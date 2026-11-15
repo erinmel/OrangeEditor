@@ -470,3 +470,131 @@ fn edits_between_checks_are_followed_without_starting_over() {
     assert!(!matches!(work.work, SessionWork::Rebuild(_)), "{work:?}");
     assert_eq!(same_problems(&host, &mut draft), 0);
 }
+
+/// `count` is set from a value node of `definition` placed beside the setter.
+fn set_from(host: &Host, definition: &str) -> (Draft, NodeId, NodeId) {
+    let (mut draft, trigger, set) = built(host);
+    let value = host
+        .add_node(&mut draft, definition, [160.0, 200.0])
+        .unwrap();
+    assert!(
+        host.connect(&mut draft, (value, "result"), (set, "value"))
+            .unwrap()
+    );
+    (draft, trigger, value)
+}
+
+fn run_once(host: &mut Host, draft: &Draft, trigger: NodeId) -> Option<Value> {
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    let count = |host: &Host| {
+        host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
+            .unwrap()
+    };
+    until("the variable", || count(host).is_some());
+    count(host)
+}
+
+#[test]
+fn value_nodes_are_in_the_palette_under_plain_names() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let labels: Vec<_> = host
+        .nodes()
+        .filter(|info| {
+            [
+                "core/number",
+                "core/whole-number",
+                "core/text",
+                "core/true-or-false",
+                "core/value",
+            ]
+            .contains(&info.definition.definition.id.as_str())
+        })
+        .map(|info| info.label().into_owned())
+        .collect();
+    assert_eq!(
+        labels,
+        ["Number", "Text", "True or false", "Value", "Whole number"]
+    );
+}
+
+#[test]
+fn a_typed_whole_number_is_wired_into_a_variable_and_runs() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, value) = set_from(&host, "core/whole-number");
+    // Untouched, the node holds zero.
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(0)));
+    assert!(
+        host.set_input(&mut draft, (value, "value"), Some("42"))
+            .unwrap()
+    );
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let shown = host.draft_view(&draft).unwrap();
+    let node = shown.nodes.iter().find(|node| node.id == value).unwrap();
+    let port = node.ports.iter().find(|port| port.id == "value").unwrap();
+    assert_eq!(port.value.as_deref(), Some("42"));
+    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(42)));
+    // A typed value that is not a whole number is refused and changes nothing.
+    assert!(
+        host.set_input(&mut draft, (value, "value"), Some("4.5"))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_generic_value_holds_any_type_once_it_is_chosen() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, value) = set_from(&host, "core/value");
+    // The wire alone settles the type; the value still has to be typed.
+    assert!(same_problems(&host, &mut draft) > 0);
+    assert!(
+        host.choose_type(&mut draft, value, "T", Some("core/i64@1"))
+            .unwrap()
+    );
+    assert!(
+        host.set_input(&mut draft, (value, "value"), Some("-3"))
+            .unwrap()
+    );
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(-3)));
+}
+
+#[test]
+fn a_value_node_of_the_wrong_type_cannot_be_wired() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, _trigger, set) = built(&host);
+    for definition in ["core/number", "core/text", "core/true-or-false"] {
+        let value = host
+            .add_node(&mut draft, definition, [160.0, 200.0])
+            .unwrap();
+        assert!(
+            host.connect(&mut draft, (value, "result"), (set, "value"))
+                .is_err(),
+            "{definition}"
+        );
+    }
+}
+
+#[test]
+fn a_wired_value_node_passes_on_what_reaches_it() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, value) = set_from(&host, "core/whole-number");
+    assert!(
+        host.set_config(&mut draft, trigger, &json!({"payload": "core/i64@1"}))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (trigger, "payload"), (value, "value"))
+            .unwrap()
+    );
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, Some(Value::I64(9))).unwrap();
+    let count = |host: &Host| {
+        host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
+            .unwrap()
+    };
+    until("the variable", || count(&host).is_some());
+    assert_eq!(count(&host), Some(Value::I64(9)));
+}
