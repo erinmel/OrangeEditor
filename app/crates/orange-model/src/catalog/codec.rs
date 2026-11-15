@@ -162,6 +162,7 @@ impl NodeDefinition {
             description: wire.description.take(),
             category_id: editor.category_id,
             category: editor.category,
+            connection_adapter: editor.connection_adapter,
         };
         Ok((wire.into(), presentation))
     }
@@ -185,6 +186,11 @@ pub struct Presentation {
     /// Stable identity of the palette category; nodes with the same one group together.
     pub category_id: Option<String>,
     pub category: Option<TextRef>,
+    /// The adapter kind of the connection the node uses, such as
+    /// `org.orange.audio/output`, so an editor can offer or declare a connection of that
+    /// kind. The contract only says that the node names a connection; whether the
+    /// session is of the right kind is still checked when the node runs.
+    pub connection_adapter: Option<String>,
 }
 
 /// The implemented part of a definition file's `editor` object. Other editor hints
@@ -195,6 +201,8 @@ struct EditorWire {
     category_id: Option<String>,
     #[serde(default)]
     category: Option<TextRef>,
+    #[serde(default)]
+    connection_adapter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -289,7 +297,8 @@ mod tests {
         let mut file = triple();
         file["label"] = json!({"key": "acme.math/triple-label", "fallback": "Triple"});
         file["editor"] = json!({"category_id": "acme.math/category",
-            "category": {"key": "acme.math/category", "fallback": "Math"}, "control": "standard"});
+            "category": {"key": "acme.math/category", "fallback": "Math"}, "control": "standard",
+            "connection_adapter": "acme.math/abacus"});
         let text = file.to_string();
         let (definition, shown) = NodeDefinition::described(&text).unwrap();
         // The text is beside the contract, not part of it.
@@ -302,6 +311,10 @@ mod tests {
         assert_eq!(shown.description, None);
         assert_eq!(shown.category_id.as_deref(), Some("acme.math/category"));
         assert_eq!(shown.category.unwrap().fallback, "Math");
+        assert_eq!(
+            shown.connection_adapter.as_deref(),
+            Some("acme.math/abacus")
+        );
 
         file["label"] = json!("Triple");
         assert!(NodeDefinition::described(&file.to_string()).is_err());

@@ -425,7 +425,7 @@ fn described(definition: Definition, description: &str) -> Definition {
     definition
         .description(description)
         .category("files", "Files")
-        .connection()
+        .uses(crate::FOLDER_ADAPTER)
 }
 
 const STRING: &str = "core/string@1";

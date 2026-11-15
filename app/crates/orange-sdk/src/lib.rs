@@ -146,6 +146,26 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
         let _ = renew;
         self.open(settings)
     }
+    /// Settings an editor can offer as a list, each with the values this machine has
+    /// now, such as the audio devices for `device`. Called on the editor's thread when
+    /// it asks, never while a flow runs. The default offers none.
+    fn choices(&self) -> Vec<SettingChoices> {
+        Vec::new()
+    }
+}
+
+/// The values a connection setting can take on this machine, from
+/// [`ConnectionAdapter::choices`]. An absent setting means `unset` (such as "System
+/// default"); `values` are offered as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingChoices {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    /// What leaving the setting out means.
+    pub unset: String,
+    pub values: Vec<String>,
+    /// Why the values could not be listed, when they could not.
+    pub problem: Option<String>,
 }
 
 /// One execution of a service node, on a worker thread.
@@ -402,10 +422,11 @@ impl Definition {
     #[must_use]
     pub fn category(mut self, slug: &str, label: &str) -> Self {
         let id = format!("{}/category-{slug}", self.package);
-        let _ = self.json.insert(
-            "editor".to_owned(),
-            serde_json::json!({"category_id": id, "category": {"key": id, "fallback": label}}),
+        self.editor(
+            "category",
+            serde_json::json!({"key": id, "fallback": label}),
         );
+        self.editor("category_id", id.into());
         self
     }
     /// The node uses the connection its `connection` config field names.
@@ -414,6 +435,23 @@ impl Definition {
         let _ = self.json.insert("connection".to_owned(), true.into());
         self
     }
+    /// The node uses a connection of adapter kind `adapter`, named by its `connection`
+    /// config field. An editor adding the node binds it to such a connection, declaring
+    /// one when the document has none.
+    #[must_use]
+    pub fn uses(mut self, adapter: &str) -> Self {
+        self.editor("connection_adapter", adapter.into());
+        self.connection()
+    }
+    fn editor(&mut self, key: &str, value: Json) {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor {
+            let _ = editor.insert(key.to_owned(), value);
+        }
+    }
     /// A data input of type `ty`, such as `core/string@1`. Inputs reach
     /// [`Call::inputs`] in the order they are added.
     #[must_use]
@@ -421,6 +459,15 @@ impl Definition {
         self.ports
             .push(serde_json::json!({"port_id": name, "direction": "input",
             "kind": "data", "type": ty}));
+        self
+    }
+    /// A data input like [`input`](Self::input) that takes `default`, a literal such as
+    /// `{"type": "core/u64@1", "value": "0"}`, when nothing is written or wired to it.
+    #[must_use]
+    pub fn input_default(mut self, name: &str, ty: &str, default: Json) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "input",
+            "kind": "data", "type": ty, "default": default}));
         self
     }
     /// A data output of type `ty`, available when the node continues. Outputs are
@@ -645,7 +692,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 3",
+        "orange-plugin 4",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

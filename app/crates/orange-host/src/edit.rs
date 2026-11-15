@@ -214,11 +214,45 @@ impl Host {
                 },
             }]
         } else {
-            let mut new = NewNode::new(node, definition);
+            let mut new = NewNode::new(node, definition.clone());
             new.config = config;
-            new_node_edit(draft.document(), registry, new)
-                .map_err(|error| refused(&error))?
-                .commands
+            let uses_connection = found
+                .references
+                .iter()
+                .any(|field| field.kind == ReferenceKind::Connection);
+            if uses_connection {
+                let adapter = self
+                    .presentations
+                    .get(&definition)
+                    .and_then(|shown| shown.connection_adapter.as_deref());
+                let (connection, declared) = self.connection_for(draft, adapter)?;
+                let _ = new
+                    .config
+                    .insert("connection".to_owned(), json!(connection));
+                if let Some(decl) = declared {
+                    // The node's contract needs its connection declared, so the node is
+                    // built against the document with the declaration and both are one edit.
+                    let mut with = draft.document().clone();
+                    let _ = with
+                        .apply([DocCommand::UpsertConnection(decl.clone())])
+                        .map_err(|error| refused(&error))?;
+                    let mut commands = vec![DocCommand::UpsertConnection(decl)];
+                    commands.extend(
+                        new_node_edit(&with, registry, new)
+                            .map_err(|error| refused(&error))?
+                            .commands,
+                    );
+                    commands
+                } else {
+                    new_node_edit(draft.document(), registry, new)
+                        .map_err(|error| refused(&error))?
+                        .commands
+                }
+            } else {
+                new_node_edit(draft.document(), registry, new)
+                    .map_err(|error| refused(&error))?
+                    .commands
+            }
         };
         // A variadic port starts with the fewest instances it may have, so a new fork
         // has its branch and a new sequence its two steps.
@@ -245,6 +279,48 @@ impl Host {
         commands.push(place_command(node, Some(at)));
         let _ = draft.commit(commands)?;
         Ok(node)
+    }
+
+    /// The connection a new node that uses one of kind `adapter` names: the first one
+    /// of that kind the document declares, in name order, or a new graph connection with
+    /// default settings when it declares none, returned to be declared with the node.
+    /// A node whose definition does not say its kind takes the first connection.
+    fn connection_for(
+        &self,
+        draft: &Draft,
+        adapter: Option<&str>,
+    ) -> Result<(String, Option<orange_model::document::ConnectionDecl>), HostError> {
+        let existing = draft
+            .document()
+            .connections()
+            .values()
+            .filter(|decl| adapter.is_none_or(|kind| decl.adapter == kind))
+            .min_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+        if let Some(decl) = existing {
+            return Ok((decl.id.to_string(), None));
+        }
+        let Some(adapter) = adapter else {
+            return Err(refused(
+                &"the node needs a connection: declare one in the Document tab first",
+            ));
+        };
+        if !self.adapters.contains_key(adapter) {
+            return Err(refused(&format!(
+                "the node needs a `{adapter}` connection, which this application cannot open"
+            )));
+        }
+        let name = adapter.rsplit('/').next().unwrap_or(adapter).to_owned();
+        let (id, decl) = self.connection_decl(
+            draft,
+            &Connection {
+                id: None,
+                name,
+                adapter: adapter.to_owned(),
+                scope: ConnectionScope::Graph,
+                settings: json!({}),
+            },
+        )?;
+        Ok((id, Some(decl)))
     }
 
     /// Removes nodes with the wires that touch them and their places.
