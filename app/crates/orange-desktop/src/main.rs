@@ -48,7 +48,10 @@ struct Desktop {
 
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        let _ = self.editor.take_events(&self.events);
+        if self.editor.take_events(&self.events) {
+            // A bounded poll may leave a backlog, including events from retired flows.
+            ui.ctx().request_repaint();
+        }
         if let Some(request) = self.editor.take_request() {
             self.carry_out(request);
         }

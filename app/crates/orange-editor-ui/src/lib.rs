@@ -4,7 +4,7 @@
 //!
 //! - [`canvas::Canvas`] draws one graph and nothing else. An application with its own
 //!   lists and panels shows only this.
-//! - [`palette`] is the data of a node list, for an application that draws its own.
+//! - [`palette()`] is the data of a node list, for an application that draws its own.
 //! - [`Editor`] is the whole editor: a toolbar, the canvas, and panels for the node
 //!   kinds, the packages, the problems and the log, each of which can be switched off
 //!   ([`Panels`]).
@@ -14,8 +14,9 @@
 //! host's view of it, and the log is the host's events. Where nodes are placed is kept
 //! in the document itself, so a layout travels with the file.
 //!
-//! Drawing never waits: every button calls one of the methods below, which are also
-//! how tests and other hosts drive the editor without a window.
+//! Buttons call the methods below, which also let tests and other hosts drive the
+//! editor without a window. Document edits and validation currently run synchronously;
+//! event polling is nonblocking and consumes a finite batch per call.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -37,47 +38,12 @@ use std::sync::mpsc::Receiver;
 /// Most lines the log keeps; older ones are dropped.
 pub const MAX_LOG_LINES: usize = 500;
 
-/// One node kind a document can use, as the palette lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaletteItem {
-    /// The definition, such as `org.orange.files/write-text`.
-    pub id: String,
-    pub label: String,
-    /// The package that provides it; empty for the language's own nodes.
-    pub package: String,
-}
+/// Maximum host events consumed by one poll, including events for other flows.
+/// Poll again on a later frame while events keep arriving.
+pub const MAX_EVENTS_PER_POLL: usize = 256;
 
-/// The host's nodes grouped by category, both in alphabetical order, keeping those
-/// whose label, definition or category contains every word of `search` in any letter
-/// case. An empty search keeps all.
-pub fn palette(host: &Host, search: &str) -> Vec<(String, Vec<PaletteItem>)> {
-    let search = search.to_lowercase();
-    let words: Vec<&str> = search.split_whitespace().collect();
-    let mut groups: std::collections::BTreeMap<String, Vec<PaletteItem>> = Default::default();
-    for info in host.nodes() {
-        let (label, category) = (info.label().into_owned(), info.category().into_owned());
-        let id = info.definition.definition.id.as_str().to_owned();
-        let text = format!("{label} {id} {category}").to_lowercase();
-        if !words.iter().all(|word| text.contains(word)) {
-            continue;
-        }
-        groups.entry(category).or_default().push(PaletteItem {
-            id,
-            label,
-            package: info
-                .provider
-                .map(|provider| provider.package.clone())
-                .unwrap_or_default(),
-        });
-    }
-    groups
-        .into_iter()
-        .map(|(category, mut items)| {
-            items.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.id.cmp(&b.id)));
-            (category, items)
-        })
-        .collect()
-}
+mod palette;
+pub use palette::{PaletteItem, palette};
 
 /// A type as a person reads it: `core/string@1` is "text". Other types keep their name
 /// without the version.
@@ -160,6 +126,7 @@ pub enum FileRequest {
 #[derive(Debug, Default)]
 pub struct Editor {
     search: String,
+    palette: palette::PaletteCache,
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<String>,
@@ -631,11 +598,15 @@ impl Editor {
         }
     }
 
-    /// Takes what the host reported since the last call into the log. Returns whether
-    /// anything arrived, so a window knows to draw again.
+    /// Takes up to [`MAX_EVENTS_PER_POLL`] host events into the log. Returns whether
+    /// anything arrived, so a window knows to draw and poll again. The finite batch
+    /// leaves time for input and painting even when producers continuously refill it.
     pub fn take_events(&mut self, events: &Receiver<HostEvent>) -> bool {
         let mut any = false;
-        while let Ok(event) = events.try_recv() {
+        for _ in 0..MAX_EVENTS_PER_POLL {
+            let Ok(event) = events.try_recv() else {
+                break;
+            };
             any = true;
             let Some(document) = &mut self.document else {
                 continue;
@@ -829,7 +800,7 @@ impl Editor {
         );
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
-            for (category, items) in palette(host, &self.search) {
+            for (category, items) in self.palette.get(host, &self.search) {
                 egui::CollapsingHeader::new(format!("{category} ({})", items.len()))
                     .id_salt(category.as_str())
                     .default_open(searching)
@@ -843,7 +814,7 @@ impl Editor {
                                 ui.selectable_label(false, item.label.as_str())
                             });
                             if shown.inner.on_hover_text(hint).clicked() {
-                                add = Some(item.id);
+                                add = Some(item.id.clone());
                             }
                         }
                     });
@@ -980,6 +951,55 @@ mod tests {
         // No renderer takes the textures of a frame drawn for a test.
         output.drop_without_applying_deltas();
         shapes
+    }
+
+    #[test]
+    fn polling_a_busy_event_queue_yields_and_preserves_the_terminal_event() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = host.bind(&graph()).unwrap();
+        editor.open(&mut host, "events.json", text);
+        editor.run(&mut host);
+        let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
+        editor.log.clear();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for n in 0..MAX_EVENTS_PER_POLL {
+            sender
+                .send(HostEvent {
+                    flow,
+                    kind: FlowEvent::TraceLost(n as u64),
+                })
+                .unwrap();
+        }
+        sender
+            .send(HostEvent {
+                flow,
+                kind: FlowEvent::Finished,
+            })
+            .unwrap();
+        assert!(editor.take_events(&receiver));
+        assert_eq!(editor.log.len(), MAX_EVENTS_PER_POLL);
+        assert!(
+            editor.is_running(),
+            "terminal event remains queued after the batch"
+        );
+        assert!(editor.take_events(&receiver));
+        assert!(!editor.is_running());
+        assert!(!editor.take_events(&receiver));
+
+        // Discarded events count too; an unrelated producer cannot monopolize a poll.
+        let mut empty = Editor::new();
+        for _ in 0..=MAX_EVENTS_PER_POLL {
+            sender
+                .send(HostEvent {
+                    flow,
+                    kind: FlowEvent::Finished,
+                })
+                .unwrap();
+        }
+        assert!(empty.take_events(&receiver));
+        assert!(empty.take_events(&receiver));
+        assert!(!empty.take_events(&receiver));
     }
 
     #[test]

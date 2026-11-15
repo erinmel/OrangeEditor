@@ -109,11 +109,22 @@ impl Host {
             .collect();
         let places = document.editor().get("nodes");
         let body = document.root();
+        // Index endpoints once. A port lookup must not scan every edge, including
+        // when the graph is incomplete and exposes only implicit control ports.
+        let mut connected: std::collections::HashMap<_, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for edge in body.edges.values() {
+            for (end, input) in [(&edge.from, false), (&edge.to, true)] {
+                let _ = connected
+                    .entry((end.node, input))
+                    .or_default()
+                    .insert(end.port.to_string());
+            }
+        }
         let wired = |node: NodeId, port: &str, input: bool| {
-            body.edges.values().any(|edge| {
-                let end = if input { &edge.to } else { &edge.from };
-                end.node == node && end.port.to_string() == port
-            })
+            connected
+                .get(&(node, input))
+                .is_some_and(|ports| ports.contains(port))
         };
         let mut nodes = Vec::with_capacity(body.nodes.len());
         for node in body.nodes.values() {
@@ -126,9 +137,8 @@ impl Host {
                     let input = port.direction == PortDirection::Input;
                     let value = node
                         .inputs
-                        .iter()
-                        .find(|(key, _)| key.to_string() == id)
-                        .and_then(|(_, literal)| self.value_of(literal).ok())
+                        .get(&PortKey::new(port.port_id.clone(), None))
+                        .and_then(|literal| self.value_of(literal).ok())
                         .map(|value| plain(&value));
                     PortView {
                         connected: wired(node.id, &id, input),
@@ -219,24 +229,25 @@ impl Host {
                 types,
             });
         }
-        let exec = |from: &(NodeId, String)| {
-            nodes
-                .iter()
-                .find(|node| node.id == from.0)
-                .and_then(|node| {
-                    node.ports
-                        .iter()
-                        .find(|port| !port.input && port.id == from.1)
-                })
-                .is_some_and(|port| port.exec)
-        };
+        let outputs: std::collections::HashMap<_, _> = nodes
+            .iter()
+            .flat_map(|node| {
+                node.ports
+                    .iter()
+                    .filter(|port| !port.input)
+                    .map(move |port| ((node.id, port.id.as_str()), port.exec))
+            })
+            .collect();
         let wires = body
             .edges
             .values()
             .map(|edge| {
                 let from = (edge.from.node, edge.from.port.to_string());
                 WireView {
-                    exec: exec(&from),
+                    exec: outputs
+                        .get(&(from.0, from.1.as_str()))
+                        .copied()
+                        .unwrap_or(false),
                     from,
                     to: (edge.to.node, edge.to.port.to_string()),
                 }

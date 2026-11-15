@@ -37,7 +37,7 @@ impl Names {
                 )
             })
             .collect();
-        let list = |key: &str| graph[key].as_array().cloned().unwrap_or_default();
+        let list = |key: &str| graph[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
         let mut nodes: Vec<(String, String)> = list("nodes")
             .iter()
             .filter_map(|node| {

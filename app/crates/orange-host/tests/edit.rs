@@ -40,6 +40,53 @@ fn built(host: &Host) -> (String, NodeId, NodeId) {
 }
 
 #[test]
+fn view_connectivity_matches_edges_after_disconnect_and_reconnect() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (text, trigger, set) = built(&host);
+    let disconnected = host.disconnect(&text, (set, "in"), true).unwrap();
+    let reconnected = host
+        .connect(&disconnected, (trigger, "then"), (set, "in"))
+        .unwrap();
+    for text in [&text, &disconnected, &reconnected] {
+        let view = host.view(text).unwrap();
+        for node in &view.nodes {
+            for port in &node.ports {
+                assert_eq!(
+                    port.connected,
+                    view.wires.iter().any(|wire| {
+                        let end = if port.input { &wire.to } else { &wire.from };
+                        end.0 == node.id && end.1 == port.id
+                    })
+                );
+            }
+        }
+        for wire in &view.wires {
+            let source = view
+                .nodes
+                .iter()
+                .find(|node| node.id == wire.from.0)
+                .unwrap();
+            let port = source
+                .ports
+                .iter()
+                .find(|port| !port.input && port.id == wire.from.1)
+                .unwrap();
+            assert_eq!(wire.exec, port.exec);
+        }
+        let set = view.nodes.iter().find(|node| node.id == set).unwrap();
+        assert_eq!(
+            set.ports
+                .iter()
+                .find(|port| port.id == "value")
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("7")
+        );
+    }
+}
+
+#[test]
 fn a_graph_is_built_from_an_empty_document_and_runs() {
     let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     // Half built, the document says what it still needs instead of being refused.

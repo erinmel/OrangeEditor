@@ -1,5 +1,15 @@
 # Tooling, environment and research register
 
+## Editor performance evidence — 2026-11-14
+
+PERF-EDITOR: [21](21-editor-performance.md) records the baseline commit, exact
+toolchain/features/lockfile, local measurement workload/results, verification commands
+and limitations for indexed canvas geometry, bounded layout, host view indexing,
+palette reuse and finite event polling. Dependencies and graph formats are unchanged.
+Versioned API evidence: installed `emath-0.37.0/src/rect.rs` defines
+`Rect::from_points`, `expand` and `intersects`; existing egui 0.37.0 painter/input
+APIs remain in use. Local timing is not a hosted CI gate or physical qualification.
+
 ## Declarations, settings, clipboard and files in the editor — 2026-11-14
 
 Pictures looked at (`orange-editor <graph> --screenshot …`): Properties of a Set

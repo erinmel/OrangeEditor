@@ -1,5 +1,16 @@
 # Architecture decision records
 
+ADR-02/21 implementation amendment (2026-11-14; PERF-EDITOR): use frame-local
+borrowed geometry/connectivity indexes and one registry-generation/search-keyed
+palette cache. The extra index memory is accepted to eliminate repeated scans;
+no pointer-identity cache may assume that a public mutable `GraphView` is unchanged.
+Saved positions bypass topology. A topological queue supplies unsaved DAG columns;
+cycle-blocked nodes stack in document order at columns reached from acyclic roots,
+replacing the old edge-order-dependent relaxation. UI polling yields after 256
+events and must continue on later frames. Graph/runtime/provider contracts and
+core/UI dependency boundaries are unchanged. [21](21-editor-performance.md)
+records behavior regressions, measured scope and open qualification limits.
+
 **Scope precedence (2026-10-22): ADR-22 supersedes the earlier delivery scope in ADR-09–12 and ADR-21. Historical rationale does not reintroduce specialized integrations or deferred protocols as release gates.**
 
 Status key: **Selected** is the planning default; **Conditional** must pass a named feasibility probe before production adoption; **Proposed** awaits the product owner's acceptance and changes no contract until accepted. Neither means implemented. Owners are responsibility roles for future work, not newly assigned people. Primary evidence was retrieved 2026-10-20; moving/development API sources are not exact dependency pins.
