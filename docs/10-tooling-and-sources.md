@@ -6117,3 +6117,22 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   A separate read-only source review checked acquisition/error/drop/compaction
   ownership. The Linux-only unit remains a required hosted check; no local Linux
   pass is claimed.
+
+### Value nodes — 2026-11-15
+
+- FR-104; ADR-25; 11 §8.4. Five pure intrinsics (`core/number`,
+  `core/whole-number`, `core/text`, `core/true-or-false`, generic `core/value`)
+  hold their constant as the literal on `value` and publish it on `result`. The
+  compiler lowers them with the existing language-owned projection: a literal folds
+  to a constant, a wire forwards. No saved field, literal form, diagnostic,
+  dependency or runtime operation is added. The host view now shows a generic
+  port's pinned or inferred type, so a value can be typed on it.
+- PASS on Windows x64/Rust 1.99.1, based on `fix/performance-n-maintainability`
+  (PR #180, not yet merged): `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets --all-features --locked -- -D warnings`; `node
+  tools/check-cargo-metadata.mjs`; `cargo test --workspace --locked` (1,858 passed,
+  0 failed, 20 ignored). Focused tests: `orange-host` `tests/edit.rs` (palette
+  names, typed whole number, generic value with a chosen type, wired pass-through,
+  refused wrong-type wires) and `orange-editor-ui`
+  `a_value_node_from_the_palette_is_typed_wired_and_run`. The desktop window was
+  not clicked through.
