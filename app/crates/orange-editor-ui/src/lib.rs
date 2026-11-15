@@ -82,6 +82,8 @@ struct Document {
     unsaved: bool,
     /// What checking found, one line each; empty when the document is valid.
     problems: Vec<String>,
+    /// The top-level node each problem is about, in the same order.
+    problem_nodes: Vec<Option<NodeId>>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
 }
@@ -182,6 +184,7 @@ impl Editor {
             graph,
             unsaved: false,
             problems: Vec::new(),
+            problem_nodes: Vec::new(),
             flow: None,
         });
         self.check(host);
@@ -600,13 +603,31 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
+        let mut marks = canvas::Marks::default();
+        document.problem_nodes.clear();
         document.problems = match host.problems(&mut document.draft) {
             Ok(diagnostics) => diagnostics
                 .iter()
-                .map(|diagnostic| describe(diagnostic, &document.names))
+                .map(|diagnostic| {
+                    let text = describe(diagnostic, &document.names);
+                    let error = diagnostic.severity == orange_host::Severity::Error;
+                    // Only the top level is on the canvas.
+                    let node = diagnostic
+                        .subject
+                        .node
+                        .filter(|_| diagnostic.subject.function.is_none());
+                    if let Some(wire) = host.wire_of(&document.draft, diagnostic) {
+                        canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
+                    } else if let Some(node) = node {
+                        canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
+                    }
+                    document.problem_nodes.push(node);
+                    text
+                })
                 .collect(),
             Err(error) => Self::problems_of(&error, &document.names),
         };
+        self.canvas.set_marks(marks);
     }
 
     /// Starts the open document as a flow. A document that cannot start says why in
@@ -988,15 +1009,35 @@ impl Editor {
         });
     }
 
-    fn log_panel(&self, ui: &mut egui::Ui) {
-        let problems = self.problems();
+    fn log_panel(&mut self, ui: &mut egui::Ui) {
+        let problems = self.problems().to_vec();
+        let nodes = self
+            .document
+            .as_ref()
+            .map(|document| document.problem_nodes.clone())
+            .unwrap_or_default();
+        let mut focus = None;
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 if !problems.is_empty() {
                     ui.heading(format!("Problems ({})", problems.len()));
-                    for problem in problems {
-                        ui.label(problem.as_str());
+                    for (index, problem) in problems.iter().enumerate() {
+                        // A problem about a node takes you to it.
+                        match nodes.get(index).copied().flatten() {
+                            Some(node) => {
+                                if ui
+                                    .link(problem.as_str())
+                                    .on_hover_text("Show the node")
+                                    .clicked()
+                                {
+                                    focus = Some(node);
+                                }
+                            }
+                            None => {
+                                ui.label(problem.as_str());
+                            }
+                        }
                     }
                     ui.separator();
                 }
@@ -1005,6 +1046,9 @@ impl Editor {
                     ui.monospace(line.as_str());
                 }
             });
+        if let (Some(node), Some(document)) = (focus, &self.document) {
+            self.canvas.focus(&document.graph, node);
+        }
     }
 
     fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -1200,6 +1244,14 @@ mod tests {
         assert!(graph.wires[0].exec);
         assert_eq!(editor.problems().len(), 1);
         assert!(editor.problems()[0].contains("(node go)"));
+        // The canvas marks the node the problem is about, and the list can take you there.
+        let go = editor.graph().unwrap().nodes[0].id;
+        let mark = editor.canvas().marks().nodes.get(&go).cloned().unwrap();
+        assert!(mark.error && mark.text.contains("(node go)"));
+        editor.canvas().select(None);
+        let graph = editor.graph().unwrap().clone();
+        editor.canvas().focus(&graph, go);
+        assert_eq!(editor.canvas().selected(), Some(go));
         editor.run(&mut host);
         assert!(!editor.is_running());
 

@@ -115,6 +115,51 @@ pub struct CanvasResponse {
     pub remove: Vec<NodeId>,
 }
 
+/// A problem shown on the canvas, on the node or wire it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    /// An error stops the graph from running; anything else is a warning.
+    pub error: bool,
+    /// What the problem says, as a person reads it; shown when the pointer is on it.
+    pub text: String,
+}
+
+/// A wire by its two ends, output first: a node and a port name each.
+pub type WireEnds = ((NodeId, String), (NodeId, String));
+
+/// The problems the canvas shows on nodes and wires.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub nodes: std::collections::HashMap<NodeId, Mark>,
+    /// By the wire's two ends, output first.
+    pub wires: std::collections::HashMap<WireEnds, Mark>,
+}
+
+impl Marks {
+    /// Adds a problem to what is already marked on a node or wire: the texts are
+    /// kept one per line, and an error outweighs a warning.
+    pub fn add<K: std::hash::Hash + Eq>(
+        marks: &mut std::collections::HashMap<K, Mark>,
+        key: K,
+        error: bool,
+        text: String,
+    ) {
+        match marks.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.error |= error;
+                if !held.text.lines().any(|line| line == text) {
+                    held.text.push('\n');
+                    held.text.push_str(&text);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(free) => {
+                let _ = free.insert(Mark { error, text });
+            }
+        }
+    }
+}
+
 /// A wire being drawn from an output, not yet let go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Wiring {
@@ -146,6 +191,8 @@ pub struct Canvas {
     /// Show the whole graph at the next frame.
     fit: bool,
     wiring: Option<Wiring>,
+    /// Problems drawn on nodes and wires.
+    marks: Marks,
     /// The size of the canvas when it was last shown, in points.
     size: Vec2,
 }
@@ -164,6 +211,7 @@ impl Default for Canvas {
             moving: false,
             fit: true,
             wiring: None,
+            marks: Marks::default(),
             size: Vec2::new(800.0, 600.0),
         }
     }
@@ -172,6 +220,8 @@ impl Default for Canvas {
 /// Colors of the canvas, taken from the surrounding egui style so it follows a light
 /// or dark application.
 struct Palette {
+    error: Color32,
+    warning: Color32,
     background: Color32,
     grid: Color32,
     card: Color32,
@@ -184,10 +234,16 @@ struct Palette {
     exec: Color32,
 }
 impl Palette {
+    fn problem(&self, error: bool) -> Color32 {
+        if error { self.error } else { self.warning }
+    }
+
     fn of(ui: &egui::Ui) -> Self {
         let visuals = ui.visuals();
         let dark = visuals.dark_mode;
         Self {
+            error: visuals.error_fg_color,
+            warning: visuals.warn_fg_color,
             background: visuals.extreme_bg_color,
             // Faint enough to sit behind the cards, clear enough to judge distances by.
             grid: visuals
@@ -462,6 +518,29 @@ impl Canvas {
             .reduce(|all, rect| all.union(rect))
     }
 
+    /// The problems drawn on nodes and wires.
+    pub fn marks(&self) -> &Marks {
+        &self.marks
+    }
+
+    /// The problems to draw on nodes and wires from now on.
+    pub fn set_marks(&mut self, marks: Marks) {
+        self.marks = marks;
+    }
+
+    /// Selects a node and moves the view so it is in the middle, at the same zoom.
+    pub fn focus(&mut self, graph: &GraphView, node: NodeId) {
+        let (Some(place), Some(shown)) = (
+            self.places.get(&node).copied(),
+            graph.nodes.iter().find(|found| found.id == node),
+        ) else {
+            return;
+        };
+        let middle = place + node_size(shown) / 2.0;
+        self.origin = middle - self.size / (2.0 * self.zoom);
+        self.select(Some(node));
+    }
+
     /// Draws the graph into the space left in `ui` and applies panning, zooming,
     /// selecting and moving. `triggers` are the nodes that get a button to fire them.
     pub fn show(
@@ -679,7 +758,10 @@ impl Canvas {
             ) else {
                 continue;
             };
-            let color = if wire.exec {
+            let mark = self.marks.wires.get(&(wire.from.clone(), wire.to.clone()));
+            let color = if let Some(mark) = mark {
+                colors.problem(mark.error)
+            } else if wire.exec {
                 colors.exec
             } else {
                 let ty = geometry
@@ -689,7 +771,12 @@ impl Canvas {
             };
             // The wire leaves and arrives level, bending more the further it goes.
             let points = wire_points(from, to, zoom);
-            let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6);
+            let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6)
+                + if mark.is_some() {
+                    1.5 * zoom.max(0.6)
+                } else {
+                    0.0
+                };
             if !wire_visible(&points, painter.clip_rect(), width) {
                 continue;
             }
@@ -742,6 +829,17 @@ impl Canvas {
             );
             if pressed {
                 done.trigger = Some(node.id);
+            }
+            if let Some(mark) = self.marks.nodes.get(&node.id) {
+                draw_mark(
+                    ui,
+                    &painter,
+                    rect,
+                    zoom,
+                    &colors,
+                    mark,
+                    response.id.with(("mark", node.id)),
+                );
             }
             for (port, slot) in slots {
                 if area.contains_rect(slot)
@@ -875,6 +973,40 @@ impl Canvas {
             }
         }
     }
+}
+
+/// Outlines a card that has a problem and puts a badge on its corner; the pointer on
+/// the badge shows what the problem says.
+fn draw_mark(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    zoom: f32,
+    colors: &Palette,
+    mark: &Mark,
+    id: egui::Id,
+) {
+    let color = colors.problem(mark.error);
+    painter.rect_stroke(
+        rect.expand(2.0 * zoom),
+        10.0 * zoom,
+        Stroke::new(2.0 * zoom.max(0.6), color),
+        StrokeKind::Outside,
+    );
+    let radius = 8.0 * zoom.max(0.75);
+    let center = Pos2::new(rect.max.x - radius * 0.4, rect.min.y + radius * 0.4);
+    painter.circle_filled(center, radius, color);
+    let _ = painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(radius * 1.4),
+        Color32::WHITE,
+    );
+    let badge = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    let _ = ui
+        .interact(badge, id, Sense::hover())
+        .on_hover_text(mark.text.as_str());
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.

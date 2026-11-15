@@ -84,7 +84,7 @@ pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
-pub use orange_model::validation::{Diagnostic, EditStats, SessionWork};
+pub use orange_model::validation::{Diagnostic, EditStats, SessionWork, Severity};
 pub use orange_packages::{
     About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
 };
