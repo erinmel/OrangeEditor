@@ -1,7 +1,7 @@
 //! The properties panel: what the selected node settles (the declarations it names,
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
-use orange_host::{NodeView, ReferenceKind};
+use orange_host::{NodeView, ReferenceKind, VarScope, Variable};
 use serde_json::{Value as Json, json};
 
 /// Types offered for a value, besides those the document already uses.
@@ -212,8 +212,14 @@ impl Editor {
         }
     }
 
+    /// The value on an input as its field shows it before typing: text without quotes.
+    fn shown_input(port: &orange_host::PortView) -> String {
+        let shown = port.value.clone().unwrap_or_default();
+        serde_json::from_str::<String>(&shown).unwrap_or(shown)
+    }
+
     pub(crate) fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        ui.heading("Properties");
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
         let selected = self.canvas.selected().and_then(|id| {
             self.graph()?
                 .nodes
@@ -223,94 +229,132 @@ impl Editor {
         });
         let Some(node) = selected else {
             self.inspected = None;
+            self.quick_variable = None;
+            ui.add_space(4.0);
             let many = self.canvas.selection();
             if many.len() > 1 {
-                ui.label(format!("{} nodes selected", many.len()));
-                ui.weak("Ctrl+C copies them, Ctrl+V pastes where the pointer is.");
+                ui.strong(format!("{} nodes selected", many.len()));
+                ui.label("Ctrl+C copies them; Ctrl+V pastes where the pointer is.");
                 if ui.button("Delete them").clicked() {
                     let _ = self.remove_nodes(host, &many);
                 }
             } else {
-                ui.weak("Select a node to see and change its values. Ctrl+click or Shift+drag selects several.");
+                ui.weak("Select a node to see and change its values.");
+                ui.weak("Ctrl+click or Shift+drag selects several.");
             }
             return;
         };
         self.inspect(&node);
-        ui.strong(node.name.as_str());
-        ui.weak(node.kind.as_str());
-        ui.weak(node.definition.as_str());
+        if self
+            .quick_variable
+            .as_ref()
+            .is_some_and(|quick| quick.node != node.id)
+        {
+            self.quick_variable = None;
+        }
+        ui.add_space(2.0);
+        let _ = ui
+            .add(egui::Label::new(egui::RichText::new(node.name.as_str()).heading()).truncate())
+            .on_hover_text(node.name.as_str());
+        let mut subtitle = node.kind.clone();
+        if let Some(detail) = &node.detail {
+            subtitle.push_str(" · ");
+            subtitle.push_str(detail);
+        }
+        let _ = ui
+            .add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
+            .on_hover_text(node.definition.as_str());
         ui.separator();
-        // What to do once the fields are drawn.
-        let mut setting: Option<(String, Option<Json>)> = None;
-        let mut typing: Option<(String, Option<String>)> = None;
-        let mut write: Option<(String, Option<String>)> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (pointer, kind) in &node.references {
-                setting = self
-                    .reference_field(ui, &node, pointer, *kind)
-                    .or(setting.take());
-            }
-            if let Some(changed) = self.settings_fields(ui, &node) {
-                setting = Some(changed);
-            }
-            for param in &node.types {
-                let shown = param
-                    .chosen
-                    .as_deref()
-                    .map_or_else(|| "from the wires".to_owned(), type_name);
-                ui.label(format!("type {}", param.name)).on_hover_text(
-                    param.found.as_deref().map_or_else(
-                        || "No type found yet.".to_owned(),
-                        |found| format!("Now {}.", type_name(found)),
-                    ),
-                );
-                let _ = egui::ComboBox::from_id_salt(("orange-type", param.name.as_str()))
-                    .selected_text(shown)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(param.chosen.is_none(), "from the wires")
-                            .clicked()
-                            && param.chosen.is_some()
+        // What to do once the fields are drawn: one change a frame.
+        let mut change = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // One label width keeps the fields in line; a narrow panel gives the
+                // room to the fields.
+                let labels = (ui.available_width() * 0.4).clamp(48.0, LABEL_WIDTH);
+                let setup =
+                    !node.references.is_empty() || node.schema.is_some() || !node.types.is_empty();
+                if setup {
+                    section(ui, "Set-up");
+                    for (pointer, kind) in &node.references {
+                        if let Some(asked) = self.reference_field(ui, labels, &node, pointer, *kind)
                         {
-                            typing = Some((param.name.clone(), None));
+                            change = Some(asked);
                         }
-                        for ty in COMMON_TYPES {
-                            let current = param.chosen.as_deref() == Some(ty);
-                            if ui.selectable_label(current, type_name(ty)).clicked() && !current {
-                                typing = Some((param.name.clone(), Some(ty.to_owned())));
-                            }
-                        }
-                    });
+                    }
+                    if let Some(asked) = self.settings_fields(ui, labels, &node) {
+                        change = Some(asked);
+                    }
+                    if let Some(asked) = Self::type_fields(ui, labels, &node) {
+                        change = Some(asked);
+                    }
+                }
+                if !node.variadic.is_empty() {
+                    section(ui, "Ports");
+                    if let Some(asked) = Self::variadic_fields(ui, labels, &node) {
+                        change = Some(asked);
+                    }
+                }
+                if node.ports.iter().any(|port| port.input && !port.exec) {
+                    section(ui, "Inputs");
+                    if let Some(asked) = self.input_fields(ui, labels, &node) {
+                        change = Some(asked);
+                    }
+                }
+                ui.add_space(10.0);
+                if ui.button("Delete node").clicked() {
+                    change = Some(Change::Delete);
+                }
+            });
+        let Some(change) = change else {
+            return;
+        };
+        match change {
+            Change::Setting(pointer, value) => {
+                let _ = self.set_setting(host, node.id, &pointer, value);
             }
-            if !node.references.is_empty() || node.schema.is_some() || !node.types.is_empty() {
-                ui.separator();
+            Change::Type(param, ty) => {
+                let _ = self.choose_type(host, node.id, &param, ty.as_deref());
             }
-            write = self.input_fields(ui, &node);
-            ui.separator();
-            if ui.button("Delete node").clicked() {
+            Change::Input(port, typed) => {
+                let _ = self.set_input(host, (node.id, &port), typed.as_deref());
+            }
+            Change::AddPort(port) => {
+                let _ = self.add_port(host, node.id, &port);
+            }
+            Change::RemovePort(port) => {
+                let _ = self.remove_port(host, (node.id, &port));
+            }
+            Change::Declare(pointer, variable) => {
+                if self
+                    .declare_variable_for(host, node.id, &pointer, &variable)
+                    .is_some()
+                {
+                    self.quick_variable = None;
+                }
+            }
+            Change::CancelDeclare => self.quick_variable = None,
+            Change::NewConnection => {
+                self.panels.nodes = true;
+                self.document_tab = true;
+                self.forms.reveal_connection();
+            }
+            Change::Delete => {
                 let _ = self.remove_node(host, node.id);
             }
-        });
-        if let Some((pointer, value)) = setting {
-            let _ = self.set_setting(host, node.id, &pointer, value);
-        }
-        if let Some((param, ty)) = typing {
-            let _ = self.choose_type(host, node.id, &param, ty.as_deref());
-        }
-        if let Some((port, typed)) = write {
-            let _ = self.set_input(host, (node.id, &port), typed.as_deref());
         }
     }
 
-    /// A chooser of the declaration a setting names. Returns the setting to write.
+    /// A chooser of the declaration a setting names, with a way to declare a new one.
     fn reference_field(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
+        labels: f32,
         node: &NodeView,
         pointer: &str,
         kind: ReferenceKind,
-    ) -> Option<(String, Option<Json>)> {
-        let label = pointer.trim_start_matches('/');
+    ) -> Option<Change> {
         let named = node
             .settings
             .pointer(pointer)
@@ -327,33 +371,113 @@ impl Editor {
             .as_ref()
             .and_then(|id| declared.iter().find(|(known, _)| known == id))
             .map_or_else(|| format!("choose a {what}"), |(_, name)| name.clone());
-        ui.label(label);
         let mut chosen = None;
-        let _ = egui::ComboBox::from_id_salt(("orange-reference", pointer))
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                for (id, name) in &declared {
-                    let current = named.as_deref() == Some(id.as_str());
-                    if ui.selectable_label(current, name.as_str()).clicked() && !current {
-                        chosen = Some((pointer.to_owned(), Some(json!(id))));
-                    }
-                }
-                if declared.is_empty() {
-                    ui.weak(format!(
-                        "The document declares no {what}s. Declare one under Document."
-                    ));
-                }
+        let mut quick = false;
+        row(
+            ui,
+            labels,
+            &words(pointer.trim_start_matches('/')),
+            None,
+            |ui| {
+                let _ = egui::ComboBox::from_id_salt(("orange-reference", pointer))
+                    .selected_text(shown)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (id, name) in &declared {
+                            let current = named.as_deref() == Some(id.as_str());
+                            if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                                chosen = Some(Change::Setting(pointer.to_owned(), Some(json!(id))));
+                            }
+                        }
+                        match kind {
+                            ReferenceKind::Variable | ReferenceKind::Connection => {
+                                if !declared.is_empty() {
+                                    ui.separator();
+                                }
+                                quick =
+                                    ui.selectable_label(false, format!("New {what}…")).clicked();
+                            }
+                            _ if declared.is_empty() => {
+                                ui.weak(format!("This graph declares no {what}s."));
+                            }
+                            _ => {}
+                        }
+                    });
+            },
+        );
+        if quick {
+            if kind != ReferenceKind::Variable {
+                return Some(Change::NewConnection);
+            }
+            self.quick_variable = Some(QuickVariable {
+                node: node.id,
+                pointer: pointer.to_owned(),
+                name: String::new(),
+                ty: COMMON_TYPES[1].to_owned(),
             });
+        }
+        if kind == ReferenceKind::Variable
+            && let Some(form) = self
+                .quick_variable
+                .as_mut()
+                .filter(|form| form.pointer == pointer)
+        {
+            chosen = Self::quick_variable_form(ui, labels, form).or(chosen);
+        }
         chosen
     }
 
+    /// The short form for a variable declared from the node that will name it: a name
+    /// and a type. The Document tab has the whole form.
+    fn quick_variable_form(
+        ui: &mut egui::Ui,
+        labels: f32,
+        form: &mut QuickVariable,
+    ) -> Option<Change> {
+        let mut change = None;
+        let _ = egui::Frame::group(ui.style()).show(ui, |ui| {
+            row(ui, labels, "Name", None, |ui| {
+                let _ = ui.add(
+                    egui::TextEdit::singleline(&mut form.name)
+                        .hint_text("new variable")
+                        .desired_width(ui.available_width()),
+                );
+            });
+            row(ui, labels, "Type", None, |ui| {
+                let _ = egui::ComboBox::from_id_salt("orange-quick-variable-type")
+                    .selected_text(type_name(&form.ty))
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for ty in COMMON_TYPES {
+                            let _ = ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                let ready = !form.name.trim().is_empty();
+                if ui
+                    .add_enabled(ready, egui::Button::new("Declare"))
+                    .clicked()
+                {
+                    change = Some(Change::Declare(form.pointer.clone(), form.variable()));
+                }
+                if ui.button("Cancel").clicked() {
+                    change = Some(Change::CancelDeclare);
+                }
+            });
+            ui.weak("Scope and starting value are under Document.");
+        });
+        change
+    }
+
     /// Fields for the settings the node's schema describes, but not those naming a
-    /// declaration. Returns a setting to write.
+    /// declaration.
     fn settings_fields(
         &mut self,
         ui: &mut egui::Ui,
+        labels: f32,
         node: &NodeView,
-    ) -> Option<(String, Option<Json>)> {
+    ) -> Option<Change> {
         let properties = node.schema.as_ref()?["properties"].as_object()?;
         let required: Vec<&str> = node.schema.as_ref()?["required"]
             .as_array()
@@ -369,27 +493,32 @@ impl Editor {
             }
             let field = Field::of(schema);
             let current = &node.settings[name.as_str()];
-            let unit = if matches!(field, Field::Time) {
-                " (milliseconds)"
+            let needed = required.contains(&name.as_str());
+            let label = if matches!(field, Field::Time) {
+                format!("{} (ms)", words(name))
             } else {
-                ""
+                words(name)
             };
-            let needed = if required.contains(&name.as_str()) {
-                ""
-            } else {
-                ", optional"
-            };
-            ui.label(format!("{name}{unit}{needed}"));
-            match &field {
+            let hover = Some(if needed { "Required." } else { "Optional." }.to_owned());
+            let mut said = None;
+            row(ui, labels, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
                     let shown = current.as_str().unwrap_or("not set").to_owned();
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
+                        .width(ui.available_width())
                         .show_ui(ui, |ui| {
+                            if !needed
+                                && ui.selectable_label(current.is_null(), "not set").clicked()
+                                && !current.is_null()
+                            {
+                                changed = Some(Change::Setting(pointer.clone(), None));
+                            }
                             for option in options {
                                 let on = current.as_str() == Some(*option);
                                 if ui.selectable_label(on, *option).clicked() && !on {
-                                    changed = Some((pointer.clone(), Some(json!(option))));
+                                    changed =
+                                        Some(Change::Setting(pointer.clone(), Some(json!(option))));
                                 }
                             }
                         });
@@ -397,71 +526,301 @@ impl Editor {
                 Field::Toggle => {
                     let mut on = current.as_bool().unwrap_or(false);
                     if ui.checkbox(&mut on, "").changed() {
-                        changed = Some((pointer.clone(), Some(json!(on))));
+                        changed = Some(Change::Setting(pointer.clone(), Some(json!(on))));
                     }
                 }
                 Field::Whole | Field::Number | Field::Time | Field::Text => {
+                    let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
-                    let mut said = None;
-                    ui.horizontal(|ui| {
-                        let entry = ui.add(
-                            egui::TextEdit::singleline(typed)
-                                .hint_text("not set")
-                                .desired_width(150.0),
-                        );
-                        let entered = entry.lost_focus()
-                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                        if entered || ui.small_button("Set").clicked() {
-                            match field.value(typed) {
-                                Ok(value) => changed = Some((pointer.clone(), Some(value))),
-                                Err(why) => said = Some(why),
+                    let hint = if needed { "required" } else { "optional" };
+                    let clear = !needed && !current.is_null();
+                    match text_field(ui, typed, hint, clear) {
+                        Edit::Done if *typed != before => {
+                            if typed.trim().is_empty() && !needed {
+                                changed = Some(Change::Setting(pointer.clone(), None));
+                            } else {
+                                match field.value(typed) {
+                                    Ok(value) => {
+                                        changed =
+                                            Some(Change::Setting(pointer.clone(), Some(value)));
+                                    }
+                                    Err(why) => said = Some(why),
+                                }
                             }
                         }
-                        if !current.is_null() && ui.small_button("Clear").clicked() {
-                            changed = Some((pointer.clone(), None));
-                        }
-                    });
-                    if let Some(why) = said {
-                        self.say(format!("not done: {why}"));
+                        Edit::Clear => changed = Some(Change::Setting(pointer.clone(), None)),
+                        Edit::Done | Edit::None => {}
                     }
                 }
+            });
+            if let Some(why) = said {
+                self.say(format!("not done: {why}"));
             }
         }
         changed
     }
 
-    /// Fields for the values on the node's inputs. Returns a value to write or take off.
-    fn input_fields(
-        &mut self,
-        ui: &mut egui::Ui,
-        node: &NodeView,
-    ) -> Option<(String, Option<String>)> {
+    /// Choosers of the types of a generic node's parameters.
+    fn type_fields(ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
+        let mut typing = None;
+        for param in &node.types {
+            let shown = param
+                .chosen
+                .as_deref()
+                .map_or_else(|| "from the wires".to_owned(), type_name);
+            let hover = param.found.as_deref().map_or_else(
+                || "No type found yet.".to_owned(),
+                |found| format!("Now {}.", type_name(found)),
+            );
+            let label = format!("Type {}", param.name);
+            row(ui, labels, &label, Some(hover), |ui| {
+                let _ = egui::ComboBox::from_id_salt(("orange-type", param.name.as_str()))
+                    .selected_text(shown)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(param.chosen.is_none(), "from the wires")
+                            .clicked()
+                            && param.chosen.is_some()
+                        {
+                            typing = Some(Change::Type(param.name.clone(), None));
+                        }
+                        for ty in COMMON_TYPES {
+                            let current = param.chosen.as_deref() == Some(ty);
+                            if ui.selectable_label(current, type_name(ty)).clicked() && !current {
+                                typing =
+                                    Some(Change::Type(param.name.clone(), Some(ty.to_owned())));
+                            }
+                        }
+                    });
+            });
+        }
+        typing
+    }
+
+    /// How many instances each variadic port has, with buttons for one more or one
+    /// fewer (the last one, with its wires).
+    fn variadic_fields(ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
+        let mut change = None;
+        for variadic in &node.variadic {
+            let last = node
+                .ports
+                .iter()
+                .rfind(|port| {
+                    port.input == variadic.input
+                        && port
+                            .id
+                            .split_once('#')
+                            .is_some_and(|(name, _)| name == variadic.port)
+                })
+                .map(|port| port.id.clone());
+            let hover = match variadic.max {
+                Some(max) => format!("From {} to {max}.", variadic.min),
+                None => format!("At least {}.", variadic.min),
+            };
+            row(ui, labels, &words(&variadic.port), Some(hover), |ui| {
+                ui.label(variadic.count.to_string());
+                let fewer = variadic.count > variadic.min && last.is_some();
+                if ui
+                    .add_enabled(fewer, egui::Button::new("−"))
+                    .on_hover_text("Take off the last one, with its wires.")
+                    .clicked()
+                    && let Some(last) = &last
+                {
+                    change = Some(Change::RemovePort(last.clone()));
+                }
+                let more = variadic.max.is_none_or(|max| variadic.count < max);
+                if ui
+                    .add_enabled(more, egui::Button::new("+"))
+                    .on_hover_text("Add one more.")
+                    .clicked()
+                {
+                    change = Some(Change::AddPort(variadic.port.clone()));
+                }
+            });
+        }
+        change
+    }
+
+    /// Fields for the values on the node's inputs.
+    fn input_fields(&mut self, ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
         let mut write = None;
         for port in node.ports.iter().filter(|port| port.input && !port.exec) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
-            ui.label(format!("{} ({ty})", port.id));
-            if port.connected {
-                ui.weak("comes from a wire");
-                continue;
-            }
-            let typed = self.typed.entry(port.id.clone()).or_default();
-            ui.horizontal(|ui| {
-                let field = ui.add(
-                    egui::TextEdit::singleline(typed)
-                        .hint_text("no value")
-                        .desired_width(150.0),
-                );
-                let entered =
-                    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if entered || ui.small_button("Set").clicked() {
-                    write = Some((port.id.clone(), Some(typed.clone())));
+            row(ui, labels, &port_label(&port.id), Some(ty.clone()), |ui| {
+                if port.connected {
+                    ui.weak("from a wire");
+                    return;
                 }
-                if port.value.is_some() && ui.small_button("Clear").clicked() {
-                    write = Some((port.id.clone(), None));
+                if port.ty.as_deref() == Some("core/bool@1") {
+                    let mut on = port.value.as_deref() == Some("true");
+                    if ui.checkbox(&mut on, "").changed() {
+                        write = Some(Change::Input(port.id.clone(), Some(on.to_string())));
+                    }
+                    if port.value.is_some()
+                        && ui
+                            .small_button("×")
+                            .on_hover_text("Take the value off.")
+                            .clicked()
+                    {
+                        write = Some(Change::Input(port.id.clone(), None));
+                    }
+                    return;
+                }
+                let before = Self::shown_input(port);
+                let typed = self.typed.entry(port.id.clone()).or_default();
+                match text_field(ui, typed, &ty, port.value.is_some()) {
+                    Edit::Done if *typed != before => {
+                        let value = (!typed.is_empty()).then(|| typed.clone());
+                        write = Some(Change::Input(port.id.clone(), value));
+                    }
+                    Edit::Clear => write = Some(Change::Input(port.id.clone(), None)),
+                    Edit::Done | Edit::None => {}
                 }
             });
         }
         write
+    }
+}
+
+/// Widest the label column of the properties panel gets.
+const LABEL_WIDTH: f32 = 120.0;
+
+/// A variable being declared from a node's properties, for the node to name.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QuickVariable {
+    node: NodeId,
+    pointer: String,
+    name: String,
+    ty: String,
+}
+
+impl QuickVariable {
+    /// A form for `node`'s `/variable`, with a name typed.
+    #[cfg(test)]
+    pub(crate) fn for_test(node: NodeId) -> Self {
+        Self {
+            node,
+            pointer: "/variable".to_owned(),
+            name: "speed".to_owned(),
+            ty: COMMON_TYPES[2].to_owned(),
+        }
+    }
+
+    /// The variable to declare: one for each run, with no starting value.
+    fn variable(&self) -> Variable {
+        Variable {
+            id: None,
+            name: self.name.trim().to_owned(),
+            ty: self.ty.clone(),
+            scope: VarScope::Run,
+            persistent: false,
+            initial: None,
+        }
+    }
+}
+
+/// What a person asked for in the properties panel.
+enum Change {
+    Setting(String, Option<Json>),
+    Type(String, Option<String>),
+    Input(String, Option<String>),
+    AddPort(String),
+    RemovePort(String),
+    /// Declare a variable and name it at the setting.
+    Declare(String, Variable),
+    CancelDeclare,
+    NewConnection,
+    Delete,
+}
+
+/// What happened to a text field this frame.
+enum Edit {
+    None,
+    /// Typing ended: Enter, or the field lost the keys.
+    Done,
+    /// Its value was taken off.
+    Clear,
+}
+
+/// A text field that fills its row, read when typing ends, with a button that takes
+/// the value off when `clear` is set.
+fn text_field(ui: &mut egui::Ui, typed: &mut String, hint: &str, clear: bool) -> Edit {
+    let button = if clear { 26.0 } else { 0.0 };
+    let field = ui.add(
+        egui::TextEdit::singleline(typed)
+            .hint_text(hint)
+            .desired_width((ui.available_width() - button).max(40.0)),
+    );
+    if clear
+        && ui
+            .small_button("×")
+            .on_hover_text("Take the value off.")
+            .clicked()
+    {
+        return Edit::Clear;
+    }
+    if field.lost_focus() {
+        Edit::Done
+    } else {
+        Edit::None
+    }
+}
+
+/// A small heading over a group of rows.
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(title).strong());
+}
+
+/// One row of the panel: a label in a column `labels` wide, then the field filling
+/// the rest. A label too long for the column is shortened and shown whole on hover,
+/// with `hover` under it.
+fn row(
+    ui: &mut egui::Ui,
+    labels: f32,
+    label: &str,
+    hover: Option<String>,
+    field: impl FnOnce(&mut egui::Ui),
+) {
+    let _ = ui.horizontal(|ui| {
+        let height = ui.spacing().interact_size.y;
+        let _ = ui
+            .allocate_ui_with_layout(
+                egui::vec2(labels, height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_width(labels);
+                    ui.add(egui::Label::new(label).truncate())
+                },
+            )
+            .inner
+            .on_hover_text(match hover {
+                Some(more) => format!("{label}\n{more}"),
+                None => label.to_owned(),
+            });
+        field(ui);
+    });
+}
+
+/// A setting's name as a person reads it: `max_iterations` is "Max iterations".
+pub(crate) fn words(name: &str) -> String {
+    let mut text = name.replace(['_', '-'], " ");
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text
+}
+
+/// A port's name as a card or the panel shows it: an instance of a variadic port
+/// (`branch#0`) is counted from one ("branch 1"), and words are spaced.
+pub fn port_label(id: &str) -> String {
+    match id.split_once('#') {
+        Some((name, instance)) => match instance.parse::<u32>() {
+            Ok(number) => format!("{} {}", name.replace(['_', '-'], " "), number + 1),
+            Err(_) => id.to_owned(),
+        },
+        None => id.replace(['_', '-'], " "),
     }
 }
 

@@ -136,7 +136,17 @@ it can name, from `TypeRegistry::nominal_types`; with none registered, adding it
 refused with that reason. The view gives `core/while` and `core/for-each` settings
 schemas matching their checks, record and enum nodes a schema listing the registered
 types and the chosen type's members, and `NodeView::detail` (the variable a variable
-node names, a record node's type and member) for a card to show.
+node names, a record node's type and member) for a card to show. In the editor,
+variables are declared where they are needed: the toolbar's New variable… and the
+Variables list atop the Nodes tab (with Get and Set buttons that add a node already
+naming the variable) open the Document form, and a variable chooser in the properties
+panel has New variable…, a short form whose declaration the node then names
+(`Editor::declare_variable_for`). The properties panel lays fields out as label and
+field rows in one label column that narrows with the panel, writes a field when typing
+ends, and adds or takes off variadic instances. Cards show a family color band, the
+detail beside the title, port names with variadic instances counted from one, short
+type hints on unfed value ports, and a hint on a node with no ports yet. Editor text
+is still fallback English without a catalogue (13, L-01 open).
 
 Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
 `remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the

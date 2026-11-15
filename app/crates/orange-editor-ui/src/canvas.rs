@@ -55,12 +55,12 @@ impl Control {
 }
 
 /// The size of a node's card in graph units: a title and one row for each input beside
-/// an output.
+/// an output. A node with no ports yet keeps one row, which says to set it up.
 pub fn node_size(node: &NodeView) -> Vec2 {
     let inputs = node.ports.iter().filter(|port| port.input).count();
     let outputs = node.ports.len() - inputs;
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let rows = inputs.max(outputs) as f32;
+    let rows = inputs.max(outputs).max(1) as f32;
     Vec2::new(
         NODE_WIDTH,
         HEADER_HEIGHT + rows * ROW_HEIGHT + FOOTER_HEIGHT,
@@ -883,6 +883,19 @@ fn draw_node<'a>(
     let radius = 8.0 * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
+    // A band along the left edge in the color of the node's family, so nodes of one
+    // package or language area are told apart at a glance, even zoomed out.
+    let band = Rect::from_min_size(rect.min, Vec2::new(4.0 * zoom, rect.height()));
+    painter.rect_filled(
+        band,
+        egui::CornerRadius {
+            nw: radius as u8,
+            sw: radius as u8,
+            ne: 0,
+            se: 0,
+        },
+        family_color(&node.definition),
+    );
     let header_color = if node.entry {
         colors.entry_header
     } else {
@@ -909,17 +922,39 @@ fn draw_node<'a>(
     let readable = zoom >= 0.45;
     let mut pressed = false;
     if readable {
-        let title = FontId::proportional(14.0 * zoom);
+        let title = FontId::proportional(14.5 * zoom);
         let small = FontId::proportional(11.5 * zoom);
-        let left = header.left_center() + Vec2::new(12.0 * zoom, 0.0);
-        let _ = painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
-        // What kind of node it is, when its name says something else.
-        if node.name != node.kind && !fire {
-            let right = header.right_center() - Vec2::new(10.0 * zoom, 0.0);
+        // Long titles stay inside the header, clear of the trigger button.
+        let reserved = if fire { 80.0 * zoom } else { 8.0 * zoom };
+        let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
+        let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
+        let left = header.left_center() + Vec2::new(14.0 * zoom, 0.0);
+        let named = header_painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
+        // What the node is set to (its variable), else what kind of node it is when its
+        // name says something else.
+        let aside = node
+            .detail
+            .as_deref()
+            .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
+        if let Some(aside) = aside {
+            let color = if node.detail.is_some() {
+                colors.exec
+            } else {
+                colors.weak
+            };
+            let _ = header_painter.text(
+                Pos2::new(named.max.x + 8.0 * zoom, header.center().y),
+                Align2::LEFT_CENTER,
+                aside,
+                small.clone(),
+                color,
+            );
+        }
+        if node.ports.is_empty() {
             let _ = painter.text(
-                right,
-                Align2::RIGHT_CENTER,
-                &node.kind,
+                Pos2::new(rect.center().x, header.max.y + ROW_HEIGHT * zoom / 2.0),
+                Align2::CENTER_CENTER,
+                "Set it up in Properties",
                 small.clone(),
                 colors.weak,
             );
@@ -965,8 +1000,16 @@ fn draw_node<'a>(
             control,
             Some(Control::Toggle | Control::Whole | Control::Number)
         );
-        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, readable, pill)
-            && control.is_some()
+        let shown = (pill, control.is_none());
+        if let Some(label) = draw_port(
+            painter,
+            port,
+            Pos2::new(x, y),
+            zoom,
+            colors,
+            readable,
+            shown,
+        ) && control.is_some()
         {
             let left = label.max.x + 8.0 * zoom;
             let height = ROW_HEIGHT * zoom - 6.0;
@@ -981,7 +1024,8 @@ fn draw_node<'a>(
 }
 
 /// Draws a port's dot and name, and the value written on an input as a pill when
-/// `pill` is set. Returns where an input's name is.
+/// `pill` is set, and a short type beside a value port nothing feeds when `hinted`.
+/// Returns where an input's name is.
 fn draw_port(
     painter: &egui::Painter,
     port: &PortView,
@@ -989,7 +1033,7 @@ fn draw_port(
     zoom: f32,
     colors: &Palette,
     readable: bool,
-    pill: bool,
+    (pill, hinted): (bool, bool),
 ) -> Option<Rect> {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
@@ -1023,15 +1067,36 @@ fn draw_port(
         return None;
     }
     let font = FontId::proportional(12.5 * zoom);
+    let hint = FontId::proportional(10.5 * zoom);
     let gap = Vec2::new(12.0 * zoom, 0.0);
+    // The way in and the way on need no words: their arrows say it.
+    let name = if port.exec && matches!(port.id.as_str(), "in" | "then") {
+        String::new()
+    } else {
+        crate::port_label(&port.id)
+    };
+    // What a value port takes or gives, when nothing on the card says it already.
+    let type_hint =
+        (hinted && !port.exec && !port.connected && !(port.input && port.value.is_some()))
+            .then(|| port.ty.as_deref().map(short_type))
+            .flatten();
     if port.input {
         let label = painter.text(
             at + gap,
             Align2::LEFT_CENTER,
-            &port.id,
+            &name,
             font.clone(),
             colors.text,
         );
+        if let Some(ty) = type_hint.filter(|_| pill) {
+            let _ = painter.text(
+                Pos2::new(label.max.x + 6.0 * zoom, at.y),
+                Align2::LEFT_CENTER,
+                ty,
+                hint,
+                colors.weak,
+            );
+        }
         // The value written on an input that no wire feeds.
         if let Some(value) = port.value.as_deref().filter(|_| !port.connected && pill) {
             let shown: String = value.chars().take(18).collect();
@@ -1051,9 +1116,49 @@ fn draw_port(
         }
         Some(label)
     } else {
-        let _ = painter.text(at - gap, Align2::RIGHT_CENTER, &port.id, font, colors.text);
+        let label = painter.text(at - gap, Align2::RIGHT_CENTER, &name, font, colors.text);
+        if let Some(ty) = type_hint {
+            let _ = painter.text(
+                Pos2::new(label.min.x - 6.0 * zoom, at.y),
+                Align2::RIGHT_CENTER,
+                ty,
+                hint,
+                colors.weak,
+            );
+        }
         None
     }
+}
+
+/// A type in a few letters for a card: "text", "number", "list<…>"; a type not found
+/// yet (`$T`) is "any".
+fn short_type(ty: &str) -> String {
+    if ty.starts_with('$') {
+        return "any".to_owned();
+    }
+    let name = crate::type_name(ty);
+    let mut short: String = name.chars().take(14).collect();
+    if short.len() < name.len() {
+        short.push('…');
+    }
+    short
+}
+
+/// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
+/// so every node of one package shares it.
+fn family_color(definition: &str) -> Color32 {
+    let family = definition.split('/').next().unwrap_or(definition);
+    if family == "core" {
+        return Color32::from_rgb(232, 140, 48);
+    }
+    // FNV-1a: stable across runs and platforms, unlike the standard hasher.
+    let hash = family.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let [a, b, c, _] = hash.to_le_bytes();
+    // Mid-tone channels read on both light and dark cards.
+    let tone = |byte: u8| 70 + byte % 140;
+    Color32::from_rgb(tone(a), tone(b), tone(c))
 }
 
 #[cfg(test)]
@@ -1421,6 +1526,29 @@ mod tests {
         // A wired input and a type without a control get none.
         assert_eq!(Control::of(&port("core/i64@1", true)), None);
         assert_eq!(Control::of(&port("core/list@1<core/i64@1>", false)), None);
+    }
+
+    #[test]
+    fn cards_name_types_shortly_and_color_families_alike() {
+        assert_eq!(short_type("core/string@1"), "text");
+        assert_eq!(short_type("$T"), "any");
+        assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");
+        assert_eq!(short_type("org.example.geo/point@1"), "org.example.ge…");
+        // Every node of one package shares a color; core has its own.
+        assert_eq!(
+            family_color("org.orange.math/add"),
+            family_color("org.orange.math/sub")
+        );
+        assert_ne!(
+            family_color("org.orange.math/add"),
+            family_color("core/fork")
+        );
+        // A node with no ports yet keeps a row for its hint.
+        let empty = node(9, Vec::new());
+        assert_eq!(
+            node_size(&empty).y,
+            HEADER_HEIGHT + ROW_HEIGHT + FOOTER_HEIGHT
+        );
     }
 
     #[test]
