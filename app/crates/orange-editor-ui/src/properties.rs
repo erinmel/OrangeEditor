@@ -235,6 +235,8 @@ impl Editor {
     }
 
     pub(crate) fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        // What the panel holds never widens it; only dragging its edge does.
+        ui.set_max_width(ui.available_width());
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
         let selected = self.canvas.selected().and_then(|id| {
             self.graph()?
@@ -811,25 +813,29 @@ enum Edit {
 /// A text field that fills its row, read when typing ends, with a button that takes
 /// the value off when `clear` is set.
 fn text_field(ui: &mut egui::Ui, typed: &mut String, hint: &str, clear: bool) -> Edit {
-    let button = if clear { 26.0 } else { 0.0 };
-    let field = ui.add(
-        egui::TextEdit::singleline(typed)
-            .hint_text(hint)
-            .desired_width((ui.available_width() - button).max(40.0)),
-    );
-    if clear
-        && ui
-            .small_button("×")
-            .on_hover_text("Take the value off.")
-            .clicked()
-    {
-        return Edit::Clear;
-    }
-    if field.lost_focus() {
-        Edit::Done
-    } else {
-        Edit::None
-    }
+    // Laid out from the right: the button takes the room it really needs and the field
+    // exactly what is left, so the row never asks for more than the panel has (a
+    // resizable panel would otherwise widen itself on every frame of typing).
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let cleared = clear
+            && ui
+                .small_button("×")
+                .on_hover_text("Take the value off.")
+                .clicked();
+        let field = ui.add(
+            egui::TextEdit::singleline(typed)
+                .hint_text(hint)
+                .desired_width(ui.available_width().max(40.0)),
+        );
+        if cleared {
+            Edit::Clear
+        } else if field.lost_focus() {
+            Edit::Done
+        } else {
+            Edit::None
+        }
+    })
+    .inner
 }
 
 /// A small heading over a group of rows.
@@ -919,5 +925,38 @@ mod tests {
         let whole = json!({"type": "integer"});
         assert_eq!(Field::of(&whole).value("12").unwrap(), json!(12));
         assert!(Field::of(&whole).value("1.5").is_err());
+    }
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    #[test]
+    fn a_value_field_with_its_clear_button_does_not_widen_a_resizable_panel() {
+        let context = egui::Context::default();
+        let mut typed = "12345".to_owned();
+        let mut widths = Vec::new();
+        for _ in 0..8 {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                let shown = egui::Panel::right("width-test")
+                    .resizable(true)
+                    .default_size(200.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(ui.available_width());
+                        row(ui, 80.0, "Value", None, |ui| {
+                            let _ = text_field(ui, &mut typed, "a number", true);
+                        });
+                    });
+                widths.push(shown.response.rect.width());
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(
+            widths
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() < 0.5),
+            "{widths:?}"
+        );
     }
 }
