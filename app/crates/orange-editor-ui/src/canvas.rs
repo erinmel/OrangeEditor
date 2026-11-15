@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const NODE_WIDTH: f32 = 236.0;
 /// Height of a card's title.
 pub const HEADER_HEIGHT: f32 = 34.0;
+/// Where the first row of ports starts: under the title, with a little room.
+pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
 pub const ROW_HEIGHT: f32 = 26.0;
 /// Space under the last row.
@@ -65,10 +67,7 @@ pub fn node_size(node: &NodeView) -> Vec2 {
     let outputs = node.ports.len() - inputs;
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
     let rows = inputs.max(outputs).max(1) as f32;
-    Vec2::new(
-        NODE_WIDTH,
-        HEADER_HEIGHT + rows * ROW_HEIGHT + FOOTER_HEIGHT,
-    )
+    Vec2::new(NODE_WIDTH, BODY_TOP + rows * ROW_HEIGHT + FOOTER_HEIGHT)
 }
 
 /// Where a port's dot is, relative to the top left corner of its node's card.
@@ -79,7 +78,7 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
         .filter(|candidate| candidate.input == input)
         .position(|candidate| candidate.id == port)?;
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let y = HEADER_HEIGHT + (row as f32 + 0.5) * ROW_HEIGHT;
+    let y = BODY_TOP + (row as f32 + 0.5) * ROW_HEIGHT;
     Some(Vec2::new(if input { 0.0 } else { NODE_WIDTH }, y))
 }
 
@@ -962,7 +961,10 @@ fn draw_node<'a>(
         }
         if node.ports.is_empty() {
             let _ = painter.text(
-                Pos2::new(rect.center().x, header.max.y + ROW_HEIGHT * zoom / 2.0),
+                Pos2::new(
+                    rect.center().x,
+                    rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom,
+                ),
                 Align2::CENTER_CENTER,
                 "Set it up in Properties",
                 small.clone(),
@@ -1023,7 +1025,7 @@ fn draw_node<'a>(
         let index = *row;
         *row += 1;
         #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-        let y = rect.min.y + (HEADER_HEIGHT + (index as f32 + 0.5) * ROW_HEIGHT) * zoom;
+        let y = rect.min.y + (BODY_TOP + (index as f32 + 0.5) * ROW_HEIGHT) * zoom;
         let x = if port.input { rect.min.x } else { rect.max.x };
         let value_end = if index < shared_rows {
             rect.center().x + 6.0 * zoom
@@ -1364,20 +1366,20 @@ mod tests {
         let graph = graph();
         assert_eq!(
             node_size(&graph.nodes[0]).y,
-            HEADER_HEIGHT + ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT
         );
         assert_eq!(
             node_size(&graph.nodes[2]).y,
-            HEADER_HEIGHT + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
         );
         let third = &graph.nodes[2];
         assert_eq!(
             port_offset(third, "b", true),
-            Some(Vec2::new(0.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT))
+            Some(Vec2::new(0.0, BODY_TOP + 2.5 * ROW_HEIGHT))
         );
         assert_eq!(
             port_offset(&graph.nodes[1], "then", false),
-            Some(Vec2::new(NODE_WIDTH, HEADER_HEIGHT + 0.5 * ROW_HEIGHT))
+            Some(Vec2::new(NODE_WIDTH, BODY_TOP + 0.5 * ROW_HEIGHT))
         );
         // A port is looked for on its own side only.
         assert_eq!(port_offset(third, "b", false), None);
@@ -1512,7 +1514,7 @@ mod tests {
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         let third = canvas.places[&id(3)];
-        let row = |n: f32| third + Vec2::new(20.0, HEADER_HEIGHT + (n + 0.5) * ROW_HEIGHT);
+        let row = |n: f32| third + Vec2::new(20.0, BODY_TOP + (n + 0.5) * ROW_HEIGHT);
         // Row 0 is the step way in; rows 1 and 2 are the values a and b.
         assert_eq!(
             canvas.input_at(&graph, row(0.0), true, id(1)),
@@ -1526,7 +1528,7 @@ mod tests {
         // Not on the node the wire started from, not on the right of the card, not on
         // empty canvas.
         assert_eq!(canvas.input_at(&graph, row(0.0), true, id(3)), None);
-        let right = third + Vec2::new(NODE_WIDTH - 10.0, HEADER_HEIGHT + 0.5 * ROW_HEIGHT);
+        let right = third + Vec2::new(NODE_WIDTH - 10.0, BODY_TOP + 0.5 * ROW_HEIGHT);
         assert_eq!(canvas.input_at(&graph, right, true, id(1)), None);
         assert_eq!(
             canvas.input_at(&graph, Pos2::new(-500.0, -500.0), true, id(1)),
@@ -1692,10 +1694,7 @@ mod tests {
         );
         // A node with no ports yet keeps a row for its hint.
         let empty = node(9, Vec::new());
-        assert_eq!(
-            node_size(&empty).y,
-            HEADER_HEIGHT + ROW_HEIGHT + FOOTER_HEIGHT
-        );
+        assert_eq!(node_size(&empty).y, BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT);
     }
 
     #[test]

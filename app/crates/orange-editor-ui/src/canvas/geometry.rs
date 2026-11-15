@@ -1,7 +1,7 @@
 //! Borrowed, frame-local geometry: one port walk instead of node scans per wire.
 //! Rebuilding from the supplied view keeps standalone Canvas callers free of cache
 //! invalidation obligations. Positions are read separately so dragging is immediate.
-use super::{FOOTER_HEIGHT, HEADER_HEIGHT, NODE_WIDTH, ROW_HEIGHT};
+use super::{BODY_TOP, FOOTER_HEIGHT, NODE_WIDTH, ROW_HEIGHT};
 use egui::{Pos2, Rect, Vec2};
 use orange_host::{GraphView, NodeId};
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ impl<'a> Geometry<'a> {
             for port in &node.ports {
                 let row = &mut rows[usize::from(port.input)];
                 #[expect(clippy::cast_precision_loss, reason = "screen coordinates")]
-                let y = HEADER_HEIGHT + (*row as f32 + 0.5) * ROW_HEIGHT;
+                let y = BODY_TOP + (*row as f32 + 0.5) * ROW_HEIGHT;
                 // Match port_offset: first occurrence on this side wins, even for
                 // an incomplete or malformed view supplied by an embedding host.
                 let _ = ports
@@ -37,7 +37,7 @@ impl<'a> Geometry<'a> {
                 *row += 1;
             }
             #[expect(clippy::cast_precision_loss, reason = "screen coordinates")]
-            let height = HEADER_HEIGHT + rows[0].max(rows[1]) as f32 * ROW_HEIGHT + FOOTER_HEIGHT;
+            let height = BODY_TOP + rows[0].max(rows[1]) as f32 * ROW_HEIGHT + FOOTER_HEIGHT;
             let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
         }
         Self { sizes, ports }
