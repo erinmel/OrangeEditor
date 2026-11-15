@@ -942,6 +942,34 @@ impl Canvas {
         if glowing {
             ui.ctx().request_repaint();
         }
+        // While a wire is drawn, the inputs it could go to are ringed.
+        if let Some(wiring) = &self.wiring {
+            let source = geometry
+                .port(wiring.from.0, &wiring.from.1, false)
+                .and_then(|port| port.ty);
+            for node in graph.nodes.iter().filter(|node| node.id != wiring.from.0) {
+                let Some(place) = self.places.get(&node.id).copied() else {
+                    continue;
+                };
+                for port in node.ports.iter().filter(|port| port.input) {
+                    if port.exec != wiring.exec || (!port.exec && !fits(source, port.ty.as_deref()))
+                    {
+                        continue;
+                    }
+                    let Some(found) = geometry.port(node.id, &port.id, true) else {
+                        continue;
+                    };
+                    let at = to_screen(place + found.offset);
+                    if area.contains(at) {
+                        painter.circle_stroke(
+                            at,
+                            (PORT_RADIUS + 3.0) * zoom.max(0.6),
+                            Stroke::new(2.0 * zoom.max(0.6), colors.selected),
+                        );
+                    }
+                }
+            }
+        }
         // The box being drawn to select.
         if let (Some(start), Some(at)) = (self.boxing, self.pointer) {
             let shown = Rect::from_two_pos(to_screen(start), to_screen(at));
@@ -1065,6 +1093,18 @@ impl Canvas {
                 None
             }
         }
+    }
+}
+
+/// Whether a value of type `source` may go to an input of type `target`, as far as the
+/// canvas can tell before asking: types it does not know yet, or a type the node leaves
+/// open, fit anything. The language still has the last word when the wire is made.
+pub fn fits(source: Option<&str>, target: Option<&str>) -> bool {
+    match (source, target) {
+        (Some(source), Some(target)) => {
+            source == target || source.contains('$') || target.contains('$')
+        }
+        _ => true,
     }
 }
 
@@ -1987,5 +2027,23 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0][0], before[0][0] + Vec2::new(50.0, 0.0));
         assert_eq!(after[0][3], before[0][3]);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fits;
+
+    #[test]
+    fn a_wire_fits_the_same_type_an_open_type_or_one_not_known_yet() {
+        assert!(fits(Some("core/i64@1"), Some("core/i64@1")));
+        assert!(!fits(Some("core/i64@1"), Some("core/string@1")));
+        assert!(fits(Some("core/i64@1"), Some("$T")));
+        assert!(fits(
+            Some("core/list@1<$T>"),
+            Some("core/list@1<core/i64@1>")
+        ));
+        assert!(fits(None, Some("core/string@1")));
+        assert!(fits(Some("core/string@1"), None));
     }
 }
