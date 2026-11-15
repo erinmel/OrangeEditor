@@ -1060,7 +1060,7 @@ fn draw_port(
     let font = FontId::proportional(12.5 * zoom);
     let hint = FontId::proportional(10.5 * zoom);
     let gap = Vec2::new(12.0 * zoom, 0.0);
-    let name = crate::port_label(&port.id);
+    let name = step_label(port).unwrap_or_else(|| crate::port_label(&port.id));
     if port.exec {
         // Steps read as on a flow chart: the way in is a tinted row inside the card,
         // the ways on are named with an arrow toward their dot.
@@ -1146,6 +1146,16 @@ fn draw_port(
             );
         }
         None
+    }
+}
+
+/// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
+/// Only the words shown change; the ports keep their IDs `in` and `then`.
+fn step_label(port: &PortView) -> Option<String> {
+    match (port.exec, port.input, port.id.as_str()) {
+        (true, true, "in") => Some("Enter".to_owned()),
+        (true, false, "then") => Some("Exit".to_owned()),
+        _ => None,
     }
 }
 
@@ -1580,6 +1590,17 @@ mod tests {
     fn cards_name_types_shortly_and_color_families_alike() {
         assert_eq!(short_type("core/string@1"), "text");
         assert_eq!(short_type("$T"), "any");
+        // The way in and the way on read as Enter and Exit; other ports keep their names.
+        assert_eq!(
+            step_label(&port("in", true, true)).as_deref(),
+            Some("Enter")
+        );
+        assert_eq!(
+            step_label(&port("then", false, true)).as_deref(),
+            Some("Exit")
+        );
+        assert_eq!(step_label(&port("in", true, false)), None);
+        assert_eq!(step_label(&port("completed", false, true)), None);
         assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");
         assert_eq!(short_type("org.example.geo/point@1"), "org.example.ge…");
         // Every node of one package shares a color; core has its own.
