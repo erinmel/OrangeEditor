@@ -1,13 +1,13 @@
-use crate::common;
+use crate::behaviour::common;
 
-use common::{minimal_document, nid, node_id};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeKind, OutputSource, PortDirection, Suspends};
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{NodeKind, OutputSource, PortDirection, Suspends};
+use crate::validation::{
     DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, NodeValidation, analyze_functions,
     validate_nodes,
 };
-use orange_model::{GraphDocument, from_json};
+use crate::{GraphDocument, from_json};
+use common::{minimal_document, nid, node_id};
 use serde_json::{Value, json};
 
 fn origin() -> HostOrigin {

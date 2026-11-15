@@ -48,7 +48,12 @@ pub use error::{
 pub use index::DocIndex;
 pub use validation::{
     AnalysisLimits, AnalysisOptions, ValidationAnalysis, ValidationCheck, ValidationReport,
-    analyze, analyze_with_effects, analyze_with_options, required_checks, validate,
-    validate_with_effects,
+    analyze, analyze_with_effects, analyze_with_options, validate,
 };
 pub use value::Value;
+
+/// The behaviour suite in `tests/`: built with the library's unit tests so its scenarios can
+/// drive the crate-private validation passes directly.
+#[cfg(test)]
+#[path = "../tests/main.rs"]
+mod behaviour;

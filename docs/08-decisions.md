@@ -1,5 +1,33 @@
 # Architecture decision records
 
+ADR-21/23 host authoring amendment (2026-11-14; MAINT-CORE): front ends edit a retained
+`orange_host::Draft`, not document text. A draft owns the parsed document, model
+transaction inverses for undo and redo, and the ADR-23 `AnalysisSession`, which
+`Host::problems` feeds every committed change set. Every host editing operation takes
+`&mut Draft` and is one transaction; text is produced only to save, copy or start or
+update a flow. This replaces the text-in/text-out editing API and the editor's
+whole-text undo stack. Graph semantics, the saved format and flow updates are
+unchanged. Measurements: [21](21-editor-performance.md).
+
+ADR-21 public-surface amendment (2026-11-14; MAINT-CORE): the public core API is what
+downstream crates and hosts call. Functions only tests used are removed from it. The
+individual validation passes (`validate_availability`, `validate_regions`, ...),
+`analyze_functions`, `required_checks` and `validate_with_effects` are crate-private;
+`analyze*`, `validate`, `validate_nodes` and `validate_body_domains` remain public.
+`orange-model`'s behaviour suite in `tests/` compiles into the library's unit-test
+target so it can still check a single pass. Graph semantics and diagnostics are unchanged.
+
+ADR-02/21 implementation amendment (2026-11-14; PERF-EDITOR): use frame-local
+borrowed geometry/connectivity indexes and one registry-generation/search-keyed
+palette cache. The extra index memory is accepted to eliminate repeated scans;
+no pointer-identity cache may assume that a public mutable `GraphView` is unchanged.
+Saved positions bypass topology. A topological queue supplies unsaved DAG columns;
+cycle-blocked nodes stack in document order at columns reached from acyclic roots,
+replacing the old edge-order-dependent relaxation. UI polling yields after 256
+events and must continue on later frames. Graph/runtime/provider contracts and
+core/UI dependency boundaries are unchanged. [21](21-editor-performance.md)
+records behavior regressions, measured scope and open qualification limits.
+
 **Scope precedence (2026-10-22): ADR-22 supersedes the earlier delivery scope in ADR-09–12 and ADR-21. Historical rationale does not reintroduce specialized integrations or deferred protocols as release gates.**
 
 Status key: **Selected** is the planning default; **Conditional** must pass a named feasibility probe before production adoption; **Proposed** awaits the product owner's acceptance and changes no contract until accepted. Neither means implemented. Owners are responsibility roles for future work, not newly assigned people. Primary evidence was retrieved 2026-10-20; moving/development API sources are not exact dependency pins.

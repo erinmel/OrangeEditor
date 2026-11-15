@@ -8,13 +8,13 @@ pub mod strategies;
 
 use std::path::PathBuf;
 
-use orange_model::document::keyed;
-use orange_model::document::literal::Literal;
-use orange_model::document::{
+use crate::document::keyed;
+use crate::document::literal::Literal;
+use crate::document::{
     DefinitionRef, Edge, FunctionDecl, GraphBody, NodeInstance, NodeKind, PortRef,
 };
-use orange_model::id::{EdgeId, FunctionId, NodeId};
-use orange_model::{BodyRef, DocCommand, GraphDocument, to_json};
+use crate::id::{EdgeId, FunctionId, NodeId};
+use crate::{BodyRef, DocCommand, GraphDocument, to_json};
 use serde_json::{Value as Json, json};
 
 pub const GRAPH_ID: &str = "a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6";

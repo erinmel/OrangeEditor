@@ -79,42 +79,10 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
     Some(Vec2::new(if input { 0.0 } else { NODE_WIDTH }, y))
 }
 
-/// Places for the nodes of a graph that has none saved: columns from left to right
-/// following the wires, each column stacked from the top. A node keeps the place the
-/// document gives it.
-pub fn auto_layout(graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
-    // A node's column is one past the furthest column that feeds it. The passes are
-    // bounded by the node count, so a cycle cannot loop forever.
-    let mut column: BTreeMap<NodeId, usize> = graph.nodes.iter().map(|node| (node.id, 0)).collect();
-    for _ in 0..graph.nodes.len() {
-        let mut changed = false;
-        for wire in &graph.wires {
-            let from = column.get(&wire.from.0).copied().unwrap_or(0);
-            if let Some(to) = column.get_mut(&wire.to.0)
-                && *to < from + 1
-                && from + 1 < graph.nodes.len()
-            {
-                *to = from + 1;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let mut next_y: BTreeMap<usize, f32> = BTreeMap::new();
-    let mut places = BTreeMap::new();
-    for node in &graph.nodes {
-        let at = column.get(&node.id).copied().unwrap_or(0);
-        let y = next_y.entry(at).or_insert(0.0);
-        #[expect(clippy::cast_precision_loss, reason = "a graph has few columns")]
-        let placed = Pos2::new(at as f32 * (NODE_WIDTH + LAYOUT_GAP.x), *y);
-        *y += node_size(node).y + LAYOUT_GAP.y;
-        let place = node.position.map_or(placed, |[x, y]| Pos2::new(x, y));
-        let _ = places.insert(node.id, place);
-    }
-    places
-}
+mod layout;
+pub use layout::auto_layout;
+mod geometry;
+use geometry::{Geometry, wire_points, wire_visible};
 
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -286,12 +254,38 @@ impl Canvas {
     /// gives them or an automatic one, nodes that are gone are forgotten, and every
     /// other node stays where it is. The view is not moved.
     pub fn update(&mut self, graph: &GraphView) {
-        let fresh = auto_layout(graph);
-        self.places.retain(|id, _| fresh.contains_key(id));
-        for (id, place) in fresh {
-            let _ = self.places.entry(id).or_insert(place);
+        // Most edits only change values or wires. Layout is needed only for a new
+        // node without a saved position; existing nodes keep their dragged places.
+        let needs_layout = graph
+            .nodes
+            .iter()
+            .any(|node| !self.places.contains_key(&node.id) && node.position.is_none());
+        let automatic = needs_layout.then(|| auto_layout(graph));
+        let retained: std::collections::HashSet<_> =
+            graph.nodes.iter().map(|node| node.id).collect();
+        self.places.retain(|id, _| retained.contains(id));
+        for node in &graph.nodes {
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.places.entry(node.id)
+                && let Some(place) = node
+                    .position
+                    .map(|[x, y]| Pos2::new(x, y))
+                    .or_else(|| automatic.as_ref()?.get(&node.id).copied())
+            {
+                let _ = entry.insert(place);
+            }
         }
         self.forget_missing();
+    }
+
+    /// Follows an undo or redo: like [`Canvas::update`], but every node the document
+    /// places goes back to that place. The view is not moved.
+    pub fn restore(&mut self, graph: &GraphView) {
+        self.update(graph);
+        for node in &graph.nodes {
+            if let Some([x, y]) = node.position {
+                let _ = self.places.insert(node.id, Pos2::new(x, y));
+            }
+        }
     }
 
     /// Drops from the selection the nodes that are gone.
@@ -538,6 +532,7 @@ impl Canvas {
         let zoom = self.zoom;
         let origin = self.origin;
         let to_screen = |point: Pos2| area.min + (point - origin) * zoom;
+        let geometry = Geometry::new(graph);
 
         painter.rect_filled(area, 0.0, colors.background);
         let step = GRID * zoom;
@@ -561,7 +556,7 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
-            let rect = Rect::from_min_size(to_screen(place), node_size(node) * zoom);
+            let rect = Rect::from_min_size(to_screen(place), geometry.size(node.id) * zoom);
             if !area.intersects(rect) {
                 continue;
             }
@@ -572,8 +567,10 @@ impl Canvas {
             if touched.dragged() {
                 // Every selected node moves together.
                 let by = touched.drag_delta() / zoom;
-                for id in self.selection.clone() {
-                    self.move_node(id, by);
+                for id in &self.selection {
+                    if let Some(place) = self.places.get_mut(id) {
+                        *place += by;
+                    }
                 }
                 self.moving = true;
             }
@@ -598,11 +595,17 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
+            if !area.expand(grab).intersects(Rect::from_min_size(
+                to_screen(place),
+                geometry.size(node.id) * zoom,
+            )) {
+                continue;
+            }
             for port in &node.ports {
-                let Some(offset) = port_offset(node, &port.id, port.input) else {
+                let Some(port_geometry) = geometry.port(node.id, &port.id, port.input) else {
                     continue;
                 };
-                let at = to_screen(place + offset);
+                let at = to_screen(place + port_geometry.offset);
                 if !area.contains(at) {
                     continue;
                 }
@@ -663,9 +666,8 @@ impl Canvas {
         }
 
         let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
-            let view = graph.nodes.iter().find(|view| view.id == node)?;
             let place = *self.places.get(&node)?;
-            Some(to_screen(place + port_offset(view, port, input)?))
+            Some(to_screen(place + geometry.port(node, port, input)?.offset))
         };
         for wire in &graph.wires {
             let (Some(from), Some(to)) = (
@@ -677,27 +679,17 @@ impl Canvas {
             let color = if wire.exec {
                 colors.exec
             } else {
-                let ty = graph
-                    .nodes
-                    .iter()
-                    .find(|node| node.id == wire.from.0)
-                    .and_then(|node| {
-                        node.ports
-                            .iter()
-                            .find(|port| !port.input && port.id == wire.from.1)
-                    })
-                    .and_then(|port| port.ty.as_deref());
+                let ty = geometry
+                    .port(wire.from.0, &wire.from.1, false)
+                    .and_then(|port| port.ty);
                 type_color(ty)
             };
             // The wire leaves and arrives level, bending more the further it goes.
-            let reach = ((to.x - from.x).abs() * 0.5).max(40.0 * zoom);
-            let points = [
-                from,
-                from + Vec2::new(reach, 0.0),
-                to - Vec2::new(reach, 0.0),
-                to,
-            ];
+            let points = wire_points(from, to, zoom);
             let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6);
+            if !wire_visible(&points, painter.clip_rect(), width) {
+                continue;
+            }
             painter.add(CubicBezierShape::from_points_stroke(
                 points,
                 false,
@@ -710,13 +702,7 @@ impl Canvas {
         if let (Some(wiring), Some(to)) = (&self.wiring, pointer)
             && let Some(from) = anchor(wiring.from.0, &wiring.from.1, false)
         {
-            let reach = ((to.x - from.x).abs() * 0.5).max(40.0 * zoom);
-            let points = [
-                from,
-                from + Vec2::new(reach, 0.0),
-                to - Vec2::new(reach, 0.0),
-                to,
-            ];
+            let points = wire_points(from, to, zoom);
             let color = if wiring.exec {
                 colors.exec
             } else {
@@ -734,7 +720,7 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
-            let rect = Rect::from_min_size(to_screen(place), node_size(node) * zoom);
+            let rect = Rect::from_min_size(to_screen(place), geometry.size(node.id) * zoom);
             if !area.intersects(rect) {
                 continue;
             }
@@ -1155,6 +1141,82 @@ mod tests {
     }
 
     #[test]
+    fn indexed_geometry_preserves_port_sides_and_refreshes_with_the_view() {
+        let mut graph = graph();
+        graph.nodes[1].ports.push(port("in", false, false));
+        let geometry = Geometry::new(&graph);
+        for node in &graph.nodes {
+            assert_eq!(geometry.size(node.id), node_size(node));
+            for port in &node.ports {
+                let found = geometry.port(node.id, &port.id, port.input).unwrap();
+                assert_eq!(Some(found.offset), port_offset(node, &port.id, port.input));
+                assert_eq!(found.ty, port.ty.as_deref());
+            }
+        }
+        assert!(geometry.port(id(99), "in", true).is_none());
+        drop(geometry);
+        graph.nodes[1].ports.reverse();
+        graph.nodes[1].ports[0].ty = Some("core/string@1".into());
+        let geometry = Geometry::new(&graph);
+        assert_eq!(
+            geometry.port(id(2), "in", false).unwrap().ty,
+            Some("core/string@1")
+        );
+        assert_eq!(
+            Some(geometry.port(id(2), "in", false).unwrap().offset),
+            port_offset(&graph.nodes[1], "in", false)
+        );
+    }
+
+    #[test]
+    fn layout_is_order_independent_and_handles_cycles_missing_ends_and_saved_places() {
+        let mut graph = graph();
+        let expected = auto_layout(&graph);
+        graph.wires.reverse();
+        assert_eq!(auto_layout(&graph), expected);
+        graph.wires.extend([wire(99, 1), wire(3, 98)]);
+        assert_eq!(auto_layout(&graph), expected);
+        graph.wires.extend([wire(2, 2), wire(3, 1)]);
+        let cyclic = auto_layout(&graph);
+        graph.wires.reverse();
+        assert_eq!(auto_layout(&graph), cyclic);
+        assert_eq!(cyclic.len(), graph.nodes.len());
+        assert!(cyclic.values().all(|point| point.is_finite()));
+        for (n, node) in graph.nodes.iter_mut().enumerate() {
+            node.position = Some([n as f32 * -100.0, 50.0]);
+        }
+        let saved = auto_layout(&graph);
+        for node in &graph.nodes {
+            let place = saved[&node.id];
+            assert_eq!([place.x, place.y], node.position.unwrap());
+        }
+    }
+
+    #[test]
+    fn updating_values_keeps_dragged_places_and_add_remove_updates_selection() {
+        let mut graph = graph();
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.move_node(id(2), Vec2::new(-500.0, 70.0));
+        canvas.select(Some(id(2)));
+        let places = canvas.places();
+        graph.nodes[1].ports[0].value = Some("changed".into());
+        canvas.update(&graph);
+        assert_eq!(canvas.places(), places);
+        graph.nodes.remove(1);
+        let mut added = node(4, vec![]);
+        added.position = Some([-100.0, -200.0]);
+        graph.nodes.push(added);
+        canvas.update(&graph);
+        assert_eq!(canvas.selected(), None);
+        assert!(!canvas.places.contains_key(&id(2)));
+        assert_eq!(canvas.places[&id(4)], Pos2::new(-100.0, -200.0));
+        graph.nodes.push(node(5, vec![]));
+        canvas.update(&graph);
+        assert!(canvas.places.contains_key(&id(5)));
+    }
+
+    #[test]
     fn nodes_without_a_place_are_laid_out_along_the_wires_and_saved_places_are_kept() {
         let mut graph = graph();
         let places = auto_layout(&graph);
@@ -1373,5 +1435,56 @@ mod tests {
         assert!(output.shapes.len() > 20, "{}", output.shapes.len());
         output.drop_without_applying_deltas();
         assert_eq!(response, CanvasResponse::default());
+    }
+
+    #[test]
+    fn drawing_culls_offscreen_wires_but_keeps_crossings_and_tracks_moved_endpoints() {
+        let mut graph = GraphView {
+            nodes: (1..=4)
+                .map(|n| node(n, vec![port("in", true, true), port("then", false, true)]))
+                .collect(),
+            wires: vec![wire(1, 2), wire(3, 4)],
+        };
+        for (node, position) in graph.nodes.iter_mut().zip([
+            [-400.0, 30.0],
+            [1000.0, 30.0],
+            [10000.0, 10000.0],
+            [11000.0, 10000.0],
+        ]) {
+            node.position = Some(position);
+        }
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.fit = false;
+        canvas.origin = Pos2::ZERO;
+        let context = egui::Context::default();
+        let draw = |canvas: &mut Canvas| {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = canvas.show(ui, &graph, &[]);
+                },
+            );
+            let curves: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::CubicBezier(curve) => Some(curve.points),
+                    _ => None,
+                })
+                .collect();
+            output.drop_without_applying_deltas();
+            curves
+        };
+        let before = draw(&mut canvas);
+        assert_eq!(before.len(), 1);
+        canvas.move_node(id(1), Vec2::new(50.0, 0.0));
+        let after = draw(&mut canvas);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0][0], before[0][0] + Vec2::new(50.0, 0.0));
+        assert_eq!(after[0][3], before[0][3]);
     }
 }

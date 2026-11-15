@@ -1,19 +1,17 @@
 //! Public-consumer qualification for the bounded node-local session cache.
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orange_model::catalog::{
-    Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
-};
-use orange_model::document::{BodyRef, NodeInstance, NodeKind, PackageLockEntry};
-use orange_model::id::NodeId;
-use orange_model::validation::{
+use crate::catalog::{Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot};
+use crate::document::{BodyRef, NodeInstance, NodeKind, PackageLockEntry};
+use crate::id::NodeId;
+use crate::validation::{
     AnalysisOptions, AnalysisSession, DiagnosticCode, SessionWork, Subject, ValidationAnalysis,
     analyze_with_options,
 };
-use orange_model::{DocCommand, GraphDocument, LayoutCommand};
+use crate::{DocCommand, GraphDocument, LayoutCommand};
 use serde_json::json;
 
 const DIGEST: &str = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -51,8 +49,8 @@ fn fixture(count: usize) -> (GraphDocument, Arc<RegistrySnapshot>) {
         .build()
         .unwrap();
     let mut document = GraphDocument::new("00000000-0000-4000-8000-000000000001".parse().unwrap());
-    let signature = orange_model::signature::project(NodeKind::Pure, [], &BTreeMap::new());
-    let key = orange_model::signature::semantic_key(&signature);
+    let signature = crate::signature::project(NodeKind::Pure, [], &BTreeMap::new());
+    let key = crate::signature::semantic_key(&signature);
     let mut commands = vec![
         DocCommand::PutPackageLock(PackageLockEntry {
             id: "example.pkg".into(),
@@ -236,8 +234,7 @@ fn session_trial_planning_reuses_the_index_without_publishing_trial_analysis() {
         edge: serde_json::from_value(common::generic::data_edge(1, (1, "value"), (2, "a")))
             .unwrap(),
     };
-    let expected =
-        orange_model::inference::plan_edit(&document, [command.clone()], &registry).unwrap();
+    let expected = crate::inference::plan_edit(&document, [command.clone()], &registry).unwrap();
     let planned = session
         .plan_edit(&mut document, [command], &registry)
         .unwrap();

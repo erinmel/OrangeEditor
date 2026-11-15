@@ -1,9 +1,9 @@
 //! Connection declarations are document content like variables and events: saved,
 //! edited atomically, undone exactly, and referenced by nodes through config.
-use orange_model::catalog::{NodeDefinition, ReferenceKind};
-use orange_model::document::{ConnectionDecl, ConnectionScope};
-use orange_model::id::ConnectionId;
-use orange_model::{DeclId, DocCommand, GraphDocument, TxError, from_json, to_json};
+use crate::catalog::{NodeDefinition, ReferenceKind};
+use crate::document::{ConnectionDecl, ConnectionScope};
+use crate::id::ConnectionId;
+use crate::{DeclId, DocCommand, GraphDocument, TxError, from_json, to_json};
 use serde_json::json;
 
 fn connection() -> ConnectionDecl {

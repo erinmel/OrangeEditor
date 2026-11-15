@@ -1,26 +1,26 @@
-use crate::common;
+use crate::behaviour::common;
 
 use std::sync::Arc;
 
-use common::{minimal_document, node_id};
-use orange_model::catalog::{
+use crate::catalog::{
     NodeDefinition, Ports, ProviderDescriptor, ProviderKey, ReferenceField, ReferenceKind,
     RegistryBuilder, RegistrySnapshot, VariableAccess,
 };
-use orange_model::document::{
+use crate::document::{
     DefinitionRef, OutputSource, PortDescriptor, PortDirection, ProviderBinding, SignatureSnapshot,
     Suspends,
 };
-use orange_model::types::{
+use crate::types::{
     CapabilityEvidence, CapabilityRequest, Constraint, ConstraintId, ConstraintImplementationRef,
     NumericOperation, TypeRegistryBuilder,
 };
-use orange_model::validation::{
+use crate::validation::{
     DiagnosticCode, FunctionEvidence, HostOrigin, analyze_functions, validate_inputs,
     validate_nodes,
 };
-use orange_model::value::literal_codec::RecordSchema;
-use orange_model::{GraphDocument, from_json};
+use crate::value::literal_codec::RecordSchema;
+use crate::{GraphDocument, from_json};
+use common::{minimal_document, node_id};
 use serde_json::{Value, json};
 
 const PKG: &str = "org.test";
@@ -53,9 +53,9 @@ fn implementation(id: &str) -> ConstraintImplementationRef {
     }
 }
 
-fn type_registry(mode: CapabilityMode) -> Arc<orange_model::types::TypeRegistry> {
+fn type_registry(mode: CapabilityMode) -> Arc<crate::types::TypeRegistry> {
     let ty = "org.test/money@1".parse().unwrap();
-    let term = orange_model::type_term::TypeTerm::parse(&ty).unwrap();
+    let term = crate::type_term::TypeTerm::parse(&ty).unwrap();
     let mut builder = TypeRegistryBuilder::core();
     builder
         .register_record(PKG, &ty, RecordSchema { fields: vec![] })
@@ -120,11 +120,11 @@ fn registry_with_access(
                 definition: definition.clone(),
                 config_version: 1,
                 volatility: None,
-                determinism: orange_model::catalog::Determinism::Deterministic,
+                determinism: crate::catalog::Determinism::Deterministic,
                 kind: if shared {
-                    orange_model::document::NodeKind::Async
+                    crate::document::NodeKind::Async
                 } else {
-                    orange_model::document::NodeKind::Action
+                    crate::document::NodeKind::Action
                 },
                 suspends: Some(if shared {
                     Suspends::Maybe
@@ -164,7 +164,7 @@ fn variable_node(operation: &str) -> Value {
 
 fn document(nodes: Value, ty: &str) -> GraphDocument {
     let signature = package_signature();
-    let signature_key = orange_model::signature::semantic_key(&signature);
+    let signature_key = crate::signature::semantic_key(&signature);
     let mut extra = json!({
         "package_lock":[{"id":PKG,"version":VER,"content_digest":DIGEST}],
         "variables":[{"id":VARIABLE,"name":"balance","type":ty,"scope":"run"}],
@@ -176,9 +176,9 @@ fn document(nodes: Value, ty: &str) -> GraphDocument {
 }
 
 fn package_signature() -> SignatureSnapshot {
-    let ty: orange_model::id::TypeExpr = "org.test/money@1".parse().unwrap();
+    let ty: crate::id::TypeExpr = "org.test/money@1".parse().unwrap();
     SignatureSnapshot {
-        kind: orange_model::document::NodeKind::Action,
+        kind: crate::document::NodeKind::Action,
         suspends: Some(Suspends::Never),
         ports: vec![
             PortDescriptor::data_in("value", ty.clone()),
@@ -200,7 +200,7 @@ fn package_node(operation: &str) -> Value {
     let signature = package_signature();
     node["definition_id"] = json!("org.test/update-money");
     node["provider"] = json!({"package":PKG,"version":VER,"id":"update-money"});
-    node["signature"] = json!(orange_model::signature::semantic_key(&signature).as_str());
+    node["signature"] = json!(crate::signature::semantic_key(&signature).as_str());
     node
 }
 
@@ -215,8 +215,7 @@ fn core_update_requires_the_exact_package_operation_witness() {
     let witness = registry
         .types()
         .supports_term(
-            &orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap())
-                .unwrap(),
+            &crate::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap(),
             CapabilityRequest::NumericOperation(NumericOperation::Add),
         )
         .unwrap()
@@ -246,8 +245,7 @@ fn core_update_requires_the_exact_package_operation_witness() {
 #[test]
 fn update_min_max_require_and_accept_exact_package_ord_evidence() {
     let registry = registry(CapabilityMode::Ord, false);
-    let ty =
-        orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
+    let ty = crate::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
     let witness = registry
         .types()
         .supports_term(&ty, CapabilityRequest::Constraint(Constraint::Ord))
@@ -292,8 +290,7 @@ fn broad_or_unrelated_evidence_does_not_authorize_update_operations() {
 #[test]
 fn compare_and_set_requires_exact_package_eq_witness() {
     let registry = registry(CapabilityMode::Eq, false);
-    let ty =
-        orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
+    let ty = crate::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
     let witness = registry
         .types()
         .supports_term(&ty, CapabilityRequest::Constraint(Constraint::Eq))
@@ -424,12 +421,12 @@ fn package_update_shape_projects_ports_without_claiming_core_effects() {
     let mut node = package_node("add");
     node["inputs"] = json!({"value":{"type":"org.test/money@1","value":{}}});
     let doc = document(json!([node]), "org.test/money@1");
-    let before = orange_model::to_json(&doc).unwrap();
+    let before = crate::to_json(&doc).unwrap();
     let report = validate_nodes(&doc, &registry);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert!(validate_inputs(&doc, &report.resolved, &registry).is_empty());
     let signature = &report.resolved[&node_id(1).parse().unwrap()];
-    assert_eq!(signature.kind, orange_model::document::NodeKind::Action);
+    assert_eq!(signature.kind, crate::document::NodeKind::Action);
     let value = signature
         .ports
         .iter()
@@ -446,16 +443,16 @@ fn package_update_shape_projects_ports_without_claiming_core_effects() {
                 .as_ref()
                 .is_some_and(|triggers| triggers.len() == 1 && triggers[0].as_str() == "then")
     }));
-    assert_eq!(orange_model::to_json(&doc).unwrap(), before);
+    assert_eq!(crate::to_json(&doc).unwrap(), before);
 }
 
 #[test]
 fn package_shared_shape_still_requires_trusted_function_effects() {
     let registry = registry_with_access(CapabilityMode::Add, Some(VariableAccess::UpdateShared));
     let mut signature = package_signature();
-    signature.kind = orange_model::document::NodeKind::Async;
+    signature.kind = crate::document::NodeKind::Async;
     signature.suspends = Some(Suspends::Maybe);
-    let signature_key = orange_model::signature::semantic_key(&signature);
+    let signature_key = crate::signature::semantic_key(&signature);
     let mut node = package_node("add");
     node["signature"] = json!(signature_key.as_str());
     let function = "40000000-0000-4000-8000-000000000001";
@@ -484,13 +481,13 @@ fn package_shared_shape_still_requires_trusted_function_effects() {
         &nodes,
         [(
             node_id(1).parse().unwrap(),
-            orange_model::validation::LeafEffects::Known(vec![]),
+            crate::validation::LeafEffects::Known(vec![]),
         )]
         .into(),
     );
     let trusted = analyze_functions(&doc, &evidence, &registry);
     let summary = &trusted.summaries[&function.parse().unwrap()];
-    assert_eq!(summary.kind, orange_model::document::NodeKind::Async);
+    assert_eq!(summary.kind, crate::document::NodeKind::Async);
     assert_eq!(summary.suspends, Suspends::Maybe);
     assert!(summary.run_writes.is_empty());
 }
@@ -500,7 +497,7 @@ fn package_update_shape_does_not_supply_function_leaf_effects() {
     let registry = registry(CapabilityMode::Add, true);
     let node = package_node("add");
     let signature = package_signature();
-    let signature_key = orange_model::signature::semantic_key(&signature);
+    let signature_key = crate::signature::semantic_key(&signature);
     let mut extra = json!({
         "package_lock":[{"id":PKG,"version":VER,"content_digest":DIGEST}],
         "variables":[{"id":VARIABLE,"name":"balance","type":"org.test/money@1","scope":"run"}],
@@ -526,12 +523,9 @@ fn package_update_shape_does_not_supply_function_leaf_effects() {
     let empty_effects = FunctionEvidence::from_nodes(
         &doc,
         &nodes,
-        [(
-            node_id,
-            orange_model::validation::LeafEffects::Known(vec![]),
-        )]
-        .into_iter()
-        .collect(),
+        [(node_id, crate::validation::LeafEffects::Known(vec![]))]
+            .into_iter()
+            .collect(),
     );
     let complete = analyze_functions(&doc, &empty_effects, &registry);
     let function_id = "40000000-0000-4000-8000-000000000001".parse().unwrap();

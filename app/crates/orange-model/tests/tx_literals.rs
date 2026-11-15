@@ -1,9 +1,9 @@
 //! G-30: a literal shadowed by an edge stays in the document; disconnecting restores it.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{BodyRef, DocCommand, TxError};
 use common::{content, eid, empty_document, i64_literal, node, port, typed_edge};
-use orange_model::{BodyRef, DocCommand, TxError};
 
 #[test]
 fn disconnect_restores_shadowed_literal() {

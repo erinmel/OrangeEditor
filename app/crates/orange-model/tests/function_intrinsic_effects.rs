@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orange_model::GraphDocument;
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::SignatureSnapshot;
-use orange_model::id::{FunctionId, NodeId};
-use orange_model::validation::{DiagnosticCode, FunctionEvidence, HostOrigin, analyze_functions};
+use crate::GraphDocument;
+use crate::catalog::RegistrySnapshot;
+use crate::document::SignatureSnapshot;
+use crate::id::{FunctionId, NodeId};
+use crate::validation::{DiagnosticCode, FunctionEvidence, HostOrigin, analyze_functions};
 use serde_json::{Value, json};
 
 const CALLER: &str = "10000000-0000-4000-8000-000000000001";
@@ -58,7 +58,7 @@ fn node(id: &str, definition: &str, config: Value) -> Value {
     })
 }
 
-fn analyze(doc: &GraphDocument) -> orange_model::validation::FunctionAnalysis {
+fn analyze(doc: &GraphDocument) -> crate::validation::FunctionAnalysis {
     analyze_functions(
         doc,
         &FunctionEvidence::new(
@@ -71,7 +71,7 @@ fn analyze(doc: &GraphDocument) -> orange_model::validation::FunctionAnalysis {
 }
 
 fn diagnostic_subjects(
-    report: &orange_model::validation::FunctionAnalysis,
+    report: &crate::validation::FunctionAnalysis,
     code: DiagnosticCode,
 ) -> Vec<NodeId> {
     report
@@ -146,7 +146,7 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
     let report = analyze(&doc);
     let caller: FunctionId = CALLER.parse().unwrap();
     let callee: FunctionId = CALLEE.parse().unwrap();
-    let run: orange_model::id::VariableId = RUN_VAR.parse().unwrap();
+    let run: crate::id::VariableId = RUN_VAR.parse().unwrap();
 
     assert!(!report.incomplete_functions.contains(&callee));
     assert!(!report.incomplete_functions.contains(&caller));
@@ -155,14 +155,14 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
     assert_eq!(
         report.summaries[&caller].run_writes[&run],
         [
-            orange_model::validation::WriteOperation::Set,
-            orange_model::validation::WriteOperation::Add,
-            orange_model::validation::WriteOperation::Min,
-            orange_model::validation::WriteOperation::Max,
-            orange_model::validation::WriteOperation::CompareAndSet,
-            orange_model::validation::WriteOperation::And,
-            orange_model::validation::WriteOperation::Or,
-            orange_model::validation::WriteOperation::Xor
+            crate::validation::WriteOperation::Set,
+            crate::validation::WriteOperation::Add,
+            crate::validation::WriteOperation::Min,
+            crate::validation::WriteOperation::Max,
+            crate::validation::WriteOperation::CompareAndSet,
+            crate::validation::WriteOperation::And,
+            crate::validation::WriteOperation::Or,
+            crate::validation::WriteOperation::Xor
         ]
         .into()
     );
@@ -197,7 +197,7 @@ fn append_records_a_transitive_run_write_without_executing_concatenation() {
         assert!(!report.incomplete_functions.contains(&function));
         assert_eq!(
             report.summaries[&function].run_writes[&RUN_VAR.parse().unwrap()],
-            [orange_model::validation::WriteOperation::Append].into()
+            [crate::validation::WriteOperation::Append].into()
         );
     }
 }
@@ -255,25 +255,21 @@ fn workspace_shared_writes_make_transitive_async_summaries_without_run_effects()
             )
         ]),
     );
-    let run: orange_model::id::VariableId = RUN_VAR.parse().unwrap();
+    let run: crate::id::VariableId = RUN_VAR.parse().unwrap();
     let forged_effects = BTreeMap::from([
         (
             SET_NODE.parse().unwrap(),
-            orange_model::validation::LeafEffects::Known(vec![
-                orange_model::validation::VariableWrite {
-                    variable: run,
-                    operation: orange_model::validation::WriteOperation::Set,
-                },
-            ]),
+            crate::validation::LeafEffects::Known(vec![crate::validation::VariableWrite {
+                variable: run,
+                operation: crate::validation::WriteOperation::Set,
+            }]),
         ),
         (
             UPDATE_NODE.parse().unwrap(),
-            orange_model::validation::LeafEffects::Known(vec![
-                orange_model::validation::VariableWrite {
-                    variable: run,
-                    operation: orange_model::validation::WriteOperation::Add,
-                },
-            ]),
+            crate::validation::LeafEffects::Known(vec![crate::validation::VariableWrite {
+                variable: run,
+                operation: crate::validation::WriteOperation::Add,
+            }]),
         ),
     ]);
     let forged_signatures = BTreeMap::from([
@@ -295,11 +291,11 @@ fn workspace_shared_writes_make_transitive_async_summaries_without_run_effects()
         assert!(!report.incomplete_functions.contains(&function));
         assert_eq!(
             report.summaries[&function].kind,
-            orange_model::document::NodeKind::Async
+            crate::document::NodeKind::Async
         );
         assert_eq!(
             report.summaries[&function].suspends,
-            orange_model::document::Suspends::Maybe
+            crate::document::Suspends::Maybe
         );
         assert!(report.summaries[&function].run_writes.is_empty());
     }

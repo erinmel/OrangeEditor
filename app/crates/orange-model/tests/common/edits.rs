@@ -1,10 +1,10 @@
 //! Random edit sequences for property tests: each `Op` is resolved against the current
 //! document, so generated edits mostly succeed and occasionally exercise rollback.
 
-use orange_model::document::literal::Literal;
-use orange_model::document::{NodeInstance, PortRef};
-use orange_model::id::{NodeId, PortKey};
-use orange_model::{BodyRef, DocCommand, GraphDocument, LayoutCommand};
+use crate::document::literal::Literal;
+use crate::document::{NodeInstance, PortRef};
+use crate::id::{NodeId, PortKey};
+use crate::{BodyRef, DocCommand, GraphDocument, LayoutCommand};
 use proptest::prelude::*;
 use serde_json::json;
 

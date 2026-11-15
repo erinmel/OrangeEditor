@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use orange_model::document::literal::Literal;
-use orange_model::type_term::TypeTerm;
-use orange_model::value::literal_codec::{
+use crate::document::literal::Literal;
+use crate::type_term::TypeTerm;
+use crate::value::literal_codec::{
     EnumSchema, FieldSchema, RecordSchema, SchemaSet, VariantSchema, decode, encode,
 };
-use orange_model::value::{DuplicateKey, JsonText, ListRepr, MapRepr, RecordRepr};
-use orange_model::{LiteralError, Value};
+use crate::value::{DuplicateKey, JsonText, ListRepr, MapRepr, RecordRepr};
+use crate::{LiteralError, Value};
 use serde_json::{Value as Json, json};
 
 fn term(text: &str) -> TypeTerm {
@@ -306,7 +306,7 @@ fn every_literal_in_the_saved_graph_example_decodes() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/threshold-v1.json"
     );
-    let document = orange_model::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let document = crate::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
     let mut count = 0;
     for node in document.root().nodes.values() {
         for literal in node.inputs.values() {
@@ -353,10 +353,7 @@ fn json_literals_respect_the_codec_budgets() {
         decode_err("core/json@1", json!(deep)),
         LiteralError::TooDeep
     );
-    let large = format!(
-        "\"{}\"",
-        "a".repeat(orange_model::value::MAX_JSON_TEXT_BYTES)
-    );
+    let large = format!("\"{}\"", "a".repeat(crate::value::MAX_JSON_TEXT_BYTES));
     assert!(matches!(
         decode_err("core/json@1", json!(large)),
         LiteralError::TooLarge { .. }
@@ -410,7 +407,7 @@ fn unknown_record_fields_and_enum_variants_are_redacted() {
 /// The whole literal shares one byte budget, so many small strings cannot add up past it.
 #[test]
 fn a_literal_is_decoded_within_one_byte_budget() {
-    use orange_model::value::literal_codec::{MAX_LITERAL_BYTES, decode_with_budget};
+    use crate::value::literal_codec::{MAX_LITERAL_BYTES, decode_with_budget};
     let item = "x".repeat(1000);
     let literal = Literal::value(
         "core/list@1<core/string@1>".parse().unwrap(),
@@ -432,7 +429,7 @@ fn a_literal_is_decoded_within_one_byte_budget() {
 
 #[test]
 fn record_identity_and_absent_field_slots_share_the_literal_budget() {
-    use orange_model::value::literal_codec::decode_with_budget;
+    use crate::value::literal_codec::decode_with_budget;
     let ty = "org.example/empty@1";
     let schemas = SchemaSet::default().with_record(
         ty,
@@ -461,7 +458,7 @@ fn record_identity_and_absent_field_slots_share_the_literal_budget() {
 
 #[test]
 fn impossible_container_counts_are_refused_before_decoding_elements() {
-    use orange_model::value::literal_codec::decode_with_budget;
+    use crate::value::literal_codec::decode_with_budget;
     // Mistyped elements would fail type validation if decoding reached them.
     // Insufficient element storage must reject before reserving/visiting them.
     for (ty, value) in [

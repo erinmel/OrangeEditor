@@ -1,10 +1,10 @@
-use crate::common;
+use crate::behaviour::common;
 
+use crate::catalog::{NodeContract, ProviderKey};
+use crate::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
+use crate::validation::{DiagnosticCode, HostOrigin, validate_nodes};
+use crate::{GraphDocument, to_json};
 use common::registry::Facts;
-use orange_model::catalog::{NodeContract, ProviderKey};
-use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
-use orange_model::{GraphDocument, to_json};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -102,7 +102,7 @@ fn setup(id: &str) -> Facts {
     facts
 }
 
-fn codes(report: &orange_model::validation::NodeValidation) -> Vec<DiagnosticCode> {
+fn codes(report: &crate::validation::NodeValidation) -> Vec<DiagnosticCode> {
     report.diagnostics.iter().map(|item| item.code).collect()
 }
 

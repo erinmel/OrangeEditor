@@ -1,54 +1,20 @@
-//! Editing a document: adding and removing nodes, wiring ports and writing values on
-//! inputs. Each operation takes the document's text and returns the edited text, so a
-//! front end keeps nothing but the text and can undo by keeping the previous one.
+//! Editing a draft: adding and removing nodes, wiring ports, writing values on inputs
+//! and placing nodes. Each operation is one model transaction on the [`Draft`], so it
+//! is one step of the draft's undo history, and its validation follows it.
 //!
-//! Every change goes through the model's own transactions. None of them runs
-//! anything; a flow of the document is changed only when the front end hands the new
-//! text to [`Host::update`].
+//! None of them runs anything; a flow of the document is changed only when the front
+//! end hands the draft's text to [`Host::update`].
 use super::*;
-use orange_model::DocCommand;
-use orange_model::document::PortRef;
+use draft::refused;
+use orange_model::binding::{NewNode, new_node_edit};
+use orange_model::document::{
+    ActivationPolicy, BodyRef, Edge, NodeInstance, NodeKind, PortRef, ProviderBinding,
+};
+use orange_model::{DocCommand, LayoutCommand};
 use serde_json::{Value as Json, json};
 
 /// One end of a wire: a node and the name of one of its ports.
 pub type PortEnd<'a> = (NodeId, &'a str);
-
-fn refused(error: &dyn std::fmt::Display) -> HostError {
-    HostError::Document(error.to_string())
-}
-
-/// An ID no node or edge of `saved` has yet, as UUID version 4 text. It is derived
-/// from the document and a counter, so the same edit of the same text gives the same
-/// ID: edits can be repeated in tests and undone and redone to identical documents.
-pub(crate) fn fresh_id(saved: &Json, what: &str) -> String {
-    let text = saved.to_string();
-    let mut attempt = 0u32;
-    loop {
-        let mut hasher = Sha256::new();
-        hasher.update(what.as_bytes());
-        hasher.update(attempt.to_le_bytes());
-        hasher.update(text.as_bytes());
-        let digest = hasher.finalize();
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(digest.get(..16).unwrap_or(&[0; 16]));
-        // Version 4, variant 1: the form every ID of a document has.
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        let hex = hex(&bytes);
-        let id = format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        );
-        if !text.contains(&id) {
-            return id;
-        }
-        attempt += 1;
-    }
-}
 
 /// The text of a new, empty document with an ID of its own.
 pub fn new_document() -> Result<String, HostError> {
@@ -56,9 +22,11 @@ pub fn new_document() -> Result<String, HostError> {
     let moment = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
-    let seed = json!({"moment": moment.to_string(), "process": std::process::id()});
-    let id = fresh_id(&seed, "graph");
-    let graph = id
+    let mut hasher = Sha256::new();
+    hasher.update(b"graph");
+    hasher.update(moment.to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    let graph = draft::uuid_text(&hasher.finalize())
         .parse()
         .map_err(|_| refused(&"the new ID is not valid"))?;
     to_json(&GraphDocument::new(graph)).map_err(|error| refused(&error))
@@ -74,99 +42,142 @@ fn port_ref(end: PortEnd<'_>) -> Result<PortRef, HostError> {
     })
 }
 
+/// The activation a new entry node gets: a queue of sixteen that faults when full.
+pub(crate) fn default_activation() -> Json {
+    json!({"mode": "queue", "capacity": 16, "overflow": "fault", "on_fault": "continue",
+        "order": 0})
+}
+
+/// The layout command that puts `node` at `at`, in whole units so a saved file stays
+/// stable and readable, or takes its place off.
+pub(crate) fn place_command(node: NodeId, at: Option<[f32; 2]>) -> DocCommand {
+    DocCommand::Layout(LayoutCommand::Set {
+        path: vec!["nodes".to_owned(), node.to_string()],
+        value: at.map(|[x, y]| json!({"x": f64::from(x.round()), "y": f64::from(y.round())})),
+    })
+}
+
 impl Host {
     /// Adds a node of kind `definition` (such as `org.orange.files/write-text`) at a
     /// place on the canvas, bound to this host's provider for it, with the default
-    /// activation if it is a trigger. Returns the document and the new node's ID. What
-    /// the node still needs (a variable to name, a type to choose) shows as problems
-    /// when the document is checked.
+    /// activation if it is a trigger. Returns the new node's ID. What the node still
+    /// needs (a variable to name, a type to choose) shows in the draft's problems.
     pub fn add_node(
         &self,
-        json: &str,
+        draft: &mut Draft,
         definition: &str,
         at: [f32; 2],
-    ) -> Result<(String, NodeId), HostError> {
+    ) -> Result<NodeId, HostError> {
         let version = self
             .nodes()
             .filter(|info| info.definition.definition.id.as_str() == definition)
             .map(|info| info.definition.definition.version)
             .max()
             .ok_or_else(|| HostError::Document(format!("no node kind `{definition}`")))?;
-        let mut saved: Json = serde_json::from_str(json).map_err(|error| refused(&error))?;
-        let id = fresh_id(&saved, "node");
-        let node = json!({"id": id, "definition_id": definition,
-            "definition_version": version, "config_version": 1, "config": {}});
-        saved["nodes"]
-            .as_array_mut()
-            .ok_or_else(|| HostError::Document("the document has no node list".into()))?
-            .push(node);
-        let bound = self.bind(&saved.to_string())?;
-        let node: NodeId = id
+        let definition = DefinitionRef {
+            id: definition
+                .parse()
+                .map_err(|_| HostError::Document(format!("no node kind `{definition}`")))?,
+            version,
+        };
+        let node: NodeId = draft
+            .fresh_id("node")
             .parse()
             .map_err(|_| refused(&"the new ID is not valid"))?;
-        Ok((place(&bound, &[(node, at)])?, node))
+        let registry = self.store.current();
+        let found = registry
+            .definition(&definition)
+            .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
+        let entry = found.kind == NodeKind::Entry;
+        let mut commands = if definition.id.is_core() {
+            vec![DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: NodeInstance {
+                    id: node,
+                    definition,
+                    config_version: found.config_version,
+                    config: Default::default(),
+                    type_args: Default::default(),
+                    type_pins: Default::default(),
+                    provider: None::<ProviderBinding>,
+                    signature: None,
+                    inputs: Default::default(),
+                    variadic: Default::default(),
+                    activation: None,
+                    extensions: Default::default(),
+                },
+            }]
+        } else {
+            new_node_edit(draft.document(), registry, NewNode::new(node, definition))
+                .map_err(|error| refused(&error))?
+                .commands
+        };
+        if entry {
+            let policy: ActivationPolicy =
+                serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;
+            commands.push(DocCommand::SetActivation {
+                node,
+                policy: Some(policy),
+            });
+        }
+        commands.push(place_command(node, Some(at)));
+        let _ = draft.commit(commands)?;
+        Ok(node)
     }
 
-    /// Removes nodes with the wires that touch them.
-    pub fn remove_nodes(&self, json: &str, nodes: &[NodeId]) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
-        let _ = document
-            .apply([DocCommand::RemoveNodes {
+    /// Removes nodes with the wires that touch them and their places.
+    pub fn remove_nodes(&self, draft: &mut Draft, nodes: &[NodeId]) -> Result<bool, HostError> {
+        let placed = draft.document().editor().get("nodes");
+        let places: Vec<DocCommand> = nodes
+            .iter()
+            .filter(|node| placed.is_some_and(|places| places.get(node.to_string()).is_some()))
+            .map(|node| place_command(*node, None))
+            .collect();
+        draft.commit(
+            std::iter::once(DocCommand::RemoveNodes {
                 ids: nodes.to_vec(),
-            }])
-            .map_err(|error| refused(&error))?;
-        // A removed node's place is of no use to anyone.
-        let mut saved: Json =
-            serde_json::from_str(&to_json(&document).map_err(|error| refused(&error))?)
-                .map_err(|error| refused(&error))?;
-        if let Some(places) = saved["editor"]["nodes"].as_object_mut() {
-            for node in nodes {
-                let _ = places.remove(&node.to_string());
-            }
-        }
-        let document = from_json(&saved.to_string()).map_err(|error| refused(&error))?;
-        to_json(&document).map_err(|error| refused(&error))
+            })
+            .chain(places),
+        )
     }
 
     /// Wires an output to an input. A value input takes one wire and a step output
     /// leads one way, so a wire already there is replaced. A wire the language does
     /// not allow (a value into a step, types that do not fit) is refused with the
-    /// reasons as [`HostError::Invalid`], and the document is unchanged.
+    /// reasons as [`HostError::Invalid`], and the draft is unchanged.
     pub fn connect(
         &self,
-        json: &str,
+        draft: &mut Draft,
         from: PortEnd<'_>,
         to: PortEnd<'_>,
-    ) -> Result<String, HostError> {
-        let view = self.view(json)?;
-        let port = |end: PortEnd<'_>, input: bool| {
-            view.nodes
-                .iter()
-                .find(|node| node.id == end.0)
+    ) -> Result<bool, HostError> {
+        let exec = |end: PortEnd<'_>, input: bool| {
+            self.node_view(draft.document(), end.0)
                 .and_then(|node| {
                     node.ports
-                        .iter()
+                        .into_iter()
                         .find(|port| port.input == input && port.id == end.1)
                 })
+                .map(|port| port.exec)
                 .ok_or_else(|| {
                     let side = if input { "input" } else { "output" };
                     HostError::Document(format!("the node has no {side} `{}`", end.1))
                 })
         };
-        let (source, target) = (port(from, false)?, port(to, true)?);
-        if source.exec != target.exec {
+        let (source, target) = (exec(from, false)?, exec(to, true)?);
+        if source != target {
             return Err(HostError::Document(
                 "a step connects to a step and a value to a value".into(),
             ));
         }
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
-        let mut commands: Vec<DocCommand> = document
+        let mut commands: Vec<DocCommand> = draft
+            .document()
             .root()
             .edges
             .values()
             .filter(|edge| {
-                if source.exec {
+                if source {
                     edge.from == from_ref
                 } else {
                     edge.to == to_ref
@@ -174,29 +185,26 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        let saved: Json = serde_json::from_str(json).map_err(|error| refused(&error))?;
-        let id = fresh_id(&saved, "edge");
-        let edge = serde_json::from_value(json!({"id": id,
+        let id = draft.fresh_id("edge");
+        let edge: Edge = serde_json::from_value(json!({"id": id,
             "from": {"node": from.0.to_string(), "port": from.1},
             "to": {"node": to.0.to_string(), "port": to.1}}))
         .map_err(|error| refused(&error))?;
+        let edge_id = edge.id;
         commands.push(DocCommand::Connect { edge });
-        let _ = document.apply(commands).map_err(|error| refused(&error))?;
-        let text = to_json(&document).map_err(|error| refused(&error))?;
+        let Some(redo) = draft.try_commit(commands)? else {
+            return Ok(false);
+        };
         // Problems that name the new wire are the reason it cannot be made.
         let against: Vec<Diagnostic> = self
-            .check(&text)?
+            .problems(draft)?
             .into_iter()
-            .filter(|diagnostic| {
-                diagnostic
-                    .subject
-                    .edge
-                    .is_some_and(|edge| edge.to_string() == id)
-            })
+            .filter(|diagnostic| diagnostic.subject.edge == Some(edge_id))
             .collect();
         if against.is_empty() {
-            Ok(text)
+            Ok(true)
         } else {
+            draft.withdraw(redo);
             Err(HostError::Invalid(against))
         }
     }
@@ -204,13 +212,13 @@ impl Host {
     /// Removes the wires at one port: those into an input, or those out of an output.
     pub fn disconnect(
         &self,
-        json: &str,
+        draft: &mut Draft,
         at: PortEnd<'_>,
         input: bool,
-    ) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
+    ) -> Result<bool, HostError> {
         let end = port_ref(at)?;
-        let commands: Vec<DocCommand> = document
+        let commands: Vec<DocCommand> = draft
+            .document()
             .root()
             .edges
             .values()
@@ -223,31 +231,28 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        if commands.is_empty() {
-            return Ok(json.to_owned());
-        }
-        let _ = document.apply(commands).map_err(|error| refused(&error))?;
-        to_json(&document).map_err(|error| refused(&error))
+        draft.commit(commands)
     }
 
     /// Replaces a node's settings (its `config`), such as the variable a variable
     /// node names or the interval of a timer.
-    pub fn set_config(&self, json: &str, node: NodeId, config: &Json) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
-        let config_version = document
+    pub fn set_config(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        config: &Json,
+    ) -> Result<bool, HostError> {
+        let config_version = draft
+            .document()
             .node(node)
             .map(|found| found.config_version)
             .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
         let config = serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
-        match document.apply([DocCommand::SetConfig {
+        draft.commit([DocCommand::SetConfig {
             node,
             config_version,
             config,
-        }]) {
-            Ok(_) => to_json(&document).map_err(|error| refused(&error)),
-            Err(orange_model::TxError::Empty) => Ok(json.to_owned()),
-            Err(error) => Err(refused(&error)),
-        }
+        }])
     }
 
     /// Writes a value on an input, typed plainly (`7`, `0.5`, `true`, `some text`) for
@@ -255,47 +260,43 @@ impl Host {
     /// other type. `None` takes the value off the input.
     pub fn set_input(
         &self,
-        json: &str,
+        draft: &mut Draft,
         at: PortEnd<'_>,
         typed: Option<&str>,
-    ) -> Result<String, HostError> {
-        let literal_of = |typed: &str| -> Result<Literal, HostError> {
-            let view = self.view(json)?;
-            let ty = view
-                .nodes
-                .iter()
-                .find(|node| node.id == at.0)
-                .and_then(|node| {
-                    node.ports
-                        .iter()
-                        .find(|port| port.input && !port.exec && port.id == at.1)
-                })
-                .and_then(|port| port.ty.clone())
-                .ok_or_else(|| {
-                    HostError::Document(format!("the node has no value input `{}`", at.1))
-                })?;
-            let text = literal(&ty, typed).map_err(HostError::Variable)?;
-            let parsed: Literal = serde_json::from_str(&text)
-                .map_err(|error| HostError::Variable(error.to_string()))?;
-            // A literal that does not decode is not a value of the input's type.
-            let _ = self.value_of(&parsed)?;
-            Ok(parsed)
-        };
-        let literal = typed.map(literal_of).transpose()?;
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
+    ) -> Result<bool, HostError> {
         let port = port_ref(at)?;
-        // Taking off a value that is not there changes nothing, the revision included.
-        let written = document
-            .node(at.0)
-            .is_some_and(|node| node.inputs.contains_key(&port.port));
-        if literal.is_none() && !written {
-            return Ok(json.to_owned());
-        }
-        match document.apply([DocCommand::SetLiteral { port, literal }]) {
-            Ok(_) => to_json(&document).map_err(|error| refused(&error)),
-            // Taking off a value that is not there changes nothing.
-            Err(orange_model::TxError::Empty) => Ok(json.to_owned()),
-            Err(error) => Err(refused(&error)),
-        }
+        let literal = match typed {
+            None => {
+                // Taking off a value that is not there changes nothing.
+                let written = draft
+                    .document()
+                    .node(at.0)
+                    .is_some_and(|node| node.inputs.contains_key(&port.port));
+                if !written {
+                    return Ok(false);
+                }
+                None
+            }
+            Some(typed) => {
+                let ty = self
+                    .node_view(draft.document(), at.0)
+                    .and_then(|node| {
+                        node.ports
+                            .into_iter()
+                            .find(|port| port.input && !port.exec && port.id == at.1)
+                    })
+                    .and_then(|port| port.ty)
+                    .ok_or_else(|| {
+                        HostError::Document(format!("the node has no value input `{}`", at.1))
+                    })?;
+                let text = literal(&ty, typed).map_err(HostError::Variable)?;
+                let parsed: Literal = serde_json::from_str(&text)
+                    .map_err(|error| HostError::Variable(error.to_string()))?;
+                // A literal that does not decode is not a value of the input's type.
+                let _ = self.value_of(&parsed)?;
+                Some(parsed)
+            }
+        };
+        draft.commit([DocCommand::SetLiteral { port, literal }])
     }
 }

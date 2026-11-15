@@ -1,9 +1,9 @@
 //! Structurally invalid documents fail to load with a specific error.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{CodecError, from_json};
 use common::{GRAPH_ID, branch_node, edge, minimal_document, node_id};
-use orange_model::{CodecError, from_json};
 use serde_json::json;
 
 /// Asserts a parse-level failure whose message mentions `needle`.

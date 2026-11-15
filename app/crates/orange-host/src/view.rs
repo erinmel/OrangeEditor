@@ -1,7 +1,7 @@
 //! A document as a canvas draws it: each node with its name, ports and place, and the
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
-use orange_model::document::{NodeKind, PortDirection, PortKind};
+use orange_model::document::{NodeInstance, NodeKind, PortDirection, PortKind};
 use serde_json::{Value as Json, json};
 
 /// One port of a node.
@@ -90,14 +90,32 @@ pub struct GraphView {
     pub wires: Vec<WireView>,
 }
 
+/// What every node view of one document is drawn with.
+struct ViewContext<'a> {
+    document: &'a GraphDocument,
+    registry: &'a RegistrySnapshot,
+    names: Names,
+    labels: BTreeMap<String, String>,
+    places: Option<&'a Json>,
+    /// The ports a wire ends or starts at, by node and side.
+    connected: std::collections::HashMap<(NodeId, bool), std::collections::HashSet<String>>,
+}
+
 impl Host {
     /// What a canvas shows of a document: its top-level nodes with their ports and
     /// places, and its wires. The document does not have to be valid or bound; a node
     /// whose definition this host lacks is shown without ports.
     pub fn view(&self, json: &str) -> Result<GraphView, HostError> {
-        let document = self.linked(json)?;
-        let registry = self.store.current();
-        let names = Names::of(self, json);
+        Ok(self.view_of(&self.linked(json)?))
+    }
+
+    /// [`Host::view`] of a draft.
+    pub fn draft_view(&self, draft: &Draft) -> Result<GraphView, HostError> {
+        let document = self.linked_document(draft.document())?;
+        Ok(self.view_of(&document))
+    }
+
+    fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {
         let labels: BTreeMap<String, String> = self
             .nodes()
             .map(|info| {
@@ -107,161 +125,186 @@ impl Host {
                 )
             })
             .collect();
-        let places = document.editor().get("nodes");
-        let body = document.root();
-        let wired = |node: NodeId, port: &str, input: bool| {
-            body.edges.values().any(|edge| {
-                let end = if input { &edge.to } else { &edge.from };
-                end.node == node && end.port.to_string() == port
-            })
-        };
-        let mut nodes = Vec::with_capacity(body.nodes.len());
-        for node in body.nodes.values() {
-            let contract = registry.contract(&document, node).ok().flatten();
-            let declared: Vec<PortView> = contract
-                .iter()
-                .flat_map(|contract| contract.ports.iter())
-                .map(|port| {
-                    let id = port.port_id.to_string();
-                    let input = port.direction == PortDirection::Input;
-                    let value = node
-                        .inputs
-                        .iter()
-                        .find(|(key, _)| key.to_string() == id)
-                        .and_then(|(_, literal)| self.value_of(literal).ok())
-                        .map(|value| plain(&value));
-                    PortView {
-                        connected: wired(node.id, &id, input),
-                        input,
-                        exec: port.kind != PortKind::Data,
-                        ty: port.ty.as_ref().map(ToString::to_string),
-                        value: value.filter(|_| input),
-                        id,
-                    }
-                })
-                .collect();
-            // The ports a kind has without declaring them (11 §4.1): the way in and
-            // the way on come first; the routes for failure and cancelling are shown
-            // only once something is wired to them, so a card stays short.
-            let mut ports = Vec::with_capacity(declared.len() + 2);
-            let mut after = Vec::new();
-            // A node that is not set up yet (a variable node that names no variable)
-            // has no contract; its kind still says which of these it has.
-            let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
-                registry
-                    .definition(&node.definition)
-                    .map(|found| found.kind)
-            });
-            if let Some(kind) = kind {
-                let outcomes = declared.iter().any(|port| port.exec && !port.input);
-                for name in orange_model::catalog::implicit_port_names(
-                    node.definition.id.as_str(),
-                    kind,
-                    outcomes,
-                ) {
-                    let input = name == "in";
-                    let port = PortView {
-                        id: name.to_owned(),
-                        input,
-                        exec: name != "error",
-                        ty: (name == "error").then(|| "core/error@1".to_owned()),
-                        value: None,
-                        connected: wired(node.id, name, input),
-                    };
-                    match name {
-                        "in" | "then" => ports.push(port),
-                        "body" | "completed" => after.push(port),
-                        _ if port.connected => after.push(port),
-                        _ => {}
-                    }
-                }
+        // Index endpoints once. A port lookup must not scan every edge, including
+        // when the graph is incomplete and exposes only implicit control ports.
+        let mut connected: std::collections::HashMap<_, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for edge in document.root().edges.values() {
+            for (end, input) in [(&edge.from, false), (&edge.to, true)] {
+                let _ = connected
+                    .entry((end.node, input))
+                    .or_default()
+                    .insert(end.port.to_string());
             }
-            ports.extend(declared);
-            ports.extend(after);
-            let definition = node.definition.id.as_str().to_owned();
-            let known = registry.definition(&node.definition);
-            let types = known
-                .iter()
-                .flat_map(|found| found.type_params.iter())
-                .map(|param| TypeChoice {
-                    name: param.name.to_string(),
-                    chosen: node.type_pins.get(&param.name).map(ToString::to_string),
-                    found: node.type_args.get(&param.name).map(ToString::to_string),
-                })
-                .collect();
-            let position = places
-                .and_then(|places| places.get(node.id.to_string()))
-                .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
-                .map(|[x, y]| {
-                    #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
-                    [x as f32, y as f32]
-                });
-            nodes.push(NodeView {
-                id: node.id,
-                name: names.node(&node.id),
-                kind: labels
-                    .get(&definition)
-                    .cloned()
-                    .unwrap_or_else(|| definition.clone()),
-                entry: kind == Some(NodeKind::Entry),
-                definition,
-                ports,
-                position,
-                settings: serde_json::to_value(&node.config).unwrap_or_default(),
-                schema: known
-                    .and_then(|found| found.config_schema.clone())
-                    .or_else(|| timer_schema(node.definition.id.as_str())),
-                references: known
-                    .iter()
-                    .flat_map(|found| found.references.iter())
-                    .map(|field| (field.pointer.clone(), field.kind))
-                    .collect(),
-                types,
-            });
         }
-        let exec = |from: &(NodeId, String)| {
-            nodes
-                .iter()
-                .find(|node| node.id == from.0)
-                .and_then(|node| {
-                    node.ports
-                        .iter()
-                        .find(|port| !port.input && port.id == from.1)
-                })
-                .is_some_and(|port| port.exec)
-        };
+        ViewContext {
+            document,
+            registry: self.store.current(),
+            names: Names::of_document(self, document),
+            labels,
+            places: document.editor().get("nodes"),
+            connected,
+        }
+    }
+
+    /// One top-level node as the canvas draws it; `None` when the document has no such node.
+    pub(crate) fn node_view(&self, document: &GraphDocument, node: NodeId) -> Option<NodeView> {
+        let context = self.view_context(document);
+        document
+            .root()
+            .nodes
+            .get(&node)
+            .map(|node| self.node_view_in(&context, node))
+    }
+
+    fn view_of(&self, document: &GraphDocument) -> GraphView {
+        let context = self.view_context(document);
+        let body = document.root();
+        let nodes: Vec<NodeView> = body
+            .nodes
+            .values()
+            .map(|node| self.node_view_in(&context, node))
+            .collect();
+        let outputs: std::collections::HashMap<_, _> = nodes
+            .iter()
+            .flat_map(|node| {
+                node.ports
+                    .iter()
+                    .filter(|port| !port.input)
+                    .map(move |port| ((node.id, port.id.as_str()), port.exec))
+            })
+            .collect();
         let wires = body
             .edges
             .values()
             .map(|edge| {
                 let from = (edge.from.node, edge.from.port.to_string());
                 WireView {
-                    exec: exec(&from),
+                    exec: outputs
+                        .get(&(from.0, from.1.as_str()))
+                        .copied()
+                        .unwrap_or(false),
                     from,
                     to: (edge.to.node, edge.to.port.to_string()),
                 }
             })
             .collect();
-        Ok(GraphView { nodes, wires })
+        GraphView { nodes, wires }
     }
-}
 
-/// Writes where nodes are placed into a document's layout (`editor.nodes`), which the
-/// compiler never reads. Places of other nodes are kept. Returns the document text.
-pub fn place(json: &str, places: &[(NodeId, [f32; 2])]) -> Result<String, HostError> {
-    let refused = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
-    let mut saved: Json = serde_json::from_str(json).map_err(|error| refused(&error))?;
-    if !saved["editor"].is_object() {
-        saved["editor"] = json!({});
+    fn node_view_in(&self, context: &ViewContext<'_>, node: &NodeInstance) -> NodeView {
+        let ViewContext {
+            document,
+            registry,
+            names,
+            labels,
+            places,
+            connected,
+        } = context;
+        let wired = |node: NodeId, port: &str, input: bool| {
+            connected
+                .get(&(node, input))
+                .is_some_and(|ports| ports.contains(port))
+        };
+        let contract = registry.contract(document, node).ok().flatten();
+        let declared: Vec<PortView> = contract
+            .iter()
+            .flat_map(|contract| contract.ports.iter())
+            .map(|port| {
+                let id = port.port_id.to_string();
+                let input = port.direction == PortDirection::Input;
+                let value = node
+                    .inputs
+                    .get(&PortKey::new(port.port_id.clone(), None))
+                    .and_then(|literal| self.value_of(literal).ok())
+                    .map(|value| plain(&value));
+                PortView {
+                    connected: wired(node.id, &id, input),
+                    input,
+                    exec: port.kind != PortKind::Data,
+                    ty: port.ty.as_ref().map(ToString::to_string),
+                    value: value.filter(|_| input),
+                    id,
+                }
+            })
+            .collect();
+        // The ports a kind has without declaring them (11 §4.1): the way in and
+        // the way on come first; the routes for failure and cancelling are shown
+        // only once something is wired to them, so a card stays short.
+        let mut ports = Vec::with_capacity(declared.len() + 2);
+        let mut after = Vec::new();
+        // A node that is not set up yet (a variable node that names no variable)
+        // has no contract; its kind still says which of these it has.
+        let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
+            registry
+                .definition(&node.definition)
+                .map(|found| found.kind)
+        });
+        if let Some(kind) = kind {
+            let outcomes = declared.iter().any(|port| port.exec && !port.input);
+            for name in orange_model::catalog::implicit_port_names(
+                node.definition.id.as_str(),
+                kind,
+                outcomes,
+            ) {
+                let input = name == "in";
+                let port = PortView {
+                    id: name.to_owned(),
+                    input,
+                    exec: name != "error",
+                    ty: (name == "error").then(|| "core/error@1".to_owned()),
+                    value: None,
+                    connected: wired(node.id, name, input),
+                };
+                match name {
+                    "in" | "then" => ports.push(port),
+                    "body" | "completed" => after.push(port),
+                    _ if port.connected => after.push(port),
+                    _ => {}
+                }
+            }
+        }
+        ports.extend(declared);
+        ports.extend(after);
+        let definition = node.definition.id.as_str().to_owned();
+        let known = registry.definition(&node.definition);
+        let types = known
+            .iter()
+            .flat_map(|found| found.type_params.iter())
+            .map(|param| TypeChoice {
+                name: param.name.to_string(),
+                chosen: node.type_pins.get(&param.name).map(ToString::to_string),
+                found: node.type_args.get(&param.name).map(ToString::to_string),
+            })
+            .collect();
+        let position = places
+            .and_then(|places| places.get(node.id.to_string()))
+            .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
+            .map(|[x, y]| {
+                #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
+                [x as f32, y as f32]
+            });
+        NodeView {
+            id: node.id,
+            name: names.node(&node.id),
+            kind: labels
+                .get(&definition)
+                .cloned()
+                .unwrap_or_else(|| definition.clone()),
+            entry: kind == Some(NodeKind::Entry),
+            definition,
+            ports,
+            position,
+            settings: serde_json::to_value(&node.config).unwrap_or_default(),
+            schema: known
+                .and_then(|found| found.config_schema.clone())
+                .or_else(|| timer_schema(node.definition.id.as_str())),
+            references: known
+                .iter()
+                .flat_map(|found| found.references.iter())
+                .map(|field| (field.pointer.clone(), field.kind))
+                .collect(),
+            types,
+        }
     }
-    if !saved["editor"]["nodes"].is_object() {
-        saved["editor"]["nodes"] = json!({});
-    }
-    for (node, [x, y]) in places {
-        // Whole numbers keep the saved file stable and readable.
-        saved["editor"]["nodes"][node.to_string()] =
-            json!({"x": f64::from(x.round()), "y": f64::from(y.round())});
-    }
-    let document = from_json(&saved.to_string()).map_err(|error| refused(&error))?;
-    to_json(&document).map_err(|error| refused(&error))
 }

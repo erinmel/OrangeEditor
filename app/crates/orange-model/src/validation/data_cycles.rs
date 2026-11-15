@@ -1,11 +1,10 @@
 //! Port-level data-dependency cycle validation (11 §8.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::catalog::RegistrySnapshot;
 use crate::document::{
     GraphDocument, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef,
-    SignatureSnapshot,
 };
 use crate::id::{NodeId, PortId, PortKey};
 
@@ -24,17 +23,6 @@ pub struct DataCycleValidation {
     pub cycle_paths: Vec<Vec<PortRef>>,
     /// Nodes with unavailable metadata needed to construct their dependency edges.
     pub incomplete_nodes: BTreeSet<NodeId>,
-}
-
-impl DataCycleValidation {
-    /// True only when dependency analysis completed and found no cycles.
-    pub fn is_valid(&self) -> bool {
-        self.incomplete_nodes.is_empty()
-            && self
-                .diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.severity != Severity::Error)
-    }
 }
 
 /// A dependency vertex borrowing its port name. Fields order as `PortRef` does, node then
@@ -119,27 +107,6 @@ impl<'a> DependencyGraph<'a> {
         }
         (self.vertices, adjacency)
     }
-}
-
-/// Builds D independently for each body. Stored signature snapshots never supply edges:
-/// unresolved nodes and invalid connections remain the responsibility of their earlier
-/// passes, and are carried forward as incomplete here.
-pub fn validate_data_cycles(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    connections: &ConnectionValidation,
-    registry: &RegistrySnapshot,
-) -> DataCycleValidation {
-    let ports = PortResolver::new(document, resolved);
-
-    validate_data_cycles_in(
-        document,
-        &ports,
-        connections,
-        registry,
-        Scope::All,
-        &mut super::visits::VisitCounts::default(),
-    )
 }
 
 /// [`validate_data_cycles`] over the bodies in `scope`.

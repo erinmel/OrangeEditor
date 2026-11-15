@@ -193,20 +193,48 @@ impl Folder {
     /// Creates or replaces a file atomically, creating the directories on its path.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
         let full = self.target(path)?;
-        let name = format!(
-            ".orange-{}-{}.tmp",
-            std::process::id(),
-            self.temporary.fetch_add(1, Ordering::Relaxed)
-        );
-        let temporary = full.with_file_name(name);
-        let written = std::fs::File::create(&temporary)
-            .and_then(|mut file| file.write_all(data).and_then(|()| file.sync_all()))
-            .and_then(|()| std::fs::rename(&temporary, &full));
+        let (temporary, mut file) = self.temporary_beside(&full)?;
+        let written = file
+            .write_all(data)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| {
+                drop(file);
+                std::fs::rename(&temporary, &full)
+            });
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
             return Err(FsError::Failed);
         }
         Ok(())
+    }
+
+    /// A new temporary file in the directory of `full`. It is created exclusively, so
+    /// a file or link already at the name, which code with access to the folder may have
+    /// put there, is never opened or written through; another name is tried instead.
+    /// The name has a part nobody can predict, so such a name is rarely met at all.
+    fn temporary_beside(&self, full: &Path) -> Result<(PathBuf, std::fs::File), FsError> {
+        use std::hash::{BuildHasher, RandomState};
+        const ATTEMPTS: usize = 16;
+        let unpredictable = RandomState::new();
+        for _ in 0..ATTEMPTS {
+            let count = self.temporary.fetch_add(1, Ordering::Relaxed);
+            let name = format!(
+                ".orange-{}-{count}-{:016x}.tmp",
+                std::process::id(),
+                unpredictable.hash_one(count)
+            );
+            let temporary = full.with_file_name(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => return Ok((temporary, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(FsError::Failed),
+            }
+        }
+        Err(FsError::Failed)
     }
 
     /// Adds to the end of a file, creating it if needed. The file may not grow past
@@ -388,6 +416,39 @@ mod tests {
         assert_eq!(locked.write("b/c.bin", b"x"), Err(FsError::ReadOnly));
         assert_eq!(locked.rename("b/c.bin", "d"), Err(FsError::ReadOnly));
         assert_eq!(locked.make_directory("e"), Err(FsError::ReadOnly));
+        let _ = std::fs::remove_dir_all(&above);
+    }
+
+    #[test]
+    fn a_link_planted_at_a_temporary_name_is_never_written_through() {
+        let above =
+            std::env::temp_dir().join(format!("orange-sandbox-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&above);
+        let inner = above.join("folder");
+        std::fs::create_dir_all(&inner).unwrap();
+        let outside = above.join("outside.txt");
+        std::fs::write(&outside, b"kept").unwrap();
+        // Links at the names a counter alone would give the first writes.
+        for count in 0..8 {
+            let name = format!(".orange-{}-{count}.tmp", std::process::id());
+            std::fs::hard_link(&outside, inner.join(name)).unwrap();
+        }
+        let folder = Folder::new(&inner, false);
+        for _ in 0..8 {
+            folder.write("a.txt", b"written").unwrap();
+        }
+        assert_eq!(std::fs::read(&outside).unwrap(), b"kept");
+        assert_eq!(folder.read("a.txt", 16), Ok(b"written".to_vec()));
+        // Exclusive creation refuses whatever is already at a name.
+        let taken = inner.join("taken.tmp");
+        std::fs::hard_link(&outside, &taken).unwrap();
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&taken)
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&above);
     }
 }

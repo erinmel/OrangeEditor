@@ -6,11 +6,11 @@
 //! reading applies: resources in constructor arguments, nominal record fields and enum
 //! payloads count. Register storage checks share this traversal through `validate_state`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{GraphDocument, PortRef, SignatureSnapshot, VarScope};
-use crate::id::{NodeId, TypeExpr};
+use crate::document::{GraphDocument, PortRef, VarScope};
+use crate::id::TypeExpr;
 use crate::type_term::TypeTerm;
 use crate::types::TypeRegistry;
 use crate::value::literal_codec::Schemas;
@@ -52,17 +52,6 @@ pub(super) fn resources(ty: &TypeExpr, types: &TypeRegistry) -> Option<Resources
         }
     }
     Some(found)
-}
-
-/// Checks variable declarations and exports. Read-only; unparsable types are diagnosed by the
-/// type passes and skipped here.
-pub fn validate_streams(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    registry: &RegistrySnapshot,
-) -> Vec<Diagnostic> {
-    let ports = PortResolver::new(document, resolved);
-    validate_streams_with_ports(document, &ports, registry)
 }
 
 pub(crate) fn validate_streams_with_ports(

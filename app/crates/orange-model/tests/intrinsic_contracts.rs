@@ -1,9 +1,9 @@
 //! Port, kind and suspension contracts of the registered language intrinsics (11 §8.4).
 
-use orange_model::GraphDocument;
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeKind, OutputSource, PortDirection, PortKind, SignatureSnapshot};
-use orange_model::validation::{HostOrigin, validate_nodes};
+use crate::GraphDocument;
+use crate::catalog::RegistrySnapshot;
+use crate::document::{NodeKind, OutputSource, PortDirection, PortKind, SignatureSnapshot};
+use crate::validation::{HostOrigin, validate_nodes};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -121,10 +121,7 @@ fn an_unknown_for_each_mode_is_rejected() {
     let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap();
     let report = validate_nodes(&doc, &RegistrySnapshot::core(origin));
     let codes: Vec<_> = report.diagnostics.iter().map(|item| item.code).collect();
-    assert_eq!(
-        codes,
-        [orange_model::validation::DiagnosticCode::ForEachMode]
-    );
+    assert_eq!(codes, [crate::validation::DiagnosticCode::ForEachMode]);
 }
 
 #[test]

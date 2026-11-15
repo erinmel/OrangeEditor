@@ -1,14 +1,12 @@
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_declaration_types};
-use orange_model::{
-    AnalysisLimits, AnalysisOptions, analyze, analyze_with_options, from_json, to_json,
-};
+use crate::catalog::RegistrySnapshot;
+use crate::validation::{DiagnosticCode, HostOrigin, validate_declaration_types};
+use crate::{AnalysisLimits, AnalysisOptions, analyze, analyze_with_options, from_json, to_json};
 use serde_json::json;
 
 fn registry() -> std::sync::Arc<RegistrySnapshot> {
@@ -59,7 +57,7 @@ fn unused_declarations_require_concrete_available_well_formed_types() {
                     .contains("private-name")
             );
             assert_eq!(
-                serde_json::from_str::<orange_model::validation::Diagnostic>(
+                serde_json::from_str::<crate::validation::Diagnostic>(
                     &serde_json::to_string(diagnostic).unwrap()
                 )
                 .unwrap(),

@@ -1,18 +1,16 @@
 //! Structural transaction rules: atomicity, ID uniqueness, body membership, ordered undo,
 //! stale inverses and change-set deltas.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::{Edge, FunctionDecl, GraphBody, ProviderBinding, VarScope, VariableDecl};
+use crate::id::VariableId;
+use crate::{BodyRef, DeclId, DocCommand, GraphDocument, TxError, from_json};
 use common::{
     add, body, chain, connect, content, eid, empty_document, function, function_id, nid, node,
     port, saved, typed_edge,
 };
 use indexmap::IndexMap;
-use orange_model::document::{
-    Edge, FunctionDecl, GraphBody, ProviderBinding, VarScope, VariableDecl,
-};
-use orange_model::id::VariableId;
-use orange_model::{BodyRef, DeclId, DocCommand, GraphDocument, TxError, from_json};
 
 fn vid() -> VariableId {
     "30000000-0000-4000-8000-000000000001".parse().unwrap()
@@ -302,14 +300,14 @@ fn rebind_changes_only_the_provider() {
 
 #[test]
 fn put_signature_is_idempotent_rejects_conflicts_and_undoes() {
-    use orange_model::document::SignatureSnapshot;
+    use crate::document::SignatureSnapshot;
     let snapshot = |ty: &str| -> SignatureSnapshot {
         serde_json::from_value(serde_json::json!({"kind": "pure", "ports": [
             {"port_id": "a", "direction": "input", "kind": "data", "type": ty}
         ]}))
         .unwrap()
     };
-    let key: orange_model::id::SignatureKey = "s-a".parse().unwrap();
+    let key: crate::id::SignatureKey = "s-a".parse().unwrap();
     let put = |ty: &str| DocCommand::PutSignature {
         key: key.clone(),
         snapshot: snapshot(ty),
@@ -419,7 +417,7 @@ fn mismatched_function_edge_key_is_typed_and_atomic() {
 
 #[test]
 fn put_package_lock_appends_is_idempotent_rejects_another_digest_and_undoes() {
-    use orange_model::document::PackageLockEntry;
+    use crate::document::PackageLockEntry;
     let lock = |package: &str, digest: &str| PackageLockEntry {
         id: package.to_owned(),
         version: "1.0.0".to_owned(),
@@ -461,7 +459,7 @@ fn put_package_lock_appends_is_idempotent_rejects_another_digest_and_undoes() {
 
 #[test]
 fn type_locks_append_coalesce_reject_another_codec_and_undo() {
-    use orange_model::document::TypeLockEntry;
+    use crate::document::TypeLockEntry;
     let lock = |ty: &str, codec: &str| TypeLockEntry {
         ty: ty.parse().unwrap(),
         codec: codec.to_owned(),
@@ -519,7 +517,7 @@ fn type_locks_append_coalesce_reject_another_codec_and_undo() {
 
 #[test]
 fn exports_upsert_in_place_remove_and_undo() {
-    use orange_model::document::GraphExport;
+    use crate::document::GraphExport;
     let export = |id: &str, port: &str| GraphExport {
         id: id.to_owned(),
         node: nid(1),
@@ -567,7 +565,7 @@ fn exports_upsert_in_place_remove_and_undo() {
 
 #[test]
 fn activation_policies_are_set_cleared_and_undone() {
-    use orange_model::document::{ActivationPolicy, FaultPolicy, OverflowPolicy, ReentrancyMode};
+    use crate::document::{ActivationPolicy, FaultPolicy, OverflowPolicy, ReentrancyMode};
     let policy = ActivationPolicy {
         mode: ReentrancyMode::Queue,
         max_parallel: None,

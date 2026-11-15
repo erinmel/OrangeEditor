@@ -1,25 +1,23 @@
 //! C1: persisted converter nodes resolve their exact entry and implementation.
-use crate::common;
+use crate::behaviour::common;
 
 use std::sync::Arc;
 
-use common::{content, id_source, minimal_document, node_id, port as port_ref};
-use orange_model::catalog::{
-    NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
-};
-use orange_model::conversion::{
+use crate::catalog::{NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder};
+use crate::conversion::{
     ConnectionOutcome, ConverterKey, ConverterProvider, ConverterRegistryBuilder,
     ExplicitConverterChoice, PackageProvider, apply_connection, plan_connection,
 };
-use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor};
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{HostOrigin, validate, validate_nodes};
-use orange_model::{GraphDocument, from_json, to_json};
+use crate::document::{DefinitionRef, NodeKind, PortDescriptor};
+use crate::types::TypeRegistry;
+use crate::validation::{HostOrigin, validate, validate_nodes};
+use crate::{GraphDocument, from_json, to_json};
+use common::{content, id_source, minimal_document, node_id, port as port_ref};
 use serde_json::{Value, json};
 
 const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
 
-fn registry(package_converter: bool) -> Arc<orange_model::catalog::RegistrySnapshot> {
+fn registry(package_converter: bool) -> Arc<crate::catalog::RegistrySnapshot> {
     let mut converters =
         ConverterRegistryBuilder::with_core_conversions(Arc::new(TypeRegistry::core())).unwrap();
     if package_converter {
@@ -46,7 +44,7 @@ fn registry(package_converter: bool) -> Arc<orange_model::catalog::RegistrySnaps
         PortDescriptor::data_out(
             "value",
             "core/i32@1".parse().unwrap(),
-            orange_model::document::OutputSource::Computed,
+            crate::document::OutputSource::Computed,
         ),
     );
     let sink = def(
@@ -94,7 +92,7 @@ fn def(id: &str, port: PortDescriptor) -> NodeDefinition {
         config_version: 1,
         kind: NodeKind::Pure,
         volatility: None,
-        determinism: orange_model::catalog::Determinism::Deterministic,
+        determinism: crate::catalog::Determinism::Deterministic,
         suspends: None,
         type_params: vec![],
         ports: Ports::Declared(vec![port]),
@@ -120,9 +118,9 @@ fn graph() -> GraphDocument {
 
 fn plan(
     doc: &GraphDocument,
-    registry: &orange_model::catalog::RegistrySnapshot,
+    registry: &crate::catalog::RegistrySnapshot,
     package: bool,
-) -> orange_model::conversion::ConnectionPlan {
+) -> crate::conversion::ConnectionPlan {
     let key = ConverterKey {
         id: "core/i32-to-i64".parse().unwrap(),
         contract_version: 1,
@@ -141,7 +139,7 @@ fn plan(
     let outcome = plan_connection(
         doc,
         registry,
-        orange_model::conversion::ConnectionRequest {
+        crate::conversion::ConnectionRequest {
             from: port_ref(1, "value"),
             to: port_ref(2, "value"),
             choice: package.then_some(ExplicitConverterChoice {
@@ -231,7 +229,7 @@ fn saved_signature(ports: Value) -> Value {
 
 #[test]
 fn lossy_and_checked_contracts_derive_their_entry_ports_and_saved_options_are_complete() {
-    let registry = orange_model::catalog::RegistrySnapshot::core(origin());
+    let registry = crate::catalog::RegistrySnapshot::core(origin());
     let lossy = convert_only(
         json!({"converter":"core/f64-to-f32","contract_version":1,"options":{"rounding":"nearest-even","overflow":"reject"}}),
         None,
@@ -287,7 +285,7 @@ fn lossy_and_checked_contracts_derive_their_entry_ports_and_saved_options_are_co
 
 #[test]
 fn converter_snapshot_is_compared_and_function_summary_keeps_pure_semantics() {
-    let registry = orange_model::catalog::RegistrySnapshot::core(origin());
+    let registry = crate::catalog::RegistrySnapshot::core(origin());
     let config = json!({"converter":"core/i32-to-i64","contract_version":1,"options":{}});
     let drifted = convert_only(
         config.clone(),

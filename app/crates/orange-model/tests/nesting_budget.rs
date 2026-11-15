@@ -1,12 +1,12 @@
 //! One nesting budget for editing, saving and loading: whatever an edit commits can be
 //! saved and read back, and the deepest accepted edit reaches the budget exactly.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::nesting::MAX_NESTING;
+use crate::edit::LayoutCommand;
+use crate::{BodyRef, CodecError, DocCommand, GraphDocument, TxError, from_json, to_json};
 use common::{body, content, empty_document, function, function_id, minimal_document, node};
-use orange_model::document::nesting::MAX_NESTING;
-use orange_model::edit::LayoutCommand;
-use orange_model::{BodyRef, CodecError, DocCommand, GraphDocument, TxError, from_json, to_json};
 use serde_json::{Value as Json, json};
 
 /// `levels` nested objects around a scalar; 0 is the scalar itself.

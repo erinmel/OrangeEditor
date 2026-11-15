@@ -6,34 +6,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{
-    GraphDocument, OutputSource, PortDirection, PortKind, PortRef, SignatureSnapshot,
-};
+use crate::document::{GraphDocument, OutputSource, PortDirection, PortKind, PortRef};
 use crate::id::{NodeId, TypeExpr};
 use crate::type_term::TypeTerm;
 use crate::types::{CapabilityRequest, Constraint};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
-
-/// Validates `GraphDocument::exports` against fresh resolved signatures.
-///
-/// Rules: the export id is unique (`E-EXPORT-DUPLICATE`, every later use); it names a data
-/// output of a root-body node (`E-EXPORT-TARGET`); the port type is concrete and has
-/// `serialize` evidence, so handles, streams and containers of them are rejected
-/// (`E-EXPORT-TYPE`); and the value's cone reads no activation-scoped producer
-/// (`E-CROSS-ACTIVATION`, G-35). Constant, literal, state and volatile cones are allowed.
-/// A target whose node did not resolve reports `E-DEPENDENCY-UNAVAILABLE`; it is never
-/// checked against a stored snapshot.
-pub fn validate_exports(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    registry: &RegistrySnapshot,
-) -> Vec<Diagnostic> {
-    let ports = PortResolver::new(document, resolved);
-    let zones = super::regions::root_zones(document, &ports, registry.origin());
-    validate_exports_with_ports(document, &ports, registry, &zones)
-}
 
 pub(crate) fn validate_exports_with_ports(
     document: &GraphDocument,

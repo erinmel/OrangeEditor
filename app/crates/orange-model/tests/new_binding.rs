@@ -2,17 +2,17 @@
 
 use std::sync::Arc;
 
-use orange_model::binding::{NewNode, NewNodeError, new_node_edit};
-use orange_model::catalog::{
+use crate::binding::{NewNode, NewNodeError, new_node_edit};
+use crate::catalog::{
     Determinism, NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
     RegistrySnapshot,
 };
-use orange_model::document::{DefinitionRef, NodeKind, TypeParam};
-use orange_model::id::NodeId;
-use orange_model::inference::apply_inferred;
-use orange_model::signature::SubstitutionFailure;
-use orange_model::validation::{HostOrigin, Severity};
-use orange_model::{DocCommand, GraphDocument, TxError, validate};
+use crate::document::{DefinitionRef, NodeKind, TypeParam};
+use crate::id::NodeId;
+use crate::inference::apply_inferred;
+use crate::signature::SubstitutionFailure;
+use crate::validation::{HostOrigin, Severity};
+use crate::{DocCommand, GraphDocument, TxError, validate};
 use serde_json::json;
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";

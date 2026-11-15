@@ -1,18 +1,18 @@
 //! 00c.6b: applying a connection plan in one transaction, with undo and redo.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::catalog::RegistrySnapshot;
+use crate::conversion::{
+    ConnectionError, ConnectionRequest, PlanApplyError, apply_connection, plan_connection,
+};
+use crate::document::PackageLockEntry;
+use crate::{BodyRef, DocCommand, GraphDocument, TxError, from_json};
 use common::generic::{
     add, data_edge, document, origin, package_converters, package_digest, package_registry,
     ready_plan, registry_with, typed_sink, typed_source,
 };
 use common::{body, content, eid, function, function_id, id_source, nid, port, saved, typed_edge};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::conversion::{
-    ConnectionError, ConnectionRequest, PlanApplyError, apply_connection, plan_connection,
-};
-use orange_model::document::PackageLockEntry;
-use orange_model::{BodyRef, DocCommand, GraphDocument, TxError, from_json};
 use serde_json::json;
 
 /// i32 source 1 → i64 sink 3, whose literal is shadowed once connected.

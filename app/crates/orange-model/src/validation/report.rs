@@ -11,8 +11,10 @@ use crate::index::DocIndex;
 use super::acceptance::{BodyPasses, Settled, accept_functions, settle};
 use super::{
     AnalysisOptions, Diagnostic, DiagnosticCode, FunctionSummary, LeafEffects, Severity, Subject,
-    sort_diagnostics, validate_body_domains, validate_config, validate_declaration_types,
-    validate_state,
+    sort_diagnostics, validate_body_domains,
+};
+use super::{
+    config::validate_config, declarations::validate_declaration_types, state::validate_state,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -79,14 +81,6 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
 ];
 
 const DOMAIN_ONLY_CHECKS: &[ValidationCheck] = &[ValidationCheck::BodyDomains];
-
-/// Checks required by the current control-domain compile-precondition contract.
-///
-/// A different execution domain needs its own explicit validation contract; this list does not
-/// certify that a foreign domain is supported.
-pub fn required_checks() -> &'static [ValidationCheck] {
-    REQUIRED_CHECKS
-}
 
 /// Combined result of the currently implemented passes over one document and registry snapshot.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -386,7 +380,7 @@ impl ValidationAnalysis {
 ///
 /// A package leaf that is not pure or volatile has no known effects here, so its
 /// function stays incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`, 11 §14); missing leaf
-/// facts are never treated as "no writes". Use [`validate_with_effects`] to supply them.
+/// facts are never treated as "no writes". Use [`analyze_with_effects`] to supply them.
 pub fn validate(document: &GraphDocument, registry: &RegistrySnapshot) -> ValidationReport {
     analyze(document, registry).into_report()
 }
@@ -394,21 +388,6 @@ pub fn validate(document: &GraphDocument, registry: &RegistrySnapshot) -> Valida
 /// Runs the currently implemented combined validation passes and binds their evidence to inputs.
 pub fn analyze(document: &GraphDocument, registry: &RegistrySnapshot) -> ValidationAnalysis {
     analyze_with_effects(document, registry, BTreeMap::new())
-}
-
-/// Validates `document` against `registry` with host-supplied leaf effects.
-///
-/// Checks body domains before running node resolution, input, connection, function and
-/// data-cycle passes on the same resolution. Unsupported domains stop the control passes.
-/// This never changes the document. `leaf_effects` must be fresh for this exact document,
-/// config, provider and lock snapshot; nodes without an entry make their function
-/// incomplete (11 §14). Diagnostics are sorted and exact duplicates removed.
-pub fn validate_with_effects(
-    document: &GraphDocument,
-    registry: &RegistrySnapshot,
-    leaf_effects: BTreeMap<NodeId, LeafEffects>,
-) -> ValidationReport {
-    analyze_with_effects(document, registry, leaf_effects).into_report()
 }
 
 /// Runs combined validation with host-supplied leaf effects and retains private freshness evidence.

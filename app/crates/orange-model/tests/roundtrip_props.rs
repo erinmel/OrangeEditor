@@ -1,10 +1,10 @@
 //! Property: any structurally valid document survives save→load unchanged and saves to
 //! the same bytes again.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{from_json, to_json};
 use common::strategies::document;
-use orange_model::{from_json, to_json};
 use proptest::prelude::*;
 
 proptest! {

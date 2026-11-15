@@ -113,26 +113,6 @@ struct Walk {
     loop_depth: usize,
 }
 
-/// Builds the region index for every body from exec edges and fresh resolved signatures.
-/// Traversal is iterative; each region visits each node at most once.
-pub fn validate_regions(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    connections: &ConnectionValidation,
-    registry: &RegistrySnapshot,
-) -> RegionValidation {
-    let ports = PortResolver::new(document, resolved);
-
-    validate_regions_in(
-        document,
-        &ports,
-        connections,
-        registry,
-        Scope::All,
-        Tally::NONE,
-    )
-}
-
 /// [`validate_regions`] over the bodies in `scope`.
 pub(crate) fn validate_regions_in(
     document: &GraphDocument,
@@ -675,7 +655,7 @@ fn reach(start: NodeId, stop: NodeId, next: &BTreeMap<NodeId, Vec<NodeId>>) -> B
 
 /// Zone pairing, purity, closure and nesting of one body (11 §8.4). The zone body is the
 /// data cone between a begin output and its end input.
-fn check_zones(
+pub(super) fn check_zones(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
     body: &GraphBody,
@@ -822,26 +802,6 @@ fn check_zones(
         ));
     }
     emit_zone_faults(faults, function, origin, result);
-}
-
-/// Standalone export checking needs lexical zone facts without rebuilding exec
-/// regions. Combined analysis reuses the already checked directory instead.
-pub(crate) fn root_zones(
-    document: &GraphDocument,
-    resolved: &PortResolver<'_>,
-    origin: &HostOrigin,
-) -> super::zones::ZoneIndex {
-    let mut result = RegionValidation::default();
-    check_zones(
-        document,
-        resolved,
-        document.root(),
-        None,
-        &BTreeSet::new(),
-        origin,
-        &mut result,
-    );
-    result.index.zones
 }
 
 fn emit_zone_faults(

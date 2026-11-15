@@ -74,9 +74,12 @@ pub struct GuestAccess {
     pub http_hosts: Option<Vec<String>>,
 }
 
-/// The bytes of the files under a directory. A directory that cannot be read counts
-/// as empty; the walk stops at [`MAX_ENTRIES`] files.
-fn used(root: &std::path::Path) -> u64 {
+/// The bytes of the files under a directory, or `None` when it holds more than
+/// [`MAX_ENTRIES`] files and directories: a total that stopped counting would let a
+/// package pass its quota by spreading data over many files, so too many to count is
+/// treated as over it. Links are not followed, so a link cannot make the walk loop or
+/// count what lies outside. A directory that cannot be read counts as empty.
+fn used(root: &std::path::Path) -> Option<u64> {
     let mut total = 0u64;
     let mut seen = 0usize;
     let mut pending = vec![root.to_path_buf()];
@@ -86,21 +89,22 @@ fn used(root: &std::path::Path) -> u64 {
             .flatten()
             .flatten()
         {
-            let Ok(metadata) = entry.metadata() else {
+            seen += 1;
+            if seen > MAX_ENTRIES {
+                return None;
+            }
+            let Ok(kind) = entry.file_type() else {
                 continue;
             };
-            if metadata.is_dir() {
+            if kind.is_dir() {
                 pending.push(entry.path());
-            } else {
-                total = total.saturating_add(metadata.len());
-                seen += 1;
-                if seen >= MAX_ENTRIES {
-                    return total;
-                }
+            } else if kind.is_file() {
+                let size = entry.metadata().map_or(0, |metadata| metadata.len());
+                total = total.saturating_add(size);
             }
         }
     }
-    total
+    Some(total)
 }
 
 fn word(error: FsError) -> &'static str {
@@ -131,6 +135,7 @@ impl GuestAccess {
             // The file being replaced gives its bytes back.
             let replaced = folder.size(path).unwrap_or(0);
             let after = used(folder.root())
+                .ok_or(QUOTA)?
                 .saturating_sub(replaced)
                 .saturating_add(data.len() as u64);
             if after > limit {
@@ -266,6 +271,16 @@ mod tests {
         access.write("a.bin", &[0; 2]).unwrap();
         access.write("c.bin", &[0; 4]).unwrap();
         assert_eq!(access.write("d.bin", &[0; 1]), Err(QUOTA));
+        // Spreading data over more files than are counted does not get past the quota.
+        let many = root.join("many");
+        std::fs::create_dir_all(&many).unwrap();
+        for n in 0..=MAX_ENTRIES {
+            std::fs::write(many.join(n.to_string()), b"").unwrap();
+        }
+        access.remove("c.bin").unwrap();
+        assert_eq!(access.write("e.bin", &[0; 1]), Err(QUOTA));
+        std::fs::remove_dir_all(&many).unwrap();
+        access.write("e.bin", &[0; 1]).unwrap();
 
         let send = |url: &str| {
             access

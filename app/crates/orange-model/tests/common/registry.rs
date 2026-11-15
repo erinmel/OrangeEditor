@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orange_model::catalog::{
+use crate::catalog::{
     NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
     RegistrySnapshot, TypeArgs,
 };
-use orange_model::document::DefinitionRef;
-use orange_model::validation::HostOrigin;
+use crate::document::DefinitionRef;
+use crate::validation::HostOrigin;
 
 /// Definition contracts and `(definition, config version, provider)` availability, frozen
 /// into one core registry snapshot by [`Facts::snapshot`].
@@ -61,12 +61,12 @@ impl Facts {
                 definition,
                 config_version: 1,
                 kind: contract.kind,
-                volatility: (contract.kind == orange_model::document::NodeKind::Volatile)
-                    .then_some(orange_model::catalog::Volatility::Entropy),
-                determinism: if contract.kind == orange_model::document::NodeKind::Volatile {
-                    orange_model::catalog::Determinism::Seeded
+                volatility: (contract.kind == crate::document::NodeKind::Volatile)
+                    .then_some(crate::catalog::Volatility::Entropy),
+                determinism: if contract.kind == crate::document::NodeKind::Volatile {
+                    crate::catalog::Determinism::Seeded
                 } else {
-                    orange_model::catalog::Determinism::Deterministic
+                    crate::catalog::Determinism::Deterministic
                 },
                 suspends: contract.suspends,
                 type_params: contract.type_params,

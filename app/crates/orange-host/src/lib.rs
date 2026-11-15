@@ -16,6 +16,7 @@ mod authoring;
 mod clip;
 mod declare;
 mod documents;
+mod draft;
 mod edit;
 mod effects;
 mod flow;
@@ -70,6 +71,7 @@ pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
 };
+pub use draft::{Draft, MAX_UNDO};
 pub use edit::{PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use names::{Names, describe, lines, literal, plain, said};
@@ -82,7 +84,7 @@ pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
-pub use orange_model::validation::Diagnostic;
+pub use orange_model::validation::{Diagnostic, EditStats, SessionWork};
 pub use orange_packages::{
     About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
 };
@@ -97,7 +99,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
 pub use state::StoredVariable;
-pub use view::{GraphView, NodeView, PortView, TypeChoice, WireView, place};
+pub use view::{GraphView, NodeView, PortView, TypeChoice, WireView};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -307,14 +309,7 @@ impl EffectResolver for Native {
 /// or a native service, has no access to a run's variables, so this is a fact about the
 /// execution boundary, not a claim taken from the package.
 fn analyzed(document: &GraphDocument, registry: &RegistrySnapshot) -> ValidationAnalysis {
-    let effects = document
-        .functions()
-        .values()
-        .flat_map(|function| function.body.nodes.values())
-        .filter(|node| !node.definition.id.is_core())
-        .map(|node| (node.id, LeafEffects::Known(Vec::new())))
-        .collect();
-    analyze_with_effects(document, registry, effects)
+    analyze_with_effects(document, registry, draft::leaf_effects(document))
 }
 
 /// Sessions by connection, with the declaration each was opened from.
@@ -1007,6 +1002,19 @@ impl Host {
     }
 
     /// Decodes a saved document and links the graph-implemented package nodes it uses.
+    /// `document` with this host's graph-implemented nodes linked in; the document itself
+    /// when the host has no graphs.
+    fn linked_document<'a>(
+        &self,
+        document: &'a GraphDocument,
+    ) -> Result<Cow<'a, GraphDocument>, HostError> {
+        if self.graphs.is_empty() {
+            return Ok(Cow::Borrowed(document));
+        }
+        let text = to_json(document).map_err(|error| HostError::Document(error.to_string()))?;
+        Ok(Cow::Owned(self.linked(&text)?))
+    }
+
     fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
         let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
         if self.graphs.is_empty() {

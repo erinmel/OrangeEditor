@@ -1,9 +1,9 @@
-use orange_model::catalog::{
+use crate::catalog::{
     Determinism, NodeDefinition, Ports, RegistryBuilder, RegistryError, RegistrySnapshot,
     Volatility,
 };
-use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
-use orange_model::validation::HostOrigin;
+use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+use crate::validation::HostOrigin;
 
 fn origin() -> HostOrigin {
     HostOrigin::new("0.0.0", format!("sha256:{}", "a".repeat(64))).unwrap()

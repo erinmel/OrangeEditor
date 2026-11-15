@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{
     GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends,
 };
-use orange_model::from_json;
-use orange_model::id::{FunctionId, NodeId};
-use orange_model::validation::{
+use crate::from_json;
+use crate::id::{FunctionId, NodeId};
+use crate::validation::{
     ConnectionValidation, DiagnosticCode, FunctionSummary, HostOrigin, WriteOperation,
     validate_regions, validate_state,
 };
@@ -522,7 +522,7 @@ fn register_codes(ty: &str, config: Value) -> Vec<DiagnosticCode> {
     )
     .unwrap();
     let registry = registry();
-    let resolved = orange_model::validation::validate_nodes(&doc, &registry).resolved;
+    let resolved = crate::validation::validate_nodes(&doc, &registry).resolved;
     assert_eq!(resolved.len(), 1);
     validate_state(
         &doc,

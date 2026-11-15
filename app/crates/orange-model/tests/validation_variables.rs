@@ -1,12 +1,12 @@
-use crate::common;
+use crate::behaviour::common;
 
-use common::{minimal_document, nid, node_id};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeKind, OutputSource, PortDirection, Suspends};
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{NodeKind, OutputSource, PortDirection, Suspends};
+use crate::validation::{
     DiagnosticCode, HostOrigin, NodeValidation, validate_inputs, validate_nodes,
 };
-use orange_model::{GraphDocument, from_json, to_json};
+use crate::{GraphDocument, from_json, to_json};
+use common::{minimal_document, nid, node_id};
 use serde_json::{Value, json};
 
 fn origin() -> HostOrigin {
@@ -158,8 +158,8 @@ fn set_workspace_requires_shared_operation() {
 
 #[test]
 fn get_drives_generic_math_and_set_checks_result() {
+    use crate::catalog::ProviderKey;
     use common::generic;
-    use orange_model::catalog::ProviderKey;
     let signature = format!("sha256:{}", "b".repeat(64));
     let digest = format!("sha256:{}", "c".repeat(64));
     let binding = json!({"package":"org.test","version":"1.0.0","id":"native"});
@@ -251,7 +251,7 @@ fn update_type_depth_limit_has_complexity_diagnostic() {
 }
 #[test]
 fn declaration_change_recomputes_the_contract() {
-    use orange_model::DocCommand;
+    use crate::DocCommand;
     let mut doc = document(
         json!([variable_node(1, "get", json!(node_id(10)))]),
         json!([
@@ -361,8 +361,8 @@ fn declaration_types_and_traversal_order_are_authoritative() {
 }
 #[test]
 fn registry_computes_variable_contracts_from_the_document() {
-    use orange_model::DocCommand;
-    use orange_model::catalog::ContractError;
+    use crate::DocCommand;
+    use crate::catalog::ContractError;
     let mut doc = document(
         json!([
             variable_node(1, "get", json!(node_id(10))),
@@ -677,8 +677,8 @@ fn compare_and_set_uses_language_eq_for_scalars_and_aggregates() {
 
 #[test]
 fn compare_and_set_connections_use_operand_types_and_boolean_result() {
+    use crate::validation::validate_connections;
     use common::generic::data_edge;
-    use orange_model::validation::validate_connections;
 
     for (source_type, target_type, valid) in [
         ("core/i64@1", "core/bool@1", true),

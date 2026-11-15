@@ -1,15 +1,15 @@
 //! G-39 (presentation never changes semantic signatures) and G-29 (missing package and
 //! snapshot drift lose no data) vectors, plus implicit kind ports.
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 
+use crate::document::{NodeKind, PortDescriptor, SignatureSnapshot};
+use crate::id::{EdgeId, PortId, TypeExpr};
+use crate::signature::{SignatureDrift, canonical_json, compare, project, semantic_key};
+use crate::{DocIndex, from_json};
 use common::{eid, nid, read_fixture, saved};
-use orange_model::document::{NodeKind, PortDescriptor, SignatureSnapshot};
-use orange_model::id::{EdgeId, PortId, TypeExpr};
-use orange_model::signature::{SignatureDrift, canonical_json, compare, project, semantic_key};
-use orange_model::{DocIndex, from_json};
 use serde_json::{Value as Json, json};
 
 const ADD_KEY: &str = include_str!("fixtures/s-add-i64.sha256");

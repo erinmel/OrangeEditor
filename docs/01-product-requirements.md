@@ -1,5 +1,12 @@
 # Product requirements
 
+Editor performance trace (2026-11-14; PERF-EDITOR): FR-01/02/03/04/07 and
+NFR-03/05/12/15 gain indexed canvas/view projection, saved-layout reuse, a
+registry/search-keyed palette and bounded event polling. Regression and local
+measurement evidence is in [21](21-editor-performance.md). Cyclic fallback layout
+is deterministic by document order; stored positions and graph semantics remain
+unchanged. Full frame-time, incremental editing and platform qualification stay open.
+
 Headless service trace (2026-11-10). FR-21 has graph-local and host-shared
 connection declarations with adapter-owned sessions. FR-23 has text requests
 and responses over HTTP/HTTPS, verified TLS, a request timeout and an 8 MiB

@@ -1,12 +1,12 @@
 //! Contextual node contracts are computed from the node's declarations, never cached.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::id::NodeId;
+use crate::inference::infer_components;
+use crate::{DocIndex, GraphDocument, from_json};
 use common::generic::{add, core_converters, data_edge, registry_builder};
 use common::{minimal_document, node_id};
-use orange_model::id::NodeId;
-use orange_model::inference::infer_components;
-use orange_model::{DocIndex, GraphDocument, from_json};
 use serde_json::json;
 
 fn id(n: u8) -> NodeId {

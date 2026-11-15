@@ -55,35 +55,40 @@ pub use diagnostic::{
     OriginError, Severity, Subject, sort_diagnostics,
 };
 
-pub use availability::{AvailabilityValidation, validate_availability};
-pub use config::{
-    CONFIG_SCHEMA_DIALECT, config_satisfies_schema, config_schema_is_supported, validate_config,
-};
-pub use connections::{ConnectionValidation, validate_connections};
-pub use control_cycles::{ControlCycleValidation, validate_control_cycles};
-pub use data_cycles::{DataCycleValidation, validate_data_cycles};
-pub use declarations::validate_declaration_types;
+pub use config::{CONFIG_SCHEMA_DIALECT, config_satisfies_schema, config_schema_is_supported};
 pub use domains::{DomainValidation, validate_body_domains};
-pub use exports::validate_exports;
-pub use inputs::validate_inputs;
 pub use limits::{AnalysisLimits, AnalysisOptions};
 pub use local::LocalWork;
 pub use nodes::{NodeValidation, validate_nodes};
-pub use regions::{
-    Region, RegionIndex, RegionKind, RegionRoot, RegionValidation, validate_regions,
-};
+pub use regions::{Region, RegionIndex, RegionKind, RegionRoot, RegionValidation};
 pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
-    analyze_with_options, required_checks, validate, validate_with_effects,
+    analyze_with_options, validate,
 };
 pub use session::{AnalysisSession, EditStats, RebuildReason, ScopeFallback, SessionWork};
-pub use state::validate_state;
-pub use streams::validate_streams;
 pub use visits::{PassVisits, VisitCounts};
 pub use worker::{AnalysisRequestId, AnalysisWorker, AnalysisWorkerError};
 pub use zones::{ZoneIndex, ZoneKind, ZoneRegion};
 
 pub use functions::{
-    FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,
-    WriteOperation, analyze_functions,
+    FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite, WriteOperation,
+};
+
+// Production runs every pass through `analyze`; the behaviour suite drives them one at a time.
+#[cfg(test)]
+mod test_passes;
+#[cfg(test)]
+pub(crate) use {
+    config::validate_config,
+    connections::ConnectionValidation,
+    control_cycles::ControlCycleValidation,
+    data_cycles::DataCycleValidation,
+    declarations::validate_declaration_types,
+    functions::analyze_functions,
+    state::validate_state,
+    test_passes::{
+        validate_availability, validate_connections, validate_control_cycles, validate_data_cycles,
+        validate_exports, validate_inputs, validate_regions, validate_streams,
+        validate_with_effects,
+    },
 };

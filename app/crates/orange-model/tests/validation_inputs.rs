@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
-use orange_model::document::SignatureSnapshot;
-use orange_model::from_json;
-use orange_model::id::NodeId;
-use orange_model::types::TypeRegistryBuilder;
-use orange_model::validation::{Diagnostic, DiagnosticCode, HostOrigin, Severity, validate_inputs};
+use crate::catalog::{RegistryBuilder, RegistrySnapshot};
+use crate::document::SignatureSnapshot;
+use crate::from_json;
+use crate::id::NodeId;
+use crate::types::TypeRegistryBuilder;
+use crate::validation::{Diagnostic, DiagnosticCode, HostOrigin, Severity, validate_inputs};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -16,7 +16,7 @@ fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "a".repeat(64))).unwrap()
 }
 
-fn document(inputs: Value, variadic: Value, edges: Value) -> orange_model::GraphDocument {
+fn document(inputs: Value, variadic: Value, edges: Value) -> crate::GraphDocument {
     from_json(
         &json!({
             "format":"orange.graph", "format_version":1,
@@ -37,12 +37,12 @@ fn signature(ports: Value) -> SignatureSnapshot {
     serde_json::from_value(json!({"kind":"pure","ports":ports})).unwrap()
 }
 
-fn run(doc: &orange_model::GraphDocument, snapshot: Option<SignatureSnapshot>) -> Vec<Diagnostic> {
+fn run(doc: &crate::GraphDocument, snapshot: Option<SignatureSnapshot>) -> Vec<Diagnostic> {
     run_with_registry(doc, snapshot, &RegistrySnapshot::core(origin()))
 }
 
 fn run_with_registry(
-    doc: &orange_model::GraphDocument,
+    doc: &crate::GraphDocument,
     snapshot: Option<SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {

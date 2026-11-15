@@ -2,13 +2,13 @@
 //! Regenerate the canonical file after an intended format change with
 //! `ORANGE_BLESS=1 cargo test -p orange-model --test codec_golden`, then review its diff.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::literal::LiteralPayload;
+use crate::document::{FaultPolicy, OverflowPolicy, ReentrancyMode, VarScope};
+use crate::id::{EdgeId, NodeId, PortKey};
+use crate::{from_json, to_json};
 use common::{edge_id, node_id, parse_json, read_fixture};
-use orange_model::document::literal::LiteralPayload;
-use orange_model::document::{FaultPolicy, OverflowPolicy, ReentrancyMode, VarScope};
-use orange_model::id::{EdgeId, NodeId, PortKey};
-use orange_model::{from_json, to_json};
 use serde_json::json;
 
 const SOURCE: &str = "threshold-v1.json";

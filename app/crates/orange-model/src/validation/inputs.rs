@@ -16,28 +16,6 @@ use crate::value::literal_codec;
 use super::scope::Scope;
 use super::{Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics};
 
-/// Validates the active value contract for data inputs with current resolved metadata.
-/// Nodes absent from `resolved` are skipped because their primary metadata resolution
-/// failed elsewhere; stored snapshots are intentionally not used as a fallback.
-pub fn validate_inputs(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    registry: &RegistrySnapshot,
-) -> Vec<Diagnostic> {
-    let mut diagnostics = validate_inputs_in(
-        document,
-        resolved,
-        registry,
-        Scope::All,
-        None,
-        None,
-        &mut super::visits::VisitCounts::default(),
-    );
-    diagnostics.extend(validate_type_locks(document, registry));
-    sort_diagnostics(&mut diagnostics);
-    diagnostics
-}
-
 /// Exact codec locks are prerequisites for interpreting saved values. Absence retains
 /// the format-v1 structural codec default; explicit unsupported locks never fall back.
 pub(crate) fn validate_type_locks(

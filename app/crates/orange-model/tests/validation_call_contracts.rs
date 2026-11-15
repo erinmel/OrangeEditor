@@ -1,7 +1,7 @@
-use orange_model::GraphDocument;
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::NodeKind;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ValidationReport, validate};
+use crate::GraphDocument;
+use crate::catalog::RegistrySnapshot;
+use crate::document::NodeKind;
+use crate::validation::{DiagnosticCode, HostOrigin, ValidationReport, validate};
 use serde_json::{Value, json};
 
 const CALL: &str = "10000000-0000-4000-8000-000000000001";

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::SignatureSnapshot;
-use orange_model::from_json;
-use orange_model::id::NodeId;
-use orange_model::validation::{Diagnostic, DiagnosticCode, HostOrigin, Subject, validate_inputs};
+use crate::catalog::RegistrySnapshot;
+use crate::document::SignatureSnapshot;
+use crate::from_json;
+use crate::id::NodeId;
+use crate::validation::{Diagnostic, DiagnosticCode, HostOrigin, Subject, validate_inputs};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -13,7 +13,7 @@ fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "a".repeat(64))).unwrap()
 }
 
-fn document(variadic: Value) -> orange_model::GraphDocument {
+fn document(variadic: Value) -> crate::GraphDocument {
     from_json(
         &json!({
             "format":"orange.graph", "format_version":1,
@@ -34,7 +34,7 @@ fn signature(ports: Value) -> SignatureSnapshot {
     serde_json::from_value(json!({"kind":"action","ports":ports})).unwrap()
 }
 
-fn run(doc: &orange_model::GraphDocument, snapshot: SignatureSnapshot) -> Vec<Diagnostic> {
+fn run(doc: &crate::GraphDocument, snapshot: SignatureSnapshot) -> Vec<Diagnostic> {
     let resolved: BTreeMap<NodeId, SignatureSnapshot> = [(NODE.parse().unwrap(), snapshot)].into();
     validate_inputs(doc, &resolved, &RegistrySnapshot::core(origin()))
 }
@@ -162,8 +162,8 @@ fn variadic_count_does_not_depend_on_literals_or_connected_instances() {
         "from":{"node":NODE,"port":"source"},
         "to":{"node":NODE,"port":"items#2"}
     }]);
-    let doc: orange_model::GraphDocument = serde_json::from_value(fixture).unwrap();
-    let before = orange_model::to_json(&doc).unwrap();
+    let doc: crate::GraphDocument = serde_json::from_value(fixture).unwrap();
+    let before = crate::to_json(&doc).unwrap();
     let diagnostics = run(
         &doc,
         signature(json!([
@@ -185,7 +185,7 @@ fn variadic_count_does_not_depend_on_literals_or_connected_instances() {
             .count(),
         1
     );
-    assert_eq!(orange_model::to_json(&doc).unwrap(), before);
+    assert_eq!(crate::to_json(&doc).unwrap(), before);
     // Input validation counts persisted instances; this fixture does not prove cycle legality.
 }
 

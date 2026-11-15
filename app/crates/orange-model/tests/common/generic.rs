@@ -3,18 +3,18 @@
 
 use std::sync::{Arc, LazyLock};
 
-use orange_model::catalog::{
+use crate::catalog::{
     NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
     TypeArgs,
 };
-use orange_model::conversion::{
+use crate::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
-use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam};
-use orange_model::types::TypeRegistry;
-use orange_model::validation::HostOrigin;
-use orange_model::{GraphDocument, from_json};
+use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam};
+use crate::types::TypeRegistry;
+use crate::validation::HostOrigin;
+use crate::{GraphDocument, from_json};
 use serde_json::{Value as Json, json};
 
 use super::{edge_id, id_source, minimal_document, node_id, port as port_ref};
@@ -62,7 +62,7 @@ pub fn registry_builder(
             config_version: 1,
             kind: NodeKind::Pure,
             volatility: None,
-            determinism: orange_model::catalog::Determinism::Deterministic,
+            determinism: crate::catalog::Determinism::Deterministic,
             suspends: None,
             type_params: vec![
                 serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))

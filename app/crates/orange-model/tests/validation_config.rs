@@ -1,15 +1,15 @@
-use crate::common;
+use crate::behaviour::common;
 
-use common::{minimal_document, node_id};
-use orange_model::catalog::{
+use crate::catalog::{
     NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
 };
-use orange_model::document::{DefinitionRef, NodeKind};
-use orange_model::from_json;
-use orange_model::validation::{
+use crate::document::{DefinitionRef, NodeKind};
+use crate::from_json;
+use crate::validation::{
     CONFIG_SCHEMA_DIALECT, DiagnosticCode, HostOrigin, ValidationCheck, analyze,
     config_schema_is_supported,
 };
+use common::{minimal_document, node_id};
 use serde_json::{Value, json};
 
 const DIGEST: &str = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -41,7 +41,7 @@ fn registry(schema: Option<Value>) -> std::sync::Arc<RegistrySnapshot> {
             config_version: 1,
             kind: NodeKind::Pure,
             volatility: None,
-            determinism: orange_model::catalog::Determinism::Deterministic,
+            determinism: crate::catalog::Determinism::Deterministic,
             suspends: None,
             type_params: vec![],
             ports: Ports::Declared(vec![]),

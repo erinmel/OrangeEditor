@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
-use orange_model::document::{NodeKind, SignatureSnapshot, Suspends};
-use orange_model::id::TypeExpr;
-use orange_model::signature::{
-    canonical_json, compare, project, project_with_suspension, semantic_key,
-};
+use crate::document::{NodeKind, SignatureSnapshot, Suspends};
+use crate::id::TypeExpr;
+use crate::signature::{canonical_json, compare, project, project_with_suspension, semantic_key};
 use serde_json::{Value, json};
 
 fn snapshot(value: Value) -> SignatureSnapshot {

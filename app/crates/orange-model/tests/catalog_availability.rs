@@ -1,6 +1,6 @@
-use orange_model::catalog::{NodeDefinition, RegistryBuilder, RegistryError};
-use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
-use orange_model::validation::HostOrigin;
+use crate::catalog::{NodeDefinition, RegistryBuilder, RegistryError};
+use crate::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
+use crate::validation::HostOrigin;
 
 fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap()
@@ -18,19 +18,18 @@ fn definition(kind: NodeKind, ports: Vec<PortDescriptor>) -> NodeDefinition {
         },
         config_version: 1,
         kind,
-        volatility: (kind == NodeKind::Volatile)
-            .then_some(orange_model::catalog::Volatility::Entropy),
+        volatility: (kind == NodeKind::Volatile).then_some(crate::catalog::Volatility::Entropy),
         determinism: if kind == NodeKind::Volatile {
-            orange_model::catalog::Determinism::Seeded
+            crate::catalog::Determinism::Seeded
         } else {
-            orange_model::catalog::Determinism::Deterministic
+            crate::catalog::Determinism::Deterministic
         },
         suspends: match kind {
             NodeKind::Async | NodeKind::Iterator => Some(Suspends::Maybe),
             _ => None,
         },
         type_params: vec![],
-        ports: orange_model::catalog::Ports::Declared(ports),
+        ports: crate::catalog::Ports::Declared(ports),
         references: vec![],
         specializations: None,
         config_schema: None,
@@ -237,7 +236,7 @@ fn invalid_availability_stays_repairable_and_publication_does_not_rewrite_it() {
     assert!(
         matches!(error, RegistryError::AvailableOnOutcome { definition, port, outcome } if definition.as_str() == "acme/test" && port.as_str() == "value" && outcome.as_str() == "missing")
     );
-    let orange_model::catalog::Ports::Declared(ports) = definition.ports else {
+    let crate::catalog::Ports::Declared(ports) = definition.ports else {
         unreachable!()
     };
     assert_eq!(serde_json::to_value(&ports[0]).unwrap(), wire);

@@ -1,9 +1,9 @@
 //! Structural authoring primitive: splice one node into an established connection.
 //! Type/port compatibility remains the planner/validator's responsibility.
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{DocCommand, TxError};
 use common::{add, connect, eid, empty_document, nid};
-use orange_model::{DocCommand, TxError};
 
 #[test]
 fn insert_between_connected_nodes_is_one_undoable_transaction() {

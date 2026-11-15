@@ -1,5 +1,17 @@
 # Architecture and ownership
 
+Editor projection update (2026-11-14; ADR-02/21, PERF-EDITOR): canvas topology and
+frame geometry are separate private modules. A borrowed per-frame port/size index
+and conservative Bezier bounds remove global endpoint scans and offscreen paint
+shapes. Saved layouts skip topology, existing positions survive semantic edits,
+and unsaved cyclic nodes use columns reached from acyclic roots, stacked in document
+order. The host indexes connectivity and output kinds while building `GraphView`.
+The editor caches one palette by registry generation/search and consumes at most
+256 events per poll; desktop schedules further polling after a nonempty batch.
+These indexes trade O(N+E+P) temporary storage for fewer repeated scans, without
+retaining graph payloads/providers. See [21](21-editor-performance.md) for exact
+scope, measurements and remaining synchronous-edit/virtualization work.
+
 Session host (2026-11-10; ADR-21): `orange-host` is the one place the layers are
 composed and the surface every front end attaches to. A `Host` owns the package store
 and its registry, the bundled native kernels, the guest engine, a fixed pool of effect
@@ -326,7 +338,7 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
 | orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
-| orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
+| orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation, editing drafts with incremental validation | UI, windows, rendering; graph semantics |
 | orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
 | orange-sdk | Plugin SDK: the service package, node, trigger, connection adapter and session types a native plugin crate implements | Package store, guest engine, front ends, any network or OS client |
 | orange-native | Loads `ServicePackage`s from native plugin libraries at start; the only crate with unsafe code | Sandboxing; installing or unloading while running |

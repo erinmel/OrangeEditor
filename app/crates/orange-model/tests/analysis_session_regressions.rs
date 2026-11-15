@@ -1,21 +1,21 @@
 //! Session behavior across host edits, stale requests and cancellation. The full validator
 //! is the oracle; these assertions do not depend on the session's cache representation.
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use common::generic::{document, registry};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeKind, VariableDecl};
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{NodeKind, VariableDecl};
+use crate::validation::{
     AnalysisLimits, AnalysisOptions, AnalysisSession, DiagnosticCode, RebuildReason, SessionWork,
     analyze_with_options,
 };
-use orange_model::{DocCommand, GraphDocument, LayoutCommand, from_json, to_json};
+use crate::{DocCommand, GraphDocument, LayoutCommand, from_json, to_json};
+use common::generic::{document, registry};
 use serde_json::json;
 
-fn layout(document: &mut GraphDocument, value: i64) -> orange_model::edit::Committed {
+fn layout(document: &mut GraphDocument, value: i64) -> crate::edit::Committed {
     document
         .apply([DocCommand::Layout(LayoutCommand::Set {
             path: vec!["viewport".into()],
@@ -378,9 +378,9 @@ fn declaration_edit_invalidates_a_consumer_inside_a_function_and_undo_restores_i
 
 #[test]
 fn adding_missing_lock_and_signature_refreshes_an_untouched_node() {
+    use crate::catalog::{NodeContract, ProviderKey};
+    use crate::document::{DefinitionRef, PackageLockEntry, SignatureSnapshot};
     use common::registry::Facts;
-    use orange_model::catalog::{NodeContract, ProviderKey};
-    use orange_model::document::{DefinitionRef, PackageLockEntry, SignatureSnapshot};
 
     let definition = DefinitionRef {
         id: "org.test/value".parse().unwrap(),

@@ -4,21 +4,21 @@
 //! Run with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored
 //! --nocapture`. It asserts nothing: it prints timings for the machine it runs on.
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::time::{Duration, Instant};
 
-use common::generic::{ADD, registry_with_provider};
-use common::minimal_document;
-use orange_model::DocIndex;
-use orange_model::catalog::ProviderKey;
-use orange_model::document::Edge;
-use orange_model::inference::{apply_inferred, apply_inferred_indexed};
-use orange_model::validation::{
+use crate::DocIndex;
+use crate::catalog::ProviderKey;
+use crate::document::Edge;
+use crate::inference::{apply_inferred, apply_inferred_indexed};
+use crate::validation::{
     ConnectionValidation, validate, validate_availability, validate_exports, validate_nodes,
     validate_regions,
 };
-use orange_model::{DocCommand, GraphDocument, from_json};
+use crate::{DocCommand, GraphDocument, from_json};
+use common::generic::{ADD, registry_with_provider};
+use common::minimal_document;
 use serde_json::{Value as Json, json};
 
 const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
@@ -27,9 +27,9 @@ const RUNS: u32 = 5;
 #[test]
 #[ignore = "release timing evidence, not NFR acceptance"]
 fn data_cycles_cost_by_port_width() {
-    use orange_model::catalog::NodeContract;
-    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
-    use orange_model::validation::{validate_connections, validate_data_cycles, validate_inputs};
+    use crate::catalog::NodeContract;
+    use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+    use crate::validation::{validate_connections, validate_data_cycles, validate_inputs};
     let definition = DefinitionRef {
         id: "org.test/wide".parse().unwrap(),
         version: 1,
@@ -57,7 +57,7 @@ fn data_cycles_cost_by_port_width() {
     provider.id = "wide".into();
     facts.provider(definition, 1, provider);
     let registry = facts.snapshot();
-    let snapshot = orange_model::signature::project(NodeKind::Pure, ports, &Default::default());
+    let snapshot = crate::signature::project(NodeKind::Pure, ports, &Default::default());
     for width in [64usize, 256, 512] {
         let mut node = json!({"id":node_id(0),"definition_id":"org.test/wide","definition_version":1,
             "config_version":1,"config":{},"signature":"wide",
@@ -232,7 +232,7 @@ fn edit_cost_by_document_size() {
 #[test]
 #[ignore = "manual connection planning comparison; not NFR acceptance"]
 fn isolated_connection_planning_by_document_size() {
-    use orange_model::conversion::{
+    use crate::conversion::{
         ConnectionOutcome, ConnectionRequest, plan_connection, plan_connection_indexed,
     };
     if cfg!(debug_assertions) {

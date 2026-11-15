@@ -42,6 +42,21 @@ pub struct RunEventStats {
     pub paused_refused: u64,
 }
 
+impl RunEventStats {
+    /// One pending awaited delivery of `charge` bytes leaves the queue, delivered or dropped.
+    fn settle_pending(&mut self, charge: usize, delivered: bool) {
+        self.pending = self.pending.saturating_sub(1);
+        self.pending_bytes = self.pending_bytes.saturating_sub(charge);
+        self.live_payload_bytes = self.live_payload_bytes.saturating_sub(charge);
+        let count = if delivered {
+            &mut self.delivered
+        } else {
+            &mut self.dropped
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
 /// Whether a host source can be told "not now" while its run is paused.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PausedSource {
@@ -375,11 +390,7 @@ impl Awaiters {
                 && let Some(completion) = waiter.completion.take()
                 && completion.metadata.is_some()
             {
-                stats.pending = stats.pending.saturating_sub(1);
-                stats.pending_bytes = stats.pending_bytes.saturating_sub(completion.charge);
-                stats.live_payload_bytes =
-                    stats.live_payload_bytes.saturating_sub(completion.charge);
-                stats.dropped = stats.dropped.saturating_add(1);
+                stats.settle_pending(completion.charge, false);
             }
         }
     }
@@ -788,14 +799,7 @@ impl Run {
                 tick: None,
             },
         );
-        let metadata = match accepted {
-            Ok(metadata) => metadata,
-            Err(fault) if fault == LIMIT => {
-                self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
-                return Err(IngressError::DeliveryLimit);
-            }
-            Err(_) => return Err(IngressError::DeliveryLimit),
-        };
+        let metadata = accepted.map_err(|fault| self.refuse_ingress(fault))?;
         if let Some(entry) = self.events.host_sources.get_mut(&source.id) {
             entry.last_seq = source_seq;
         }
@@ -850,16 +854,17 @@ impl Run {
                 tick: None,
             },
         );
-        let metadata = match accepted {
-            Ok(metadata) => metadata,
-            Err(fault) if fault == LIMIT => {
-                self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
-                return Err(IngressError::DeliveryLimit);
-            }
-            Err(_) => return Err(IngressError::DeliveryLimit),
-        };
+        let metadata = accepted.map_err(|fault| self.refuse_ingress(fault))?;
         self.events.manual_sequences[manual] = source_seq;
         Ok(metadata)
+    }
+    /// Host ingress refused at admission: every refusal is a delivery limit, and only the
+    /// capacity limit counts as an overflow.
+    fn refuse_ingress(&mut self, fault: KernelFault) -> IngressError {
+        if fault == LIMIT {
+            self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
+        }
+        IngressError::DeliveryLimit
     }
     pub(super) fn waiter_count(&self) -> usize {
         self.events.waiters.len()
@@ -884,18 +889,7 @@ impl Run {
         if let Some(completion) = &waiter.completion
             && completion.metadata.is_some()
         {
-            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
-            self.events.stats.pending_bytes = self
-                .events
-                .stats
-                .pending_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.live_payload_bytes = self
-                .events
-                .stats
-                .live_payload_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.dropped = self.events.stats.dropped.saturating_add(1);
+            self.events.stats.settle_pending(completion.charge, false);
         }
         Some(waiter)
     }
@@ -910,34 +904,12 @@ impl Run {
     }
     pub(super) fn published_await_delivery(&mut self, completion: &AwaitCompletion) {
         if completion.metadata.is_some() {
-            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
-            self.events.stats.pending_bytes = self
-                .events
-                .stats
-                .pending_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.live_payload_bytes = self
-                .events
-                .stats
-                .live_payload_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.delivered = self.events.stats.delivered.saturating_add(1);
+            self.events.stats.settle_pending(completion.charge, true);
         }
     }
     pub(super) fn dropped_await_delivery(&mut self, completion: &AwaitCompletion) {
         if completion.metadata.is_some() {
-            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
-            self.events.stats.pending_bytes = self
-                .events
-                .stats
-                .pending_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.live_payload_bytes = self
-                .events
-                .stats
-                .live_payload_bytes
-                .saturating_sub(completion.charge);
-            self.events.stats.dropped = self.events.stats.dropped.saturating_add(1);
+            self.events.stats.settle_pending(completion.charge, false);
         }
     }
     pub(super) fn event_waiter_count(&self) -> usize {

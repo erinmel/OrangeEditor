@@ -76,10 +76,10 @@ impl Editor {
 
     /// Declares a variable, or changes the one with `variable.id`. Returns its ID.
     pub fn declare_variable(&mut self, host: &mut Host, variable: &Variable) -> Option<String> {
-        let text = self.editing()?;
-        match host.declare_variable(&text, variable) {
-            Ok((text, id)) => {
-                let _ = self.edited(host, Ok(text));
+        let draft = self.editing()?;
+        match host.declare_variable(draft, variable) {
+            Ok(id) => {
+                let _ = self.edited(host, Ok(true));
                 Some(id)
             }
             Err(error) => {
@@ -91,10 +91,10 @@ impl Editor {
 
     /// Removes a variable; nodes that name it show as problems.
     pub fn remove_variable(&mut self, host: &mut Host, id: &str) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.remove_variable(&text, id);
+        let result = host.remove_variable(draft, id);
         self.edited(host, result)
     }
 
@@ -105,10 +105,10 @@ impl Editor {
         host: &mut Host,
         connection: &Connection,
     ) -> Option<String> {
-        let text = self.editing()?;
-        match host.declare_connection(&text, connection) {
-            Ok((text, id)) => {
-                let _ = self.edited(host, Ok(text));
+        let draft = self.editing()?;
+        match host.declare_connection(draft, connection) {
+            Ok(id) => {
+                let _ = self.edited(host, Ok(true));
                 Some(id)
             }
             Err(error) => {
@@ -120,10 +120,10 @@ impl Editor {
 
     /// Removes a connection; nodes that use it show as problems.
     pub fn remove_connection(&mut self, host: &mut Host, id: &str) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.remove_connection(&text, id);
+        let result = host.remove_connection(draft, id);
         self.edited(host, result)
     }
 

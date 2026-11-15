@@ -1,23 +1,23 @@
 //! FR-02: copy/paste keeps internal edges and remaps every ID and reference without
 //! aliasing the originals.
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::{BTreeSet, HashSet};
 
+use crate::catalog::{
+    NodeDefinition, Ports, ReferenceField, ReferenceKind, RegistryBuilder, RegistrySnapshot,
+};
+use crate::document::{NodeKind, ProviderBinding};
+use crate::id::{EdgeId, EventDeclId, NodeId, VariableId};
+use crate::paste::Fragment;
+use crate::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use common::generic::origin;
 use common::strategies::document;
 use common::{
     body, content, empty_document, function, function_id, id_source, nid, node, port, read_fixture,
     typed_edge,
 };
-use orange_model::catalog::{
-    NodeDefinition, Ports, ReferenceField, ReferenceKind, RegistryBuilder, RegistrySnapshot,
-};
-use orange_model::document::{NodeKind, ProviderBinding};
-use orange_model::id::{EdgeId, EventDeclId, NodeId, VariableId};
-use orange_model::paste::Fragment;
-use orange_model::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -218,7 +218,7 @@ fn registered_definition_captures_only_its_declared_reference_field() {
             config_version: custom.config_version,
             kind: NodeKind::Pure,
             volatility: None,
-            determinism: orange_model::catalog::Determinism::Deterministic,
+            determinism: crate::catalog::Determinism::Deterministic,
             suspends: None,
             type_params: Vec::new(),
             ports: Ports::Declared(Vec::new()),
@@ -467,7 +467,7 @@ fn paste_carries_the_lock_entries_of_copied_provider_bindings() {
     let paste = fragment.paste(&other, BodyRef::Root, id_source(3)).unwrap();
     assert!(matches!(
         other.apply(paste.commands),
-        Err(orange_model::TxError::PackageLockConflict { .. })
+        Err(crate::TxError::PackageLockConflict { .. })
     ));
     assert_eq!(content(&other), before);
 }
@@ -527,8 +527,8 @@ fn hand_built_fragment_with_dangling_edges_pastes_only_internal_ones() {
     let _ = document.apply(paste.commands).unwrap();
 }
 
-fn type_lock(ty: &str, codec: &str) -> orange_model::document::TypeLockEntry {
-    orange_model::document::TypeLockEntry {
+fn type_lock(ty: &str, codec: &str) -> crate::document::TypeLockEntry {
+    crate::document::TypeLockEntry {
         ty: ty.parse().unwrap(),
         codec: codec.to_owned(),
         extensions: Default::default(),
@@ -536,10 +536,10 @@ fn type_lock(ty: &str, codec: &str) -> orange_model::document::TypeLockEntry {
 }
 
 fn has_type_codec_error(document: &GraphDocument) -> bool {
-    orange_model::validate(document, &registry())
+    crate::validate(document, &registry())
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.code == orange_model::validation::DiagnosticCode::TypeCodec)
+        .any(|diagnostic| diagnostic.code == crate::validation::DiagnosticCode::TypeCodec)
 }
 
 #[test]
@@ -606,7 +606,7 @@ fn paste_reuses_matching_type_locks_and_rejects_another_codec_atomically() {
         .unwrap();
     assert!(matches!(
         conflicting.apply(paste.commands),
-        Err(orange_model::TxError::TypeLockConflict(ty)) if ty.as_str() == "core/bool@1"
+        Err(crate::TxError::TypeLockConflict(ty)) if ty.as_str() == "core/bool@1"
     ));
     assert_eq!(content(&conflicting), before);
 }

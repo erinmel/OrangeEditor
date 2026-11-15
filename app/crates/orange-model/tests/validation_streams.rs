@@ -1,14 +1,14 @@
-use crate::common;
+use crate::behaviour::common;
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use crate::catalog::{RegistryBuilder, RegistrySnapshot};
+use crate::type_term::TypeTerm;
+use crate::types::TypeRegistryBuilder;
+use crate::validation::{DiagnosticCode, HostOrigin, validate_streams};
+use crate::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, VariantSchema};
+use crate::{GraphDocument, from_json};
 use common::minimal_document;
-use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
-use orange_model::type_term::TypeTerm;
-use orange_model::types::TypeRegistryBuilder;
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_streams};
-use orange_model::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, VariantSchema};
-use orange_model::{GraphDocument, from_json};
 use serde_json::{Value, json};
 
 const VAR: &str = "50000000-0000-4000-8000-000000000001";
@@ -155,7 +155,7 @@ fn registers_check_resources_in_the_fresh_nominal_cell_type() {
         "type_args":{"T":"core/i64@1"}
     }]})))
     .unwrap();
-    let report = orange_model::validation::analyze(&document, &registry).into_report();
+    let report = crate::validation::analyze(&document, &registry).into_report();
     assert!(
         report
             .diagnostics

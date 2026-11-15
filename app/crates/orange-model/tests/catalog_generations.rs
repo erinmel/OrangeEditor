@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use orange_model::GraphDocument;
-use orange_model::catalog::{
+use crate::GraphDocument;
+use crate::catalog::{
     Determinism, NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
     RegistryError, RegistrySnapshot,
 };
-use orange_model::document::{DefinitionRef, NodeKind};
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
+use crate::document::{DefinitionRef, NodeKind};
+use crate::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
