@@ -207,6 +207,13 @@ impl Host {
                 .is_some_and(|ports| ports.contains(port))
         };
         let contract = registry.contract(document, node).ok().flatten();
+        // A generic port shows the type its parameter has now: the chosen one, else the
+        // one found from the wires, so a value can be typed on it.
+        let settled = (!node.type_args.is_empty() || !node.type_pins.is_empty()).then(|| {
+            let mut args = node.type_args.clone();
+            args.extend(node.type_pins.clone());
+            args
+        });
         let declared: Vec<PortView> = contract
             .iter()
             .flat_map(|contract| contract.ports.iter())
@@ -222,7 +229,12 @@ impl Host {
                     connected: wired(node.id, &id, input),
                     input,
                     exec: port.kind != PortKind::Data,
-                    ty: port.ty.as_ref().map(ToString::to_string),
+                    ty: port.ty.as_ref().map(|ty| match &settled {
+                        Some(args) => {
+                            orange_model::signature::substitute_params(ty, args).to_string()
+                        }
+                        None => ty.to_string(),
+                    }),
                     value: value.filter(|_| input),
                     id,
                 }

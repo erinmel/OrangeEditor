@@ -21,9 +21,9 @@ mod data_compile;
 mod effects;
 mod error;
 mod evaluate;
-mod lazy;
 mod plan;
 mod preview;
+mod projection;
 mod zones;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};

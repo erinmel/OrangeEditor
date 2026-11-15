@@ -1,19 +1,22 @@
-//! Language-owned constant branch specialization, never package-controlled laziness.
+//! Language-owned nodes whose result is one of their inputs: constant branch specialization
+//! of Select, And, Or, Coalesce and Try, and value nodes. Never package-controlled laziness.
 use crate::{CompileError, KernelBinding, KernelFault, PureKernel};
 use orange_model::Value;
 use orange_model::catalog::intrinsic_id as ids;
-use orange_model::document::{NodeInstance, PortDirection, SignatureSnapshot};
+use orange_model::document::{NodeInstance, PortDescriptor, PortDirection, SignatureSnapshot};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Lazy {
+pub(crate) enum Projection {
     Select,
     And,
     Or,
     Coalesce,
     Try,
+    /// A value node (11 §8.4): its `value` input is published unchanged on `result`.
+    Value,
 }
-impl Lazy {
+impl Projection {
     pub(crate) fn resolve(
         node: &NodeInstance,
         sig: &SignatureSnapshot,
@@ -24,6 +27,9 @@ impl Lazy {
             ids::OR => Self::Or,
             ids::COALESCE => Self::Coalesce,
             ids::TRY => Self::Try,
+            ids::NUMBER | ids::WHOLE_NUMBER | ids::TEXT | ids::TRUE_OR_FALSE | ids::VALUE => {
+                Self::Value
+            }
             _ => return Ok(None),
         };
         let bad = || CompileError::KernelContract { node: node.id };
@@ -40,6 +46,7 @@ impl Lazy {
             Self::And | Self::Or => &[("a", false), ("b", true), ("result", false)],
             Self::Coalesce => &[("value", false), ("fallback", true), ("result", false)],
             Self::Try => &[("value", true), ("result", false)],
+            Self::Value => &[("value", false), ("result", false)],
         };
         if sig.ports.len() != expected.len() {
             return Err(bad());
@@ -57,7 +64,7 @@ impl Lazy {
                 return Err(bad());
             }
         }
-        if !matches!(kind, Self::Coalesce | Self::Try)
+        if !matches!(kind, Self::Coalesce | Self::Try | Self::Value)
             && sig.ports[0].ty.as_ref().map(|ty| ty.as_str()) != Some("core/bool@1")
         {
             return Err(bad());
@@ -92,6 +99,7 @@ impl Lazy {
                     return Err(bad());
                 }
             }
+            Self::Value if sig.ports[0].ty != sig.ports[1].ty => return Err(bad()),
             _ => {}
         }
         Ok(Some(kind))
@@ -104,7 +112,7 @@ impl Lazy {
             (Self::And | Self::Or, Value::Bool(_)) => None,
             (Self::Coalesce, Value::None) => Some("fallback"),
             (Self::Coalesce, _) => None,
-            (Self::Try, _) => None,
+            (Self::Try | Self::Value, _) => None,
             _ => return None,
         })
     }
@@ -122,12 +130,21 @@ pub(crate) enum ProjectionMode {
         boxed: bool,
     },
 }
+/// A kernel over the lowered `inputs` that publishes the last one on the single output.
 pub(crate) fn binding(
-    inputs: Box<[orange_model::id::PortKey]>,
-    outputs: Box<[orange_model::id::PortKey]>,
+    inputs: &[&PortDescriptor],
+    outputs: &[&PortDescriptor],
     faulted: bool,
     mode: ProjectionMode,
 ) -> KernelBinding {
+    let inputs: Box<[_]> = inputs
+        .iter()
+        .map(|port| crate::compile::key(port))
+        .collect();
+    let outputs = outputs
+        .iter()
+        .map(|port| crate::compile::key(port))
+        .collect();
     let index = if faulted {
         None
     } else {
@@ -137,16 +154,16 @@ pub(crate) fn binding(
     KernelBinding {
         inputs,
         outputs,
-        kernel: Arc::new(Projection { index, arity, mode }),
+        kernel: Arc::new(ProjectionKernel { index, arity, mode }),
     }
 }
 #[derive(Debug)]
-struct Projection {
+struct ProjectionKernel {
     index: Option<usize>,
     arity: usize,
     mode: ProjectionMode,
 }
-impl PureKernel for Projection {
+impl PureKernel for ProjectionKernel {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         const BAD: KernelFault = KernelFault {
             code: crate::FaultText::Static("core/InternalFault"),

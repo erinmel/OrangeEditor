@@ -153,7 +153,42 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         });
     }
     definitions.extend(zone_definitions());
+    definitions.extend(value_definitions());
     definitions
+}
+
+/// Value nodes (11 §8.4): pure nodes whose `value` input holds the constant a person
+/// types, published unchanged on `result`. Four name a common type and default to its
+/// zero; `core/value` is generic, for any type with a literal form.
+fn value_definitions() -> Vec<NodeDefinition> {
+    use crate::value::{Value, literal_codec};
+    let value = |id, text: &'static str, zero: Option<Value>| {
+        let mut input = PortDescriptor::data_in("value", ty(text));
+        // A core type's zero always encodes; a failure would leave the port without one.
+        input.default = zero.and_then(|zero| {
+            literal_codec::encode(&ty(text), &zero, &literal_codec::SchemaSet::default()).ok()
+        });
+        definition(
+            id,
+            NodeKind::Pure,
+            None,
+            vec![
+                input,
+                PortDescriptor::data_out("result", ty(text), OutputSource::Computed),
+            ],
+        )
+    };
+    vec![
+        value(ids::NUMBER, "core/f64@1", Some(Value::F64(0.0))),
+        value(ids::WHOLE_NUMBER, "core/i64@1", Some(Value::I64(0))),
+        value(
+            ids::TEXT,
+            "core/string@1",
+            Some(Value::Str(std::sync::Arc::new(String::new()))),
+        ),
+        value(ids::TRUE_OR_FALSE, "core/bool@1", Some(Value::Bool(false))),
+        generic(value(ids::VALUE, "$T", None), "T", &[]),
+    ]
 }
 
 fn stream_definitions() -> Vec<NodeDefinition> {

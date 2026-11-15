@@ -2,7 +2,7 @@ use crate::compile::{
     Admission, ConstantFolder, Incoming, admit, binding_error, charge, decode, fault_bytes,
     is_host_read, key, matches_abi, port_type, value_bytes,
 };
-use crate::lazy::Lazy;
+use crate::projection::Projection;
 use crate::*;
 use orange_model::GraphDocument;
 use orange_model::catalog::RegistrySnapshot;
@@ -58,7 +58,7 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     resolver: &'a R,
     options: CompileOptions<'a>,
     incoming: &'a Incoming<'a>,
-    lazy: &'a BTreeMap<NodeId, Lazy>,
+    projections: &'a BTreeMap<NodeId, Projection>,
     folder: ConstantFolder<'a, R>,
     plan: DataPlan,
     completed: BTreeSet<(usize, NodeId)>,
@@ -364,7 +364,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     .map(key),
                 work,
             );
-        } else if calls.lazy(self.lazy, scope, node).is_some() {
+        } else if calls.projection(self.projections, scope, node).is_some() {
             work.push((scope, Task::Choose(node)));
             self.dependencies(node, [key(&sig.ports[0])], work);
         } else {
@@ -382,7 +382,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             Some(FoldedValue::Fault(_)) => SelectionMode::Static(None),
             Some(FoldedValue::Value(value)) => SelectionMode::Static(
                 calls
-                    .lazy(self.lazy, scope, node)
+                    .projection(self.projections, scope, node)
                     .ok_or(CompileError::ValidationIncomplete)?
                     .selected(value)
                     .ok_or(CompileError::KernelContract { node })?,
@@ -477,9 +477,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         } else if constant {
             self.folder.pull_at(scope, node_id)?;
             DataOperation::Constant
-        } else if let Some(lazy) = calls.lazy(self.lazy, scope, node_id) {
-            match lazy {
-                Lazy::Select => {
+        } else if let Some(projection) = calls.projection(self.projections, scope, node_id) {
+            match projection {
+                Projection::Select => {
                     let selected = selection
                         .as_ref()
                         .is_some_and(|s| matches!(s.mode, SelectionMode::Static(_)));
@@ -488,14 +488,20 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                         when_false: if selected { 1 } else { 2 },
                     }
                 }
-                Lazy::And => DataOperation::And,
-                Lazy::Or => DataOperation::Or,
-                Lazy::Coalesce => DataOperation::Coalesce {
+                Projection::And => DataOperation::And,
+                Projection::Or => DataOperation::Or,
+                Projection::Coalesce => DataOperation::Coalesce {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                 },
-                Lazy::Try => DataOperation::Try {
+                Projection::Try => DataOperation::Try {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                 },
+                Projection::Value => DataOperation::Pure(crate::projection::binding(
+                    &inputs_ports,
+                    &output_ports,
+                    false,
+                    crate::projection::ProjectionMode::Value,
+                )),
             }
         } else if is_host_read(&self.plan.snapshot, node) {
             DataOperation::Input
@@ -693,7 +699,7 @@ pub(crate) fn lower_roots(
         resolver,
         options,
         &admission.incoming,
-        &admission.lazy_nodes,
+        &admission.projections,
         calls,
     )?;
     let mut state = Lowering {
@@ -705,7 +711,7 @@ pub(crate) fn lower_roots(
         resolver,
         options,
         incoming: &admission.incoming,
-        lazy: &admission.lazy_nodes,
+        projections: &admission.projections,
         plan: DataPlan {
             zones: vec![],
             snapshot,

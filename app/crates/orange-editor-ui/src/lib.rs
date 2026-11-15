@@ -1231,6 +1231,49 @@ mod tests {
     }
 
     #[test]
+    fn a_value_node_from_the_palette_is_typed_wired_and_run() {
+        let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+        let found = palette(&host, "whole number");
+        let item = found
+            .iter()
+            .flat_map(|(_, items)| items)
+            .find(|item| item.label == "Whole number")
+            .unwrap();
+        assert_eq!(
+            (item.id.as_str(), item.package.as_str()),
+            ("core/whole-number", "")
+        );
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let number = editor.add_node(&mut host, &item.id).unwrap();
+        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let count = editor.declarations().unwrap().variables[0].id.clone();
+        assert!(editor.set_setting(&mut host, set, "/variable", Some(json!(count.unwrap()))));
+        // The card offers a whole-number field for the value.
+        let shown = editor.graph().unwrap().clone();
+        let node = shown.nodes.iter().find(|node| node.id == number).unwrap();
+        let port = node.ports.iter().find(|port| port.id == "value").unwrap();
+        assert_eq!(port.ty.as_deref(), Some("core/i64@1"));
+        assert!(editor.set_input(&mut host, (number, "value"), Some("12")));
+        assert!(editor.connect(&mut host, (number, "result"), (set, "value")));
+        assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
+        assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        editor.run(&mut host);
+        editor.trigger(&host, trigger);
+        let started = Instant::now();
+        while !editor.log().any(|line| line.ends_with("count = 12")) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the typed value ran"
+            );
+            let _ = editor.take_events(&events);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        editor.stop(&mut host);
+    }
+
+    #[test]
     fn declarations_settings_and_types_are_changed_from_the_editor() {
         use orange_host::{Connection, ConnectionScope, VarScope, Variable};
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
