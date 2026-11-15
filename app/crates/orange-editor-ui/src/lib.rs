@@ -908,7 +908,7 @@ impl Editor {
         ui.horizontal(|ui| {
             let _ = ui.selectable_value(&mut self.document_tab, false, "Nodes");
             let _ = ui
-                .selectable_value(&mut self.document_tab, true, "Document")
+                .selectable_value(&mut self.document_tab, true, "Variables")
                 .on_hover_text("The variables and connections of this graph.");
         });
         ui.separator();
