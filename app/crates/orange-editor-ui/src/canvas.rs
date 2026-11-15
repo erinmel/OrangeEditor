@@ -19,6 +19,9 @@ pub const HEADER_HEIGHT: f32 = 34.0;
 pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
 pub const ROW_HEIGHT: f32 = 26.0;
+/// How round a card's corners are, in graph units.
+const CARD_RADIUS: f32 = 8.0;
+
 /// How long a node of a running flow glows after it takes a step.
 const GLOW_SECONDS: f32 = 0.8;
 
@@ -864,6 +867,8 @@ impl Canvas {
         }
 
         let mut glowing = false;
+        // Outlines and badges go over every card, so a later card does not hide them.
+        let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
@@ -888,20 +893,7 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
-            if let Some((at, failed)) = self.activity.get(&node.id).copied() {
-                let age = at.elapsed().as_secs_f32();
-                if age < GLOW_SECONDS {
-                    let color = if failed { colors.error } else { colors.exec };
-                    let strength = 1.0 - age / GLOW_SECONDS;
-                    painter.rect_stroke(
-                        rect.expand(4.0 * zoom),
-                        12.0 * zoom,
-                        Stroke::new(3.0 * zoom.max(0.6), color.gamma_multiply(strength)),
-                        StrokeKind::Outside,
-                    );
-                    glowing = true;
-                }
-            }
+            overlays.push((node.id, rect));
             for port in node.ports.iter().filter(|port| !port.input) {
                 if let (Some(value), Some(at)) = (
                     self.values.get(&(node.id, port.id.clone())),
@@ -919,7 +911,30 @@ impl Canvas {
                     );
                 }
             }
-            if let Some(mark) = self.marks.nodes.get(&node.id) {
+            for (port, slot) in slots {
+                if area.contains_rect(slot)
+                    && let Some(written) = self.control(ui, node, port, slot, response.id)
+                {
+                    done.set_input = Some(written);
+                }
+            }
+        }
+        for (node, rect) in overlays {
+            if let Some((at, failed)) = self.activity.get(&node).copied() {
+                let age = at.elapsed().as_secs_f32();
+                if age < GLOW_SECONDS {
+                    let color = if failed { colors.error } else { colors.exec };
+                    let strength = 1.0 - age / GLOW_SECONDS;
+                    painter.rect_stroke(
+                        rect,
+                        CARD_RADIUS * zoom,
+                        Stroke::new(3.0 * zoom.max(0.6), color.gamma_multiply(strength)),
+                        StrokeKind::Outside,
+                    );
+                    glowing = true;
+                }
+            }
+            if let Some(mark) = self.marks.nodes.get(&node) {
                 draw_mark(
                     ui,
                     &painter,
@@ -927,15 +942,8 @@ impl Canvas {
                     zoom,
                     &colors,
                     mark,
-                    response.id.with(("mark", node.id)),
+                    response.id.with(("mark", node)),
                 );
-            }
-            for (port, slot) in slots {
-                if area.contains_rect(slot)
-                    && let Some(written) = self.control(ui, node, port, slot, response.id)
-                {
-                    done.set_input = Some(written);
-                }
             }
         }
         // A glow fades on its own, so the canvas is drawn again until it has.
@@ -1120,14 +1128,16 @@ fn draw_mark(
     id: egui::Id,
 ) {
     let color = colors.problem(mark.error);
+    // The card's own corners, just outside its edge, so the outline follows the card.
     painter.rect_stroke(
-        rect.expand(2.0 * zoom),
-        10.0 * zoom,
+        rect,
+        CARD_RADIUS * zoom,
         Stroke::new(2.0 * zoom.max(0.6), color),
         StrokeKind::Outside,
     );
-    let radius = 8.0 * zoom.max(0.75);
-    let center = Pos2::new(rect.max.x - radius * 0.4, rect.min.y + radius * 0.4);
+    // The badge sits on the top-right corner, clear of the title and buttons.
+    let radius = 7.0 * zoom.max(0.75);
+    let center = rect.right_top();
     painter.circle_filled(center, radius, color);
     let _ = painter.text(
         center,
@@ -1156,7 +1166,7 @@ fn draw_node<'a>(
     (selected, fire, controls): (bool, bool, bool),
     canvas: egui::Id,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
-    let radius = 8.0 * zoom;
+    let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
     // The header carries the node family's color: a tint, and a line along its foot,
