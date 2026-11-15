@@ -109,7 +109,7 @@ impl Host {
                 .into_iter()
                 .map(|(node, at)| edit::place_command(node, Some(at))),
         );
-        let _ = draft.commit(std::mem::take(&mut paste.commands))?;
+        let _ = draft.commit(self.store.current(), std::mem::take(&mut paste.commands))?;
         Ok(fresh)
     }
 }

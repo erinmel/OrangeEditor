@@ -838,3 +838,57 @@ fn every_suggested_kind_takes_the_wire_on_the_input_it_names() {
             .any(|taker| taker.definition == "core/set-variable")
     );
 }
+
+#[test]
+fn whole_numbers_compared_by_greater_run_into_a_variable() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let text = json!({"format": "orange.graph", "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-0000000000c9", "revision": 1,
+        "package_lock": [], "type_lock": [], "events": [], "connections": [],
+        "signatures": {}, "functions": [], "exports": [], "editor": {},
+        "variables": [{"id": id(100), "name": "bigger", "type": "core/bool@1",
+            "scope": "run", "persistent": false, "conflict": "reject"}],
+        "nodes": [], "edges": []})
+    .to_string();
+    let mut draft = host.draft(&text).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let set = host
+        .add_node(&mut draft, "core/set-variable", [600.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, set, &json!({"variable": id(100)}))
+            .unwrap()
+    );
+    let a = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 200.0])
+        .unwrap();
+    let b = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 300.0])
+        .unwrap();
+    let greater = host
+        .add_node(&mut draft, "org.orange.math/greater", [300.0, 200.0])
+        .unwrap();
+    assert!(host.set_input(&mut draft, (a, "value"), Some("5")).unwrap());
+    assert!(host.set_input(&mut draft, (b, "value"), Some("3")).unwrap());
+    // Greater is generic: wiring whole numbers into it settles its type, and its saved
+    // signature must follow in the same edit, or the graph does not run.
+    for (from, to) in [
+        ((a, "result"), (greater, "a")),
+        ((b, "result"), (greater, "b")),
+        ((greater, "result"), (set, "value")),
+        ((trigger, "then"), (set, "in")),
+    ] {
+        assert!(host.connect(&mut draft, from, to).unwrap());
+    }
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    let value = |host: &Host| {
+        host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
+            .unwrap()
+    };
+    until("the variable", || value(&host).is_some());
+    assert_eq!(value(&host), Some(Value::Bool(true)));
+}
