@@ -715,8 +715,29 @@ impl Editor {
                 continue;
             }
             let said = lines(&event, &document.names);
-            if matches!(event.kind, FlowEvent::Finished) {
-                document.flow = None;
+            // The canvas follows the run: a node glows as it takes a step, and the
+            // latest value on an output shows beside it.
+            match &event.kind {
+                FlowEvent::Node(step) => {
+                    let failed = step.fault.is_some()
+                        || matches!(
+                            step.outcome,
+                            orange_host::ControlOutcome::Failed
+                                | orange_host::ControlOutcome::TimedOut
+                        );
+                    self.canvas.pulse(step.node, failed);
+                }
+                FlowEvent::Ports(values) => {
+                    for (node, port, value) in values {
+                        self.canvas
+                            .show_value(*node, port.to_string(), orange_host::plain(value));
+                    }
+                }
+                FlowEvent::Finished => {
+                    document.flow = None;
+                    self.canvas.clear_run();
+                }
+                _ => {}
             }
             for line in said {
                 self.say(line);
@@ -1283,6 +1304,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(editor.log().any(|line| line.ends_with("go: done")));
+        // The canvas saw the trigger take its step.
+        assert_eq!(editor.canvas().last_step(go), Some(false));
         // The running document draws, with more on screen than the empty editor.
         assert!(draw(&mut editor, &mut host) > 0);
 

@@ -19,6 +19,9 @@ pub const HEADER_HEIGHT: f32 = 34.0;
 pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
 pub const ROW_HEIGHT: f32 = 26.0;
+/// How long a node of a running flow glows after it takes a step.
+const GLOW_SECONDS: f32 = 0.8;
+
 /// Space under the last row.
 pub const FOOTER_HEIGHT: f32 = 8.0;
 /// Distance between the columns and rows of an automatic layout.
@@ -199,6 +202,10 @@ pub struct Canvas {
     wiring: Option<Wiring>,
     /// Problems drawn on nodes and wires.
     marks: Marks,
+    /// When each node of a running flow last took a step, and whether it failed.
+    activity: std::collections::HashMap<NodeId, (std::time::Instant, bool)>,
+    /// The latest value a running flow put on each output, as a person reads it.
+    values: std::collections::HashMap<(NodeId, String), String>,
     /// The size of the canvas when it was last shown, in points.
     size: Vec2,
 }
@@ -218,6 +225,8 @@ impl Default for Canvas {
             fit: true,
             wiring: None,
             marks: Marks::default(),
+            activity: std::collections::HashMap::new(),
+            values: std::collections::HashMap::new(),
             size: Vec2::new(800.0, 600.0),
         }
     }
@@ -529,6 +538,38 @@ impl Canvas {
         &self.marks
     }
 
+    /// A running flow's node took a step: its card glows for a moment, in the error
+    /// color when the step failed.
+    pub fn pulse(&mut self, node: NodeId, failed: bool) {
+        let _ = self
+            .activity
+            .insert(node, (std::time::Instant::now(), failed));
+    }
+
+    /// A running flow put `value` (as a person reads it) on an output; it shows beside
+    /// the port until another comes or the flow ends.
+    pub fn show_value(&mut self, node: NodeId, port: String, value: String) {
+        let _ = self.values.insert((node, port), value);
+    }
+
+    /// Whether a running flow's node has taken a step, and whether that step failed.
+    pub fn last_step(&self, node: NodeId) -> Option<bool> {
+        self.activity.get(&node).map(|(_, failed)| *failed)
+    }
+
+    /// The value shown beside an output, if any.
+    pub fn shown_value(&self, node: NodeId, port: &str) -> Option<&str> {
+        self.values
+            .get(&(node, port.to_owned()))
+            .map(String::as_str)
+    }
+
+    /// The flow ended: no more glow or values from it.
+    pub fn clear_run(&mut self) {
+        self.activity.clear();
+        self.values.clear();
+    }
+
     /// The problems to draw on nodes and wires from now on.
     pub fn set_marks(&mut self, marks: Marks) {
         self.marks = marks;
@@ -822,6 +863,7 @@ impl Canvas {
             ));
         }
 
+        let mut glowing = false;
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
@@ -846,6 +888,37 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            if let Some((at, failed)) = self.activity.get(&node.id).copied() {
+                let age = at.elapsed().as_secs_f32();
+                if age < GLOW_SECONDS {
+                    let color = if failed { colors.error } else { colors.exec };
+                    let strength = 1.0 - age / GLOW_SECONDS;
+                    painter.rect_stroke(
+                        rect.expand(4.0 * zoom),
+                        12.0 * zoom,
+                        Stroke::new(3.0 * zoom.max(0.6), color.gamma_multiply(strength)),
+                        StrokeKind::Outside,
+                    );
+                    glowing = true;
+                }
+            }
+            for port in node.ports.iter().filter(|port| !port.input) {
+                if let (Some(value), Some(at)) = (
+                    self.values.get(&(node.id, port.id.clone())),
+                    geometry
+                        .port(node.id, &port.id, false)
+                        .map(|found| to_screen(place + found.offset)),
+                ) {
+                    let shown: String = value.chars().take(24).collect();
+                    let _ = painter.text(
+                        at + Vec2::new(8.0 * zoom, -9.0 * zoom),
+                        egui::Align2::LEFT_CENTER,
+                        shown,
+                        egui::FontId::monospace(10.0 * zoom.max(0.7)),
+                        colors.weak,
+                    );
+                }
+            }
             if let Some(mark) = self.marks.nodes.get(&node.id) {
                 draw_mark(
                     ui,
@@ -864,6 +937,10 @@ impl Canvas {
                     done.set_input = Some(written);
                 }
             }
+        }
+        // A glow fades on its own, so the canvas is drawn again until it has.
+        if glowing {
+            ui.ctx().request_repaint();
         }
         // The box being drawn to select.
         if let (Some(start), Some(at)) = (self.boxing, self.pointer) {
