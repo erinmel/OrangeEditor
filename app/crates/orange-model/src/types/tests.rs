@@ -154,6 +154,32 @@ fn registers_nominal_schemas_and_reuses_them_for_literal_codec() {
         )
         .unwrap();
     let registry = builder.build().unwrap();
+    // Record and enum nodes are offered exactly the package's nominal types.
+    let listed = registry.nominal_types();
+    let summary: Vec<_> = listed
+        .iter()
+        .map(|ty| {
+            (
+                ty.name.as_str(),
+                ty.record,
+                ty.members.clone(),
+                ty.with_payload.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("org.example/point@1", true, vec!["x".to_owned()], vec![]),
+            (
+                "org.example/state@2",
+                false,
+                vec!["ready".to_owned()],
+                vec!["ready".to_owned()]
+            ),
+        ]
+    );
+    assert!(TypeRegistry::core().nominal_types().is_empty());
 
     let point_ty = expr("org.example/point@1");
     let point = decode(

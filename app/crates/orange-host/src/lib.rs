@@ -72,7 +72,7 @@ pub use documents::{
     discard_autosave, publish_function, recover_document, save_document,
 };
 pub use draft::{Draft, MAX_UNDO};
-pub use edit::{PortEnd, new_document};
+pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use names::{Names, describe, lines, literal, plain, said};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
@@ -99,7 +99,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
 pub use state::StoredVariable;
-pub use view::{GraphView, NodeView, PortView, TypeChoice, WireView};
+pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

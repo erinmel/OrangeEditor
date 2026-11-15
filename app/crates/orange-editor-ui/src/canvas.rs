@@ -1080,6 +1080,7 @@ mod tests {
             name: format!("node {n}"),
             kind: "Kind".into(),
             definition: "org.example/kind".into(),
+            detail: None,
             entry: n == 1,
             ports,
             position: None,
@@ -1087,6 +1088,7 @@ mod tests {
             schema: None,
             references: Vec::new(),
             types: Vec::new(),
+            variadic: Vec::new(),
         }
     }
     fn wire(from: u32, to: u32) -> WireView {

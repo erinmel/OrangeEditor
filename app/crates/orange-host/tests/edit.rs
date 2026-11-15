@@ -1,6 +1,6 @@
 //! Building and changing a document through the host's edit operations alone, as an
 //! editor does: one draft, edited in place, with its problems following the edits.
-use orange_host::{Draft, Host, HostError, HostOptions, NodeId, Value};
+use orange_host::{Draft, Host, HostError, HostOptions, NEW_WHILE_BOUND, NodeId, Value};
 use orange_testkit::{id, until};
 use serde_json::{Value as Json, json};
 
@@ -608,4 +608,87 @@ fn a_wired_value_node_passes_on_what_reaches_it() {
         run_once(&mut host, &draft, trigger, Some(Value::I64(9))),
         Some(Value::I64(9))
     );
+}
+
+#[test]
+fn loops_and_forks_are_shown_once_and_start_valid_with_ports_added_and_taken_off() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let fork = host
+        .add_node(&mut draft, "core/fork", [300.0, 0.0])
+        .unwrap();
+    let sequence = host
+        .add_node(&mut draft, "core/sequence", [300.0, 200.0])
+        .unwrap();
+    let looped = host
+        .add_node(&mut draft, "core/while", [300.0, 400.0])
+        .unwrap();
+    let set = host
+        .add_node(&mut draft, "core/set-variable", [600.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, set, &json!({"variable": id(100)}))
+            .unwrap()
+    );
+    let ports = |draft: &Draft, node: NodeId| -> Vec<String> {
+        let view = host.draft_view(draft).unwrap();
+        let node = view.nodes.iter().find(|found| found.id == node).unwrap();
+        node.ports
+            .iter()
+            .map(|port| format!("{}{}", if port.input { "<" } else { ">" }, port.id))
+            .collect()
+    };
+    // A port the kind both implies and declares is shown once.
+    assert_eq!(
+        ports(&draft, looped),
+        ["<in", "<condition", ">body", ">completed"]
+    );
+    // Variadic ports start with as many instances as they need.
+    assert_eq!(ports(&draft, fork), ["<in", ">completed", ">branch#0"]);
+    assert_eq!(ports(&draft, sequence), ["<in", ">then#0", ">then#1"]);
+    let view = host.draft_view(&draft).unwrap();
+    let node = view.nodes.iter().find(|found| found.id == looped).unwrap();
+    assert_eq!(node.settings["max_iterations"], NEW_WHILE_BOUND);
+    assert_eq!(
+        node.schema.as_ref().unwrap()["required"][0],
+        "max_iterations"
+    );
+    let set_view = view.nodes.iter().find(|found| found.id == set).unwrap();
+    assert_eq!(set_view.detail.as_deref(), Some("count"));
+    assert!(
+        host.set_input(&mut draft, (set, "value"), Some("1"))
+            .unwrap()
+    );
+
+    // Another branch is added, wired, and taken off with its wire.
+    let added = host.add_port(&mut draft, fork, "branch").unwrap();
+    assert_eq!(added, "branch#1");
+    assert_eq!(
+        ports(&draft, fork),
+        ["<in", ">completed", ">branch#0", ">branch#1"]
+    );
+    assert!(
+        host.connect(&mut draft, (trigger, "then"), (fork, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (fork, "branch#1"), (set, "in"))
+            .unwrap()
+    );
+    assert!(host.problems(&mut draft).unwrap().iter().all(|problem| {
+        problem.subject.node != Some(fork) && problem.subject.node != Some(set)
+    }));
+    assert!(host.remove_port(&mut draft, (fork, "branch#1")).unwrap());
+    assert_eq!(ports(&draft, fork), ["<in", ">completed", ">branch#0"]);
+    assert!(host.draft_view(&draft).unwrap().wires.len() == 1);
+    // The fewest a port may have stay, and a plain port is not variadic.
+    assert!(host.remove_port(&mut draft, (fork, "branch#0")).is_err());
+    assert!(host.add_port(&mut draft, set, "value").is_err());
+    // Undo takes back one port at a time.
+    assert!(draft.undo());
+    assert_eq!(ports(&draft, fork).len(), 4);
+    let _ = same_problems(&host, &mut draft);
 }

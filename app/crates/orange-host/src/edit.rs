@@ -7,9 +7,12 @@
 use super::*;
 use draft::refused;
 use orange_model::binding::{NewNode, new_node_edit};
+use orange_model::catalog::{NominalAccess, Ports, RegistrySnapshot};
+use orange_model::document::ConfigValue;
 use orange_model::document::{
     ActivationPolicy, BodyRef, Edge, NodeInstance, NodeKind, PortRef, ProviderBinding,
 };
+use orange_model::id::{PortId, PortKey};
 use orange_model::{DocCommand, LayoutCommand};
 use serde_json::{Value as Json, json};
 
@@ -46,6 +49,108 @@ fn port_ref(end: PortEnd<'_>) -> Result<PortRef, HostError> {
 pub(crate) fn default_activation() -> Json {
     json!({"mode": "queue", "capacity": 16, "overflow": "fault", "on_fault": "continue",
         "order": 0})
+}
+
+/// The bound a new while loop starts with, so it is valid until a person changes it.
+pub const NEW_WHILE_BOUND: u64 = 1000;
+
+/// The settings a new node of `found` starts with: a while loop's bound, and the first
+/// registered type (and member) a record or enum node can name. A record or enum
+/// node with no type to name cannot be added, and the error says so.
+fn new_config(
+    found: &NodeDefinition,
+    registry: &RegistrySnapshot,
+) -> Result<ConfigValue, HostError> {
+    let mut config = ConfigValue::new();
+    if found.definition.id.as_str() == "core/while" {
+        let _ = config.insert("max_iterations".to_owned(), json!(NEW_WHILE_BOUND));
+    }
+    if let Ports::Nominal(access) = found.ports {
+        let record = matches!(
+            access,
+            NominalAccess::MakeRecord | NominalAccess::GetField | NominalAccess::SetField
+        );
+        let choices = view::nominal_choices(access, registry);
+        let Some((ty, members)) = choices.first() else {
+            return Err(HostError::Document(format!(
+                "`{}` names {} type, and no active package declares one",
+                found.definition.id,
+                if record { "a record" } else { "an enum" }
+            )));
+        };
+        let _ = config.insert("type".to_owned(), json!(ty));
+        if let (Some(member), Some(first)) = (view::nominal_member(access), members.first()) {
+            let _ = config.insert(member.to_owned(), json!(first));
+        }
+    }
+    Ok(config)
+}
+
+impl Host {
+    /// Adds an instance of a variadic port (such as another branch of a fork) after
+    /// the node's last one. Returns its name, such as `branch#2`.
+    pub fn add_port(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        port: &str,
+    ) -> Result<String, HostError> {
+        let view = self
+            .node_view(draft.document(), node)
+            .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
+        let found = view
+            .variadic
+            .iter()
+            .find(|variadic| variadic.port == port)
+            .ok_or_else(|| {
+                HostError::Document(format!("the node has no variadic port `{port}`"))
+            })?;
+        if found.max.is_some_and(|max| found.count >= max) {
+            return Err(HostError::Document(format!(
+                "`{port}` has as many instances as it may"
+            )));
+        }
+        let id: PortId = port
+            .parse()
+            .map_err(|_| HostError::Document(format!("`{port}` is not a port name")))?;
+        let next = draft
+            .document()
+            .node(node)
+            .and_then(|instance| instance.variadic.get(&id))
+            .map_or(0, |state| state.next);
+        let _ = draft.commit([DocCommand::InsertVariadic {
+            node,
+            port: id.clone(),
+            at: found.count,
+        }])?;
+        Ok(PortKey::new(id, Some(next)).to_string())
+    }
+
+    /// Removes one instance of a variadic port (`branch#1`) with its wires and value.
+    /// The fewest instances the port may have stay.
+    pub fn remove_port(&self, draft: &mut Draft, at: PortEnd<'_>) -> Result<bool, HostError> {
+        let key: PortKey =
+            at.1.parse()
+                .map_err(|_| HostError::Document(format!("`{}` is not a port name", at.1)))?;
+        let view = self
+            .node_view(draft.document(), at.0)
+            .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
+        let found = view
+            .variadic
+            .iter()
+            .find(|variadic| variadic.port == key.port().as_str() && key.instance().is_some())
+            .ok_or_else(|| HostError::Document(format!("`{}` is not an added port", at.1)))?;
+        if found.count <= found.min {
+            return Err(HostError::Document(format!(
+                "`{}` needs at least {} instance(s)",
+                found.port, found.min
+            )));
+        }
+        draft.commit([DocCommand::RemoveVariadic {
+            node: at.0,
+            port: key,
+        }])
+    }
 }
 
 /// The layout command that puts `node` at `at`, in whole units so a saved file stays
@@ -89,6 +194,7 @@ impl Host {
             .definition(&definition)
             .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
         let entry = found.kind == NodeKind::Entry;
+        let config = new_config(found, registry)?;
         let mut commands = if definition.id.is_core() {
             vec![DocCommand::AddNode {
                 body: BodyRef::Root,
@@ -96,7 +202,7 @@ impl Host {
                     id: node,
                     definition,
                     config_version: found.config_version,
-                    config: Default::default(),
+                    config,
                     type_args: Default::default(),
                     type_pins: Default::default(),
                     provider: None::<ProviderBinding>,
@@ -108,10 +214,26 @@ impl Host {
                 },
             }]
         } else {
-            new_node_edit(draft.document(), registry, NewNode::new(node, definition))
+            let mut new = NewNode::new(node, definition);
+            new.config = config;
+            new_node_edit(draft.document(), registry, new)
                 .map_err(|error| refused(&error))?
                 .commands
         };
+        // A variadic port starts with the fewest instances it may have, so a new fork
+        // has its branch and a new sequence its two steps.
+        if let Ports::Declared(ports) = &found.ports {
+            for port in ports {
+                let least = port.variadic.map_or(0, |bounds| bounds.min);
+                for at in 0..least {
+                    commands.push(DocCommand::InsertVariadic {
+                        node,
+                        port: port.port_id.clone(),
+                        at: usize::from(at),
+                    });
+                }
+            }
+        }
         if entry {
             let policy: ActivationPolicy =
                 serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;
