@@ -27,6 +27,10 @@ const GRID: f32 = 24.0;
 const PORT_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.75;
+/// Space between a card's edge and what is inside it.
+const CARD_PADDING: f32 = 12.0;
+/// Height of a field or control in a row of a card.
+const FIELD_HEIGHT: f32 = 20.0;
 /// Width of the control for an input's value on a card.
 const CONTROL_WIDTH: f32 = 96.0;
 
@@ -933,7 +937,7 @@ fn draw_node<'a>(
         let reserved = if fire { 80.0 * zoom } else { 8.0 * zoom };
         let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
-        let left = header.left_center() + Vec2::new(14.0 * zoom, 0.0);
+        let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
         let named = header_painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
         // What the node is set to (its variable), else what kind of node it is when its
         // name says something else.
@@ -942,8 +946,9 @@ fn draw_node<'a>(
             .as_deref()
             .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
         if let Some(aside) = aside {
+            // What it is set to reads as text; what kind it is, quieter.
             let color = if node.detail.is_some() {
-                colors.exec
+                colors.text.gamma_multiply(0.8)
             } else {
                 colors.weak
             };
@@ -988,7 +993,26 @@ fn draw_node<'a>(
         }
     }
 
-    let (mut inputs, mut outputs) = (0u16, 0u16);
+    // Where an input's value may reach: the middle of the card when an output shares
+    // its row, else the card's inner right edge.
+    let shared_rows = node.ports.iter().filter(|port| !port.input).count();
+    // The values of a card's inputs start in one column, after its longest input name,
+    // but never past the middle of the card.
+    let names = FontId::proportional(12.5 * zoom);
+    let longest = node
+        .ports
+        .iter()
+        .filter(|port| port.input && !port.exec && readable)
+        .map(|port| {
+            painter
+                .layout_no_wrap(crate::port_label(&port.id), names.clone(), colors.text)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let value_start =
+        (rect.min.x + (CARD_PADDING + 10.0) * zoom + longest).min(rect.center().x - 10.0 * zoom);
+    let (mut inputs, mut outputs) = (0usize, 0usize);
     let mut slots = Vec::new();
     for port in &node.ports {
         let row = if port.input {
@@ -996,49 +1020,72 @@ fn draw_node<'a>(
         } else {
             &mut outputs
         };
-        let y = rect.min.y + (HEADER_HEIGHT + (f32::from(*row) + 0.5) * ROW_HEIGHT) * zoom;
+        let index = *row;
         *row += 1;
+        #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
+        let y = rect.min.y + (HEADER_HEIGHT + (index as f32 + 0.5) * ROW_HEIGHT) * zoom;
         let x = if port.input { rect.min.x } else { rect.max.x };
-        // Toggles and numbers are drawn by their control instead of a pill.
+        let value_end = if index < shared_rows {
+            rect.center().x + 6.0 * zoom
+        } else {
+            rect.max.x - CARD_PADDING * zoom
+        };
+        // Toggles and numbers are drawn by their control instead of a field.
         let control = Control::of(port).filter(|_| controls && readable);
-        let pill = !matches!(
-            control,
-            Some(Control::Toggle | Control::Whole | Control::Number)
-        );
-        let shown = (pill, control.is_none());
-        if let Some(label) = draw_port(
-            painter,
-            port,
-            Pos2::new(x, y),
-            zoom,
-            colors,
+        let style = PortStyle {
             readable,
-            shown,
-        ) && control.is_some()
+            field: !matches!(
+                control,
+                Some(Control::Toggle | Control::Whole | Control::Number)
+            ),
+            hinted: control.is_none(),
+            value_start,
+            value_end,
+        };
+        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, style)
+            && let Some(control) = control
         {
-            let left = label.max.x + 8.0 * zoom;
-            let height = ROW_HEIGHT * zoom - 6.0;
-            let slot = Rect::from_min_size(
-                Pos2::new(left, y - height / 2.0),
-                Vec2::new(CONTROL_WIDTH * zoom, height),
-            );
+            let height = FIELD_HEIGHT * zoom;
+            let left = (label.max.x + 8.0 * zoom).max(value_start);
+            let width = match control {
+                Control::Toggle => height,
+                Control::Whole | Control::Number => {
+                    (value_end - left).clamp(36.0 * zoom, CONTROL_WIDTH * zoom)
+                }
+                Control::Text => (value_end - left).max(36.0 * zoom),
+            };
+            let slot =
+                Rect::from_min_size(Pos2::new(left, y - height / 2.0), Vec2::new(width, height));
             slots.push((port, slot));
         }
     }
     (pressed, slots)
 }
 
-/// Draws a port's dot and name, and the value written on an input as a pill when
-/// `pill` is set, and a short type beside a value port nothing feeds when `hinted`.
-/// Returns where an input's name is.
+/// How one port of a card is drawn.
+#[derive(Debug, Clone, Copy)]
+struct PortStyle {
+    /// Big enough to read: names and values are drawn.
+    readable: bool,
+    /// An input's value is drawn as a field (no control draws it).
+    field: bool,
+    /// A short type is shown beside a value port nothing feeds.
+    hinted: bool,
+    /// Where an input's value starts, unless its name is longer.
+    value_start: f32,
+    /// The farthest right an input's value reaches.
+    value_end: f32,
+}
+
+/// Draws a port's dot and name, an input's value as a field, and a short type
+/// beside a value port nothing feeds. Returns where an input's name is.
 fn draw_port(
     painter: &egui::Painter,
     port: &PortView,
     at: Pos2,
     zoom: f32,
     colors: &Palette,
-    readable: bool,
-    (pill, hinted): (bool, bool),
+    style: PortStyle,
 ) -> Option<Rect> {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
@@ -1054,22 +1101,23 @@ fn draw_port(
         painter.circle_filled(at, radius, colors.card);
         painter.circle_stroke(at, radius, Stroke::new(1.5, color));
     }
-    if !readable {
+    if !style.readable {
         return None;
     }
     let font = FontId::proportional(12.5 * zoom);
     let hint = FontId::proportional(10.5 * zoom);
-    let gap = Vec2::new(12.0 * zoom, 0.0);
+    let gap = CARD_PADDING * zoom;
     let name = step_label(port).unwrap_or_else(|| crate::port_label(&port.id));
     if port.exec {
         // Steps read as on a flow chart: the way in is a tinted row inside the card,
         // the ways on are named with an arrow toward their dot.
-        let arrow = 12.0 * zoom;
+        let arrow = 11.0 * zoom;
         if port.input {
-            let text = painter.layout_no_wrap(name, font, color);
+            let text = painter.layout_no_wrap(name, font, colors.text);
+            let height = FIELD_HEIGHT * zoom;
             let row = Rect::from_min_size(
-                Pos2::new(at.x + 8.0 * zoom, at.y - ROW_HEIGHT * zoom * 0.4),
-                Vec2::new(text.size().x + arrow + 22.0 * zoom, ROW_HEIGHT * zoom * 0.8),
+                Pos2::new(at.x + gap - 4.0 * zoom, at.y - height / 2.0),
+                Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
             );
             painter.rect_filled(row, 5.0 * zoom, color.gamma_multiply(0.16));
             draw_arrow(
@@ -1080,62 +1128,32 @@ fn draw_port(
                 zoom,
             );
             let place = Pos2::new(row.min.x + 13.0 * zoom + arrow, at.y - text.size().y / 2.0);
-            painter.galley(place, text, color);
+            painter.galley(place, text, colors.text);
             return Some(row);
         }
-        let start = at.x - gap.x - arrow;
+        let start = at.x - gap - arrow;
         draw_arrow(painter, Pos2::new(start, at.y), arrow, color, zoom);
         let _ = painter.text(
             Pos2::new(start - 6.0 * zoom, at.y),
             Align2::RIGHT_CENTER,
             &name,
             font,
-            color,
+            colors.text,
         );
         return None;
     }
     // What a value port takes or gives, when nothing on the card says it already.
-    let type_hint =
-        (hinted && !port.exec && !port.connected && !(port.input && port.value.is_some()))
-            .then(|| port.ty.as_deref().map(short_type))
-            .flatten();
-    if port.input {
+    let type_hint = (style.hinted && !port.connected && !(port.input && port.value.is_some()))
+        .then(|| port.ty.as_deref().map(short_type))
+        .flatten();
+    if !port.input {
         let label = painter.text(
-            at + gap,
-            Align2::LEFT_CENTER,
+            at - Vec2::new(gap, 0.0),
+            Align2::RIGHT_CENTER,
             &name,
-            font.clone(),
+            font,
             colors.text,
         );
-        if let Some(ty) = type_hint.filter(|_| pill) {
-            let _ = painter.text(
-                Pos2::new(label.max.x + 6.0 * zoom, at.y),
-                Align2::LEFT_CENTER,
-                ty,
-                hint,
-                colors.weak,
-            );
-        }
-        // The value written on an input that no wire feeds.
-        if let Some(value) = port.value.as_deref().filter(|_| !port.connected && pill) {
-            let shown: String = value.chars().take(18).collect();
-            let shown = if shown.len() < value.len() {
-                format!("{shown}…")
-            } else {
-                shown
-            };
-            let from = Pos2::new(label.max.x + 8.0 * zoom, at.y);
-            let text = painter.layout_no_wrap(shown, font, colors.text);
-            let pill = Rect::from_min_size(
-                from - Vec2::new(0.0, text.size().y / 2.0 + 2.0 * zoom),
-                text.size() + Vec2::new(10.0, 4.0) * zoom,
-            );
-            painter.rect_filled(pill, 4.0 * zoom, colors.header);
-            painter.galley(pill.min + Vec2::new(5.0, 2.0) * zoom, text, colors.text);
-        }
-        Some(label)
-    } else {
-        let label = painter.text(at - gap, Align2::RIGHT_CENTER, &name, font, colors.text);
         if let Some(ty) = type_hint {
             let _ = painter.text(
                 Pos2::new(label.min.x - 6.0 * zoom, at.y),
@@ -1145,8 +1163,68 @@ fn draw_port(
                 colors.weak,
             );
         }
-        None
+        return None;
     }
+    let label = painter.text(
+        at + Vec2::new(gap, 0.0),
+        Align2::LEFT_CENTER,
+        &name,
+        font.clone(),
+        colors.text,
+    );
+    if let Some(ty) = type_hint.filter(|_| style.field) {
+        let _ = painter.text(
+            Pos2::new(label.max.x + 6.0 * zoom, at.y),
+            Align2::LEFT_CENTER,
+            ty,
+            hint,
+            colors.weak,
+        );
+    }
+    // The value written on an input that no wire feeds, in a field that ends where
+    // the row's value may reach, shortened with an ellipsis when it is longer.
+    // An input that can be typed into and has no value shows an empty field.
+    let shown = match port.value.as_deref() {
+        Some(value) => Some((field_text(value), colors.text)),
+        None if !style.hinted => Some(("—".to_owned(), colors.weak)),
+        None => None,
+    };
+    if let Some((value, ink)) = shown.filter(|_| !port.connected && style.field) {
+        let left = (label.max.x + 8.0 * zoom).max(style.value_start);
+        let room = style.value_end - left;
+        let pad = 6.0 * zoom;
+        if room > 3.0 * pad {
+            let mut job = egui::text::LayoutJob::simple_singleline(value, font, ink);
+            job.wrap = egui::text::TextWrapping {
+                max_width: room - 2.0 * pad,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            let text = painter.layout_job(job);
+            let height = FIELD_HEIGHT * zoom;
+            let field = Rect::from_min_size(
+                Pos2::new(left, at.y - height / 2.0),
+                Vec2::new(text.size().x + 2.0 * pad, height),
+            );
+            painter.rect_filled(field, 4.0 * zoom, colors.background);
+            painter.rect_stroke(
+                field,
+                4.0 * zoom,
+                Stroke::new(1.0, colors.outline),
+                StrokeKind::Inside,
+            );
+            let place = Pos2::new(field.min.x + pad, at.y - text.size().y / 2.0);
+            painter.galley(place, text, ink);
+        }
+    }
+    Some(label)
+}
+
+/// A value as its field on a card shows it: text without its quotes, others as
+/// written.
+fn field_text(value: &str) -> String {
+    serde_json::from_str::<String>(value).unwrap_or_else(|_| value.to_owned())
 }
 
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
