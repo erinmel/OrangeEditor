@@ -153,7 +153,56 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         });
     }
     definitions.extend(zone_definitions());
+    definitions.extend(value_definitions());
     definitions
+}
+
+/// Value nodes (11 §8.4): pure nodes whose `value` input holds the constant a person
+/// types, published unchanged on `result`. Four name a common type and default to its
+/// zero; `core/value` is generic, for any type with a literal form.
+fn value_definitions() -> Vec<NodeDefinition> {
+    use crate::document::literal::{Literal, LiteralPayload};
+    let value = |id, text: &'static str, default: Option<Literal>| {
+        let mut input = PortDescriptor::data_in("value", ty(text));
+        input.default = default;
+        definition(
+            id,
+            NodeKind::Pure,
+            None,
+            vec![
+                input,
+                PortDescriptor::data_out("result", ty(text), OutputSource::Computed),
+            ],
+        )
+    };
+    let zero = |text, json| Some(Literal::value(ty(text), json));
+    vec![
+        value(
+            ids::NUMBER,
+            "core/f64@1",
+            Some(Literal {
+                ty: ty("core/f64@1"),
+                payload: LiteralPayload::Bits(format!("{:016x}", 0f64.to_bits())),
+                display: Some("0".to_owned()),
+            }),
+        ),
+        value(
+            ids::WHOLE_NUMBER,
+            "core/i64@1",
+            zero("core/i64@1", serde_json::json!("0")),
+        ),
+        value(
+            ids::TEXT,
+            "core/string@1",
+            zero("core/string@1", serde_json::json!("")),
+        ),
+        value(
+            ids::TRUE_OR_FALSE,
+            "core/bool@1",
+            zero("core/bool@1", serde_json::json!(false)),
+        ),
+        generic(value(ids::VALUE, "$T", None), "T", &[]),
+    ]
 }
 
 fn stream_definitions() -> Vec<NodeDefinition> {

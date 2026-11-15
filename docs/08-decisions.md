@@ -857,3 +857,15 @@ admission; function retirement releases the callee's error charge. This complete
 the ownership correction for these paths without changing error identity, graph
 semantics, public Rust signatures, WIT or dependencies. Quota refusals remain
 infrastructure errors and never become an ordinary error arm or partial publication.
+
+## ADR-25 — Value nodes hold constants on their input
+
+**Decision (2026-11-15; FR-104):** a graph holds a plain value in a value node: a pure language intrinsic with input `value` and output `result` of one type. There is one node per common type, `core/number` (f64), `core/whole-number` (i64), `core/text` (string) and `core/true-or-false` (bool), each defaulting to its zero, plus one generic `core/value` (`T`) for any other type with a literal form, typed by a pin or its wires. The palette names them from their IDs ("Number", "Whole number", "Text", "True or false", "Value").
+
+**Why one per common type and a generic one:** a person picking "Number" should not first choose a type, and a fixed type gives the card its number field, checkbox or text field and a sensible zero at once. Records, enums, durations and lists are reached through the generic node and the existing type chooser rather than one node each.
+
+**Why the constant is an input literal, not config:** input literals already have a canonical codec, validation, diagnostics, card controls and folding (11 §4.4). Keeping the value there adds no saved field, literal form or diagnostic, and the same edit operation types a value on any input. The cost is that `value` can also be wired; the node then forwards what reaches it, which is harmless and matches how literals are shadowed elsewhere.
+
+**Lowering:** the compiler treats value nodes with the language-owned projection already used by Select and Coalesce. A literal folds to a compile-time constant; a wired input forwards without a provider binding, so packages neither implement nor replace them (11 §16). Runtime and host need no new operation. The host view now shows a generic port's settled type (pin, else inferred) so a value can be typed on it.
+
+**Contracts:** 11 §8.4; FR-104. Verification is the focused `orange-host` and `orange-editor-ui` tests named in FR-104.

@@ -496,6 +496,12 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 Lazy::Try => DataOperation::Try {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                 },
+                Lazy::Value => DataOperation::Pure(crate::lazy::binding(
+                    inputs_ports.iter().map(|p| key(p)).collect(),
+                    output_ports.iter().map(|p| key(p)).collect(),
+                    false,
+                    crate::lazy::ProjectionMode::Value,
+                )),
             }
         } else if is_host_read(&self.plan.snapshot, node) {
             DataOperation::Input
