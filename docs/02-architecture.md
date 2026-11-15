@@ -143,8 +143,8 @@ naming the variable) open the Document form, and a variable chooser in the prope
 panel has New variable…, a short form whose declaration the node then names
 (`Editor::declare_variable_for`). The properties panel lays fields out as label and
 field rows in one label column that narrows with the panel, writes a field when typing
-ends, and adds or takes off variadic instances. Cards show a family color band, the
-detail beside the title, port names with variadic instances counted from one, short
+ends, and adds or takes off variadic instances. Cards tint their header with the node family's color, show the
+detail beside the title, every port as a dot on the edge (a step port is green, with an arrow beside its name; the way in is a tinted row inside the card), port names with variadic instances counted from one, short
 type hints on unfed value ports, and a hint on a node with no ports yet. Editor text
 is still fallback English without a catalogue (13, L-01 open).
 

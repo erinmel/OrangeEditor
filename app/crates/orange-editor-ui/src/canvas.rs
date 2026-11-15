@@ -813,10 +813,18 @@ impl Canvas {
                         .and_then(|text| text.parse().ok())
                         .unwrap_or(0.0)
                 });
+                // An input with no value says so, rather than showing a 0 it does not have.
+                let unset = held.is_none() && port.value.is_none();
                 let touched = place(ui, &mut |ui| {
                     let drag =
                         egui::DragValue::new(&mut value).speed(if whole { 0.2 } else { 0.01 });
-                    ui.add(if whole { drag.fixed_decimals(0) } else { drag })
+                    let drag = if whole { drag.fixed_decimals(0) } else { drag };
+                    let drag = if unset {
+                        drag.custom_formatter(|_, _| "—".to_owned())
+                    } else {
+                        drag
+                    };
+                    ui.add(drag)
                 });
                 if touched.dragged() {
                     self.dragging = Some((node.id, port.id.clone(), value));
@@ -883,23 +891,13 @@ fn draw_node<'a>(
     let radius = 8.0 * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
-    // A band along the left edge in the color of the node's family, so nodes of one
-    // package or language area are told apart at a glance, even zoomed out.
-    let band = Rect::from_min_size(rect.min, Vec2::new(4.0 * zoom, rect.height()));
-    painter.rect_filled(
-        band,
-        egui::CornerRadius {
-            nw: radius as u8,
-            sw: radius as u8,
-            ne: 0,
-            se: 0,
-        },
-        family_color(&node.definition),
-    );
+    // The header carries the node family's color: a tint, and a line along its foot,
+    // so nodes of one package are told apart at a glance, even zoomed out.
+    let family = family_color(&node.definition);
     let header_color = if node.entry {
         colors.entry_header
     } else {
-        colors.header
+        mix(colors.header, family, 0.18)
     };
     painter.rect_filled(
         header,
@@ -910,6 +908,13 @@ fn draw_node<'a>(
             se: 0,
         },
         header_color,
+    );
+    painter.line_segment(
+        [
+            header.left_bottom() + Vec2::new(1.0, 0.0),
+            header.right_bottom() - Vec2::new(1.0, 0.0),
+        ],
+        Stroke::new(2.0 * zoom, family),
     );
     let outline = if selected {
         Stroke::new(2.0, colors.selected)
@@ -1041,25 +1046,11 @@ fn draw_port(
     } else {
         type_color(port.ty.as_deref())
     };
-    if port.exec {
-        // A step is an arrowhead pointing along the flow.
-        let tip = at + Vec2::new(radius * 1.2, 0.0);
-        let back = at - Vec2::new(radius * 0.9, 0.0);
-        let points = vec![
-            back + Vec2::new(0.0, -radius),
-            tip,
-            back + Vec2::new(0.0, radius),
-        ];
-        let fill = if port.connected { color } else { colors.card };
-        painter.add(egui::Shape::convex_polygon(
-            points,
-            fill,
-            Stroke::new(1.5, color),
-        ));
-    } else if port.connected {
+    // Every port is a dot on the card's edge: filled once wired, a ring before. A step
+    // is told from a value by its color and by the arrow beside its name.
+    if port.connected {
         painter.circle_filled(at, radius, color);
     } else {
-        // A value port nothing is wired to is a ring.
         painter.circle_filled(at, radius, colors.card);
         painter.circle_stroke(at, radius, Stroke::new(1.5, color));
     }
@@ -1069,12 +1060,40 @@ fn draw_port(
     let font = FontId::proportional(12.5 * zoom);
     let hint = FontId::proportional(10.5 * zoom);
     let gap = Vec2::new(12.0 * zoom, 0.0);
-    // The way in and the way on need no words: their arrows say it.
-    let name = if port.exec && matches!(port.id.as_str(), "in" | "then") {
-        String::new()
-    } else {
-        crate::port_label(&port.id)
-    };
+    let name = crate::port_label(&port.id);
+    if port.exec {
+        // Steps read as on a flow chart: the way in is a tinted row inside the card,
+        // the ways on are named with an arrow toward their dot.
+        let arrow = 12.0 * zoom;
+        if port.input {
+            let text = painter.layout_no_wrap(name, font, color);
+            let row = Rect::from_min_size(
+                Pos2::new(at.x + 8.0 * zoom, at.y - ROW_HEIGHT * zoom * 0.4),
+                Vec2::new(text.size().x + arrow + 22.0 * zoom, ROW_HEIGHT * zoom * 0.8),
+            );
+            painter.rect_filled(row, 5.0 * zoom, color.gamma_multiply(0.16));
+            draw_arrow(
+                painter,
+                Pos2::new(row.min.x + 7.0 * zoom, at.y),
+                arrow,
+                color,
+                zoom,
+            );
+            let place = Pos2::new(row.min.x + 13.0 * zoom + arrow, at.y - text.size().y / 2.0);
+            painter.galley(place, text, color);
+            return Some(row);
+        }
+        let start = at.x - gap.x - arrow;
+        draw_arrow(painter, Pos2::new(start, at.y), arrow, color, zoom);
+        let _ = painter.text(
+            Pos2::new(start - 6.0 * zoom, at.y),
+            Align2::RIGHT_CENTER,
+            &name,
+            font,
+            color,
+        );
+        return None;
+    }
     // What a value port takes or gives, when nothing on the card says it already.
     let type_hint =
         (hinted && !port.exec && !port.connected && !(port.input && port.value.is_some()))
@@ -1128,6 +1147,35 @@ fn draw_port(
         }
         None
     }
+}
+
+/// An arrow pointing right, `width` long, from `from` (its tail, at mid height).
+fn draw_arrow(painter: &egui::Painter, from: Pos2, width: f32, color: Color32, zoom: f32) {
+    let stroke = Stroke::new(1.6 * zoom, color);
+    let tip = from + Vec2::new(width, 0.0);
+    let head = width * 0.4;
+    painter.line_segment([from, tip], stroke);
+    painter.line_segment([tip, tip + Vec2::new(-head, -head)], stroke);
+    painter.line_segment([tip, tip + Vec2::new(-head, head)], stroke);
+}
+
+/// `base` moved toward `tint` by `amount` (0 keeps `base`, 1 is `tint`).
+fn mix(base: Color32, tint: Color32, amount: f32) -> Color32 {
+    let channel = |a: u8, b: u8| {
+        let value = f32::from(a) + (f32::from(b) - f32::from(a)) * amount;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a blend of two bytes stays a byte"
+        )]
+        let byte = value.round().clamp(0.0, 255.0) as u8;
+        byte
+    };
+    Color32::from_rgb(
+        channel(base.r(), tint.r()),
+        channel(base.g(), tint.g()),
+        channel(base.b(), tint.b()),
+    )
 }
 
 /// A type in a few letters for a card: "text", "number", "list<…>"; a type not found
