@@ -1,13 +1,13 @@
-use orange_model::catalog::{NodeDefinition, Ports, RegistryBuilder, RegistryError};
-use orange_model::document::literal::Literal;
-use orange_model::document::{
+use crate::catalog::{NodeDefinition, Ports, RegistryBuilder, RegistryError};
+use crate::document::literal::Literal;
+use crate::document::{
     DefinitionRef, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, TypeParam,
 };
-use orange_model::id::TypeExpr;
-use orange_model::type_term::TypeTerm;
-use orange_model::types::{TypeRegistry, TypeRegistryBuilder};
-use orange_model::validation::HostOrigin;
-use orange_model::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, VariantSchema};
+use crate::id::TypeExpr;
+use crate::type_term::TypeTerm;
+use crate::types::{TypeRegistry, TypeRegistryBuilder};
+use crate::validation::HostOrigin;
+use crate::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, VariantSchema};
 use serde_json::json;
 
 fn origin() -> HostOrigin {
@@ -23,7 +23,7 @@ fn definition(ports: Vec<PortDescriptor>, params: &[&str]) -> NodeDefinition {
         config_version: 1,
         kind: NodeKind::Action,
         volatility: None,
-        determinism: orange_model::catalog::Determinism::Deterministic,
+        determinism: crate::catalog::Determinism::Deterministic,
         suspends: None,
         type_params: params
             .iter()
@@ -164,7 +164,7 @@ fn descriptor_and_snapshot_optional_metadata_round_trip_without_normalization() 
             OutputSource::Computed,
         )
     };
-    let snapshot = orange_model::document::SignatureSnapshot {
+    let snapshot = crate::document::SignatureSnapshot {
         kind: NodeKind::Action,
         suspends: None,
         ports: vec![descriptor.clone()],
@@ -178,7 +178,7 @@ fn descriptor_and_snapshot_optional_metadata_round_trip_without_normalization() 
         descriptor
     );
     assert_eq!(
-        serde_json::from_value::<orange_model::document::SignatureSnapshot>(snapshot_wire).unwrap(),
+        serde_json::from_value::<crate::document::SignatureSnapshot>(snapshot_wire).unwrap(),
         snapshot
     );
 }

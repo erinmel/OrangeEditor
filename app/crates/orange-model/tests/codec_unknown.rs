@@ -1,10 +1,10 @@
 //! Unknown keys and unresolved package nodes survive load→save (FR-05; structural basis
 //! for G-29). The codec never needs the definition to keep a node.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{from_json, to_json};
 use common::{branch_node, minimal_document, node_id, parse_json};
-use orange_model::{from_json, to_json};
 use serde_json::json;
 
 #[test]

@@ -10,9 +10,7 @@ use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
 
-use super::diagnostic::{
-    Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
-};
+use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
 use super::scope::Scope;
 
@@ -22,39 +20,6 @@ pub struct ConnectionValidation {
     pub diagnostics: Vec<Diagnostic>,
     /// Nodes whose signatures or unresolved generic types prevented a complete check.
     pub incomplete_nodes: BTreeSet<NodeId>,
-}
-
-impl ConnectionValidation {
-    /// True only when validation completed and produced no error diagnostics.
-    pub fn is_valid(&self) -> bool {
-        self.incomplete_nodes.is_empty()
-            && self
-                .diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.severity != Severity::Error)
-    }
-}
-
-/// Validates stored edges against the fresh node resolution `resolved` (from
-/// [`validate_nodes`](super::validate_nodes)) without changing the document. A package
-/// node that did not resolve is checked against its stored snapshot (11 §4.5).
-pub fn validate_connections(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    registry: &RegistrySnapshot,
-) -> ConnectionValidation {
-    let index = DocIndex::build(document);
-    let ports = PortResolver::new(document, resolved);
-
-    validate_connections_in(
-        document,
-        &ports,
-        registry,
-        Scope::All,
-        &index,
-        None,
-        &mut super::visits::VisitCounts::default(),
-    )
 }
 
 /// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.

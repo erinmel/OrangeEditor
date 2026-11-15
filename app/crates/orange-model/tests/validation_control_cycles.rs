@@ -1,12 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{
-    GraphDocument, NodeKind, PortDescriptor, SignatureSnapshot, Suspends,
-};
-use orange_model::from_json;
-use orange_model::id::NodeId;
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{GraphDocument, NodeKind, PortDescriptor, SignatureSnapshot, Suspends};
+use crate::from_json;
+use crate::id::NodeId;
+use crate::validation::{
     ConnectionValidation, ControlCycleValidation, DiagnosticCode, HostOrigin,
     validate_control_cycles,
 };

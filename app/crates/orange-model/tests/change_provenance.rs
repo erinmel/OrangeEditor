@@ -1,9 +1,9 @@
 //! Journal-owned change identities and stale-index recovery.
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::{PackageLockEntry, SignatureSnapshot};
+use crate::{BodyRef, ChangeSet, DocCommand, DocIndex, GraphDocument, LayoutCommand};
 use common::{empty_document, node};
-use orange_model::document::{PackageLockEntry, SignatureSnapshot};
-use orange_model::{BodyRef, ChangeSet, DocCommand, DocIndex, GraphDocument, LayoutCommand};
 use serde_json::json;
 
 fn identities(document: &GraphDocument) -> (u64, u64, u64) {

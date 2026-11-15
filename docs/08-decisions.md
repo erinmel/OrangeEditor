@@ -1,5 +1,13 @@
 # Architecture decision records
 
+ADR-21 public-surface amendment (2026-11-14; MAINT-CORE): the public core API is what
+downstream crates and hosts call. Functions only tests used are removed from it. The
+individual validation passes (`validate_availability`, `validate_regions`, ...),
+`analyze_functions`, `required_checks` and `validate_with_effects` are crate-private;
+`analyze*`, `validate`, `validate_nodes` and `validate_body_domains` remain public.
+`orange-model`'s behaviour suite in `tests/` compiles into the library's unit-test
+target so it can still check a single pass. Graph semantics and diagnostics are unchanged.
+
 ADR-02/21 implementation amendment (2026-11-14; PERF-EDITOR): use frame-local
 borrowed geometry/connectivity indexes and one registry-generation/search-keyed
 palette cache. The extra index memory is accepted to eliminate repeated scans;

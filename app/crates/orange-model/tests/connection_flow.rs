@@ -1,15 +1,15 @@
 //! 00c.7a: resolve → infer → select → insert → save/load → undo/redo through the public API.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::conversion::apply_connection;
+use crate::inference::apply_inferred;
+use crate::type_term::TypeTerm;
+use crate::{DocCommand, from_json};
 use common::generic::{
     add, document, package_digest, package_registry, ready_plan, typed_sink, typed_source,
 };
 use common::{content, nid, saved};
-use orange_model::conversion::apply_connection;
-use orange_model::inference::apply_inferred;
-use orange_model::type_term::TypeTerm;
-use orange_model::{DocCommand, from_json};
 use serde_json::json;
 
 #[test]

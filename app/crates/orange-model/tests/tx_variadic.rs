@@ -1,11 +1,11 @@
 //! G-31: variadic instance ports keep stable `port#k` keys; counters are never reused.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::VariadicState;
+use crate::id::{PortId, PortKey};
+use crate::{BodyRef, DocCommand, GraphDocument, TxError};
 use common::{content, eid, empty_document, i64_literal, nid, node, port, saved, typed_edge};
-use orange_model::document::VariadicState;
-use orange_model::id::{PortId, PortKey};
-use orange_model::{BodyRef, DocCommand, GraphDocument, TxError};
 
 fn item() -> PortId {
     "item".parse().unwrap()
@@ -25,7 +25,7 @@ fn insert(document: &mut GraphDocument, at: usize) -> Result<(), TxError> {
         .map(|_| ())
 }
 
-fn remove(document: &mut GraphDocument, port: &str) -> Result<orange_model::Committed, TxError> {
+fn remove(document: &mut GraphDocument, port: &str) -> Result<crate::Committed, TxError> {
     document.apply([DocCommand::RemoveVariadic {
         node: nid(1),
         port: key(port),

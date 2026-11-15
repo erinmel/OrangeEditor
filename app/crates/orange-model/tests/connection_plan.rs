@@ -1,15 +1,15 @@
 //! 00c.6a: read-only connection plans (11 §6): direct wire, replacement or converter node.
 
-use crate::common;
+use crate::behaviour::common;
 
-use common::generic::{add, data_edge, document, registry, source, typed_sink, typed_source};
-use common::{content, eid, id_source, nid, port};
-use orange_model::conversion::{
+use crate::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionPlan, ConnectionRequest, ExplicitConverterChoice,
     SelectionRejection,
 };
-use orange_model::inference::{InferenceIssue, plan_edit};
-use orange_model::{DocCommand, GraphDocument};
+use crate::inference::{InferenceIssue, plan_edit};
+use crate::{DocCommand, GraphDocument};
+use common::generic::{add, data_edge, document, registry, source, typed_sink, typed_source};
+use common::{content, eid, id_source, nid, port};
 use serde_json::json;
 
 fn request(from: (u8, &str), to: (u8, &str)) -> ConnectionRequest {
@@ -25,7 +25,7 @@ fn plan(
     request: ConnectionRequest,
 ) -> Result<ConnectionOutcome, ConnectionError> {
     let mut ids = id_source(3);
-    orange_model::conversion::plan_connection(doc, &registry(None), request, &mut ids)
+    crate::conversion::plan_connection(doc, &registry(None), request, &mut ids)
 }
 
 fn ready(outcome: Result<ConnectionOutcome, ConnectionError>) -> ConnectionPlan {
@@ -59,7 +59,7 @@ fn a_unique_lossless_entry_plans_a_visible_converter_with_fresh_identities() {
     let doc = pair("i32", "i64");
     let mut calls = 0;
     let mut source = id_source(3);
-    let outcome = orange_model::conversion::plan_connection(
+    let outcome = crate::conversion::plan_connection(
         &doc,
         &registry(None),
         request((1, "value"), (3, "value")),
@@ -153,7 +153,7 @@ fn an_explicit_choice_binds_the_exact_candidate_and_a_stale_one_is_rejected() {
         panic!("a partial conversion needs a choice");
     };
     let candidate = &candidates[0];
-    let choose = |entry: &orange_model::conversion::ConverterKey| ConnectionRequest {
+    let choose = |entry: &crate::conversion::ConverterKey| ConnectionRequest {
         choice: Some(ExplicitConverterChoice {
             entry: entry.clone(),
             provider: candidate.provider.clone(),
@@ -167,7 +167,7 @@ fn an_explicit_choice_binds_the_exact_candidate_and_a_stale_one_is_rejected() {
         "core/i64-to-i32@1"
     );
 
-    let stale = orange_model::conversion::ConverterKey {
+    let stale = crate::conversion::ConverterKey {
         id: "core/i32-to-i64".parse().unwrap(),
         contract_version: 1,
     };
@@ -242,7 +242,7 @@ fn incompatible_connections_are_refused_independently_of_cached_arguments() {
     // A constraint or specialization failure is a conflict too.
     let doc = document(vec![typed_source(4, "f64"), add(2, json!({}))], vec![]);
     let only_i64 = registry(Some(vec!["core/i64@1"]));
-    let refused = orange_model::conversion::plan_connection(
+    let refused = crate::conversion::plan_connection(
         &doc,
         &only_i64,
         request((4, "value"), (2, "a")),
@@ -285,10 +285,10 @@ fn implicit_ports_are_exec_or_typed_by_their_kind() {
         "config_version": 1, "config": {}, "signature": "s-act"
     });
     let mut value: serde_json::Value =
-        serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+        serde_json::from_str(&crate::to_json(&doc).unwrap()).unwrap();
     value["signatures"]["s-act"] = json!({"kind": "action", "ports": []});
     value["nodes"].as_array_mut().unwrap().push(json);
-    doc = orange_model::from_json(&value.to_string()).unwrap();
+    doc = crate::from_json(&value.to_string()).unwrap();
 
     // `then` is an exec port; `error` is a typed data output that is not an i64.
     assert!(matches!(
@@ -303,8 +303,8 @@ fn implicit_ports_are_exec_or_typed_by_their_kind() {
 
 #[test]
 fn indexed_planning_matches_read_only_plans_and_restores_document_and_index() {
-    use orange_model::DocIndex;
-    use orange_model::conversion::plan_connection_indexed;
+    use crate::DocIndex;
+    use crate::conversion::plan_connection_indexed;
     for (from, to) in [("i64", "i64"), ("i32", "i64"), ("f64", "f32")] {
         let mut doc = pair(from, to);
         let before = doc.clone();
@@ -327,8 +327,8 @@ fn indexed_planning_matches_read_only_plans_and_restores_document_and_index() {
 
 #[test]
 fn indexed_planning_preserves_content_on_rejection_and_panicking_identity_source() {
-    use orange_model::DocIndex;
-    use orange_model::conversion::plan_connection_indexed;
+    use crate::DocIndex;
+    use crate::conversion::plan_connection_indexed;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     let mut doc = pair("i64", "i64");
     let before = doc.clone();

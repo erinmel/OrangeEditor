@@ -31,15 +31,6 @@ pub struct AvailabilityValidation {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-impl AvailabilityValidation {
-    /// True when no availability error was found.
-    pub fn is_valid(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.severity != Severity::Error)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Vertex {
     Node(NodeId),
@@ -313,18 +304,6 @@ impl<'a> Answers<'a> {
             })
             .contains(&Vertex::Node(consumer))
     }
-}
-
-/// Checks value availability and activation ownership for every body.
-pub fn validate_availability(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    connections: &ConnectionValidation,
-    regions: &RegionIndex,
-    registry: &RegistrySnapshot,
-) -> AvailabilityValidation {
-    let ports = PortResolver::new(document, resolved);
-    validate_availability_with_ports(document, &ports, connections, regions, registry)
 }
 
 pub(crate) fn validate_availability_with_ports(

@@ -1,12 +1,12 @@
-use crate::common;
+use crate::behaviour::common;
 
-use common::{minimal_document, node_id};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::from_json;
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::from_json;
+use crate::validation::{
     DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, Severity, analyze_functions,
     validate_nodes,
 };
+use common::{minimal_document, node_id};
 use serde_json::{Value, json};
 
 fn origin() -> HostOrigin {

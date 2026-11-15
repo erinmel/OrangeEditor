@@ -1,9 +1,9 @@
 //! G-36: layout-only edits are flagged so no validation, compile or preview work runs.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::{BodyRef, DocCommand, LayoutCommand, TxError};
 use common::{content, empty_document, i64_literal, node, node_id, port};
-use orange_model::{BodyRef, DocCommand, LayoutCommand, TxError};
 use serde_json::{Value as Json, json};
 
 fn set(path: &[&str], value: Option<Json>) -> DocCommand {

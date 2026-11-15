@@ -2,16 +2,16 @@
 //! current content, retains a bounded number of snapshots and stops when the host says
 //! (16 §3).
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::sync::Arc;
 
+use crate::validation::{AnalysisLimits, AnalysisWorker, AnalysisWorkerError};
+use crate::{DocCommand, GraphDocument, LayoutCommand, analyze};
 use common::{add, empty_document};
-use orange_model::validation::{AnalysisLimits, AnalysisWorker, AnalysisWorkerError};
-use orange_model::{DocCommand, GraphDocument, LayoutCommand, analyze};
 use serde_json::json;
 
-fn registry() -> Arc<orange_model::catalog::RegistrySnapshot> {
+fn registry() -> Arc<crate::catalog::RegistrySnapshot> {
     common::generic::registry(None)
 }
 

@@ -1,11 +1,11 @@
-use crate::common;
+use crate::behaviour::common;
 
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
+use crate::document::{DefinitionRef, NodeKind};
+use crate::validation::{DiagnosticCode, HostOrigin, ValidationCheck, analyze};
+use crate::{GraphDocument, from_json};
 use common::registry::Facts;
 use common::{minimal_document, node_id};
-use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
-use orange_model::document::{DefinitionRef, NodeKind};
-use orange_model::validation::{DiagnosticCode, HostOrigin, ValidationCheck, analyze};
-use orange_model::{GraphDocument, from_json};
 use serde_json::{Value, json};
 
 const VAR: &str = "40000000-0000-4000-8000-000000000001";

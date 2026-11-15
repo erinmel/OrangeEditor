@@ -1,13 +1,13 @@
-use crate::common;
+use crate::behaviour::common;
 
-use common::{minimal_document, nid, node_id};
-use orange_model::catalog::{
+use crate::catalog::{
     ContractError, NodeDefinition, Ports, ReferenceKind, RegistryBuilder, RegistryError,
     RegistrySnapshot, VariableAccess,
 };
-use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDirection, Suspends};
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_inputs, validate_nodes};
-use orange_model::{DocCommand, GraphDocument, from_json};
+use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDirection, Suspends};
+use crate::validation::{DiagnosticCode, HostOrigin, validate_inputs, validate_nodes};
+use crate::{DocCommand, GraphDocument, from_json};
+use common::{minimal_document, nid, node_id};
 use serde_json::{Value, json};
 
 fn origin() -> HostOrigin {
@@ -298,11 +298,11 @@ fn package_definitions_can_reuse_async_shared_metadata_without_core_effect_autho
         config_version: 1,
         kind: NodeKind::Async,
         volatility: None,
-        determinism: orange_model::catalog::Determinism::Deterministic,
+        determinism: crate::catalog::Determinism::Deterministic,
         suspends: Some(Suspends::Maybe),
         type_params: Vec::new(),
         ports: Ports::Variable(VariableAccess::WriteShared),
-        references: vec![orange_model::catalog::ReferenceField {
+        references: vec![crate::catalog::ReferenceField {
             pointer: "/variable".into(),
             kind: ReferenceKind::Variable,
         }],

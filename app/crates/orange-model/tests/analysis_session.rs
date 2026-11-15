@@ -1,21 +1,21 @@
 //! V12a: an `AnalysisSession` always equals the full analysis of its document, and says
 //! what each update did (16 §3).
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 
-use common::edits::{command, op};
-use common::generic::{add, data_edge, document, registry, typed_source};
-use common::{empty_document, read_fixture};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::Edge;
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::Edge;
+use crate::validation::{
     AnalysisLimits, AnalysisOptions, AnalysisSession, LeafEffects, RebuildReason, SessionWork,
     analyze_with_options,
 };
-use orange_model::{DocCommand, GraphDocument, LayoutCommand, from_json};
+use crate::{DocCommand, GraphDocument, LayoutCommand, from_json};
+use common::edits::{command, op};
+use common::generic::{add, data_edge, document, registry, typed_source};
+use common::{empty_document, read_fixture};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -23,7 +23,7 @@ fn options() -> AnalysisOptions<'static> {
     AnalysisOptions::default()
 }
 
-fn full(document: &GraphDocument, registry: &RegistrySnapshot) -> orange_model::ValidationAnalysis {
+fn full(document: &GraphDocument, registry: &RegistrySnapshot) -> crate::ValidationAnalysis {
     analyze_with_options(document, registry, BTreeMap::new(), options())
 }
 
@@ -284,7 +284,7 @@ fn edits_recheck_only_the_edges_of_touched_nodes() {
     // A new unconnected node touches no edge.
     let added = doc
         .apply([DocCommand::AddNode {
-            body: orange_model::BodyRef::Root,
+            body: crate::BodyRef::Root,
             node: serde_json::from_value(typed_source(30, "i64")).unwrap(),
         }])
         .unwrap();
@@ -318,7 +318,7 @@ fn edits_recheck_only_the_edges_of_touched_nodes() {
     // A literal edit that changes no signature is scoped and checks no edge.
     let edited = doc
         .apply([DocCommand::SetLiteral {
-            port: orange_model::document::PortRef {
+            port: crate::document::PortRef {
                 node: common::nid(14),
                 port: "value".parse().unwrap(),
             },
@@ -367,7 +367,7 @@ fn edits_resolve_only_the_generic_components_they_reach() {
     // A layout-free unrelated edit reuses both.
     let added = doc
         .apply([DocCommand::AddNode {
-            body: orange_model::BodyRef::Root,
+            body: crate::BodyRef::Root,
             node: serde_json::from_value(typed_source(9, "i64")).unwrap(),
         }])
         .unwrap();

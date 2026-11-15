@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use orange_model::GraphDocument;
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{SignatureSnapshot, Suspends};
-use orange_model::edit::DocCommand;
-use orange_model::id::{FunctionId, NodeId};
-use orange_model::validation::{
+use crate::GraphDocument;
+use crate::catalog::RegistrySnapshot;
+use crate::document::{SignatureSnapshot, Suspends};
+use crate::edit::DocCommand;
+use crate::id::{FunctionId, NodeId};
+use crate::validation::{
     DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, VariableWrite, WriteOperation,
     analyze_functions,
 };
@@ -53,7 +53,7 @@ fn analyze(
     doc: &GraphDocument,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     effects: &BTreeMap<NodeId, LeafEffects>,
-) -> orange_model::validation::FunctionAnalysis {
+) -> crate::validation::FunctionAnalysis {
     analyze_functions(
         doc,
         &FunctionEvidence::new(doc, resolved.clone(), effects.clone()),
@@ -80,7 +80,7 @@ fn infers_strongest_kind_and_ignores_declared_kind_as_evidence() {
     let id: FunctionId = F1.parse().unwrap();
     assert_eq!(
         report.summaries[&id].kind,
-        orange_model::document::NodeKind::Action
+        crate::document::NodeKind::Action
     );
     assert!(
         report
@@ -110,7 +110,7 @@ fn nested_calls_compose_kind_suspension_and_run_writes_conservatively() {
     let outer: FunctionId = F1.parse().unwrap();
     assert_eq!(
         report.summaries[&outer].kind,
-        orange_model::document::NodeKind::Async
+        crate::document::NodeKind::Async
     );
     assert_eq!(report.summaries[&outer].suspends, Suspends::Maybe);
 }
@@ -236,7 +236,7 @@ fn provider_backed_core_namespace_definition_uses_resolved_host_contract() {
     let report = analyze(&doc, &resolved, &effects);
     assert_eq!(
         report.summaries[&F1.parse::<FunctionId>().unwrap()].kind,
-        orange_model::document::NodeKind::Pure
+        crate::document::NodeKind::Pure
     );
     assert!(!report.incomplete_functions.contains(&F1.parse().unwrap()));
 }
@@ -493,7 +493,7 @@ fn evidence_from_node_validation_matches_manual_construction() {
         "pure",
         json!([custom_node(N1, "core/select")])
     )]));
-    let nodes = orange_model::validation::validate_nodes(&doc, &registry());
+    let nodes = crate::validation::validate_nodes(&doc, &registry());
     let effects = BTreeMap::new();
     let built = FunctionEvidence::from_nodes(&doc, &nodes, effects.clone());
     let manual = FunctionEvidence::new(&doc, nodes.resolved.clone(), effects);

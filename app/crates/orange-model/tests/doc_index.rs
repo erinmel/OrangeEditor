@@ -1,14 +1,14 @@
 //! Derived index queries, and the property that an incrementally updated index always
 //! equals a fresh build (through edits, rollbacks, function body rescans and undo).
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeSet;
 
+use crate::id::EdgeId;
+use crate::{BodyRef, DocIndex, from_json};
 use common::edits::{command, op};
 use common::{edge_id, empty_document, nid, port, read_fixture};
-use orange_model::id::EdgeId;
-use orange_model::{BodyRef, DocIndex, from_json};
 use proptest::prelude::*;
 
 fn test_uuid(n: u128) -> uuid::Uuid {
@@ -17,10 +17,10 @@ fn test_uuid(n: u128) -> uuid::Uuid {
 
 fn edge_with_id(
     id: EdgeId,
-    from: orange_model::document::PortRef,
-    to: orange_model::document::PortRef,
-) -> orange_model::document::Edge {
-    orange_model::document::Edge {
+    from: crate::document::PortRef,
+    to: crate::document::PortRef,
+) -> crate::document::Edge {
+    crate::document::Edge {
         id,
         from,
         to,
@@ -55,10 +55,10 @@ fn queries_on_the_saved_graph_example() {
 
 #[test]
 fn function_membership_index_tracks_empty_replaced_removed_and_edited_bodies() {
+    use crate::DocCommand;
+    use crate::document::PortRef;
+    use crate::id::{FunctionId, NodeId};
     use common::{body, function, node};
-    use orange_model::DocCommand;
-    use orange_model::document::PortRef;
-    use orange_model::id::{FunctionId, NodeId};
 
     let make_function = |id: FunctionId, nodes: Vec<_>, edges: Vec<_>| {
         let mut declaration = function(body(nodes, edges));
@@ -88,7 +88,7 @@ fn function_membership_index_tracks_empty_replaced_removed_and_edited_bodies() {
             },
         )
     };
-    let assert_synced = |document: &orange_model::GraphDocument, index: &DocIndex| {
+    let assert_synced = |document: &crate::GraphDocument, index: &DocIndex| {
         assert!(index.is_current(document));
         assert_eq!(index, &DocIndex::build(document));
     };
@@ -152,10 +152,10 @@ fn function_membership_index_tracks_empty_replaced_removed_and_edited_bodies() {
 
 #[test]
 fn moving_function_body_members_is_order_independent_and_undoable() {
+    use crate::DocCommand;
+    use crate::document::PortRef;
+    use crate::id::{FunctionId, NodeId};
     use common::{body, function, node};
-    use orange_model::DocCommand;
-    use orange_model::document::PortRef;
-    use orange_model::id::{FunctionId, NodeId};
 
     let id = |value| FunctionId::from_uuid(test_uuid(value)).unwrap();
     let make_function = |function_id, nodes, edges| {
@@ -255,8 +255,8 @@ proptest! {
 
 /// Every node ever seen is located in exactly the body that now holds it, or nowhere.
 fn assert_lookup_current(
-    document: &orange_model::GraphDocument,
-    seen: &mut BTreeSet<orange_model::id::NodeId>,
+    document: &crate::GraphDocument,
+    seen: &mut BTreeSet<crate::id::NodeId>,
 ) -> Result<(), TestCaseError> {
     let mut held = std::collections::BTreeMap::new();
     for (body, nodes) in document.bodies_with_refs() {

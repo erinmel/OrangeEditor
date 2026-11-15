@@ -1,10 +1,10 @@
-use crate::common;
+use crate::behaviour::common;
 
+use crate::GraphDocument;
+use crate::catalog::{NodeContract, ProviderKey};
+use crate::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
+use crate::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use common::registry::Facts;
-use orange_model::GraphDocument;
-use orange_model::catalog::{NodeContract, ProviderKey};
-use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
 const SOURCE: &str = "10000000-0000-4000-8000-000000000001";
@@ -310,9 +310,9 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
 
     // Low-level inference delegates this package binding to constraints; it must not
     // consult the core list. Compilation resolution independently requires the lock.
-    let components = orange_model::inference::infer_components(
+    let components = crate::inference::infer_components(
         &document,
-        &orange_model::DocIndex::build(&document),
+        &crate::DocIndex::build(&document),
         [node.parse().unwrap()],
         &facts.snapshot(),
     );

@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use orange_model::GraphDocument;
-use orange_model::catalog::{
+use crate::GraphDocument;
+use crate::catalog::{
     NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistryError,
 };
-use orange_model::document::{DefinitionRef, NodeKind, SignatureSnapshot, Suspends};
-use orange_model::validation::{HostOrigin, validate_nodes};
+use crate::document::{DefinitionRef, NodeKind, SignatureSnapshot, Suspends};
+use crate::validation::{HostOrigin, validate_nodes};
 use serde_json::json;
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -28,12 +28,11 @@ fn definition(kind: NodeKind, suspends: Option<Suspends>) -> NodeDefinition {
         },
         config_version: 1,
         kind,
-        volatility: (kind == NodeKind::Volatile)
-            .then_some(orange_model::catalog::Volatility::Entropy),
+        volatility: (kind == NodeKind::Volatile).then_some(crate::catalog::Volatility::Entropy),
         determinism: if kind == NodeKind::Volatile {
-            orange_model::catalog::Determinism::Seeded
+            crate::catalog::Determinism::Seeded
         } else {
-            orange_model::catalog::Determinism::Deterministic
+            crate::catalog::Determinism::Deterministic
         },
         suspends,
         type_params: vec![],
@@ -47,7 +46,7 @@ fn definition(kind: NodeKind, suspends: Option<Suspends>) -> NodeDefinition {
 fn registry(
     kind: NodeKind,
     suspends: Option<Suspends>,
-) -> Result<Arc<orange_model::catalog::RegistrySnapshot>, RegistryError> {
+) -> Result<Arc<crate::catalog::RegistrySnapshot>, RegistryError> {
     let definition = definition(kind, suspends);
     let key = ProviderKey {
         package: "example.pkg".into(),
@@ -72,7 +71,7 @@ fn document(kind: NodeKind, suspends: Option<Suspends>) -> GraphDocument {
         ports: vec![],
         extensions: Default::default(),
     };
-    let signature = orange_model::signature::semantic_key(&snapshot);
+    let signature = crate::signature::semantic_key(&snapshot);
     let signature = signature.to_string();
     serde_json::from_value(json!({
         "format_version":1,

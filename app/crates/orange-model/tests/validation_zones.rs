@@ -2,13 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{
-    GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot,
-};
-use orange_model::from_json;
-use orange_model::id::NodeId;
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot};
+use crate::from_json;
+use crate::id::NodeId;
+use crate::validation::{
     ConnectionValidation, DiagnosticCode, HostOrigin, RegionValidation, ZoneKind,
     validate_data_cycles, validate_regions,
 };
@@ -30,7 +28,7 @@ struct N {
     signature: SignatureSnapshot,
 }
 
-fn int() -> orange_model::id::TypeExpr {
+fn int() -> crate::id::TypeExpr {
     "core/i64@1".parse().unwrap()
 }
 
@@ -245,10 +243,10 @@ fn switch_cases_must_be_present_distinct_and_of_the_key_kind() {
 /// connected (11 §8.4).
 #[test]
 fn enum_switch_cases_name_known_variants_and_cover_the_schema_or_connect_default() {
-    use orange_model::catalog::RegistryBuilder;
-    use orange_model::types::{Constraint, TypeRegistryBuilder};
-    use orange_model::value::literal_codec::{EnumSchema, VariantSchema};
-    let light: orange_model::id::TypeExpr = "org.example/light@1".parse().unwrap();
+    use crate::catalog::RegistryBuilder;
+    use crate::types::{Constraint, TypeRegistryBuilder};
+    use crate::value::literal_codec::{EnumSchema, VariantSchema};
+    let light: crate::id::TypeExpr = "org.example/light@1".parse().unwrap();
     let mut types = TypeRegistryBuilder::core();
     let variants = ["red", "amber", "green"].map(|id| VariantSchema {
         variant_id: id.into(),
@@ -521,8 +519,8 @@ fn zone_pair_ids_and_ownership_are_local_to_each_function_body() {
     let (root, mut resolved) = fixture(vec![begin(1, "same"), end(2, "same")], vec![]);
     let (inner, inner_resolved) = fixture(vec![begin(3, "same"), end(4, "same")], vec![]);
     resolved.extend(inner_resolved);
-    let mut saved = serde_json::from_str::<Value>(&orange_model::to_json(&root).unwrap()).unwrap();
-    let inner = serde_json::from_str::<Value>(&orange_model::to_json(&inner).unwrap()).unwrap();
+    let mut saved = serde_json::from_str::<Value>(&crate::to_json(&root).unwrap()).unwrap();
+    let inner = serde_json::from_str::<Value>(&crate::to_json(&inner).unwrap()).unwrap();
     let function = "20000000-0000-4000-8000-000000000001";
     saved["functions"] = json!([{
         "id": function, "name": "nested", "kind": "pure", "inputs": [], "outputs": [],

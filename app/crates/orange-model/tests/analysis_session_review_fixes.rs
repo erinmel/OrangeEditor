@@ -1,18 +1,18 @@
 //! Regressions for deterministic rejection freshness and early resource rejection.
-use crate::common;
+use crate::behaviour::common;
 
-use orange_model::catalog::RegistryBuilder;
-use orange_model::validation::{
+use crate::catalog::RegistryBuilder;
+use crate::validation::{
     AnalysisLimits, AnalysisOptions, AnalysisSession, DiagnosticCode, HostOrigin, LeafEffects,
     SessionWork, VariableWrite, WriteOperation, analyze_with_options, config_satisfies_schema,
     validate_config,
 };
-use orange_model::{DocCommand, GraphDocument, LayoutCommand, from_json};
+use crate::{DocCommand, GraphDocument, LayoutCommand, from_json};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-fn layout(document: &mut GraphDocument, value: i32) -> orange_model::edit::Committed {
+fn layout(document: &mut GraphDocument, value: i32) -> crate::edit::Committed {
     document
         .apply([DocCommand::Layout(LayoutCommand::Set {
             path: vec!["view".into()],
@@ -24,7 +24,7 @@ fn layout(document: &mut GraphDocument, value: i32) -> orange_model::edit::Commi
 fn assert_no_validation(
     session: &AnalysisSession,
     doc: &GraphDocument,
-    registry: &orange_model::catalog::RegistrySnapshot,
+    registry: &crate::catalog::RegistrySnapshot,
     options: AnalysisOptions<'_>,
 ) {
     assert!(session.is_current(doc, registry));

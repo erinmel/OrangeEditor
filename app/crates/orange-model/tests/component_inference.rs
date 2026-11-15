@@ -1,18 +1,18 @@
 //! 00c.4a: read-only inference over the generic component an edit touches (11 §5.5).
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::DocIndex;
+use crate::catalog::{ProviderKey, RegistrySnapshot};
+use crate::id::NodeId;
+use crate::inference::{
+    ComponentInference, EquationEvidence, InferenceIssue, UnificationError, infer_components,
+};
+use crate::{GraphDocument, from_json};
 use common::generic::{
     add, data_edge, document, only, registry, registry_with_provider_specializations, source,
 };
 use common::{minimal_document, node_id};
-use orange_model::DocIndex;
-use orange_model::catalog::{ProviderKey, RegistrySnapshot};
-use orange_model::id::NodeId;
-use orange_model::inference::{
-    ComponentInference, EquationEvidence, InferenceIssue, UnificationError, infer_components,
-};
-use orange_model::{GraphDocument, from_json};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -134,8 +134,8 @@ fn conflicting_pins_report_a_mismatch_with_pin_evidence_and_no_bindings() {
 fn a_pin_nested_past_the_parser_budget_is_a_complexity_issue_not_a_mismatch() {
     let deep = format!(
         "{}core/i64@1{}",
-        "core/list@1<".repeat(orange_model::type_term::MAX_NESTING + 1),
-        ">".repeat(orange_model::type_term::MAX_NESTING + 1)
+        "core/list@1<".repeat(crate::type_term::MAX_NESTING + 1),
+        ">".repeat(crate::type_term::MAX_NESTING + 1)
     );
     let doc = document(vec![add(2, json!({"type_pins": {"T": deep}}))], vec![]);
     assert_eq!(

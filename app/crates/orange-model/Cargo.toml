@@ -5,7 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-# Integration tests build as one binary (tests/main.rs).
+# The tests/ harness compiles into the library's unit-test target (src/lib.rs) so it can
+# reach crate-private validation passes.
 autotests = false
 
 [dependencies]
@@ -22,6 +23,3 @@ proptest.workspace = true
 [lints]
 workspace = true
 
-[[test]]
-name = "integration"
-path = "tests/main.rs"

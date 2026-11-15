@@ -1,16 +1,16 @@
 //! 00c.4b: inference results persisted in the same transaction as the edit (11 §5.5).
 
-use crate::common;
+use crate::behaviour::common;
 
-use common::generic::{add, data_edge, document, registry, source, typed_source};
-use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};
-use orange_model::conversion::PlanApplyError;
-use orange_model::document::{Edge, NodeInstance};
-use orange_model::edit::LayoutCommand;
-use orange_model::inference::{
+use crate::conversion::PlanApplyError;
+use crate::document::{Edge, NodeInstance};
+use crate::edit::LayoutCommand;
+use crate::inference::{
     InferenceIssue, apply_inferred, apply_inferred_indexed, apply_plan, plan_edit,
 };
-use orange_model::{BodyRef, DocCommand, DocIndex, GraphDocument, TxError, from_json};
+use crate::{BodyRef, DocCommand, DocIndex, GraphDocument, TxError, from_json};
+use common::generic::{add, data_edge, document, registry, source, typed_source};
+use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};
 use serde_json::{Value as Json, json};
 
 fn connect(edge: Json) -> DocCommand {
@@ -418,7 +418,7 @@ fn variable_update(n: u8, variable: u8) -> Json {
         "config_version":1,"config":{"variable":node_id(variable),"operation":"add"}})
 }
 
-fn variable_decl(id: u8, ty: &str) -> orange_model::document::VariableDecl {
+fn variable_decl(id: u8, ty: &str) -> crate::document::VariableDecl {
     serde_json::from_value(json!({"id":node_id(id),"name":"v","type":ty,"scope":"run"})).unwrap()
 }
 
@@ -437,8 +437,8 @@ fn declaration_driven_document() -> GraphDocument {
     .unwrap()
 }
 
-fn declaration_registry() -> std::sync::Arc<orange_model::catalog::RegistrySnapshot> {
-    common::generic::registry_with_provider(orange_model::catalog::ProviderKey {
+fn declaration_registry() -> std::sync::Arc<crate::catalog::RegistrySnapshot> {
+    common::generic::registry_with_provider(crate::catalog::ProviderKey {
         package: "org.test".into(),
         version: "1.0.0".into(),
         content_digest: format!("sha256:{}", "c".repeat(64)),
@@ -474,7 +474,7 @@ fn variable_changes_reinfer_referenced_generic_components_and_undo_redo_together
     assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f64@1"));
     assert_eq!(signature_types(&doc, 2), ["core/f64@1"; 3]);
     assert_eq!(doc.node(nid(4)).unwrap(), &unrelated);
-    let resolved = orange_model::validation::validate_nodes(&doc, &registry);
+    let resolved = crate::validation::validate_nodes(&doc, &registry);
     assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
     assert_eq!(
         resolved.resolved[&nid(2)]
@@ -592,7 +592,7 @@ fn declaration_change_preserves_an_incompatible_explicit_pin_and_reports_the_con
 
 #[test]
 fn update_outputs_invalidate_generic_consumers_in_root_and_function_bodies() {
-    use orange_model::validation::{validate_connections, validate_nodes};
+    use crate::validation::{validate_connections, validate_nodes};
 
     let registry = declaration_registry();
     for in_function in [false, true] {
@@ -683,7 +683,7 @@ fn update_outputs_invalidate_generic_consumers_in_root_and_function_bodies() {
         assert_eq!(doc.node(nid(4)).unwrap(), &unrelated);
         let before_scope_change = content(&doc);
         let mut workspace = variable_decl(10, "core/i64@1");
-        workspace.scope = orange_model::document::VarScope::Workspace;
+        workspace.scope = crate::document::VarScope::Workspace;
         let scope_change =
             apply_inferred(&mut doc, [DocCommand::UpsertVariable(workspace)], &registry).unwrap();
         assert_eq!(type_arg(&doc, 2), None);
@@ -692,7 +692,7 @@ fn update_outputs_invalidate_generic_consumers_in_root_and_function_bodies() {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| {
-                    diagnostic.code == orange_model::validation::DiagnosticCode::VariableScope
+                    diagnostic.code == crate::validation::DiagnosticCode::VariableScope
                         && diagnostic.subject.node == Some(nid(1))
                 })
         );
@@ -759,7 +759,7 @@ fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
         let output_types: Vec<_> = contract
             .ports
             .iter()
-            .filter(|port| port.direction == orange_model::document::PortDirection::Output)
+            .filter(|port| port.direction == crate::document::PortDirection::Output)
             .map(|port| (port.port_id.as_str(), port.ty.as_ref().unwrap().to_string()))
             .collect();
         assert_eq!(
@@ -798,7 +798,7 @@ fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
             registry
                 .contract(&doc, doc.node(nid(3)).unwrap())
                 .unwrap_err(),
-            orange_model::catalog::ContractError::UpdateConstraint
+            crate::catalog::ContractError::UpdateConstraint
         );
         let _ = doc.revert(lost_eq.committed.inverse).unwrap();
         assert_eq!(content(&doc), after);
@@ -809,9 +809,9 @@ fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
 /// share a projected signature.
 #[test]
 fn same_definition_nodes_in_one_component_keep_distinct_signatures() {
+    use crate::catalog::{Determinism, NodeDefinition, Ports};
+    use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
     use common::generic::{core_converters, port, registry_builder};
-    use orange_model::catalog::{Determinism, NodeDefinition, Ports};
-    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
     let param = |name: &str| serde_json::from_value(json!({"name": name})).unwrap();
     let registry = registry_builder(core_converters(), None)
         .definition(NodeDefinition {
@@ -891,9 +891,9 @@ fn a_shared_failed_argument_check_names_every_node() {
 /// inference reports no conflict for it and solves the node from its other evidence.
 #[test]
 fn concrete_edges_at_a_generic_node_are_left_to_the_validator() {
+    use crate::catalog::{Determinism, NodeDefinition, Ports};
+    use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
     use common::generic::{core_converters, port, registry_builder};
-    use orange_model::catalog::{Determinism, NodeDefinition, Ports};
-    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
     let registry = registry_builder(core_converters(), None)
         .definition(NodeDefinition {
             definition: DefinitionRef {

@@ -1,12 +1,12 @@
 //! Type-only generic inference for graph-local function calls.
 
-use crate::common;
+use crate::behaviour::common;
 
+use crate::document::{FunctionDecl, NodeInstance};
+use crate::inference::{InferenceIssue, apply_inferred, plan_edit};
+use crate::{BodyRef, DocCommand, GraphDocument, from_json};
 use common::generic::{add, data_edge, registry, typed_sink, typed_source};
 use common::{content, function_id, minimal_document, nid, node_id};
-use orange_model::document::{FunctionDecl, NodeInstance};
-use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
-use orange_model::{BodyRef, DocCommand, GraphDocument, from_json};
 use serde_json::{Value as Json, json};
 
 fn generic_function() -> Json {
@@ -412,7 +412,7 @@ fn nested_call_parameters_infer_from_output_context_without_touching_other_calls
         &mut doc,
         [DocCommand::SetLiteral {
             port: common::port(3, "value"),
-            literal: Some(orange_model::document::literal::Literal::value(
+            literal: Some(crate::document::literal::Literal::value(
                 "core/list@1<core/i64@1>".parse().unwrap(),
                 json!(["1"]),
             )),

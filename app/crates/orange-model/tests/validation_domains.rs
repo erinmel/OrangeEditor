@@ -1,9 +1,7 @@
-use orange_model::document::BodyRef;
-use orange_model::id::FunctionId;
-use orange_model::validation::{
-    DiagnosticCode, DomainValidation, HostOrigin, validate_body_domains,
-};
-use orange_model::{GraphDocument, from_json, to_json};
+use crate::document::BodyRef;
+use crate::id::FunctionId;
+use crate::validation::{DiagnosticCode, DomainValidation, HostOrigin, validate_body_domains};
+use crate::{GraphDocument, from_json, to_json};
 use serde_json::{Value, json};
 
 const FUNCTION: &str = "30000000-0000-4000-8000-000000000001";
@@ -146,8 +144,8 @@ fn domain_values_round_trip_unchanged_on_root_and_function_bodies() {
 
 #[test]
 fn combined_analysis_does_not_interpret_foreign_bodies_as_control() {
-    use orange_model::catalog::RegistrySnapshot;
-    use orange_model::validation::{ValidationCheck, analyze, analyze_with_effects, validate};
+    use crate::catalog::RegistrySnapshot;
+    use crate::validation::{ValidationCheck, analyze, analyze_with_effects, validate};
     use std::collections::BTreeMap;
     let document = document(None, Some(json!("private.domain/marker")));
     let mut wire = serde_json::to_value(&document).unwrap();
@@ -218,9 +216,9 @@ fn combined_analysis_does_not_interpret_foreign_bodies_as_control() {
 
 #[test]
 fn domain_edits_and_undo_change_actual_coverage_and_freshness() {
-    use orange_model::DocCommand;
-    use orange_model::catalog::RegistrySnapshot;
-    use orange_model::validation::{ValidationCheck, analyze};
+    use crate::DocCommand;
+    use crate::catalog::RegistrySnapshot;
+    use crate::validation::{ValidationCheck, analyze};
     let mut document = document(None, None);
     let registry = RegistrySnapshot::core(origin());
     let initial = analyze(&document, &registry);

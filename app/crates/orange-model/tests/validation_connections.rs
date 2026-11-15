@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::validation::{
     ConnectionValidation, DiagnosticCode, HostOrigin, validate_connections, validate_nodes,
 };
-use orange_model::{GraphDocument, to_json};
+use crate::{GraphDocument, to_json};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 

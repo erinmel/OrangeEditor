@@ -37,11 +37,6 @@ impl VisitCounts {
         bodies: 0,
     };
 
-    /// Whether the pass visited nothing.
-    pub fn is_zero(&self) -> bool {
-        *self == Self::ZERO
-    }
-
     /// Every body, node and edge of `document`, with `ports` port descriptors: what a pass
     /// that iterates every body's nodes and edges once reads.
     pub(super) fn whole(document: &crate::document::GraphDocument, ports: usize) -> Self {

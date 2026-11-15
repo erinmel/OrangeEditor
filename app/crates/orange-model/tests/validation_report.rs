@@ -1,18 +1,18 @@
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeMap;
 
-use common::registry::Facts;
-use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
-use orange_model::document::{DefinitionRef, NodeKind};
-use orange_model::id::{FunctionId, NodeId};
-use orange_model::validation::{
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
+use crate::document::{DefinitionRef, NodeKind};
+use crate::id::{FunctionId, NodeId};
+use crate::validation::{
     AnalysisLimits, AnalysisWorker, Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin,
     LeafEffects, ValidationCheck, VariableWrite, WriteOperation, analyze, analyze_functions,
     analyze_with_effects, sort_diagnostics, validate, validate_connections, validate_data_cycles,
     validate_inputs, validate_nodes, validate_regions, validate_with_effects,
 };
-use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
+use crate::{GraphDocument, ValidationReport, from_json, to_json};
+use common::registry::Facts;
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -122,30 +122,24 @@ fn merged(
     let connections = validate_connections(doc, &nodes.resolved, registry);
     let data_cycles = validate_data_cycles(doc, &nodes.resolved, &connections, registry);
     let regions = validate_regions(doc, &nodes.resolved, &connections, registry);
-    let control = orange_model::validation::validate_control_cycles(
-        doc,
-        &nodes.resolved,
-        &connections,
-        registry,
-    );
+    let control =
+        crate::validation::validate_control_cycles(doc, &nodes.resolved, &connections, registry);
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
-    diagnostics.extend(orange_model::validation::validate_declaration_types(
-        doc, registry,
-    ));
+    diagnostics.extend(crate::validation::validate_declaration_types(doc, registry));
     diagnostics.extend(validate_inputs(doc, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
-    diagnostics.extend(orange_model::validation::validate_exports(
+    diagnostics.extend(crate::validation::validate_exports(
         doc,
         &nodes.resolved,
         registry,
     ));
-    diagnostics.extend(orange_model::validation::validate_config(doc, registry));
+    diagnostics.extend(crate::validation::validate_config(doc, registry));
     let explained_nodes: std::collections::BTreeSet<_> = diagnostics
         .iter()
-        .filter(|item| item.severity == orange_model::validation::Severity::Error)
+        .filter(|item| item.severity == crate::validation::Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
     diagnostics.extend(

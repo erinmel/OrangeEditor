@@ -3,7 +3,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use orange_model::{from_json, to_json};
+use crate::{from_json, to_json};
 use serde_json::json;
 
 fn id(prefix: u8, n: usize) -> String {

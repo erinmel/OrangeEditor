@@ -4,9 +4,7 @@ use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{
-    BodyRef, GraphDocument, PortDirection, PortKind, SignatureSnapshot, Suspends,
-};
+use crate::document::{BodyRef, GraphDocument, PortDirection, PortKind, Suspends};
 use crate::id::NodeId;
 
 use super::connections::ConnectionValidation;
@@ -24,42 +22,7 @@ pub struct ControlCycleValidation {
     pub incomplete_nodes: BTreeSet<NodeId>,
 }
 
-impl ControlCycleValidation {
-    /// True only when analysis completed and found no unsuspended control cycle.
-    pub fn is_valid(&self) -> bool {
-        self.incomplete_nodes.is_empty()
-            && self
-                .diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.severity != Severity::Error)
-    }
-}
-
 type Graph = BTreeMap<NodeId, BTreeSet<NodeId>>;
-
-/// Builds C per body from valid exec and event-to-exec edges between fresh resolved nodes.
-///
-/// Implicit structured-loop back edges are not edges of the document, so they never form a
-/// cycle here. Every explicit cycle needs a node whose resolved `suspends` is `always`; a
-/// `maybe`, unknown or unresolved node never certifies. The check removes certifying nodes and
-/// reports each remaining cyclic component, which is exactly "some cycle avoids them".
-pub fn validate_control_cycles(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    connections: &ConnectionValidation,
-    registry: &RegistrySnapshot,
-) -> ControlCycleValidation {
-    let ports = PortResolver::new(document, resolved);
-
-    validate_control_cycles_in(
-        document,
-        &ports,
-        connections,
-        registry,
-        Scope::All,
-        Tally::NONE,
-    )
-}
 
 /// [`validate_control_cycles`] over the bodies in `scope`.
 pub(crate) fn validate_control_cycles_in(

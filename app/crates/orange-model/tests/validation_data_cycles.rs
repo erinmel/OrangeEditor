@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{
     GraphDocument, NodeKind, OutputSource, PortDescriptor, PortRef, SignatureSnapshot,
 };
-use orange_model::from_json;
-use orange_model::id::{EdgeId, NodeId, PortId, PortKey};
-use orange_model::validation::{
+use crate::from_json;
+use crate::id::{EdgeId, NodeId, PortId, PortKey};
+use crate::validation::{
     ConnectionValidation, DataCycleValidation, Diagnostic, DiagnosticCode, HostOrigin, Subject,
     validate_data_cycles,
 };
@@ -226,8 +226,8 @@ fn implicit_exec_and_event_edges_are_resolved_but_excluded_from_data_graph() {
         vec![],
     );
     let event_signature = signature(vec![PortDescriptor {
-        direction: orange_model::document::PortDirection::Output,
-        kind: orange_model::document::PortKind::Event,
+        direction: crate::document::PortDirection::Output,
+        kind: crate::document::PortKind::Event,
         ty: Some("core/i64@1".parse().unwrap()),
         source: Some(OutputSource::Payload),
         ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
@@ -391,8 +391,7 @@ fn sparse_variadic_instances_are_vertices_by_ordered_concrete_key() {
     let mut fixture = serde_json::to_value(&doc).unwrap();
     fixture["edges"][1]["to"]["port"] = json!("items#7");
     let orphan: GraphDocument = serde_json::from_value(fixture).unwrap();
-    let connections =
-        orange_model::validation::validate_connections(&orphan, &signatures, &registry());
+    let connections = crate::validation::validate_connections(&orphan, &signatures, &registry());
     assert!(
         connections
             .diagnostics

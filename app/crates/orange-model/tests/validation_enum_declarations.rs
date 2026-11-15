@@ -2,17 +2,17 @@
 //! §10.2, §11.1): declarations resolve through the registry's schemas, initializers decode
 //! against the current schema, and map keys need `hash` + `eq`.
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::sync::Arc;
 
+use crate::catalog::{RegistryBuilder, RegistrySnapshot};
+use crate::type_term::TypeTerm;
+use crate::types::{Constraint, TypeRegistryBuilder};
+use crate::validation::{DiagnosticCode, HostOrigin};
+use crate::value::literal_codec::{EnumSchema, VariantSchema};
+use crate::{analyze, from_json};
 use common::{minimal_document, node_id};
-use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
-use orange_model::type_term::TypeTerm;
-use orange_model::types::{Constraint, TypeRegistryBuilder};
-use orange_model::validation::{DiagnosticCode, HostOrigin};
-use orange_model::value::literal_codec::{EnumSchema, VariantSchema};
-use orange_model::{analyze, from_json};
 use serde_json::{Value, json};
 
 const LIGHT: &str = "org.example/light@1";

@@ -1,12 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{
-    GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot,
-};
-use orange_model::from_json;
-use orange_model::id::{EdgeId, NodeId, PortId, PortKey};
-use orange_model::validation::{
+use crate::catalog::RegistrySnapshot;
+use crate::document::{GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot};
+use crate::from_json;
+use crate::id::{EdgeId, NodeId, PortId, PortKey};
+use crate::validation::{
     ConnectionValidation, Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics,
     validate_availability, validate_regions,
 };
@@ -56,7 +54,7 @@ fn node(n: u8, definition: &str, kind: NodeKind, ports: Vec<PortDescriptor>) -> 
     }
 }
 
-fn int() -> orange_model::id::TypeExpr {
+fn int() -> crate::id::TypeExpr {
     "core/i64@1".parse().unwrap()
 }
 

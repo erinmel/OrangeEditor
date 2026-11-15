@@ -1,13 +1,13 @@
 //! Structural import bounds, ambiguous-lock rejection and the checked Serde boundary.
 
-use crate::common;
+use crate::behaviour::common;
 
-use common::{branch_node, minimal_document};
-use orange_model::document::codec::{
+use crate::document::codec::{
     ImportBudget, ImportLimits, from_json_with_budget, from_json_with_limits,
 };
-use orange_model::error::ImportResource;
-use orange_model::{CodecError, GraphDocument, from_json, to_json};
+use crate::error::ImportResource;
+use crate::{CodecError, GraphDocument, from_json, to_json};
+use common::{branch_node, minimal_document};
 use serde_json::{Value, json};
 
 fn package(id: &str, version: &str, digest: &str) -> Value {

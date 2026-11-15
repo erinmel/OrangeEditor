@@ -1,6 +1,6 @@
-use orange_model::GraphDocument;
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
+use crate::GraphDocument;
+use crate::catalog::RegistrySnapshot;
+use crate::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";

@@ -3,19 +3,19 @@
 
 use std::sync::Arc;
 
-use orange_model::catalog::{
+use crate::catalog::{
     Determinism, NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
     RegistrySnapshot,
 };
-use orange_model::document::{DefinitionRef, NodeKind, ProviderBinding};
-use orange_model::edit::PlanApplyError;
-use orange_model::id::NodeId;
-use orange_model::rebind::{
+use crate::document::{DefinitionRef, NodeKind, ProviderBinding};
+use crate::edit::PlanApplyError;
+use crate::id::NodeId;
+use crate::rebind::{
     RebindError, RebindOutcome, RebindPlan, RebindRequest, RebindSelection, apply_rebind,
     plan_rebind,
 };
-use orange_model::validation::{DiagnosticCode, HostOrigin};
-use orange_model::{DocCommand, GraphDocument, validate};
+use crate::validation::{DiagnosticCode, HostOrigin};
+use crate::{DocCommand, GraphDocument, validate};
 use serde_json::json;
 
 const A1: &str = "10000000-0000-4000-8000-000000000001";

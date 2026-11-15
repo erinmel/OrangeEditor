@@ -1,15 +1,15 @@
 //! The authoring orphan projection and the validator agree on which edges have no port,
 //! including variadic instances (11 §4.5).
 
-use crate::common;
+use crate::behaviour::common;
 
 use std::collections::BTreeSet;
 
+use crate::catalog::RegistrySnapshot;
+use crate::id::EdgeId;
+use crate::validation::{DiagnosticCode, HostOrigin};
+use crate::{DocCommand, DocIndex, GraphDocument, from_json, validate};
 use common::{branch_node, edge_id, eid, minimal_document, nid, node_id};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::id::EdgeId;
-use orange_model::validation::{DiagnosticCode, HostOrigin};
-use orange_model::{DocCommand, DocIndex, GraphDocument, from_json, validate};
 use serde_json::json;
 
 fn registry() -> std::sync::Arc<RegistrySnapshot> {

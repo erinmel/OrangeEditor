@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use orange_model::GraphDocument;
-use orange_model::catalog::{CallInterfaceError, RegistrySnapshot, call_interface};
-use orange_model::document::PortDirection;
-use orange_model::validation::HostOrigin;
+use crate::GraphDocument;
+use crate::catalog::{CallInterfaceError, RegistrySnapshot, call_interface};
+use crate::document::PortDirection;
+use crate::validation::HostOrigin;
 use serde_json::{Value, json};
 
 const F1: &str = "10000000-0000-4000-8000-000000000001";
@@ -59,7 +59,7 @@ fn document(functions: Value, nodes: Value) -> GraphDocument {
 fn call(
     doc: &GraphDocument,
     id: &str,
-) -> Result<Option<orange_model::catalog::CallInterface>, CallInterfaceError> {
+) -> Result<Option<crate::catalog::CallInterface>, CallInterfaceError> {
     call_interface(doc, doc.node(id.parse().unwrap()).unwrap(), &registry())
 }
 

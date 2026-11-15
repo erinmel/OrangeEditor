@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use orange_model::document::literal::{Literal, LiteralPayload};
-use orange_model::value::literal_codec::{SchemaSet, decode, encode};
-use orange_model::{LiteralError, Value};
+use crate::document::literal::{Literal, LiteralPayload};
+use crate::value::literal_codec::{SchemaSet, decode, encode};
+use crate::{LiteralError, Value};
 use serde_json::{Value as Json, json};
 
 fn literal(ty: &str, value: Json) -> Literal {
