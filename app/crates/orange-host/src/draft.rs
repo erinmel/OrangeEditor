@@ -10,12 +10,45 @@ use super::*;
 use orange_model::validation::{AnalysisOptions, AnalysisSession};
 use orange_model::{ChangeSet, Committed, DocCommand, Inverse, TxError};
 
-/// The analysis kept beside a draft, and the changes it has not seen yet.
+/// The analysis kept beside a draft, with the registry it was made against.
 #[derive(Debug)]
 struct Analysis {
-    generation: u64,
+    registry: Arc<RegistrySnapshot>,
     effects: BTreeMap<NodeId, LeafEffects>,
     session: AnalysisSession,
+}
+
+impl Analysis {
+    fn new(document: &GraphDocument, registry: &Arc<RegistrySnapshot>) -> Self {
+        let effects = leaf_effects(document);
+        Self {
+            registry: Arc::clone(registry),
+            session: AnalysisSession::new(
+                document,
+                registry,
+                effects.clone(),
+                AnalysisOptions::default(),
+            ),
+            effects,
+        }
+    }
+
+    /// Follows one committed change. A session is given each change while the document
+    /// is in that change's resulting state; handing it several at once would make all
+    /// but the last look stale and force a full analysis for each.
+    fn follow(&mut self, document: &GraphDocument, change: &ChangeSet) {
+        let options = AnalysisOptions::default();
+        let _ = self
+            .session
+            .update(document, &self.registry, change, options);
+        let effects = leaf_effects(document);
+        if effects != self.effects {
+            let _ =
+                self.session
+                    .set_leaf_effects(document, &self.registry, effects.clone(), options);
+            self.effects = effects;
+        }
+    }
 }
 
 /// A document being edited: the parsed graph, its undo history, and validation that
@@ -27,8 +60,7 @@ pub struct Draft {
     document: GraphDocument,
     undo: Vec<Inverse>,
     redo: Vec<Inverse>,
-    /// Committed changes since `analysis` last saw the document, oldest first.
-    unseen: Vec<ChangeSet>,
+    /// Kept once [`Host::problems`] has been asked; then it follows every edit.
     analysis: Option<Analysis>,
 }
 
@@ -41,7 +73,6 @@ impl Draft {
             document,
             undo: Vec::new(),
             redo: Vec::new(),
-            unseen: Vec::new(),
             analysis: None,
         }
     }
@@ -54,6 +85,12 @@ impl Draft {
     /// The document's text, in the saved format.
     pub fn text(&self) -> Result<String, HostError> {
         to_json(&self.document).map_err(|error| refused(&error))
+    }
+
+    /// What the kept analysis did for the last edit, once [`Host::problems`] has been
+    /// asked: whether it re-checked a scope or ran in full, and why.
+    pub fn analysis_work(&self) -> Option<&EditStats> {
+        self.analysis.as_ref().map(|kept| kept.session.stats())
     }
 
     /// Whether there is an edit to undo, and one to do again.
@@ -72,18 +109,22 @@ impl Draft {
     }
 
     fn step(&mut self, back: bool) -> bool {
-        let (from, to) = if back {
-            (&mut self.undo, &mut self.redo)
+        let popped = if back {
+            self.undo.pop()
         } else {
-            (&mut self.redo, &mut self.undo)
+            self.redo.pop()
         };
-        let Some(inverse) = from.pop() else {
+        let Some(inverse) = popped else {
             return false;
         };
         match self.document.revert(inverse) {
             Ok(committed) => {
-                to.push(committed.inverse);
-                self.unseen.push(committed.change_set);
+                if back {
+                    self.redo.push(committed.inverse);
+                } else {
+                    self.undo.push(committed.inverse);
+                }
+                self.follow(&committed.change_set);
                 true
             }
             // Every inverse was made from this document, so it always applies; a
@@ -138,14 +179,30 @@ impl Draft {
             let _ = self.undo.remove(0);
         }
         self.redo.clear();
-        self.unseen.push(committed.change_set);
+        self.follow(&committed.change_set);
     }
 
-    /// Takes back the edit just committed, leaving no trace in the history: for an
-    /// operation that finds its result is not allowed.
-    pub(crate) fn withdraw(&mut self) {
+    fn follow(&mut self, change: &ChangeSet) {
+        if let Some(analysis) = &mut self.analysis {
+            analysis.follow(&self.document, change);
+        }
+    }
+
+    /// Applies `commands` as a trial that [`Draft::withdraw`] can take back with the
+    /// history exactly as it was, redo included.
+    pub(crate) fn try_commit(
+        &mut self,
+        commands: impl IntoIterator<Item = DocCommand>,
+    ) -> Result<Option<Vec<Inverse>>, HostError> {
+        let redo = self.redo.clone();
+        Ok(self.commit(commands)?.then_some(redo))
+    }
+
+    /// Takes back a trial from [`Draft::try_commit`] and restores the redo history it
+    /// cleared: for an operation that finds its result is not allowed.
+    pub(crate) fn withdraw(&mut self, redo: Vec<Inverse>) {
         if self.undo() {
-            let _ = self.redo.pop();
+            self.redo = redo;
         }
     }
 
@@ -232,46 +289,16 @@ impl Host {
         if !self.graphs.is_empty() {
             // Linked graphs rewrite the document before it is checked, so there is no
             // edit of the linked form to follow.
-            draft.unseen.clear();
             draft.analysis = None;
             return self.check(&draft.text()?);
         }
-        let options = AnalysisOptions::default();
-        let effects = leaf_effects(&draft.document);
-        let unseen = std::mem::take(&mut draft.unseen);
+        // Edits were followed as they were made; only new packages start over.
         let current = draft
             .analysis
             .as_ref()
-            .is_some_and(|kept| kept.generation == registry.generation());
-        match &mut draft.analysis {
-            Some(kept) if current => {
-                for change in &unseen {
-                    let _ = kept
-                        .session
-                        .update(&draft.document, registry, change, options);
-                }
-                if kept.effects != effects {
-                    let _ = kept.session.set_leaf_effects(
-                        &draft.document,
-                        registry,
-                        effects.clone(),
-                        options,
-                    );
-                    kept.effects = effects;
-                }
-            }
-            _ => {
-                draft.analysis = Some(Analysis {
-                    generation: registry.generation(),
-                    session: AnalysisSession::new(
-                        &draft.document,
-                        registry,
-                        effects.clone(),
-                        options,
-                    ),
-                    effects,
-                });
-            }
+            .is_some_and(|kept| kept.registry.generation() == registry.generation());
+        if !current {
+            draft.analysis = Some(Analysis::new(&draft.document, registry));
         }
         let Some(kept) = &draft.analysis else {
             return Ok(Vec::new());

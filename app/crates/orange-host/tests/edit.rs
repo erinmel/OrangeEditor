@@ -424,3 +424,49 @@ fn copied_nodes_paste_with_their_wire_under_new_ids_and_keep_their_variable() {
     assert_eq!(host.draft_view(&draft).unwrap().nodes.len(), 2);
     assert!(host.paste(&mut draft, "some text", [0.0, 0.0]).is_err());
 }
+
+#[test]
+fn a_refused_wire_keeps_what_could_be_done_again() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, _trigger, set) = built(&host);
+    let concat = host
+        .add_node(&mut draft, "org.orange.text/concat", [0.0, 200.0])
+        .unwrap();
+    let joined = output(&host, &draft, concat);
+    assert!(
+        host.set_input(&mut draft, (set, "value"), Some("9"))
+            .unwrap()
+    );
+    assert!(draft.undo());
+    assert_eq!(draft.can_undo(), (true, true));
+    match host.connect(&mut draft, (concat, &joined), (set, "value")) {
+        Err(HostError::Invalid(_)) => {}
+        other => panic!("the wire was not refused: {other:?}"),
+    }
+    // The refused wire left the undone value to be done again.
+    assert_eq!(draft.can_undo(), (true, true));
+    assert!(draft.redo());
+    let view = host.draft_view(&draft).unwrap();
+    let node = view.nodes.iter().find(|node| node.id == set).unwrap();
+    let value = node.ports.iter().find(|port| port.id == "value").unwrap();
+    assert_eq!(value.value.as_deref(), Some("9"));
+}
+
+#[test]
+fn edits_between_checks_are_followed_without_starting_over() {
+    use orange_host::SessionWork;
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, _trigger, set) = built(&host);
+    let _ = host.problems(&mut draft).unwrap();
+    // Several edits before the next check, as the editor makes a move then an edit.
+    assert!(draft.place(&[(set, [500.0, 80.0])]).unwrap());
+    assert!(
+        host.set_input(&mut draft, (set, "value"), Some("9"))
+            .unwrap()
+    );
+    assert!(draft.undo());
+    assert!(draft.redo());
+    let work = draft.analysis_work().unwrap();
+    assert!(!matches!(work.work, SessionWork::Rebuild(_)), "{work:?}");
+    assert_eq!(same_problems(&host, &mut draft), 0);
+}

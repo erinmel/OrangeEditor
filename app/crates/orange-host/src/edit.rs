@@ -192,9 +192,9 @@ impl Host {
         .map_err(|error| refused(&error))?;
         let edge_id = edge.id;
         commands.push(DocCommand::Connect { edge });
-        if !draft.commit(commands)? {
+        let Some(redo) = draft.try_commit(commands)? else {
             return Ok(false);
-        }
+        };
         // Problems that name the new wire are the reason it cannot be made.
         let against: Vec<Diagnostic> = self
             .problems(draft)?
@@ -204,7 +204,7 @@ impl Host {
         if against.is_empty() {
             Ok(true)
         } else {
-            draft.withdraw();
+            draft.withdraw(redo);
             Err(HostError::Invalid(against))
         }
     }
