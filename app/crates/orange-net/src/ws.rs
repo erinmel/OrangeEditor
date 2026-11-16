@@ -48,6 +48,17 @@ const QUEUE_FULL: KernelFault = fault(
     "The connection has too many messages waiting to be sent.",
 );
 
+/// What a listening entry fires for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Listen {
+    Text,
+    Binary,
+    /// The socket has opened.
+    Connected,
+    /// An open socket has closed or failed.
+    Disconnected,
+}
+
 /// One message waiting to be sent.
 #[derive(Debug, Clone)]
 enum Outgoing {
@@ -60,8 +71,10 @@ struct Shared {
     /// Headers of the opening handshake; they can be credentials.
     headers: Vec<(String, String)>,
     outgoing: Mutex<VecDeque<Outgoing>>,
-    /// Each listener with whether it takes binary messages instead of text ones.
-    listeners: Listeners<bool>,
+    /// Each listener with what it fires for.
+    listeners: Listeners<Listen>,
+    /// Whether the socket is open now.
+    connected: AtomicBool,
     /// Set once a flow has attached its triggers; the socket is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
@@ -78,11 +91,11 @@ impl Shared {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
-    /// Fires every listening entry. A flow that has ended is forgotten; one whose
-    /// mailbox is full misses this message, as its bounded mailbox requires.
-    fn deliver(&self, binary: bool, payload: &Value) {
+    /// Fires every entry listening for `what`. A flow that has ended is forgotten; one
+    /// whose mailbox is full misses this firing, as its bounded mailbox requires.
+    fn deliver(&self, what: Listen, payload: &Value) {
         self.listeners
-            .emit(|takes_binary| (*takes_binary == binary).then(|| payload.clone()));
+            .emit(|listens| (*listens == what).then(|| payload.clone()));
     }
 }
 
@@ -112,14 +125,19 @@ fn set_poll(socket: &WebSocket<MaybeTlsStream<TcpStream>>) {
     let _ = stream.set_read_timeout(Some(POLL));
 }
 
-/// Serves one established socket until it fails, closes or the session ends.
-fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
+/// Why a served socket stopped, as the disconnected entry's payload says it.
+const CLOSED: &str = "closed by the server";
+const FAILED: &str = "connection lost";
+
+/// Serves one established socket until it fails, closes or the session ends, and says
+/// why it stopped.
+fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> &'static str {
     set_poll(socket);
     loop {
         if shared.stopped() {
             let _ = socket.close(None);
             let _ = socket.flush();
-            return;
+            return "connection closed";
         }
         loop {
             let next = shared
@@ -140,22 +158,25 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .push_front(text);
-                    return;
+                    return FAILED;
                 }
             }
         }
         match socket.read() {
             Ok(Message::Text(text)) => {
-                shared.deliver(false, &Value::Str(Arc::new(text.as_str().to_owned())));
+                shared.deliver(
+                    Listen::Text,
+                    &Value::Str(Arc::new(text.as_str().to_owned())),
+                );
             }
             Ok(Message::Binary(data)) => {
-                shared.deliver(true, &Value::Bytes(Arc::new(data.to_vec())));
+                shared.deliver(Listen::Binary, &Value::Bytes(Arc::new(data.to_vec())));
             }
-            Ok(Message::Close(_)) => return,
+            Ok(Message::Close(_)) => return CLOSED,
             Ok(_) => {}
             Err(Error::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(_) => return,
+            Err(_) => return FAILED,
         }
     }
 }
@@ -187,7 +208,13 @@ fn run(shared: &Shared) {
             && let Ok((mut socket, _)) = tungstenite::connect(request)
         {
             retry = FIRST_RETRY;
-            serve(shared, &mut socket);
+            shared.connected.store(true, Ordering::Release);
+            shared.deliver(Listen::Connected, &Value::Str(Arc::new(shared.url.clone())));
+            let why = serve(shared, &mut socket);
+            shared.connected.store(false, Ordering::Release);
+            if !shared.stopped() {
+                shared.deliver(Listen::Disconnected, &Value::Str(Arc::new(why.to_owned())));
+            }
         }
         // Wait before reconnecting, but notice the session ending promptly.
         let mut waited = Duration::ZERO;
@@ -215,6 +242,7 @@ impl ConnectionAdapter for WsAdapter {
             headers: crate::auth_headers(settings)?,
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Listeners::new(),
+            connected: AtomicBool::new(false),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
@@ -261,11 +289,30 @@ impl ServiceNode for WsSend {
     }
 }
 
-/// Fires its entry once per text message received on the connection, or once per
-/// binary message.
+/// What a connection is doing now: whether its socket is open and how many messages
+/// wait to be sent. Reading it never waits for the socket.
+#[derive(Debug)]
+pub(crate) struct WsStatus;
+impl ServiceNode for WsStatus {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let shared = session(call.session).ok_or(NO_SESSION)?;
+        let queued = shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        Ok(vec![
+            Value::Bool(shared.connected.load(Ordering::Acquire)),
+            Value::I64(i64::try_from(queued).unwrap_or(i64::MAX)),
+        ])
+    }
+}
+
+/// Fires its entry once per text message received on the connection, once per
+/// binary message, or each time the socket opens or closes.
 #[derive(Debug)]
 pub(crate) struct WsMessage {
-    pub binary: bool,
+    pub listen: Listen,
 }
 impl ServiceSource for WsMessage {
     fn start(
@@ -278,7 +325,7 @@ impl ServiceSource for WsMessage {
         Ok(Listeners::listen(
             Arc::clone(shared),
             |shared| &shared.listeners,
-            self.binary,
+            self.listen,
             emitter,
         ))
     }
@@ -286,9 +333,39 @@ impl ServiceSource for WsMessage {
 
 pub(crate) fn ws_send_definition() -> String {
     Definition::node(crate::PACKAGE, "ws-send", "Send WebSocket message")
+        .description("Puts a text message in the connection's send queue and continues: Queued means queued, not delivered. It fails when the queue is full.")
         .category("network", "Network")
         .uses(crate::WS_ADAPTER)
+        .then_label("Queued")
         .input("text", "core/string@1")
+        .build()
+}
+
+pub(crate) fn ws_status_definition() -> String {
+    Definition::node(crate::PACKAGE, "ws-status", "WebSocket status")
+        .description("Reads whether the connection's socket is open now and how many messages wait in its send queue.")
+        .category("network", "Network")
+        .uses(crate::WS_ADAPTER)
+        .output("connected", "core/bool@1")
+        .output("queued", "core/i64@1")
+        .build()
+}
+
+pub(crate) fn ws_connected_definition() -> String {
+    Definition::entry(crate::PACKAGE, "ws-connected", "On WebSocket connected")
+        .description("Fires each time the connection's socket opens, with its URL.")
+        .category("network", "Network")
+        .uses(crate::WS_ADAPTER)
+        .payload("core/string@1")
+        .build()
+}
+
+pub(crate) fn ws_disconnected_definition() -> String {
+    Definition::entry(crate::PACKAGE, "ws-disconnected", "On WebSocket disconnected")
+        .description("Fires each time an open socket closes or fails, with why. The connection then reconnects by itself.")
+        .category("network", "Network")
+        .uses(crate::WS_ADAPTER)
+        .payload("core/string@1")
         .build()
 }
 
@@ -306,8 +383,10 @@ pub(crate) fn ws_send_bytes_definition() -> String {
         "ws-send-bytes",
         "Send WebSocket binary message",
     )
+    .description("Puts a binary message in the connection's send queue and continues: Queued means queued, not delivered. It fails when the queue is full.")
     .category("network", "Network")
     .uses(crate::WS_ADAPTER)
+    .then_label("Queued")
     .input("data", "core/bytes@1")
     .build()
 }

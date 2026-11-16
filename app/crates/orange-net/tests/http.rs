@@ -136,6 +136,39 @@ fn a_node_sends_a_request_on_the_documents_connection() {
 }
 
 #[test]
+fn a_get_with_nothing_typed_sends_no_body_and_a_404_is_an_answer_not_a_failure() {
+    let mut host = host();
+    let mut saved: Json =
+        serde_json::from_str(&document(&host, graph_connection(&server_with(1, 404)))).unwrap();
+    for node in saved["nodes"].as_array_mut().unwrap() {
+        if node["definition_id"] == orange_net::HTTP_REQUEST {
+            // Method, path and body all left to their defaults: a bare GET.
+            let _ = node.as_object_mut().unwrap().remove("inputs");
+        }
+    }
+    saved["nodes"].as_array_mut().unwrap().push(set(7, 102));
+    saved["edges"].as_array_mut().unwrap().extend([
+        edge(7, 5, "then", 7, "in"),
+        edge(8, 3, "success", 7, "value"),
+    ]);
+    saved["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": id(102), "name": "ok", "type": "core/bool@1", "scope": "run"}));
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the answer", || read(&host, flow, 102).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(404)));
+    assert_eq!(read(&host, flow, 102), Some(Value::Bool(false)));
+    let Some(Value::Str(reply)) = read(&host, flow, 101) else {
+        panic!("the reply is text");
+    };
+    assert_eq!(reply.as_str(), "GET / HTTP/1.1|");
+}
+
+#[test]
 fn two_documents_use_one_shared_connection_whose_settings_stay_in_the_host() {
     let mut host = host();
     let shared = json!({"id": CONNECTION, "name": "api", "adapter": orange_net::HTTP_ADAPTER,
