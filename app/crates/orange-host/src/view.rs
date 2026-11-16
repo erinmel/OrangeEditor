@@ -592,7 +592,7 @@ fn human_duration(nanoseconds: &str) -> Option<String> {
         (1_000, "µs"),
     ];
     for (size, unit) in units {
-        if ns >= size && ns % (size / 10).max(1) == 0 {
+        if ns >= size && ns.is_multiple_of((size / 10).max(1)) {
             let whole = ns / size;
             let tenths = (ns % size) * 10 / size;
             return Some(if tenths == 0 {
