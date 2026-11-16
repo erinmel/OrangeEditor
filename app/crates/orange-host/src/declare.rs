@@ -121,6 +121,27 @@ impl Host {
             .unwrap_or_default()
     }
 
+    /// The number settings of `adapter` an editor can show as fields, such as an audio
+    /// input's threshold. Empty for an adapter that has none or that this host lacks.
+    pub fn adapter_fields(&self, adapter: &str) -> Vec<SettingField> {
+        self.adapters
+            .get(adapter)
+            .map(|found| found.fields())
+            .unwrap_or_default()
+    }
+
+    /// A live reading of what a connection of `adapter` with `settings` would see, such
+    /// as an input device's level, for an editor to show while a person sets it up.
+    /// It runs apart from every flow and stops when dropped. `None` when the adapter
+    /// has nothing to show; an error says why it cannot start.
+    pub fn probe(
+        &self,
+        adapter: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<Box<dyn Probe>, String>> {
+        self.adapters.get(adapter)?.probe(settings)
+    }
+
     /// Declares a variable, or changes the one with `variable.id`, keeping what this
     /// does not set. Returns the variable's ID.
     pub fn declare_variable(

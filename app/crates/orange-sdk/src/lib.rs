@@ -152,6 +152,45 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn choices(&self) -> Vec<SettingChoices> {
         Vec::new()
     }
+    /// Number settings an editor can show as fields, such as an input's threshold.
+    /// The default offers none.
+    fn fields(&self) -> Vec<SettingField> {
+        Vec::new()
+    }
+    /// A live reading of what a connection with `settings` would see, such as an input
+    /// device's level, for an editor to show while a person sets the connection up.
+    /// `None` when the adapter has nothing to show; an error says why it cannot.
+    /// Called on the editor's thread: it starts its work elsewhere and returns at once.
+    fn probe(&self, settings: &Map<String, Json>) -> Option<Result<Box<dyn Probe>, String>> {
+        let _ = settings;
+        None
+    }
+}
+
+/// A live reading from [`ConnectionAdapter::probe`]. Dropping it stops the work.
+pub trait Probe: Send + 'static {
+    /// The latest reading, or why there is none (the device could not be opened).
+    /// Never waits.
+    fn read(&self) -> Result<f64, String>;
+}
+
+/// A number setting of a connection, from [`ConnectionAdapter::fields`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingField {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    /// What it is called, such as "Threshold".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// The unit typed in, such as `dBFS` or `ms`.
+    pub unit: String,
+    pub min: f64,
+    pub max: f64,
+    /// What leaving it out means; `None` when that depends on other settings.
+    pub default: Option<f64>,
+    /// Only whole numbers.
+    pub whole: bool,
 }
 
 /// The values a connection setting can take on this machine, from
@@ -164,6 +203,9 @@ pub struct SettingChoices {
     /// What leaving the setting out means.
     pub unset: String,
     pub values: Vec<String>,
+    /// What each of `values` is called, in the same order, when the value is an ID a
+    /// person cannot read; empty shows the values themselves.
+    pub labels: Vec<String>,
     /// Why the values could not be listed, when they could not.
     pub problem: Option<String>,
 }
@@ -725,7 +767,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 4",
+        "orange-plugin 5",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
