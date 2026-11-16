@@ -869,3 +869,25 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 **Lowering:** the compiler treats value nodes with the language-owned projection already used by Select and Coalesce. A literal folds to a compile-time constant; a wired input forwards without a provider binding, so packages neither implement nor replace them (11 §16). Runtime and host need no new operation. The host view now shows a generic port's settled type (pin, else inferred) so a value can be typed on it.
 
 **Contracts:** 11 §8.4; FR-104. Verification is the focused `orange-host` and `orange-editor-ui` tests named in FR-104.
+
+## ADR-26 — Groups in the layout, extraction as a checked edit
+
+**Decision (2026-11-15; FR-111):** a group is presentation, as 11 §14 already says: `editor.groups.<id>` holds `name`, `color` (`#rrggbb`), `nodes` (top-level node IDs) and `collapsed`. The compiler, validation and signatures never read it, and a node is in at most one group. Groups list only nodes still at the top level, so deleting or extracting a node takes it out of its frame without a second edit, and an undo brings it back.
+
+"Make function" is the editor refactoring 11 §14 names: one transaction removes the selected nodes, adds a `FunctionDecl` holding them (same node IDs, with `core/function-entry` and `core/return` or `core/function-outputs`), adds a `core/call` in their place and rewires the boundary. A value wired in from one outside output becomes one input; a value used outside becomes one output; ports take the inside port's name, deduplicated and kept off the implicit names. The kind is the strongest kind among the nodes (calls count as their callee's). Steps may enter at one input and leave from one output; triggers and stream loops are refused before any edit, as are crossing types not yet settled.
+
+**Why a checked trial instead of new rules:** the language already owns what a function may hold (`E-ENTRY-IN-FUNCTION`, `E-MISSING-RETURN`, `E-FUNCTION-KIND`, …). The host applies the edit as a trial and withdraws it, with history and redo as they were, when it adds an error the draft did not have (compared by code, node, port and variable, ignoring the function and wire IDs that change). No diagnostic, G-suite rule or saved field of the language changes.
+
+**View:** the host now draws a `core/call` with its function's declared kind and interface, named after the function, so a call is wired and typed like any node. Editing a function's body on the canvas is not part of this decision.
+
+**Contracts:** 11 §14 (unchanged), 12 editor layout; FR-111. Verification is the focused tests named in FR-111.
+
+## ADR-27 — Adapters describe their settings; the editor stores typed secrets
+
+**Decision (2026-11-16; FR-114):** a connection adapter describes itself and its settings through default methods of `ConnectionAdapter`: `about` (name and purpose), `texts` (text settings, each possibly `secret`, `required` or a `list`, addressed by names joined by `/` for one inside an object), `toggles`, and the existing `choices` and `fields`. An editor draws its form from these and keeps the settings' JSON for anything else. A secret typed in the editor goes to the host's `SecretStore` under `connection/<connection ID>/<setting>` through `Host::declare_connection_with_secrets`, before the declaration is committed; the document, its undo history, events and the editor's debug output hold only the `credential://` reference.
+
+**Why default methods, not a settings schema file:** adapters are Rust values in service packages; a default that returns nothing keeps every existing adapter valid, and an adapter's code already knows its settings. A JSON schema would have to be kept in step by hand and still could not mark a value as a secret for the store.
+
+**Why the name follows the connection ID:** the ID is stable across renames, unique in a document and valid as a secret name, so typing a secret again replaces it rather than leaving copies. Undo does not delete a stored secret: the store has no delete operation for hosts, and a redo needs it again.
+
+**Contracts:** 05 connection manager, FR-114 (FR-19/21/22). Verification is the focused tests named in FR-114.

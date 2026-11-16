@@ -18,6 +18,9 @@ pub struct PortView {
     pub value: Option<String>,
     /// Whether a wire ends or starts here.
     pub connected: bool,
+    /// What the node's definition calls this port, when it names it: "Queued" for
+    /// the `then` of a send that only queues. A front end otherwise names it itself.
+    pub label: Option<String>,
 }
 
 /// One node of a document's top level.
@@ -52,6 +55,9 @@ pub struct NodeView {
     pub types: Vec<TypeChoice>,
     /// The ports of which the node has as many as it is given ([`Host::add_port`]).
     pub variadic: Vec<VariadicView>,
+    /// Text inputs that hold a path on this machine, from the node's definition file,
+    /// so the editor can offer the system's file or folder chooser beside them.
+    pub paths: Vec<PathInput>,
 }
 
 /// A variadic port of a node, such as the branches of a fork: its instances are
@@ -295,7 +301,11 @@ impl Host {
                 .get(&(node, input))
                 .is_some_and(|ports| ports.contains(port))
         };
-        let contract = registry.contract(document, node).ok().flatten();
+        let contract = call_contract(document, node, registry)
+            .map(Cow::Owned)
+            .or_else(|| registry.contract(document, node).ok().flatten());
+        // What the node's definition file says about showing it.
+        let shown = self.presentations.get(&node.definition);
         // A generic port shows the type its parameter has now: the chosen one, else the
         // one found from the wires, so a value can be typed on it.
         let settled = (!node.type_args.is_empty() || !node.type_pins.is_empty()).then(|| {
@@ -346,6 +356,7 @@ impl Host {
                     }),
                     value: value.filter(|_| input),
                     id,
+                    label: None,
                 });
             }
         }
@@ -389,6 +400,10 @@ impl Host {
                     ty: (name == "error").then(|| "core/error@1".to_owned()),
                     value: None,
                     connected: wired(node.id, name, input),
+                    label: (name == "then")
+                        .then(|| shown?.then_label.as_ref())
+                        .flatten()
+                        .map(|label| label.fallback.clone()),
                 };
                 match name {
                     "in" | "then" => ports.push(port),
@@ -445,7 +460,9 @@ impl Host {
                     Some(member) => format!("{short}.{member}"),
                     None => short.to_owned(),
                 })
-            });
+            })
+            // A trigger shows what fires it.
+            .or_else(|| trigger_detail(node.definition.id.as_str(), &node.config));
         NodeView {
             id: node.id,
             detail,
@@ -453,6 +470,7 @@ impl Host {
             kind: labels
                 .get(&definition)
                 .cloned()
+                .or_else(|| (definition == "core/call").then(|| "Function".to_owned()))
                 .unwrap_or_else(|| definition.clone()),
             entry: kind == Some(NodeKind::Entry),
             definition,
@@ -475,6 +493,7 @@ impl Host {
                 .map(|field| (field.pointer.clone(), field.kind))
                 .collect(),
             types,
+            paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
         }
     }
 }
@@ -499,5 +518,129 @@ impl Host {
             (edge.from.node, edge.from.port.to_string()),
             (edge.to.node, edge.to.port.to_string()),
         ))
+    }
+}
+
+/// The contract of a call of one of the document's functions: the function's declared
+/// kind and interface, so the call is drawn and wired like any node. `None` for any
+/// other node, or a call whose function is missing or malformed.
+pub(crate) fn call_contract(
+    document: &GraphDocument,
+    node: &NodeInstance,
+    registry: &RegistrySnapshot,
+) -> Option<orange_model::catalog::NodeContract> {
+    let interface = orange_model::catalog::call_interface(document, node, registry)
+        .ok()
+        .flatten()?;
+    let function = document.functions().get(&interface.function)?;
+    Some(orange_model::catalog::NodeContract {
+        kind: function.kind,
+        suspends: None,
+        type_params: interface.type_params,
+        ports: interface.ports,
+    })
+}
+
+/// What an operator computes, written with its inputs' names, such as `a > b` for
+/// Greater: a card shows it under its title, with the inputs' values in place of their
+/// names when they are known. `None` for a node that is not an operator.
+pub fn formula(definition: &str) -> Option<&'static str> {
+    let name = definition.strip_prefix("org.orange.math/")?;
+    let name = name.strip_prefix("float-").unwrap_or(name);
+    Some(match name {
+        "greater" => "a > b",
+        "greater-or-equal" => "a >= b",
+        "less" => "a < b",
+        "less-or-equal" => "a <= b",
+        "equal" => "a == b",
+        "not-equal" => "a != b",
+        "add" => "a + b",
+        "subtract" => "a - b",
+        "multiply" => "a × b",
+        "divide" => "a / b",
+        "remainder" | "modulo" => "a % b",
+        "power" => "base ^ exponent",
+        "minimum" => "min(a, b)",
+        "maximum" => "max(a, b)",
+        _ => return None,
+    })
+}
+
+/// What a trigger waits for, from its settings: `every 1 s`, `after 300 ms`, or what a
+/// manual entry fires with.
+fn trigger_detail(definition: &str, config: &serde_json::Map<String, Json>) -> Option<String> {
+    let text = |key: &str| config.get(key).and_then(Json::as_str);
+    match definition {
+        "core/on-timer" => Some(format!("every {}", human_duration(text("interval")?)?)),
+        "core/on-timeout" => Some(format!("after {}", human_duration(text("delay")?)?)),
+        "core/on-manual" => text("payload").map(|ty| {
+            let short = ty.rsplit('/').next().unwrap_or(ty);
+            format!("with {}", short.split('@').next().unwrap_or(short))
+        }),
+        _ => None,
+    }
+}
+
+/// Nanoseconds, as the format stores a length of time, read as a person would say it.
+fn human_duration(nanoseconds: &str) -> Option<String> {
+    let ns: u128 = nanoseconds.parse().ok()?;
+    let units = [
+        (3_600_000_000_000, "h"),
+        (60_000_000_000, "min"),
+        (1_000_000_000, "s"),
+        (1_000_000, "ms"),
+        (1_000, "µs"),
+    ];
+    for (size, unit) in units {
+        if ns >= size && ns.is_multiple_of((size / 10).max(1)) {
+            let whole = ns / size;
+            let tenths = (ns % size) * 10 / size;
+            return Some(if tenths == 0 {
+                format!("{whole} {unit}")
+            } else {
+                format!("{whole}.{tenths} {unit}")
+            });
+        }
+    }
+    Some(format!("{ns} ns"))
+}
+
+#[cfg(test)]
+mod trigger_detail_tests {
+    use super::*;
+
+    #[test]
+    fn a_trigger_says_what_fires_it() {
+        let config = |json: Json| json.as_object().cloned().unwrap();
+        assert_eq!(
+            trigger_detail(
+                "core/on-timer",
+                &config(serde_json::json!({"interval": "1000000000"}))
+            )
+            .as_deref(),
+            Some("every 1 s")
+        );
+        assert_eq!(
+            trigger_detail(
+                "core/on-timeout",
+                &config(serde_json::json!({"delay": "300000000"}))
+            )
+            .as_deref(),
+            Some("after 300 ms")
+        );
+        assert_eq!(human_duration("1500000000").as_deref(), Some("1.5 s"));
+        assert_eq!(human_duration("120000000000").as_deref(), Some("2 min"));
+        assert_eq!(
+            trigger_detail(
+                "core/on-manual",
+                &config(serde_json::json!({"payload": "core/i64@1"}))
+            )
+            .as_deref(),
+            Some("with i64")
+        );
+        assert_eq!(
+            trigger_detail("core/on-start", &config(serde_json::json!({}))),
+            None
+        );
     }
 }

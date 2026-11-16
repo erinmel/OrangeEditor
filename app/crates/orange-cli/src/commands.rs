@@ -109,11 +109,12 @@ pub(crate) fn pack(words: &[String]) -> Done {
 
 pub(crate) fn devices() -> Done {
     let devices = orange_audio::devices()?;
-    for name in devices.outputs {
-        println!("output  {name}");
+    // The name, then what a connection's `device` setting holds to choose it.
+    for device in devices.outputs {
+        println!("output  {}  [{}]", device.name, device.setting());
     }
-    for name in devices.inputs {
-        println!("input   {name}");
+    for device in devices.inputs {
+        println!("input   {}  [{}]", device.name, device.setting());
     }
     Ok(())
 }

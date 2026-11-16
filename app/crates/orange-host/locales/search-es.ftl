@@ -1,0 +1,77 @@
+# Palabras con las que la búsqueda encuentra nodos, en español. Mismos IDs que search-en.ftl.
+
+language-name = Español
+
+concept-trigger = disparador, desencadenante, cuando, inicio, iniciar, empezar, evento, al
+concept-trigger-purpose = Inicia el flujo cuando ocurre algo.
+concept-math = matemáticas, aritmética, calcular, número, suma, operación
+concept-math-purpose = Calcula con números.
+concept-compare = comparar, comparación, igual, mayor, menor, mismo
+concept-compare-purpose = Compara dos valores.
+concept-logic = lógica, si, condición, booleano, rama, elegir
+concept-logic-purpose = Elige un camino según una condición.
+concept-text = texto, cadena, palabras, caracteres, letras
+concept-text-purpose = Trabaja con texto.
+concept-time = tiempo, hora, reloj, temporizador, retraso, esperar, intervalo
+concept-time-purpose = Espera o lee la hora.
+concept-audio = audio, sonido, música, micrófono, altavoz, volumen
+concept-audio-purpose = Reproduce o escucha sonido.
+concept-network = red, internet, web, http, petición, solicitud, mqtt, websocket
+concept-network-purpose = Habla con otras máquinas.
+concept-file = archivo, fichero, carpeta, disco, ruta, directorio, guardar, cargar
+concept-file-purpose = Lee o escribe archivos y carpetas.
+concept-variable = variable, estado, guardar, recordar, memoria, valor
+concept-variable-purpose = Lee o guarda un valor entre ejecuciones.
+concept-loop = bucle, repetir, cada, iterar, ciclo, veces
+concept-loop-purpose = Repite trabajo.
+concept-list = lista, colección, mapa, diccionario, registro
+concept-list-purpose = Trabaja con listas, mapas y registros.
+concept-data = json, datos, campo
+concept-data-purpose = Lee valores de JSON.
+
+category-math = matemáticas
+category-text = texto
+category-collections = colecciones
+category-json = datos
+category-files = archivos
+category-network = red
+category-audio = sonido
+
+alias-core-whole-number = entero, número entero, número
+alias-core-number = número, decimal, real
+alias-core-true-or-false = booleano, verdadero o falso, interruptor
+alias-core-text = texto, cadena
+alias-core-value = constante, literal
+alias-core-wait = esperar, pausa, retraso
+alias-core-set-variable = asignar, guardar, escribir
+alias-core-get-variable = leer, obtener
+alias-core-branch = si, sino, condición
+alias-core-on-manual = manual, a mano, botón
+alias-core-on-timer = temporizador, cada
+alias-core-on-start = al iniciar, inicio
+alias-org-orange-math-add = sumar, más
+alias-org-orange-math-subtract = restar, menos
+alias-org-orange-math-multiply = multiplicar, por
+alias-org-orange-math-divide = dividir, entre
+alias-org-orange-math-greater = mayor que
+alias-org-orange-math-less = menor que
+alias-org-orange-math-equal = igual
+alias-org-orange-audio-input-level = micrófono, entrada, volumen
+alias-org-orange-audio-on-level = micrófono, sonido, aplauso, fuerte
+alias-org-orange-audio-play = sonido, audio, altavoz, música, reproducir
+
+purpose-core-on-manual = Empieza al pulsar Ejecutar.
+purpose-core-on-start = Empieza una vez al iniciar el flujo.
+purpose-core-on-stop = Se ejecuta una vez al detener el flujo.
+purpose-core-on-timer = Empieza una y otra vez con un temporizador.
+purpose-core-on-timeout = Empieza una vez tras una espera.
+purpose-core-on-event = Empieza cuando se emite un evento.
+purpose-core-on-variable-changed = Empieza cuando cambia una variable.
+purpose-core-on-watch = Empieza cuando cambia un valor vigilado.
+purpose-org-orange-audio-on-level = Empieza cuando el micrófono suena fuerte.
+purpose-core-wait = Espera un rato y sigue.
+purpose-core-branch = Va por un lado si es verdadero y por el otro si es falso.
+purpose-core-whole-number = Un número entero que escribes.
+purpose-core-number = Un número decimal que escribes.
+purpose-core-true-or-false = Verdadero o falso, como lo pongas.
+purpose-core-text = Un texto que escribes.

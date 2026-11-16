@@ -4,6 +4,7 @@
 //! without waiting, adds every playing sound into the block and hands finished sounds
 //! back on a second bounded channel, so sample memory is freed on a control thread. It
 //! does not allocate, block, log or touch a file.
+use crate::stream::Live;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -20,6 +21,9 @@ pub(crate) struct Voice {
     pub gain: f32,
     /// Starts again from the beginning when it reaches the end, until it is stopped.
     pub looped: bool,
+    /// A live sound read from an input as it is captured, in place of `sound` (which
+    /// is then empty). It ends only when stopped or when its input closes.
+    pub live: Option<Box<Live>>,
 }
 
 #[derive(Debug)]
@@ -68,6 +72,9 @@ pub(crate) fn mixer() -> (Mixer, SyncSender<Command>, Receiver<Voice>, Arc<Atomi
 fn end(voice: &mut Voice) {
     voice.looped = false;
     voice.at = voice.sound.len();
+    if let Some(live) = &mut voice.live {
+        live.ended = true;
+    }
 }
 
 impl Mixer {
@@ -112,8 +119,13 @@ impl Mixer {
         for slot in &mut self.voices {
             let Some(voice) = slot else { continue };
             let gain = voice.gain * self.volume;
+            if let Some(live) = &mut voice.live
+                && !self.paused
+            {
+                live.mix(out, gain);
+            }
             let mut written = 0;
-            while !self.paused && written < out.len() {
+            while voice.live.is_none() && !self.paused && written < out.len() {
                 let rest = voice.sound.get(voice.at..).unwrap_or_default();
                 if rest.is_empty() {
                     if voice.looped && !voice.sound.is_empty() {
@@ -130,7 +142,10 @@ impl Mixer {
                 written += count;
             }
             // A stopped sound is handed back even while the output is paused.
-            let ended = voice.at >= voice.sound.len() && !(voice.looped && !voice.sound.is_empty());
+            let ended = match &voice.live {
+                Some(live) => live.finished(),
+                None => voice.at >= voice.sound.len() && !(voice.looped && !voice.sound.is_empty()),
+            };
             if ended
                 && let Some(ended) = slot.take()
                 && let Err(TrySendError::Full(ended) | TrySendError::Disconnected(ended)) =
@@ -157,6 +172,7 @@ mod tests {
             at: 0,
             gain,
             looped: false,
+            live: None,
         }
     }
 
