@@ -544,7 +544,7 @@ impl Editor {
             .get(&key)
             .cloned()
             .unwrap_or_else(|| shown.to_owned());
-        let response = ui.add(edit_like(&mut text));
+        let response = ui.add(edit_like(&mut text, "unset"));
         if response.has_focus() {
             let _ = self.forms.inline.insert(key, text);
             None
@@ -811,20 +811,16 @@ impl Editor {
             let id = connection.id.clone().unwrap_or_default();
             let users = self.connection_users(host, &id);
             let detail = format!("{}\n{}", label_of(&connection.adapter), connection.adapter);
-            let (edit, delete) = declaration_row(
-                ui,
-                &connection.name,
-                &label_of(&connection.adapter),
-                &detail,
-            );
-            ui.horizontal(|ui| {
+            let (edit, delete) = declaration_row(ui, &connection.name, &detail);
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(12.0);
                 if users.is_empty() {
-                    ui.weak("Not used by any node.");
+                    ui.weak(format!("{}, not used yet", label_of(&connection.adapter)));
                 } else {
                     let _ = ui
                         .weak(format!(
-                            "Used by {} node{}: {}",
+                            "{}, used by {} node{}: {}",
+                            label_of(&connection.adapter),
                             users.len(),
                             if users.len() == 1 { "" } else { "s" },
                             users.join(", ")
@@ -1016,8 +1012,9 @@ impl Editor {
 }
 
 /// A frameless field that reads like a label until it is clicked.
-fn edit_like(text: &mut String) -> egui::TextEdit<'_> {
+fn edit_like<'a>(text: &'a mut String, hint: &str) -> egui::TextEdit<'a> {
     egui::TextEdit::singleline(text)
+        .hint_text(hint)
         .frame(egui::Frame::NONE)
         .desired_width(110.0)
 }
@@ -1109,17 +1106,15 @@ fn text_at<'a>(settings: &'a Json, path: &str) -> Option<&'a Json> {
 /// never into the settings; one already stored shows as such, with a button to type
 /// another.
 fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, secrets: &mut Typed) {
-    egui::Grid::new("orange-connection-texts")
-        .num_columns(2)
-        .spacing([8.0, 6.0])
-        .show(ui, |ui| {
+    {
+        {
             for text in texts {
                 let label = if text.required {
                     format!("{} *", text.label)
                 } else {
                     text.label.clone()
                 };
-                let _ = ui.label(label).on_hover_text(text.help.as_str());
+                let _ = ui.small(label).on_hover_text(text.help.as_str());
                 let current = text_at(settings, &text.setting).cloned();
                 if text.secret {
                     let stored = current
@@ -1202,9 +1197,10 @@ fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, se
                         set_text(settings, &text.setting, value);
                     }
                 }
-                ui.end_row();
+                ui.add_space(2.0);
             }
-        });
+        }
+    }
 }
 
 /// Switches for an adapter's true-or-false settings. One switched back to its default
@@ -1239,12 +1235,11 @@ fn section_heading(ui: &mut egui::Ui, title: &str, add: &str) -> bool {
     .inner
 }
 
-/// One declaration in a list: its name, what it is in weak text, and edit and delete
+/// One declaration in a list: its name, with edit and delete
 /// buttons at the right end. `detail` is shown on hover. Returns whether each was pressed.
-fn declaration_row(ui: &mut egui::Ui, name: &str, kind: &str, detail: &str) -> (bool, bool) {
+fn declaration_row(ui: &mut egui::Ui, name: &str, detail: &str) -> (bool, bool) {
     ui.horizontal(|ui| {
-        let _ = ui.label(name).on_hover_text(detail);
-        ui.weak(kind);
+        let _ = ui.strong(name).on_hover_text(detail);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let delete = ui.small_button("Delete").clicked();
             let edit = ui.small_button("Edit").clicked();
