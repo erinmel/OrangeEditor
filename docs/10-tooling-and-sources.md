@@ -1,5 +1,97 @@
 # Tooling, environment and research register
 
+## Search, menus and icons — 2026-11-16
+
+Branch `claude/search-menus-icons-51fe65` on `feat/editor-design`. Windows 11 Home
+10.0.26300, Rust 1.99.1, egui 0.37.0; no new crate, lockfile unchanged.
+
+Icon font: Phosphor Regular, `src/regular/Phosphor.ttf` of the npm package
+`@phosphor-icons/web` 2.1.2 (published 2025-03-31, licence MIT, copyright Phosphor
+Icons), 488,636 bytes, SHA-256
+`06b91e022b7ee899a63efced879392a74f0bacbda54e4467e9f663220d173a10`; bundled as
+`app/crates/orange-editor-ui/fonts/Phosphor.ttf` with its licence beside it. Codepoints
+were read from the same package's `src/regular/style.css`. The crate `egui-phosphor`
+0.14.0 ships the identical file but depends on egui 0.36, so it was not taken. The
+font is not a Cargo dependency, so `deny.toml` is unchanged; MIT is already allowed.
+API read from the egui/epaint 0.37.0 sources in the cargo registry:
+`Context::add_font(FontInsert)` with `InsertFontFamily { family, priority }`, which
+creates a named family when missing and skips a font already added by name;
+`FontPriority::{Highest, Lowest}`; `Button::new` taking atoms such as
+`(RichText, &str)` and `Button::shortcut_text`; `InputState::consume_key`. In 0.37 a
+family with no font logs a warning instead of panicking.
+
+Search words: `app/crates/orange-host/locales/search-en.ftl` and `search-es.ftl`, a
+subset of Fluent (`id = text` lines, no arguments) read by the host; no Fluent crate
+was adopted (13 §3 still open).
+
+Local runs used their own `CARGO_TARGET_DIR`: the shared target directory was being
+built by other worktrees at the same time, and integration tests were compiled against
+a stale `orange-host` library.
+
+| Command | Result |
+| --- | --- |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,911 tests, 0 failed (orange-net loopback included) |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not checked: the menus, the quick-add arrows and the icons in a real window, with a
+real pointer, on high-DPI screens or with a screen reader.
+
+## Audio streams — 2026-11-16
+
+Branch `claude/audio-streams-03d3be` on `e0b310e` (FR-115, 05 "Audio streams").
+Windows 11 Home 10.0.26300, Rust 1.99.1, workspace lockfile unchanged (cpal 0.18.2,
+hound 3.5.1). API evidence: installed `cpal-0.18.2/src/host/wasapi/mod.rs` (an output
+device used as an input enables loopback), `src/host/wasapi/device.rs`
+(`AUDCLNT_STREAMFLAGS_LOOPBACK` on a render endpoint; `default_input_config` refuses
+render endpoints, so loopback opens with `default_output_config`) and
+`src/host/coreaudio/macos/loopback.rs` (aggregate-device loopback, not run here).
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p orange-audio --lib` | Pass: 35 tests, the stream, pass-through, level and recording tests on the silent device and its test tone included |
+| `cargo test -p orange-audio --test audio` | Pass: a graph on the silent devices measures, records 0.2 s and plays an input through until stopped |
+| `cargo test -p orange-audio --lib -- --ignored --nocapture the_default_microphone_is_recorded` | Pass: the USB headset microphone opened at 48 kHz mono; one second gave 48,000 samples in the WAV file |
+| `cargo test -p orange-audio --lib -- --ignored --nocapture what_the_default_output_plays` (two runs) | Pass: loopback on the default output (the headset) opened at 48 kHz stereo and delivered 48,000 samples per 500 ms; other playback on the machine was captured at peaks of 0.44 and 0.63 before the test's own 0.05 tone, so the tone could not be told apart from it |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,909 tests, 0 failed |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not verified: loopback while nothing at all plays (WASAPI may then deliver no packets,
+so a recording of it would wait), a virtual cable (none is installed here; such cables
+are ordinary WASAPI endpoints and use the same code), pass-through from a real
+microphone to real speakers, a device unplugged while a stream plays, macOS loopback
+(not offered) and Linux monitor sources. The Audio in card's live meter is not built
+(22 §6).
+
+## Service gaps from the editor audit — 2026-11-15
+
+Branch `feat/service-gaps` on `feat/editor-debugging`. Windows 11 Home 10.0.26300,
+Rust 1.99.1, workspace lockfile unchanged (cpal 0.18.2, egui 0.37.0, ureq 3.5.1,
+tungstenite 0.30.0). API evidence: installed `cpal-0.18.2/src/lib.rs` (`DeviceId`,
+`Display`/`FromStr` as `<host>:<id>`), `src/traits.rs` (`HostTrait::device_by_id`,
+`DeviceTrait::id`) and `src/error.rs` (`ErrorKind`); `egui-0.37.0/src/memory/mod.rs`
+(`Memory::stop_text_input` clears focus at once, `lost_focus` compares with the
+previous frame).
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p orange-audio --lib -- --ignored every_listed` | Pass: two outputs and one input listed with `wasapi:{…}` identifiers, each found again by its identifier |
+| `cargo run -p orange-cli -- devices` | Each device printed with its name and identifier |
+| `cargo test -p orange-audio --lib -- --ignored the_default_microphone` | First run failed: the WASAPI capture stream reports `Xrun` right after opening, which the new reopen logic took for a lost device; non-fatal kinds are now ignored. Then pass, loudest level -46.0 dBFS over 2 s |
+| `cargo test -p orange-net` | Pass, loopback HTTP and WebSocket servers included (no AccessDenied here) |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,891 tests, 0 failed |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Run while typing (FR-110): the headless editor tests click into the field, type and
+click Run, with the press and release in one frame as a quick click arrives. The
+former code passed them too, because an edit reaches a running flow, so the reported
+first-click failure was not reproduced headlessly; Run now ends the typing and starts
+the run after the panels have written the field, in the same frame. Not checked: the
+desktop file chooser and the level meter clicked through in the window, CoreAudio and
+ALSA identifiers, a device unplugged while a sound plays.
+
 ## Audio from the editor — 2026-11-15
 
 Reproduced first: on a host with `orange_audio::package()`, `Host::add_node` refused

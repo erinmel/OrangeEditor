@@ -1114,7 +1114,7 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 - Function declaration edits, target changes and removal re-infer referenced caller components in root and function bodies using typed references in both document states. Missing targets supply no saved type evidence. Calls that cease to have a generic interface clear stale inferred arguments; pins and historical signature data remain unchanged. The originating edit and inferred updates are one undoable transaction.
 - Each call has its own frame and locals. Run variables are shared with the caller's run.
 - A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`). V4b enforces this as a warning on every `core/fork` with `join: detach` in a function body (strictest reading: the fork may leave a strand running at Return or at the end of the body); the fork stays valid. The documented host entries (`core/on-start`, `on-stop`, `on-manual`, `on-timer`, `on-timeout`, `on-variable-changed`, `on-watch`) report `E-ENTRY-IN-FUNCTION` in a function body even where this core version does not register them yet.
-- The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
+- The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only. Implementation note (2026-11-15, FR-111, ADR-26): the host's extraction makes one function of top-level nodes in one checked, undoable edit and refuses selections the rules above reject; groups are kept in `editor.groups`.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
 
 ### 14.1 Saved specialized nodes and templates
@@ -1193,6 +1193,15 @@ A graph function still cannot take a connection as an argument. A graph-implemen
 package node uses one through per-connection copies made when the host links it (04).
 Not specified yet: adapter compatibility in validation.
 A node that receives from a connection is a package entry (§10.2).
+
+Live media references (2026-11-16, FR-115). A package may give a value that names a
+live source it holds, such as the audio package's `org.orange.audio/stream@1` record
+naming an open input connection. It is an ordinary package record, not a
+`core/stream@1` (§12): the graph never pulls its samples, it may be copied, wired to
+several consumers and stored like any record, and each consuming package node reads
+the source itself under the package's own bounded-buffer and overflow policy (05). It
+grants nothing a connection did not already grant, and once the source has closed the
+package refuses it with a fault.
 
 ## 17. Diagnostics catalog
 

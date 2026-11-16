@@ -25,6 +25,7 @@ fn graph(count: u32) -> GraphView {
                     ty: None,
                     value: None,
                     connected: true,
+                    label: None,
                 })
                 .collect(),
             position: None,
@@ -33,6 +34,7 @@ fn graph(count: u32) -> GraphView {
             references: Vec::new(),
             types: Vec::new(),
             variadic: Vec::new(),
+            paths: Vec::new(),
         })
         .collect();
     // Reverse edge order is a valid document order and stresses repeated relaxation.

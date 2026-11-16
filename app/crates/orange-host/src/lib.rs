@@ -23,9 +23,11 @@ mod flow;
 mod flows;
 mod graphs;
 mod names;
+mod organise;
 mod packages;
 mod persist;
 mod preview;
+mod search;
 mod services;
 mod state;
 mod streams;
@@ -67,7 +69,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub use declare::{Connection, Declarations, Variable};
+pub use declare::{AdapterInfo, Connection, Declarations, Variable, secret_name};
 pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
@@ -82,7 +84,7 @@ pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpRespons
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
-pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
+pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
@@ -96,14 +98,17 @@ pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
 pub use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, Items, SERVICE_PROVIDER, ServiceNode,
-    ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices, TARGET, TypeDecl,
+    AdapterAbout, Call, ConnectionAdapter, EmitError, Emitter, Items, Probe, SERVICE_PROVIDER,
+    ServiceNode, ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices,
+    SettingField, SettingText, SettingToggle, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
+pub use search::{CONCEPTS, Found, Match, SOURCE_LANGUAGE, SearchWords, SearchWordsError};
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
-pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView};
+pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -526,9 +531,11 @@ impl NodeInfo<'_> {
             }
         }
     }
-    /// Other words a person may search for this node by, such as `integer` for Int.
-    pub fn aliases(&self) -> &'static [&'static str] {
-        aliases(self.definition.definition.id.as_str())
+    /// Other words a person may search for this node by in English, such as `integer`
+    /// for Int, from the built-in search words. [`Host::search_nodes`] also uses the
+    /// active language's words and any added ones.
+    pub fn aliases(&self) -> Vec<&'static str> {
+        SearchWords::built_in().aliases(SOURCE_LANGUAGE, self.definition.definition.id.as_str())
     }
     /// The palette category in the default language: its definition file's category,
     /// or one made from the ID's namespace (`org.orange.math/add` is in "Math").
@@ -633,6 +640,8 @@ pub struct Host {
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
+    /// The words the node search finds nodes by.
+    search_words: SearchWords,
     not_restored: Vec<(String, HostError)>,
     /// The base nodes and each service package the application was started with.
     built_in: Vec<BuiltIn>,
@@ -886,6 +895,7 @@ impl Host {
             graphs: Graphs::new(),
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
+            search_words: SearchWords::built_in().clone(),
             not_restored: Vec::new(),
             built_in,
             disabled,
@@ -1167,22 +1177,4 @@ fn short_label(id: &str) -> Option<&'static str> {
         "core/text" => "Text",
         _ => return None,
     })
-}
-
-/// Words a node is also found by in a search.
-fn aliases(id: &str) -> &'static [&'static str] {
-    match id {
-        "core/whole-number" => &["integer", "whole number", "i64", "u64", "count"],
-        "core/number" => &["number", "decimal", "real", "f64", "f32", "double"],
-        "core/true-or-false" => &["boolean", "true or false", "flag", "switch"],
-        "core/text" => &["string", "str", "words"],
-        "core/value" => &["constant", "literal"],
-        "core/wait" => &["delay", "sleep", "pause"],
-        "core/set-variable" => &["assign", "store", "write"],
-        "core/get-variable" => &["read", "load"],
-        "org.orange.audio/input-level" => &["microphone", "mic", "input", "volume", "loudness"],
-        "org.orange.audio/on-level" => &["microphone", "mic", "sound", "clap", "loud"],
-        "org.orange.audio/play" => &["sound", "audio", "speaker", "music"],
-        _ => &[],
-    }
 }
