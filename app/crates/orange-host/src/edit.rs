@@ -414,26 +414,6 @@ impl Host {
         }
     }
 
-    /// Removes the one wire from output `from` to input `to`, leaving any other wire at
-    /// either port. `false` when there is no such wire.
-    pub fn disconnect_wire(
-        &self,
-        draft: &mut Draft,
-        from: PortEnd<'_>,
-        to: PortEnd<'_>,
-    ) -> Result<bool, HostError> {
-        let (from, to) = (port_ref(from)?, port_ref(to)?);
-        let commands: Vec<DocCommand> = draft
-            .document()
-            .root()
-            .edges
-            .values()
-            .filter(|edge| edge.from == from && edge.to == to)
-            .map(|edge| DocCommand::Disconnect { edge: edge.id })
-            .collect();
-        draft.commit(self.store.current(), commands)
-    }
-
     /// Removes the wires at one port: those into an input, or those out of an output.
     pub fn disconnect(
         &self,
@@ -530,4 +510,114 @@ impl Host {
             [DocCommand::SetLiteral { port, literal }],
         )
     }
+}
+
+impl Host {
+    /// Removes the one wire from `from` to `to`. Returns whether there was one.
+    pub fn disconnect_wire(
+        &self,
+        draft: &mut Draft,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Result<bool, HostError> {
+        let (from, to) = (port_ref(from)?, port_ref(to)?);
+        let edges: Vec<DocCommand> = draft
+            .document()
+            .root()
+            .edges
+            .values()
+            .filter(|edge| edge.from == from && edge.to == to)
+            .map(|edge| DocCommand::Disconnect { edge: edge.id })
+            .collect();
+        draft.commit(self.store.current(), edges)
+    }
+
+    /// Puts `node` into the wire from `from` to `to`, as one edit: the wire is replaced
+    /// by one into the node's first input of the same kind and type, and one out of its
+    /// first such output. Refused, with nothing changed, when the node has no fitting
+    /// ports or the language does not allow the new wires.
+    pub fn insert_into_wire(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Result<bool, HostError> {
+        let ends = |id: NodeId| self.node_view(draft.document(), id);
+        let source = ends(from.0)
+            .and_then(|view| view.ports.into_iter().find(|p| !p.input && p.id == from.1))
+            .ok_or_else(|| refused(&"the wire's output is not there"))?;
+        let middle = ends(node).ok_or_else(|| refused(&"the document has no such node"))?;
+        let fits = |port: &PortView| {
+            port.exec == source.exec
+                && (source.exec
+                    || port.ty.as_deref().is_none_or(|ty| {
+                        source.ty.as_deref().is_none_or(|from| from == ty)
+                            || ty.contains('$')
+                            || from_open(source.ty.as_deref())
+                    }))
+        };
+        let into = middle
+            .ports
+            .iter()
+            .find(|port| port.input && fits(port))
+            .ok_or_else(|| refused(&"the node has no input this wire fits"))?;
+        let out = middle
+            .ports
+            .iter()
+            .find(|port| !port.input && port.exec == source.exec)
+            .ok_or_else(|| refused(&"the node has no output to go on with"))?;
+        let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
+        let mut commands: Vec<DocCommand> = draft
+            .document()
+            .root()
+            .edges
+            .values()
+            .filter(|edge| edge.from == from_ref && edge.to == to_ref)
+            .map(|edge| DocCommand::Disconnect { edge: edge.id })
+            .collect();
+        if commands.is_empty() {
+            return Err(refused(&"there is no such wire"));
+        }
+        let mut made = Vec::new();
+        for (n, (a, b)) in [
+            ((from.0, from.1), (node, into.id.as_str())),
+            ((node, out.id.as_str()), (to.0, to.1)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = draft.fresh_id(&format!("insert {n}"));
+            let edge: Edge = serde_json::from_value(json!({"id": id,
+                "from": {"node": a.0.to_string(), "port": a.1},
+                "to": {"node": b.0.to_string(), "port": b.1}}))
+            .map_err(|error| refused(&error))?;
+            made.push(edge.id);
+            commands.push(DocCommand::Connect { edge });
+        }
+        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
+            return Ok(false);
+        };
+        let against: Vec<Diagnostic> = self
+            .problems(draft)?
+            .into_iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .subject
+                    .edge
+                    .is_some_and(|edge| made.contains(&edge))
+            })
+            .collect();
+        if against.is_empty() {
+            Ok(true)
+        } else {
+            draft.withdraw(redo);
+            Err(HostError::Invalid(against))
+        }
+    }
+}
+
+/// Whether a type is still open (a parameter), so it may become anything.
+fn from_open(ty: Option<&str>) -> bool {
+    ty.is_some_and(|ty| ty.contains('$'))
 }

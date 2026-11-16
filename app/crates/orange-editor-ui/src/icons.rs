@@ -39,6 +39,7 @@ pub const NODES: char = '\u{ec24}'; // sidebar-simple
 pub const PROPERTIES: char = '\u{e434}'; // sliders-horizontal
 pub const PACKAGES: char = '\u{e390}'; // package
 pub const LOG: char = '\u{eae8}'; // terminal-window
+pub const SNAP: char = '\u{e6c8}'; // grid-four
 pub const FIT: char = '\u{e626}'; // frame-corners
 pub const ACTUAL_SIZE: char = '\u{e310}'; // magnifying-glass-plus
 pub const LANGUAGE: char = '\u{e4a2}'; // translate
@@ -75,6 +76,7 @@ pub const ALL: &[char] = &[
     PACKAGES,
     LOG,
     FIT,
+    SNAP,
     ACTUAL_SIZE,
     LANGUAGE,
     EXPAND,
