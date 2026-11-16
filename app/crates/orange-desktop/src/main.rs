@@ -105,7 +105,7 @@ impl Desktop {
         &mut self,
         node: orange_host::NodeId,
         port: &str,
-        folder: bool,
+        (folder, save): (bool, bool),
         extensions: &[String],
         current: &str,
     ) {
@@ -125,7 +125,14 @@ impl Desktop {
             if !extensions.is_empty() {
                 dialog = dialog.add_filter(extensions.join(", "), extensions);
             }
-            dialog.set_title("Choose a file").pick_file()
+            if save {
+                if let Some(name) = current.file_name() {
+                    dialog = dialog.set_file_name(name.to_string_lossy());
+                }
+                dialog.set_title("Save as").save_file()
+            } else {
+                dialog.set_title("Choose a file").pick_file()
+            }
         };
         if let Some(path) = chosen {
             let _ =
@@ -153,11 +160,12 @@ impl Desktop {
             node,
             port,
             folder,
+            save,
             extensions,
             current,
         } = &request
         {
-            self.choose_path(*node, port, *folder, extensions, current);
+            self.choose_path(*node, port, (*folder, *save), extensions, current);
             return;
         }
         // Edits that are not saved are not dropped without asking.

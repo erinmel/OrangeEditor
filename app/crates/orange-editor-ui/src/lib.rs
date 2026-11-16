@@ -153,6 +153,8 @@ pub enum FileRequest {
         port: String,
         /// A folder instead of a file.
         folder: bool,
+        /// A file the node writes: ask where to save it rather than for one that exists.
+        save: bool,
         /// File name extensions to offer, without the dot; empty offers every file.
         extensions: Vec<String>,
         /// The path the input holds now, to start the dialog from.
