@@ -56,15 +56,29 @@ pub use palette::{PaletteItem, palette};
 /// without the version.
 pub fn type_name(ty: &str) -> String {
     match ty {
-        "core/string@1" => "text".to_owned(),
-        "core/bool@1" => "true or false".to_owned(),
-        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => "whole number".to_owned(),
-        "core/f64@1" | "core/f32@1" => "number".to_owned(),
-        "core/bytes@1" => "bytes".to_owned(),
-        "core/duration@1" => "length of time".to_owned(),
+        "core/string@1" => "Text".to_owned(),
+        "core/bool@1" => "Bool".to_owned(),
+        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => "Int".to_owned(),
+        "core/f64@1" | "core/f32@1" => "Float".to_owned(),
+        "core/bytes@1" => "Bytes".to_owned(),
+        "core/duration@1" => "Duration".to_owned(),
         // Core types lose their namespace everywhere in the expression.
         other => other.replace("core/", "").replace("@1", ""),
     }
+}
+
+/// A type exactly, for a tooltip beside its short name: `core/i64@1` is `i64`.
+pub fn exact_type(ty: &str) -> String {
+    ty.replace("core/", "").replace("@1", "")
+}
+
+/// The left panel's tabs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Tab {
+    #[default]
+    Nodes,
+    Variables,
+    Connections,
 }
 
 /// The document being edited.
@@ -143,7 +157,7 @@ pub struct Editor {
     /// A variable being declared from the properties of the node that will name it.
     quick_variable: Option<properties::QuickVariable>,
     /// The left panel shows the document's declarations instead of the node kinds.
-    document_tab: bool,
+    tab: Tab,
     forms: declarations::Forms,
     /// The setting choices of each connection adapter (its devices, say), listed when
     /// first shown and again when a person asks: listing may ask the operating system.
@@ -453,10 +467,10 @@ impl Editor {
         Some(node)
     }
 
-    /// Shows the Document tab with the form for a new variable open.
+    /// Shows the Variables tab with the form for a new variable open.
     pub fn new_variable_form(&mut self) {
         self.panels.nodes = true;
-        self.document_tab = true;
+        self.tab = Tab::Variables;
         self.forms.reveal_variable();
     }
 
@@ -645,6 +659,7 @@ impl Editor {
         }
         match document.draft.text().and_then(|text| host.open(&text)) {
             Ok(flow) => {
+                self.canvas.clear_run();
                 let _ = host.observe(flow, true);
                 let entries = host
                     .info(flow)
@@ -677,6 +692,8 @@ impl Editor {
         };
         let _ = host.stop(flow, StopMode::Graceful);
         let _ = host.close(flow);
+        // What the run showed stays, dimmed, until the next run.
+        self.canvas.mark_stale();
         self.say(format!("[{flow}] closed"));
     }
 
@@ -726,16 +743,30 @@ impl Editor {
                                 | orange_host::ControlOutcome::TimedOut
                         );
                     self.canvas.pulse(step.node, failed);
+                    // A failure stays on its node, with what the log says about it,
+                    // until the node takes a step that does not fail.
+                    if failed {
+                        let why = said.join("; ");
+                        self.canvas.fail(step.node, why);
+                    } else {
+                        self.canvas.recover(step.node);
+                    }
                 }
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
-                        self.canvas
-                            .show_value(*node, port.to_string(), orange_host::plain(value));
+                        self.canvas.show_value(
+                            *node,
+                            port.to_string(),
+                            orange_host::plain(value),
+                            orange_host::inspect(value),
+                        );
                     }
                 }
+                // Values from before an edit or the end of the run are kept, dimmed.
+                FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
                     document.flow = None;
-                    self.canvas.clear_run();
+                    self.canvas.mark_stale();
                 }
                 _ => {}
             }
@@ -906,15 +937,25 @@ impl Editor {
 
     fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         ui.horizontal(|ui| {
-            let _ = ui.selectable_value(&mut self.document_tab, false, "Nodes");
+            let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, "Nodes");
             let _ = ui
-                .selectable_value(&mut self.document_tab, true, "Variables")
-                .on_hover_text("The variables and connections of this graph.");
+                .selectable_value(&mut self.tab, Tab::Variables, "Variables")
+                .on_hover_text("The values this graph keeps.");
+            let _ = ui
+                .selectable_value(&mut self.tab, Tab::Connections, "Connections")
+                .on_hover_text("The devices and services this graph uses.");
         });
         ui.separator();
-        if self.document_tab {
-            self.document_tab(ui, host);
-            return;
+        match self.tab {
+            Tab::Nodes => {}
+            Tab::Variables => {
+                self.variables_tab(ui, host);
+                return;
+            }
+            Tab::Connections => {
+                self.connections_tab(ui, host);
+                return;
+            }
         }
         let mut add = None;
         let mut variable_node = None;
@@ -961,10 +1002,16 @@ impl Editor {
                         new_variable = ui.button("New variable…").clicked();
                     });
             }
-            for (category, items) in self.palette.get(host, &self.search) {
+            let found = self.palette.get(host, &self.search);
+            if searching && found.is_empty() {
+                ui.weak("No node matches. Try another word, such as int, text or wait.");
+            }
+            for (category, items) in found {
+                // A search opens every section it found something in.
                 egui::CollapsingHeader::new(format!("{category} ({})", items.len()))
                     .id_salt(category.as_str())
                     .default_open(searching)
+                    .open(searching.then_some(true))
                     .show(ui, |ui| {
                         for item in items {
                             let hint =
@@ -1452,7 +1499,7 @@ mod tests {
         let item = found
             .iter()
             .flat_map(|(_, items)| items)
-            .find(|item| item.label == "Whole number")
+            .find(|item| item.label == "Int")
             .unwrap();
         assert_eq!(
             (item.id.as_str(), item.package.as_str()),
@@ -1546,7 +1593,9 @@ mod tests {
         // The panels draw the settings, the types and the Document tab.
         editor.canvas().select(Some(collect));
         assert!(draw(&mut editor, &mut host) > 0);
-        editor.document_tab = true;
+        editor.tab = Tab::Variables;
+        assert!(draw(&mut editor, &mut host) > 0);
+        editor.tab = Tab::Connections;
         assert!(draw(&mut editor, &mut host) > 0);
     }
 
@@ -1758,13 +1807,13 @@ mod tests {
             .unwrap();
         assert_eq!(node(&editor, get).detail.as_deref(), Some("total"));
         assert!(!node(&editor, get).ports.is_empty());
-        // The toolbar opens the new-variable form under Document.
-        editor.document_tab = false;
+        // The toolbar opens the new-variable form under Variables.
+        editor.tab = Tab::Nodes;
         editor.new_variable_form();
-        assert!(editor.document_tab && editor.panels.nodes);
+        assert!(editor.tab == Tab::Variables && editor.panels.nodes);
         assert!(draw(&mut editor, &mut host) > 0);
         // The quick form draws in the properties of the node it is for.
-        editor.document_tab = false;
+        editor.tab = Tab::Nodes;
         editor.canvas().select(Some(set));
         editor.quick_variable = Some(properties::QuickVariable::for_test(set));
         assert!(draw_at(&mut editor, &mut host, [520.0, 360.0]) > 0);
@@ -1807,8 +1856,11 @@ mod tests {
 
     #[test]
     fn types_are_named_for_people() {
-        assert_eq!(type_name("core/string@1"), "text");
-        assert_eq!(type_name("core/i64@1"), "whole number");
+        assert_eq!(type_name("core/string@1"), "Text");
+        assert_eq!(type_name("core/i64@1"), "Int");
+        assert_eq!(type_name("core/f64@1"), "Float");
+        assert_eq!(type_name("core/bool@1"), "Bool");
+        assert_eq!(exact_type("core/u64@1"), "u64");
         assert_eq!(type_name("core/list@1<core/i64@1>"), "list<i64>");
         assert_eq!(
             type_name("org.example.geo/point@1"),
@@ -1886,5 +1938,26 @@ mod quick_add_tests {
         editor.open_quick_add(None, [0.0, 300.0], egui::Pos2::ZERO);
         let every = editor.quick_choices(&host, "");
         assert!(every.len() > sequence.len() && every.iter().all(|choice| choice.input.is_none()));
+    }
+}
+
+#[cfg(test)]
+mod glyph_tests {
+    /// Every symbol the editor draws on its own, as a button or mark.
+    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”'];
+
+    #[test]
+    fn every_symbol_the_editor_draws_is_in_its_fonts() {
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |_| {});
+        output.drop_without_applying_deltas();
+        let missing: Vec<char> = context.fonts_mut(|fonts| {
+            SYMBOLS
+                .iter()
+                .copied()
+                .filter(|symbol| !fonts.has_glyph(&egui::FontId::proportional(14.0), *symbol))
+                .collect()
+        });
+        assert!(missing.is_empty(), "drawn as boxes: {missing:?}");
     }
 }

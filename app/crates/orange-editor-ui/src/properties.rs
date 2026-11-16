@@ -362,6 +362,7 @@ impl Editor {
                         change = Some(asked);
                     }
                 }
+                self.values_section(ui, &node);
                 ui.add_space(10.0);
                 if ui.button("Delete node").clicked() {
                     change = Some(Change::Delete);
@@ -403,7 +404,7 @@ impl Editor {
             Change::CancelDeclare => self.quick_variable = None,
             Change::NewConnection => {
                 self.panels.nodes = true;
-                self.document_tab = true;
+                self.tab = crate::Tab::Connections;
                 self.forms.reveal_connection();
             }
             Change::Delete => {
@@ -958,5 +959,57 @@ mod width_tests {
                 .all(|pair| (pair[0] - pair[1]).abs() < 0.5),
             "{widths:?}"
         );
+    }
+}
+
+impl Editor {
+    /// What the last run did at the node: why its last step failed, and the value on
+    /// each input it received and each output it gave, in full and copyable. Values from
+    /// a run that has ended, or from before an edit, are said to be so.
+    fn values_section(&self, ui: &mut egui::Ui, node: &NodeView) {
+        let Some(graph) = self.graph() else {
+            return;
+        };
+        let failure = self.canvas.failure(node.id);
+        let ports: Vec<(&orange_host::PortView, &canvas::Shown)> = node
+            .ports
+            .iter()
+            .filter(|port| !port.exec)
+            .filter_map(|port| {
+                let shown = self
+                    .canvas
+                    .port_value(graph, node.id, &port.id, port.input)?;
+                Some((port, shown))
+            })
+            .collect();
+        if failure.is_none() && ports.is_empty() {
+            return;
+        }
+        section(ui, "Values");
+        if self.canvas.is_stale() {
+            ui.weak("From the last run; run again to see them now.");
+        }
+        if let Some(why) = failure {
+            ui.colored_label(ui.visuals().error_fg_color, format!("Failed: {why}"));
+        }
+        for (port, shown) in ports {
+            let side = if port.input { "in" } else { "out" };
+            let title = format!("{} ({side}) = {}", port_label(&port.id), shown.short);
+            egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
+                .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
+                .show(ui, |ui| {
+                    let mut full = shown.full.clone();
+                    let _ = ui.add(
+                        egui::TextEdit::multiline(&mut full)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY)
+                            .interactive(true),
+                    );
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(shown.full.clone());
+                    }
+                });
+        }
     }
 }

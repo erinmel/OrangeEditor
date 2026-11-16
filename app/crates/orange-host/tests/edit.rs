@@ -502,7 +502,7 @@ fn run_once(
 }
 
 #[test]
-fn value_nodes_are_in_the_palette_under_plain_names() {
+fn value_nodes_are_in_the_palette_under_short_names_and_found_by_aliases() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
     let labels: Vec<_> = host
         .nodes()
@@ -518,10 +518,12 @@ fn value_nodes_are_in_the_palette_under_plain_names() {
         })
         .map(|info| info.label().into_owned())
         .collect();
-    assert_eq!(
-        labels,
-        ["Number", "Text", "True or false", "Value", "Whole number"]
-    );
+    assert_eq!(labels, ["Float", "Text", "Bool", "Value", "Int"]);
+    let int = host
+        .nodes()
+        .find(|info| info.definition.definition.id.as_str() == "core/whole-number")
+        .unwrap();
+    assert!(int.aliases().contains(&"integer"));
 }
 
 #[test]
@@ -905,10 +907,55 @@ fn two_nodes_of_one_kind_are_called_the_same_on_the_canvas() {
         .unwrap();
     let view = host.draft_view(&draft).unwrap();
     let name = |id: NodeId| view.nodes.iter().find(|n| n.id == id).unwrap().name.clone();
-    assert_eq!(name(a), "Whole number");
-    assert_eq!(name(b), "Whole number");
+    assert_eq!(name(a), "Int");
+    assert_eq!(name(b), "Int");
     // Text that has nothing else to tell them apart by keeps the ID ending.
     let names = orange_host::Names::of_document(&host, draft.document());
     assert_ne!(names.node(&a), names.node(&b));
-    assert_eq!(names.without_ids().node(&a), "Whole number");
+    assert_eq!(names.without_ids().node(&a), "Int");
+}
+
+#[test]
+fn whole_numbers_past_two_to_the_53_are_kept_exactly() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let value = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .unwrap();
+    for typed in [
+        "9007199254740993",
+        "9223372036854775807",
+        "-9223372036854775808",
+    ] {
+        assert!(
+            host.set_input(&mut draft, (value, "value"), Some(typed))
+                .unwrap()
+        );
+        let view = host.draft_view(&draft).unwrap();
+        let node = view.nodes.iter().find(|n| n.id == value).unwrap();
+        let shown = node.ports.iter().find(|p| p.id == "value").unwrap();
+        assert_eq!(shown.value.as_deref(), Some(typed));
+    }
+    assert!(
+        host.set_input(&mut draft, (value, "value"), Some("9223372036854775808"))
+            .is_err()
+    );
+}
+
+#[test]
+fn a_value_is_inspected_whole_with_bytes_as_a_bounded_hex_preview() {
+    use orange_host::{MAX_INSPECT_BYTES, inspect};
+    let long = "x".repeat(500);
+    assert_eq!(
+        inspect(&Value::Str(std::sync::Arc::new(long.clone()))),
+        long
+    );
+    assert_eq!(
+        inspect(&Value::I64(9_007_199_254_740_993)),
+        "9007199254740993"
+    );
+    let bytes = Value::Bytes(std::sync::Arc::new(vec![0xab; MAX_INSPECT_BYTES + 10]));
+    let shown = inspect(&bytes);
+    assert!(shown.starts_with(&format!("{} bytes\nab ab", MAX_INSPECT_BYTES + 10)));
+    assert!(shown.ends_with("… 10 more bytes"));
 }

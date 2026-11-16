@@ -109,7 +109,7 @@ pub(crate) fn choice_fields(
                     }
                 });
             *refresh |= ui
-                .small_button("↻")
+                .small_button("Refresh")
                 .on_hover_text("List them again")
                 .clicked();
         });
@@ -245,14 +245,22 @@ impl Editor {
         self.edited(host, result)
     }
 
-    pub(crate) fn document_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+    pub(crate) fn variables_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
-            ui.weak("Open a graph to see what it declares.");
+            ui.weak("Open a graph to see its variables.");
             return;
         };
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.variables_section(ui, host, &declared);
-            ui.separator();
+        });
+    }
+
+    pub(crate) fn connections_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let Some(declared) = self.declarations().cloned() else {
+            ui.weak("Open a graph to see its connections.");
+            return;
+        };
+        egui::ScrollArea::vertical().show(ui, |ui| {
             self.connections_section(ui, host, &declared);
         });
     }
@@ -271,7 +279,8 @@ impl Editor {
         let mut remove = None;
         for variable in &declared.variables {
             let detail = format!(
-                "{}{}{}",
+                "{}, {}{}{}",
+                exact_type(&variable.ty),
                 scope_name(variable.scope),
                 if variable.persistent {
                     ", kept between runs"
@@ -547,8 +556,8 @@ fn declaration_row(ui: &mut egui::Ui, name: &str, kind: &str, detail: &str) -> (
         let _ = ui.label(name).on_hover_text(detail);
         ui.weak(kind);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let delete = ui.small_button("🗑").on_hover_text("Delete").clicked();
-            let edit = ui.small_button("✏").on_hover_text("Change").clicked();
+            let delete = ui.small_button("Delete").clicked();
+            let edit = ui.small_button("Edit").clicked();
             (edit, delete)
         })
         .inner
