@@ -70,6 +70,9 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 
 ## 5. Variables and connections
 
+Implemented 2026-11-16 (FR-114, FR-115); the drag handle and menu use plain text
+symbols until the bundled icon font (§4) lands.
+
 * **Variables** list like Blueprint variables: name, type chip, current value while
   running; drag one onto the canvas to get a Get, Alt-drag for a Set; edit in place.
 * **Connections** are created from every adapter the host has (network, WebSocket,

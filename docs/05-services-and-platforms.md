@@ -36,7 +36,15 @@ Credential Manager, macOS Keychain and, on Linux, the desktop's Secret Service o
 D-Bus, which keeps secrets across restarts; a machine without a Secret Service reports
 the store as unavailable rather than keeping secrets somewhere weaker)
 and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
-entries and read the secret from standard input. HTTP and WebSocket connections take
+entries and read the secret from standard input. An editor sets secrets up without that command
+(2026-11-16, FR-114): adapters describe their settings (`ConnectionAdapter::about`,
+`texts`, `toggles`, with `choices` and `fields`), and a text setting marked `secret`
+is typed masked; `Host::declare_connection_with_secrets` stores it with
+`SecretStore::replace` under `connection/<connection ID>/<setting>` before the
+declaration is committed and writes only the reference, so nothing is declared when the
+store refuses. Undoing the declaration leaves the stored secret; it is replaced when
+the same setting is typed again. `Host::test_connection` resolves the references and
+opens the connection once, without keeping it. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
 `org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type
