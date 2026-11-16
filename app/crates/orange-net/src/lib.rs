@@ -22,7 +22,7 @@ mod ws;
 pub use feed::{download, fetch, new_feed_key, sha256, sign_feed, verify_feed};
 pub use ws::MAX_QUEUED_MESSAGES;
 
-use orange_sdk::{FaultText, KernelFault, ServicePackage};
+use orange_sdk::{FaultText, KernelFault, ServicePackage, SettingText};
 use serde_json::{Map, Value as Json};
 
 /// Package namespace of the definitions and adapter kinds here.
@@ -299,4 +299,45 @@ pub fn package() -> ServicePackage {
         // The definition is a constant of this crate, checked by its tests.
         Err(error) => unreachable!("built-in definition is valid: {error}"),
     }
+}
+
+/// A text setting an editor shows as a field.
+pub(crate) fn text_setting(setting: &str, label: &str, help: &str, hint: &str) -> SettingText {
+    SettingText {
+        setting: setting.to_owned(),
+        label: label.to_owned(),
+        help: help.to_owned(),
+        hint: hint.to_owned(),
+        ..SettingText::default()
+    }
+}
+
+/// A secret setting: typed masked and kept in the credential store.
+pub(crate) fn secret_setting(setting: &str, label: &str, help: &str) -> SettingText {
+    SettingText {
+        secret: true,
+        ..text_setting(setting, label, help, "")
+    }
+}
+
+/// The settings [`auth_headers`] reads that an editor offers as fields.
+pub(crate) fn auth_texts() -> Vec<SettingText> {
+    vec![
+        secret_setting(
+            "bearer",
+            "Bearer token",
+            "Sent as Authorization: Bearer with every request.",
+        ),
+        text_setting(
+            "basic/user",
+            "User name",
+            "Sent with the password as basic authorization.",
+            "",
+        ),
+        secret_setting(
+            "basic/password",
+            "Password",
+            "Sent with the user name as basic authorization.",
+        ),
+    ]
 }

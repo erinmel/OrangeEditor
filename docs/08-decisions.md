@@ -881,3 +881,13 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 **View:** the host now draws a `core/call` with its function's declared kind and interface, named after the function, so a call is wired and typed like any node. Editing a function's body on the canvas is not part of this decision.
 
 **Contracts:** 11 §14 (unchanged), 12 editor layout; FR-111. Verification is the focused tests named in FR-111.
+
+## ADR-27 — Adapters describe their settings; the editor stores typed secrets
+
+**Decision (2026-11-16; FR-114):** a connection adapter describes itself and its settings through default methods of `ConnectionAdapter`: `about` (name and purpose), `texts` (text settings, each possibly `secret`, `required` or a `list`, addressed by names joined by `/` for one inside an object), `toggles`, and the existing `choices` and `fields`. An editor draws its form from these and keeps the settings' JSON for anything else. A secret typed in the editor goes to the host's `SecretStore` under `connection/<connection ID>/<setting>` through `Host::declare_connection_with_secrets`, before the declaration is committed; the document, its undo history, events and the editor's debug output hold only the `credential://` reference.
+
+**Why default methods, not a settings schema file:** adapters are Rust values in service packages; a default that returns nothing keeps every existing adapter valid, and an adapter's code already knows its settings. A JSON schema would have to be kept in step by hand and still could not mark a value as a secret for the store.
+
+**Why the name follows the connection ID:** the ID is stable across renames, unique in a document and valid as a secret name, so typing a secret again replaces it rather than leaving copies. Undo does not delete a stored secret: the store has no delete operation for hosts, and a redo needs it again.
+
+**Contracts:** 05 connection manager, FR-114 (FR-19/21/22). Verification is the focused tests named in FR-114.

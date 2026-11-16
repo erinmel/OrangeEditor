@@ -223,6 +223,10 @@ impl Canvas {
         colors: &Palette,
     ) {
         let zoom = self.zoom;
+        if !self.groups.is_empty() {
+            // A canvas shown without the editor still has its carets.
+            crate::icons::install(painter.ctx());
+        }
         for group in &self.groups {
             let Some(frame) = self.group_frame(graph, group) else {
                 continue;
@@ -254,11 +258,23 @@ impl Canvas {
                 StrokeKind::Inside,
             );
             let font = FontId::proportional(13.0 * zoom.max(0.5));
-            let mark = if group.collapsed { "▸" } else { "▾" };
-            let _ = painter.text(
+            // The caret is from the bundled icon font, the name from the text font.
+            let mark = if group.collapsed {
+                crate::icons::EXPAND
+            } else {
+                crate::icons::COLLAPSE
+            };
+            let caret = painter.text(
                 title.left_center() + Vec2::new(10.0 * zoom, 0.0),
                 Align2::LEFT_CENTER,
-                format!("{mark} {}", group.name),
+                mark,
+                FontId::new(font.size, crate::icons::family()),
+                colors.text,
+            );
+            let _ = painter.text(
+                Pos2::new(caret.right() + 4.0 * zoom, title.center().y),
+                Align2::LEFT_CENTER,
+                group.name.as_str(),
                 font.clone(),
                 colors.text,
             );

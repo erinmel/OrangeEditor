@@ -163,6 +163,78 @@ impl Session for HttpSession {
 #[derive(Debug)]
 pub(crate) struct HttpAdapter;
 impl ConnectionAdapter for HttpAdapter {
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "Web service (HTTP)".into(),
+            purpose: "Sends requests to a web address, such as a REST API.".into(),
+        }
+    }
+    fn texts(&self) -> Vec<orange_sdk::SettingText> {
+        let mut texts = vec![orange_sdk::SettingText {
+            required: true,
+            ..crate::text_setting(
+                "base_url",
+                "Address",
+                "Where requests go; each request's path is added to it.",
+                "https://api.example.com",
+            )
+        }];
+        texts.extend(crate::auth_texts());
+        texts.extend([
+            crate::text_setting(
+                "oauth/token_url",
+                "OAuth token address",
+                "Where OAuth access tokens are fetched from.",
+                "https://auth.example.com/token",
+            ),
+            crate::text_setting("oauth/client_id", "OAuth client ID", "The client's ID.", ""),
+            crate::secret_setting(
+                "oauth/client_secret",
+                "OAuth client secret",
+                "The client's secret, for the client-credentials grant.",
+            ),
+            crate::secret_setting(
+                "oauth/refresh_token",
+                "OAuth refresh token",
+                "A refresh token, for the refresh grant.",
+            ),
+            crate::text_setting(
+                "oauth/scope",
+                "OAuth scope",
+                "The scopes asked for, separated by spaces.",
+                "read write",
+            ),
+        ]);
+        texts
+    }
+    fn fields(&self) -> Vec<orange_sdk::SettingField> {
+        #[expect(clippy::cast_precision_loss, reason = "minutes in milliseconds")]
+        let field =
+            |setting: &str, label: &str, help: &str, default: u64| orange_sdk::SettingField {
+                setting: setting.into(),
+                label: label.into(),
+                help: help.into(),
+                unit: "ms".into(),
+                min: 1.0,
+                max: 3_600_000.0,
+                default: Some(default as f64),
+                whole: true,
+            };
+        vec![
+            field(
+                "timeout_ms",
+                "Timeout",
+                "How long a whole request may take.",
+                DEFAULT_TIMEOUT_MS,
+            ),
+            field(
+                "stream_timeout_ms",
+                "Stream timeout",
+                "How long one streamed response may last.",
+                DEFAULT_STREAM_TIMEOUT_MS,
+            ),
+        ]
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         self.open_renewing(settings, Renew::none())
     }

@@ -135,6 +135,22 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
 /// an adapter that needs a handshake performs it on first use, from a worker.
 pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String>;
+    /// What the adapter is called and what it is for, for a person choosing one. The
+    /// default is empty: an editor then names it from its kind.
+    fn about(&self) -> AdapterAbout {
+        AdapterAbout::default()
+    }
+    /// Text settings an editor can show as fields, such as a URL or a password. A
+    /// [`secret`](SettingText::secret) one is typed masked and kept in the host's
+    /// credential store; the settings hold only its `credential://` reference. The
+    /// default offers none.
+    fn texts(&self) -> Vec<SettingText> {
+        Vec::new()
+    }
+    /// True-or-false settings an editor can show as switches. The default offers none.
+    fn toggles(&self) -> Vec<SettingToggle> {
+        Vec::new()
+    }
     /// [`open`](Self::open) for an adapter whose service can replace a secret it was
     /// given: it keeps `renew` and reports each replacement. The host calls this one;
     /// the default ignores `renew`.
@@ -196,6 +212,46 @@ pub struct SettingField {
     pub default: Option<f64>,
     /// Only whole numbers.
     pub whole: bool,
+}
+
+/// What a connection adapter is, from [`ConnectionAdapter::about`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdapterAbout {
+    /// What it is called, such as "Web service (HTTP)".
+    pub label: String,
+    /// One sentence on what a connection of it is for.
+    pub purpose: String,
+}
+
+/// A text setting of a connection, from [`ConnectionAdapter::texts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingText {
+    /// Where it is in the settings: its name, or names joined by `/` for one inside an
+    /// object, such as `basic/password`.
+    pub setting: String,
+    /// What it is called, such as "Password".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// An example shown while it is empty.
+    pub hint: String,
+    /// It holds a secret: typed masked and kept in the credential store.
+    pub secret: bool,
+    /// The connection cannot open without it.
+    pub required: bool,
+    /// A list of texts, typed one per line, such as topics to subscribe to.
+    pub list: bool,
+}
+
+/// A true-or-false setting of a connection, from [`ConnectionAdapter::toggles`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingToggle {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    pub label: String,
+    pub help: String,
+    /// What leaving it out means.
+    pub default: bool,
 }
 
 /// The values a connection setting can take on this machine, from

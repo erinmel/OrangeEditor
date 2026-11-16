@@ -277,6 +277,12 @@ impl Session for OutputSession {
 #[derive(Debug)]
 struct OutputAdapter;
 impl ConnectionAdapter for OutputAdapter {
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "Audio output".into(),
+            purpose: "Plays sounds on a speaker or other output device.".into(),
+        }
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         Ok(Arc::new(OutputSession {
             device: device_setting(settings)?,
@@ -701,6 +707,12 @@ impl Drop for InputProbe {
 #[derive(Debug)]
 struct InputAdapter;
 impl ConnectionAdapter for InputAdapter {
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "Audio input".into(),
+            purpose: "Listens to a microphone or other input device.".into(),
+        }
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         Ok(Arc::new(InputSession(spawn_input(settings)?)))
     }

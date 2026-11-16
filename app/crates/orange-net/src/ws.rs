@@ -229,6 +229,25 @@ fn run(shared: &Shared) {
 #[derive(Debug)]
 pub(crate) struct WsAdapter;
 impl ConnectionAdapter for WsAdapter {
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "WebSocket".into(),
+            purpose: "Keeps a socket open to a server to send and receive messages.".into(),
+        }
+    }
+    fn texts(&self) -> Vec<orange_sdk::SettingText> {
+        let mut texts = vec![orange_sdk::SettingText {
+            required: true,
+            ..crate::text_setting(
+                "url",
+                "Address",
+                "The socket's address.",
+                "wss://example.com/socket",
+            )
+        }];
+        texts.extend(crate::auth_texts());
+        texts
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         let url = settings
             .get("url")
