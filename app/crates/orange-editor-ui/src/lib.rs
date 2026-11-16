@@ -1940,3 +1940,24 @@ mod quick_add_tests {
         assert!(every.len() > sequence.len() && every.iter().all(|choice| choice.input.is_none()));
     }
 }
+
+#[cfg(test)]
+mod glyph_tests {
+    /// Every symbol the editor draws on its own, as a button or mark.
+    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”'];
+
+    #[test]
+    fn every_symbol_the_editor_draws_is_in_its_fonts() {
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |_| {});
+        output.drop_without_applying_deltas();
+        let missing: Vec<char> = context.fonts_mut(|fonts| {
+            SYMBOLS
+                .iter()
+                .copied()
+                .filter(|symbol| !fonts.has_glyph(&egui::FontId::proportional(14.0), *symbol))
+                .collect()
+        });
+        assert!(missing.is_empty(), "drawn as boxes: {missing:?}");
+    }
+}

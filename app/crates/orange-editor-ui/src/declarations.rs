@@ -109,7 +109,7 @@ pub(crate) fn choice_fields(
                     }
                 });
             *refresh |= ui
-                .small_button("↻")
+                .small_button("Refresh")
                 .on_hover_text("List them again")
                 .clicked();
         });
@@ -556,8 +556,8 @@ fn declaration_row(ui: &mut egui::Ui, name: &str, kind: &str, detail: &str) -> (
         let _ = ui.label(name).on_hover_text(detail);
         ui.weak(kind);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let delete = ui.small_button("🗑").on_hover_text("Delete").clicked();
-            let edit = ui.small_button("✏").on_hover_text("Change").clicked();
+            let delete = ui.small_button("Delete").clicked();
+            let edit = ui.small_button("Edit").clicked();
             (edit, delete)
         })
         .inner

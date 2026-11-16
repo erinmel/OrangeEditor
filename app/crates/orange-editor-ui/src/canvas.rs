@@ -1163,7 +1163,7 @@ impl Canvas {
                     (Some(value), _) => value.to_string(),
                     (None, Some(text)) => text.to_owned(),
                     // An input with no value says so, rather than showing a 0 it does not have.
-                    (None, None) => "â".to_owned(),
+                    (None, None) => "—".to_owned(),
                 };
                 let touched = place(ui, &mut |ui| {
                     ui.add(
@@ -1301,6 +1301,29 @@ pub(crate) fn step_whole(base: i128, pixels: f32, ty: &str) -> i128 {
     base.saturating_add(steps).clamp(least, most)
 }
 
+/// `text` cut to fit in `width` with an ellipsis, and whether it was cut.
+fn elide(painter: &egui::Painter, text: &str, font: &FontId, width: f32) -> (String, bool) {
+    let fits = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+            <= width
+    };
+    if fits(text) {
+        return (text.to_owned(), false);
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        let _ = chars.pop();
+        let shorter = format!("{}\u{2026}", chars.iter().collect::<String>().trim_end());
+        if fits(&shorter) {
+            return (shorter, true);
+        }
+    }
+    ("\u{2026}".to_owned(), true)
+}
+
 /// Whether a value of type `source` may go to an input of type `target`, as far as the
 /// canvas can tell before asking: types it does not know yet, or a type the node leaves
 /// open, fit anything. The language still has the last word when the wire is made.
@@ -1409,7 +1432,15 @@ fn draw_node<'a>(
         let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
         let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
-        let named = header_painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
+        // A title too long for the header ends in an ellipsis; the whole name is on hover.
+        let room = (clip.max.x - left.x).max(0.0);
+        let (shown, cut) = elide(painter, &node.name, &title, room);
+        let named = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
+        if cut {
+            let _ = ui
+                .interact(clip, canvas.with(("title", node.id)), Sense::hover())
+                .on_hover_text(node.name.as_str());
+        }
         // What the node is set to (its variable), else what kind of node it is when its
         // name says something else.
         let aside = node
@@ -2322,5 +2353,29 @@ mod run_state_tests {
         canvas.clear_run();
         assert!(!canvas.is_stale() && canvas.failure(b).is_none());
         assert!(canvas.port_value(&graph, b, "value", true).is_none());
+    }
+}
+
+#[cfg(test)]
+mod elide_tests {
+    use super::*;
+
+    #[test]
+    fn a_title_too_long_for_its_room_ends_in_an_ellipsis() {
+        let context = egui::Context::default();
+        let mut result = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let font = FontId::proportional(14.0);
+            let short = elide(ui.painter(), "Int", &font, 200.0);
+            let long = elide(ui.painter(), "When the microphone hears sound", &font, 90.0);
+            result = Some((short, long));
+        });
+        output.drop_without_applying_deltas();
+        let (short, long) = result.unwrap();
+        assert_eq!(short, ("Int".to_owned(), false));
+        assert!(
+            long.1 && long.0.ends_with('\u{2026}') && long.0.len() < 31,
+            "{long:?}"
+        );
     }
 }

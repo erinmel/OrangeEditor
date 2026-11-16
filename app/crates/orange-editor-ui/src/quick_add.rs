@@ -159,7 +159,7 @@ impl Editor {
                             }
                             for choice in choices.iter().take(SHOWN) {
                                 let text = match &choice.input {
-                                    Some(input) => format!("{}  → {input}", choice.label),
+                                    Some(input) => format!("{}  to {input}", choice.label),
                                     None => choice.label.clone(),
                                 };
                                 if ui
