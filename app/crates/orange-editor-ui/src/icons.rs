@@ -124,7 +124,9 @@ pub(crate) fn button(
     } else {
         format!("{what} ({shortcut})")
     };
-    ui.add_enabled(enabled, egui::Button::new(text(icon).size(16.0)))
+    let response = ui.add_enabled(enabled, egui::Button::new(text(icon).size(16.0)));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, what));
+    response
         .on_hover_text(tip.clone())
         .on_disabled_hover_text(tip)
 }
@@ -137,5 +139,7 @@ pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool, icon: char, what: &str) -
     if response.clicked() {
         *on = !*on;
     }
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), *on, what));
     response
 }

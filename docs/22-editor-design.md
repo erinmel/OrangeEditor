@@ -15,7 +15,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
    a node says what it computes (`a > b`); a trigger shows what it fires with. Debugging
    needs no log reading.
 3. **Problems are quiet until asked.** A problem marks the exact place (a port, a wire, a
-   field) with a small sign; detail is on hover and in the Problems list. Nothing is
+   field) with a small sign; full diagnostic text lives in the Problems dock. Nothing is
    drawn over other cards.
 4. **Words a person uses.** Names say what something is for (Int, Text, Microphone in),
    search understands intent ("trigger", "when", "every second", "disparador"), and
@@ -31,7 +31,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Grid | Snap to grid is on by default (24 units), shown in the toolbar; Alt while dragging moves freely. |
 | Wires | A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
-| Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. Clicking the dot opens the docked Problems and log panel. Keep the diagnostic text in that panel. |
+| Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. Clicking a validation marker or the toolbar count opens Problems; a runtime failure marker opens Log. The two views have independent scroll positions. |
 | Run feedback | A brief pulse along the card's top edge when a step runs; a failed step keeps a red top edge and the dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
@@ -50,7 +50,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 
 ## 4. Search and commands
 
-Dragging a palette result shows a labeled placement preview on the canvas before dropping the node.
+Palette and canvas search use the same full-width result rows. The title identifies the node and the secondary line says what it does. Up and Down move the visible highlight, and Enter adds the highlighted result. Dragging a palette result shows a labeled placement preview before dropping it.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts and the words of each node's description, in the
@@ -114,3 +114,40 @@ and a separate Mix node.
 ## 7. Out of scope for now
 
 Themes beyond light and dark, touch input, collaborative editing.
+
+## 7. Interaction references and review checklist
+
+| Reference | Rule for OrangeEditor | Review scenario |
+|---|---|---|
+| [Warudo Blueprint editor](https://docs.warudo.app/docs/blueprints/overview) | Keep graph selection, node discovery, and property editing in distinct places. Preserve the canvas as the main working area. | Find a timer by purpose, drag it to the canvas, then edit its most common input on the card. |
+| [Houdini network editor](https://www.sidefx.com/docs/houdini/network/nodes.html) and [Blender 4.5 node editing](https://docs.blender.org/manual/en/4.5/interface/controls/nodes/editing.html) | Offer search at the pointer, show placement before committing, and keep wire insertion reversible as one edit. | Add via keyboard; try valid and invalid wire insertion; undo the successful insertion once. |
+| [Unreal Blueprint placement](https://dev.epicgames.com/documentation/unreal-engine/blueprint-basic-user-guide-in-unreal-engine) and [debugger](https://dev.epicgames.com/documentation/en-us/unreal-engine/blueprint-debugger-in-unreal-engine) | Filter by port context when wiring. Distinguish computed preview, observed values, and values that have yet to be produced. | Wire two Bool values to AND and read its unwired output. In a running graph, inspect a pin before and after it executes. |
+| [WCAG 2.2](https://www.w3.org/TR/WCAG22/) and [Nielsen Norman Group heuristics](https://www.nngroup.com/articles/ten-usability-heuristics/) | Give icon controls readable names, make keyboard focus visible, and use text or shape alongside color. Keep status and recovery actions close to the work. Use the web criteria as design guidance for the native editor. | Navigate without a mouse. Verify result rows are easy to target, toggle states are distinguishable, and a problem marker leads to explanatory text. |
+
+Before calling a UI change complete, exercise the primary actions in normal and narrow
+windows, at default and high display scale, with both pointer and keyboard. Include
+long port names and values, a high-density graph, a failed run, and an empty search.
+Verify tracing and recording with actual devices if an audio change affects routing.
+Headless egui tests cover drawn shapes and synthetic events; visual and hardware checks
+need their own evidence.
+### Visual hierarchy and feedback
+
+- Give the canvas the largest area. Group related controls into stable docks and keep
+  the active graph, run state and problems visible. Use a neutral canvas and reserve
+  strong colors for selection, execution and faults. Use the same node family cue in
+  the palette and card headers when adding family icons.
+- Keep titles, port labels and values scannable in that order. Prefer one compact
+  primary action per card. Use consistent row heights and padding, keep long values
+  within the card, and show full precision in the inspector. At distant zoom, keep
+  shape and routing readable while removing detail that is too small to read.
+- Let settings answer what will change before applying an edit. Confirm destructive
+  operations when undo cannot recover the work. Use the same validation wording on
+  a node, its inspector and the Problems dock. Preserve the original values and
+  wiring when an edit is rejected.
+- Keep panel focus and selection visible. Test empty, loading, unavailable and failed
+  states alongside the happy path. For network and audio panels, distinguish saved
+  settings, connection state and runtime outcomes. Never use credentials in UI
+  diagnostics.
+- Review dense graph navigation at realistic scale before adding persistent overlays.
+  An optional overview is useful when the graph exceeds the viewport. Verify zoom,
+  fit and focus behaviour first. [Houdini network navigation](https://www.sidefx.com/docs/houdini/network/navigate.html)

@@ -182,6 +182,8 @@ impl std::fmt::Debug for Probing {
 #[derive(Debug, Default)]
 pub struct Editor {
     search: String,
+    palette_highlighted: usize,
+    log_events: bool,
     palette: palette::PaletteCache,
     document: Option<Document>,
     canvas: Canvas,
@@ -1149,18 +1151,29 @@ impl Editor {
                     ui.label("No document is open.");
                     return;
                 };
-                let valid = document.problems.is_empty();
+                let problem_count = document.problems.len();
                 let title = if document.unsaved {
                     format!("{} (not saved)", document.path)
                 } else {
                     document.path.clone()
                 };
                 let path = document.path.clone();
-                ui.label(match (running, valid) {
-                    (true, _) => "Running",
-                    (false, true) => "Ready",
-                    (false, false) => "Has problems",
-                });
+                if running {
+                    ui.label("Running");
+                }
+                if problem_count > 0 {
+                    let label = if problem_count == 1 {
+                        "1 problem".to_owned()
+                    } else {
+                        format!("{problem_count} problems")
+                    };
+                    if ui.button(label).clicked() {
+                        self.panels.log = true;
+                        self.log_events = false;
+                    }
+                } else if !running {
+                    ui.label("Ready");
+                }
                 // The file's name; its whole path when pointed at.
                 let name = title
                     .rsplit(['/', '\\'])
@@ -1223,11 +1236,36 @@ impl Editor {
         let mut add = None;
         let mut variable_node = None;
         let mut new_variable = false;
-        let _ = ui.add(
+        let search_id = ui.scope_id().with("node-palette-search");
+        let (up, down, enter) =
+            if ui.memory(|memory| memory.has_focus(search_id)) && !self.search.trim().is_empty() {
+                ui.input_mut(|input| {
+                    (
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    )
+                })
+            } else {
+                (false, false, false)
+            };
+        if up || down {
+            ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+        }
+        let field = ui.add(
             egui::TextEdit::singleline(&mut self.search)
-                .hint_text("Search nodes")
+                .id(search_id)
+                .event_filter(egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                })
+                .hint_text("Search by name or purpose")
                 .desired_width(f32::INFINITY),
         );
+        if field.changed() {
+            self.palette_highlighted = 0;
+        }
         let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
@@ -1274,38 +1312,38 @@ impl Editor {
             if searching && found.is_empty() {
                 ui.weak("No node matches. Try a name or a purpose, such as int, timer or text.");
             }
+            let found_count = found.iter().map(|(_, items)| items.len()).sum::<usize>();
+            let last = found_count.saturating_sub(1);
+            self.palette_highlighted = self.palette_highlighted.min(last);
+            if down {
+                self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
+            }
+            if up {
+                self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
+            }
+            let mut index = 0;
             for (category, items) in found {
-                // A search opens every section it found something in.
-                egui::CollapsingHeader::new(format!("{category} ({})", items.len()))
+                egui::CollapsingHeader::new(category.as_str())
                     .id_salt(category.as_str())
                     .default_open(searching)
                     .open(searching.then_some(true))
                     .show(ui, |ui| {
                         for item in items {
-                            let hint = if item.purpose.is_empty() {
-                                format!("{}\nClick to add it, or drag it onto the graph.", item.id)
-                            } else {
-                                format!(
-                                    "{}\n{}\nClick to add it, or drag it onto the graph.",
-                                    item.purpose, item.id
-                                )
-                            };
-                            // Dragged, it carries its kind to where it is let go.
+                            let active =
+                                searching && field.has_focus() && index == self.palette_highlighted;
+                            index += 1;
                             let id = ui.scope_id().with(("orange-kind", item.id.as_str()));
+                            let detail = if searching { item.purpose.as_str() } else { "" };
                             let shown = ui.dnd_drag_source(id, item.clone(), |ui| {
-                                ui.selectable_label(false, item.label.as_str())
+                                palette::result_row(ui, &item.label, detail, active)
                             });
-                            if shown.inner.on_hover_text(hint).clicked() {
-                                add = Some(item.id.clone());
+                            if active && (up || down) {
+                                shown.inner.scroll_to_me(None);
                             }
-                            // A search says what each found node is for.
-                            if searching && !item.purpose.is_empty() {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(item.purpose.as_str()).small().weak(),
-                                    )
-                                    .truncate(),
-                                );
+                            if shown.inner.on_hover_text(&item.purpose).clicked()
+                                || (active && enter)
+                            {
+                                add = Some(item.id.clone());
                             }
                         }
                     });
@@ -1365,6 +1403,27 @@ impl Editor {
     }
 
     fn log_panel(&mut self, ui: &mut egui::Ui) {
+        let count = self.problems().len();
+        ui.horizontal(|ui| {
+            let label = if count == 0 {
+                "Problems".to_owned()
+            } else {
+                format!("Problems ({count})")
+            };
+            let _ = ui.selectable_value(&mut self.log_events, false, label);
+            let _ = ui.selectable_value(&mut self.log_events, true, "Log");
+        });
+        if self.log_events {
+            egui::ScrollArea::vertical()
+                .id_salt("editor-events")
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for line in &self.log {
+                        ui.monospace(line.as_str());
+                    }
+                });
+            return;
+        }
         let problems = self.problems().to_vec();
         let nodes = self
             .document
@@ -1373,10 +1432,11 @@ impl Editor {
             .unwrap_or_default();
         let mut focus = None;
         egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
+            .id_salt("editor-problems")
             .show(ui, |ui| {
-                if !problems.is_empty() {
-                    ui.heading(format!("Problems ({})", problems.len()));
+                if problems.is_empty() {
+                    ui.weak("No problems found.");
+                } else {
                     for (index, problem) in problems.iter().enumerate() {
                         // A problem about a node takes you to it.
                         match nodes.get(index).copied().flatten() {
@@ -1394,11 +1454,6 @@ impl Editor {
                             }
                         }
                     }
-                    ui.separator();
-                }
-                ui.heading("Log");
-                for line in &self.log {
-                    ui.monospace(line.as_str());
                 }
             });
         if let (Some(node), Some(document)) = (focus, &self.document) {
@@ -1416,8 +1471,9 @@ impl Editor {
             .as_ref()
             .map_or(&[][..], |(_, entries)| entries.as_slice());
         let done = self.canvas.show(ui, &document.graph, triggers);
-        if done.show_problems {
+        if done.show_problems || done.show_runtime_log {
             self.panels.log = true;
+            self.log_events = done.show_runtime_log;
         }
         if done.moved {
             self.keep_layout();
@@ -2638,5 +2694,52 @@ mod preview_tests {
         assert_eq!(editor.canvas().shown_value(and, "result"), Some("true"));
         assert!(editor.disconnect(&mut host, (and, "b"), true));
         assert_eq!(editor.canvas().shown_value(and, "result"), None);
+    }
+}
+
+#[cfg(test)]
+mod palette_keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_search_adds_the_highlighted_result_by_keyboard() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        editor.search = "trigger".into();
+        let expected = palette(&host, &editor.search)[0].1[1].id.clone();
+        let context = egui::Context::default();
+        for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
+            let events = key
+                .into_iter()
+                .map(|key| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .collect();
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            context
+                .run_ui(input, |ui| {
+                    if key.is_none() {
+                        let search = ui.scope_id().with("node-palette-search");
+                        ui.memory_mut(|memory| memory.request_focus(search));
+                    }
+                    editor.nodes_panel(ui, &mut host);
+                })
+                .drop_without_applying_deltas();
+        }
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].definition, expected);
     }
 }
