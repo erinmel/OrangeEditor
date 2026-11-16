@@ -508,8 +508,19 @@ impl Definition {
     /// system's chooser beside it, for a folder when `folder`, else for a file with one
     /// of `extensions` (any file when empty).
     #[must_use]
-    pub fn path_input(mut self, port: &str, folder: bool, extensions: &[&str]) -> Self {
-        let path = serde_json::json!({"port": port, "folder": folder, "extensions": extensions});
+    pub fn path_input(self, port: &str, folder: bool, extensions: &[&str]) -> Self {
+        self.path_hint(
+            serde_json::json!({"port": port, "folder": folder, "extensions": extensions}),
+        )
+    }
+    /// The text input `port` names a file the node writes, such as a recording: an
+    /// editor offers the system's save chooser beside it, for a file with one of
+    /// `extensions` (any file when empty).
+    #[must_use]
+    pub fn save_path_input(self, port: &str, extensions: &[&str]) -> Self {
+        self.path_hint(serde_json::json!({"port": port, "save": true, "extensions": extensions}))
+    }
+    fn path_hint(mut self, path: Json) -> Self {
         let editor = self
             .json
             .entry("editor")
