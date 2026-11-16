@@ -443,6 +443,36 @@ impl Editor {
         self.edited(host, result)
     }
 
+    /// Takes one wire off, by its two ends.
+    pub fn disconnect_wire(
+        &mut self,
+        host: &mut Host,
+        from: (NodeId, &str),
+        to: (NodeId, &str),
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.disconnect_wire(draft, from, to);
+        self.edited(host, result)
+    }
+
+    /// Puts `node` into the wire from `from` to `to`; a node that does not fit says why
+    /// in the log and nothing changes.
+    pub fn insert_into_wire(
+        &mut self,
+        host: &mut Host,
+        node: NodeId,
+        from: (NodeId, &str),
+        to: (NodeId, &str),
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.insert_into_wire(draft, node, from, to);
+        self.edited(host, result)
+    }
+
     /// Takes the wires off one port.
     pub fn disconnect(&mut self, host: &mut Host, at: (NodeId, &str), input: bool) -> bool {
         let Some(draft) = self.editing() else {
@@ -686,6 +716,15 @@ impl Editor {
                         canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
                     } else if let Some(node) = node {
                         canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
+                        // The port at fault is ringed as well as the node marked.
+                        if let Some(port) = &diagnostic.subject.port {
+                            canvas::Marks::add(
+                                &mut marks.ports,
+                                (node, port.to_string()),
+                                error,
+                                text.clone(),
+                            );
+                        }
                     }
                     document.problem_nodes.push(node);
                     text
@@ -1223,6 +1262,12 @@ impl Editor {
         }
         if let Some((node, port, input)) = done.disconnect {
             let _ = self.disconnect(host, (node, &port), input);
+        }
+        if let Some((from, to)) = done.remove_wire {
+            let _ = self.disconnect_wire(host, (from.0, &from.1), (to.0, &to.1));
+        }
+        if let Some((node, (from, to))) = done.insert {
+            let _ = self.insert_into_wire(host, node, (from.0, &from.1), (to.0, &to.1));
         }
         if !done.remove.is_empty() {
             let _ = self.remove_nodes(host, &done.remove);

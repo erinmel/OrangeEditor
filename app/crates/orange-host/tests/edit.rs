@@ -960,3 +960,49 @@ fn a_value_is_inspected_whole_with_bytes_as_a_bounded_hex_preview() {
     assert!(shown.starts_with(&format!("{} bytes\nab ab", MAX_INSPECT_BYTES + 10)));
     assert!(shown.ends_with("… 10 more bytes"));
 }
+
+#[test]
+fn a_node_dropped_on_a_wire_goes_into_it_as_one_edit() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let wait = host
+        .add_node(&mut draft, "core/wait", [160.0, 0.0])
+        .unwrap();
+    let before = draft.text().unwrap();
+    assert!(
+        host.insert_into_wire(&mut draft, wait, (trigger, "then"), (set, "in"))
+            .unwrap()
+    );
+    let wires = host.draft_view(&draft).unwrap().wires;
+    let has = |from: NodeId, to: NodeId| wires.iter().any(|w| w.from.0 == from && w.to.0 == to);
+    assert!(has(trigger, wait) && has(wait, set) && !has(trigger, set));
+    // One step back puts the wire back as it was.
+    assert!(draft.undo());
+    let content = |text: &str| {
+        let mut saved: Json = serde_json::from_str(text).unwrap();
+        saved.as_object_mut().unwrap().remove("revision");
+        saved
+    };
+    assert_eq!(content(&draft.text().unwrap()), content(&before));
+    // A node with no step input does not go into a step wire; nothing changes.
+    let int = host
+        .add_node(&mut draft, "core/whole-number", [160.0, 200.0])
+        .unwrap();
+    let held = draft.text().unwrap();
+    assert!(
+        host.insert_into_wire(&mut draft, int, (trigger, "then"), (set, "in"))
+            .is_err()
+    );
+    assert_eq!(draft.text().unwrap(), held);
+    // One wire can be taken off by its two ends.
+    assert!(
+        host.disconnect_wire(&mut draft, (trigger, "then"), (set, "in"))
+            .unwrap()
+    );
+    assert!(host.draft_view(&draft).unwrap().wires.is_empty());
+    assert!(
+        !host
+            .disconnect_wire(&mut draft, (trigger, "then"), (set, "in"))
+            .unwrap()
+    );
+}
