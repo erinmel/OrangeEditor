@@ -1292,7 +1292,7 @@ impl Editor {
                             };
                             // Dragged, it carries its kind to where it is let go.
                             let id = ui.scope_id().with(("orange-kind", item.id.as_str()));
-                            let shown = ui.dnd_drag_source(id, item.id.clone(), |ui| {
+                            let shown = ui.dnd_drag_source(id, item.clone(), |ui| {
                                 ui.selectable_label(false, item.label.as_str())
                             });
                             if shown.inner.on_hover_text(hint).clicked() {
@@ -1416,6 +1416,9 @@ impl Editor {
             .as_ref()
             .map_or(&[][..], |(_, entries)| entries.as_slice());
         let done = self.canvas.show(ui, &document.graph, triggers);
+        if done.show_problems {
+            self.panels.log = true;
+        }
         if done.moved {
             self.keep_layout();
         }
@@ -2489,11 +2492,24 @@ impl Editor {
         // output that cannot does not blank the rest.
         let found = match host.preview(&text, &wanted) {
             Ok(found) => found,
-            Err(_) => wanted
-                .iter()
-                .filter_map(|one| host.preview(&text, std::slice::from_ref(one)).ok())
-                .flatten()
-                .collect(),
+            Err(_) => {
+                let Ok(saved) = serde_json::from_str(&text) else {
+                    return;
+                };
+                let mut upstream = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
+                for wire in &document.graph.wires {
+                    upstream.entry(wire.to.0).or_default().push(wire.from.0);
+                }
+                wanted
+                    .iter()
+                    .filter_map(|one| {
+                        let scoped = preview_dependencies(&saved, &upstream, one.0)?;
+                        host.preview(&scoped.to_string(), std::slice::from_ref(one))
+                            .ok()
+                    })
+                    .flatten()
+                    .collect()
+            }
         };
         for previewed in found {
             if let Ok(value) = &previewed.value {
@@ -2506,6 +2522,37 @@ impl Editor {
             }
         }
     }
+}
+
+/// Retain the requested root node and its upstream dependencies. The host still
+/// validates and compiles the projection, including the original providers and types.
+fn preview_dependencies(
+    saved: &serde_json::Value,
+    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    output: NodeId,
+) -> Option<serde_json::Value> {
+    let mut nodes = std::collections::BTreeSet::new();
+    let mut pending = vec![output];
+    while let Some(node) = pending.pop() {
+        if nodes.insert(node)
+            && let Some(sources) = upstream.get(&node)
+        {
+            pending.extend(sources);
+        }
+    }
+    let contains = |id: &serde_json::Value| {
+        id.as_str()
+            .and_then(|id| id.parse::<NodeId>().ok())
+            .is_some_and(|id| nodes.contains(&id))
+    };
+    let mut scoped = saved.clone();
+    scoped["nodes"]
+        .as_array_mut()?
+        .retain(|node| contains(&node["id"]));
+    scoped["edges"]
+        .as_array_mut()?
+        .retain(|edge| contains(&edge["from"]["node"]) && contains(&edge["to"]["node"]));
+    Some(scoped)
 }
 
 #[cfg(test)]
@@ -2548,5 +2595,48 @@ mod preview_tests {
             editor.canvas().shown_value(greater, "result"),
             Some("false")
         );
+    }
+
+    #[test]
+    fn and_shows_both_inputs_and_its_unwired_result() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let a = editor
+            .add_node_at(&mut host, "core/true-or-false", [0.0, 0.0])
+            .unwrap();
+        let b = editor
+            .add_node_at(&mut host, "core/true-or-false", [0.0, 120.0])
+            .unwrap();
+        let and = editor
+            .add_node_at(&mut host, "core/and", [300.0, 60.0])
+            .unwrap();
+        assert!(editor.set_input(&mut host, (a, "value"), Some("true")));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("false")));
+        assert!(editor.connect(&mut host, (a, "result"), (and, "a")));
+        assert!(editor.connect(&mut host, (b, "result"), (and, "b")));
+        let graph = editor.graph().unwrap().clone();
+        for (port, expected) in [("a", "true"), ("b", "false")] {
+            assert_eq!(
+                editor
+                    .canvas()
+                    .port_value(&graph, and, port, true)
+                    .map(|value| value.short.as_str()),
+                Some(expected)
+            );
+        }
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("false"));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("true")));
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("true"));
+        editor
+            .add_node_at(&mut host, "org.orange.math/greater", [600.0, 0.0])
+            .unwrap();
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("true"));
+        assert!(editor.disconnect(&mut host, (and, "b"), true));
+        assert_eq!(editor.canvas().shown_value(and, "result"), None);
     }
 }

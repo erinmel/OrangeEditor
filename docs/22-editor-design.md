@@ -30,8 +30,8 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
 | Grid | Snap to grid is on by default (24 units), shown in the toolbar; Alt while dragging moves freely. |
 | Wires | A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
-| Values | Each data port shows the value it last carried in a small pill outside the card; hovering shows it whole; clicking pins it open. A pure node shows its result live while its inputs are known (preview, compiled with the same plan rules as a run). |
-| Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. The dot's tooltip lists the problems; clicking opens Problems at them. |
+| Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
+| Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. Clicking the dot opens the docked Problems and log panel. Keep the diagnostic text in that panel. |
 | Run feedback | A brief pulse along the card's top edge when a step runs; a failed step keeps a red top edge and the dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
@@ -49,6 +49,8 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 
 ## 4. Search and commands
+
+Dragging a palette result shows a labeled placement preview on the canvas before dropping the node.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts and the words of each node's description, in the

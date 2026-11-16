@@ -106,6 +106,8 @@ pub struct CanvasResponse {
     pub trigger: Option<NodeId>,
     /// Nodes were let go at new places: [`Canvas::places`] is worth saving.
     pub moved: bool,
+    /// The problem marker was clicked.
+    pub show_problems: bool,
     /// The node that was clicked.
     pub selected: Option<NodeId>,
     /// A value was written on an input with its control on the card, typed as a
@@ -156,7 +158,7 @@ pub struct Shown {
 pub struct Mark {
     /// An error stops the graph from running; anything else is a warning.
     pub error: bool,
-    /// What the problem says, as a person reads it; shown when the pointer is on it.
+    /// What the problem says, as a person reads it.
     pub text: String,
 }
 
@@ -756,12 +758,19 @@ impl Canvas {
             .hover_pos()
             .map(|at| graph_point(at, self.origin, self.zoom));
         // A node kind dragged from a list and let go here.
-        if let (Some(kind), Some(at)) = (
-            response.dnd_release_payload::<String>(),
-            ui.input(|input| input.pointer.interact_pos()),
-        ) {
+        let palette_item = response.dnd_hover_payload::<crate::PaletteItem>();
+        let dropped = if palette_item.is_some() {
+            response
+                .dnd_release_payload::<crate::PaletteItem>()
+                .map(|item| item.id.clone())
+        } else {
+            response
+                .dnd_release_payload::<String>()
+                .map(|kind| (*kind).clone())
+        };
+        if let (Some(kind), Some(at)) = (dropped, ui.input(|input| input.pointer.interact_pos())) {
             let at = graph_point(at, self.origin, self.zoom);
-            done.dropped = Some(((*kind).clone(), [at.x, at.y]));
+            done.dropped = Some((kind, [at.x, at.y]));
         }
         if let Some(pointer) = response.hover_pos() {
             let (mut scroll, mut factor, modifiers) = ui.input(|input| {
@@ -1158,28 +1167,19 @@ impl Canvas {
                 ) else {
                     continue;
                 };
-                let mut shown: String = value.short.chars().take(24).collect();
-                if shown.len() < value.short.len() {
-                    shown.push('…');
+                if zoom < 0.6 {
+                    continue;
                 }
-                let (offset, align) = if port.input {
-                    (
-                        Vec2::new(-8.0 * zoom, -9.0 * zoom),
-                        egui::Align2::RIGHT_CENTER,
-                    )
+                let font = FontId::monospace(9.0 * zoom);
+                let inset = CARD_PADDING * zoom;
+                let (x, align) = if port.input {
+                    (inset, Align2::LEFT_CENTER)
                 } else {
-                    (
-                        Vec2::new(8.0 * zoom, -9.0 * zoom),
-                        egui::Align2::LEFT_CENTER,
-                    )
+                    (-inset, Align2::RIGHT_CENTER)
                 };
-                let _ = painter.text(
-                    at + offset,
-                    align,
-                    shown,
-                    egui::FontId::monospace(10.0 * zoom.max(0.7)),
-                    tint,
-                );
+                let room = rect.width() / 2.0 - 2.0 * inset;
+                let (shown, _) = elide(&painter, &value.short, &font, room);
+                let _ = painter.text(at + Vec2::new(x, 9.0 * zoom), align, shown, font, tint);
             }
             for (port, slot) in slots {
                 if area.contains_rect(slot)
@@ -1210,13 +1210,6 @@ impl Canvas {
                         (PORT_RADIUS + 3.5) * zoom.max(0.6),
                         Stroke::new(2.0 * zoom.max(0.6), colors.problem(mark.error)),
                     );
-                    let _ = ui
-                        .interact(
-                            Rect::from_center_size(center, Vec2::splat(18.0 * zoom.max(0.6))),
-                            response.id.with(("port-mark", *at, port.as_str(), input)),
-                            Sense::hover(),
-                        )
-                        .on_hover_text(mark.text.as_str());
                 }
             }
             if let Some(why) = self.failures.get(&node) {
@@ -1225,7 +1218,7 @@ impl Canvas {
                     error: true,
                     text: format!("Failed in the last run: {why}"),
                 };
-                draw_mark(
+                done.show_problems |= draw_mark(
                     ui,
                     &painter,
                     rect,
@@ -1235,7 +1228,7 @@ impl Canvas {
                     response.id.with(("failed", node)),
                 );
             } else if let Some(mark) = self.marks.nodes.get(&node) {
-                draw_mark(
+                done.show_problems |= draw_mark(
                     ui,
                     &painter,
                     rect,
@@ -1294,12 +1287,33 @@ impl Canvas {
             );
         }
         // Where a dragged node kind would land.
-        if response.dnd_hover_payload::<String>().is_some() {
+        if let (None, Some(item), Some(at)) = (
+            &done.dropped,
+            palette_item,
+            ui.input(|input| input.pointer.interact_pos()),
+        ) {
+            let ghost =
+                Rect::from_min_size(at, Vec2::new(NODE_WIDTH, HEADER_HEIGHT + ROW_HEIGHT) * zoom);
+            painter.rect_filled(ghost, CARD_RADIUS * zoom, colors.card.gamma_multiply(0.92));
             painter.rect_stroke(
-                area,
-                0.0,
-                Stroke::new(2.0, colors.selected),
+                ghost,
+                CARD_RADIUS * zoom,
+                Stroke::new(1.5, colors.selected),
                 StrokeKind::Inside,
+            );
+            let font = FontId::proportional(14.5 * zoom);
+            let (label, _) = elide(
+                &painter,
+                &item.label,
+                &font,
+                ghost.width() - 2.0 * CARD_PADDING * zoom,
+            );
+            let _ = painter.text(
+                at + Vec2::new(CARD_PADDING, HEADER_HEIGHT / 2.0) * zoom,
+                Align2::LEFT_CENTER,
+                label,
+                font,
+                colors.text,
             );
         }
         done
@@ -1329,10 +1343,16 @@ impl Canvas {
         let written = |text: String| Some((node.id, port.id.clone(), text));
         match control {
             Control::Toggle => {
-                let mut on = port.value.as_deref() == Some("true");
-                let changed =
-                    place(ui, &mut |ui| ui.add(egui::Checkbox::without_text(&mut on))).changed();
-                changed.then(|| written(on.to_string())).flatten()
+                let on = port.value.as_deref() == Some("true");
+                let label = match port.value.as_deref() {
+                    Some("true") => "True",
+                    Some("false") => "False",
+                    _ => "Set",
+                };
+                place(ui, &mut |ui| ui.add(egui::Button::new(label).selected(on)))
+                    .clicked()
+                    .then(|| written((!on).to_string()))
+                    .flatten()
             }
             Control::Whole => {
                 let ty = port.ty.as_deref().unwrap_or("core/i64@1");
@@ -1538,8 +1558,7 @@ pub fn fits(source: Option<&str>, target: Option<&str>) -> bool {
     }
 }
 
-/// Outlines a card that has a problem and puts a badge on its corner; the pointer on
-/// the badge shows what the problem says.
+/// Marks a problem in the header and reports a click.
 fn draw_mark(
     ui: &egui::Ui,
     painter: &egui::Painter,
@@ -1548,20 +1567,15 @@ fn draw_mark(
     colors: &Palette,
     mark: &Mark,
     id: egui::Id,
-) {
-    let color = colors.problem(mark.error);
-    // A small dot in the header, left of the title: quiet, inside the card, over
-    // nothing else. What is wrong is on hover; the place at fault is ringed apart.
+) -> bool {
     let radius = 3.5 * zoom.max(0.75);
     let center = Pos2::new(
         rect.min.x + (CARD_PADDING / 2.0) * zoom,
         rect.min.y + (HEADER_HEIGHT / 2.0) * zoom,
     );
-    painter.circle_filled(center, radius, color);
+    painter.circle_filled(center, radius, colors.problem(mark.error));
     let area = Rect::from_center_size(center, Vec2::splat(CARD_PADDING * zoom));
-    let _ = ui
-        .interact(area, id, Sense::hover())
-        .on_hover_text(mark.text.as_str());
+    ui.interact(area, id, Sense::click()).clicked()
 }
 
 /// A thin band along a card's top edge: the failure of its last step, or the fading
@@ -1775,7 +1789,7 @@ fn draw_node<'a>(
             let height = FIELD_HEIGHT * zoom;
             let left = (label.max.x + 8.0 * zoom).max(value_start);
             let width = match control {
-                Control::Toggle => height,
+                Control::Toggle => 48.0 * zoom,
                 Control::Whole | Control::Number => {
                     (value_end - left).clamp(36.0 * zoom, CONTROL_WIDTH * zoom)
                 }
@@ -2307,6 +2321,59 @@ mod tests {
         let output = context.run_ui(input, |ui| response = canvas.show(ui, graph, &[]));
         output.drop_without_applying_deltas();
         response
+    }
+
+    #[test]
+    fn dragging_a_palette_item_previews_it_and_both_payloads_can_be_dropped() {
+        let context = egui::Context::default();
+        let graph = GraphView {
+            nodes: Vec::new(),
+            wires: Vec::new(),
+        };
+        let mut canvas = Canvas::new();
+        let pointer = Pos2::new(200.0, 150.0);
+        let mut response = CanvasResponse::default();
+        let mut frame = |events| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                events,
+                ..Default::default()
+            };
+            let output = context.run_ui(input, |ui| response = canvas.show(ui, &graph, &[]));
+            (output, response.dropped.clone())
+        };
+        let button = |pressed| egui::Event::PointerButton {
+            pos: pointer,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(pointer)])
+            .0
+            .drop_without_applying_deltas();
+        egui::DragAndDrop::set_payload(
+            &context,
+            crate::PaletteItem {
+                id: "core/and".into(),
+                label: "AND placement".into(),
+                package: String::new(),
+                purpose: String::new(),
+            },
+        );
+        let (output, dropped) = frame(vec![button(true)]);
+        assert!(dropped.is_none());
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "AND placement")
+        }));
+        output.drop_without_applying_deltas();
+        let (output, dropped) = frame(vec![button(false)]);
+        output.drop_without_applying_deltas();
+        assert_eq!(dropped.unwrap().0, "core/and");
+        frame(vec![button(true)]).0.drop_without_applying_deltas();
+        egui::DragAndDrop::set_payload(&context, "variable:sample".to_owned());
+        let (output, dropped) = frame(vec![button(false)]);
+        output.drop_without_applying_deltas();
+        assert_eq!(dropped.unwrap().0, "variable:sample");
     }
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
