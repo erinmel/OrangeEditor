@@ -794,3 +794,121 @@ fn a_node_that_uses_a_connection_is_bound_to_one_of_its_kind_when_added() {
     assert!(draft.undo() && draft.undo() && draft.undo());
     assert!(host.declarations(&draft).connections.is_empty());
 }
+
+#[test]
+fn every_suggested_kind_takes_the_wire_on_the_input_it_names() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, trigger, _set) = built(&host);
+    let concat_draft = {
+        let mut draft = host.draft(&empty()).unwrap();
+        let concat = host
+            .add_node(&mut draft, "org.orange.text/concat", [0.0, 0.0])
+            .unwrap();
+        (draft, concat)
+    };
+    let joined = output(&host, &concat_draft.0, concat_draft.1);
+    for (draft, from) in [
+        (&draft, (trigger, "then")),
+        (&concat_draft.0, (concat_draft.1, joined.as_str())),
+    ] {
+        let takers = host.takers(draft, from);
+        assert!(!takers.is_empty());
+        for taker in takers {
+            let mut trial = host.draft(&draft.text().unwrap()).unwrap();
+            let Ok(node) = host.add_node(&mut trial, &taker.definition, [400.0, 0.0]) else {
+                continue;
+            };
+            // The input is there; the language may still refuse the wire with a reason.
+            match host.connect(&mut trial, from, (node, &taker.input)) {
+                Ok(_) | Err(HostError::Invalid(_)) => {}
+                Err(other) => panic!("{} has no input {}: {other}", taker.definition, taker.input),
+            }
+        }
+    }
+    let text = host.takers(&concat_draft.0, (concat_draft.1, &joined));
+    assert!(
+        text.iter()
+            .any(|taker| taker.definition == "org.orange.text/concat")
+    );
+    assert!(text.iter().all(|taker| taker.definition != "core/sequence"));
+    let steps = host.takers(&draft, (trigger, "then"));
+    assert!(
+        steps
+            .iter()
+            .any(|taker| taker.definition == "core/set-variable")
+    );
+}
+
+#[test]
+fn whole_numbers_compared_by_greater_run_into_a_variable() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let text = json!({"format": "orange.graph", "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-0000000000c9", "revision": 1,
+        "package_lock": [], "type_lock": [], "events": [], "connections": [],
+        "signatures": {}, "functions": [], "exports": [], "editor": {},
+        "variables": [{"id": id(100), "name": "bigger", "type": "core/bool@1",
+            "scope": "run", "persistent": false, "conflict": "reject"}],
+        "nodes": [], "edges": []})
+    .to_string();
+    let mut draft = host.draft(&text).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let set = host
+        .add_node(&mut draft, "core/set-variable", [600.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, set, &json!({"variable": id(100)}))
+            .unwrap()
+    );
+    let a = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 200.0])
+        .unwrap();
+    let b = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 300.0])
+        .unwrap();
+    let greater = host
+        .add_node(&mut draft, "org.orange.math/greater", [300.0, 200.0])
+        .unwrap();
+    assert!(host.set_input(&mut draft, (a, "value"), Some("5")).unwrap());
+    assert!(host.set_input(&mut draft, (b, "value"), Some("3")).unwrap());
+    // Greater is generic: wiring whole numbers into it settles its type, and its saved
+    // signature must follow in the same edit, or the graph does not run.
+    for (from, to) in [
+        ((a, "result"), (greater, "a")),
+        ((b, "result"), (greater, "b")),
+        ((greater, "result"), (set, "value")),
+        ((trigger, "then"), (set, "in")),
+    ] {
+        assert!(host.connect(&mut draft, from, to).unwrap());
+    }
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    let value = |host: &Host| {
+        host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
+            .unwrap()
+    };
+    until("the variable", || value(&host).is_some());
+    assert_eq!(value(&host), Some(Value::Bool(true)));
+}
+
+#[test]
+fn two_nodes_of_one_kind_are_called_the_same_on_the_canvas() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let a = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .unwrap();
+    let b = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 100.0])
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let name = |id: NodeId| view.nodes.iter().find(|n| n.id == id).unwrap().name.clone();
+    assert_eq!(name(a), "Whole number");
+    assert_eq!(name(b), "Whole number");
+    // Text that has nothing else to tell them apart by keeps the ID ending.
+    let names = orange_host::Names::of_document(&host, draft.document());
+    assert_ne!(names.node(&a), names.node(&b));
+    assert_eq!(names.without_ids().node(&a), "Whole number");
+}

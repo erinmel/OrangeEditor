@@ -19,6 +19,12 @@ pub const HEADER_HEIGHT: f32 = 34.0;
 pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
 pub const ROW_HEIGHT: f32 = 26.0;
+/// How round a card's corners are, in graph units.
+const CARD_RADIUS: f32 = 8.0;
+
+/// How long a node of a running flow glows after it takes a step.
+const GLOW_SECONDS: f32 = 0.8;
+
 /// Space under the last row.
 pub const FOOTER_HEIGHT: f32 = 8.0;
 /// Distance between the columns and rows of an automatic layout.
@@ -113,6 +119,57 @@ pub struct CanvasResponse {
     pub disconnect: Option<(NodeId, String, bool)>,
     /// The selected nodes were deleted.
     pub remove: Vec<NodeId>,
+    /// A wire was let go where no input takes it: the output it comes from and where,
+    /// in graph units and on the screen, so a new node can be chosen to take it.
+    pub loose: Option<((NodeId, String), [f32; 2], Pos2)>,
+    /// Tab or Space was pressed over the canvas to add a node at the pointer: where, in
+    /// graph units and on the screen.
+    pub quick_add: Option<([f32; 2], Pos2)>,
+}
+
+/// A problem shown on the canvas, on the node or wire it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    /// An error stops the graph from running; anything else is a warning.
+    pub error: bool,
+    /// What the problem says, as a person reads it; shown when the pointer is on it.
+    pub text: String,
+}
+
+/// A wire by its two ends, output first: a node and a port name each.
+pub type WireEnds = ((NodeId, String), (NodeId, String));
+
+/// The problems the canvas shows on nodes and wires.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub nodes: std::collections::HashMap<NodeId, Mark>,
+    /// By the wire's two ends, output first.
+    pub wires: std::collections::HashMap<WireEnds, Mark>,
+}
+
+impl Marks {
+    /// Adds a problem to what is already marked on a node or wire: the texts are
+    /// kept one per line, and an error outweighs a warning.
+    pub fn add<K: std::hash::Hash + Eq>(
+        marks: &mut std::collections::HashMap<K, Mark>,
+        key: K,
+        error: bool,
+        text: String,
+    ) {
+        match marks.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.error |= error;
+                if !held.text.lines().any(|line| line == text) {
+                    held.text.push('\n');
+                    held.text.push_str(&text);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(free) => {
+                let _ = free.insert(Mark { error, text });
+            }
+        }
+    }
 }
 
 /// A wire being drawn from an output, not yet let go.
@@ -146,6 +203,12 @@ pub struct Canvas {
     /// Show the whole graph at the next frame.
     fit: bool,
     wiring: Option<Wiring>,
+    /// Problems drawn on nodes and wires.
+    marks: Marks,
+    /// When each node of a running flow last took a step, and whether it failed.
+    activity: std::collections::HashMap<NodeId, (std::time::Instant, bool)>,
+    /// The latest value a running flow put on each output, as a person reads it.
+    values: std::collections::HashMap<(NodeId, String), String>,
     /// The size of the canvas when it was last shown, in points.
     size: Vec2,
 }
@@ -164,6 +227,9 @@ impl Default for Canvas {
             moving: false,
             fit: true,
             wiring: None,
+            marks: Marks::default(),
+            activity: std::collections::HashMap::new(),
+            values: std::collections::HashMap::new(),
             size: Vec2::new(800.0, 600.0),
         }
     }
@@ -172,6 +238,8 @@ impl Default for Canvas {
 /// Colors of the canvas, taken from the surrounding egui style so it follows a light
 /// or dark application.
 struct Palette {
+    error: Color32,
+    warning: Color32,
     background: Color32,
     grid: Color32,
     card: Color32,
@@ -184,10 +252,16 @@ struct Palette {
     exec: Color32,
 }
 impl Palette {
+    fn problem(&self, error: bool) -> Color32 {
+        if error { self.error } else { self.warning }
+    }
+
     fn of(ui: &egui::Ui) -> Self {
         let visuals = ui.visuals();
         let dark = visuals.dark_mode;
         Self {
+            error: visuals.error_fg_color,
+            warning: visuals.warn_fg_color,
             background: visuals.extreme_bg_color,
             // Faint enough to sit behind the cards, clear enough to judge distances by.
             grid: visuals
@@ -462,6 +536,61 @@ impl Canvas {
             .reduce(|all, rect| all.union(rect))
     }
 
+    /// The problems drawn on nodes and wires.
+    pub fn marks(&self) -> &Marks {
+        &self.marks
+    }
+
+    /// A running flow's node took a step: its card glows for a moment, in the error
+    /// color when the step failed.
+    pub fn pulse(&mut self, node: NodeId, failed: bool) {
+        let _ = self
+            .activity
+            .insert(node, (std::time::Instant::now(), failed));
+    }
+
+    /// A running flow put `value` (as a person reads it) on an output; it shows beside
+    /// the port until another comes or the flow ends.
+    pub fn show_value(&mut self, node: NodeId, port: String, value: String) {
+        let _ = self.values.insert((node, port), value);
+    }
+
+    /// Whether a running flow's node has taken a step, and whether that step failed.
+    pub fn last_step(&self, node: NodeId) -> Option<bool> {
+        self.activity.get(&node).map(|(_, failed)| *failed)
+    }
+
+    /// The value shown beside an output, if any.
+    pub fn shown_value(&self, node: NodeId, port: &str) -> Option<&str> {
+        self.values
+            .get(&(node, port.to_owned()))
+            .map(String::as_str)
+    }
+
+    /// The flow ended: no more glow or values from it.
+    pub fn clear_run(&mut self) {
+        self.activity.clear();
+        self.values.clear();
+    }
+
+    /// The problems to draw on nodes and wires from now on.
+    pub fn set_marks(&mut self, marks: Marks) {
+        self.marks = marks;
+    }
+
+    /// Selects a node and moves the view so it is in the middle, at the same zoom.
+    pub fn focus(&mut self, graph: &GraphView, node: NodeId) {
+        let (Some(place), Some(shown)) = (
+            self.places.get(&node).copied(),
+            graph.nodes.iter().find(|found| found.id == node),
+        ) else {
+            return;
+        };
+        let middle = place + node_size(shown) / 2.0;
+        self.origin = middle - self.size / (2.0 * self.zoom);
+        self.select(Some(node));
+    }
+
     /// Draws the graph into the space left in `ui` and applies panning, zooming,
     /// selecting and moving. `triggers` are the nodes that get a button to fire them.
     pub fn show(
@@ -636,20 +765,30 @@ impl Canvas {
                 let at = origin + (pointer - area.min) / zoom;
                 done.connect = self
                     .input_at(graph, at, wiring.exec, wiring.from.0)
-                    .map(|to| (wiring.from, to));
+                    .map(|to| (wiring.from.clone(), to));
+                // Let go on the background, not on a node: ask for a node to take it.
+                let on_node = self.nodes_in(graph, Rect::from_center_size(at, Vec2::splat(1.0)));
+                if done.connect.is_none() && on_node.is_empty() && area.contains(pointer) {
+                    done.loose = Some((wiring.from, [at.x, at.y], pointer));
+                }
             }
             self.wiring = None;
         }
         // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
         // selects everything, and copy, cut and paste go through the clipboard.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (delete, all, events) = ui.input(|input| {
+            let (delete, all, add, events) = ui.input(|input| {
                 (
                     input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace),
                     input.modifiers.command && input.key_pressed(egui::Key::A),
+                    input.key_pressed(egui::Key::Tab) || input.key_pressed(egui::Key::Space),
                     input.events.clone(),
                 )
             });
+            if add && let Some(screen) = response.hover_pos() {
+                let at = graph_point(screen, self.origin, self.zoom);
+                done.quick_add = Some(([at.x, at.y], screen));
+            }
             if delete && !self.selection.is_empty() {
                 done.remove = self.selection();
                 self.select(None);
@@ -679,7 +818,10 @@ impl Canvas {
             ) else {
                 continue;
             };
-            let color = if wire.exec {
+            let mark = self.marks.wires.get(&(wire.from.clone(), wire.to.clone()));
+            let color = if let Some(mark) = mark {
+                colors.problem(mark.error)
+            } else if wire.exec {
                 colors.exec
             } else {
                 let ty = geometry
@@ -689,7 +831,12 @@ impl Canvas {
             };
             // The wire leaves and arrives level, bending more the further it goes.
             let points = wire_points(from, to, zoom);
-            let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6);
+            let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6)
+                + if mark.is_some() {
+                    1.5 * zoom.max(0.6)
+                } else {
+                    0.0
+                };
             if !wire_visible(&points, painter.clip_rect(), width) {
                 continue;
             }
@@ -719,6 +866,9 @@ impl Canvas {
             ));
         }
 
+        let mut glowing = false;
+        // Outlines and badges go over every card, so a later card does not hide them.
+        let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
@@ -743,11 +893,88 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            overlays.push((node.id, rect));
+            for port in node.ports.iter().filter(|port| !port.input) {
+                if let (Some(value), Some(at)) = (
+                    self.values.get(&(node.id, port.id.clone())),
+                    geometry
+                        .port(node.id, &port.id, false)
+                        .map(|found| to_screen(place + found.offset)),
+                ) {
+                    let shown: String = value.chars().take(24).collect();
+                    let _ = painter.text(
+                        at + Vec2::new(8.0 * zoom, -9.0 * zoom),
+                        egui::Align2::LEFT_CENTER,
+                        shown,
+                        egui::FontId::monospace(10.0 * zoom.max(0.7)),
+                        colors.weak,
+                    );
+                }
+            }
             for (port, slot) in slots {
                 if area.contains_rect(slot)
                     && let Some(written) = self.control(ui, node, port, slot, response.id)
                 {
                     done.set_input = Some(written);
+                }
+            }
+        }
+        for (node, rect) in overlays {
+            if let Some((at, failed)) = self.activity.get(&node).copied() {
+                let age = at.elapsed().as_secs_f32();
+                if age < GLOW_SECONDS {
+                    let color = if failed { colors.error } else { colors.exec };
+                    let strength = 1.0 - age / GLOW_SECONDS;
+                    painter.rect_stroke(
+                        rect,
+                        CARD_RADIUS * zoom,
+                        Stroke::new(3.0 * zoom.max(0.6), color.gamma_multiply(strength)),
+                        StrokeKind::Outside,
+                    );
+                    glowing = true;
+                }
+            }
+            if let Some(mark) = self.marks.nodes.get(&node) {
+                draw_mark(
+                    ui,
+                    &painter,
+                    rect,
+                    zoom,
+                    &colors,
+                    mark,
+                    response.id.with(("mark", node)),
+                );
+            }
+        }
+        // A glow fades on its own, so the canvas is drawn again until it has.
+        if glowing {
+            ui.ctx().request_repaint();
+        }
+        // While a wire is drawn, the inputs it could go to are ringed.
+        if let Some(wiring) = &self.wiring {
+            let source = geometry
+                .port(wiring.from.0, &wiring.from.1, false)
+                .and_then(|port| port.ty);
+            for node in graph.nodes.iter().filter(|node| node.id != wiring.from.0) {
+                let Some(place) = self.places.get(&node.id).copied() else {
+                    continue;
+                };
+                for port in node.ports.iter().filter(|port| port.input) {
+                    if port.exec != wiring.exec || (!port.exec && !fits(source, port.ty.as_deref()))
+                    {
+                        continue;
+                    }
+                    let Some(found) = geometry.port(node.id, &port.id, true) else {
+                        continue;
+                    };
+                    let at = to_screen(place + found.offset);
+                    if area.contains(at) {
+                        painter.circle_stroke(
+                            at,
+                            (PORT_RADIUS + 3.0) * zoom.max(0.6),
+                            Stroke::new(2.0 * zoom.max(0.6), colors.selected),
+                        );
+                    }
                 }
             }
         }
@@ -877,6 +1104,54 @@ impl Canvas {
     }
 }
 
+/// Whether a value of type `source` may go to an input of type `target`, as far as the
+/// canvas can tell before asking: types it does not know yet, or a type the node leaves
+/// open, fit anything. The language still has the last word when the wire is made.
+pub fn fits(source: Option<&str>, target: Option<&str>) -> bool {
+    match (source, target) {
+        (Some(source), Some(target)) => {
+            source == target || source.contains('$') || target.contains('$')
+        }
+        _ => true,
+    }
+}
+
+/// Outlines a card that has a problem and puts a badge on its corner; the pointer on
+/// the badge shows what the problem says.
+fn draw_mark(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    zoom: f32,
+    colors: &Palette,
+    mark: &Mark,
+    id: egui::Id,
+) {
+    let color = colors.problem(mark.error);
+    // The card's own corners, just outside its edge, so the outline follows the card.
+    painter.rect_stroke(
+        rect,
+        CARD_RADIUS * zoom,
+        Stroke::new(2.0 * zoom.max(0.6), color),
+        StrokeKind::Outside,
+    );
+    // The badge sits on the top-right corner, clear of the title and buttons.
+    let radius = 7.0 * zoom.max(0.75);
+    let center = rect.right_top();
+    painter.circle_filled(center, radius, color);
+    let _ = painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(radius * 1.4),
+        Color32::WHITE,
+    );
+    let badge = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    let _ = ui
+        .interact(badge, id, Sense::hover())
+        .on_hover_text(mark.text.as_str());
+}
+
 /// Draws one card. Returns whether its trigger button was pressed.
 /// `flags` are whether the card is selected, has a trigger button and shows controls
 /// for its values. Also returns where each input's control goes.
@@ -891,7 +1166,7 @@ fn draw_node<'a>(
     (selected, fire, controls): (bool, bool, bool),
     canvas: egui::Id,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
-    let radius = 8.0 * zoom;
+    let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
     // The header carries the node family's color: a tint, and a line along its foot,
@@ -1762,5 +2037,23 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0][0], before[0][0] + Vec2::new(50.0, 0.0));
         assert_eq!(after[0][3], before[0][3]);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fits;
+
+    #[test]
+    fn a_wire_fits_the_same_type_an_open_type_or_one_not_known_yet() {
+        assert!(fits(Some("core/i64@1"), Some("core/i64@1")));
+        assert!(!fits(Some("core/i64@1"), Some("core/string@1")));
+        assert!(fits(Some("core/i64@1"), Some("$T")));
+        assert!(fits(
+            Some("core/list@1<$T>"),
+            Some("core/list@1<core/i64@1>")
+        ));
+        assert!(fits(None, Some("core/string@1")));
+        assert!(fits(Some("core/string@1"), None));
     }
 }

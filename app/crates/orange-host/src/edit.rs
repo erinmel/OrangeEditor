@@ -118,11 +118,14 @@ impl Host {
             .node(node)
             .and_then(|instance| instance.variadic.get(&id))
             .map_or(0, |state| state.next);
-        let _ = draft.commit([DocCommand::InsertVariadic {
-            node,
-            port: id.clone(),
-            at: found.count,
-        }])?;
+        let _ = draft.commit(
+            self.store.current(),
+            [DocCommand::InsertVariadic {
+                node,
+                port: id.clone(),
+                at: found.count,
+            }],
+        )?;
         Ok(PortKey::new(id, Some(next)).to_string())
     }
 
@@ -146,10 +149,13 @@ impl Host {
                 found.port, found.min
             )));
         }
-        draft.commit([DocCommand::RemoveVariadic {
-            node: at.0,
-            port: key,
-        }])
+        draft.commit(
+            self.store.current(),
+            [DocCommand::RemoveVariadic {
+                node: at.0,
+                port: key,
+            }],
+        )
     }
 }
 
@@ -277,7 +283,7 @@ impl Host {
             });
         }
         commands.push(place_command(node, Some(at)));
-        let _ = draft.commit(commands)?;
+        let _ = draft.commit(self.store.current(), commands)?;
         Ok(node)
     }
 
@@ -332,6 +338,7 @@ impl Host {
             .map(|node| place_command(*node, None))
             .collect();
         draft.commit(
+            self.store.current(),
             std::iter::once(DocCommand::RemoveNodes {
                 ids: nodes.to_vec(),
             })
@@ -390,7 +397,7 @@ impl Host {
         .map_err(|error| refused(&error))?;
         let edge_id = edge.id;
         commands.push(DocCommand::Connect { edge });
-        let Some(redo) = draft.try_commit(commands)? else {
+        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
             return Ok(false);
         };
         // Problems that name the new wire are the reason it cannot be made.
@@ -429,7 +436,7 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        draft.commit(commands)
+        draft.commit(self.store.current(), commands)
     }
 
     /// Replaces a node's settings (its `config`), such as the variable a variable
@@ -446,11 +453,14 @@ impl Host {
             .map(|found| found.config_version)
             .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
         let config = serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
-        draft.commit([DocCommand::SetConfig {
-            node,
-            config_version,
-            config,
-        }])
+        draft.commit(
+            self.store.current(),
+            [DocCommand::SetConfig {
+                node,
+                config_version,
+                config,
+            }],
+        )
     }
 
     /// Writes a value on an input, typed plainly (`7`, `0.5`, `true`, `some text`) for
@@ -495,6 +505,9 @@ impl Host {
                 Some(parsed)
             }
         };
-        draft.commit([DocCommand::SetLiteral { port, literal }])
+        draft.commit(
+            self.store.current(),
+            [DocCommand::SetLiteral { port, literal }],
+        )
     }
 }

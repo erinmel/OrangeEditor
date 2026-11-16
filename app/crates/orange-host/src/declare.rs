@@ -170,7 +170,7 @@ impl Host {
             }
         }
         let decl: VariableDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
-        let _ = draft.commit([DocCommand::UpsertVariable(decl)])?;
+        let _ = draft.commit(self.store.current(), [DocCommand::UpsertVariable(decl)])?;
         Ok(id)
     }
 
@@ -180,7 +180,7 @@ impl Host {
         let id: VariableId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a variable ID")))?;
-        draft.commit([DocCommand::RemoveVariable(id)])
+        draft.commit(self.store.current(), [DocCommand::RemoveVariable(id)])
     }
 
     /// Declares a connection, or changes the one with `connection.id`. A setting whose
@@ -193,7 +193,7 @@ impl Host {
         connection: &Connection,
     ) -> Result<String, HostError> {
         let (id, decl) = self.connection_decl(draft, connection)?;
-        let _ = draft.commit([DocCommand::UpsertConnection(decl)])?;
+        let _ = draft.commit(self.store.current(), [DocCommand::UpsertConnection(decl)])?;
         Ok(id)
     }
 
@@ -241,7 +241,7 @@ impl Host {
         let id: ConnectionId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a connection ID")))?;
-        draft.commit([DocCommand::RemoveConnection(id)])
+        draft.commit(self.store.current(), [DocCommand::RemoveConnection(id)])
     }
 
     /// Chooses the type of one type parameter of a generic node (a pin, 11 §5.5), such
@@ -268,7 +268,10 @@ impl Host {
                 let _ = pins.remove(param);
             }
         }
-        draft.commit([DocCommand::SetTypePins { node, pins }])
+        draft.commit(
+            self.store.current(),
+            [DocCommand::SetTypePins { node, pins }],
+        )
     }
 }
 

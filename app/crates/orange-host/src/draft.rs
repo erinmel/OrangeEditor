@@ -62,6 +62,8 @@ pub struct Draft {
     redo: Vec<Inverse>,
     /// Kept once [`Host::problems`] has been asked; then it follows every edit.
     analysis: Option<Analysis>,
+    /// Lookups of the document that type inference keeps up to date between edits.
+    index: Option<orange_model::DocIndex>,
 }
 
 /// Most edits a draft can undo.
@@ -74,6 +76,7 @@ impl Draft {
             undo: Vec::new(),
             redo: Vec::new(),
             analysis: None,
+            index: None,
         }
     }
 
@@ -154,18 +157,37 @@ impl Draft {
         if moved.is_empty() {
             return Ok(false);
         }
-        self.commit(moved)
-    }
-
-    /// Applies `commands` as one edit that can be undone. An edit that changes nothing
-    /// is not one: `Ok(false)`.
-    pub(crate) fn commit(
-        &mut self,
-        commands: impl IntoIterator<Item = DocCommand>,
-    ) -> Result<bool, HostError> {
-        match self.document.apply(commands) {
+        // Layout changes no type, so it needs no inference.
+        match self.document.apply(moved) {
             Ok(committed) => {
                 self.record(committed);
+                Ok(true)
+            }
+            Err(TxError::Empty) => Ok(false),
+            Err(error) => Err(refused(&error)),
+        }
+    }
+
+    /// Applies `commands` as one edit that can be undone, together with what they imply
+    /// for the types of generic nodes: the types the wires settle and the signatures that
+    /// follow from them are written in the same edit, so a node's saved signature never
+    /// falls behind its wires. An edit that changes nothing is not one: `Ok(false)`.
+    pub(crate) fn commit(
+        &mut self,
+        registry: &RegistrySnapshot,
+        commands: impl IntoIterator<Item = DocCommand>,
+    ) -> Result<bool, HostError> {
+        let index = self
+            .index
+            .get_or_insert_with(|| orange_model::DocIndex::build(&self.document));
+        match orange_model::inference::apply_inferred_indexed(
+            &mut self.document,
+            index,
+            commands,
+            registry,
+        ) {
+            Ok(inferred) => {
+                self.record(inferred.committed);
                 Ok(true)
             }
             Err(TxError::Empty) => Ok(false),
@@ -192,10 +214,11 @@ impl Draft {
     /// history exactly as it was, redo included.
     pub(crate) fn try_commit(
         &mut self,
+        registry: &RegistrySnapshot,
         commands: impl IntoIterator<Item = DocCommand>,
     ) -> Result<Option<Vec<Inverse>>, HostError> {
         let redo = self.redo.clone();
-        Ok(self.commit(commands)?.then_some(redo))
+        Ok(self.commit(registry, commands)?.then_some(redo))
     }
 
     /// Takes back a trial from [`Draft::try_commit`] and restores the redo history it

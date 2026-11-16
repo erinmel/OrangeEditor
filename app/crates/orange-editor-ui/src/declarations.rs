@@ -63,6 +63,8 @@ pub(crate) struct Forms {
     /// the toolbar or the properties panel.
     open_variable: bool,
     open_connection: bool,
+    /// The variable form is shown.
+    variable_open: bool,
 }
 
 impl Forms {
@@ -256,84 +258,123 @@ impl Editor {
     }
 
     fn variables_section(&mut self, ui: &mut egui::Ui, host: &mut Host, declared: &Declarations) {
-        ui.heading("Variables");
+        // A heading with its add button, as in a blueprint's variable list.
+        if self.forms.open_variable {
+            self.forms.open_variable = false;
+            self.forms.variable_open = true;
+        }
+        let adding = section_heading(ui, "Variables", "Add a variable");
+        if adding {
+            self.forms.variable = VariableForm::default();
+            self.forms.variable_open = true;
+        }
         let mut remove = None;
         for variable in &declared.variables {
-            ui.horizontal(|ui| {
-                let _ = ui
-                    .label(format!("{} ({})", variable.name, type_name(&variable.ty)))
-                    .on_hover_text(format!(
-                        "{}{}{}",
-                        scope_name(variable.scope),
-                        if variable.persistent { ", kept" } else { "" },
-                        variable
-                            .initial
-                            .as_ref()
-                            .map_or_else(String::new, |initial| format!(", starts at {initial}"))
-                    ));
-                if ui.small_button("Change").clicked() {
-                    self.forms.variable = VariableForm {
-                        changing: variable.id.clone(),
-                        name: variable.name.clone(),
-                        ty: variable.ty.clone(),
-                        scope: variable.scope,
-                        persistent: variable.persistent,
-                        initial: variable.initial.clone().unwrap_or_default(),
-                    };
-                }
-                if ui.small_button("Remove").clicked() {
-                    remove = variable.id.clone();
-                }
-            });
+            let detail = format!(
+                "{}{}{}",
+                scope_name(variable.scope),
+                if variable.persistent {
+                    ", kept between runs"
+                } else {
+                    ""
+                },
+                variable
+                    .initial
+                    .as_ref()
+                    .map_or_else(String::new, |initial| format!(", starts at {initial}"))
+            );
+            let (edit, delete) =
+                declaration_row(ui, &variable.name, &type_name(&variable.ty), &detail);
+            if edit {
+                self.forms.variable = VariableForm {
+                    changing: variable.id.clone(),
+                    name: variable.name.clone(),
+                    ty: variable.ty.clone(),
+                    scope: variable.scope,
+                    persistent: variable.persistent,
+                    initial: variable.initial.clone().unwrap_or_default(),
+                };
+                self.forms.variable_open = true;
+            }
+            if delete {
+                remove = variable.id.clone();
+            }
         }
-        if declared.variables.is_empty() {
-            ui.weak("None yet.");
+        if declared.variables.is_empty() && !self.forms.variable_open {
+            ui.weak("No variables yet. + adds one.");
         }
-        let form = &mut self.forms.variable;
-        let title = if form.changing.is_some() {
-            "Change variable"
-        } else {
-            "New variable"
-        };
         let mut declare = false;
         let mut cancel = false;
-        let reveal = std::mem::take(&mut self.forms.open_variable);
-        let form = &mut self.forms.variable;
-        egui::CollapsingHeader::new(title)
-            .id_salt("orange-variable-form")
-            .default_open(false)
-            .open((form.changing.is_some() || reveal).then_some(true))
-            .show(ui, |ui| {
-                let _ = ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("name"));
-                let _ = egui::ComboBox::from_id_salt("orange-variable-type")
-                    .selected_text(type_name(&form.ty))
-                    .show_ui(ui, |ui| {
-                        for ty in COMMON_TYPES {
-                            let _ = ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
-                        }
+        if self.forms.variable_open {
+            let form = &mut self.forms.variable;
+            let changing = form.changing.is_some();
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.strong(if changing {
+                    "Change variable"
+                } else {
+                    "New variable"
+                });
+                egui::Grid::new("orange-variable-form")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Name");
+                        let _ = ui.add(
+                            egui::TextEdit::singleline(&mut form.name)
+                                .hint_text("such as count")
+                                .desired_width(ui.available_width()),
+                        );
+                        ui.end_row();
+                        ui.label("Type");
+                        let _ = egui::ComboBox::from_id_salt("orange-variable-type")
+                            .selected_text(type_name(&form.ty))
+                            .show_ui(ui, |ui| {
+                                for ty in COMMON_TYPES {
+                                    let _ = ui.selectable_value(
+                                        &mut form.ty,
+                                        ty.to_owned(),
+                                        type_name(ty),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Lasts")
+                            .on_hover_text("How long the value is kept while the graph runs.");
+                        let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
+                            .selected_text(scope_name(form.scope))
+                            .show_ui(ui, |ui| {
+                                for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
+                                    let _ = ui.selectable_value(
+                                        &mut form.scope,
+                                        scope,
+                                        scope_name(scope),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Starts at");
+                        let _ = ui.add(
+                            egui::TextEdit::singleline(&mut form.initial)
+                                .hint_text("empty until written")
+                                .desired_width(ui.available_width()),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        let _ = ui.checkbox(&mut form.persistent, "Keep between runs");
+                        ui.end_row();
                     });
-                let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
-                    .selected_text(scope_name(form.scope))
-                    .show_ui(ui, |ui| {
-                        for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                            let _ = ui.selectable_value(&mut form.scope, scope, scope_name(scope));
-                        }
-                    });
-                let _ = ui.checkbox(&mut form.persistent, "kept between runs");
-                let _ = ui.add(
-                    egui::TextEdit::singleline(&mut form.initial).hint_text("starts at (optional)"),
-                );
                 ui.horizontal(|ui| {
                     let ready = !form.name.trim().is_empty();
-                    let label = if form.changing.is_some() {
-                        "Change"
-                    } else {
-                        "Declare"
-                    };
-                    declare = ui.add_enabled(ready, egui::Button::new(label)).clicked();
-                    cancel = form.changing.is_some() && ui.button("Cancel").clicked();
+                    declare = ui
+                        .add_enabled(
+                            ready,
+                            egui::Button::new(if changing { "Save" } else { "Add" }),
+                        )
+                        .clicked();
+                    cancel = ui.button("Cancel").clicked();
                 });
             });
+        }
         if declare {
             let form = self.forms.variable.clone();
             let variable = Variable {
@@ -346,10 +387,12 @@ impl Editor {
             };
             if self.declare_variable(host, &variable).is_some() {
                 self.forms.variable = VariableForm::default();
+                self.forms.variable_open = false;
             }
         }
         if cancel {
             self.forms.variable = VariableForm::default();
+            self.forms.variable_open = false;
         }
         if let Some(id) = remove {
             let _ = self.remove_variable(host, &id);
@@ -357,14 +400,20 @@ impl Editor {
     }
 
     fn connections_section(&mut self, ui: &mut egui::Ui, host: &mut Host, declared: &Declarations) {
-        ui.heading("Connections");
+        if section_heading(ui, "Connections", "Add a connection") {
+            self.forms.connection = ConnectionForm::default();
+            self.forms.open_connection = true;
+        }
         let mut remove = None;
         for connection in &declared.connections {
-            ui.horizontal(|ui| {
-                let _ = ui
-                    .label(connection.name.as_str())
-                    .on_hover_text(connection.adapter.as_str());
-                if ui.small_button("Change").clicked() {
+            let kind = connection
+                .adapter
+                .rsplit('/')
+                .next()
+                .unwrap_or(&connection.adapter);
+            let (edit, delete) = declaration_row(ui, &connection.name, kind, &connection.adapter);
+            {
+                if edit {
                     self.forms.connection = ConnectionForm {
                         changing: connection.id.clone(),
                         name: connection.name.clone(),
@@ -374,13 +423,13 @@ impl Editor {
                             .unwrap_or_default(),
                     };
                 }
-                if ui.small_button("Remove").clicked() {
+                if delete {
                     remove = connection.id.clone();
                 }
-            });
+            }
         }
         if declared.connections.is_empty() {
-            ui.weak("None yet.");
+            ui.weak("No connections yet. + adds one.");
         }
         let adapters = host.adapters();
         if self.forms.connection.adapter.is_empty()
@@ -476,4 +525,33 @@ impl Editor {
             let _ = self.remove_connection(host, &id);
         }
     }
+}
+
+/// A section's heading with an add button at its right end. Returns whether it was
+/// pressed.
+fn section_heading(ui: &mut egui::Ui, title: &str, add: &str) -> bool {
+    ui.horizontal(|ui| {
+        ui.heading(title);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.button("+").on_hover_text(add).clicked()
+        })
+        .inner
+    })
+    .inner
+}
+
+/// One declaration in a list: its name, what it is in weak text, and edit and delete
+/// buttons at the right end. `detail` is shown on hover. Returns whether each was pressed.
+fn declaration_row(ui: &mut egui::Ui, name: &str, kind: &str, detail: &str) -> (bool, bool) {
+    ui.horizontal(|ui| {
+        let _ = ui.label(name).on_hover_text(detail);
+        ui.weak(kind);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let delete = ui.small_button("🗑").on_hover_text("Delete").clicked();
+            let edit = ui.small_button("✏").on_hover_text("Change").clicked();
+            (edit, delete)
+        })
+        .inner
+    })
+    .inner
 }

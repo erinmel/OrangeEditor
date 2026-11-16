@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default)]
 pub struct Names {
     nodes: BTreeMap<String, String>,
+    /// Each node's name before an ID ending tells it from another of the same name.
+    called: BTreeMap<String, String>,
     /// Each variable's ID with its name and declared type.
     variables: BTreeMap<String, (String, String)>,
 }
@@ -96,7 +98,9 @@ impl Names {
                 (id, name)
             })
             .collect();
-        // Nodes that would be called the same are told apart by the end of their ID.
+        let called: BTreeMap<String, String> = nodes.iter().cloned().collect();
+        // In text, nodes that would be called the same are told apart by the end of
+        // their ID.
         let mut count: BTreeMap<String, usize> = BTreeMap::new();
         for (_, name) in &nodes {
             *count.entry(name.to_lowercase()).or_default() += 1;
@@ -108,8 +112,23 @@ impl Names {
         }
         Self {
             nodes: nodes.into_iter().collect(),
+            called,
             variables,
         }
+    }
+
+    /// The same names, with nodes called only by their name even where several share
+    /// it: for a front end that shows which node is which in another way, such as a
+    /// canvas, where an ID ending would only be noise.
+    pub fn without_ids(mut self) -> Self {
+        self.nodes.clone_from(&self.called);
+        self
+    }
+
+    /// What a node is called, without an ID ending even when another has the same name.
+    pub fn called(&self, id: &NodeId) -> String {
+        let id = id.to_string();
+        self.called.get(&id).cloned().unwrap_or(id)
     }
 
     /// What a node is called; its ID when the graph does not have it.

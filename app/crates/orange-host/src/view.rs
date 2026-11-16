@@ -449,7 +449,7 @@ impl Host {
         NodeView {
             id: node.id,
             detail,
-            name: names.node(&node.id),
+            name: names.called(&node.id),
             kind: labels
                 .get(&definition)
                 .cloned()
@@ -476,5 +476,28 @@ impl Host {
                 .collect(),
             types,
         }
+    }
+}
+
+impl Host {
+    /// The ends of the top-level wire a problem is about, output first: where a canvas
+    /// marks it. `None` when the problem names no wire of the top level.
+    pub fn wire_of(
+        &self,
+        draft: &Draft,
+        diagnostic: &Diagnostic,
+    ) -> Option<((NodeId, String), (NodeId, String))> {
+        if diagnostic.subject.function.is_some() {
+            return None;
+        }
+        let edge = draft
+            .document()
+            .root()
+            .edges
+            .get(&diagnostic.subject.edge?)?;
+        Some((
+            (edge.from.node, edge.from.port.to_string()),
+            (edge.to.node, edge.to.port.to_string()),
+        ))
     }
 }

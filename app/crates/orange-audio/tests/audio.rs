@@ -329,6 +329,26 @@ fn the_audio_nodes_are_listed_with_their_text() {
             .fallback,
         "Audio"
     );
+    // The input nodes are found by the word a person looks for.
+    let labels: Vec<String> = host
+        .nodes()
+        .filter(|info| {
+            info.definition
+                .definition
+                .id
+                .as_str()
+                .starts_with("org.orange.audio/")
+        })
+        .map(|info| info.label().into_owned())
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .filter(|label| label.contains("icrophone"))
+            .count()
+            == 2,
+        "{labels:?}"
+    );
 }
 
 /// Plays a short tone on the real default device. Run by hand:

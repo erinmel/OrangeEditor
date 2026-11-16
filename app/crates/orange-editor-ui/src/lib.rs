@@ -25,8 +25,10 @@
 pub mod canvas;
 mod declarations;
 mod properties;
+mod quick_add;
 
 pub use properties::{COMMON_TYPES, port_label, set_at};
+pub use quick_add::QuickChoice;
 
 use canvas::Canvas;
 use orange_host::{
@@ -82,6 +84,8 @@ struct Document {
     unsaved: bool,
     /// What checking found, one line each; empty when the document is valid.
     problems: Vec<String>,
+    /// The top-level node each problem is about, in the same order.
+    problem_nodes: Vec<Option<NodeId>>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
 }
@@ -150,6 +154,8 @@ pub struct Editor {
     /// Save as, which it hands over through [`Editor::take_request`].
     pub file_dialogs: bool,
     request: Option<FileRequest>,
+    /// The search to add a node at the pointer, while it is open.
+    quick: Option<quick_add::QuickAdd>,
 }
 
 impl Editor {
@@ -177,11 +183,12 @@ impl Editor {
             path,
             untitled: false,
             declared: host.declarations(&draft),
-            names: Names::of_document(host, draft.document()),
+            names: Names::of_document(host, draft.document()).without_ids(),
             draft,
             graph,
             unsaved: false,
             problems: Vec::new(),
+            problem_nodes: Vec::new(),
             flow: None,
         });
         self.check(host);
@@ -229,7 +236,7 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        document.names = Names::of_document(host, document.draft.document());
+        document.names = Names::of_document(host, document.draft.document()).without_ids();
         document.graph = host.draft_view(&document.draft).unwrap_or_default();
         document.declared = host.declarations(&document.draft);
         document.unsaved = true;
@@ -600,13 +607,31 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
+        let mut marks = canvas::Marks::default();
+        document.problem_nodes.clear();
         document.problems = match host.problems(&mut document.draft) {
             Ok(diagnostics) => diagnostics
                 .iter()
-                .map(|diagnostic| describe(diagnostic, &document.names))
+                .map(|diagnostic| {
+                    let text = describe(diagnostic, &document.names);
+                    let error = diagnostic.severity == orange_host::Severity::Error;
+                    // Only the top level is on the canvas.
+                    let node = diagnostic
+                        .subject
+                        .node
+                        .filter(|_| diagnostic.subject.function.is_none());
+                    if let Some(wire) = host.wire_of(&document.draft, diagnostic) {
+                        canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
+                    } else if let Some(node) = node {
+                        canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
+                    }
+                    document.problem_nodes.push(node);
+                    text
+                })
                 .collect(),
             Err(error) => Self::problems_of(&error, &document.names),
         };
+        self.canvas.set_marks(marks);
     }
 
     /// Starts the open document as a flow. A document that cannot start says why in
@@ -690,8 +715,29 @@ impl Editor {
                 continue;
             }
             let said = lines(&event, &document.names);
-            if matches!(event.kind, FlowEvent::Finished) {
-                document.flow = None;
+            // The canvas follows the run: a node glows as it takes a step, and the
+            // latest value on an output shows beside it.
+            match &event.kind {
+                FlowEvent::Node(step) => {
+                    let failed = step.fault.is_some()
+                        || matches!(
+                            step.outcome,
+                            orange_host::ControlOutcome::Failed
+                                | orange_host::ControlOutcome::TimedOut
+                        );
+                    self.canvas.pulse(step.node, failed);
+                }
+                FlowEvent::Ports(values) => {
+                    for (node, port, value) in values {
+                        self.canvas
+                            .show_value(*node, port.to_string(), orange_host::plain(value));
+                    }
+                }
+                FlowEvent::Finished => {
+                    document.flow = None;
+                    self.canvas.clear_run();
+                }
+                _ => {}
             }
             for line in said {
                 self.say(line);
@@ -862,7 +908,7 @@ impl Editor {
         ui.horizontal(|ui| {
             let _ = ui.selectable_value(&mut self.document_tab, false, "Nodes");
             let _ = ui
-                .selectable_value(&mut self.document_tab, true, "Document")
+                .selectable_value(&mut self.document_tab, true, "Variables")
                 .on_hover_text("The variables and connections of this graph.");
         });
         ui.separator();
@@ -988,15 +1034,35 @@ impl Editor {
         });
     }
 
-    fn log_panel(&self, ui: &mut egui::Ui) {
-        let problems = self.problems();
+    fn log_panel(&mut self, ui: &mut egui::Ui) {
+        let problems = self.problems().to_vec();
+        let nodes = self
+            .document
+            .as_ref()
+            .map(|document| document.problem_nodes.clone())
+            .unwrap_or_default();
+        let mut focus = None;
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 if !problems.is_empty() {
                     ui.heading(format!("Problems ({})", problems.len()));
-                    for problem in problems {
-                        ui.label(problem.as_str());
+                    for (index, problem) in problems.iter().enumerate() {
+                        // A problem about a node takes you to it.
+                        match nodes.get(index).copied().flatten() {
+                            Some(node) => {
+                                if ui
+                                    .link(problem.as_str())
+                                    .on_hover_text("Show the node")
+                                    .clicked()
+                                {
+                                    focus = Some(node);
+                                }
+                            }
+                            None => {
+                                ui.label(problem.as_str());
+                            }
+                        }
                     }
                     ui.separator();
                 }
@@ -1005,6 +1071,9 @@ impl Editor {
                     ui.monospace(line.as_str());
                 }
             });
+        if let (Some(node), Some(document)) = (focus, &self.document) {
+            self.canvas.focus(&document.graph, node);
+        }
     }
 
     fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -1051,6 +1120,13 @@ impl Editor {
         if let Some((definition, at)) = done.dropped {
             let _ = self.add_node_at(host, &definition, at);
         }
+        if let Some((from, at, screen)) = done.loose {
+            self.open_quick_add(Some(from), at, screen);
+        }
+        if let Some((at, screen)) = done.quick_add {
+            self.open_quick_add(None, at, screen);
+        }
+        self.quick_add_popup(ui.ctx(), host);
     }
 }
 
@@ -1066,7 +1142,7 @@ mod tests {
     }
 
     /// A manual entry named `go` that sets the variable `count` to 7.
-    fn graph() -> String {
+    pub(super) fn graph() -> String {
         json!({"format": "orange.graph", "format_version": 1,
             "graph_id": "20000000-0000-4000-8000-0000000000e9", "revision": 1,
             "package_lock": [], "type_lock": [], "events": [], "connections": [],
@@ -1200,6 +1276,14 @@ mod tests {
         assert!(graph.wires[0].exec);
         assert_eq!(editor.problems().len(), 1);
         assert!(editor.problems()[0].contains("(node go)"));
+        // The canvas marks the node the problem is about, and the list can take you there.
+        let go = editor.graph().unwrap().nodes[0].id;
+        let mark = editor.canvas().marks().nodes.get(&go).cloned().unwrap();
+        assert!(mark.error && mark.text.contains("(node go)"));
+        editor.canvas().select(None);
+        let graph = editor.graph().unwrap().clone();
+        editor.canvas().focus(&graph, go);
+        assert_eq!(editor.canvas().selected(), Some(go));
         editor.run(&mut host);
         assert!(!editor.is_running());
 
@@ -1220,6 +1304,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(editor.log().any(|line| line.ends_with("go: done")));
+        // The canvas saw the trigger take its step.
+        assert_eq!(editor.canvas().last_step(go), Some(false));
         // The running document draws, with more on screen than the empty editor.
         assert!(draw(&mut editor, &mut host) > 0);
 
@@ -1738,5 +1824,67 @@ mod tests {
         }
         assert_eq!(editor.log().count(), MAX_LOG_LINES);
         assert_eq!(editor.log().next(), Some("line 10"));
+    }
+}
+
+#[cfg(test)]
+mod quick_add_tests {
+    use super::*;
+    use orange_host::HostOptions;
+
+    #[test]
+    fn a_wire_let_go_on_the_canvas_offers_the_kinds_that_take_it_and_wires_the_choice() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = host.bind(&tests::graph()).unwrap();
+        editor.open(&mut host, "graph.json", text);
+        let go = editor.graph().unwrap().nodes[0].id;
+        editor.open_quick_add(Some((go, "then".into())), [600.0, 0.0], egui::Pos2::ZERO);
+        let all = editor.quick_choices(&host, "");
+        assert!(all.iter().all(|choice| choice.input.is_some()));
+        let sequence = editor.quick_choices(&host, "seque");
+        assert_eq!(sequence.len(), 1, "{sequence:?}");
+        let node = editor.pick_quick(&mut host, &sequence[0]).unwrap();
+        assert!(!editor.is_quick_add_open());
+        let graph = editor.graph().unwrap();
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from == (go, "then".to_owned()) && wire.to.0 == node)
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|found| found.id == node)
+                .unwrap()
+                .position,
+            Some([600.0, 0.0])
+        );
+        // One step back takes the wire off, another the node.
+        editor.undo(&mut host);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|found| found.id == node)
+        );
+        editor.undo(&mut host);
+        assert!(
+            !editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|found| found.id == node)
+        );
+
+        // Without a wire, every kind is offered and nothing is wired.
+        editor.open_quick_add(None, [0.0, 300.0], egui::Pos2::ZERO);
+        let every = editor.quick_choices(&host, "");
+        assert!(every.len() > sequence.len() && every.iter().all(|choice| choice.input.is_none()));
     }
 }

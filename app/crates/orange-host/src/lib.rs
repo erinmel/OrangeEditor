@@ -29,6 +29,7 @@ mod preview;
 mod services;
 mod state;
 mod streams;
+mod suggest;
 mod variables;
 mod view;
 
@@ -84,7 +85,7 @@ pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
-pub use orange_model::validation::{Diagnostic, EditStats, SessionWork};
+pub use orange_model::validation::{Diagnostic, EditStats, SessionWork, Severity};
 pub use orange_packages::{
     About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
 };
@@ -99,6 +100,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
 pub use state::StoredVariable;
+pub use suggest::Suggestion;
 pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView};
 
 /// Identifies one flow for the life of its host. Never reused.

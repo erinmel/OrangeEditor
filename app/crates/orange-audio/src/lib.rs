@@ -584,8 +584,8 @@ fn stop_definition() -> String {
 }
 
 fn input_level_definition() -> String {
-    Definition::node(crate::PACKAGE, "input-level", "Input level")
-        .description("Reads the latest level of an input device in dBFS.")
+    Definition::node(crate::PACKAGE, "input-level", "Microphone level")
+        .description("Reads how loud the microphone, or another input device, is now, in dBFS.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
         .output("level", "core/f64@1")
@@ -593,8 +593,8 @@ fn input_level_definition() -> String {
 }
 
 fn on_level_definition() -> String {
-    Definition::entry(crate::PACKAGE, "on-level", "On input level")
-        .description("Fires when an input device's level reaches the connection's threshold.")
+    Definition::entry(crate::PACKAGE, "on-level", "When the microphone hears sound")
+        .description("Fires when the microphone, or another input device, gets as loud as its connection's threshold.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
         .payload("core/f64@1")
@@ -606,7 +606,7 @@ pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
         .about(
             "Audio",
-            "Plays sound files on an output device and reads the level of an input device.",
+            "Plays sound files on an output device and listens to a microphone or other input device.",
         )
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
