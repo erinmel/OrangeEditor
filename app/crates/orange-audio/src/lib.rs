@@ -1354,12 +1354,15 @@ mod tests {
         assert_eq!(output.heard(), 0.0);
         let id = output.play_live(Arc::clone(&ring), 0.5).unwrap();
         let started = Instant::now();
-        while output.heard() == 0.0 && started.elapsed() < Duration::from_secs(5) {
+        let mut peak = output.heard();
+        // Input and output ticks are independent. Check the first audible tick
+        // rather than reading a later one which may have underrun.
+        while peak == 0.0 && started.elapsed() < Duration::from_secs(5) {
             thread::sleep(POLL);
+            peak = output.heard();
         }
-        thread::sleep(POLL * 5);
         // The square wave arrives scaled by the gain.
-        assert!((output.heard() - 0.25).abs() < 1e-6, "{}", output.heard());
+        assert!((peak - 0.25).abs() < 1e-6, "{peak}");
         assert!((input.0.levels.latest() + 6.0206).abs() < 0.01);
         // Stopping the output's sounds ends the live sound.
         assert!(output.stop_all());
