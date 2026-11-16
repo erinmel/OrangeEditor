@@ -13,6 +13,11 @@
 //! mixes prepared samples. These controls act on every sound of an output connection:
 //! sounds that need separate control play on separate connections. Streaming from disk
 //! and playlists are not provided.
+//!
+//! Live sound travels as an audio stream ([`STREAM_TYPE`]): [`AUDIO_IN`] gives the
+//! sound an input connection captures, and [`AUDIO_OUT`], [`LEVEL`] and [`RECORD`]
+//! take it. The value only names the input; the samples stay in a bounded ring that
+//! the capture callback fills and each consumer reads at its own pace (see `stream`).
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -20,26 +25,30 @@
 mod device;
 mod level;
 mod mixer;
+mod stream;
 mod wav;
 
-pub use device::{Device, Devices, NULL_DEVICE, devices};
+pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
 pub use mixer::MAX_VOICES;
+pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
 pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 
 use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
     Call, ConnectionAdapter, Definition, Emitter, FaultText, KernelFault, Listeners, Probe,
-    ServiceNode, ServicePackage, ServiceSource, Session, SettingField, Value,
+    RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, SettingField, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use stream::{Cursor, Ring};
 
 /// Package namespace of the definitions and adapter kinds here.
 pub const PACKAGE: &str = "org.orange.audio";
@@ -73,9 +82,34 @@ pub const LOOP: &str = "org.orange.audio/loop";
 pub const PAUSE: &str = "org.orange.audio/pause";
 /// Lets the paused sounds of an output connection continue.
 pub const RESUME: &str = "org.orange.audio/resume";
-/// Moves every sound on an output connection to `seconds` from its start (0 to
-/// [`MAX_SECONDS`]). A sound shorter than that ends; a repeating one wraps around.
+/// "Jump to time": moves every sound on an output connection to `seconds` from its
+/// start (0 to [`MAX_SECONDS`]). A sound shorter than that ends; a repeating one wraps
+/// around; a live stream is not moved.
 pub const SEEK: &str = "org.orange.audio/seek";
+/// The type of an audio stream: a record whose one field, `source`, names a live
+/// input. It holds no samples, so copying it is free and every consumer reads the
+/// same sound; it stops working when its input connection closes.
+pub const STREAM_TYPE: &str = "org.orange.audio/stream@1";
+/// Gives what an input connection captures as an audio stream `stream`, with its
+/// `rate` (frames per second) and `channels`. The device opens here if it is not open
+/// yet; a device that cannot be opened within [`OPEN_WAIT`] is the fault
+/// `org.orange.audio/Device`.
+pub const AUDIO_IN: &str = "org.orange.audio/audio-in";
+/// Plays an audio `stream` on an output connection at `gain` (0 to 8), converted to
+/// the output's rate and channels, until the output's sounds are stopped, the run
+/// stops it or the stream's input closes. Streams played on one output are mixed.
+pub const AUDIO_OUT: &str = "org.orange.audio/audio-out";
+/// Reads the latest measured level of an audio `stream` in dBFS as `level`, measured
+/// over the window of the stream's input connection.
+pub const LEVEL: &str = "org.orange.audio/level";
+/// Records `seconds` (more than 0, up to [`MAX_RECORD_SECONDS`]) of an audio `stream`
+/// to a 16-bit PCM WAV file at `path`, at the stream's own rate and channels, and
+/// gives the seconds recorded as `recorded`. Stopping the run ends the file early, still valid.
+pub const RECORD: &str = "org.orange.audio/record";
+/// Longest recording [`RECORD`] makes.
+pub const MAX_RECORD_SECONDS: f64 = 3_600.0;
+/// How long [`AUDIO_IN`] and [`RECORD`] wait for an input device to open.
+pub const OPEN_WAIT: Duration = Duration::from_secs(3);
 /// Sets the volume of an output connection: `gain` (0 to 8; 1 is unchanged) scales
 /// everything it plays, on top of each sound's own gain.
 pub const SET_VOLUME: &str = "org.orange.audio/set-volume";
@@ -135,6 +169,16 @@ const BUSY: KernelFault = fault(
     "org.orange.audio/too-many-sounds",
     "Too many sounds are already playing on the device.",
 );
+const ENDED: KernelFault = fault(
+    "org.orange.audio/Ended",
+    "org.orange.audio/stream-ended",
+    "The audio stream's input is closed.",
+);
+const WRITE: KernelFault = fault(
+    "org.orange.audio/Write",
+    "org.orange.audio/file-unwritable",
+    "The recording could not be written to the file.",
+);
 
 fn device_setting(settings: &Map<String, Json>) -> Result<Option<String>, String> {
     match settings.get("device") {
@@ -148,13 +192,12 @@ fn device_setting(settings: &Map<String, Json>) -> Result<Option<String>, String
 /// now, by identifier and shown by name, then [`NULL_DEVICE`]. Listing asks the OS
 /// audio host, so it is done only when an editor asks, never on a flow's or the
 /// device's thread.
-fn device_choices(pick: fn(Devices) -> Vec<Device>) -> Vec<orange_sdk::SettingChoices> {
+fn device_choices(pick: fn(Devices) -> Vec<(String, String)>) -> Vec<orange_sdk::SettingChoices> {
     let (found, problem) = match devices() {
         Ok(found) => (pick(found), None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
-    let mut values: Vec<String> = found.iter().map(|d| d.setting().to_owned()).collect();
-    let mut labels: Vec<String> = found.into_iter().map(|device| device.name).collect();
+    let (mut values, mut labels): (Vec<String>, Vec<String>) = found.into_iter().unzip();
     values.push(NULL_DEVICE.to_owned());
     labels.push("Silent (no device)".to_owned());
     vec![orange_sdk::SettingChoices {
@@ -164,6 +207,26 @@ fn device_choices(pick: fn(Devices) -> Vec<Device>) -> Vec<orange_sdk::SettingCh
         labels,
         problem,
     }]
+}
+
+/// A listed device as a choice: the value its setting holds and its name.
+fn choice(device: Device) -> (String, String) {
+    (device.setting().to_owned(), device.name)
+}
+
+/// The `device` choices of an input: its capture devices, then what each output device
+/// plays where the system offers that.
+fn input_choices(found: Devices) -> Vec<(String, String)> {
+    let mut choices: Vec<_> = found.inputs.into_iter().map(choice).collect();
+    if LOOPBACK_OFFERED {
+        choices.extend(found.outputs.into_iter().map(|device| {
+            (
+                format!("{LOOPBACK_PREFIX}{}", device.setting()),
+                format!("{} (what it plays)", device.name),
+            )
+        }));
+    }
+    choices
 }
 
 /// An output connection. The device opens when a node first plays on it, so a document
@@ -221,7 +284,7 @@ impl ConnectionAdapter for OutputAdapter {
         }))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
-        device_choices(|found| found.outputs)
+        device_choices(|found| found.outputs.into_iter().map(choice).collect())
     }
 }
 
@@ -373,6 +436,10 @@ impl ServiceNode for Control {
 }
 
 struct InputShared {
+    /// What a stream value names this input by (see [`SOURCES`]).
+    id: u64,
+    /// The ring of the device while it is open.
+    ring: Mutex<Option<Arc<Ring>>>,
     device: Option<String>,
     window: Duration,
     gate: Gate,
@@ -411,7 +478,77 @@ impl Drop for InputSession {
     }
 }
 
+/// The inputs open in this process, by the ID their stream values carry. An entry goes
+/// when its input is dropped, so a stream of a closed input is refused, not reused.
+static SOURCES: Mutex<BTreeMap<u64, Weak<InputShared>>> = Mutex::new(BTreeMap::new());
+static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
+
+impl Drop for InputShared {
+    fn drop(&mut self) {
+        let _ = SOURCES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+/// The stream value of an input.
+fn stream_value(id: u64) -> Result<Value, KernelFault> {
+    Ok(Value::Record(Arc::new(RecordRepr {
+        ty: STREAM_TYPE.parse().map_err(|_| BAD_INPUT)?,
+        fields: Box::new([Some(Value::U64(id))]),
+    })))
+}
+
+/// The input a stream value names, while it is open.
+fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
+    let Value::Record(record) = value else {
+        return Err(BAD_INPUT);
+    };
+    let [Some(Value::U64(id))] = &record.fields[..] else {
+        return Err(BAD_INPUT);
+    };
+    SOURCES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(id)
+        .and_then(Weak::upgrade)
+        .ok_or(ENDED)
+}
+
 impl InputShared {
+    /// The device's ring once it is open and capturing, opening it first when no flow
+    /// has started the input yet. Waits up to `patience` (for ever when `None`) while
+    /// the device is not open, and gives up when `cancelled`. An input that cannot be
+    /// opened is the fault `Device` once it has been tried; a closed connection is
+    /// `Ended`.
+    fn wait_ring(
+        &self,
+        patience: Option<Duration>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Arc<Ring>, KernelFault> {
+        self.started.store(true, Ordering::Release);
+        let started = Instant::now();
+        loop {
+            if self.stopped() || cancelled() {
+                return Err(ENDED);
+            }
+            let ring = self
+                .ring
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(ring) = ring.filter(|ring| !ring.closed()) {
+                return Ok(ring);
+            }
+            if patience.is_some_and(|patience| started.elapsed() >= patience)
+                || (patience.is_some() && self.failure().is_some())
+            {
+                return Err(DEVICE);
+            }
+            thread::sleep(POLL);
+        }
+    }
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
@@ -463,6 +600,8 @@ fn listen(shared: &InputShared) {
                 continue;
             }
         };
+        *shared.ring.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Arc::clone(stream.ring()));
         shared.set_failure(None);
         retry = FIRST_RETRY;
         while !shared.stopped() {
@@ -479,6 +618,8 @@ fn listen(shared: &InputShared) {
             }
             thread::sleep(POLL);
         }
+        *shared.ring.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        // Closes the ring: its readers end or wait for the next one.
         drop(stream);
     }
 }
@@ -517,6 +658,8 @@ fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String>
     };
     let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
     let shared = Arc::new(InputShared {
+        id: NEXT_SOURCE.fetch_add(1, Ordering::Relaxed),
+        ring: Mutex::new(None),
         device: device_setting(settings)?,
         window: Duration::from_millis(window),
         gate: Gate::held(threshold, release, hold),
@@ -526,6 +669,10 @@ fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String>
         stop: AtomicBool::new(false),
         failed: Mutex::new(None),
     });
+    let _ = SOURCES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(shared.id, Arc::downgrade(&shared));
     let worker = Arc::clone(&shared);
     let _ = thread::Builder::new()
         .name("orange-audio-input".into())
@@ -558,7 +705,7 @@ impl ConnectionAdapter for InputAdapter {
         Ok(Arc::new(InputSession(spawn_input(settings)?)))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
-        device_choices(|found| found.inputs)
+        device_choices(input_choices)
     }
     fn fields(&self) -> Vec<SettingField> {
         let field = |setting: &str, label: &str, help: &str, unit: &str| SettingField {
@@ -662,6 +809,156 @@ impl ServiceSource for OnLevel {
     }
 }
 
+#[derive(Debug)]
+struct AudioIn;
+impl ServiceNode for AudioIn {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let shared = input(call.session).ok_or(NO_SESSION)?;
+        let ring = shared.wait_ring(Some(OPEN_WAIT), &|| call.lease.is_cancelled())?;
+        Ok(vec![
+            stream_value(shared.id)?,
+            Value::U64(u64::from(ring.rate)),
+            Value::U64(u64::from(ring.channels)),
+        ])
+    }
+}
+
+/// Plays a stream on an output until it is stopped. When the stream's input device
+/// is opened again (it failed, or was unplugged and came back), it plays on from the
+/// new device.
+#[derive(Debug)]
+struct AudioOut;
+impl ServiceNode for AudioOut {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let [stream, Value::F64(gain)] = call.inputs else {
+            return Err(BAD_INPUT);
+        };
+        let session = output(call)?;
+        if !(0.0..=8.0).contains(gain) {
+            return Err(BAD_INPUT);
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
+        let gain = *gain as f32;
+        let source = source(stream)?;
+        let cancelled = || call.lease.is_cancelled();
+        loop {
+            let ring = match source.wait_ring(None, &cancelled) {
+                Ok(ring) => ring,
+                // The input closed or the run stopped the node: it has ended.
+                Err(fault) if fault == ENDED => return Ok(Vec::new()),
+                Err(fault) => return Err(fault),
+            };
+            let output = session.output()?;
+            let id = output.play_live(Arc::clone(&ring), gain).ok_or(BUSY)?;
+            match output.wait(id, cancelled) {
+                Ended::Stalled => {
+                    session.forget(&output);
+                    return Err(DEVICE);
+                }
+                // Stopped, or the run no longer wants it.
+                Ended::Done if cancelled() || !ring.closed() => return Ok(Vec::new()),
+                // The input device closed; follow it to the next one.
+                Ended::Done => {}
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Level;
+impl ServiceNode for Level {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let [stream] = call.inputs else {
+            return Err(BAD_INPUT);
+        };
+        let source = source(stream)?;
+        if source.failure().is_some() {
+            return Err(DEVICE);
+        }
+        Ok(vec![Value::F64(source.levels.latest())])
+    }
+}
+
+/// Samples taken from the ring per write to the file.
+const RECORD_BLOCK: usize = 8_192;
+
+#[derive(Debug)]
+struct Record;
+impl ServiceNode for Record {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let [stream, Value::Str(path), Value::F64(seconds)] = call.inputs else {
+            return Err(BAD_INPUT);
+        };
+        if path.is_empty() || !(*seconds > 0.0 && *seconds <= MAX_RECORD_SECONDS) {
+            return Err(BAD_INPUT);
+        }
+        let source = source(stream)?;
+        let cancelled = || call.lease.is_cancelled();
+        let ring = source.wait_ring(Some(OPEN_WAIT), &cancelled)?;
+        record(
+            Cursor::new(ring),
+            Path::new(path.as_str()),
+            *seconds,
+            &cancelled,
+        )
+        .map(|recorded| vec![Value::F64(recorded)])
+    }
+}
+
+/// Writes `seconds` of what `cursor` reads to a WAV file and returns the seconds
+/// written. Ends early, with a valid file, when `cancelled`; a device that stops
+/// mid-way leaves a valid file of what was heard and is the fault `Device`.
+fn record(
+    mut cursor: Cursor,
+    path: &Path,
+    seconds: f64,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<f64, KernelFault> {
+    let (rate, channels) = (cursor.ring().rate, cursor.ring().channels);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "at most an hour of frames"
+    )]
+    let total = (seconds * f64::from(rate)) as u64 * u64::from(channels);
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).map_err(|_| WRITE)?;
+    let mut block = vec![0.0f32; RECORD_BLOCK / usize::from(channels) * usize::from(channels)];
+    let mut done = 0u64;
+    let mut stopped = false;
+    while done < total && !cancelled() {
+        let want = usize::try_from(total - done).map_or(block.len(), |left| left.min(block.len()));
+        let Some(buffer) = block.get_mut(..want) else {
+            break;
+        };
+        let read = cursor.read(buffer);
+        for sample in buffer.iter().take(read) {
+            #[expect(clippy::cast_possible_truncation, reason = "clamped to full scale")]
+            let pcm = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+            writer.write_sample(pcm).map_err(|_| WRITE)?;
+        }
+        done += read as u64;
+        if read == 0 {
+            if cursor.ring().closed() {
+                stopped = true;
+                break;
+            }
+            thread::sleep(POLL);
+        }
+    }
+    writer.finalize().map_err(|_| WRITE)?;
+    if stopped {
+        return Err(DEVICE);
+    }
+    #[expect(clippy::cast_precision_loss, reason = "at most an hour of frames")]
+    Ok(done as f64 / f64::from(channels) / f64::from(rate))
+}
+
 /// Gain 1, the sound as it is, for a `gain` input left empty.
 fn unit_gain() -> Json {
     serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 1.0f64.to_bits())})
@@ -724,8 +1021,8 @@ fn resume_definition() -> String {
 }
 
 fn seek_definition() -> String {
-    Definition::node(crate::PACKAGE, "seek", "Seek sounds")
-        .description("Moves every sound playing on an output device to a position in seconds.")
+    Definition::node(crate::PACKAGE, "seek", "Jump to time")
+        .description("Moves every sound playing on an output to the same time, in seconds from each sound's start: 0 starts them all again. A sound shorter than that ends, a looping one wraps around, and live audio is not moved.")
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("seconds", "core/f64@1")
@@ -750,8 +1047,8 @@ fn stop_definition() -> String {
 }
 
 fn input_level_definition() -> String {
-    Definition::node(crate::PACKAGE, "input-level", "Microphone level")
-        .description("Reads how loud the microphone, or another input device, is now, in dBFS.")
+    Definition::node(crate::PACKAGE, "input-level", "Input level")
+        .description("Reads how loud an input connection (a microphone, line input, virtual cable or what an output plays) is now, in dBFS. Level does the same for an audio stream.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
         .output("level", "core/f64@1")
@@ -759,12 +1056,67 @@ fn input_level_definition() -> String {
 }
 
 fn on_level_definition() -> String {
-    Definition::entry(crate::PACKAGE, "on-level", "When the microphone hears sound")
-        .description("Fires when the microphone, or another input device, gets as loud as its connection's threshold.")
+    Definition::entry(crate::PACKAGE, "on-level", "On level")
+        .description("Fires when an Audio in connection (a microphone, line input, virtual cable or what an output plays) gets as loud as its threshold, and again only after it has fallen to the release level.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
         .payload("core/f64@1")
         .build()
+}
+
+fn stream_input(definition: Definition) -> Definition {
+    definition.input("stream", STREAM_TYPE)
+}
+
+fn audio_in_definition() -> String {
+    Definition::node(crate::PACKAGE, "audio-in", "Audio in")
+        .description("Listens to an input: a microphone, a line input, a virtual cable, or what an output device plays where the system offers that. Gives its sound as an audio stream, with the stream's rate and channels, for Audio out, Level and Record to file.")
+        .category("audio", "Audio")
+        .uses(INPUT_ADAPTER)
+        .output("stream", STREAM_TYPE)
+        .output("rate", "core/u64@1")
+        .output("channels", "core/u64@1")
+        .build()
+}
+
+fn audio_out_definition() -> String {
+    stream_input(
+        Definition::node(crate::PACKAGE, "audio-out", "Audio out")
+            .description("Plays an audio stream on an output device until Stop sounds stops it or its input closes. Streams played on the same output are mixed together, so this is also how inputs are mixed.")
+            .category("audio", "Audio")
+            .uses(OUTPUT_ADAPTER),
+    )
+    .input_default("gain", "core/f64@1", unit_gain())
+    .build()
+}
+
+fn level_definition() -> String {
+    stream_input(
+        Definition::node(crate::PACKAGE, "level", "Level")
+            .description(
+                "Reads how loud an audio stream is now, in dBFS: 0 is full scale, -120 silence.",
+            )
+            .category("audio", "Audio"),
+    )
+    .output("level", "core/f64@1")
+    .build()
+}
+
+fn record_definition() -> String {
+    stream_input(
+        Definition::node(crate::PACKAGE, "record", "Record to file")
+            .description("Records an audio stream to a WAV file for a number of seconds, then continues with the seconds recorded. Stopping the run ends the file early.")
+            .category("audio", "Audio"),
+    )
+    .input("path", "core/string@1")
+    .save_path_input("path", &["wav"])
+    .input_default(
+        "seconds",
+        "core/f64@1",
+        serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 10.0f64.to_bits())}),
+    )
+    .output("recorded", "core/f64@1")
+    .build()
 }
 
 /// The package to pass to `Host::with_services`.
@@ -772,10 +1124,11 @@ pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
         .about(
             "Audio",
-            "Plays sound files on an output device and listens to a microphone or other input device.",
+            "Plays sound files and live audio on output devices, and listens to, measures and records microphones and other inputs.",
         )
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
+        .record("stream", &[("source", "core/u64@1")])
         .node(&play_definition(), Play { looped: false })
         .and_then(|package| package.node(&loop_definition(), Play { looped: true }))
         .and_then(|package| package.node(&play_from_definition(), PlayFrom))
@@ -785,7 +1138,11 @@ pub fn package() -> ServicePackage {
         .and_then(|package| package.node(&seek_definition(), Control::Seek))
         .and_then(|package| package.node(&set_volume_definition(), Control::Volume))
         .and_then(|package| package.node(&input_level_definition(), InputLevel))
-        .and_then(|package| package.source(&on_level_definition(), OnLevel));
+        .and_then(|package| package.source(&on_level_definition(), OnLevel))
+        .and_then(|package| package.node(&audio_in_definition(), AudioIn))
+        .and_then(|package| package.node(&audio_out_definition(), AudioOut))
+        .and_then(|package| package.node(&level_definition(), Level))
+        .and_then(|package| package.node(&record_definition(), Record));
     match package {
         Ok(package) => package,
         // The definitions are constants of this crate, checked by its tests.
@@ -827,9 +1184,10 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 9);
+        assert_eq!(package.nodes().len(), 13);
         assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 2);
+        assert_eq!(package.types().len(), 1);
     }
 
     #[test]
@@ -945,6 +1303,226 @@ mod tests {
         assert!(!play.paths[0].folder && play.paths[0].extensions.contains(&"ogg".to_owned()));
         let (_, from) = orange_sdk::NodeDefinition::described(&play_from_definition()).unwrap();
         assert!(from.paths[0].folder);
+    }
+    /// An input on the test tone: a square wave of amplitude 0.5 (-6.02 dBFS) at
+    /// 48 kHz in two channels, measured in 10 ms windows.
+    fn tone_input() -> InputSession {
+        InputSession(
+            spawn_input(&settings(
+                serde_json::json!({"device": device::TONE_DEVICE, "window_ms": 10}),
+            ))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_stream_names_its_input_until_the_input_closes() {
+        let input = tone_input();
+        let value = stream_value(input.0.id).unwrap();
+        assert!(Arc::ptr_eq(&source(&value).unwrap(), &input.0));
+        let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
+        assert_eq!((ring.rate, ring.channels), (48_000, 2));
+        let shared = Arc::downgrade(&input.0);
+        drop(input);
+        // The listening thread lets go, the ring closes and the stream is refused.
+        let started = Instant::now();
+        while shared.upgrade().is_some() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(POLL);
+        }
+        assert!(ring.closed());
+        assert_eq!(source(&value).err(), Some(ENDED));
+        assert_eq!(source(&Value::U64(1)).err(), Some(BAD_INPUT));
+    }
+
+    #[test]
+    fn an_input_stream_passes_through_to_an_output_and_its_level_is_measured() {
+        let input = tone_input();
+        let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
+        let output = Output::open(Some(NULL_DEVICE)).unwrap();
+        assert_eq!(output.heard(), 0.0);
+        let id = output.play_live(Arc::clone(&ring), 0.5).unwrap();
+        let started = Instant::now();
+        while output.heard() == 0.0 && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(POLL);
+        }
+        thread::sleep(POLL * 5);
+        // The square wave arrives scaled by the gain.
+        assert!((output.heard() - 0.25).abs() < 1e-6, "{}", output.heard());
+        assert!((input.0.levels.latest() + 6.0206).abs() < 0.01);
+        // Stopping the output's sounds ends the live sound.
+        assert!(output.stop_all());
+        assert_eq!(output.wait(id, || false), Ended::Done);
+        thread::sleep(POLL * 3);
+        assert_eq!(output.heard(), 0.0);
+
+        // A live sound ends when its input closes.
+        let id = output.play_live(Arc::clone(&ring), 1.0).unwrap();
+        drop(input);
+        assert_eq!(output.wait(id, || false), Ended::Done);
+        assert!(ring.closed());
+    }
+
+    #[test]
+    fn a_stream_is_recorded_to_a_wav_file_at_its_rate_and_channels() {
+        let input = tone_input();
+        let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("orange-audio-record-{}.wav", std::process::id()));
+        let started = Instant::now();
+        let seconds = record(Cursor::new(Arc::clone(&ring)), &path, 0.25, &|| false).unwrap();
+        // It took about as long as it recorded: it waited for the samples.
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!((seconds - 0.25).abs() < 1e-9);
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let spec = reader.spec();
+        assert_eq!(
+            (spec.sample_rate, spec.channels, spec.bits_per_sample),
+            (48_000, 2, 16)
+        );
+        let samples: Vec<i16> = reader.samples::<i16>().map(Result::unwrap).collect();
+        assert_eq!(samples.len(), 24_000);
+        assert!(samples.iter().all(|sample| sample.unsigned_abs() == 16_383));
+
+        // Cancelling ends the file early, still readable.
+        let seconds = record(Cursor::new(Arc::clone(&ring)), &path, 60.0, &|| true).unwrap();
+        assert_eq!(seconds, 0.0);
+        assert_eq!(hound::WavReader::open(&path).unwrap().len(), 0);
+        // A file that cannot be made is a fault.
+        let folder = std::env::temp_dir();
+        assert_eq!(
+            record(Cursor::new(ring), &folder, 0.1, &|| false).err(),
+            Some(WRITE)
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn an_input_offers_what_each_output_plays_where_the_system_can() {
+        let found = Devices {
+            inputs: vec![Device {
+                id: Some("wasapi:{in}".into()),
+                name: "Microphone".into(),
+            }],
+            outputs: vec![Device {
+                id: Some("wasapi:{out}".into()),
+                name: "Speakers".into(),
+            }],
+        };
+        let choices = input_choices(found);
+        assert_eq!(
+            choices[0],
+            ("wasapi:{in}".to_owned(), "Microphone".to_owned())
+        );
+        if LOOPBACK_OFFERED {
+            assert_eq!(
+                choices[1],
+                (
+                    "loopback:wasapi:{out}".to_owned(),
+                    "Speakers (what it plays)".to_owned()
+                )
+            );
+        } else {
+            assert_eq!(choices.len(), 1);
+        }
+    }
+
+    #[test]
+    fn stream_nodes_take_and_give_the_stream_type_and_record_asks_where_to_save() {
+        let port = |text: &str, direction: &str| -> Option<String> {
+            assert!(orange_sdk::NodeDefinition::described(text).is_ok());
+            let file: Json = serde_json::from_str(text).unwrap();
+            file["ports"]
+                .as_array()?
+                .iter()
+                .find(|port| port["port_id"] == "stream" && port["direction"] == direction)
+                .map(|port| port["type"].as_str().unwrap_or_default().to_owned())
+        };
+        assert_eq!(
+            port(&audio_in_definition(), "output").as_deref(),
+            Some(STREAM_TYPE)
+        );
+        for definition in [
+            audio_out_definition(),
+            level_definition(),
+            record_definition(),
+        ] {
+            assert_eq!(port(&definition, "input").as_deref(), Some(STREAM_TYPE));
+        }
+        let (_, record) = orange_sdk::NodeDefinition::described(&record_definition()).unwrap();
+        assert!(record.paths[0].save && !record.paths[0].folder);
+        let (_, seek) = orange_sdk::NodeDefinition::described(&seek_definition()).unwrap();
+        assert_eq!(seek.label.unwrap().fallback, "Jump to time");
+    }
+
+    /// Captures what the default output plays (WASAPI loopback), first while this test
+    /// plays nothing, then while it plays a quiet 0.6 s tone. Makes a faint sound, so
+    /// it is not part of the normal run: `cargo test -p orange-audio --lib -- --ignored`.
+    #[test]
+    #[ignore = "needs an audio output device and makes a faint sound"]
+    fn what_the_default_output_plays_is_captured_by_loopback() {
+        let input = InputSession(
+            spawn_input(&settings(serde_json::json!({"device": LOOPBACK_PREFIX}))).unwrap(),
+        );
+        let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
+        println!("loopback {} Hz, {} channels", ring.rate, ring.channels);
+        let before = ring.written();
+        let mut idle_cursor = Cursor::new(Arc::clone(&ring));
+        thread::sleep(Duration::from_millis(500));
+        let idle = ring.written() - before;
+        let mut heard = vec![0.0f32; 96_000];
+        let read = idle_cursor.read(&mut heard);
+        let idle_loudest = heard[..read]
+            .iter()
+            .fold(0.0f32, |most, s| most.max(s.abs()));
+        let output = Output::open(None).unwrap();
+        let frames = usize::try_from(output.rate).unwrap() * 6 / 10;
+        let channels = usize::from(output.channels);
+        let tone: Arc<[f32]> = (0..frames * channels)
+            .map(|n| if n / channels % 100 < 50 { 0.05 } else { -0.05 })
+            .collect();
+        let mut cursor = Cursor::new(Arc::clone(&ring));
+        let id = output.play(tone, 1.0, false).unwrap();
+        let mut loudest = 0.0f32;
+        let mut block = vec![0.0f32; 8_192];
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(900) {
+            let read = cursor.read(&mut block);
+            loudest = block[..read]
+                .iter()
+                .fold(loudest, |most, s| most.max(s.abs()));
+            thread::sleep(POLL);
+        }
+        assert_eq!(output.wait(id, || false), Ended::Done);
+        println!(
+            "idle: {idle} samples in 500 ms, loudest {idle_loudest}; loudest while playing: {loudest}"
+        );
+        // Other playback on the machine is captured too, so only sound is checked, not
+        // that it is this tone.
+        assert!(
+            idle > 0 && loudest.max(idle_loudest) > 0.01,
+            "nothing was captured"
+        );
+    }
+
+    /// Records one second of the default microphone through Audio in's ring.
+    #[test]
+    #[ignore = "needs an audio input device"]
+    fn the_default_microphone_is_recorded_to_a_file() {
+        let input = InputSession(spawn_input(&Map::new()).unwrap());
+        let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
+        let path = std::env::temp_dir().join("orange-audio-microphone.wav");
+        let seconds = record(Cursor::new(Arc::clone(&ring)), &path, 1.0, &|| false).unwrap();
+        let reader = hound::WavReader::open(&path).unwrap();
+        println!(
+            "{} Hz, {} channels, {seconds} s, {} samples",
+            ring.rate,
+            ring.channels,
+            reader.len()
+        );
+        assert_eq!(
+            u64::from(reader.len()),
+            u64::from(ring.rate) * u64::from(ring.channels)
+        );
     }
 
     /// Needs a microphone, so it is not part of the normal run:
