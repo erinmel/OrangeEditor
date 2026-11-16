@@ -2,7 +2,7 @@
 
 ## Audio streams — 2026-11-16
 
-Branch `claude/audio-streams-03d3be` on `e0b310e` (FR-112, 05 "Audio streams").
+Branch `claude/audio-streams-03d3be` on `e0b310e` (FR-115, 05 "Audio streams").
 Windows 11 Home 10.0.26300, Rust 1.99.1, workspace lockfile unchanged (cpal 0.18.2,
 hound 3.5.1). API evidence: installed `cpal-0.18.2/src/host/wasapi/mod.rs` (an output
 device used as an input enables loopback), `src/host/wasapi/device.rs`

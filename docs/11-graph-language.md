@@ -1194,7 +1194,7 @@ package node uses one through per-connection copies made when the host links it 
 Not specified yet: adapter compatibility in validation.
 A node that receives from a connection is a package entry (§10.2).
 
-Live media references (2026-11-16, FR-112). A package may give a value that names a
+Live media references (2026-11-16, FR-115). A package may give a value that names a
 live source it holds, such as the audio package's `org.orange.audio/stream@1` record
 naming an open input connection. It is an ordinary package record, not a
 `core/stream@1` (§12): the graph never pulls its samples, it may be copied, wired to

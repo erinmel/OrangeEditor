@@ -284,7 +284,7 @@ identifiers, a device unplugged while playing, and silent rerouting of a default
 output are not checked. Rerouting to another device is not done: only the same
 setting is opened again.
 
-Audio streams (2026-11-16, FR-112; 22 §6): `audio-in` (Audio in) gives what an input
+Audio streams (2026-11-16, FR-115; 22 §6): `audio-in` (Audio in) gives what an input
 connection captures as a value of the package record type `org.orange.audio/stream@1`
 (one field, `source: u64`), with the capture's `rate` and `channels`; `audio-out`
 (Audio out, inputs `stream` and `gain`), `level` (Level, output `level` in dBFS) and
