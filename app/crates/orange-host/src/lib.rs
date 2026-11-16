@@ -106,7 +106,7 @@ pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
-pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView};
+pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

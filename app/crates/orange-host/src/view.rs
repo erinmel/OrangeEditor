@@ -460,7 +460,9 @@ impl Host {
                     Some(member) => format!("{short}.{member}"),
                     None => short.to_owned(),
                 })
-            });
+            })
+            // A trigger shows what fires it.
+            .or_else(|| trigger_detail(node.definition.id.as_str(), &node.config));
         NodeView {
             id: node.id,
             detail,
@@ -537,4 +539,108 @@ pub(crate) fn call_contract(
         type_params: interface.type_params,
         ports: interface.ports,
     })
+}
+
+/// What an operator computes, written with its inputs' names, such as `a > b` for
+/// Greater: a card shows it under its title, with the inputs' values in place of their
+/// names when they are known. `None` for a node that is not an operator.
+pub fn formula(definition: &str) -> Option<&'static str> {
+    let name = definition.strip_prefix("org.orange.math/")?;
+    let name = name.strip_prefix("float-").unwrap_or(name);
+    Some(match name {
+        "greater" => "a > b",
+        "greater-or-equal" => "a >= b",
+        "less" => "a < b",
+        "less-or-equal" => "a <= b",
+        "equal" => "a == b",
+        "not-equal" => "a != b",
+        "add" => "a + b",
+        "subtract" => "a - b",
+        "multiply" => "a × b",
+        "divide" => "a / b",
+        "remainder" | "modulo" => "a % b",
+        "power" => "base ^ exponent",
+        "minimum" => "min(a, b)",
+        "maximum" => "max(a, b)",
+        _ => return None,
+    })
+}
+
+/// What a trigger waits for, from its settings: `every 1 s`, `after 300 ms`, or what a
+/// manual entry fires with.
+fn trigger_detail(definition: &str, config: &serde_json::Map<String, Json>) -> Option<String> {
+    let text = |key: &str| config.get(key).and_then(Json::as_str);
+    match definition {
+        "core/on-timer" => Some(format!("every {}", human_duration(text("interval")?)?)),
+        "core/on-timeout" => Some(format!("after {}", human_duration(text("delay")?)?)),
+        "core/on-manual" => text("payload").map(|ty| {
+            let short = ty.rsplit('/').next().unwrap_or(ty);
+            format!("with {}", short.split('@').next().unwrap_or(short))
+        }),
+        _ => None,
+    }
+}
+
+/// Nanoseconds, as the format stores a length of time, read as a person would say it.
+fn human_duration(nanoseconds: &str) -> Option<String> {
+    let ns: u128 = nanoseconds.parse().ok()?;
+    let units = [
+        (3_600_000_000_000, "h"),
+        (60_000_000_000, "min"),
+        (1_000_000_000, "s"),
+        (1_000_000, "ms"),
+        (1_000, "µs"),
+    ];
+    for (size, unit) in units {
+        if ns >= size && ns % (size / 10).max(1) == 0 {
+            let whole = ns / size;
+            let tenths = (ns % size) * 10 / size;
+            return Some(if tenths == 0 {
+                format!("{whole} {unit}")
+            } else {
+                format!("{whole}.{tenths} {unit}")
+            });
+        }
+    }
+    Some(format!("{ns} ns"))
+}
+
+#[cfg(test)]
+mod trigger_detail_tests {
+    use super::*;
+
+    #[test]
+    fn a_trigger_says_what_fires_it() {
+        let config = |json: Json| json.as_object().cloned().unwrap();
+        assert_eq!(
+            trigger_detail(
+                "core/on-timer",
+                &config(serde_json::json!({"interval": "1000000000"}))
+            )
+            .as_deref(),
+            Some("every 1 s")
+        );
+        assert_eq!(
+            trigger_detail(
+                "core/on-timeout",
+                &config(serde_json::json!({"delay": "300000000"}))
+            )
+            .as_deref(),
+            Some("after 300 ms")
+        );
+        assert_eq!(human_duration("1500000000").as_deref(), Some("1.5 s"));
+        assert_eq!(human_duration("120000000000").as_deref(), Some("2 min"));
+        assert_eq!(
+            trigger_detail(
+                "core/on-manual",
+                &config(serde_json::json!({"payload": "core/i64@1"}))
+            )
+            .as_deref(),
+            Some("with i64")
+        );
+        assert_eq!(
+            trigger_detail("core/on-start", &config(serde_json::json!({}))),
+            None
+        );
+    }
 }

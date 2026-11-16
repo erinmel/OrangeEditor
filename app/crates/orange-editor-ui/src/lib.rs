@@ -243,6 +243,7 @@ impl Editor {
             flow: None,
         });
         self.check(host);
+        self.preview_values(host);
     }
 
     /// What the canvas shows of the open document.
@@ -322,6 +323,7 @@ impl Editor {
             self.say(line);
         }
         self.check(host);
+        self.preview_values(host);
     }
 
     /// Follows up an edit of the draft. A refused edit says why in the log and changed
@@ -2075,7 +2077,7 @@ mod quick_add_tests {
 #[cfg(test)]
 mod glyph_tests {
     /// Every symbol the editor draws on its own, as a button or mark.
-    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”'];
+    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”', 'µ'];
 
     #[test]
     fn every_symbol_the_editor_draws_is_in_its_fonts() {
@@ -2234,5 +2236,106 @@ mod run_tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(value, Some(orange_host::Value::I64(79)));
+    }
+}
+
+/// Most outputs previewed one at a time when they cannot all be previewed together.
+const MAX_PREVIEWED: usize = 64;
+
+impl Editor {
+    /// While nothing runs, shows beside each output of a pure node (a value, an
+    /// operator) what it computes from what is wired into it, without running the
+    /// graph: Greater wired to two Ints shows true or false as soon as it is wired.
+    /// Outputs that depend on a trigger, a variable or an effect are left blank.
+    pub fn preview_values(&mut self, host: &mut Host) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if document.flow.is_some() {
+            return;
+        }
+        let Ok(text) = document.draft.text() else {
+            return;
+        };
+        let wanted: Vec<(NodeId, orange_host::PortKey)> = document
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| !node.entry && node.ports.iter().all(|port| !port.exec))
+            .flat_map(|node| {
+                node.ports
+                    .iter()
+                    .filter(|port| !port.input)
+                    .filter_map(move |port| Some((node.id, port.id.parse().ok()?)))
+            })
+            .take(MAX_PREVIEWED)
+            .collect();
+        self.canvas.clear_run();
+        if wanted.is_empty() {
+            return;
+        }
+        // All at once when every one can be previewed; otherwise one by one, so one
+        // output that cannot does not blank the rest.
+        let found = match host.preview(&text, &wanted) {
+            Ok(found) => found,
+            Err(_) => wanted
+                .iter()
+                .filter_map(|one| host.preview(&text, std::slice::from_ref(one)).ok())
+                .flatten()
+                .collect(),
+        };
+        for previewed in found {
+            if let Ok(value) = &previewed.value {
+                self.canvas.show_value(
+                    previewed.node,
+                    previewed.port.to_string(),
+                    orange_host::plain(value),
+                    orange_host::inspect(value),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use orange_host::HostOptions;
+
+    #[test]
+    fn an_operator_shows_its_result_while_it_is_wired_without_running() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = orange_host::new_document().unwrap();
+        editor.open(&mut host, "graph.json", text);
+        let a = editor
+            .add_node_at(&mut host, "core/whole-number", [0.0, 0.0])
+            .unwrap();
+        let b = editor
+            .add_node_at(&mut host, "core/whole-number", [0.0, 120.0])
+            .unwrap();
+        let greater = editor
+            .add_node_at(&mut host, "org.orange.math/greater", [300.0, 60.0])
+            .unwrap();
+        assert!(editor.set_input(&mut host, (a, "value"), Some("12")));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("7")));
+        assert!(editor.connect(&mut host, (a, "result"), (greater, "a")));
+        assert!(editor.connect(&mut host, (b, "result"), (greater, "b")));
+        assert_eq!(editor.canvas().shown_value(greater, "result"), Some("true"));
+        assert_eq!(editor.canvas().shown_value(a, "result"), Some("12"));
+        // What Greater receives shows on its inputs too.
+        let graph = editor.graph().unwrap().clone();
+        assert_eq!(
+            editor
+                .canvas()
+                .port_value(&graph, greater, "b", true)
+                .map(|v| v.short.clone()),
+            Some("7".to_owned())
+        );
+        assert!(editor.set_input(&mut host, (b, "value"), Some("30")));
+        assert_eq!(
+            editor.canvas().shown_value(greater, "result"),
+            Some("false")
+        );
     }
 }

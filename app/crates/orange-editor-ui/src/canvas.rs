@@ -1070,8 +1070,24 @@ impl Canvas {
                 continue;
             }
             let selected = self.selection.contains(&node.id);
-            let fire = triggers.contains(&node.id);
+            // On manual always has its button; it fires only while the graph runs.
+            let fire = (node.definition == "core/on-manual" || triggers.contains(&node.id))
+                .then(|| triggers.contains(&node.id));
             let controls = zoom >= CONTROLS_ZOOM;
+            // An operator says what it computes, with values in place of names.
+            let formula = orange_host::formula(&node.definition).map(|formula| {
+                fill_formula(formula, |port| {
+                    node.ports
+                        .iter()
+                        .find(|p| p.input && p.id == port)
+                        .and_then(|p| {
+                            p.value.clone().or_else(|| {
+                                self.port_value(graph, node.id, port, true)
+                                    .map(|shown| shown.short.clone())
+                            })
+                        })
+                })
+            });
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
@@ -1081,6 +1097,7 @@ impl Canvas {
                 &colors,
                 (selected, fire, controls),
                 response.id,
+                formula.as_deref(),
             );
             if pressed {
                 done.trigger = Some(node.id);
@@ -1538,8 +1555,9 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, controls): (bool, bool, bool),
+    (selected, fire, controls): (bool, Option<bool>, bool),
     canvas: egui::Id,
+    formula: Option<&str>,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
@@ -1583,7 +1601,11 @@ fn draw_node<'a>(
         let title = FontId::proportional(14.5 * zoom);
         let small = FontId::proportional(11.5 * zoom);
         // Long titles stay inside the header, clear of the trigger button.
-        let reserved = if fire { 80.0 * zoom } else { 8.0 * zoom };
+        let reserved = if fire.is_some() {
+            80.0 * zoom
+        } else {
+            8.0 * zoom
+        };
         let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
         let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
@@ -1598,9 +1620,8 @@ fn draw_node<'a>(
         }
         // What the node is set to (its variable), else what kind of node it is when its
         // name says something else.
-        let aside = node
-            .detail
-            .as_deref()
+        let aside = formula
+            .or(node.detail.as_deref())
             .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
         if let Some(aside) = aside {
             // What it is set to reads as text; what kind it is, quieter.
@@ -1629,27 +1650,34 @@ fn draw_node<'a>(
                 colors.weak,
             );
         }
-        if fire {
+        if let Some(live) = fire {
             let size = Vec2::new(64.0, 22.0) * zoom;
             let button = Rect::from_center_size(
                 header.right_center() - Vec2::new(size.x / 2.0 + 8.0 * zoom, 0.0),
                 size,
             );
-            let touched = ui.interact(button, canvas.with(("trigger", node.id)), Sense::click());
-            let fill = if touched.hovered() {
-                colors.selected
-            } else {
-                colors.exec
+            let sense = if live { Sense::click() } else { Sense::hover() };
+            let touched = ui
+                .interact(button, canvas.with(("trigger", node.id)), sense)
+                .on_hover_text(if live {
+                    "Fire it now."
+                } else {
+                    "Run the graph to fire it."
+                });
+            let fill = match (live, touched.hovered()) {
+                (false, _) => colors.weak.gamma_multiply(0.35),
+                (true, true) => colors.selected,
+                (true, false) => colors.exec,
             };
             painter.rect_filled(button, 5.0 * zoom, fill);
             let _ = painter.text(
                 button.center(),
                 Align2::CENTER_CENTER,
-                "Trigger",
+                "Fire",
                 small.clone(),
-                colors.card,
+                if live { colors.card } else { colors.weak },
             );
-            pressed = touched.clicked();
+            pressed = live && touched.clicked();
         }
     }
 
@@ -2607,5 +2635,58 @@ mod wire_hit_tests {
         assert!(bezier_distance(&points, Pos2::new(0.0, 0.0)) < 0.5);
         assert!(bezier_distance(&points, Pos2::new(50.0, 50.0)) < 2.0);
         assert!(bezier_distance(&points, Pos2::new(0.0, 100.0)) > 30.0);
+    }
+}
+
+/// A formula with each input's value, when `value_of` knows it, in place of its name;
+/// a short value is shown whole, a long one as its start.
+pub(crate) fn fill_formula(formula: &str, value_of: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        match value_of(word) {
+            Some(value) => {
+                let mut shown: String = value.chars().take(10).collect();
+                if shown.len() < value.len() {
+                    shown.push('\u{2026}');
+                }
+                out.push_str(&shown);
+            }
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in formula.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod formula_tests {
+    use super::fill_formula;
+
+    #[test]
+    fn known_inputs_take_the_place_of_their_names() {
+        let both = |port: &str| match port {
+            "a" => Some("12".to_owned()),
+            "b" => Some("7".to_owned()),
+            _ => None,
+        };
+        assert_eq!(fill_formula("a > b", both), "12 > 7");
+        assert_eq!(
+            fill_formula("a > b", |port| (port == "a").then(|| "3".to_owned())),
+            "3 > b"
+        );
+        assert_eq!(fill_formula("min(a, b)", |_| None), "min(a, b)");
     }
 }

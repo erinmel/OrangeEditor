@@ -1006,3 +1006,32 @@ fn a_node_dropped_on_a_wire_goes_into_it_as_one_edit() {
             .unwrap()
     );
 }
+
+#[test]
+fn every_name_in_an_operators_formula_is_one_of_its_inputs() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let mut checked = 0;
+    let kinds: Vec<String> = host
+        .nodes()
+        .map(|info| info.definition.definition.id.as_str().to_owned())
+        .filter(|id| orange_host::formula(id).is_some())
+        .collect();
+    for kind in kinds {
+        let node = host.add_node(&mut draft, &kind, [0.0, 0.0]).unwrap();
+        let view = host.draft_view(&draft).unwrap();
+        let card = view.nodes.iter().find(|n| n.id == node).unwrap();
+        let formula = orange_host::formula(&kind).unwrap();
+        for word in formula
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|word| !word.is_empty() && !["min", "max"].contains(word))
+        {
+            assert!(
+                card.ports.iter().any(|p| p.input && p.id == word),
+                "{kind}: `{word}` is not an input"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked >= 10, "{checked}");
+}
