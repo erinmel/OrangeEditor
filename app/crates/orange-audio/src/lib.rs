@@ -613,6 +613,9 @@ impl ConnectionAdapter for InputAdapter {
             },
         ]
     }
+    fn probes(&self) -> bool {
+        true
+    }
     fn probe(&self, settings: &Map<String, Json>) -> Option<Result<Box<dyn Probe>, String>> {
         Some(spawn_input(settings).map(|shared| {
             shared.started.store(true, Ordering::Release);

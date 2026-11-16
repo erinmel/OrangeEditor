@@ -130,6 +130,13 @@ impl Host {
             .unwrap_or_default()
     }
 
+    /// Whether [`Host::probe`] has a live reading to show for `adapter`. Opens nothing.
+    pub fn adapter_probes(&self, adapter: &str) -> bool {
+        self.adapters
+            .get(adapter)
+            .is_some_and(|found| found.probes())
+    }
+
     /// A live reading of what a connection of `adapter` with `settings` would see, such
     /// as an input device's level, for an editor to show while a person sets it up.
     /// It runs apart from every flow and stops when dropped. `None` when the adapter

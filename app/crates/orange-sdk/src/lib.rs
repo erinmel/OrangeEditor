@@ -157,6 +157,11 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn fields(&self) -> Vec<SettingField> {
         Vec::new()
     }
+    /// Whether [`probe`](Self::probe) has something to show, asked without opening
+    /// anything. The default says no.
+    fn probes(&self) -> bool {
+        false
+    }
     /// A live reading of what a connection with `settings` would see, such as an input
     /// device's level, for an editor to show while a person sets the connection up.
     /// `None` when the adapter has nothing to show; an error says why it cannot.

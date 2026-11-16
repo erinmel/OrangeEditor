@@ -602,7 +602,7 @@ impl Editor {
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
                     let hint = if needed { "required" } else { "optional" };
                     let clear = !needed && !current.is_null();
-                    match text_field(ui, typed, hint, clear) {
+                    match text_field(ui, typed, hint, clear, None) {
                         Edit::Done if *typed != before => {
                             if typed.trim().is_empty() && !needed {
                                 changed = Some(Change::Setting(pointer.clone(), None));
@@ -617,7 +617,7 @@ impl Editor {
                             }
                         }
                         Edit::Clear => changed = Some(Change::Setting(pointer.clone(), None)),
-                        Edit::Done | Edit::None => {}
+                        Edit::Done | Edit::None | Edit::Browse => {}
                     }
                 }
             });
@@ -736,13 +736,32 @@ impl Editor {
                     return;
                 }
                 let before = Self::shown_input(port);
+                // A path is chosen with the system's chooser, where the application
+                // has one.
+                let path = node
+                    .paths
+                    .iter()
+                    .find(|path| path.port == port.id)
+                    .filter(|_| self.file_dialogs);
+                let browse = path.map(|path| if path.folder { "folder" } else { "file" });
                 let typed = self.typed.entry(port.id.clone()).or_default();
-                match text_field(ui, typed, &ty, port.value.is_some()) {
+                match text_field(ui, typed, &ty, port.value.is_some(), browse) {
                     Edit::Done if *typed != before => {
                         let value = (!typed.is_empty()).then(|| typed.clone());
                         write = Some(Change::Input(port.id.clone(), value));
                     }
                     Edit::Clear => write = Some(Change::Input(port.id.clone(), None)),
+                    Edit::Browse => {
+                        if let Some(path) = path {
+                            self.request = Some(crate::FileRequest::ChoosePath {
+                                node: node.id,
+                                port: port.id.clone(),
+                                folder: path.folder,
+                                extensions: path.extensions.clone(),
+                                current: typed.clone(),
+                            });
+                        }
+                    }
                     Edit::Done | Edit::None => {}
                 }
             });
@@ -809,11 +828,20 @@ enum Edit {
     Done,
     /// Its value was taken off.
     Clear,
+    /// The chooser of a path was asked for.
+    Browse,
 }
 
 /// A text field that fills its row, read when typing ends, with a button that takes
-/// the value off when `clear` is set.
-fn text_field(ui: &mut egui::Ui, typed: &mut String, hint: &str, clear: bool) -> Edit {
+/// the value off when `clear` is set and one that asks for the system's chooser when
+/// `browse` names what it chooses ("file" or "folder").
+fn text_field(
+    ui: &mut egui::Ui,
+    typed: &mut String,
+    hint: &str,
+    clear: bool,
+    browse: Option<&str>,
+) -> Edit {
     // Laid out from the right: the button takes the room it really needs and the field
     // exactly what is left, so the row never asks for more than the panel has (a
     // resizable panel would otherwise widen itself on every frame of typing).
@@ -823,6 +851,11 @@ fn text_field(ui: &mut egui::Ui, typed: &mut String, hint: &str, clear: bool) ->
                 .small_button("×")
                 .on_hover_text("Take the value off.")
                 .clicked();
+        let browsed = browse.is_some_and(|what| {
+            ui.small_button("…")
+                .on_hover_text(format!("Choose a {what}."))
+                .clicked()
+        });
         let field = ui.add(
             egui::TextEdit::singleline(typed)
                 .hint_text(hint)
@@ -830,6 +863,8 @@ fn text_field(ui: &mut egui::Ui, typed: &mut String, hint: &str, clear: bool) ->
         );
         if cleared {
             Edit::Clear
+        } else if browsed {
+            Edit::Browse
         } else if field.lost_focus() {
             Edit::Done
         } else {
@@ -946,7 +981,7 @@ mod width_tests {
                     .show(ui, |ui| {
                         ui.set_max_width(ui.available_width());
                         row(ui, 80.0, "Value", None, |ui| {
-                            let _ = text_field(ui, &mut typed, "a number", true);
+                            let _ = text_field(ui, &mut typed, "a number", true, None);
                         });
                     });
                 widths.push(shown.response.rect.width());
