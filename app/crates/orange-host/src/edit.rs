@@ -414,6 +414,26 @@ impl Host {
         }
     }
 
+    /// Removes the one wire from output `from` to input `to`, leaving any other wire at
+    /// either port. `false` when there is no such wire.
+    pub fn disconnect_wire(
+        &self,
+        draft: &mut Draft,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Result<bool, HostError> {
+        let (from, to) = (port_ref(from)?, port_ref(to)?);
+        let commands: Vec<DocCommand> = draft
+            .document()
+            .root()
+            .edges
+            .values()
+            .filter(|edge| edge.from == from && edge.to == to)
+            .map(|edge| DocCommand::Disconnect { edge: edge.id })
+            .collect();
+        draft.commit(self.store.current(), commands)
+    }
+
     /// Removes the wires at one port: those into an input, or those out of an output.
     pub fn disconnect(
         &self,
