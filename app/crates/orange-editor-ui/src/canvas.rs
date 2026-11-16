@@ -96,7 +96,7 @@ mod layout;
 pub use layout::auto_layout;
 mod geometry;
 mod groups;
-use geometry::{Geometry, wire_points, wire_visible};
+use geometry::{Geometry, near_wire, wire_points, wire_visible};
 pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 
 /// What the person did on the canvas this frame.
@@ -139,6 +139,9 @@ pub struct CanvasResponse {
     pub group: Option<GroupEdit>,
     /// Ctrl+G was pressed: the selected nodes are to be grouped.
     pub group_selection: bool,
+    /// The second mouse button was clicked: on what, and where in graph units and on
+    /// the screen, for the right-click menu.
+    pub context: Option<(crate::MenuTarget, [f32; 2], Pos2)>,
 }
 
 /// A value a run put on a port, short for the canvas and in full for the inspector.
@@ -740,6 +743,15 @@ impl Canvas {
         if response.clicked() {
             self.select(None);
         }
+        // A right-click on the background; a wire under it is found as wires are drawn.
+        let background_menu = response
+            .secondary_clicked()
+            .then(|| response.interact_pointer_pos())
+            .flatten();
+        let menu_at = |screen: Pos2, origin: Pos2, zoom: f32| {
+            let at = graph_point(screen, origin, zoom);
+            ([at.x, at.y], screen)
+        };
         self.pointer = response
             .hover_pos()
             .map(|at| graph_point(at, self.origin, self.zoom));
@@ -861,10 +873,16 @@ impl Canvas {
                 }
                 done.selected = self.selected;
             }
+            if touched.secondary_clicked()
+                && let Some(screen) = touched.interact_pointer_pos()
+            {
+                let (at, screen) = menu_at(screen, self.origin, self.zoom);
+                done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
+            }
         }
 
-        // Ports: dragging from an output draws a wire; the second mouse button on a
-        // wired port takes its wires off.
+        // Ports: dragging from an output draws a wire; the second mouse button opens
+        // the port's menu.
         let grab = (PORT_RADIUS + 5.0) * zoom.max(0.6);
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
@@ -898,8 +916,14 @@ impl Canvas {
                         exec: port.exec,
                     });
                 }
-                if touched.secondary_clicked() && port.connected {
-                    done.disconnect = Some((node.id, port.id.clone(), port.input));
+                if touched.secondary_clicked() {
+                    let target = crate::MenuTarget::Port {
+                        node: node.id,
+                        port: port.id.clone(),
+                        input: port.input,
+                    };
+                    let (at, screen) = menu_at(at, origin, zoom);
+                    done.context = Some((target, at, screen));
                 }
             }
         }
@@ -989,6 +1013,14 @@ impl Canvas {
             };
             // The wire leaves and arrives level, bending more the further it goes.
             let points = wire_points(from, to, zoom);
+            if done.context.is_none()
+                && let Some(click) = background_menu
+                && near_wire(points, click, 6.0 * zoom.max(0.6))
+            {
+                let (at, screen) = menu_at(click, origin, zoom);
+                let ends = (wire.from.clone(), wire.to.clone());
+                done.context = Some((crate::MenuTarget::Wire(ends), at, screen));
+            }
             let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6)
                 + if mark.is_some() {
                     1.5 * zoom.max(0.6)
@@ -1020,6 +1052,13 @@ impl Canvas {
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
             ));
+        }
+
+        if done.context.is_none()
+            && let Some(click) = background_menu
+        {
+            let (at, screen) = menu_at(click, origin, zoom);
+            done.context = Some((crate::MenuTarget::Canvas, at, screen));
         }
 
         // The wire being drawn follows the pointer until it is let go.
