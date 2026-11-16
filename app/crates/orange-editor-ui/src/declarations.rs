@@ -245,14 +245,22 @@ impl Editor {
         self.edited(host, result)
     }
 
-    pub(crate) fn document_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+    pub(crate) fn variables_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
-            ui.weak("Open a graph to see what it declares.");
+            ui.weak("Open a graph to see its variables.");
             return;
         };
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.variables_section(ui, host, &declared);
-            ui.separator();
+        });
+    }
+
+    pub(crate) fn connections_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let Some(declared) = self.declarations().cloned() else {
+            ui.weak("Open a graph to see its connections.");
+            return;
+        };
+        egui::ScrollArea::vertical().show(ui, |ui| {
             self.connections_section(ui, host, &declared);
         });
     }
@@ -271,7 +279,8 @@ impl Editor {
         let mut remove = None;
         for variable in &declared.variables {
             let detail = format!(
-                "{}{}{}",
+                "{}, {}{}{}",
+                exact_type(&variable.ty),
                 scope_name(variable.scope),
                 if variable.persistent {
                     ", kept between runs"

@@ -2140,7 +2140,7 @@ mod tests {
 
     #[test]
     fn cards_name_types_shortly_and_color_families_alike() {
-        assert_eq!(short_type("core/string@1"), "text");
+        assert_eq!(short_type("core/string@1"), "Text");
         assert_eq!(short_type("$T"), "any");
         // The way in and the way on read as Enter and Exit; other ports keep their names.
         assert_eq!(

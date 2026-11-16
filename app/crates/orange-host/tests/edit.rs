@@ -502,7 +502,7 @@ fn run_once(
 }
 
 #[test]
-fn value_nodes_are_in_the_palette_under_plain_names() {
+fn value_nodes_are_in_the_palette_under_short_names_and_found_by_aliases() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
     let labels: Vec<_> = host
         .nodes()
@@ -518,10 +518,12 @@ fn value_nodes_are_in_the_palette_under_plain_names() {
         })
         .map(|info| info.label().into_owned())
         .collect();
-    assert_eq!(
-        labels,
-        ["Number", "Text", "True or false", "Value", "Whole number"]
-    );
+    assert_eq!(labels, ["Float", "Text", "Bool", "Value", "Int"]);
+    let int = host
+        .nodes()
+        .find(|info| info.definition.definition.id.as_str() == "core/whole-number")
+        .unwrap();
+    assert!(int.aliases().contains(&"integer"));
 }
 
 #[test]
@@ -905,12 +907,12 @@ fn two_nodes_of_one_kind_are_called_the_same_on_the_canvas() {
         .unwrap();
     let view = host.draft_view(&draft).unwrap();
     let name = |id: NodeId| view.nodes.iter().find(|n| n.id == id).unwrap().name.clone();
-    assert_eq!(name(a), "Whole number");
-    assert_eq!(name(b), "Whole number");
+    assert_eq!(name(a), "Int");
+    assert_eq!(name(b), "Int");
     // Text that has nothing else to tell them apart by keeps the ID ending.
     let names = orange_host::Names::of_document(&host, draft.document());
     assert_ne!(names.node(&a), names.node(&b));
-    assert_eq!(names.without_ids().node(&a), "Whole number");
+    assert_eq!(names.without_ids().node(&a), "Int");
 }
 
 #[test]

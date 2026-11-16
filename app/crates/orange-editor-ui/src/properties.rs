@@ -404,7 +404,7 @@ impl Editor {
             Change::CancelDeclare => self.quick_variable = None,
             Change::NewConnection => {
                 self.panels.nodes = true;
-                self.document_tab = true;
+                self.tab = crate::Tab::Connections;
                 self.forms.reveal_connection();
             }
             Change::Delete => {

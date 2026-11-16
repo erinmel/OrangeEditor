@@ -66,16 +66,23 @@ impl Editor {
             words.iter().all(|word| text.contains(word.as_str()))
         };
         match (&quick.from, &self.document) {
-            (Some(from), Some(document)) => host
-                .takers(&document.draft, (from.0, &from.1))
-                .into_iter()
-                .filter(|taker| matches(&taker.label, &taker.definition))
-                .map(|taker| QuickChoice {
-                    definition: taker.definition,
-                    label: taker.label,
-                    input: Some(taker.input),
-                })
-                .collect(),
+            (Some(from), Some(document)) => {
+                let mut found: Vec<QuickChoice> = host
+                    .takers(&document.draft, (from.0, &from.1))
+                    .into_iter()
+                    .filter(|taker| matches(&taker.label, &taker.definition))
+                    .map(|taker| QuickChoice {
+                        definition: taker.definition,
+                        label: taker.label,
+                        input: Some(taker.input),
+                    })
+                    .collect();
+                // The best match first: "wait" puts Wait before Await event.
+                if !search.trim().is_empty() {
+                    found.sort_by_key(|choice| crate::palette::rank(&choice.label, &[], search));
+                }
+                found
+            }
             _ => palette(host, search)
                 .into_iter()
                 .flat_map(|(_, items)| items)

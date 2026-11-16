@@ -519,9 +519,16 @@ impl NodeInfo<'_> {
             Some(label) => Cow::Borrowed(label.fallback.as_str()),
             None => {
                 let id = self.definition.definition.id.as_str();
-                Cow::Owned(words(id.rsplit('/').next().unwrap_or(id)))
+                match short_label(id) {
+                    Some(label) => Cow::Borrowed(label),
+                    None => Cow::Owned(words(id.rsplit('/').next().unwrap_or(id))),
+                }
             }
         }
+    }
+    /// Other words a person may search for this node by, such as `integer` for Int.
+    pub fn aliases(&self) -> &'static [&'static str] {
+        aliases(self.definition.definition.id.as_str())
     }
     /// The palette category in the default language: its definition file's category,
     /// or one made from the ID's namespace (`org.orange.math/add` is in "Math").
@@ -1149,4 +1156,33 @@ pub fn settings_from_json(
 ) -> Result<serde_json::Map<String, serde_json::Value>, HostError> {
     serde_json::from_slice(text)
         .map_err(|error| HostError::Connection("settings".into(), error.to_string()))
+}
+
+/// The short names the value nodes go by, as in most node editors.
+fn short_label(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "core/whole-number" => "Int",
+        "core/number" => "Float",
+        "core/true-or-false" => "Bool",
+        "core/text" => "Text",
+        _ => return None,
+    })
+}
+
+/// Words a node is also found by in a search.
+fn aliases(id: &str) -> &'static [&'static str] {
+    match id {
+        "core/whole-number" => &["integer", "whole number", "i64", "u64", "count"],
+        "core/number" => &["number", "decimal", "real", "f64", "f32", "double"],
+        "core/true-or-false" => &["boolean", "true or false", "flag", "switch"],
+        "core/text" => &["string", "str", "words"],
+        "core/value" => &["constant", "literal"],
+        "core/wait" => &["delay", "sleep", "pause"],
+        "core/set-variable" => &["assign", "store", "write"],
+        "core/get-variable" => &["read", "load"],
+        "org.orange.audio/input-level" => &["microphone", "mic", "input", "volume", "loudness"],
+        "org.orange.audio/on-level" => &["microphone", "mic", "sound", "clap", "loud"],
+        "org.orange.audio/play" => &["sound", "audio", "speaker", "music"],
+        _ => &[],
+    }
 }
