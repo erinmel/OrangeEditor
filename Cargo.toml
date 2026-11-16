@@ -34,7 +34,7 @@ sha2 = "=0.11.1"
 symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "ogg", "vorbis"] }
 thiserror = "=2.0.21"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
-ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 uuid = { version = "=1.29.0", features = ["serde"] }
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
 webpki-roots = "=1.0.11"
