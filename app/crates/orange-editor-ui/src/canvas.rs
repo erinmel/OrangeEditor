@@ -91,7 +91,9 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
 mod layout;
 pub use layout::auto_layout;
 mod geometry;
+mod groups;
 use geometry::{Geometry, wire_points, wire_visible};
+pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -125,6 +127,10 @@ pub struct CanvasResponse {
     /// Tab or Space was pressed over the canvas to add a node at the pointer: where, in
     /// graph units and on the screen.
     pub quick_add: Option<([f32; 2], Pos2)>,
+    /// A group was changed or taken away on the canvas.
+    pub group: Option<GroupEdit>,
+    /// Ctrl+G was pressed: the selected nodes are to be grouped.
+    pub group_selection: bool,
 }
 
 /// A value a run put on a port, short for the canvas and in full for the inspector.
@@ -225,6 +231,11 @@ pub struct Canvas {
     stale: bool,
     /// The size of the canvas when it was last shown, in points.
     size: Vec2,
+    /// The document's groups, the nodes hidden in collapsed ones and a group being
+    /// renamed with what is typed.
+    groups: Vec<orange_host::Group>,
+    hidden: std::collections::HashSet<NodeId>,
+    renaming: Option<(String, String)>,
 }
 impl Default for Canvas {
     fn default() -> Self {
@@ -248,6 +259,9 @@ impl Default for Canvas {
             failures: std::collections::HashMap::new(),
             stale: false,
             size: Vec2::new(800.0, 600.0),
+            groups: Vec::new(),
+            hidden: std::collections::HashSet::new(),
+            renaming: None,
         }
     }
 }
@@ -412,7 +426,7 @@ impl Canvas {
         self.selection = nodes
             .iter()
             .copied()
-            .filter(|id| self.places.contains_key(id))
+            .filter(|id| self.places.contains_key(id) && !self.hidden.contains(id))
             .collect();
         self.selected = match self.selection.len() {
             1 => self.selection.first().copied(),
@@ -446,6 +460,7 @@ impl Canvas {
         graph
             .nodes
             .iter()
+            .filter(|node| !self.hidden.contains(&node.id))
             .filter(|node| {
                 self.places.get(&node.id).is_some_and(|place| {
                     Rect::from_min_size(*place, node_size(node)).intersects(area)
@@ -469,7 +484,7 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
-            if node.id == from {
+            if node.id == from || self.hidden.contains(&node.id) {
                 continue;
             }
             for port in node
@@ -748,12 +763,22 @@ impl Canvas {
             }
         }
 
+        // Groups: their title bars are handled under the cards, and their frames drawn
+        // behind them.
+        let screen = |rect: Rect| Rect::from_min_max(to_screen(rect.min), to_screen(rect.max));
+        self.group_input(ui, graph, screen, response.id, &mut done);
+        self.draw_groups(&painter, graph, screen, &colors);
+        let collapsed = self.collapsed_frames(graph);
+
         // Nodes are handled before anything is drawn, so a wire follows the node
         // being moved in the same frame.
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
+            if self.hidden.contains(&node.id) {
+                continue;
+            }
             let rect = Rect::from_min_size(to_screen(place), geometry.size(node.id) * zoom);
             if !area.intersects(rect) {
                 continue;
@@ -793,6 +818,9 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
+            if self.hidden.contains(&node.id) {
+                continue;
+            }
             if !area.expand(grab).intersects(Rect::from_min_size(
                 to_screen(place),
                 geometry.size(node.id) * zoom,
@@ -844,6 +872,9 @@ impl Canvas {
         // selects everything, and copy, cut and paste go through the clipboard.
         if !ui.ctx().egui_wants_keyboard_input() {
             let (delete, all, add, events) = ui.input(|input| {
+                done.group_selection = input.modifiers.command
+                    && input.key_pressed(egui::Key::G)
+                    && !self.selection.is_empty();
                 (
                     input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace),
                     input.modifiers.command && input.key_pressed(egui::Key::A),
@@ -874,10 +905,16 @@ impl Canvas {
         }
 
         let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
+            if self.hidden.contains(&node) {
+                return self.hidden_anchor(&collapsed, node, input).map(to_screen);
+            }
             let place = *self.places.get(&node)?;
             Some(to_screen(place + geometry.port(node, port, input)?.offset))
         };
         for wire in &graph.wires {
+            if self.wire_hidden(wire) {
+                continue;
+            }
             let (Some(from), Some(to)) = (
                 anchor(wire.from.0, &wire.from.1, false),
                 anchor(wire.to.0, &wire.to.1, true),
@@ -939,6 +976,9 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
+            if self.hidden.contains(&node.id) {
+                continue;
+            }
             let rect = Rect::from_min_size(to_screen(place), geometry.size(node.id) * zoom);
             if !area.intersects(rect) {
                 continue;
@@ -1057,7 +1097,11 @@ impl Canvas {
             let source = geometry
                 .port(wiring.from.0, &wiring.from.1, false)
                 .and_then(|port| port.ty);
-            for node in graph.nodes.iter().filter(|node| node.id != wiring.from.0) {
+            for node in graph
+                .nodes
+                .iter()
+                .filter(|node| node.id != wiring.from.0 && !self.hidden.contains(&node.id))
+            {
                 let Some(place) = self.places.get(&node.id).copied() else {
                     continue;
                 };
