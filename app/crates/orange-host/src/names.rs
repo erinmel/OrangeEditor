@@ -341,6 +341,49 @@ pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
     }
 }
 
+/// Most characters [`inspect`] writes; past it the text says how much was left out.
+pub const MAX_INSPECT_CHARS: usize = 64 * 1024;
+/// Most bytes [`inspect`] shows of a bytes value, in hex.
+pub const MAX_INSPECT_BYTES: usize = 256;
+
+/// A value in full, for looking at it closely: text whole, numbers exact, bytes as their
+/// count and a hex preview of the first [`MAX_INSPECT_BYTES`], and lists, maps and
+/// records laid out one item a line. Bounded by [`MAX_INSPECT_CHARS`].
+pub fn inspect(value: &Value) -> String {
+    let full = match value {
+        Value::Str(text) => text.as_str().to_owned(),
+        Value::Bytes(bytes) => {
+            let shown: Vec<String> = bytes
+                .iter()
+                .take(MAX_INSPECT_BYTES)
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let mut lines: Vec<String> = shown.chunks(16).map(|row| row.join(" ")).collect();
+            if bytes.len() > MAX_INSPECT_BYTES {
+                lines.push(format!("… {} more bytes", bytes.len() - MAX_INSPECT_BYTES));
+            }
+            format!("{} bytes\n{}", bytes.len(), lines.join("\n"))
+        }
+        Value::List(_)
+        | Value::Map(_)
+        | Value::Record(_)
+        | Value::Enum { .. }
+        | Value::Some(_)
+        | Value::Err(_) => format!("{value:#?}"),
+        other => plain(other),
+    };
+    let count = full.chars().count();
+    if count <= MAX_INSPECT_CHARS {
+        return full;
+    }
+    let mut kept: String = full.chars().take(MAX_INSPECT_CHARS).collect();
+    kept.push_str(&format!(
+        "\n… {} more characters",
+        count - MAX_INSPECT_CHARS
+    ));
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

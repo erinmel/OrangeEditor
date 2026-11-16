@@ -939,3 +939,21 @@ fn whole_numbers_past_two_to_the_53_are_kept_exactly() {
             .is_err()
     );
 }
+
+#[test]
+fn a_value_is_inspected_whole_with_bytes_as_a_bounded_hex_preview() {
+    use orange_host::{MAX_INSPECT_BYTES, inspect};
+    let long = "x".repeat(500);
+    assert_eq!(
+        inspect(&Value::Str(std::sync::Arc::new(long.clone()))),
+        long
+    );
+    assert_eq!(
+        inspect(&Value::I64(9_007_199_254_740_993)),
+        "9007199254740993"
+    );
+    let bytes = Value::Bytes(std::sync::Arc::new(vec![0xab; MAX_INSPECT_BYTES + 10]));
+    let shown = inspect(&bytes);
+    assert!(shown.starts_with(&format!("{} bytes\nab ab", MAX_INSPECT_BYTES + 10)));
+    assert!(shown.ends_with("… 10 more bytes"));
+}

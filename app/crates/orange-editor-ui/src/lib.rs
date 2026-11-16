@@ -645,6 +645,7 @@ impl Editor {
         }
         match document.draft.text().and_then(|text| host.open(&text)) {
             Ok(flow) => {
+                self.canvas.clear_run();
                 let _ = host.observe(flow, true);
                 let entries = host
                     .info(flow)
@@ -677,6 +678,8 @@ impl Editor {
         };
         let _ = host.stop(flow, StopMode::Graceful);
         let _ = host.close(flow);
+        // What the run showed stays, dimmed, until the next run.
+        self.canvas.mark_stale();
         self.say(format!("[{flow}] closed"));
     }
 
@@ -726,16 +729,30 @@ impl Editor {
                                 | orange_host::ControlOutcome::TimedOut
                         );
                     self.canvas.pulse(step.node, failed);
+                    // A failure stays on its node, with what the log says about it,
+                    // until the node takes a step that does not fail.
+                    if failed {
+                        let why = said.join("; ");
+                        self.canvas.fail(step.node, why);
+                    } else {
+                        self.canvas.recover(step.node);
+                    }
                 }
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
-                        self.canvas
-                            .show_value(*node, port.to_string(), orange_host::plain(value));
+                        self.canvas.show_value(
+                            *node,
+                            port.to_string(),
+                            orange_host::plain(value),
+                            orange_host::inspect(value),
+                        );
                     }
                 }
+                // Values from before an edit or the end of the run are kept, dimmed.
+                FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
                     document.flow = None;
-                    self.canvas.clear_run();
+                    self.canvas.mark_stale();
                 }
                 _ => {}
             }

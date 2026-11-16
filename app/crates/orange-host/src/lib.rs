@@ -75,7 +75,9 @@ pub use documents::{
 pub use draft::{Draft, MAX_UNDO};
 pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
-pub use names::{Names, describe, lines, literal, plain, said};
+pub use names::{
+    MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
+};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;

@@ -127,6 +127,13 @@ pub struct CanvasResponse {
     pub quick_add: Option<([f32; 2], Pos2)>,
 }
 
+/// A value a run put on a port, short for the canvas and in full for the inspector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown {
+    pub short: String,
+    pub full: String,
+}
+
 /// A problem shown on the canvas, on the node or wire it is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mark {
@@ -210,7 +217,12 @@ pub struct Canvas {
     /// When each node of a running flow last took a step, and whether it failed.
     activity: std::collections::HashMap<NodeId, (std::time::Instant, bool)>,
     /// The latest value a running flow put on each output, as a person reads it.
-    values: std::collections::HashMap<(NodeId, String), String>,
+    values: std::collections::HashMap<(NodeId, String), Shown>,
+    /// Nodes whose last step failed, with why; kept until the node succeeds or a new
+    /// run starts.
+    failures: std::collections::HashMap<NodeId, String>,
+    /// The values and failures are from a run that has ended or a graph since changed.
+    stale: bool,
     /// The size of the canvas when it was last shown, in points.
     size: Vec2,
 }
@@ -233,6 +245,8 @@ impl Default for Canvas {
             marks: Marks::default(),
             activity: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
+            failures: std::collections::HashMap::new(),
+            stale: false,
             size: Vec2::new(800.0, 600.0),
         }
     }
@@ -552,10 +566,57 @@ impl Canvas {
             .insert(node, (std::time::Instant::now(), failed));
     }
 
-    /// A running flow put `value` (as a person reads it) on an output; it shows beside
-    /// the port until another comes or the flow ends.
-    pub fn show_value(&mut self, node: NodeId, port: String, value: String) {
-        let _ = self.values.insert((node, port), value);
+    /// A running flow put a value on an output: `short` shows beside the port, `full`
+    /// in the inspector. It stays until another comes; when the run ends it is dimmed.
+    pub fn show_value(&mut self, node: NodeId, port: String, short: String, full: String) {
+        self.stale = false;
+        let _ = self.values.insert((node, port), Shown { short, full });
+    }
+
+    /// A node's step failed, for `why`: the node keeps an error badge until it
+    /// succeeds or a new run starts.
+    pub fn fail(&mut self, node: NodeId, why: String) {
+        let _ = self.failures.insert(node, why);
+    }
+
+    /// A node took a step that did not fail: its earlier failure is over.
+    pub fn recover(&mut self, node: NodeId) {
+        let _ = self.failures.remove(&node);
+    }
+
+    /// Why the node's last step failed, if it did.
+    pub fn failure(&self, node: NodeId) -> Option<&str> {
+        self.failures.get(&node).map(String::as_str)
+    }
+
+    /// The run the values came from has ended, or its graph changed: they stay, dimmed
+    /// and said to be from the last run, until a new run starts.
+    pub fn mark_stale(&mut self) {
+        self.stale = true;
+    }
+
+    /// Whether the values shown are from a run that has ended or a graph since changed.
+    pub fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    /// The value last on a port: on an output, what the node put there; on a wired
+    /// input, what the output it is wired to holds.
+    pub fn port_value(
+        &self,
+        graph: &GraphView,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<&Shown> {
+        if !input {
+            return self.values.get(&(node, port.to_owned()));
+        }
+        graph
+            .wires
+            .iter()
+            .find(|wire| wire.to.0 == node && wire.to.1 == port)
+            .and_then(|wire| self.values.get(&wire.from))
     }
 
     /// Whether a running flow's node has taken a step, and whether that step failed.
@@ -567,13 +628,15 @@ impl Canvas {
     pub fn shown_value(&self, node: NodeId, port: &str) -> Option<&str> {
         self.values
             .get(&(node, port.to_owned()))
-            .map(String::as_str)
+            .map(|shown| shown.short.as_str())
     }
 
-    /// The flow ended: no more glow or values from it.
+    /// A new run starts: nothing from an earlier one is shown.
     pub fn clear_run(&mut self) {
         self.activity.clear();
         self.values.clear();
+        self.failures.clear();
+        self.stale = false;
     }
 
     /// The problems to draw on nodes and wires from now on.
@@ -897,22 +960,44 @@ impl Canvas {
                 done.trigger = Some(node.id);
             }
             overlays.push((node.id, rect));
-            for port in node.ports.iter().filter(|port| !port.input) {
-                if let (Some(value), Some(at)) = (
-                    self.values.get(&(node.id, port.id.clone())),
+            // Values a run put on ports: beside each output, and beside each wired
+            // input the value it receives. Cut short here; the inspector has them whole.
+            let tint = if self.stale {
+                colors.weak.gamma_multiply(0.5)
+            } else {
+                colors.weak
+            };
+            for port in node.ports.iter().filter(|port| !port.exec) {
+                let (Some(value), Some(at)) = (
+                    self.port_value(graph, node.id, &port.id, port.input),
                     geometry
-                        .port(node.id, &port.id, false)
+                        .port(node.id, &port.id, port.input)
                         .map(|found| to_screen(place + found.offset)),
-                ) {
-                    let shown: String = value.chars().take(24).collect();
-                    let _ = painter.text(
-                        at + Vec2::new(8.0 * zoom, -9.0 * zoom),
-                        egui::Align2::LEFT_CENTER,
-                        shown,
-                        egui::FontId::monospace(10.0 * zoom.max(0.7)),
-                        colors.weak,
-                    );
+                ) else {
+                    continue;
+                };
+                let mut shown: String = value.short.chars().take(24).collect();
+                if shown.len() < value.short.len() {
+                    shown.push('…');
                 }
+                let (offset, align) = if port.input {
+                    (
+                        Vec2::new(-8.0 * zoom, -9.0 * zoom),
+                        egui::Align2::RIGHT_CENTER,
+                    )
+                } else {
+                    (
+                        Vec2::new(8.0 * zoom, -9.0 * zoom),
+                        egui::Align2::LEFT_CENTER,
+                    )
+                };
+                let _ = painter.text(
+                    at + offset,
+                    align,
+                    shown,
+                    egui::FontId::monospace(10.0 * zoom.max(0.7)),
+                    tint,
+                );
             }
             for (port, slot) in slots {
                 if area.contains_rect(slot)
@@ -937,7 +1022,21 @@ impl Canvas {
                     glowing = true;
                 }
             }
-            if let Some(mark) = self.marks.nodes.get(&node) {
+            if let Some(why) = self.failures.get(&node) {
+                let failed = Mark {
+                    error: true,
+                    text: format!("Failed in the last run: {why}"),
+                };
+                draw_mark(
+                    ui,
+                    &painter,
+                    rect,
+                    zoom,
+                    &colors,
+                    &failed,
+                    response.id.with(("failed", node)),
+                );
+            } else if let Some(mark) = self.marks.nodes.get(&node) {
                 draw_mark(
                     ui,
                     &painter,
@@ -2177,5 +2276,51 @@ mod whole_tests {
         assert_eq!(step_whole(0, -50.0, "core/u32@1"), 0);
         assert_eq!(parse_whole("2147483648", "core/i32@1"), None);
         assert_eq!(parse_whole("1.5", "core/i64@1"), None);
+    }
+}
+
+#[cfg(test)]
+mod run_state_tests {
+    use super::*;
+
+    fn node(n: u32) -> NodeId {
+        format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
+    }
+
+    #[test]
+    fn a_wired_input_shows_its_sources_value_and_failures_last_until_success() {
+        let (a, b) = (node(1), node(2));
+        let graph = GraphView {
+            nodes: Vec::new(),
+            wires: vec![orange_host::WireView {
+                from: (a, "result".into()),
+                to: (b, "value".into()),
+                exec: false,
+            }],
+        };
+        let mut canvas = Canvas::new();
+        canvas.show_value(a, "result".into(), "42".into(), "42".into());
+        assert_eq!(
+            canvas.port_value(&graph, b, "value", true).unwrap().short,
+            "42"
+        );
+        assert_eq!(
+            canvas.port_value(&graph, a, "result", false).unwrap().full,
+            "42"
+        );
+        assert!(canvas.port_value(&graph, b, "other", true).is_none());
+
+        canvas.fail(b, "the request failed".into());
+        assert_eq!(canvas.failure(b), Some("the request failed"));
+        // The run ends: values stay, dimmed; the failure stays too.
+        canvas.mark_stale();
+        assert!(canvas.is_stale() && canvas.failure(b).is_some());
+        canvas.recover(b);
+        assert!(canvas.failure(b).is_none());
+        // A new run starts from nothing.
+        canvas.fail(b, "again".into());
+        canvas.clear_run();
+        assert!(!canvas.is_stale() && canvas.failure(b).is_none());
+        assert!(canvas.port_value(&graph, b, "value", true).is_none());
     }
 }
