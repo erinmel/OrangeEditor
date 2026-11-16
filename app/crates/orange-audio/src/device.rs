@@ -25,11 +25,30 @@ const SCRATCH: usize = 16_384;
 const STALL: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(5);
 
-/// The input and output device names the operating system reports.
+/// One device the operating system reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    /// The operating system's identifier of the endpoint, as `<host>:<id>` (on Windows
+    /// `wasapi:` and the endpoint ID, on macOS `coreaudio:` and the device UID, on Linux
+    /// `alsa:` and the PCM name). It survives renaming and tells apart devices with
+    /// the same name. `None` when the system gives none.
+    pub id: Option<String>,
+    /// What the system calls it, which two devices can share.
+    pub name: String,
+}
+impl Device {
+    /// What a connection's `device` setting holds to name this device: its identifier
+    /// where the system has one, else its name.
+    pub fn setting(&self) -> &str {
+        self.id.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// The input and output devices the operating system reports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Devices {
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
+    pub inputs: Vec<Device>,
+    pub outputs: Vec<Device>,
 }
 
 /// Lists the devices a connection's `device` setting can name. [`NULL_DEVICE`] is
@@ -41,11 +60,15 @@ pub fn devices() -> Result<Devices, String> {
         let Ok(description) = device.description() else {
             continue;
         };
+        let listed = Device {
+            id: device.id().ok().map(|id| id.to_string()),
+            name: description.name().to_owned(),
+        };
         if device.supports_input() {
-            found.inputs.push(description.name().to_owned());
+            found.inputs.push(listed.clone());
         }
         if device.supports_output() {
-            found.outputs.push(description.name().to_owned());
+            found.outputs.push(listed);
         }
     }
     Ok(found)
@@ -61,15 +84,25 @@ fn find(name: Option<&str>, input: bool) -> Result<cpal::Device, String> {
         };
         return device.ok_or_else(|| "there is no default audio device".to_owned());
     };
+    let usable = |device: &cpal::Device| {
+        if input {
+            device.supports_input()
+        } else {
+            device.supports_output()
+        }
+    };
+    // An identifier names one endpoint, whatever it is called now; a setting that is
+    // not one, or names an endpoint that is gone, is matched as a name.
+    if let Ok(id) = name.parse::<cpal::DeviceId>()
+        && let Some(device) = host.device_by_id(&id)
+        && usable(&device)
+    {
+        return Ok(device);
+    }
     host.devices()
         .map_err(|error| error.to_string())?
         .find(|device| {
-            let usable = if input {
-                device.supports_input()
-            } else {
-                device.supports_output()
-            };
-            usable
+            usable(device)
                 && device
                     .description()
                     .is_ok_and(|description| description.name() == name)
@@ -105,6 +138,9 @@ pub(crate) struct Output {
     next: AtomicU64,
     /// Blocks the device has asked for.
     blocks: Arc<AtomicU64>,
+    /// Set by the stream's error callback: the device has gone or changed, and a new
+    /// output must be opened.
+    broken: Arc<AtomicBool>,
     driver: Driver,
 }
 impl std::fmt::Debug for Output {
@@ -127,10 +163,23 @@ impl Drop for Output {
     }
 }
 
+/// Whether a stream error means the stream plays or records no more and the device
+/// must be opened again. An overrun or underrun (`Xrun`), a followed route change or a
+/// refused real-time mode leaves the stream running. Runs in the error callback, so it
+/// only looks at the kind.
+fn fatal(error: &cpal::Error) -> bool {
+    use cpal::ErrorKind::{DeviceNotAvailable, HostUnavailable, StreamInvalidated};
+    matches!(
+        error.kind(),
+        DeviceNotAvailable | HostUnavailable | StreamInvalidated
+    )
+}
+
 fn output_stream<T>(
     device: &cpal::Device,
     config: StreamConfig,
     mut mixer: Mixer,
+    broken: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + FromSample<f32>,
@@ -150,8 +199,13 @@ where
                 }
             }
         },
-        // A stream error stops callbacks; a playing node then reports a stalled device.
-        |_| {},
+        // A fatal stream error stops callbacks; a playing node then reports a stalled device
+        // and the next one opens the device again.
+        move |error| {
+            if fatal(&error) {
+                broken.store(true, Ordering::Release);
+            }
+        },
         None,
     )
 }
@@ -160,6 +214,8 @@ impl Output {
     /// Opens the default device, the device with this name, or the silent device.
     pub(crate) fn open(device: Option<&str>) -> Result<Self, String> {
         let (mixer, commands, retired, blocks) = mixer::mixer();
+        let broken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&broken);
         let (rate, channels, driver) = if device == Some(NULL_DEVICE) {
             (NULL_RATE, NULL_CHANNELS, null_output(mixer)?)
         } else {
@@ -170,11 +226,11 @@ impl Output {
             let config = supported.config();
             let (rate, channels) = (config.sample_rate, config.channels);
             let stream = match supported.sample_format() {
-                SampleFormat::F32 => output_stream::<f32>(&device, config, mixer),
-                SampleFormat::F64 => output_stream::<f64>(&device, config, mixer),
-                SampleFormat::I16 => output_stream::<i16>(&device, config, mixer),
-                SampleFormat::U16 => output_stream::<u16>(&device, config, mixer),
-                SampleFormat::I32 => output_stream::<i32>(&device, config, mixer),
+                SampleFormat::F32 => output_stream::<f32>(&device, config, mixer, flag),
+                SampleFormat::F64 => output_stream::<f64>(&device, config, mixer, flag),
+                SampleFormat::I16 => output_stream::<i16>(&device, config, mixer, flag),
+                SampleFormat::U16 => output_stream::<u16>(&device, config, mixer, flag),
+                SampleFormat::I32 => output_stream::<i32>(&device, config, mixer, flag),
                 other => {
                     return Err(format!(
                         "the device's sample format {other} is not supported"
@@ -194,8 +250,20 @@ impl Output {
             active: Mutex::new(0),
             next: AtomicU64::new(0),
             blocks,
+            broken,
             driver,
         })
+    }
+
+    /// The device reported an error and plays no more.
+    pub(crate) fn broken(&self) -> bool {
+        self.broken.load(Ordering::Acquire)
+    }
+
+    /// Acts as the stream's error callback does.
+    #[cfg(test)]
+    pub(crate) fn fail(&self) {
+        self.broken.store(true, Ordering::Release);
     }
 
     /// Takes ended sounds back from the callback and frees them here.
@@ -329,6 +397,8 @@ pub(crate) struct Levels {
     latest: AtomicU64,
     fired: AtomicU64,
     fired_level: AtomicU64,
+    /// Set by the stream's error callback: the device has gone and must be reopened.
+    broken: AtomicBool,
 }
 impl Levels {
     pub(crate) fn new() -> Self {
@@ -336,7 +406,12 @@ impl Levels {
             latest: AtomicU64::new(SILENCE_DB.to_bits()),
             fired: AtomicU64::new(0),
             fired_level: AtomicU64::new(SILENCE_DB.to_bits()),
+            broken: AtomicBool::new(false),
         }
+    }
+    /// Takes the stream error flag: whether the device failed since the last call.
+    pub(crate) fn take_broken(&self) -> bool {
+        self.broken.swap(false, Ordering::AcqRel)
     }
     /// Records one measured window.
     pub(crate) fn record(&self, gate: &mut Gate, level: f64) {
@@ -370,6 +445,7 @@ where
     T: SizedSample,
     f32: FromSample<T>,
 {
+    let failed = Arc::clone(&levels);
     device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -378,8 +454,12 @@ where
                 |level| levels.record(&mut gate, level),
             );
         },
-        // A stream error stops callbacks; the level then stays at its last value.
-        |_| {},
+        // A fatal stream error stops callbacks; the listening thread then opens it again.
+        move |error| {
+            if fatal(&error) {
+                failed.broken.store(true, Ordering::Release);
+            }
+        },
         None,
     )
 }
@@ -465,5 +545,24 @@ mod tests {
         levels.record(&mut gate, -5.0);
         assert_eq!(levels.fired(), (1, -10.0));
         assert_eq!(levels.latest(), -5.0);
+    }
+
+    /// Asks the operating system, so it is not part of the normal run:
+    /// `cargo test -p orange-audio -- --ignored`. Opens nothing and makes no sound.
+    #[test]
+    #[ignore = "needs the machine's audio devices"]
+    fn every_listed_device_is_found_again_by_what_its_setting_holds() {
+        let found = devices().unwrap();
+        for (listed, input) in found
+            .outputs
+            .iter()
+            .map(|device| (device, false))
+            .chain(found.inputs.iter().map(|device| (device, true)))
+        {
+            assert!(listed.id.is_some(), "{listed:?} has no identifier");
+            let again = find(Some(listed.setting()), input).unwrap();
+            assert_eq!(again.id().unwrap().to_string(), listed.setting());
+            println!("{} {listed:?}", if input { "input " } else { "output" });
+        }
     }
 }

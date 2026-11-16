@@ -242,14 +242,18 @@ impl ServiceNode for HttpRequest {
             return Err(BAD_REQUEST);
         };
         let mut response = session.send(method, path, "", &[], body.as_bytes().to_vec(), false)?;
-        let status = i64::from(response.status().as_u16());
+        let status = response.status().as_u16();
         let text = response
             .body_mut()
             .with_config()
             .limit(MAX_RESPONSE_BYTES)
             .read_to_string()
             .map_err(|_| RESPONSE)?;
-        Ok(vec![Value::I64(status), Value::Str(Arc::new(text))])
+        Ok(vec![
+            Value::I64(i64::from(status)),
+            Value::Bool(success(status)),
+            Value::Str(Arc::new(text)),
+        ])
     }
 }
 
@@ -285,7 +289,7 @@ impl ServiceNode for HttpRequestBytes {
             body.as_ref().clone(),
             false,
         )?;
-        let status = i64::from(response.status().as_u16());
+        let status = response.status().as_u16();
         let kind = response
             .headers()
             .get("content-type")
@@ -299,7 +303,8 @@ impl ServiceNode for HttpRequestBytes {
             .read_to_vec()
             .map_err(|_| RESPONSE)?;
         Ok(vec![
-            Value::I64(status),
+            Value::I64(i64::from(status)),
+            Value::Bool(success(status)),
             Value::Str(Arc::new(kind)),
             Value::Bytes(Arc::new(bytes)),
         ])
@@ -338,7 +343,8 @@ impl ServiceNode for HttpStream {
             body.as_ref().clone(),
             true,
         )?;
-        let status = i64::from(response.status().as_u16());
+        let code = response.status().as_u16();
+        let (status, ok) = (Value::I64(i64::from(code)), Value::Bool(success(code)));
         let mut reader = std::io::BufReader::new(response.body_mut().as_reader());
         let mut line = Vec::new();
         let mut lines = 0i64;
@@ -371,13 +377,13 @@ impl ServiceNode for HttpStream {
                 // line; the server then sees a slow reader.
                 while emitter.emit(Some(payload.clone())) == Err(EmitError::Busy) {
                     if call.lease.is_cancelled() {
-                        return Ok(vec![Value::I64(status), Value::I64(lines)]);
+                        return Ok(vec![status, ok, Value::I64(lines)]);
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
         }
-        Ok(vec![Value::I64(status), Value::I64(lines)])
+        Ok(vec![status, ok, Value::I64(lines)])
     }
 }
 
@@ -403,19 +409,52 @@ impl ServiceSource for HttpStreamLine {
     }
 }
 
+/// Whether `status` says the server did what was asked: 200 to 299. Any other status,
+/// such as 404 or 500, is still an answer and comes back as data; only a request that
+/// could not be completed at all fails the node.
+pub(crate) const fn success(status: u16) -> bool {
+    matches!(status, 200..=299)
+}
+
+/// A text input left empty: no body, no content type.
+fn no_text() -> Json {
+    serde_json::json!({"type": "core/string@1", "value": ""})
+}
+
+/// A request sent with nothing more than its method and path: no content type, no
+/// extra headers and no body.
+fn bare(definition: Definition) -> Definition {
+    definition
+        .input_default(
+            "method",
+            "core/string@1",
+            serde_json::json!({"type": "core/string@1", "value": "GET"}),
+        )
+        .input_default("path", "core/string@1", no_text())
+        .input_default("content_type", "core/string@1", no_text())
+        .input_default(
+            "headers",
+            "core/list@1<core/string@1>",
+            serde_json::json!({"type": "core/list@1<core/string@1>", "value": []}),
+        )
+        .input_default(
+            "content",
+            "core/bytes@1",
+            serde_json::json!({"type": "core/bytes@1", "value": ""}),
+        )
+}
+
 pub(crate) fn http_stream_definition() -> String {
-    Definition::node(crate::PACKAGE, "http-stream", "HTTP request (streamed)")
-        .description("Sends a request and delivers the response line by line as it arrives.")
-        .category("network", "Network")
-        .uses(crate::HTTP_ADAPTER)
-        .input("method", "core/string@1")
-        .input("path", "core/string@1")
-        .input("content_type", "core/string@1")
-        .input("headers", "core/list@1<core/string@1>")
-        .input("content", "core/bytes@1")
-        .output("status", "core/i64@1")
-        .output("lines", "core/i64@1")
-        .build()
+    bare(
+        Definition::node(crate::PACKAGE, "http-stream", "HTTP request (streamed)")
+            .description("Sends a request and delivers the response line by line as it arrives. Any status is a result; `success` is true for 200 to 299, and the node fails only when the request cannot be completed.")
+            .category("network", "Network")
+            .uses(crate::HTTP_ADAPTER),
+    )
+    .output("status", "core/i64@1")
+    .output("success", "core/bool@1")
+    .output("lines", "core/i64@1")
+    .build()
 }
 
 pub(crate) fn http_stream_line_definition() -> String {
@@ -427,20 +466,18 @@ pub(crate) fn http_stream_line_definition() -> String {
 }
 
 pub(crate) fn http_request_bytes_definition() -> String {
-    Definition::node(
-        crate::PACKAGE,
-        "http-request-bytes",
-        "HTTP request (binary)",
+    bare(
+        Definition::node(
+            crate::PACKAGE,
+            "http-request-bytes",
+            "HTTP request (binary)",
+        )
+        .description("Sends a request with a binary body and returns the response as bytes. Any status is a result; `success` is true for 200 to 299, and the node fails only when the request cannot be completed.")
+        .category("network", "Network")
+        .uses(crate::HTTP_ADAPTER),
     )
-    .description("Sends a request with a binary body and returns the response as bytes.")
-    .category("network", "Network")
-    .uses(crate::HTTP_ADAPTER)
-    .input("method", "core/string@1")
-    .input("path", "core/string@1")
-    .input("content_type", "core/string@1")
-    .input("headers", "core/list@1<core/string@1>")
-    .input("content", "core/bytes@1")
     .output("status", "core/i64@1")
+    .output("success", "core/bool@1")
     .output("response_type", "core/string@1")
     .output("response", "core/bytes@1")
     .build()
@@ -448,12 +485,25 @@ pub(crate) fn http_request_bytes_definition() -> String {
 
 pub(crate) fn http_request_definition() -> String {
     Definition::node(crate::PACKAGE, "http-request", "HTTP request")
+        .description("Sends a request and returns the response as text. Any status, such as 404 or 500, is a result; `success` is true for 200 to 299. The node fails (its `failed` step) only when the request cannot be completed: no connection, a timeout or a body that is not text. Leave `content` empty to send no body.")
         .category("network", "Network")
         .uses(crate::HTTP_ADAPTER)
-        .input("method", "core/string@1")
-        .input("path", "core/string@1")
-        .input("content", "core/string@1")
+        .input_default("method", "core/string@1", serde_json::json!({"type": "core/string@1", "value": "GET"}))
+        .input_default("path", "core/string@1", no_text())
+        .input_default("content", "core/string@1", no_text())
         .output("status", "core/i64@1")
+        .output("success", "core/bool@1")
         .output("response", "core/string@1")
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_2xx_is_success_and_every_status_is_an_answer() {
+        assert!(success(200) && success(204) && success(299));
+        assert!(!success(199) && !success(301) && !success(404) && !success(500));
+    }
 }

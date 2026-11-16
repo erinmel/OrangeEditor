@@ -3,7 +3,9 @@
 //! a setting that holds one is a `credential://<name>` reference to the system's store.
 use super::*;
 use crate::properties::COMMON_TYPES;
-use orange_host::{Connection, ConnectionScope, Declarations, SettingChoices, VarScope, Variable};
+use orange_host::{
+    Connection, ConnectionScope, Declarations, SettingChoices, SettingField, VarScope, Variable,
+};
 use serde_json::Value as Json;
 
 /// What is being typed into the variable form.
@@ -89,10 +91,21 @@ pub(crate) fn choice_fields(
     let mut chosen = None;
     for choice in choices {
         let current = settings.get(&choice.setting).and_then(Json::as_str);
+        // A value is shown by what it is called, such as a device's name for its ID.
+        let label = |value: &str| {
+            choice
+                .values
+                .iter()
+                .position(|known| known == value)
+                .and_then(|at| choice.labels.get(at))
+                .map_or(value, String::as_str)
+                .to_owned()
+        };
         ui.horizontal(|ui| {
             ui.label(choice.setting.as_str());
+            let shown = current.map_or_else(|| choice.unset.clone(), label);
             let _ = egui::ComboBox::from_id_salt(("orange-setting-choice", salt, &choice.setting))
-                .selected_text(current.unwrap_or(choice.unset.as_str()))
+                .selected_text(shown)
                 .show_ui(ui, |ui| {
                     if ui
                         .selectable_label(current.is_none(), choice.unset.as_str())
@@ -103,7 +116,12 @@ pub(crate) fn choice_fields(
                     }
                     for value in &choice.values {
                         let selected = current == Some(value.as_str());
-                        if ui.selectable_label(selected, value.as_str()).clicked() && !selected {
+                        if ui
+                            .selectable_label(selected, label(value))
+                            .on_hover_text(value.as_str())
+                            .clicked()
+                            && !selected
+                        {
                             chosen = Some((choice.setting.clone(), Some(value.clone())));
                         }
                     }
@@ -123,6 +141,201 @@ pub(crate) fn choice_fields(
         }
     }
     chosen
+}
+
+/// Fields for the number settings of a connection, over `settings`. A setting left out
+/// shows what that means and a button that writes its default. Returns the setting to
+/// change and its new value, `None` to leave it out.
+pub(crate) fn number_fields(
+    ui: &mut egui::Ui,
+    fields: &[SettingField],
+    settings: &Json,
+) -> Option<(String, Option<f64>)> {
+    let mut changed = None;
+    for field in fields {
+        let current = settings.get(&field.setting).and_then(Json::as_f64);
+        ui.horizontal(|ui| {
+            let _ = ui
+                .label(field.label.as_str())
+                .on_hover_text(field.help.as_str());
+            match current {
+                Some(mut value) => {
+                    let speed = if field.whole { 1.0 } else { 0.5 };
+                    let mut drag = egui::DragValue::new(&mut value)
+                        .range(field.min..=field.max)
+                        .speed(speed)
+                        .suffix(format!(" {}", field.unit));
+                    if field.whole {
+                        drag = drag.fixed_decimals(0);
+                    }
+                    if ui.add(drag).changed() {
+                        let value = if field.whole { value.round() } else { value };
+                        changed = Some((field.setting.clone(), Some(value)));
+                    }
+                    if ui
+                        .small_button("×")
+                        .on_hover_text("Leave it out: use the default.")
+                        .clicked()
+                    {
+                        changed = Some((field.setting.clone(), None));
+                    }
+                }
+                None => {
+                    let start = field.default.unwrap_or((field.min + field.max) / 2.0);
+                    match field.default {
+                        Some(default) => ui.weak(format!("default, {default} {}", field.unit)),
+                        None => ui.weak("automatic"),
+                    }
+                    .on_hover_text(field.help.as_str());
+                    if ui.small_button("Set").clicked() {
+                        changed = Some((field.setting.clone(), Some(start)));
+                    }
+                }
+            }
+        });
+    }
+    changed
+}
+
+/// A switch that shows what the device of a connection being set up hears now, and
+/// the meter while it is on. It listens apart from any run, only while switched on.
+fn live_level(
+    ui: &mut egui::Ui,
+    host: &Host,
+    form: &ConnectionForm,
+    choices: &[SettingChoices],
+    fields: &[SettingField],
+    probing: &mut Option<crate::Probing>,
+) {
+    let mut on = probing.is_some();
+    if ui
+        .checkbox(&mut on, "Show the live level")
+        .on_hover_text("Listens to the device now, apart from any run.")
+        .changed()
+        && !on
+    {
+        *probing = None;
+    }
+    if !on {
+        return;
+    }
+    let Ok(Json::Object(settings)) = serde_json::from_str::<Json>(&form.settings) else {
+        ui.weak("The settings are not JSON.");
+        return;
+    };
+    // What chooses the device: changing it listens again; moving the trigger's levels
+    // does not reopen the device.
+    let key: String = choices
+        .iter()
+        .map(|choice| format!("{:?};", settings.get(&choice.setting)))
+        .collect();
+    let stale = probing.as_ref().is_none_or(|probing| {
+        probing.adapter != form.adapter || probing.settings != key || probing.probe.is_err()
+    });
+    if stale {
+        *probing = host
+            .probe(&form.adapter, &settings)
+            .map(|probe| crate::Probing {
+                adapter: form.adapter.clone(),
+                settings: key,
+                probe,
+            });
+    }
+    let Some(probing) = probing.as_ref() else {
+        return;
+    };
+    let level = match &probing.probe {
+        Ok(probe) => probe.read(),
+        Err(why) => Err(why.clone()),
+    };
+    let marks: Vec<(f64, &str)> = fields
+        .iter()
+        .filter(|field| field.unit == "dBFS")
+        .filter_map(|field| {
+            let db = settings
+                .get(&field.setting)
+                .and_then(Json::as_f64)
+                .or(field.default)?;
+            Some((db, field.label.as_str()))
+        })
+        .collect();
+    level_meter(ui, level, &marks);
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(50));
+}
+
+/// The loudest and quietest levels a level meter shows, in dBFS.
+const METER_DB: std::ops::RangeInclusive<f64> = -90.0..=0.0;
+
+/// A bar showing `level` in dBFS, with a line at each of `marks` (a level and what it
+/// is), or why there is no level.
+pub(crate) fn level_meter(ui: &mut egui::Ui, level: Result<f64, String>, marks: &[(f64, &str)]) {
+    let level = match level {
+        Ok(level) => level,
+        Err(why) => {
+            ui.weak(format!("No level: {why}"));
+            return;
+        }
+    };
+    let width = ui.available_width().max(60.0);
+    let height = ui.spacing().interact_size.y * 0.7;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let span = METER_DB.end() - METER_DB.start();
+    #[expect(clippy::cast_possible_truncation, reason = "a fraction of a width")]
+    let at = |db: f64| {
+        let fraction =
+            ((db.clamp(*METER_DB.start(), *METER_DB.end()) - METER_DB.start()) / span) as f32;
+        rect.left() + fraction * rect.width()
+    };
+    let visuals = ui.visuals();
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
+    let filled = egui::Rect::from_min_max(rect.min, egui::pos2(at(level), rect.max.y));
+    let loud = marks
+        .first()
+        .is_some_and(|(threshold, _)| level >= *threshold);
+    let color = if loud {
+        visuals.warn_fg_color
+    } else {
+        visuals.selection.bg_fill
+    };
+    painter.rect_filled(filled, 2.0, color);
+    for (db, _) in marks {
+        let x = at(*db);
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.5, visuals.strong_text_color()),
+        );
+    }
+    let hover: Vec<String> = marks
+        .iter()
+        .map(|(db, what)| format!("{what}: {db:.1} dBFS"))
+        .collect();
+    let _ = response.on_hover_text(hover.join("\n"));
+    ui.label(format!("{level:.1} dBFS now"));
+}
+
+/// `settings` with `setting` set to the number `value`, or left out for `None`.
+pub(crate) fn with_number(settings: &Json, setting: &str, value: Option<f64>) -> Json {
+    let mut settings = settings.clone();
+    if let Json::Object(fields) = &mut settings {
+        match value {
+            Some(value) => {
+                // A whole number is written as one, as a person would type it.
+                #[expect(clippy::cast_possible_truncation, reason = "checked to be whole")]
+                let number = if value.fract() == 0.0 && value.abs() < 1e15 {
+                    Json::from(value as i64)
+                } else {
+                    Json::from(value)
+                };
+                let _ = fields.insert(setting.to_owned(), number);
+            }
+            None => {
+                let _ = fields.remove(setting);
+            }
+        }
+    }
+    settings
 }
 
 /// `settings` with `setting` set to `value`, or left out for `None`.
@@ -448,6 +661,9 @@ impl Editor {
         }
         let adapter = self.forms.connection.adapter.clone();
         let choices = self.adapter_choices(host, &adapter, false);
+        let fields = host.adapter_fields(&adapter);
+        let probes = host.adapter_probes(&adapter);
+        let probing = &mut self.probing;
         let mut refresh = false;
         let form = &mut self.forms.connection;
         let title = if form.changing.is_some() {
@@ -459,7 +675,7 @@ impl Editor {
         let mut cancel = false;
         let reveal = std::mem::take(&mut self.forms.open_connection);
         let form = &mut self.forms.connection;
-        egui::CollapsingHeader::new(title)
+        let shown = egui::CollapsingHeader::new(title)
             .id_salt("orange-connection-form")
             .default_open(false)
             .open((form.changing.is_some() || reveal).then_some(true))
@@ -491,6 +707,17 @@ impl Editor {
                         serde_json::to_string_pretty(&with_setting(&current, &setting, value))
                             .unwrap_or_default();
                 }
+                if !fields.is_empty()
+                    && let Ok(current) = serde_json::from_str::<Json>(&form.settings)
+                    && let Some((setting, value)) = number_fields(ui, &fields, &current)
+                {
+                    form.settings =
+                        serde_json::to_string_pretty(&with_number(&current, &setting, value))
+                            .unwrap_or_default();
+                }
+                if probes {
+                    live_level(ui, host, form, &choices, &fields, probing);
+                }
                 ui.label("settings (JSON)");
                 let _ = ui.add(
                     egui::TextEdit::multiline(&mut form.settings)
@@ -506,6 +733,10 @@ impl Editor {
                     cancel = form.changing.is_some() && ui.button("Cancel").clicked();
                 });
             });
+        // A closed form shows no level, and the device it listened to is let go.
+        if shown.body_returned.is_none() || declare || cancel {
+            self.probing = None;
+        }
         if declare {
             let form = self.forms.connection.clone();
             match serde_json::from_str(&form.settings) {

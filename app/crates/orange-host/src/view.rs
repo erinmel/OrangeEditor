@@ -18,6 +18,9 @@ pub struct PortView {
     pub value: Option<String>,
     /// Whether a wire ends or starts here.
     pub connected: bool,
+    /// What the node's definition calls this port, when it names it: "Queued" for
+    /// the `then` of a send that only queues. A front end otherwise names it itself.
+    pub label: Option<String>,
 }
 
 /// One node of a document's top level.
@@ -52,6 +55,9 @@ pub struct NodeView {
     pub types: Vec<TypeChoice>,
     /// The ports of which the node has as many as it is given ([`Host::add_port`]).
     pub variadic: Vec<VariadicView>,
+    /// Text inputs that hold a path on this machine, from the node's definition file,
+    /// so the editor can offer the system's file or folder chooser beside them.
+    pub paths: Vec<PathInput>,
 }
 
 /// A variadic port of a node, such as the branches of a fork: its instances are
@@ -296,6 +302,8 @@ impl Host {
                 .is_some_and(|ports| ports.contains(port))
         };
         let contract = registry.contract(document, node).ok().flatten();
+        // What the node's definition file says about showing it.
+        let shown = self.presentations.get(&node.definition);
         // A generic port shows the type its parameter has now: the chosen one, else the
         // one found from the wires, so a value can be typed on it.
         let settled = (!node.type_args.is_empty() || !node.type_pins.is_empty()).then(|| {
@@ -346,6 +354,7 @@ impl Host {
                     }),
                     value: value.filter(|_| input),
                     id,
+                    label: None,
                 });
             }
         }
@@ -389,6 +398,10 @@ impl Host {
                     ty: (name == "error").then(|| "core/error@1".to_owned()),
                     value: None,
                     connected: wired(node.id, name, input),
+                    label: (name == "then")
+                        .then(|| shown?.then_label.as_ref())
+                        .flatten()
+                        .map(|label| label.fallback.clone()),
                 };
                 match name {
                     "in" | "then" => ports.push(port),
@@ -475,6 +488,7 @@ impl Host {
                 .map(|field| (field.pointer.clone(), field.kind))
                 .collect(),
             types,
+            paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
         }
     }
 }

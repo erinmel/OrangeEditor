@@ -22,7 +22,7 @@ mod level;
 mod mixer;
 mod wav;
 
-pub use device::{Devices, NULL_DEVICE, devices};
+pub use device::{Device, Devices, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
 pub use mixer::MAX_VOICES;
 pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
@@ -30,21 +30,23 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
-    ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, Emitter, FaultText, KernelFault, Listeners, Probe,
+    ServiceNode, ServicePackage, ServiceSource, Session, SettingField, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 /// Package namespace of the definitions and adapter kinds here.
 pub const PACKAGE: &str = "org.orange.audio";
-/// Adapter kind of an output device. Setting: `device`, a name from [`devices`] or
-/// [`NULL_DEVICE`]; absent means the system default. The device opens at first use.
+/// Adapter kind of an output device. Setting: `device`, a [`Device::setting`] from
+/// [`devices`] (the endpoint's identifier where the system has one, else its name; a
+/// name is still accepted) or [`NULL_DEVICE`]; absent means the system default. The
+/// device opens at first use, and again at the next use after it failed or stopped.
 pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// Adapter kind of an input device whose level is measured. Settings: `device` as for
 /// an output; `threshold_db` (default -30) and `release_db` (default 6 below the
@@ -87,6 +89,9 @@ const DEFAULT_THRESHOLD_DB: f64 = -30.0;
 const DEFAULT_HYSTERESIS_DB: f64 = 6.0;
 const DEFAULT_WINDOW_MS: u64 = 50;
 const POLL: Duration = Duration::from_millis(10);
+/// How long an input waits before opening its device again after it failed.
+const FIRST_RETRY: Duration = Duration::from_millis(500);
+const MAX_RETRY: Duration = Duration::from_secs(5);
 
 const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
     KernelFault {
@@ -140,35 +145,64 @@ fn device_setting(settings: &Map<String, Json>) -> Result<Option<String>, String
 }
 
 /// The `device` choices of a connection: the devices of one direction the system lists
-/// now, then [`NULL_DEVICE`]. Listing asks the OS audio host, so it is done only when an
-/// editor asks, never on a flow's or the device's thread.
-fn device_choices(pick: fn(Devices) -> Vec<String>) -> Vec<orange_sdk::SettingChoices> {
-    let (mut values, problem) = match devices() {
+/// now, by identifier and shown by name, then [`NULL_DEVICE`]. Listing asks the OS
+/// audio host, so it is done only when an editor asks, never on a flow's or the
+/// device's thread.
+fn device_choices(pick: fn(Devices) -> Vec<Device>) -> Vec<orange_sdk::SettingChoices> {
+    let (found, problem) = match devices() {
         Ok(found) => (pick(found), None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
+    let mut values: Vec<String> = found.iter().map(|d| d.setting().to_owned()).collect();
+    let mut labels: Vec<String> = found.into_iter().map(|device| device.name).collect();
     values.push(NULL_DEVICE.to_owned());
+    labels.push("Silent (no device)".to_owned());
     vec![orange_sdk::SettingChoices {
         setting: "device".to_owned(),
         unset: "System default".to_owned(),
         values,
+        labels,
         problem,
     }]
 }
 
 /// An output connection. The device opens when a node first plays on it, so a document
-/// opens on a machine without that device and only the playing node fails.
+/// opens on a machine without that device and only the playing node fails. A device
+/// that could not be opened, or that failed or stopped since, is opened again by the
+/// next node that plays: plugging it in later is enough.
 #[derive(Debug)]
 struct OutputSession {
     device: Option<String>,
-    output: OnceLock<Result<Output, String>>,
+    output: Mutex<Option<Arc<Output>>>,
 }
 impl OutputSession {
-    fn output(&self) -> Result<&Output, KernelFault> {
+    /// The open output, opening the device first when needed.
+    fn output(&self) -> Result<Arc<Output>, KernelFault> {
+        let mut held = self.output.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(output) = held.as_ref().filter(|output| !output.broken()) {
+            return Ok(Arc::clone(output));
+        }
+        // A failure is not kept: the next node tries again.
+        *held = None;
+        let output = Arc::new(Output::open(self.device.as_deref()).map_err(|_| DEVICE)?);
+        *held = Some(Arc::clone(&output));
+        Ok(output)
+    }
+    /// The output if the device is open and working, without opening it.
+    fn opened(&self) -> Option<Arc<Output>> {
         self.output
-            .get_or_init(|| Output::open(self.device.as_deref()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map_err(|_| DEVICE)
+            .filter(|output| !output.broken())
+            .cloned()
+    }
+    /// Drops `output` after it stalled, so the next node opens the device again.
+    fn forget(&self, output: &Arc<Output>) {
+        let mut held = self.output.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.as_ref().is_some_and(|kept| Arc::ptr_eq(kept, output)) {
+            *held = None;
+        }
     }
 }
 impl Session for OutputSession {
@@ -183,7 +217,7 @@ impl ConnectionAdapter for OutputAdapter {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         Ok(Arc::new(OutputSession {
             device: device_setting(settings)?,
-            output: OnceLock::new(),
+            output: Mutex::new(None),
         }))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
@@ -227,7 +261,10 @@ fn play(call: &Call<'_>, path: &Path, gain: f64, looped: bool) -> Result<(), Ker
     let id = output.play(sound, gain as f32, looped).ok_or(BUSY)?;
     match output.wait(id, || call.lease.is_cancelled()) {
         Ended::Done => Ok(()),
-        Ended::Stalled => Err(DEVICE),
+        Ended::Stalled => {
+            session.forget(&output);
+            Err(DEVICE)
+        }
     }
 }
 
@@ -288,8 +325,8 @@ struct Stop;
 impl ServiceNode for Stop {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         // A device nothing has played on has nothing to stop and is not opened for it.
-        match output(call)?.output.get() {
-            Some(Ok(output)) if !output.stop_all() => Err(DEVICE),
+        match output(call)?.opened() {
+            Some(output) if !output.stop_all() => Err(DEVICE),
             _ => Ok(Vec::new()),
         }
     }
@@ -314,7 +351,7 @@ impl ServiceNode for Control {
         let position = 0.0..=MAX_SECONDS as f64;
         // A volume is set before anything plays, so it opens the device; the others
         // have nothing to act on while the device is closed.
-        let sent = match (self, session.output.get()) {
+        let sent = match (self, session.opened()) {
             (Self::Volume, _) => {
                 #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
                 let gain = number(0.0..=8.0)? as f32;
@@ -323,12 +360,12 @@ impl ServiceNode for Control {
             (Self::Seek, opened) => {
                 let seconds = number(position)?;
                 match opened {
-                    Some(Ok(output)) => output.seek(seconds),
+                    Some(output) => output.seek(seconds),
                     _ => true,
                 }
             }
-            (Self::Pause, Some(Ok(output))) => output.pause(true),
-            (Self::Resume, Some(Ok(output))) => output.pause(false),
+            (Self::Pause, Some(output)) => output.pause(true),
+            (Self::Resume, Some(output)) => output.pause(false),
             (Self::Pause | Self::Resume, _) => true,
         };
         if sent { Ok(Vec::new()) } else { Err(DEVICE) }
@@ -344,8 +381,9 @@ struct InputShared {
     /// Set once a flow has attached its triggers; the device is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
-    /// Why the device could not be opened, once that is known.
-    failed: OnceLock<String>,
+    /// Why the device could not be opened the last time it was tried; cleared once it
+    /// opens.
+    failed: Mutex<Option<String>>,
 }
 impl std::fmt::Debug for InputShared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -373,37 +411,75 @@ impl Drop for InputSession {
     }
 }
 
-/// Owns the capture stream and turns threshold crossings into entry firings.
+impl InputShared {
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+    fn failure(&self) -> Option<String> {
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+    fn set_failure(&self, failure: Option<String>) {
+        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = failure;
+    }
+    /// Waits `time`, or less when the session ends.
+    fn rest(&self, time: Duration) {
+        let mut waited = Duration::ZERO;
+        while waited < time && !self.stopped() {
+            thread::sleep(POLL);
+            waited += POLL;
+        }
+    }
+}
+
+/// Owns the capture stream and turns threshold crossings into entry firings. A device
+/// that cannot be opened, or that fails while open, is opened again with backoff, so a
+/// microphone plugged in later is heard.
 fn listen(shared: &InputShared) {
     while !shared.started.load(Ordering::Acquire) {
-        if shared.stop.load(Ordering::Acquire) {
+        if shared.stopped() {
             return;
         }
         thread::sleep(POLL);
     }
-    let stream = device::open_input(
-        shared.device.as_deref(),
-        shared.window,
-        shared.gate,
-        Arc::clone(&shared.levels),
-    );
-    let _stream = match stream {
-        Ok(stream) => stream,
-        Err(reason) => {
-            let _ = shared.failed.set(reason);
-            return;
-        }
-    };
+    let mut retry = FIRST_RETRY;
     let mut seen = shared.levels.fired().0;
-    while !shared.stop.load(Ordering::Acquire) {
-        let (count, level) = shared.levels.fired();
-        if count != seen {
-            // Crossings closer together than one poll are reported as one.
-            seen = count;
-            let payload = Value::F64(level);
-            shared.listeners.emit(|()| Some(payload.clone()));
+    while !shared.stopped() {
+        let _ = shared.levels.take_broken();
+        let stream = device::open_input(
+            shared.device.as_deref(),
+            shared.window,
+            shared.gate,
+            Arc::clone(&shared.levels),
+        );
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(reason) => {
+                shared.set_failure(Some(reason));
+                shared.rest(retry);
+                retry = (retry * 2).min(MAX_RETRY);
+                continue;
+            }
+        };
+        shared.set_failure(None);
+        retry = FIRST_RETRY;
+        while !shared.stopped() {
+            if shared.levels.take_broken() {
+                shared.set_failure(Some("the input device stopped".to_owned()));
+                break;
+            }
+            let (count, level) = shared.levels.fired();
+            if count != seen {
+                // Crossings closer together than one poll are reported as one.
+                seen = count;
+                let payload = Value::F64(level);
+                shared.listeners.emit(|()| Some(payload.clone()));
+            }
+            thread::sleep(POLL);
         }
-        thread::sleep(POLL);
+        drop(stream);
     }
 }
 
@@ -418,49 +494,133 @@ fn number(settings: &Map<String, Json>, name: &str) -> Result<Option<f64>, Strin
     }
 }
 
+/// Starts an input's listening thread from its settings; it waits for `started`.
+fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String> {
+    let threshold = number(settings, "threshold_db")?.unwrap_or(DEFAULT_THRESHOLD_DB);
+    let release = number(settings, "release_db")?.unwrap_or(threshold - DEFAULT_HYSTERESIS_DB);
+    if release > threshold {
+        return Err("`release_db` must not be above `threshold_db`".into());
+    }
+    let window = match settings.get("window_ms") {
+        None => DEFAULT_WINDOW_MS,
+        Some(value) => value
+            .as_u64()
+            .filter(|ms| (5..=1_000).contains(ms))
+            .ok_or("`window_ms` must be an integer from 5 to 1000")?,
+    };
+    let hold = match settings.get("hold_ms") {
+        None => 0,
+        Some(value) => value
+            .as_u64()
+            .filter(|ms| *ms <= 60_000)
+            .ok_or("`hold_ms` must be an integer from 0 to 60000")?,
+    };
+    let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
+    let shared = Arc::new(InputShared {
+        device: device_setting(settings)?,
+        window: Duration::from_millis(window),
+        gate: Gate::held(threshold, release, hold),
+        levels: Arc::new(Levels::new()),
+        listeners: Listeners::new(),
+        started: AtomicBool::new(false),
+        stop: AtomicBool::new(false),
+        failed: Mutex::new(None),
+    });
+    let worker = Arc::clone(&shared);
+    let _ = thread::Builder::new()
+        .name("orange-audio-input".into())
+        .spawn(move || listen(&worker))
+        .map_err(|error| error.to_string())?;
+    Ok(shared)
+}
+
+/// The level an input device hears now, measured apart from every flow while an editor
+/// shows it. Dropping it closes the device.
+struct InputProbe(Arc<InputShared>);
+impl Probe for InputProbe {
+    fn read(&self) -> Result<f64, String> {
+        match self.0.failure() {
+            Some(reason) => Err(reason),
+            None => Ok(self.0.levels.latest()),
+        }
+    }
+}
+impl Drop for InputProbe {
+    fn drop(&mut self) {
+        self.0.stop.store(true, Ordering::Release);
+    }
+}
+
 #[derive(Debug)]
 struct InputAdapter;
 impl ConnectionAdapter for InputAdapter {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
-        let threshold = number(settings, "threshold_db")?.unwrap_or(DEFAULT_THRESHOLD_DB);
-        let release = number(settings, "release_db")?.unwrap_or(threshold - DEFAULT_HYSTERESIS_DB);
-        if release > threshold {
-            return Err("`release_db` must not be above `threshold_db`".into());
-        }
-        let window = match settings.get("window_ms") {
-            None => DEFAULT_WINDOW_MS,
-            Some(value) => value
-                .as_u64()
-                .filter(|ms| (5..=1_000).contains(ms))
-                .ok_or("`window_ms` must be an integer from 5 to 1000")?,
-        };
-        let hold = match settings.get("hold_ms") {
-            None => 0,
-            Some(value) => value
-                .as_u64()
-                .filter(|ms| *ms <= 60_000)
-                .ok_or("`hold_ms` must be an integer from 0 to 60000")?,
-        };
-        let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
-        let shared = Arc::new(InputShared {
-            device: device_setting(settings)?,
-            window: Duration::from_millis(window),
-            gate: Gate::held(threshold, release, hold),
-            levels: Arc::new(Levels::new()),
-            listeners: Listeners::new(),
-            started: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
-            failed: OnceLock::new(),
-        });
-        let worker = Arc::clone(&shared);
-        let _ = thread::Builder::new()
-            .name("orange-audio-input".into())
-            .spawn(move || listen(&worker))
-            .map_err(|error| error.to_string())?;
-        Ok(Arc::new(InputSession(shared)))
+        Ok(Arc::new(InputSession(spawn_input(settings)?)))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
         device_choices(|found| found.inputs)
+    }
+    fn fields(&self) -> Vec<SettingField> {
+        let field = |setting: &str, label: &str, help: &str, unit: &str| SettingField {
+            setting: setting.to_owned(),
+            label: label.to_owned(),
+            help: help.to_owned(),
+            unit: unit.to_owned(),
+            min: crate::SILENCE_DB,
+            max: 0.0,
+            default: None,
+            whole: false,
+        };
+        vec![
+            SettingField {
+                default: Some(DEFAULT_THRESHOLD_DB),
+                ..field(
+                    "threshold_db",
+                    "Threshold",
+                    "The level at which the trigger fires.",
+                    "dBFS",
+                )
+            },
+            field(
+                "release_db",
+                "Release",
+                "The level the sound must fall to before the trigger can fire again; 6 below the threshold when left out.",
+                "dBFS",
+            ),
+            SettingField {
+                min: 0.0,
+                max: 60_000.0,
+                default: Some(0.0),
+                whole: true,
+                ..field(
+                    "hold_ms",
+                    "Hold",
+                    "How long the sound must stay at the threshold before the trigger fires.",
+                    "ms",
+                )
+            },
+            SettingField {
+                min: 5.0,
+                max: 1_000.0,
+                default: Some(50.0),
+                whole: true,
+                ..field(
+                    "window_ms",
+                    "Window",
+                    "The length of each measurement.",
+                    "ms",
+                )
+            },
+        ]
+    }
+    fn probes(&self) -> bool {
+        true
+    }
+    fn probe(&self, settings: &Map<String, Json>) -> Option<Result<Box<dyn Probe>, String>> {
+        Some(spawn_input(settings).map(|shared| {
+            shared.started.store(true, Ordering::Release);
+            Box::new(InputProbe(shared)) as Box<dyn Probe>
+        }))
     }
 }
 
@@ -476,7 +636,7 @@ struct InputLevel;
 impl ServiceNode for InputLevel {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let shared = input(call.session).ok_or(NO_SESSION)?;
-        if shared.failed.get().is_some() {
+        if shared.failure().is_some() {
             return Err(DEVICE);
         }
         Ok(vec![Value::F64(shared.levels.latest())])
@@ -513,9 +673,13 @@ fn play_definition() -> String {
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")
+        .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
         .build()
 }
+
+/// The file name extensions of the sound files played.
+const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg"];
 
 fn play_from_definition() -> String {
     Definition::node(crate::PACKAGE, "play-from", "Play sound from folder")
@@ -525,6 +689,7 @@ fn play_from_definition() -> String {
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("folder", "core/string@1")
+        .path_input("folder", true, &[])
         .input_default("pick", "core/u64@1", serde_json::json!({"type": "core/u64@1", "value": "0"}))
         .input_default("gain", "core/f64@1", unit_gain())
         .output("file", "core/string@1")
@@ -537,6 +702,7 @@ fn loop_definition() -> String {
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")
+        .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
         .build()
 }
@@ -685,5 +851,115 @@ mod tests {
         ] {
             assert!(InputAdapter.open(&settings(bad)).is_err());
         }
+    }
+
+    #[test]
+    fn an_output_that_failed_is_opened_again_at_the_next_use() {
+        // A device that cannot be opened is not remembered as failed.
+        let missing = OutputSession {
+            device: Some("no such device here".into()),
+            output: Mutex::new(None),
+        };
+        assert_eq!(missing.output().err(), Some(DEVICE));
+        assert!(missing.output.lock().unwrap().is_none());
+
+        let silent = OutputSession {
+            device: Some(NULL_DEVICE.into()),
+            output: Mutex::new(None),
+        };
+        assert!(silent.opened().is_none());
+        let first = silent.output().unwrap();
+        assert!(Arc::ptr_eq(&first, &silent.output().unwrap()));
+        // One whose stream reported an error is replaced, not reused.
+        first.fail();
+        assert!(silent.opened().is_none());
+        let second = silent.output().unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        // One that stalled is forgotten.
+        silent.forget(&second);
+        assert!(silent.opened().is_none());
+    }
+
+    #[test]
+    fn an_input_offers_its_trigger_settings_and_a_live_level() {
+        let fields = InputAdapter.fields();
+        let names: Vec<_> = fields.iter().map(|field| field.setting.as_str()).collect();
+        assert_eq!(
+            names,
+            ["threshold_db", "release_db", "hold_ms", "window_ms"]
+        );
+        assert_eq!(fields[0].default, Some(DEFAULT_THRESHOLD_DB));
+        assert!(fields[2].whole && fields[3].whole);
+
+        // The silent device hears nothing, and says so as silence.
+        let probe = InputAdapter
+            .probe(&settings(serde_json::json!({"device": NULL_DEVICE})))
+            .unwrap()
+            .unwrap();
+        thread::sleep(POLL * 3);
+        assert_eq!(probe.read(), Ok(SILENCE_DB));
+        drop(probe);
+        // Settings that cannot work are refused before anything opens.
+        let bad = settings(serde_json::json!({"device": NULL_DEVICE, "window_ms": 1}));
+        assert!(InputAdapter.probe(&bad).unwrap().is_err());
+
+        // A device that is not there is reported, and tried again.
+        let missing = InputAdapter
+            .probe(&settings(
+                serde_json::json!({"device": "no such device here"}),
+            ))
+            .unwrap()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while missing.read().is_ok() && started.elapsed() < Duration::from_secs(10) {
+            thread::sleep(POLL);
+        }
+        assert!(missing.read().is_err());
+    }
+
+    #[test]
+    fn a_device_is_named_by_its_identifier_where_the_system_has_one() {
+        let named = Device {
+            id: None,
+            name: "Speakers".into(),
+        };
+        let identified = Device {
+            id: Some("wasapi:{0.0.0.00000000}.{1234}".into()),
+            name: "Speakers".into(),
+        };
+        assert_eq!(named.setting(), "Speakers");
+        assert_eq!(identified.setting(), "wasapi:{0.0.0.00000000}.{1234}");
+        // Choices always end with the silent device and label every value.
+        let choices = OutputAdapter.choices();
+        assert_eq!(
+            choices[0].values.last().map(String::as_str),
+            Some(NULL_DEVICE)
+        );
+        assert_eq!(choices[0].values.len(), choices[0].labels.len());
+    }
+
+    #[test]
+    fn sound_inputs_offer_a_file_or_folder_chooser() {
+        let (_, play) = orange_sdk::NodeDefinition::described(&play_definition()).unwrap();
+        assert_eq!(play.paths[0].port, "path");
+        assert!(!play.paths[0].folder && play.paths[0].extensions.contains(&"ogg".to_owned()));
+        let (_, from) = orange_sdk::NodeDefinition::described(&play_from_definition()).unwrap();
+        assert!(from.paths[0].folder);
+    }
+
+    /// Needs a microphone, so it is not part of the normal run:
+    /// `cargo test -p orange-audio -- --ignored`.
+    #[test]
+    #[ignore = "needs an audio input device"]
+    fn the_default_microphone_is_measured_live() {
+        let probe = InputAdapter.probe(&Map::new()).unwrap().unwrap();
+        let mut loudest = SILENCE_DB;
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(100));
+            loudest = loudest.max(probe.read().unwrap());
+        }
+        // A muted microphone hears digital silence, which is still a reading.
+        println!("loudest {loudest:.1} dBFS");
+        assert!((SILENCE_DB..=0.0).contains(&loudest));
     }
 }

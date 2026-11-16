@@ -482,3 +482,161 @@ fn binary_messages_cross_both_ways_and_the_handshake_is_authorized() {
         Some(Value::Bytes(std::sync::Arc::new(vec![255, 2, 1, 0])))
     );
 }
+
+/// A document whose nodes `uses` are package nodes on the connection, each `(n,
+/// definition)`; `rest` adds core nodes, `edges` and `variables` as saved.
+fn built(
+    host: &Host,
+    connection: Json,
+    uses: &[(u32, &str)],
+    rest: Json,
+    variables: Json,
+) -> String {
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-0000000000c1".parse().unwrap());
+    let decl = serde_json::from_value(connection).unwrap();
+    let _ = document
+        .apply([DocCommand::UpsertConnection(decl)])
+        .unwrap();
+    for (n, definition) in uses {
+        let mut new = NewNode::new(
+            node(*n),
+            DefinitionRef {
+                id: definition.parse().unwrap(),
+                version: 1,
+            },
+        );
+        new.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+        let edit = new_node_edit(&document, host.registry(), new).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        if entry["definition_id"]
+            .as_str()
+            .is_some_and(|id| id == orange_net::WS_CONNECTED || id == orange_net::WS_DISCONNECTED)
+        {
+            entry["activation"] = activation();
+        }
+    }
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend(rest["nodes"].as_array().unwrap().iter().cloned());
+    saved["edges"] = rest["edges"].clone();
+    saved["variables"] = variables;
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+fn keep(n: u32, variable: u32) -> Json {
+    let mut keep = core(n, "set-variable");
+    keep["config"] = json!({"variable": id(variable)});
+    keep
+}
+
+fn variable(host: &Host, flow: FlowId, n: u32) -> Option<Value> {
+    let variable: VariableId = id(n).parse().unwrap();
+    host.inspect(flow, move |run| run.variable(variable).cloned())
+        .unwrap()
+}
+
+#[test]
+fn entries_fire_when_the_socket_opens_and_when_the_server_closes_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    // Closes every socket as soon as it is open.
+    let _ = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut socket = tungstenite::accept(stream.unwrap()).unwrap();
+            let _ = socket.close(None);
+            while socket.read().is_ok() {}
+        }
+    });
+    let mut host = host();
+    let connection = json!({"id": CONNECTION, "name": "peer", "adapter": orange_net::WS_ADAPTER,
+        "scope": "graph", "settings": {"url": url}});
+    let rest = json!({
+        "nodes": [keep(4, 100), keep(5, 101)],
+        "edges": [
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 1, "payload", 4, "value"),
+            edge(3, 2, "then", 5, "in"),
+            edge(4, 2, "payload", 5, "value"),
+        ]
+    });
+    let variables = json!([
+        {"id": id(100), "name": "up", "type": STRING, "scope": "run"},
+        {"id": id(101), "name": "down", "type": STRING, "scope": "run"}
+    ]);
+    let text = built(
+        &host,
+        connection,
+        &[
+            (1, orange_net::WS_CONNECTED),
+            (2, orange_net::WS_DISCONNECTED),
+        ],
+        rest,
+        variables,
+    );
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    until("both entries", || variable(&host, flow, 101).is_some());
+    assert_eq!(
+        variable(&host, flow, 100),
+        Some(Value::Str(std::sync::Arc::new(url)))
+    );
+    assert_eq!(
+        variable(&host, flow, 101),
+        Some(Value::Str(std::sync::Arc::new(
+            "closed by the server".into()
+        )))
+    );
+}
+
+#[test]
+fn the_status_says_whether_the_socket_is_open_and_how_many_messages_wait() {
+    let mut host = host();
+    let connection = json!({"id": CONNECTION, "name": "peer", "adapter": orange_net::WS_ADAPTER,
+        "scope": "graph", "settings": {"url": server()}});
+    let rest = json!({
+        "nodes": [core(2, "on-manual"), keep(4, 100), keep(5, 101), keep(6, 102)],
+        "edges": [
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 3, "then", 5, "in"),
+            edge(4, 3, "connected", 5, "value"),
+            edge(5, 5, "then", 6, "in"),
+            edge(6, 3, "queued", 6, "value"),
+            edge(7, 1, "payload", 4, "value"),
+        ]
+    });
+    let variables = json!([
+        {"id": id(100), "name": "up", "type": STRING, "scope": "run"},
+        {"id": id(101), "name": "open", "type": "core/bool@1", "scope": "run"},
+        {"id": id(102), "name": "queued", "type": "core/i64@1", "scope": "run"}
+    ]);
+    let text = built(
+        &host,
+        connection,
+        &[(1, orange_net::WS_CONNECTED), (3, orange_net::WS_STATUS)],
+        rest,
+        variables,
+    );
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    until("the socket", || variable(&host, flow, 100).is_some());
+    host.trigger(flow, node(2), None).unwrap();
+    until("the status", || variable(&host, flow, 102).is_some());
+    assert_eq!(variable(&host, flow, 101), Some(Value::Bool(true)));
+    assert_eq!(variable(&host, flow, 102), Some(Value::I64(0)));
+}
+
+#[test]
+fn a_send_continues_on_a_step_shown_as_queued() {
+    let host = host();
+    let send = host
+        .nodes()
+        .find(|node| node.definition.definition.id.as_str() == orange_net::WS_SEND)
+        .unwrap();
+    let label = send.presentation.unwrap().then_label.as_ref().unwrap();
+    assert_eq!(label.fallback, "Queued");
+}

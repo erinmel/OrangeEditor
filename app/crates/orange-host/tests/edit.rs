@@ -716,6 +716,7 @@ impl orange_host::ConnectionAdapter for Things {
             setting: "which".into(),
             unset: "any".into(),
             values: vec!["red".into(), "blue".into()],
+            labels: Vec::new(),
             problem: None,
         }]
     }

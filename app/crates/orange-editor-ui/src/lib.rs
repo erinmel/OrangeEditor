@@ -132,7 +132,7 @@ impl Default for Panels {
 
 /// A file action the editor leaves to the application, which owns its file dialogs
 /// (or has none: an application that keeps graphs elsewhere opens them itself).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRequest {
     /// Start a new graph.
     New,
@@ -140,6 +140,34 @@ pub enum FileRequest {
     Open,
     /// Choose where to save the open graph.
     SaveAs,
+    /// Choose a file or folder for a node's text input that holds a path, such as the
+    /// sound file of Play sound, and hand it to [`Editor::choose_path`].
+    ChoosePath {
+        node: NodeId,
+        port: String,
+        /// A folder instead of a file.
+        folder: bool,
+        /// File name extensions to offer, without the dot; empty offers every file.
+        extensions: Vec<String>,
+        /// The path the input holds now, to start the dialog from.
+        current: String,
+    },
+}
+
+/// A connection's live reading while its form shows it, such as an input's level.
+pub(crate) struct Probing {
+    /// The adapter and the device settings it was started with; a change to either
+    /// starts it again.
+    pub(crate) adapter: String,
+    pub(crate) settings: String,
+    pub(crate) probe: Result<Box<dyn orange_host::Probe>, String>,
+}
+impl std::fmt::Debug for Probing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Probing")
+            .field("adapter", &self.adapter)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The state of the editor between frames.
@@ -170,6 +198,11 @@ pub struct Editor {
     request: Option<FileRequest>,
     /// The search to add a node at the pointer, while it is open.
     quick: Option<quick_add::QuickAdd>,
+    /// Run was pressed this frame: it starts once the fields have handed over what was
+    /// being typed, at the end of the frame.
+    run_asked: bool,
+    /// The live reading of the connection being set up, while a person asked to see it.
+    pub(crate) probing: Option<Probing>,
 }
 
 impl Editor {
@@ -574,6 +607,16 @@ impl Editor {
         self.request = Some(request);
     }
 
+    /// Puts the path a person chose for a [`FileRequest::ChoosePath`] on the input it was
+    /// asked for, and in its field.
+    pub fn choose_path(&mut self, host: &mut Host, node: NodeId, port: &str, path: &str) -> bool {
+        let set = self.set_input(host, (node, port), Some(path));
+        if set && self.inspected == Some(node) {
+            let _ = self.typed.insert(port.to_owned(), path.to_owned());
+        }
+        set
+    }
+
     /// The file action asked for since the last call, for the application to carry out
     /// with its dialogs: [`Editor::open`] with what was chosen, or [`Editor::save_as`].
     pub fn take_request(&mut self) -> Option<FileRequest> {
@@ -843,6 +886,11 @@ impl Editor {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.canvas_panel(ui, host));
+        // The panels have now taken in what a field was being typed, so the run
+        // starts with it.
+        if std::mem::take(&mut self.run_asked) {
+            self.run(host);
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -900,7 +948,10 @@ impl Editor {
                         self.stop(host);
                     }
                 } else if ui.button("Run").clicked() {
-                    self.run(host);
+                    // A field being typed in ends its typing now, in this frame, and the
+                    // run starts after it has been written: one click does both.
+                    ui.memory_mut(egui::Memory::stop_text_input);
+                    self.run_asked = true;
                 }
                 ui.separator();
                 let (undo, redo) = self.can_undo();
@@ -1959,5 +2010,149 @@ mod glyph_tests {
                 .collect()
         });
         assert!(missing.is_empty(), "drawn as boxes: {missing:?}");
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::tests::graph;
+    use super::*;
+    use orange_host::HostOptions;
+
+    fn id(n: u32) -> String {
+        format!("10000000-0000-4000-8000-{n:012x}")
+    }
+
+    /// Where the text `text` is drawn in `shapes`, the rightmost when it is drawn more
+    /// than once (the properties panel is on the right), else the leftmost.
+    fn drawn_at(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<egui::Pos2> {
+        drawn_where(shapes, text, true)
+    }
+
+    fn drawn_where(
+        shapes: &[egui::epaint::ClippedShape],
+        text: &str,
+        rightmost: bool,
+    ) -> Option<egui::Pos2> {
+        let mut found: Vec<egui::Pos2> = Vec::new();
+        for clipped in shapes {
+            let mut stack = vec![&clipped.shape];
+            while let Some(shape) = stack.pop() {
+                match shape {
+                    egui::Shape::Text(drawn) if drawn.galley.text() == text => {
+                        found.push(drawn.visual_bounding_rect().center());
+                    }
+                    egui::Shape::Vec(inner) => stack.extend(inner.iter()),
+                    _ => {}
+                }
+            }
+        }
+        if rightmost {
+            found.into_iter().max_by(|a, b| a.x.total_cmp(&b.x))
+        } else {
+            found.into_iter().min_by(|a, b| a.x.total_cmp(&b.x))
+        }
+    }
+
+    #[test]
+    fn one_click_on_run_writes_the_field_being_typed_in_and_starts_the_run() {
+        typed_then_run(true);
+    }
+
+    #[test]
+    fn one_click_on_run_writes_a_value_being_typed_on_a_card_and_starts_the_run() {
+        typed_then_run(false);
+    }
+
+    /// Types 9 after the 7 of the set-variable node, in the properties panel or on its
+    /// card, then clicks Run once.
+    fn typed_then_run(panel: bool) {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = host.bind(&graph()).unwrap();
+        editor.open(&mut host, "typed.json", text);
+        editor.panels.nodes = false;
+        editor.panels.log = false;
+        editor.canvas.select(Some(id(2).parse().unwrap()));
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let frame = |editor: &mut Editor, host: &mut Host, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let output = context.run_ui(input, |ui| editor.ui(ui, host));
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let click = |at: egui::Pos2| {
+            [
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ]
+        };
+        let shapes = frame(&mut editor, &mut host, Vec::new());
+        let field = drawn_where(&shapes, "7", panel).expect("the value field shows 7");
+        // A card's whole number is typed after a double click.
+        let clicks = if panel { 1 } else { 2 };
+        for _ in 0..clicks {
+            for events in click(field) {
+                let _ = frame(&mut editor, &mut host, events);
+            }
+        }
+        let _ = frame(&mut editor, &mut host, Vec::new());
+        assert!(
+            context.egui_wants_keyboard_input(),
+            "the field has the keys"
+        );
+        let shapes = frame(
+            &mut editor,
+            &mut host,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::End,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Text("9".into()),
+            ],
+        );
+        // Typed, not yet written.
+        assert!(!editor.document.as_ref().unwrap().unsaved);
+        // A quick click: the system hands over the press and the release in one frame.
+        let run = drawn_at(&shapes, "Run").expect("the toolbar shows Run");
+        let _ = frame(&mut editor, &mut host, click(run).concat());
+        let document = editor.document.as_ref().unwrap();
+        assert!(document.flow.is_some(), "one click started the run");
+        let saved = document.draft.text().unwrap();
+        assert!(saved.contains("\"79\""), "the typed value was written");
+        // And the run has it: the entry sets `count` to what was typed, not to 7.
+        let flow = document.flow.as_ref().unwrap().0;
+        host.trigger(flow, id(1).parse().unwrap(), None).unwrap();
+        let count: orange_host::VariableId = id(100).parse().unwrap();
+        let started = std::time::Instant::now();
+        let mut value = None;
+        while value.is_none() && started.elapsed() < std::time::Duration::from_secs(10) {
+            value = host
+                .inspect(flow, move |run| run.variable(count).cloned())
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(value, Some(orange_host::Value::I64(79)));
     }
 }

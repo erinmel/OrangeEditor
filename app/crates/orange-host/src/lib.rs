@@ -82,7 +82,7 @@ pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpRespons
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
-pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
+pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
@@ -96,8 +96,9 @@ pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
 pub use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, Items, SERVICE_PROVIDER, ServiceNode,
-    ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices, TARGET, TypeDecl,
+    Call, ConnectionAdapter, EmitError, Emitter, Items, Probe, SERVICE_PROVIDER, ServiceNode,
+    ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices, SettingField, TARGET,
+    TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;

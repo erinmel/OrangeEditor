@@ -163,6 +163,8 @@ impl NodeDefinition {
             category_id: editor.category_id,
             category: editor.category,
             connection_adapter: editor.connection_adapter,
+            then_label: editor.then_label,
+            paths: editor.paths,
         };
         Ok((wire.into(), presentation))
     }
@@ -191,6 +193,26 @@ pub struct Presentation {
     /// kind. The contract only says that the node names a connection; whether the
     /// session is of the right kind is still checked when the node runs.
     pub connection_adapter: Option<String>,
+    /// What the node's `then` output is called when "Exit" would mislead, such as
+    /// "Queued" for a send that only puts a message in a queue.
+    pub then_label: Option<TextRef>,
+    /// Text inputs that hold a path on this machine, so an editor can offer the
+    /// system's file or folder chooser beside them.
+    pub paths: Vec<PathInput>,
+}
+
+/// A text input that holds a path, from a definition file's `editor.paths`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathInput {
+    /// The input's port ID.
+    pub port: String,
+    /// The path names a folder instead of a file.
+    #[serde(default)]
+    pub folder: bool,
+    /// File name extensions offered, without the dot; empty offers every file.
+    #[serde(default)]
+    pub extensions: Vec<String>,
 }
 
 /// The implemented part of a definition file's `editor` object. Other editor hints
@@ -203,6 +225,10 @@ struct EditorWire {
     category: Option<TextRef>,
     #[serde(default)]
     connection_adapter: Option<String>,
+    #[serde(default)]
+    then_label: Option<TextRef>,
+    #[serde(default)]
+    paths: Vec<PathInput>,
 }
 
 #[derive(Deserialize)]
@@ -298,7 +324,9 @@ mod tests {
         file["label"] = json!({"key": "acme.math/triple-label", "fallback": "Triple"});
         file["editor"] = json!({"category_id": "acme.math/category",
             "category": {"key": "acme.math/category", "fallback": "Math"}, "control": "standard",
-            "connection_adapter": "acme.math/abacus"});
+            "connection_adapter": "acme.math/abacus",
+            "then_label": {"key": "acme.math/triple-then", "fallback": "Tripled"},
+            "paths": [{"port": "value", "extensions": ["txt"]}]});
         let text = file.to_string();
         let (definition, shown) = NodeDefinition::described(&text).unwrap();
         // The text is beside the contract, not part of it.
@@ -314,6 +342,15 @@ mod tests {
         assert_eq!(
             shown.connection_adapter.as_deref(),
             Some("acme.math/abacus")
+        );
+        assert_eq!(shown.then_label.unwrap().fallback, "Tripled");
+        assert_eq!(
+            shown.paths,
+            [PathInput {
+                port: "value".to_owned(),
+                folder: false,
+                extensions: vec!["txt".to_owned()]
+            }]
         );
 
         file["label"] = json!("Triple");
