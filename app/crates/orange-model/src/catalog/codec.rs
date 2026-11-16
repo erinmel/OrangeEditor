@@ -210,6 +210,9 @@ pub struct PathInput {
     /// The path names a folder instead of a file.
     #[serde(default)]
     pub folder: bool,
+    /// The node writes the file, so the chooser asks where to save it.
+    #[serde(default)]
+    pub save: bool,
     /// File name extensions offered, without the dot; empty offers every file.
     #[serde(default)]
     pub extensions: Vec<String>,
@@ -349,6 +352,7 @@ mod tests {
             [PathInput {
                 port: "value".to_owned(),
                 folder: false,
+                save: false,
                 extensions: vec!["txt".to_owned()]
             }]
         );

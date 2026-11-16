@@ -757,6 +757,7 @@ impl Editor {
                                 node: node.id,
                                 port: port.id.clone(),
                                 folder: path.folder,
+                                save: path.save,
                                 extensions: path.extensions.clone(),
                                 current: typed.clone(),
                             });
