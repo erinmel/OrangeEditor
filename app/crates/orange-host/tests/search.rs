@@ -134,6 +134,6 @@ fn a_language_adds_words_without_changing_ids() {
         "core/wait"
     );
     // Purposes fall back to English.
-    assert_eq!(found[0].purpose.is_empty(), false);
+    assert!(!found[0].purpose.is_empty());
     assert!(host.add_search_words("fr", "Mauvais = x").is_err());
 }
