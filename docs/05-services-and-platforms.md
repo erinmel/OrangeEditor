@@ -36,7 +36,17 @@ Credential Manager, macOS Keychain and, on Linux, the desktop's Secret Service o
 D-Bus, which keeps secrets across restarts; a machine without a Secret Service reports
 the store as unavailable rather than keeping secrets somewhere weaker)
 and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
-entries and read the secret from standard input. HTTP and WebSocket connections take
+entries and read the secret from standard input. An editor sets secrets up without that command
+(2026-11-16, FR-114): adapters describe their settings (`ConnectionAdapter::about`,
+`texts`, `toggles`, with `choices` and `fields`), and a text setting marked `secret`
+is typed masked; `Host::declare_connection_with_secrets` stores it with
+`SecretStore::replace` under `connection/<connection ID>/<setting>` before the
+declaration is committed and writes only the reference, so nothing is declared when the
+store refuses. Undoing the declaration leaves the stored secret; it is replaced when
+the same setting is typed again. `Host::test_connection` resolves the references and
+opens the adapter once and releases it. Adapters that connect on first use may only
+validate settings. The editor shows a host-owned error if the adapter refuses to open
+so that an adapter's error text cannot expose a credential. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
 `org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type
@@ -137,6 +147,13 @@ names are verified against the bundled Mozilla roots (`webpki-roots`), not the s
 trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
 are not implemented.
 
+Answers and failures (2026-11-15, FR-107): the request nodes also return `success`,
+true for 200 to 299, so a graph branches on it while a 404 or 500 still arrives as
+`status` and `response`; `failed` stays for a request that could not be completed.
+`method` defaults to `GET` and `path`, `content` (and on the binary and streamed
+nodes `content_type` and `headers`) to empty, so a GET with nothing typed validates
+and sends no body.
+
 WebSocket (2026-11-10): adapter `org.orange.net/websocket`, setting `url` (`ws://` or
 `wss://`, same TLS stack). A session is one socket with its own I/O thread, started
 when the connection is opened; it connects in the background and reconnects with
@@ -150,7 +167,11 @@ hear each message. A diagram whose mailbox is full misses that message. Binary
 messages are ignored; ping/pong is answered by the library. Not implemented: binary
 payloads, subprotocols and headers, connection-state events (opened, closed, failed),
 per-message acknowledgement, and messages that arrived before a diagram started
-listening. Nothing else in this section is
+listening. State (2026-11-15, FR-107): the entries `ws-connected` (payload the URL) and
+`ws-disconnected` (payload why: closed by the server, connection lost) fire each time
+the socket opens or an open socket stops; a failed attempt to connect fires neither.
+`ws-status` reads `connected` and `queued`, the messages waiting. The sends' `then` is
+shown as "Queued" (definition hint `then_label`, 12 §4). Nothing else in this section is
 implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
 retries, redirects policy, proxy or DNS rules, or Test Connection. The text
 below remains a proposal.
@@ -199,8 +220,8 @@ AMQP 1.0 is a different separately versioned optional adapter, not a baseline co
 ## Audio architecture
 
 Implemented part (2026-11-11; `orange-audio`, package `org.orange.audio`). Connections:
-`org.orange.audio/output` (setting `device`: a device name, `null` for the built-in
-silent device, absent for the system default) and `org.orange.audio/input` (`device`,
+`org.orange.audio/output` (setting `device`: the device's endpoint identifier or name,
+`null` for the built-in silent device, absent for the system default) and `org.orange.audio/input` (`device`,
 `threshold_db` default -30, `release_db` default 6 dB below it, `window_ms` 5 to 1,000,
 default 50, `hold_ms` 0 to 60,000, default 0: how long the level must stay at the
 threshold or above, in whole measurements, before the entry fires). Nodes: `play` (inputs `path`, `gain` 0 to 8) reads a WAV file with
@@ -249,11 +270,85 @@ runtime's entropy rules, 11) wired into `pick`; the audio package draws no rando
 itself. Device lists were read on Windows 11 (WASAPI) only (10); macOS and Linux
 listing, and devices that appear or disappear while the list is open, are not checked.
 
+Devices that come and go (2026-11-15, FR-108): devices are listed with cpal 0.18's
+`DeviceId`, persisted as `<host>:<id>` (WASAPI endpoint ID, CoreAudio UID, ALSA PCM
+name), and the choice list writes the identifier and shows the name; a setting that
+is not an identifier, or names an endpoint that is gone, is matched by name, so older
+documents still open. An output that could not be opened is not remembered: the next
+node that plays opens it again; one whose stream reported a fatal error (device not
+available, host unavailable, stream invalidated) or that stalled is dropped and
+reopened at the next play. An input whose device is missing or fails is reopened
+with backoff from 500 ms to 5 s, and `input-level` fails while it is down. Overruns
+(`Xrun`), followed route changes and a refused real-time mode are not failures. The
+error callback only stores a flag; the data callbacks are unchanged.
+
+Setting up from the editor (2026-11-15, FR-109): `play` and `loop` mark `path` as a
+sound file and `play-from` marks `folder` as a folder (definition hint `paths`, 12 §4),
+and the editor asks the application for the system's chooser. The input adapter lists
+`threshold_db`, `release_db`, `hold_ms` and `window_ms` through
+`ConnectionAdapter::fields`, and `ConnectionAdapter::probe` measures the chosen device
+apart from every flow while the connection form's live level is switched on; the
+form marks the threshold and release on the meter and lets the device go when it
+closes. Identifiers were checked on Windows (WASAPI) only (10); CoreAudio and ALSA
+identifiers, a device unplugged while playing, and silent rerouting of a default
+output are not checked. Rerouting to another device is not done: only the same
+setting is opened again.
+
+Audio streams (2026-11-16, FR-115; 22 §6): `audio-in` (Audio in) gives what an input
+connection captures as a value of the package record type `org.orange.audio/stream@1`
+(one field, `source: u64`), with the capture's `rate` and `channels`; `audio-out`
+(Audio out, inputs `stream` and `gain`), `level` (Level, output `level` in dBFS) and
+`record` (Record to file, inputs `stream`, `path` and `seconds`, output `recorded`)
+take it. The value names a live input and holds no samples, so it is not a
+`core/stream@1` (11 §12): sample-rate audio is not pulled through the graph item by
+item, and package effects cannot take core stream inputs. Copying it fans out by
+design; each consumer reads independently. It is refused (`org.orange.audio/Ended`)
+once its input connection has closed, and a value of another shape is
+`org.orange.audio/Input`.
+
+Bounded buffers and policies: each opened input keeps one ring of one second of
+interleaved `f32` samples at the device's own rate and channels, allocated when the
+device opens and never grown. The capture callback is its only writer (atomic stores,
+no lock, no allocation) and also meters, as before. Readers keep their own positions:
+a reader more than half a ring behind skips to a quarter ring before the newest
+sample (drop-oldest), and a reader that has caught up gets nothing. Audio out reads in
+the output callback through a reader made on the control thread: it starts 30 ms
+behind the capture, jumps back to 30 ms when more than 250 ms behind (clock drift, a
+paused output), plays silence when caught up, converts the rate by linear
+interpolation and maps channels as source `n` to output `n`, a mono source to every
+channel, more output channels repeating the source's in order and extra source
+channels left out. It ends when the output's sounds are stopped, the run cancels it or
+its input closes; when the input device is reopened after a failure it follows the
+new ring. Streams played on one output are mixed by the existing mixer and count
+against `MAX_VOICES`; Jump to time does not move them. Record to file writes 16-bit PCM
+WAV at the stream's rate and channels, `seconds` in (0, 3600], counted in captured
+frames, on the node's worker thread; cancelling finalizes a valid shorter file, a
+file that cannot be written is `org.orange.audio/Write`, and a device that stops
+mid-way leaves a valid file and is `org.orange.audio/Device`. Audio in and Record wait
+up to 3 s for the device to open. The silent input now captures timed silence (48 kHz,
+two channels, 10 ms blocks), so streams work on machines without devices.
+
+Endpoints: Audio in uses the input connection, so it takes any capture endpoint the
+system lists (microphones, line inputs, virtual cables such as VB-Cable, which are
+ordinary WASAPI endpoints). An input `device` of `loopback:` and an output's setting
+(`loopback:` alone is the default output) captures what that output plays; it is
+offered and listed ("<name> (what it plays)") on Windows only, through cpal 0.18.2's
+WASAPI loopback (an input stream on a render endpoint in the output's default
+format). cpal 0.18.2 also implements macOS loopback through a temporary aggregate
+device; it is not verified, so not offered, and other systems refuse the setting with
+a reason. Linux has no ALSA loopback in cpal; PulseAudio or PipeWire monitor sources
+may appear as ordinary inputs, which is not checked. Windows evidence is in 10.
+
+`entry on-level` is now labelled On level and `input-level` Input level, over any input
+connection, loopback included; Seek is labelled Jump to time and its description says
+it moves every sound on the output to the same time. `record` marks `path` with the
+`save` path hint (12 §4), and the desktop editor opens the system's save dialog for it.
+
 Not implemented from the design below: `AudioAsset` handles, control of one sound
 among several on a connection (separate connections are separate players),
 streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
 Opus and AAC, resampling better than linear interpolation,
-hotplug and device-change handling, and multi-device
+events for devices that appear or disappear, and multi-device
 synchronization. Crossings closer than
 10 ms are reported as one.
 

@@ -244,6 +244,43 @@ impl Folder {
 #[derive(Debug)]
 struct FolderAdapter;
 impl ConnectionAdapter for FolderAdapter {
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "Folder".into(),
+            purpose: "Reads, writes and watches the files of one folder, and nothing outside it."
+                .into(),
+        }
+    }
+    fn texts(&self) -> Vec<orange_sdk::SettingText> {
+        vec![orange_sdk::SettingText {
+            setting: "path".into(),
+            label: "Folder".into(),
+            help: "The folder's path on this machine.".into(),
+            required: true,
+            ..orange_sdk::SettingText::default()
+        }]
+    }
+    fn toggles(&self) -> Vec<orange_sdk::SettingToggle> {
+        vec![orange_sdk::SettingToggle {
+            setting: "read_only".into(),
+            label: "Read only".into(),
+            help: "Nodes can read the folder but not change it.".into(),
+            default: false,
+        }]
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a small number of milliseconds")]
+    fn fields(&self) -> Vec<orange_sdk::SettingField> {
+        vec![orange_sdk::SettingField {
+            setting: "poll_ms".into(),
+            label: "Check every".into(),
+            help: "How often the folder is looked at for changes.".into(),
+            unit: "ms".into(),
+            min: 50.0,
+            max: 60_000.0,
+            default: Some(DEFAULT_POLL_MS as f64),
+            whole: true,
+        }]
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         let path = settings
             .get("path")

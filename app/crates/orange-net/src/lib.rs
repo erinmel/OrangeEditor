@@ -22,7 +22,7 @@ mod ws;
 pub use feed::{download, fetch, new_feed_key, sha256, sign_feed, verify_feed};
 pub use ws::MAX_QUEUED_MESSAGES;
 
-use orange_sdk::{FaultText, KernelFault, ServicePackage};
+use orange_sdk::{FaultText, KernelFault, ServicePackage, SettingText};
 use serde_json::{Map, Value as Json};
 
 /// Package namespace of the definitions and adapter kinds here.
@@ -38,15 +38,19 @@ pub const PACKAGE: &str = "org.orange.net";
 /// `stream_timeout_ms` (default 600,000) limits one streamed response. A document
 /// writes a secret value as `credential://<name>`; the host supplies it.
 pub const HTTP_ADAPTER: &str = "org.orange.net/http";
-/// Sends one request on an HTTP connection. Inputs `method`, `path`, `content` (the request body); outputs
-/// `status` and `response`. Any HTTP status is a result, not a failure.
+/// Sends one request on an HTTP connection. Inputs `method` (default `GET`), `path`
+/// (default empty) and `content`, the request body (empty sends none); outputs `status`,
+/// `success` (true for 200 to 299) and `response`. Any HTTP status, such as 404 or 500,
+/// is a result, not a failure: the node fails only when the request cannot be completed
+/// (no connection, a timeout, an unreadable body).
 pub const HTTP_REQUEST: &str = "org.orange.net/http-request";
 
 /// Sends one request with a binary body on an HTTP connection and returns the response
 /// as bytes, whatever it holds: protobuf, an encrypted payload, an image. Inputs
 /// `method`, `path`, `content_type` (empty for none), `headers` (a list of `Name: value`
-/// lines sent with this request only) and `content`; outputs `status`,
-/// `response_type` (the response's content type) and `response`.
+/// lines sent with this request only) and `content`, each with a default that sends a
+/// bare `GET`; outputs `status`, `success`, `response_type` (the response's content
+/// type) and `response`.
 pub const HTTP_REQUEST_BYTES: &str = "org.orange.net/http-request-bytes";
 /// Queues one binary message on a WebSocket connection. Input `data`.
 pub const WS_SEND_BYTES: &str = "org.orange.net/ws-send-bytes";
@@ -58,11 +62,21 @@ pub const WS_BINARY: &str = "org.orange.net/ws-binary";
 /// `wss://…`) and, for the opening handshake, `bearer`, `basic` and `headers` as for
 /// an HTTP connection. The session connects in the background and reconnects with backoff.
 pub const WS_ADAPTER: &str = "org.orange.net/websocket";
-/// Queues one text message on a WebSocket connection. Input `text`.
+/// Queues one text message on a WebSocket connection. Input `text`. Its `then` is
+/// shown as "Queued": it means the message entered the bounded queue
+/// ([`MAX_QUEUED_MESSAGES`]), not that it was delivered.
 pub const WS_SEND: &str = "org.orange.net/ws-send";
 /// Entry fired once per text message received on a WebSocket connection, with the
 /// text as `payload`.
 pub const WS_MESSAGE: &str = "org.orange.net/ws-message";
+/// Entry fired each time a WebSocket connection's socket opens, with its URL.
+pub const WS_CONNECTED: &str = "org.orange.net/ws-connected";
+/// Entry fired each time an open socket closes or fails, with why; the connection
+/// then reconnects by itself.
+pub const WS_DISCONNECTED: &str = "org.orange.net/ws-disconnected";
+/// Reads a WebSocket connection's state: `connected` and `queued`, the messages
+/// waiting to be sent.
+pub const WS_STATUS: &str = "org.orange.net/ws-status";
 
 /// Adapter kind of an MQTT 3.1.1 connection. Settings: `url` (required, `mqtt://host`
 /// or `mqtts://host` for TLS, with an optional `:port`), `username` and `password`
@@ -93,7 +107,7 @@ const DEFAULT_STREAM_TIMEOUT_MS: u64 = 600_000;
 pub const MAX_STREAM_LINE_BYTES: usize = 1024 * 1024;
 /// Sends a request like [`HTTP_REQUEST_BYTES`] and reads the response as it arrives:
 /// each non-empty line fires the connection's [`HTTP_STREAM_LINE`] entries, and the node
-/// continues when the response ends, with `status` and the number of `lines`. It is
+/// continues when the response ends, with `status`, `success` and the number of `lines`. It is
 /// how a graph follows server-sent events or a response generated piece by piece.
 pub const HTTP_STREAM: &str = "org.orange.net/http-stream";
 /// Entry fired once per line of a response streamed on an HTTP connection, with the
@@ -226,12 +240,36 @@ pub fn package() -> ServicePackage {
         .and_then(|package| {
             package.source(
                 &ws::ws_message_definition(),
-                ws::WsMessage { binary: false },
+                ws::WsMessage {
+                    listen: ws::Listen::Text,
+                },
             )
         })
         .and_then(|package| {
-            package.source(&ws::ws_binary_definition(), ws::WsMessage { binary: true })
+            package.source(
+                &ws::ws_binary_definition(),
+                ws::WsMessage {
+                    listen: ws::Listen::Binary,
+                },
+            )
         })
+        .and_then(|package| {
+            package.source(
+                &ws::ws_connected_definition(),
+                ws::WsMessage {
+                    listen: ws::Listen::Connected,
+                },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                &ws::ws_disconnected_definition(),
+                ws::WsMessage {
+                    listen: ws::Listen::Disconnected,
+                },
+            )
+        })
+        .and_then(|package| package.node(&ws::ws_status_definition(), ws::WsStatus))
         .and_then(|package| {
             package.node(
                 &mqtt::publish_definition(),
@@ -261,4 +299,45 @@ pub fn package() -> ServicePackage {
         // The definition is a constant of this crate, checked by its tests.
         Err(error) => unreachable!("built-in definition is valid: {error}"),
     }
+}
+
+/// A text setting an editor shows as a field.
+pub(crate) fn text_setting(setting: &str, label: &str, help: &str, hint: &str) -> SettingText {
+    SettingText {
+        setting: setting.to_owned(),
+        label: label.to_owned(),
+        help: help.to_owned(),
+        hint: hint.to_owned(),
+        ..SettingText::default()
+    }
+}
+
+/// A secret setting: typed masked and kept in the credential store.
+pub(crate) fn secret_setting(setting: &str, label: &str, help: &str) -> SettingText {
+    SettingText {
+        secret: true,
+        ..text_setting(setting, label, help, "")
+    }
+}
+
+/// The settings [`auth_headers`] reads that an editor offers as fields.
+pub(crate) fn auth_texts() -> Vec<SettingText> {
+    vec![
+        secret_setting(
+            "bearer",
+            "Bearer token",
+            "Sent as Authorization: Bearer with every request.",
+        ),
+        text_setting(
+            "basic/user",
+            "User name",
+            "Sent with the password as basic authorization.",
+            "",
+        ),
+        secret_setting(
+            "basic/password",
+            "Password",
+            "Sent with the user name as basic authorization.",
+        ),
+    ]
 }
