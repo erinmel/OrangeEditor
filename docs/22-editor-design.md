@@ -151,3 +151,8 @@ need their own evidence.
 - Review dense graph navigation at realistic scale before adding persistent overlays.
   An optional overview is useful when the graph exceeds the viewport. Verify zoom,
   fit and focus behaviour first. [Houdini network navigation](https://www.sidefx.com/docs/houdini/network/navigate.html)
+
+The canvas indexes incoming wires once per frame for displayed values and formulas.
+Port value reads borrow their keys. Wire hit testing skips curves whose bounds do not
+reach the pointer. Frame timing and interaction latency still require measurement on
+dense graphs.

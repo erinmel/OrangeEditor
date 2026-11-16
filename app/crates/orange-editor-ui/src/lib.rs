@@ -183,6 +183,7 @@ impl std::fmt::Debug for Probing {
 pub struct Editor {
     search: String,
     palette_highlighted: usize,
+    palette_mode: palette::PaletteMode,
     log_events: bool,
     palette: palette::PaletteCache,
     document: Option<Document>,
@@ -519,6 +520,35 @@ impl Editor {
         };
         let result = host.insert_into_wire(draft, node, from, to);
         self.edited(host, result)
+    }
+
+    fn add_node_into_wire(
+        &mut self,
+        host: &mut Host,
+        definition: &str,
+        at: [f32; 2],
+        wire: &canvas::WireEnds,
+    ) -> Option<NodeId> {
+        let draft = self.editing()?;
+        match host.add_node_into_wire(
+            draft,
+            definition,
+            at,
+            (wire.0.0, &wire.0.1),
+            (wire.1.0, &wire.1.1),
+        ) {
+            Ok(node) => {
+                let _ = self.edited(host, Ok(true));
+                self.canvas.select(Some(node));
+                Some(node)
+            }
+            Err(error) => {
+                let _ = self.edited(host, Err(error));
+                self.panels.log = true;
+                self.log_events = true;
+                None
+            }
+        }
     }
 
     /// Takes the wires off one port.
@@ -1266,6 +1296,15 @@ impl Editor {
         if field.changed() {
             self.palette_highlighted = 0;
         }
+        ui.horizontal(|ui| {
+            let _ =
+                ui.selectable_value(&mut self.palette_mode, palette::PaletteMode::Names, "Names");
+            let _ = ui.selectable_value(
+                &mut self.palette_mode,
+                palette::PaletteMode::Previews,
+                "Names + previews",
+            );
+        });
         let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
@@ -1308,7 +1347,9 @@ impl Editor {
             } else {
                 self.language.as_str()
             };
-            let found = self.palette.get(host, &self.search, language);
+            let results = self.palette.get(host, &self.search, language);
+            let found = results.groups;
+            let summaries = results.summaries;
             if searching && found.is_empty() {
                 ui.weak("No node matches. Try a name or a purpose, such as int, timer or text.");
             }
@@ -1332,17 +1373,36 @@ impl Editor {
                             let active =
                                 searching && field.has_focus() && index == self.palette_highlighted;
                             index += 1;
-                            let id = ui.scope_id().with(("orange-kind", item.id.as_str()));
-                            let detail = if searching { item.purpose.as_str() } else { "" };
-                            let shown = ui.dnd_drag_source(id, item.clone(), |ui| {
-                                palette::result_row(ui, &item.label, detail, active)
-                            });
-                            if active && (up || down) {
-                                shown.inner.scroll_to_me(None);
+                            let detail = if self.palette_mode == palette::PaletteMode::Previews {
+                                item.purpose.as_str()
+                            } else {
+                                ""
+                            };
+                            let row = palette::result_row(
+                                ui,
+                                &item.label,
+                                detail,
+                                if self.palette_mode == palette::PaletteMode::Previews {
+                                    summaries.get(&item.id).map_or("", String::as_str)
+                                } else {
+                                    ""
+                                },
+                                active,
+                                egui::Sense::click_and_drag(),
+                            );
+                            if row.drag_started() {
+                                let card = self.document.as_ref().and_then(|document| {
+                                    host.placement_preview(&document.draft, &item.id).ok()
+                                });
+                                row.dnd_set_drag_payload(palette::PaletteDrag {
+                                    item: item.clone(),
+                                    card,
+                                });
                             }
-                            if shown.inner.on_hover_text(&item.purpose).clicked()
-                                || (active && enter)
-                            {
+                            if active && (up || down) {
+                                row.scroll_to_me(None);
+                            }
+                            if row.on_hover_text(&item.id).clicked() || (active && enter) {
                                 add = Some(item.id.clone());
                             }
                         }
@@ -1521,7 +1581,11 @@ impl Editor {
                     let _ = self.drop_variable(host, variable, set, at);
                 }
                 None => {
-                    let _ = self.add_node_at(host, &definition, at);
+                    if let Some(wire) = done.drop_wire {
+                        let _ = self.add_node_into_wire(host, &definition, at, &wire);
+                    } else {
+                        let _ = self.add_node_at(host, &definition, at);
+                    }
                 }
             }
         }

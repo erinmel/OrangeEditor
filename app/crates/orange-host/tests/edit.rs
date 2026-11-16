@@ -1008,6 +1008,52 @@ fn a_node_dropped_on_a_wire_goes_into_it_as_one_edit() {
 }
 
 #[test]
+fn dropping_a_new_kind_splices_atomically_and_previews_without_editing() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let before = draft.text().unwrap();
+    let (from, to) = ((trigger, "then"), (set, "in"));
+    let card = host.placement_preview(&draft, "core/wait").unwrap();
+    assert!(card.ports.iter().any(|port| port.input && port.exec));
+    assert!(card.ports.iter().any(|port| !port.input && port.exec));
+    assert_eq!(draft.text().unwrap(), before);
+    assert!(
+        host.add_node_into_wire(&mut draft, "core/whole-number", [160.0, 0.0], from, to)
+            .is_err()
+    );
+    assert_eq!(draft.text().unwrap(), before);
+    let wait = host
+        .add_node_into_wire(&mut draft, "core/wait", [160.0, 0.0], from, to)
+        .unwrap();
+    let wires = host.draft_view(&draft).unwrap().wires;
+    assert!(
+        wires
+            .iter()
+            .any(|wire| wire.from.0 == trigger && wire.to.0 == wait)
+    );
+    assert!(
+        wires
+            .iter()
+            .any(|wire| wire.from.0 == wait && wire.to.0 == set)
+    );
+    assert!(
+        wires
+            .iter()
+            .all(|wire| wire.from.0 != trigger || wire.to.0 != set)
+    );
+    assert!(draft.undo());
+    let without_revision = |text: &str| {
+        let mut value: Json = serde_json::from_str(text).unwrap();
+        value.as_object_mut().unwrap().remove("revision");
+        value
+    };
+    assert_eq!(
+        without_revision(&draft.text().unwrap()),
+        without_revision(&before)
+    );
+}
+
+#[test]
 fn every_name_in_an_operators_formula_is_one_of_its_inputs() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
     let mut draft = host.draft(&empty()).unwrap();

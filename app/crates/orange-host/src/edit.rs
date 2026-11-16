@@ -179,6 +179,17 @@ impl Host {
         definition: &str,
         at: [f32; 2],
     ) -> Result<NodeId, HostError> {
+        let (node, commands) = self.new_node_commands(draft, definition, at)?;
+        let _ = draft.commit(self.store.current(), commands)?;
+        Ok(node)
+    }
+
+    fn new_node_commands(
+        &self,
+        draft: &Draft,
+        definition: &str,
+        at: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let version = self
             .nodes()
             .filter(|info| info.definition.definition.id.as_str() == definition)
@@ -283,8 +294,7 @@ impl Host {
             });
         }
         commands.push(place_command(node, Some(at)));
-        let _ = draft.commit(self.store.current(), commands)?;
-        Ok(node)
+        Ok((node, commands))
     }
 
     /// The connection a new node that uses one of kind `adapter` names: the first one
@@ -543,29 +553,90 @@ impl Host {
         from: PortEnd<'_>,
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
+        let (commands, made) = self.splice_commands(draft, node, from, to)?;
+        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
+            return Ok(false);
+        };
+        match self.check_splice(draft, &made) {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                draft.withdraw(redo);
+                Err(error)
+            }
+        }
+    }
+
+    /// Returns the configured card for a node kind without editing the document.
+    pub fn placement_preview(
+        &self,
+        draft: &Draft,
+        definition: &str,
+    ) -> Result<NodeView, HostError> {
+        let (node, commands) = self.new_node_commands(draft, definition, [0.0, 0.0])?;
+        let mut staged = draft.document().clone();
+        let _ = staged.apply(commands).map_err(|error| refused(&error))?;
+        self.node_view(&staged, node)
+            .ok_or_else(|| refused(&"the new node could not be previewed"))
+    }
+
+    /// Creates a node and replaces a wire with its two links as one undoable edit.
+    pub fn add_node_into_wire(
+        &self,
+        draft: &mut Draft,
+        definition: &str,
+        at: [f32; 2],
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Result<NodeId, HostError> {
+        let (node, mut commands) = self.new_node_commands(draft, definition, at)?;
+        let mut staged = self.staged_node(draft, &commands)?;
+        let (splice, made) = self.splice_commands(&staged, node, from, to)?;
+        let _ = staged.commit(self.store.current(), splice.iter().cloned())?;
+        self.check_splice(&mut staged, &made)?;
+        commands.extend(splice);
+        let _ = draft.commit(self.store.current(), commands)?;
+        Ok(node)
+    }
+
+    fn staged_node(&self, draft: &Draft, commands: &[DocCommand]) -> Result<Draft, HostError> {
+        let mut staged = Draft::new(draft.document().clone());
+        let _ = staged.commit(self.store.current(), commands.iter().cloned())?;
+        Ok(staged)
+    }
+
+    fn splice_commands(
+        &self,
+        draft: &Draft,
+        node: NodeId,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Result<(Vec<DocCommand>, Vec<orange_model::id::EdgeId>), HostError> {
         let ends = |id: NodeId| self.node_view(draft.document(), id);
         let source = ends(from.0)
             .and_then(|view| view.ports.into_iter().find(|p| !p.input && p.id == from.1))
             .ok_or_else(|| refused(&"the wire's output is not there"))?;
+        let target = ends(to.0)
+            .and_then(|view| view.ports.into_iter().find(|p| p.input && p.id == to.1))
+            .ok_or_else(|| refused(&"the wire's input is not there"))?;
         let middle = ends(node).ok_or_else(|| refused(&"the document has no such node"))?;
-        let fits = |port: &PortView| {
-            port.exec == source.exec
-                && (source.exec
-                    || port.ty.as_deref().is_none_or(|ty| {
-                        source.ty.as_deref().is_none_or(|from| from == ty)
+        let fits = |output: &PortView, input: &PortView| {
+            output.exec == input.exec
+                && (output.exec
+                    || input.ty.as_deref().is_none_or(|ty| {
+                        output.ty.as_deref().is_none_or(|from| from == ty)
                             || ty.contains('$')
-                            || from_open(source.ty.as_deref())
+                            || from_open(output.ty.as_deref())
                     }))
         };
         let into = middle
             .ports
             .iter()
-            .find(|port| port.input && fits(port))
+            .find(|port| port.input && fits(&source, port))
             .ok_or_else(|| refused(&"the node has no input this wire fits"))?;
         let out = middle
             .ports
             .iter()
-            .find(|port| !port.input && port.exec == source.exec)
+            .find(|port| !port.input && fits(port, &target))
             .ok_or_else(|| refused(&"the node has no output to go on with"))?;
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
         let mut commands: Vec<DocCommand> = draft
@@ -595,9 +666,14 @@ impl Host {
             made.push(edge.id);
             commands.push(DocCommand::Connect { edge });
         }
-        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
-            return Ok(false);
-        };
+        Ok((commands, made))
+    }
+
+    fn check_splice(
+        &self,
+        draft: &mut Draft,
+        made: &[orange_model::id::EdgeId],
+    ) -> Result<(), HostError> {
         let against: Vec<Diagnostic> = self
             .problems(draft)?
             .into_iter()
@@ -609,9 +685,8 @@ impl Host {
             })
             .collect();
         if against.is_empty() {
-            Ok(true)
+            Ok(())
         } else {
-            draft.withdraw(redo);
             Err(HostError::Invalid(against))
         }
     }

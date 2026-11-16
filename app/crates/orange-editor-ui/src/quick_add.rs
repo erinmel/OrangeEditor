@@ -116,27 +116,17 @@ impl Editor {
     /// input. Closes the search. Returns the new node.
     pub fn pick_quick(&mut self, host: &mut Host, choice: &QuickChoice) -> Option<NodeId> {
         let quick = self.quick.take()?;
+        if let (Some(from), Some(to)) = (quick.from.as_ref(), quick.into.as_ref()) {
+            return self.add_node_into_wire(
+                host,
+                &choice.definition,
+                quick.at,
+                &(from.clone(), to.clone()),
+            );
+        }
         let node = self.add_node_at(host, &choice.definition, quick.at)?;
         if let (Some(from), Some(input)) = (&quick.from, &choice.input) {
             let _ = self.connect(host, (from.0, &from.1), (node, input));
-        }
-        if let Some(into) = &quick.into {
-            let exec = self.port_view(into.0, &into.1, true).map(|port| port.exec);
-            let outputs: Vec<String> = self
-                .graph()
-                .and_then(|graph| graph.nodes.iter().find(|shown| shown.id == node))
-                .map(|shown| {
-                    shown
-                        .ports
-                        .iter()
-                        .filter(|port| !port.input && Some(port.exec) == exec)
-                        .map(|port| port.id.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            if let Some(output) = outputs.first() {
-                let _ = self.connect(host, (node, output), (into.0, &into.1));
-            }
         }
         self.canvas.select(Some(node));
         Some(node)
@@ -225,7 +215,14 @@ impl Editor {
                                 } else {
                                     format!("{} · {}", choice.category, choice.purpose)
                                 };
-                                let row = palette::result_row(ui, &name, &detail, on);
+                                let row = palette::result_row(
+                                    ui,
+                                    &name,
+                                    &detail,
+                                    "",
+                                    on,
+                                    egui::Sense::click(),
+                                );
                                 if on && (up || down) {
                                     row.scroll_to_me(None);
                                 }

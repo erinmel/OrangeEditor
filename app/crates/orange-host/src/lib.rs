@@ -517,6 +517,21 @@ pub struct NodeInfo<'a> {
     pub provider: Option<&'a ProviderKey>,
 }
 impl NodeInfo<'_> {
+    /// The names and directions of fixed ports visible before a node is placed.
+    /// Configuration-dependent ports are resolved for the placement preview.
+    pub fn declared_port_names(&self) -> impl Iterator<Item = (&str, bool)> {
+        let ports = match &self.definition.ports {
+            orange_model::catalog::Ports::Declared(ports) => ports.as_slice(),
+            _ => &[],
+        };
+        ports.iter().map(|port| {
+            (
+                port.port_id.as_str(),
+                port.direction == orange_model::document::PortDirection::Input,
+            )
+        })
+    }
+
     /// The node's name in the default language: its definition file's label, or a name
     /// made from its ID (`core/set-variable` is "Set variable") when it has none.
     pub fn label(&self) -> Cow<'_, str> {

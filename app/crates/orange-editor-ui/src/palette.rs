@@ -2,18 +2,32 @@
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
 use orange_host::Host;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PaletteMode {
+    Names,
+    #[default]
+    Previews,
+}
+
+#[derive(Clone)]
+pub(crate) struct PaletteDrag {
+    pub item: PaletteItem,
+    pub card: Option<orange_host::NodeView>,
+}
+
 /// Full-width target shared by the docked palette and the canvas picker.
 pub(crate) fn result_row(
     ui: &mut egui::Ui,
     name: &str,
     detail: &str,
+    ports: &str,
     highlighted: bool,
+    sense: egui::Sense,
 ) -> egui::Response {
-    let height = if detail.is_empty() { 26.0 } else { 42.0 };
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::click(),
-    );
+    let height = 26.0
+        + if detail.is_empty() { 0.0 } else { 16.0 }
+        + if ports.is_empty() { 0.0 } else { 16.0 };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), sense);
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::accesskit::Role::Button,
@@ -57,6 +71,10 @@ pub(crate) fn result_row(
             rect.min.y + 23.0,
         );
     }
+    if !ports.is_empty() {
+        let y = rect.min.y + if detail.is_empty() { 23.0 } else { 39.0 };
+        draw(egui::RichText::new(ports).small().monospace().into(), y);
+    }
     response
 }
 
@@ -67,16 +85,34 @@ pub(crate) struct PaletteCache {
     search: String,
     language: String,
     groups: Vec<(String, Vec<PaletteItem>)>,
+    summaries: std::collections::HashMap<String, String>,
+}
+
+pub(crate) struct PaletteResults<'a> {
+    pub groups: &'a [(String, Vec<PaletteItem>)],
+    pub summaries: &'a std::collections::HashMap<String, String>,
 }
 
 impl PaletteCache {
-    pub fn get(
-        &mut self,
-        host: &Host,
-        search: &str,
-        language: &str,
-    ) -> &[(String, Vec<PaletteItem>)] {
+    pub fn get(&mut self, host: &Host, search: &str, language: &str) -> PaletteResults<'_> {
         let generation = host.registry().generation();
+        if self.generation != Some(generation) {
+            self.summaries.clear();
+            for item in host.nodes() {
+                let mut inputs = Vec::new();
+                let mut outputs = Vec::new();
+                for (name, input) in item.declared_port_names() {
+                    let side = if input { &mut inputs } else { &mut outputs };
+                    side.push(crate::port_label(name));
+                }
+                if !inputs.is_empty() || !outputs.is_empty() {
+                    self.summaries.insert(
+                        item.definition.definition.id.to_string(),
+                        format!("{} → {}", inputs.join(", "), outputs.join(", ")),
+                    );
+                }
+            }
+        }
         if self.generation != Some(generation) || self.search != search || self.language != language
         {
             self.groups = palette_in(host, search, language);
@@ -86,7 +122,10 @@ impl PaletteCache {
             self.language.push_str(language);
             self.generation = Some(generation);
         }
-        &self.groups
+        PaletteResults {
+            groups: &self.groups,
+            summaries: &self.summaries,
+        }
     }
 }
 
@@ -140,6 +179,50 @@ mod tests {
     use orange_host::HostOptions;
 
     #[test]
+    fn the_result_can_be_dragged_from_the_preview_line() {
+        let ctx = egui::Context::default();
+        let mut rect = egui::Rect::NOTHING;
+        let mut dragged = false;
+        let mut frame = |events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(280.0, 220.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                let row = result_row(
+                    ui,
+                    "AND",
+                    "Both values must be true",
+                    "A, B → Result",
+                    false,
+                    egui::Sense::click_and_drag(),
+                );
+                rect = row.rect;
+                dragged |= row.drag_started();
+            })
+            .drop_without_applying_deltas();
+            rect
+        };
+        let initial = frame(Vec::new());
+        let at = egui::pos2(initial.right() - 14.0, initial.bottom() - 9.0);
+        frame(vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        frame(vec![egui::Event::PointerMoved(at + egui::vec2(0.0, 65.0))]);
+        assert!(dragged);
+    }
+
+    #[test]
     fn a_search_finds_aliases_concepts_and_spanish_and_puts_the_best_match_first() {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let first = |search: &str, language: &str| {
@@ -162,17 +245,20 @@ mod tests {
     fn cached_palette_tracks_search_language_and_registry_and_keeps_the_current_allocation() {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut cache = PaletteCache::default();
-        assert_eq!(cache.get(&host, "", "en"), palette(&host, ""));
-        let allocation = cache.get(&host, "", "en").as_ptr();
-        assert_eq!(cache.get(&host, "", "en").as_ptr(), allocation);
+        assert_eq!(cache.get(&host, "", "en").groups, palette(&host, ""));
+        let allocation = cache.get(&host, "", "en").groups.as_ptr();
+        assert_eq!(cache.get(&host, "", "en").groups.as_ptr(), allocation);
         for search in ["MATH add", "unmatched-xyz", ""] {
-            assert_eq!(cache.get(&host, search, "en"), palette(&host, search));
+            assert_eq!(
+                cache.get(&host, search, "en").groups,
+                palette(&host, search)
+            );
         }
         assert_eq!(
-            cache.get(&host, "disparador", "es"),
+            cache.get(&host, "disparador", "es").groups,
             palette_in(&host, "disparador", "es")
         );
-        assert!(cache.get(&host, "disparador", "en").is_empty());
+        assert!(cache.get(&host, "disparador", "en").groups.is_empty());
         // Registry generations are process-unique, including when one editor is
         // reused with another host. Old provider labels must not survive that switch.
         let (core, _events) = Host::new(HostOptions {
@@ -182,7 +268,7 @@ mod tests {
         .unwrap();
         assert_ne!(core.registry().generation(), host.registry().generation());
         assert_ne!(palette(&core, ""), palette(&host, ""));
-        assert_eq!(cache.get(&core, "", "en"), palette(&core, ""));
-        assert_eq!(cache.get(&host, "", "en"), palette(&host, ""));
+        assert_eq!(cache.get(&core, "", "en").groups, palette(&core, ""));
+        assert_eq!(cache.get(&host, "", "en").groups, palette(&host, ""));
     }
 }

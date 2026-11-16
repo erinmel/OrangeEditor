@@ -70,7 +70,7 @@ pub struct Draft {
 pub const MAX_UNDO: usize = 200;
 
 impl Draft {
-    fn new(document: GraphDocument) -> Self {
+    pub(crate) fn new(document: GraphDocument) -> Self {
         Self {
             document,
             undo: Vec::new(),

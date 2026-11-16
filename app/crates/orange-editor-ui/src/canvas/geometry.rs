@@ -14,6 +14,7 @@ pub(super) struct PortGeometry<'a> {
 pub(super) struct Geometry<'a> {
     sizes: HashMap<NodeId, Vec2>,
     ports: HashMap<(NodeId, bool, &'a str), PortGeometry<'a>>,
+    incoming: HashMap<(NodeId, &'a str), (NodeId, &'a str)>,
 }
 
 impl<'a> Geometry<'a> {
@@ -40,11 +41,25 @@ impl<'a> Geometry<'a> {
             let height = BODY_TOP + rows[0].max(rows[1]) as f32 * ROW_HEIGHT + FOOTER_HEIGHT;
             let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
         }
-        Self { sizes, ports }
+        let mut incoming = HashMap::with_capacity(graph.wires.len());
+        for wire in &graph.wires {
+            incoming
+                .entry((wire.to.0, wire.to.1.as_str()))
+                .or_insert((wire.from.0, wire.from.1.as_str()));
+        }
+        Self {
+            sizes,
+            ports,
+            incoming,
+        }
     }
 
     pub fn size(&self, node: NodeId) -> Vec2 {
         self.sizes[&node]
+    }
+
+    pub fn source(&self, node: NodeId, port: &str) -> Option<(NodeId, &'a str)> {
+        self.incoming.get(&(node, port)).copied()
     }
 
     pub fn port<'b>(

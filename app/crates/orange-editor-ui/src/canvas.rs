@@ -123,6 +123,8 @@ pub struct CanvasResponse {
     /// A node kind was dropped on the canvas from a list: the kind and where, in graph
     /// units.
     pub dropped: Option<(String, [f32; 2])>,
+    /// A palette node was released over this existing wire.
+    pub drop_wire: Option<WireEnds>,
     /// A wire was drawn from an output to an input: the two ends.
     pub connect: Option<((NodeId, String), (NodeId, String))>,
     /// The wires at a port were taken off: the node, the port and whether it is an input.
@@ -247,7 +249,7 @@ pub struct Canvas {
     /// When each node of a running flow last took a step, and whether it failed.
     activity: std::collections::HashMap<NodeId, (std::time::Instant, bool)>,
     /// The latest value a running flow put on each output, as a person reads it.
-    values: std::collections::HashMap<(NodeId, String), Shown>,
+    values: std::collections::HashMap<NodeId, std::collections::HashMap<String, Shown>>,
     /// Nodes whose last step failed, with why; kept until the node succeeds or a new
     /// run starts.
     failures: std::collections::HashMap<NodeId, String>,
@@ -613,7 +615,11 @@ impl Canvas {
     /// in the inspector. It stays until another comes; when the run ends it is dimmed.
     pub fn show_value(&mut self, node: NodeId, port: String, short: String, full: String) {
         self.stale = false;
-        let _ = self.values.insert((node, port), Shown { short, full });
+        let _ = self
+            .values
+            .entry(node)
+            .or_default()
+            .insert(port, Shown { short, full });
     }
 
     /// A node's step failed, for `why`: the node keeps an error badge until it
@@ -653,13 +659,32 @@ impl Canvas {
         input: bool,
     ) -> Option<&Shown> {
         if !input {
-            return self.values.get(&(node, port.to_owned()));
+            return self.output_value(node, port);
         }
         graph
             .wires
             .iter()
             .find(|wire| wire.to.0 == node && wire.to.1 == port)
-            .and_then(|wire| self.values.get(&wire.from))
+            .and_then(|wire| self.output_value(wire.from.0, &wire.from.1))
+    }
+
+    fn output_value(&self, node: NodeId, port: &str) -> Option<&Shown> {
+        self.values.get(&node)?.get(port)
+    }
+
+    fn frame_port_value(
+        &self,
+        geometry: &Geometry<'_>,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<&Shown> {
+        let (node, port) = if input {
+            geometry.source(node, port)?
+        } else {
+            (node, port)
+        };
+        self.output_value(node, port)
     }
 
     /// Whether a running flow's node has taken a step, and whether that step failed.
@@ -669,8 +694,7 @@ impl Canvas {
 
     /// The value shown beside an output, if any.
     pub fn shown_value(&self, node: NodeId, port: &str) -> Option<&str> {
-        self.values
-            .get(&(node, port.to_owned()))
+        self.output_value(node, port)
             .map(|shown| shown.short.as_str())
     }
 
@@ -760,18 +784,21 @@ impl Canvas {
             .hover_pos()
             .map(|at| graph_point(at, self.origin, self.zoom));
         // A node kind dragged from a list and let go here.
-        let palette_item = response.dnd_hover_payload::<crate::PaletteItem>();
+        let palette_item = response.dnd_hover_payload::<crate::palette::PaletteDrag>();
         let dropped = if palette_item.is_some() {
             response
-                .dnd_release_payload::<crate::PaletteItem>()
-                .map(|item| item.id.clone())
+                .dnd_release_payload::<crate::palette::PaletteDrag>()
+                .map(|drag| drag.item.id.clone())
         } else {
             response
                 .dnd_release_payload::<String>()
                 .map(|kind| (*kind).clone())
         };
         if let (Some(kind), Some(at)) = (dropped, ui.input(|input| input.pointer.interact_pos())) {
-            let at = graph_point(at, self.origin, self.zoom);
+            let mut at = graph_point(at, self.origin, self.zoom);
+            if palette_item.is_some() && self.snap && !ui.input(|input| input.modifiers.alt) {
+                at = snapped(at);
+            }
             done.dropped = Some((kind, [at.x, at.y]));
         }
         if let Some(pointer) = response.hover_pos() {
@@ -938,7 +965,9 @@ impl Canvas {
                 }
             }
         }
-        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let pointer = ui
+            .input(|input| input.pointer.interact_pos())
+            .filter(|at| area.contains(*at));
         if let Some(wiring) = self.wiring.clone()
             && ui.input(|input| input.pointer.any_released())
         {
@@ -1042,7 +1071,11 @@ impl Canvas {
                 continue;
             }
             let ends = (wire.from.clone(), wire.to.clone());
-            if let Some(at) = pointer {
+            if let Some(at) = pointer
+                && Rect::from_points(&points)
+                    .expand(WIRE_GRAB * zoom.max(0.6))
+                    .contains(at)
+            {
                 let away = bezier_distance(&points, at);
                 if nearest.as_ref().is_none_or(|(best, _)| away < *best) {
                     nearest = Some((away, ends.clone()));
@@ -1092,6 +1125,9 @@ impl Canvas {
         self.hover_wire = nearest
             .filter(|(away, _)| *away <= WIRE_GRAB * zoom.max(0.6))
             .map(|(_, ends)| ends);
+        if palette_item.is_some() && done.dropped.is_some() {
+            done.drop_wire.clone_from(&self.hover_wire);
+        }
         // A click on the background selects the wire under it, or none.
         if response.clicked() {
             self.selected_wire = self.hover_wire.clone();
@@ -1132,7 +1168,7 @@ impl Canvas {
                         .find(|p| p.input && p.id == port)
                         .and_then(|p| {
                             p.value.clone().or_else(|| {
-                                self.port_value(graph, node.id, port, true)
+                                self.frame_port_value(&geometry, node.id, port, true)
                                     .map(|shown| shown.short.clone())
                             })
                         })
@@ -1162,7 +1198,7 @@ impl Canvas {
             };
             for port in node.ports.iter().filter(|port| !port.exec) {
                 let (Some(value), Some(at)) = (
-                    self.port_value(graph, node.id, &port.id, port.input),
+                    self.frame_port_value(&geometry, node.id, &port.id, port.input),
                     geometry
                         .port(node.id, &port.id, port.input)
                         .map(|found| to_screen(place + found.offset)),
@@ -1289,34 +1325,52 @@ impl Canvas {
             );
         }
         // Where a dragged node kind would land.
-        if let (None, Some(item), Some(at)) = (
-            &done.dropped,
-            palette_item,
-            ui.input(|input| input.pointer.interact_pos()),
-        ) {
-            let ghost =
-                Rect::from_min_size(at, Vec2::new(NODE_WIDTH, HEADER_HEIGHT + ROW_HEIGHT) * zoom);
-            painter.rect_filled(ghost, CARD_RADIUS * zoom, colors.card.gamma_multiply(0.92));
-            painter.rect_stroke(
-                ghost,
-                CARD_RADIUS * zoom,
-                Stroke::new(1.5, colors.selected),
-                StrokeKind::Inside,
-            );
-            let font = FontId::proportional(14.5 * zoom);
-            let (label, _) = elide(
-                &painter,
-                &item.label,
-                &font,
-                ghost.width() - 2.0 * CARD_PADDING * zoom,
-            );
-            let _ = painter.text(
-                at + Vec2::new(CARD_PADDING, HEADER_HEIGHT / 2.0) * zoom,
-                Align2::LEFT_CENTER,
-                label,
-                font,
-                colors.text,
-            );
+        if let (None, Some(drag), Some(pointer)) = (&done.dropped, palette_item, pointer) {
+            let mut place = graph_point(pointer, origin, zoom);
+            if self.snap && !ui.input(|input| input.modifiers.alt) {
+                place = snapped(place);
+            }
+            let at = to_screen(place);
+            if let Some(card) = &drag.card {
+                let rect = Rect::from_min_size(at, node_size(card) * zoom);
+                let _ = draw_node(
+                    ui,
+                    &painter,
+                    card,
+                    rect,
+                    zoom,
+                    &colors,
+                    (true, None, false),
+                    response.id,
+                    None,
+                );
+            } else {
+                let rect = Rect::from_min_size(at, Vec2::new(NODE_WIDTH, HEADER_HEIGHT) * zoom);
+                painter.rect_filled(rect, CARD_RADIUS * zoom, colors.header);
+                let font = FontId::proportional(14.5 * zoom);
+                let (label, _) = elide(
+                    &painter,
+                    &drag.item.label,
+                    &font,
+                    rect.width() - 2.0 * CARD_PADDING * zoom,
+                );
+                let _ = painter.text(
+                    at + Vec2::new(CARD_PADDING, HEADER_HEIGHT / 2.0) * zoom,
+                    Align2::LEFT_CENTER,
+                    label,
+                    font,
+                    colors.text,
+                );
+            }
+            if self.hover_wire.is_some() {
+                let _ = painter.text(
+                    at - Vec2::new(0.0, 8.0),
+                    Align2::LEFT_BOTTOM,
+                    "Insert into wire",
+                    FontId::proportional(12.0),
+                    colors.text,
+                );
+            }
         }
         done
     }
@@ -2329,11 +2383,23 @@ mod tests {
     fn dragging_a_palette_item_previews_it_and_both_payloads_can_be_dropped() {
         let context = egui::Context::default();
         let graph = GraphView {
-            nodes: Vec::new(),
-            wires: Vec::new(),
+            nodes: vec![
+                node(1, vec![port("then", false, true)]),
+                node(2, vec![port("in", true, true)]),
+            ],
+            wires: vec![wire(1, 2)],
         };
         let mut canvas = Canvas::new();
-        let pointer = Pos2::new(200.0, 150.0);
+        canvas.origin = Pos2::ZERO;
+        canvas.fit = false;
+        canvas.places.insert(id(1), Pos2::new(0.0, 96.0));
+        canvas.places.insert(id(2), Pos2::new(460.0, 96.0));
+        let pointer = Pos2::new(350.0, 96.0 + BODY_TOP + ROW_HEIGHT / 2.0);
+        let mut card = node(
+            3,
+            vec![port("a", true, false), port("result", false, false)],
+        );
+        card.name = "AND placement".into();
         let mut response = CanvasResponse::default();
         let mut frame = |events| {
             let input = egui::RawInput {
@@ -2342,7 +2408,7 @@ mod tests {
                 ..Default::default()
             };
             let output = context.run_ui(input, |ui| response = canvas.show(ui, &graph, &[]));
-            (output, response.dropped.clone())
+            (output, response.dropped.clone(), response.drop_wire.clone())
         };
         let button = |pressed| egui::Event::PointerButton {
             pos: pointer,
@@ -2355,27 +2421,35 @@ mod tests {
             .drop_without_applying_deltas();
         egui::DragAndDrop::set_payload(
             &context,
-            crate::PaletteItem {
-                id: "core/and".into(),
-                label: "AND placement".into(),
-                package: String::new(),
-                purpose: String::new(),
+            crate::palette::PaletteDrag {
+                card: Some(card),
+                item: crate::PaletteItem {
+                    id: "core/and".into(),
+                    label: "AND placement".into(),
+                    package: String::new(),
+                    purpose: String::new(),
+                },
             },
         );
-        let (output, dropped) = frame(vec![button(true)]);
+        let (output, dropped, _) = frame(vec![button(true)]);
         assert!(dropped.is_none());
         assert!(output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "AND placement")
         }));
         output.drop_without_applying_deltas();
-        let (output, dropped) = frame(vec![button(false)]);
+        let (output, dropped, spliced) = frame(vec![button(false)]);
         output.drop_without_applying_deltas();
         assert_eq!(dropped.unwrap().0, "core/and");
+        assert_eq!(
+            spliced,
+            Some(((id(1), "then".into()), (id(2), "in".into())))
+        );
         frame(vec![button(true)]).0.drop_without_applying_deltas();
         egui::DragAndDrop::set_payload(&context, "variable:sample".to_owned());
-        let (output, dropped) = frame(vec![button(false)]);
+        let (output, dropped, spliced) = frame(vec![button(false)]);
         output.drop_without_applying_deltas();
         assert_eq!(dropped.unwrap().0, "variable:sample");
+        assert!(spliced.is_none());
     }
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
