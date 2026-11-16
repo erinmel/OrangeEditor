@@ -98,6 +98,50 @@ impl eframe::App for Desktop {
     }
 }
 
+impl Desktop {
+    /// Asks the person for the file or folder a node's input holds, starting where the
+    /// input points now, and puts it on the input.
+    fn choose_path(
+        &mut self,
+        node: orange_host::NodeId,
+        port: &str,
+        (folder, save): (bool, bool),
+        extensions: &[String],
+        current: &str,
+    ) {
+        let current = Path::new(current);
+        let start = if folder {
+            Some(current)
+        } else {
+            current.parent()
+        };
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(start) = start.filter(|start| start.is_dir()) {
+            dialog = dialog.set_directory(start);
+        }
+        let chosen = if folder {
+            dialog.set_title("Choose a folder").pick_folder()
+        } else {
+            if !extensions.is_empty() {
+                dialog = dialog.add_filter(extensions.join(", "), extensions);
+            }
+            if save {
+                if let Some(name) = current.file_name() {
+                    dialog = dialog.set_file_name(name.to_string_lossy());
+                }
+                dialog.set_title("Save as").save_file()
+            } else {
+                dialog.set_title("Choose a file").pick_file()
+            }
+        };
+        if let Some(path) = chosen {
+            let _ =
+                self.editor
+                    .choose_path(&mut self.host, node, port, &path.display().to_string());
+        }
+    }
+}
+
 /// Tells the person something went wrong, in a dialog of the system.
 fn trouble(title: &str, message: &str) {
     let _ = rfd::MessageDialog::new()
@@ -112,6 +156,18 @@ impl Desktop {
     /// Carries out a file action of the editor with the system's dialogs. The dialogs
     /// wait for the person, as a desktop program's dialogs do.
     fn carry_out(&mut self, request: FileRequest) {
+        if let FileRequest::ChoosePath {
+            node,
+            port,
+            folder,
+            save,
+            extensions,
+            current,
+        } = &request
+        {
+            self.choose_path(*node, port, (*folder, *save), extensions, current);
+            return;
+        }
         // Edits that are not saved are not dropped without asking.
         if matches!(request, FileRequest::New | FileRequest::Open) && self.editor.is_unsaved() {
             let answer = rfd::MessageDialog::new()
@@ -149,6 +205,7 @@ impl Desktop {
                     Err(error) => trouble("Not opened", &format!("{}: {error}", path.display())),
                 }
             }
+            FileRequest::ChoosePath { .. } => {}
             FileRequest::SaveAs => {
                 let name = current
                     .and_then(Path::file_name)

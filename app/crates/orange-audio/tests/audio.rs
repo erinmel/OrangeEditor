@@ -329,7 +329,7 @@ fn the_audio_nodes_are_listed_with_their_text() {
             .fallback,
         "Audio"
     );
-    // The input nodes are found by the word a person looks for.
+    // The stream nodes are named by what they do, and Seek by where it goes.
     let labels: Vec<String> = host
         .nodes()
         .filter(|info| {
@@ -341,14 +341,17 @@ fn the_audio_nodes_are_listed_with_their_text() {
         })
         .map(|info| info.label().into_owned())
         .collect();
-    assert!(
-        labels
-            .iter()
-            .filter(|label| label.contains("icrophone"))
-            .count()
-            == 2,
-        "{labels:?}"
-    );
+    for wanted in [
+        "Audio in",
+        "Audio out",
+        "Level",
+        "On level",
+        "Record to file",
+        "Jump to time",
+    ] {
+        assert!(labels.iter().any(|label| label == wanted), "{labels:?}");
+    }
+    assert!(!labels.iter().any(|label| label.contains("Seek")));
 }
 
 /// Plays a short tone on the real default device. Run by hand:
@@ -500,4 +503,156 @@ fn a_dropped_play_node_gets_a_connection_and_plays_a_random_file_of_a_folder() {
     };
     assert!(["a.wav", "b.wav"].contains(&name.as_str()), "{name}");
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+/// Audio in on the silent input, wired into Level, Record to file and Audio out on the
+/// silent output. Manual entry 30 measures and records `seconds` to `path`, storing
+/// the level in variable 104 and the seconds recorded in 103; entry 40 plays the
+/// input on the output until entry 7 stops it, then stores 1 in 105.
+fn stream_document(host: &Host, path: &Path, seconds: f64) -> String {
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000002".parse().unwrap());
+    for (id, adapter) in [
+        (OUTPUT, orange_audio::OUTPUT_ADAPTER),
+        (INPUT, orange_audio::INPUT_ADAPTER),
+    ] {
+        let declared = json!({"id": id, "name": id, "adapter": adapter, "scope": "graph",
+            "settings": {"device": orange_audio::NULL_DEVICE}});
+        let _ = document
+            .apply([orange_model::DocCommand::UpsertConnection(
+                serde_json::from_value(declared).unwrap(),
+            )])
+            .unwrap();
+    }
+    let place = |document: &mut GraphDocument,
+                 n: u32,
+                 name: &str,
+                 connection: Option<&str>,
+                 inputs: Json| {
+        let mut new = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: name.parse().unwrap(),
+                version: 1,
+            },
+        );
+        if let Some(connection) = connection {
+            new.config = serde_json::from_value(json!({"connection": connection})).unwrap();
+        }
+        new.inputs = serde_json::from_value(inputs).unwrap();
+        let edit = new_node_edit(document, host.registry(), new).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    };
+    let number = |value: f64| json!({"type": F64, "bits": format!("{:016x}", value.to_bits())});
+    place(
+        &mut document,
+        31,
+        orange_audio::AUDIO_IN,
+        Some(INPUT),
+        json!({}),
+    );
+    place(&mut document, 34, orange_audio::LEVEL, None, json!({}));
+    place(
+        &mut document,
+        32,
+        orange_audio::RECORD,
+        None,
+        json!({"path": {"type": STRING, "value": path.to_str().unwrap()}, "seconds": number(seconds)}),
+    );
+    place(
+        &mut document,
+        41,
+        orange_audio::AUDIO_IN,
+        Some(INPUT),
+        json!({}),
+    );
+    place(
+        &mut document,
+        42,
+        orange_audio::AUDIO_OUT,
+        Some(OUTPUT),
+        json!({}),
+    );
+    place(
+        &mut document,
+        8,
+        orange_audio::STOP,
+        Some(OUTPUT),
+        json!({}),
+    );
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let store = |n: u32, target: u32| {
+        let mut node = core(n, "set-variable");
+        node["config"] = json!({"variable": id(target)});
+        node
+    };
+    let nodes = saved["nodes"].as_array_mut().unwrap();
+    nodes.extend([
+        core(30, "on-manual"),
+        store(35, 104),
+        store(33, 103),
+        core(40, "on-manual"),
+        set(43, 105, 1),
+        core(7, "on-manual"),
+    ]);
+    saved["edges"] = json!([
+        edge(1, 30, "then", 31, "in"),
+        edge(2, 31, "then", 34, "in"),
+        edge(3, 31, "stream", 34, "stream"),
+        edge(4, 34, "then", 35, "in"),
+        edge(5, 34, "level", 35, "value"),
+        edge(6, 35, "then", 32, "in"),
+        edge(7, 31, "stream", 32, "stream"),
+        edge(8, 32, "then", 33, "in"),
+        edge(9, 32, "recorded", 33, "value"),
+        edge(10, 40, "then", 41, "in"),
+        edge(11, 41, "then", 42, "in"),
+        edge(12, 41, "stream", 42, "stream"),
+        edge(13, 42, "then", 43, "in"),
+        edge(14, 7, "then", 8, "in"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(103), "name": "recorded", "type": F64, "scope": "run"},
+        {"id": id(104), "name": "level", "type": F64, "scope": "run"},
+        {"id": id(105), "name": "played", "type": I64, "scope": "run"}
+    ]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn an_input_stream_is_measured_recorded_and_played_through_to_an_output() {
+    let mut host = host();
+    let dir = std::env::temp_dir().join(format!("orange-audio-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("recorded.wav");
+    let text = stream_document(&host, &path, 0.2);
+    assert_eq!(host.check(&text).unwrap(), []);
+    let flow = host.open(&text).unwrap();
+
+    host.trigger(flow, node(30), None).unwrap();
+    until("the recording", || read(&host, flow, 103).is_some());
+    assert_eq!(
+        read(&host, flow, 104),
+        Some(Value::F64(orange_audio::SILENCE_DB))
+    );
+    let Some(Value::F64(recorded)) = read(&host, flow, 103) else {
+        panic!("seconds recorded");
+    };
+    assert!((recorded - 0.2).abs() < 1e-9);
+    let reader = hound::WavReader::open(&path).unwrap();
+    assert_eq!(reader.spec().sample_rate, 48_000);
+    assert_eq!(reader.len(), 48_000 / 5 * 2);
+
+    // The input plays on the output until the output's sounds are stopped.
+    host.trigger(flow, node(40), None).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&host, flow, 105), None);
+    let mut last = Instant::now() - Duration::from_secs(1);
+    until("the pass-through to stop", || {
+        if last.elapsed() >= Duration::from_millis(100) {
+            last = Instant::now();
+            host.trigger(flow, node(7), None).unwrap();
+        }
+        read(&host, flow, 105).is_some()
+    });
+    std::fs::remove_file(&path).unwrap();
 }

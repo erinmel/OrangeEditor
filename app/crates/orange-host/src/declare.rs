@@ -5,6 +5,7 @@ use super::*;
 use orange_model::DocCommand;
 use orange_model::document::{ConnectionDecl, VariableDecl};
 use orange_model::id::{ConnectionId, TypeExpr, VariableId};
+use orange_sdk::{SECRET_PREFIX, SettingText, SettingToggle};
 use serde_json::{Value as Json, json};
 
 use draft::refused;
@@ -42,6 +43,60 @@ pub struct Connection {
 pub struct Declarations {
     pub variables: Vec<Variable>,
     pub connections: Vec<Connection>,
+}
+
+/// A connection adapter as an editor offers it: by name and purpose, not by kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterInfo {
+    /// Its kind, such as `org.orange.net/http`, which a connection names.
+    pub id: String,
+    /// What it is called, such as "Web service (HTTP)"; made from its kind when the
+    /// adapter gives no name.
+    pub label: String,
+    /// One sentence on what it is for; empty when the adapter gives none.
+    pub purpose: String,
+}
+
+/// The name a connection's secret is stored under in the credential store:
+/// `connection/<connection ID>/<setting>`, such as `connection/…/basic/password`.
+pub fn secret_name(connection: &str, setting: &str) -> String {
+    let clean = |text: &str| -> String {
+        text.trim_matches('/')
+            .chars()
+            .map(|c| {
+                let c = c.to_ascii_lowercase();
+                if c.is_ascii_lowercase()
+                    || c.is_ascii_digit()
+                    || matches!(c, '.' | '_' | '-' | '/')
+                {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    };
+    format!("connection/{}/{}", clean(connection), clean(setting))
+}
+
+/// `settings` with the setting at `path` (names joined by `/`) set to `value`,
+/// making the objects on the way.
+fn put_at(settings: &mut Json, path: &str, value: Json) {
+    let mut at = settings;
+    let mut names = path.split('/').filter(|name| !name.is_empty()).peekable();
+    while let Some(name) = names.next() {
+        if !at.is_object() {
+            *at = json!({});
+        }
+        let Json::Object(fields) = at else {
+            return;
+        };
+        if names.peek().is_none() {
+            let _ = fields.insert(name.to_owned(), value);
+            return;
+        }
+        at = fields.entry(name.to_owned()).or_insert_with(|| json!({}));
+    }
 }
 
 /// Words that mark a setting as a secret, which a document holds only as a reference.
@@ -110,6 +165,83 @@ impl Host {
         self.adapters.keys().cloned().collect()
     }
 
+    /// Every connection adapter this host has, from every package, with its name and
+    /// purpose, sorted by name.
+    pub fn adapter_list(&self) -> Vec<AdapterInfo> {
+        let mut list: Vec<AdapterInfo> = self
+            .adapters
+            .iter()
+            .map(|(id, adapter)| {
+                let about = adapter.about();
+                let label = if about.label.trim().is_empty() {
+                    words(id.rsplit('/').next().unwrap_or(id))
+                } else {
+                    about.label
+                };
+                AdapterInfo {
+                    id: id.clone(),
+                    label,
+                    purpose: about.purpose,
+                }
+            })
+            .collect();
+        list.sort_by_key(|adapter| adapter.label.to_lowercase());
+        list
+    }
+
+    /// The text settings of `adapter` an editor can show as fields, secrets among
+    /// them. Empty for an adapter that has none or that this host lacks.
+    pub fn adapter_texts(&self, adapter: &str) -> Vec<SettingText> {
+        self.adapters
+            .get(adapter)
+            .map(|found| found.texts())
+            .unwrap_or_default()
+    }
+
+    /// The true-or-false settings of `adapter` an editor can show as switches.
+    pub fn adapter_toggles(&self, adapter: &str) -> Vec<SettingToggle> {
+        self.adapters
+            .get(adapter)
+            .map(|found| found.toggles())
+            .unwrap_or_default()
+    }
+
+    /// The nodes of a document that use connection `id`, in document order.
+    pub fn connection_users(&self, draft: &Draft, id: &str) -> Vec<NodeId> {
+        draft
+            .document()
+            .bodies()
+            .flat_map(|body| body.nodes.values())
+            .filter(|node| {
+                node.config
+                    .get("connection")
+                    .and_then(Json::as_str)
+                    .is_some_and(|named| named == id)
+            })
+            .map(|node| node.id)
+            .collect()
+    }
+
+    /// Opens a connection of `adapter` with `settings` and lets it go, to check them:
+    /// the settings are valid and every credential they name is in the store. Nothing
+    /// is sent by an adapter that connects on first use. The error says why it would
+    /// not open, never with a secret's value.
+    pub fn test_connection(
+        &self,
+        adapter: &str,
+        settings: &serde_json::Map<String, Json>,
+    ) -> Result<(), String> {
+        let found = self
+            .adapters
+            .get(adapter)
+            .ok_or_else(|| format!("no adapter `{adapter}` is available"))?;
+        let (settings, _) = with_secrets(self.options.secrets.as_ref(), settings)?;
+        found
+            .open(&settings)
+            .map(drop)
+            .map_err(|_| "The adapter could not open with these settings. Check the connection and credentials.".into())
+    }
+
     /// The settings of `adapter` an editor can offer as a list, with the values this
     /// machine has now (such as its audio devices). Empty for an adapter that offers
     /// none or that this host does not have. It may ask the operating system, so a front
@@ -119,6 +251,34 @@ impl Host {
             .get(adapter)
             .map(|found| found.choices())
             .unwrap_or_default()
+    }
+
+    /// The number settings of `adapter` an editor can show as fields, such as an audio
+    /// input's threshold. Empty for an adapter that has none or that this host lacks.
+    pub fn adapter_fields(&self, adapter: &str) -> Vec<SettingField> {
+        self.adapters
+            .get(adapter)
+            .map(|found| found.fields())
+            .unwrap_or_default()
+    }
+
+    /// Whether [`Host::probe`] has a live reading to show for `adapter`. Opens nothing.
+    pub fn adapter_probes(&self, adapter: &str) -> bool {
+        self.adapters
+            .get(adapter)
+            .is_some_and(|found| found.probes())
+    }
+
+    /// A live reading of what a connection of `adapter` with `settings` would see, such
+    /// as an input device's level, for an editor to show while a person sets it up.
+    /// It runs apart from every flow and stops when dropped. `None` when the adapter
+    /// has nothing to show; an error says why it cannot start.
+    pub fn probe(
+        &self,
+        adapter: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<Box<dyn Probe>, String>> {
+        self.adapters.get(adapter)?.probe(settings)
     }
 
     /// Declares a variable, or changes the one with `variable.id`, keeping what this
@@ -234,6 +394,48 @@ impl Host {
         decl["settings"] = connection.settings.clone();
         let decl: ConnectionDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
         Ok((id, decl))
+    }
+
+    /// Declares a connection like [`declare_connection`](Self::declare_connection),
+    /// first storing each of `secrets` (a setting, as names joined by `/`, and the
+    /// secret typed for it) in the host's credential store under
+    /// [`secret_name`] and writing only its `credential://` reference into the
+    /// settings. Nothing is declared when a secret cannot be stored. Returns the
+    /// connection's ID.
+    pub fn declare_connection_with_secrets(
+        &self,
+        draft: &mut Draft,
+        connection: &Connection,
+        secrets: &[(String, String)],
+    ) -> Result<String, HostError> {
+        let id = match &connection.id {
+            Some(id) => id.clone(),
+            None => draft.fresh_id("connection"),
+        };
+        let mut connection = Connection {
+            id: Some(id.clone()),
+            ..connection.clone()
+        };
+        if !secrets.is_empty() {
+            let store = self.options.secrets.as_ref().ok_or_else(|| {
+                HostError::Connection(
+                    connection.name.clone(),
+                    "the application has no credential store".into(),
+                )
+            })?;
+            for (setting, secret) in secrets {
+                let name = secret_name(&id, setting);
+                store.replace(&name, secret).map_err(|error| {
+                    HostError::Connection(connection.name.clone(), format!("{setting}: {error}"))
+                })?;
+                put_at(
+                    &mut connection.settings,
+                    setting,
+                    Json::String(format!("{SECRET_PREFIX}{name}")),
+                );
+            }
+        }
+        self.declare_connection(draft, &connection)
     }
 
     /// Removes a connection. Nodes that use it show as problems until they use another.

@@ -73,9 +73,46 @@ pub(super) fn wire_visible(points: &[Pos2; 4], clip: Rect, width: f32) -> bool {
     clip.intersects(Rect::from_points(points).expand(width))
 }
 
+/// Whether `at` is within `reach` of the wire drawn through `points`, sampled along
+/// its curve.
+pub(super) fn near_wire(points: [Pos2; 4], at: Pos2, reach: f32) -> bool {
+    if !Rect::from_points(&points).expand(reach).contains(at) {
+        return false;
+    }
+    const STEPS: usize = 24;
+    let point = |t: f32| {
+        let u = 1.0 - t;
+        let weights = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        points
+            .iter()
+            .zip(weights)
+            .fold(Vec2::ZERO, |sum, (p, w)| sum + p.to_vec2() * w)
+            .to_pos2()
+    };
+    (0..STEPS).any(|step| {
+        let (a, b) = (
+            point(step as f32 / STEPS as f32),
+            point((step + 1) as f32 / STEPS as f32),
+        );
+        let along = b - a;
+        let t = ((at - a).dot(along) / along.length_sq().max(f32::EPSILON)).clamp(0.0, 1.0);
+        (a + along * t).distance(at) <= reach
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_on_the_drawn_curve_is_near_the_wire_and_one_off_it_is_not() {
+        let points = wire_points(Pos2::new(0.0, 0.0), Pos2::new(200.0, 100.0), 1.0);
+        // The curve passes through the middle of its ends and leaves level.
+        assert!(near_wire(points, Pos2::new(100.0, 50.0), 3.0));
+        assert!(near_wire(points, Pos2::new(5.0, 1.0), 3.0));
+        assert!(!near_wire(points, Pos2::new(100.0, 0.0), 6.0));
+        assert!(!near_wire(points, Pos2::new(400.0, 400.0), 6.0));
+    }
 
     #[test]
     fn culling_keeps_crossing_and_bending_wires_and_stroke_margin() {

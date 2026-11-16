@@ -24,6 +24,9 @@
 
 pub mod canvas;
 mod declarations;
+pub mod icons;
+mod menu;
+mod organise;
 mod properties;
 mod quick_add;
 
@@ -50,7 +53,8 @@ pub const MAX_LOG_LINES: usize = 500;
 pub const MAX_EVENTS_PER_POLL: usize = 256;
 
 mod palette;
-pub use palette::{PaletteItem, palette};
+pub use menu::{Command, MenuEntry, MenuTarget};
+pub use palette::{PaletteItem, palette, palette_in};
 
 /// A type as a person reads it: `core/string@1` is "text". Other types keep their name
 /// without the version.
@@ -102,6 +106,8 @@ struct Document {
     problem_nodes: Vec<Option<NodeId>>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
+    /// The latest value of each variable a run wrote, by variable ID, as text.
+    values: std::collections::BTreeMap<String, String>,
 }
 
 pub use orange_host::MAX_UNDO;
@@ -132,7 +138,7 @@ impl Default for Panels {
 
 /// A file action the editor leaves to the application, which owns its file dialogs
 /// (or has none: an application that keeps graphs elsewhere opens them itself).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRequest {
     /// Start a new graph.
     New,
@@ -140,6 +146,36 @@ pub enum FileRequest {
     Open,
     /// Choose where to save the open graph.
     SaveAs,
+    /// Choose a file or folder for a node's text input that holds a path, such as the
+    /// sound file of Play sound, and hand it to [`Editor::choose_path`].
+    ChoosePath {
+        node: NodeId,
+        port: String,
+        /// A folder instead of a file.
+        folder: bool,
+        /// A file the node writes: ask where to save it rather than for one that exists.
+        save: bool,
+        /// File name extensions to offer, without the dot; empty offers every file.
+        extensions: Vec<String>,
+        /// The path the input holds now, to start the dialog from.
+        current: String,
+    },
+}
+
+/// A connection's live reading while its form shows it, such as an input's level.
+pub(crate) struct Probing {
+    /// The adapter and the device settings it was started with; a change to either
+    /// starts it again.
+    pub(crate) adapter: String,
+    pub(crate) settings: String,
+    pub(crate) probe: Result<Box<dyn orange_host::Probe>, String>,
+}
+impl std::fmt::Debug for Probing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Probing")
+            .field("adapter", &self.adapter)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The state of the editor between frames.
@@ -170,11 +206,54 @@ pub struct Editor {
     request: Option<FileRequest>,
     /// The search to add a node at the pointer, while it is open.
     quick: Option<quick_add::QuickAdd>,
+    /// Run was pressed this frame: it starts once the fields have handed over what was
+    /// being typed, at the end of the frame.
+    run_asked: bool,
+    /// The live reading of the connection being set up, while a person asked to see it.
+    pub(crate) probing: Option<Probing>,
+    /// A function being made of the selected nodes, while its preview is open.
+    extracting: Option<organise::Extracting>,
+    /// The language the node search also matches in, as a BCP 47 tag; empty is English.
+    language: String,
+    /// The right-click menu, while it is open.
+    menu: Option<menu::Menu>,
+    /// What this editor copied last, for Paste from the menu.
+    clip: Option<String>,
+    /// Copied text for the system clipboard, handed over on the next frame.
+    clip_out: Option<String>,
+    /// Paste from the menu with nothing copied here: the system clipboard is asked.
+    paste_asked: bool,
 }
 
 impl Editor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The language the node search matches in besides English, such as `es`.
+    pub fn language(&self) -> &str {
+        if self.language.is_empty() {
+            orange_host::SOURCE_LANGUAGE
+        } else {
+            &self.language
+        }
+    }
+
+    /// Makes the node search match in `language` (a BCP 47 tag) and English. Nothing
+    /// about the graph changes with it.
+    pub fn set_language(&mut self, language: &str) {
+        self.language = language.trim().to_owned();
+    }
+
+    /// A port of the open graph's top level, as the canvas draws it.
+    fn port_view(&self, node: NodeId, port: &str, input: bool) -> Option<&orange_host::PortView> {
+        self.graph()?
+            .nodes
+            .iter()
+            .find(|shown| shown.id == node)?
+            .ports
+            .iter()
+            .find(|shown| shown.id == port && shown.input == input)
     }
 
     /// Shows a document: `text` is the saved graph and `path` what it is called. It is
@@ -193,6 +272,7 @@ impl Editor {
         };
         let graph = host.draft_view(&draft).unwrap_or_default();
         self.canvas.load(&graph);
+        self.canvas.set_groups(draft.groups());
         self.document = Some(Document {
             path,
             untitled: false,
@@ -204,8 +284,10 @@ impl Editor {
             problems: Vec::new(),
             problem_nodes: Vec::new(),
             flow: None,
+            values: std::collections::BTreeMap::new(),
         });
         self.check(host);
+        self.preview_values(host);
     }
 
     /// What the canvas shows of the open document.
@@ -255,6 +337,7 @@ impl Editor {
         document.declared = host.declarations(&document.draft);
         document.unsaved = true;
         self.canvas.update(&document.graph);
+        self.canvas.set_groups(document.draft.groups());
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
         let mut said = None;
@@ -284,6 +367,7 @@ impl Editor {
             self.say(line);
         }
         self.check(host);
+        self.preview_values(host);
     }
 
     /// Follows up an edit of the draft. A refused edit says why in the log and changed
@@ -402,6 +486,36 @@ impl Editor {
             return false;
         };
         let result = host.connect(draft, from, to);
+        self.edited(host, result)
+    }
+
+    /// Takes one wire off, by its two ends.
+    pub fn disconnect_wire(
+        &mut self,
+        host: &mut Host,
+        from: (NodeId, &str),
+        to: (NodeId, &str),
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.disconnect_wire(draft, from, to);
+        self.edited(host, result)
+    }
+
+    /// Puts `node` into the wire from `from` to `to`; a node that does not fit says why
+    /// in the log and nothing changes.
+    pub fn insert_into_wire(
+        &mut self,
+        host: &mut Host,
+        node: NodeId,
+        from: (NodeId, &str),
+        to: (NodeId, &str),
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.insert_into_wire(draft, node, from, to);
         self.edited(host, result)
     }
 
@@ -574,6 +688,16 @@ impl Editor {
         self.request = Some(request);
     }
 
+    /// Puts the path a person chose for a [`FileRequest::ChoosePath`] on the input it was
+    /// asked for, and in its field.
+    pub fn choose_path(&mut self, host: &mut Host, node: NodeId, port: &str, path: &str) -> bool {
+        let set = self.set_input(host, (node, port), Some(path));
+        if set && self.inspected == Some(node) {
+            let _ = self.typed.insert(port.to_owned(), path.to_owned());
+        }
+        set
+    }
+
     /// The file action asked for since the last call, for the application to carry out
     /// with its dialogs: [`Editor::open`] with what was chosen, or [`Editor::save_as`].
     pub fn take_request(&mut self) -> Option<FileRequest> {
@@ -638,6 +762,15 @@ impl Editor {
                         canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
                     } else if let Some(node) = node {
                         canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
+                        // The port at fault is ringed as well as the node marked.
+                        if let Some(port) = &diagnostic.subject.port {
+                            canvas::Marks::add(
+                                &mut marks.ports,
+                                (node, port.to_string()),
+                                error,
+                                text.clone(),
+                            );
+                        }
                     }
                     document.problem_nodes.push(node);
                     text
@@ -762,6 +895,14 @@ impl Editor {
                         );
                     }
                 }
+                FlowEvent::Variables(changed) => {
+                    for (variable, value) in changed {
+                        let shown = value
+                            .as_ref()
+                            .map_or_else(|| "unset".to_owned(), orange_host::plain);
+                        let _ = document.values.insert(variable.to_string(), shown);
+                    }
+                }
                 // Values from before an edit or the end of the run are kept, dimmed.
                 FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
@@ -779,7 +920,16 @@ impl Editor {
 
     /// Draws the editor into `ui` and applies what the person did.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        // Undo, redo and the file keys, unless a text field is being typed in.
+        icons::install(ui.ctx());
+        if let Some(clip) = self.clip_out.take() {
+            ui.ctx().copy_text(clip);
+        }
+        if std::mem::take(&mut self.paste_asked) {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+        }
+        // Undo, redo, the file keys and the canvas commands' keys, unless a text field
+        // is being typed in.
         if !ui.ctx().egui_wants_keyboard_input() {
             let (undo, redo, save, save_as, open, new) = ui.input(|input| {
                 let command = input.modifiers.command;
@@ -795,6 +945,27 @@ impl Editor {
                     key(egui::Key::N),
                 )
             });
+            let (duplicate, arrange, function, fit) = ui.input(|input| {
+                let key = |key| input.modifiers.command && input.key_pressed(key);
+                (
+                    key(egui::Key::D),
+                    key(egui::Key::L),
+                    key(egui::Key::E),
+                    input.key_pressed(egui::Key::Home),
+                )
+            });
+            if duplicate {
+                let _ = self.duplicate(host);
+            }
+            if arrange {
+                let _ = self.arrange_selection();
+            }
+            if function && !self.canvas.selection().is_empty() {
+                self.preview_function(host);
+            }
+            if fit {
+                self.canvas.fit();
+            }
             if undo {
                 self.undo(host);
             }
@@ -843,82 +1014,148 @@ impl Editor {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.canvas_panel(ui, host));
+        // The panels have now taken in what a field was being typed, so the run
+        // starts with it.
+        if std::mem::take(&mut self.run_asked) {
+            self.run(host);
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         egui::Panel::top("orange-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let _ = ui.toggle_value(&mut self.panels.nodes, "Nodes");
-                let _ = ui.toggle_value(&mut self.panels.properties, "Properties");
-                let _ = ui.toggle_value(&mut self.panels.packages, "Packages");
-                let _ = ui.toggle_value(&mut self.panels.log, "Log");
-                ui.separator();
+                // File
+                let open = self.document.is_some();
                 if self.file_dialogs {
-                    if ui.button("New").on_hover_text("Ctrl+N").clicked() {
+                    if icons::button(ui, true, icons::NEW, "New graph", "Ctrl+N").clicked() {
                         self.ask(FileRequest::New);
                     }
-                    if ui.button("Open…").on_hover_text("Ctrl+O").clicked() {
+                    if icons::button(ui, true, icons::OPEN, "Open a graph…", "Ctrl+O").clicked() {
                         self.ask(FileRequest::Open);
                     }
                 }
+                if icons::button(ui, open, icons::SAVE, "Save", "Ctrl+S").clicked()
+                    && let Err(message) = self.save()
+                {
+                    self.say(message);
+                }
+                if self.file_dialogs
+                    && icons::button(ui, open, icons::SAVE_AS, "Save as…", "Ctrl+Shift+S").clicked()
+                {
+                    self.ask(FileRequest::SaveAs);
+                }
+                ui.separator();
+                // Edit
+                let (undo, redo) = self.can_undo();
+                if icons::button(ui, undo, icons::UNDO, "Undo", "Ctrl+Z").clicked() {
+                    self.undo(host);
+                }
+                if icons::button(ui, redo, icons::REDO, "Redo", "Ctrl+Y").clicked() {
+                    self.redo(host);
+                }
+                let chosen = self.canvas.selection().len();
+                if icons::button(
+                    ui,
+                    chosen > 0,
+                    icons::GROUP,
+                    "Frame the selected nodes in a named group",
+                    "Ctrl+G",
+                )
+                .clicked()
+                {
+                    let _ = self.group_selection(host, "Group");
+                }
+                if icons::button(
+                    ui,
+                    chosen > 0,
+                    icons::FUNCTION,
+                    "Make a reusable function of the selected nodes…",
+                    "Ctrl+E",
+                )
+                .clicked()
+                {
+                    self.preview_function(host);
+                }
+                if icons::button(
+                    ui,
+                    chosen > 1,
+                    icons::ARRANGE,
+                    "Lay the selected nodes out along their wires",
+                    "Ctrl+L",
+                )
+                .clicked()
+                {
+                    let _ = self.arrange_selection();
+                }
+                if icons::button(
+                    ui,
+                    open,
+                    icons::VARIABLE,
+                    "Declare a variable of this graph…",
+                    "",
+                )
+                .clicked()
+                {
+                    self.new_variable_form();
+                }
+                ui.separator();
+                // Run
+                let running = self
+                    .document
+                    .as_ref()
+                    .is_some_and(|document| document.flow.is_some());
+                if icons::button(ui, open, icons::CHECK, "Check the graph for problems", "")
+                    .clicked()
+                {
+                    self.check(host);
+                }
+                if running {
+                    if icons::button(ui, true, icons::STOP, "Stop", "").clicked() {
+                        self.stop(host);
+                    }
+                } else if icons::button(ui, open, icons::RUN, "Run", "").clicked() {
+                    // A field being typed in ends its typing now, in this frame, and the
+                    // run starts after it has been written: one click does both.
+                    ui.memory_mut(egui::Memory::stop_text_input);
+                    self.run_asked = true;
+                }
+                ui.separator();
+                // View
+                let _ = icons::toggle(ui, &mut self.panels.nodes, icons::NODES, "Nodes panel");
+                let _ = icons::toggle(
+                    ui,
+                    &mut self.panels.properties,
+                    icons::PROPERTIES,
+                    "Properties panel",
+                );
+                let _ = icons::toggle(
+                    ui,
+                    &mut self.panels.packages,
+                    icons::PACKAGES,
+                    "Packages panel",
+                );
+                let _ = icons::toggle(ui, &mut self.panels.log, icons::LOG, "Problems and log");
+                if icons::button(ui, open, icons::FIT, "Fit the graph in view", "Home").clicked() {
+                    self.canvas.fit();
+                }
+                if icons::button(ui, open, icons::ACTUAL_SIZE, "Actual size", "").clicked() {
+                    self.canvas.reset_zoom();
+                }
+                let _ = icons::toggle(ui, &mut self.canvas.snap, icons::SNAP, "Snap to grid");
+                ui.label(format!("{:.0}%", self.canvas.zoom() * 100.0));
+                self.language_choice(ui, host);
+                ui.separator();
                 let Some(document) = &self.document else {
                     ui.label("No document is open.");
                     return;
                 };
-                let (running, valid) = (document.flow.is_some(), document.problems.is_empty());
+                let valid = document.problems.is_empty();
                 let title = if document.unsaved {
                     format!("{} (not saved)", document.path)
                 } else {
                     document.path.clone()
                 };
                 let path = document.path.clone();
-                if ui.button("Save").on_hover_text("Ctrl+S").clicked()
-                    && let Err(message) = self.save()
-                {
-                    self.say(message);
-                }
-                if self.file_dialogs
-                    && ui
-                        .button("Save as…")
-                        .on_hover_text("Ctrl+Shift+S")
-                        .clicked()
-                {
-                    self.ask(FileRequest::SaveAs);
-                }
-                if ui.button("Check").clicked() {
-                    self.check(host);
-                }
-                if ui
-                    .button("New variable…")
-                    .on_hover_text("Declare a variable of this graph.")
-                    .clicked()
-                {
-                    self.new_variable_form();
-                }
-                if running {
-                    if ui.button("Stop").clicked() {
-                        self.stop(host);
-                    }
-                } else if ui.button("Run").clicked() {
-                    self.run(host);
-                }
-                ui.separator();
-                let (undo, redo) = self.can_undo();
-                if ui.add_enabled(undo, egui::Button::new("Undo")).clicked() {
-                    self.undo(host);
-                }
-                if ui.add_enabled(redo, egui::Button::new("Redo")).clicked() {
-                    self.redo(host);
-                }
-                ui.separator();
-                if ui.button("Fit").clicked() {
-                    self.canvas.fit();
-                }
-                if ui.button("Actual size").clicked() {
-                    self.canvas.reset_zoom();
-                }
-                ui.label(format!("{:.0}%", self.canvas.zoom() * 100.0));
-                ui.separator();
                 ui.label(match (running, valid) {
                     (true, _) => "Running",
                     (false, true) => "Ready",
@@ -933,6 +1170,32 @@ impl Editor {
                 let _ = ui.strong(name).on_hover_text(path);
             });
         });
+    }
+
+    /// The language the node search also understands, from the host's search words.
+    fn language_choice(&mut self, ui: &mut egui::Ui, host: &Host) {
+        let languages = host.search_words().languages();
+        let current = self.language().to_owned();
+        let name = languages
+            .iter()
+            .find(|(tag, _)| *tag == current)
+            .map_or(current.as_str(), |(_, name)| name)
+            .to_owned();
+        let mut chosen = None;
+        let _ = egui::ComboBox::from_id_salt("orange-language")
+            .selected_text((icons::text(icons::LANGUAGE), format!(" {name}")))
+            .show_ui(ui, |ui| {
+                for (tag, name) in &languages {
+                    if ui.selectable_label(*tag == current, *name).clicked() {
+                        chosen = Some((*tag).to_owned());
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The language node search understands, besides English.");
+        if let Some(tag) = chosen {
+            self.set_language(&tag);
+        }
     }
 
     fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -1002,9 +1265,14 @@ impl Editor {
                         new_variable = ui.button("New variable…").clicked();
                     });
             }
-            let found = self.palette.get(host, &self.search);
+            let language = if self.language.is_empty() {
+                orange_host::SOURCE_LANGUAGE
+            } else {
+                self.language.as_str()
+            };
+            let found = self.palette.get(host, &self.search, language);
             if searching && found.is_empty() {
-                ui.weak("No node matches. Try another word, such as int, text or wait.");
+                ui.weak("No node matches. Try a name or a purpose, such as int, timer or text.");
             }
             for (category, items) in found {
                 // A search opens every section it found something in.
@@ -1014,15 +1282,30 @@ impl Editor {
                     .open(searching.then_some(true))
                     .show(ui, |ui| {
                         for item in items {
-                            let hint =
-                                format!("{}\nClick to add it, or drag it onto the graph.", item.id);
+                            let hint = if item.purpose.is_empty() {
+                                format!("{}\nClick to add it, or drag it onto the graph.", item.id)
+                            } else {
+                                format!(
+                                    "{}\n{}\nClick to add it, or drag it onto the graph.",
+                                    item.purpose, item.id
+                                )
+                            };
                             // Dragged, it carries its kind to where it is let go.
                             let id = ui.scope_id().with(("orange-kind", item.id.as_str()));
-                            let shown = ui.dnd_drag_source(id, item.id.clone(), |ui| {
+                            let shown = ui.dnd_drag_source(id, item.clone(), |ui| {
                                 ui.selectable_label(false, item.label.as_str())
                             });
                             if shown.inner.on_hover_text(hint).clicked() {
                                 add = Some(item.id.clone());
+                            }
+                            // A search says what each found node is for.
+                            if searching && !item.purpose.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(item.purpose.as_str()).small().weak(),
+                                    )
+                                    .truncate(),
+                                );
                             }
                         }
                     });
@@ -1133,6 +1416,9 @@ impl Editor {
             .as_ref()
             .map_or(&[][..], |(_, entries)| entries.as_slice());
         let done = self.canvas.show(ui, &document.graph, triggers);
+        if done.show_problems {
+            self.panels.log = true;
+        }
         if done.moved {
             self.keep_layout();
         }
@@ -1145,6 +1431,12 @@ impl Editor {
         if let Some((node, port, input)) = done.disconnect {
             let _ = self.disconnect(host, (node, &port), input);
         }
+        if let Some((from, to)) = done.remove_wire {
+            let _ = self.disconnect_wire(host, (from.0, &from.1), (to.0, &to.1));
+        }
+        if let Some((node, (from, to))) = done.insert {
+            let _ = self.insert_into_wire(host, node, (from.0, &from.1), (to.0, &to.1));
+        }
         if !done.remove.is_empty() {
             let _ = self.remove_nodes(host, &done.remove);
         }
@@ -1154,6 +1446,7 @@ impl Editor {
         if (done.copy || done.cut)
             && let Some(clip) = self.copy(host)
         {
+            self.clip = Some(clip.clone());
             ui.ctx().copy_text(clip);
             if done.cut {
                 let selection = self.canvas.selection();
@@ -1165,7 +1458,16 @@ impl Editor {
             let _ = self.paste(host, &clip, at);
         }
         if let Some((definition, at)) = done.dropped {
-            let _ = self.add_node_at(host, &definition, at);
+            // A variable dragged from the Variables list becomes a Get, or a Set with Alt.
+            match definition.strip_prefix(declarations::VARIABLE_DRAG) {
+                Some(variable) => {
+                    let set = ui.input(|input| input.modifiers.alt);
+                    let _ = self.drop_variable(host, variable, set, at);
+                }
+                None => {
+                    let _ = self.add_node_at(host, &definition, at);
+                }
+            }
         }
         if let Some((from, at, screen)) = done.loose {
             self.open_quick_add(Some(from), at, screen);
@@ -1173,7 +1475,18 @@ impl Editor {
         if let Some((at, screen)) = done.quick_add {
             self.open_quick_add(None, at, screen);
         }
+        if let Some(edit) = done.group {
+            self.group_edit(host, edit);
+        }
+        if done.group_selection {
+            let _ = self.group_selection(host, "Group");
+        }
+        if let Some((target, at, screen)) = done.context {
+            self.open_menu(target, at, screen);
+        }
+        self.menu_popup(ui.ctx(), host);
         self.quick_add_popup(ui.ctx(), host);
+        self.function_window(ui.ctx(), host);
     }
 }
 
@@ -1189,7 +1502,7 @@ mod tests {
     }
 
     /// A manual entry named `go` that sets the variable `count` to 7.
-    pub(super) fn graph() -> String {
+    pub(crate) fn graph() -> String {
         json!({"format": "orange.graph", "format_version": 1,
             "graph_id": "20000000-0000-4000-8000-0000000000e9", "revision": 1,
             "package_lock": [], "type_lock": [], "events": [], "connections": [],
@@ -1944,7 +2257,7 @@ mod quick_add_tests {
 #[cfg(test)]
 mod glyph_tests {
     /// Every symbol the editor draws on its own, as a button or mark.
-    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”'];
+    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”', 'µ'];
 
     #[test]
     fn every_symbol_the_editor_draws_is_in_its_fonts() {
@@ -1959,5 +2272,371 @@ mod glyph_tests {
                 .collect()
         });
         assert!(missing.is_empty(), "drawn as boxes: {missing:?}");
+    }
+
+    #[test]
+    fn every_icon_is_in_the_bundled_font_and_ordinary_text_is_not_taken_by_it() {
+        let context = egui::Context::default();
+        crate::icons::install(&context);
+        let output = context.run_ui(egui::RawInput::default(), |_| {});
+        output.drop_without_applying_deltas();
+        let icons = egui::FontId::new(14.0, crate::icons::family());
+        let text = egui::FontId::proportional(14.0);
+        context.fonts_mut(|fonts| {
+            let missing: Vec<char> = crate::icons::ALL
+                .iter()
+                .copied()
+                .filter(|icon| !fonts.has_glyph(&icons, *icon))
+                .collect();
+            assert!(missing.is_empty(), "icons drawn as boxes: {missing:?}");
+            // Icons in ordinary text find the icon font too.
+            assert!(
+                crate::icons::ALL
+                    .iter()
+                    .all(|icon| fonts.has_glyph(&text, *icon))
+            );
+        });
+        // The icons are distinct, and installing again changes nothing.
+        let mut seen = crate::icons::ALL.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), crate::icons::ALL.len());
+        crate::icons::install(&context);
+        assert_eq!(
+            context.fonts(|fonts| fonts.definitions().font_data.len()),
+            egui::FontDefinitions::default().font_data.len() + 1
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::tests::graph;
+    use super::*;
+    use orange_host::HostOptions;
+
+    fn id(n: u32) -> String {
+        format!("10000000-0000-4000-8000-{n:012x}")
+    }
+
+    /// Where the text `text` is drawn in `shapes`, the rightmost when it is drawn more
+    /// than once (the properties panel is on the right), else the leftmost.
+    fn drawn_at(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<egui::Pos2> {
+        drawn_where(shapes, text, true)
+    }
+
+    fn drawn_where(
+        shapes: &[egui::epaint::ClippedShape],
+        text: &str,
+        rightmost: bool,
+    ) -> Option<egui::Pos2> {
+        let mut found: Vec<egui::Pos2> = Vec::new();
+        for clipped in shapes {
+            let mut stack = vec![&clipped.shape];
+            while let Some(shape) = stack.pop() {
+                match shape {
+                    egui::Shape::Text(drawn) if drawn.galley.text() == text => {
+                        found.push(drawn.visual_bounding_rect().center());
+                    }
+                    egui::Shape::Vec(inner) => stack.extend(inner.iter()),
+                    _ => {}
+                }
+            }
+        }
+        if rightmost {
+            found.into_iter().max_by(|a, b| a.x.total_cmp(&b.x))
+        } else {
+            found.into_iter().min_by(|a, b| a.x.total_cmp(&b.x))
+        }
+    }
+
+    #[test]
+    fn one_click_on_run_writes_the_field_being_typed_in_and_starts_the_run() {
+        typed_then_run(true);
+    }
+
+    #[test]
+    fn one_click_on_run_writes_a_value_being_typed_on_a_card_and_starts_the_run() {
+        typed_then_run(false);
+    }
+
+    /// Types 9 after the 7 of the set-variable node, in the properties panel or on its
+    /// card, then clicks Run once.
+    fn typed_then_run(panel: bool) {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = host.bind(&graph()).unwrap();
+        editor.open(&mut host, "typed.json", text);
+        editor.panels.nodes = false;
+        editor.panels.log = false;
+        editor.canvas.select(Some(id(2).parse().unwrap()));
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let frame = |editor: &mut Editor, host: &mut Host, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let output = context.run_ui(input, |ui| editor.ui(ui, host));
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let click = |at: egui::Pos2| {
+            [
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ]
+        };
+        let shapes = frame(&mut editor, &mut host, Vec::new());
+        let field = drawn_where(&shapes, "7", panel).expect("the value field shows 7");
+        // A card's whole number is typed after a double click.
+        let clicks = if panel { 1 } else { 2 };
+        for _ in 0..clicks {
+            for events in click(field) {
+                let _ = frame(&mut editor, &mut host, events);
+            }
+        }
+        let _ = frame(&mut editor, &mut host, Vec::new());
+        assert!(
+            context.egui_wants_keyboard_input(),
+            "the field has the keys"
+        );
+        let shapes = frame(
+            &mut editor,
+            &mut host,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::End,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::Text("9".into()),
+            ],
+        );
+        // Typed, not yet written.
+        assert!(!editor.document.as_ref().unwrap().unsaved);
+        // A quick click: the system hands over the press and the release in one frame.
+        let run = drawn_at(&shapes, &crate::icons::RUN.to_string()).expect("the toolbar shows Run");
+        let _ = frame(&mut editor, &mut host, click(run).concat());
+        let document = editor.document.as_ref().unwrap();
+        assert!(document.flow.is_some(), "one click started the run");
+        let saved = document.draft.text().unwrap();
+        assert!(saved.contains("\"79\""), "the typed value was written");
+        // And the run has it: the entry sets `count` to what was typed, not to 7.
+        let flow = document.flow.as_ref().unwrap().0;
+        host.trigger(flow, id(1).parse().unwrap(), None).unwrap();
+        let count: orange_host::VariableId = id(100).parse().unwrap();
+        let started = std::time::Instant::now();
+        let mut value = None;
+        while value.is_none() && started.elapsed() < std::time::Duration::from_secs(10) {
+            value = host
+                .inspect(flow, move |run| run.variable(count).cloned())
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(value, Some(orange_host::Value::I64(79)));
+    }
+}
+
+/// Most outputs previewed one at a time when they cannot all be previewed together.
+const MAX_PREVIEWED: usize = 64;
+
+impl Editor {
+    /// While nothing runs, shows beside each output of a pure node (a value, an
+    /// operator) what it computes from what is wired into it, without running the
+    /// graph: Greater wired to two Ints shows true or false as soon as it is wired.
+    /// Outputs that depend on a trigger, a variable or an effect are left blank.
+    pub fn preview_values(&mut self, host: &mut Host) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if document.flow.is_some() {
+            return;
+        }
+        let Ok(text) = document.draft.text() else {
+            return;
+        };
+        let wanted: Vec<(NodeId, orange_host::PortKey)> = document
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| !node.entry && node.ports.iter().all(|port| !port.exec))
+            .flat_map(|node| {
+                node.ports
+                    .iter()
+                    .filter(|port| !port.input)
+                    .filter_map(move |port| Some((node.id, port.id.parse().ok()?)))
+            })
+            .take(MAX_PREVIEWED)
+            .collect();
+        self.canvas.clear_run();
+        if wanted.is_empty() {
+            return;
+        }
+        // All at once when every one can be previewed; otherwise one by one, so one
+        // output that cannot does not blank the rest.
+        let found = match host.preview(&text, &wanted) {
+            Ok(found) => found,
+            Err(_) => {
+                let Ok(saved) = serde_json::from_str(&text) else {
+                    return;
+                };
+                let mut upstream = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
+                for wire in &document.graph.wires {
+                    upstream.entry(wire.to.0).or_default().push(wire.from.0);
+                }
+                wanted
+                    .iter()
+                    .filter_map(|one| {
+                        let scoped = preview_dependencies(&saved, &upstream, one.0)?;
+                        host.preview(&scoped.to_string(), std::slice::from_ref(one))
+                            .ok()
+                    })
+                    .flatten()
+                    .collect()
+            }
+        };
+        for previewed in found {
+            if let Ok(value) = &previewed.value {
+                self.canvas.show_value(
+                    previewed.node,
+                    previewed.port.to_string(),
+                    orange_host::plain(value),
+                    orange_host::inspect(value),
+                );
+            }
+        }
+    }
+}
+
+/// Retain the requested root node and its upstream dependencies. The host still
+/// validates and compiles the projection, including the original providers and types.
+fn preview_dependencies(
+    saved: &serde_json::Value,
+    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    output: NodeId,
+) -> Option<serde_json::Value> {
+    let mut nodes = std::collections::BTreeSet::new();
+    let mut pending = vec![output];
+    while let Some(node) = pending.pop() {
+        if nodes.insert(node)
+            && let Some(sources) = upstream.get(&node)
+        {
+            pending.extend(sources);
+        }
+    }
+    let contains = |id: &serde_json::Value| {
+        id.as_str()
+            .and_then(|id| id.parse::<NodeId>().ok())
+            .is_some_and(|id| nodes.contains(&id))
+    };
+    let mut scoped = saved.clone();
+    scoped["nodes"]
+        .as_array_mut()?
+        .retain(|node| contains(&node["id"]));
+    scoped["edges"]
+        .as_array_mut()?
+        .retain(|edge| contains(&edge["from"]["node"]) && contains(&edge["to"]["node"]));
+    Some(scoped)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use orange_host::HostOptions;
+
+    #[test]
+    fn an_operator_shows_its_result_while_it_is_wired_without_running() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = orange_host::new_document().unwrap();
+        editor.open(&mut host, "graph.json", text);
+        let a = editor
+            .add_node_at(&mut host, "core/whole-number", [0.0, 0.0])
+            .unwrap();
+        let b = editor
+            .add_node_at(&mut host, "core/whole-number", [0.0, 120.0])
+            .unwrap();
+        let greater = editor
+            .add_node_at(&mut host, "org.orange.math/greater", [300.0, 60.0])
+            .unwrap();
+        assert!(editor.set_input(&mut host, (a, "value"), Some("12")));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("7")));
+        assert!(editor.connect(&mut host, (a, "result"), (greater, "a")));
+        assert!(editor.connect(&mut host, (b, "result"), (greater, "b")));
+        assert_eq!(editor.canvas().shown_value(greater, "result"), Some("true"));
+        assert_eq!(editor.canvas().shown_value(a, "result"), Some("12"));
+        // What Greater receives shows on its inputs too.
+        let graph = editor.graph().unwrap().clone();
+        assert_eq!(
+            editor
+                .canvas()
+                .port_value(&graph, greater, "b", true)
+                .map(|v| v.short.clone()),
+            Some("7".to_owned())
+        );
+        assert!(editor.set_input(&mut host, (b, "value"), Some("30")));
+        assert_eq!(
+            editor.canvas().shown_value(greater, "result"),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn and_shows_both_inputs_and_its_unwired_result() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let a = editor
+            .add_node_at(&mut host, "core/true-or-false", [0.0, 0.0])
+            .unwrap();
+        let b = editor
+            .add_node_at(&mut host, "core/true-or-false", [0.0, 120.0])
+            .unwrap();
+        let and = editor
+            .add_node_at(&mut host, "core/and", [300.0, 60.0])
+            .unwrap();
+        assert!(editor.set_input(&mut host, (a, "value"), Some("true")));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("false")));
+        assert!(editor.connect(&mut host, (a, "result"), (and, "a")));
+        assert!(editor.connect(&mut host, (b, "result"), (and, "b")));
+        let graph = editor.graph().unwrap().clone();
+        for (port, expected) in [("a", "true"), ("b", "false")] {
+            assert_eq!(
+                editor
+                    .canvas()
+                    .port_value(&graph, and, port, true)
+                    .map(|value| value.short.as_str()),
+                Some(expected)
+            );
+        }
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("false"));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("true")));
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("true"));
+        editor
+            .add_node_at(&mut host, "org.orange.math/greater", [600.0, 0.0])
+            .unwrap();
+        assert_eq!(editor.canvas().shown_value(and, "result"), Some("true"));
+        assert!(editor.disconnect(&mut host, (and, "b"), true));
+        assert_eq!(editor.canvas().shown_value(and, "result"), None);
     }
 }

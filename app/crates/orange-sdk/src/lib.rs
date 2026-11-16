@@ -135,6 +135,22 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
 /// an adapter that needs a handshake performs it on first use, from a worker.
 pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String>;
+    /// What the adapter is called and what it is for, for a person choosing one. The
+    /// default is empty: an editor then names it from its kind.
+    fn about(&self) -> AdapterAbout {
+        AdapterAbout::default()
+    }
+    /// Text settings an editor can show as fields, such as a URL or a password. A
+    /// [`secret`](SettingText::secret) one is typed masked and kept in the host's
+    /// credential store; the settings hold only its `credential://` reference. The
+    /// default offers none.
+    fn texts(&self) -> Vec<SettingText> {
+        Vec::new()
+    }
+    /// True-or-false settings an editor can show as switches. The default offers none.
+    fn toggles(&self) -> Vec<SettingToggle> {
+        Vec::new()
+    }
     /// [`open`](Self::open) for an adapter whose service can replace a secret it was
     /// given: it keeps `renew` and reports each replacement. The host calls this one;
     /// the default ignores `renew`.
@@ -152,6 +168,90 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn choices(&self) -> Vec<SettingChoices> {
         Vec::new()
     }
+    /// Number settings an editor can show as fields, such as an input's threshold.
+    /// The default offers none.
+    fn fields(&self) -> Vec<SettingField> {
+        Vec::new()
+    }
+    /// Whether [`probe`](Self::probe) has something to show, asked without opening
+    /// anything. The default says no.
+    fn probes(&self) -> bool {
+        false
+    }
+    /// A live reading of what a connection with `settings` would see, such as an input
+    /// device's level, for an editor to show while a person sets the connection up.
+    /// `None` when the adapter has nothing to show; an error says why it cannot.
+    /// Called on the editor's thread: it starts its work elsewhere and returns at once.
+    fn probe(&self, settings: &Map<String, Json>) -> Option<Result<Box<dyn Probe>, String>> {
+        let _ = settings;
+        None
+    }
+}
+
+/// A live reading from [`ConnectionAdapter::probe`]. Dropping it stops the work.
+pub trait Probe: Send + 'static {
+    /// The latest reading, or why there is none (the device could not be opened).
+    /// Never waits.
+    fn read(&self) -> Result<f64, String>;
+}
+
+/// A number setting of a connection, from [`ConnectionAdapter::fields`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingField {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    /// What it is called, such as "Threshold".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// The unit typed in, such as `dBFS` or `ms`.
+    pub unit: String,
+    pub min: f64,
+    pub max: f64,
+    /// What leaving it out means; `None` when that depends on other settings.
+    pub default: Option<f64>,
+    /// Only whole numbers.
+    pub whole: bool,
+}
+
+/// What a connection adapter is, from [`ConnectionAdapter::about`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdapterAbout {
+    /// What it is called, such as "Web service (HTTP)".
+    pub label: String,
+    /// One sentence on what a connection of it is for.
+    pub purpose: String,
+}
+
+/// A text setting of a connection, from [`ConnectionAdapter::texts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingText {
+    /// Where it is in the settings: its name, or names joined by `/` for one inside an
+    /// object, such as `basic/password`.
+    pub setting: String,
+    /// What it is called, such as "Password".
+    pub label: String,
+    /// One sentence on what it does.
+    pub help: String,
+    /// An example shown while it is empty.
+    pub hint: String,
+    /// It holds a secret: typed masked and kept in the credential store.
+    pub secret: bool,
+    /// The connection cannot open without it.
+    pub required: bool,
+    /// A list of texts, typed one per line, such as topics to subscribe to.
+    pub list: bool,
+}
+
+/// A true-or-false setting of a connection, from [`ConnectionAdapter::toggles`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingToggle {
+    /// The setting's name in the connection's settings object.
+    pub setting: String,
+    pub label: String,
+    pub help: String,
+    /// What leaving it out means.
+    pub default: bool,
 }
 
 /// The values a connection setting can take on this machine, from
@@ -164,6 +264,9 @@ pub struct SettingChoices {
     /// What leaving the setting out means.
     pub unset: String,
     pub values: Vec<String>,
+    /// What each of `values` is called, in the same order, when the value is an ID a
+    /// person cannot read; empty shows the values themselves.
+    pub labels: Vec<String>,
     /// Why the values could not be listed, when they could not.
     pub problem: Option<String>,
 }
@@ -443,6 +546,50 @@ impl Definition {
         self.editor("connection_adapter", adapter.into());
         self.connection()
     }
+    /// What the node's `then` output is called on a card, when "Exit" would mislead:
+    /// "Queued" for a node that continues once a message is queued, not delivered.
+    #[must_use]
+    pub fn then_label(mut self, label: &str) -> Self {
+        let key = format!(
+            "{}-then",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        self.editor(
+            "then_label",
+            serde_json::json!({"key": key, "fallback": label}),
+        );
+        self
+    }
+    /// The text input `port` holds a path on this machine: an editor offers the
+    /// system's chooser beside it, for a folder when `folder`, else for a file with one
+    /// of `extensions` (any file when empty).
+    #[must_use]
+    pub fn path_input(self, port: &str, folder: bool, extensions: &[&str]) -> Self {
+        self.path_hint(
+            serde_json::json!({"port": port, "folder": folder, "extensions": extensions}),
+        )
+    }
+    /// The text input `port` names a file the node writes, such as a recording: an
+    /// editor offers the system's save chooser beside it, for a file with one of
+    /// `extensions` (any file when empty).
+    #[must_use]
+    pub fn save_path_input(self, port: &str, extensions: &[&str]) -> Self {
+        self.path_hint(serde_json::json!({"port": port, "save": true, "extensions": extensions}))
+    }
+    fn path_hint(mut self, path: Json) -> Self {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor
+            && let Json::Array(paths) = editor
+                .entry("paths")
+                .or_insert_with(|| Json::Array(Vec::new()))
+        {
+            paths.push(path);
+        }
+        self
+    }
     fn editor(&mut self, key: &str, value: Json) {
         let editor = self
             .json
@@ -692,7 +839,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 4",
+        "orange-plugin 5",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

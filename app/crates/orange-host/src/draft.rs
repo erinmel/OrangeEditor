@@ -157,8 +157,13 @@ impl Draft {
         if moved.is_empty() {
             return Ok(false);
         }
-        // Layout changes no type, so it needs no inference.
-        match self.document.apply(moved) {
+        self.layout(moved)
+    }
+
+    /// Applies edits of the document's layout as one edit that can be undone. Layout
+    /// changes no type, so it needs no inference. Returns whether anything changed.
+    pub(crate) fn layout(&mut self, commands: Vec<DocCommand>) -> Result<bool, HostError> {
+        match self.document.apply(commands) {
             Ok(committed) => {
                 self.record(committed);
                 Ok(true)

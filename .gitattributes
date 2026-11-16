@@ -13,3 +13,4 @@
 *.jpg binary
 *.wasm binary
 *.orangeplug binary
+*.ttf binary
