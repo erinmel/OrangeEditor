@@ -82,7 +82,7 @@ pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpRespons
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
-pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
+pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};

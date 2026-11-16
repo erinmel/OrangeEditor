@@ -1735,6 +1735,9 @@ fn field_text(value: &str) -> String {
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
 fn step_label(port: &PortView) -> Option<String> {
+    if let Some(label) = &port.label {
+        return Some(label.clone());
+    }
     match (port.exec, port.input, port.id.as_str()) {
         (true, true, "in") => Some("Enter".to_owned()),
         (true, false, "then") => Some("Exit".to_owned()),
@@ -1818,6 +1821,7 @@ mod tests {
             ty: (!exec).then(|| "core/i64@1".to_owned()),
             value: None,
             connected: false,
+            label: None,
         }
     }
     fn node(n: u32, ports: Vec<PortView>) -> NodeView {
@@ -1835,6 +1839,7 @@ mod tests {
             references: Vec::new(),
             types: Vec::new(),
             variadic: Vec::new(),
+            paths: Vec::new(),
         }
     }
     fn wire(from: u32, to: u32) -> WireView {
@@ -2147,6 +2152,7 @@ mod tests {
             ty: Some(ty.into()),
             value: None,
             connected,
+            label: None,
         };
         assert_eq!(
             Control::of(&port("core/bool@1", false)),
@@ -2182,6 +2188,12 @@ mod tests {
             step_label(&port("then", false, true)).as_deref(),
             Some("Exit")
         );
+        // A definition that names its way on, such as a send that only queues, says so.
+        let queued = PortView {
+            label: Some("Queued".into()),
+            ..port("then", false, true)
+        };
+        assert_eq!(step_label(&queued).as_deref(), Some("Queued"));
         assert_eq!(step_label(&port("in", true, false)), None);
         assert_eq!(step_label(&port("completed", false, true)), None);
         assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");

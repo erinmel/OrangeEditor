@@ -443,6 +443,39 @@ impl Definition {
         self.editor("connection_adapter", adapter.into());
         self.connection()
     }
+    /// What the node's `then` output is called on a card, when "Exit" would mislead:
+    /// "Queued" for a node that continues once a message is queued, not delivered.
+    #[must_use]
+    pub fn then_label(mut self, label: &str) -> Self {
+        let key = format!(
+            "{}-then",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        self.editor(
+            "then_label",
+            serde_json::json!({"key": key, "fallback": label}),
+        );
+        self
+    }
+    /// The text input `port` holds a path on this machine: an editor offers the
+    /// system's chooser beside it, for a folder when `folder`, else for a file with one
+    /// of `extensions` (any file when empty).
+    #[must_use]
+    pub fn path_input(mut self, port: &str, folder: bool, extensions: &[&str]) -> Self {
+        let path = serde_json::json!({"port": port, "folder": folder, "extensions": extensions});
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor
+            && let Json::Array(paths) = editor
+                .entry("paths")
+                .or_insert_with(|| Json::Array(Vec::new()))
+        {
+            paths.push(path);
+        }
+        self
+    }
     fn editor(&mut self, key: &str, value: Json) {
         let editor = self
             .json
