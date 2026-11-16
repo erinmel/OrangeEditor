@@ -1,5 +1,33 @@
 # Tooling, environment and research register
 
+## Service gaps from the editor audit — 2026-11-15
+
+Branch `feat/service-gaps` on `feat/editor-debugging`. Windows 11 Home 10.0.26300,
+Rust 1.99.1, workspace lockfile unchanged (cpal 0.18.2, egui 0.37.0, ureq 3.5.1,
+tungstenite 0.30.0). API evidence: installed `cpal-0.18.2/src/lib.rs` (`DeviceId`,
+`Display`/`FromStr` as `<host>:<id>`), `src/traits.rs` (`HostTrait::device_by_id`,
+`DeviceTrait::id`) and `src/error.rs` (`ErrorKind`); `egui-0.37.0/src/memory/mod.rs`
+(`Memory::stop_text_input` clears focus at once, `lost_focus` compares with the
+previous frame).
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p orange-audio --lib -- --ignored every_listed` | Pass: two outputs and one input listed with `wasapi:{…}` identifiers, each found again by its identifier |
+| `cargo run -p orange-cli -- devices` | Each device printed with its name and identifier |
+| `cargo test -p orange-audio --lib -- --ignored the_default_microphone` | First run failed: the WASAPI capture stream reports `Xrun` right after opening, which the new reopen logic took for a lost device; non-fatal kinds are now ignored. Then pass, loudest level -46.0 dBFS over 2 s |
+| `cargo test -p orange-net` | Pass, loopback HTTP and WebSocket servers included (no AccessDenied here) |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,891 tests, 0 failed |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Run while typing (FR-110): the headless editor tests click into the field, type and
+click Run, with the press and release in one frame as a quick click arrives. The
+former code passed them too, because an edit reaches a running flow, so the reported
+first-click failure was not reproduced headlessly; Run now ends the typing and starts
+the run after the panels have written the field, in the same frame. Not checked: the
+desktop file chooser and the level meter clicked through in the window, CoreAudio and
+ALSA identifiers, a device unplugged while a sound plays.
+
 ## Audio from the editor — 2026-11-15
 
 Reproduced first: on a host with `orange_audio::package()`, `Host::add_node` refused

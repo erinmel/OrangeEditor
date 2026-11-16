@@ -146,8 +146,10 @@ its tier, can be switched off by ID and on again without removing it; the switch
 saved beside the stored archives and applies from the next start (02, "Package
 switches"). The plugin interface revision in `orange_sdk::ABI` is 2 since
 `ServicePackage` carries a display name and description, 3 since it carries an
-update source, and 4 (2026-11-15) since `ConnectionAdapter` has `choices` and
-`Presentation` carries `connection_adapter`.
+update source, 4 (2026-11-15) since `ConnectionAdapter` has `choices` and
+`Presentation` carries `connection_adapter`, and 5 (2026-11-15) since
+`ConnectionAdapter` has `fields`, `probes` and `probe`, `SettingChoices` has `labels`
+and `Presentation` carries `then_label` and `paths`.
 
 Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
 at a manifest's `update.feed` URL is
@@ -245,7 +247,12 @@ Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 of that kind, so an editor binds a dropped node to one (2026-11-15);
 `Definition::input_default` gives an input a literal used when nothing is written or
 wired; `ConnectionAdapter::choices` lists the values a setting can take on this
-machine (such as audio devices), and is called only when an editor asks. This tier is compiled into the application or loaded from a
+machine (such as audio devices, with `labels` naming values a person cannot read), and
+is called only when an editor asks. `ConnectionAdapter::fields` lists number settings
+an editor shows as fields, and `probe` gives a live reading (`Probe::read`, never
+waiting) taken apart from every flow while a person sets a connection up, stopped by
+dropping it (2026-11-15). `Definition::then_label` names a node's way on and
+`Definition::path_input` marks a text input that holds a file or folder. This tier is compiled into the application or loaded from a
 library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
 application is a Wasm component or a graph package.
 

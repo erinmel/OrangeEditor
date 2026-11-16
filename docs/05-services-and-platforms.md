@@ -137,6 +137,13 @@ names are verified against the bundled Mozilla roots (`webpki-roots`), not the s
 trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
 are not implemented.
 
+Answers and failures (2026-11-15, FR-107): the request nodes also return `success`,
+true for 200 to 299, so a graph branches on it while a 404 or 500 still arrives as
+`status` and `response`; `failed` stays for a request that could not be completed.
+`method` defaults to `GET` and `path`, `content` (and on the binary and streamed
+nodes `content_type` and `headers`) to empty, so a GET with nothing typed validates
+and sends no body.
+
 WebSocket (2026-11-10): adapter `org.orange.net/websocket`, setting `url` (`ws://` or
 `wss://`, same TLS stack). A session is one socket with its own I/O thread, started
 when the connection is opened; it connects in the background and reconnects with
@@ -150,7 +157,11 @@ hear each message. A diagram whose mailbox is full misses that message. Binary
 messages are ignored; ping/pong is answered by the library. Not implemented: binary
 payloads, subprotocols and headers, connection-state events (opened, closed, failed),
 per-message acknowledgement, and messages that arrived before a diagram started
-listening. Nothing else in this section is
+listening. State (2026-11-15, FR-107): the entries `ws-connected` (payload the URL) and
+`ws-disconnected` (payload why: closed by the server, connection lost) fire each time
+the socket opens or an open socket stops; a failed attempt to connect fires neither.
+`ws-status` reads `connected` and `queued`, the messages waiting. The sends' `then` is
+shown as "Queued" (definition hint `then_label`, 12 §4). Nothing else in this section is
 implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
 retries, redirects policy, proxy or DNS rules, or Test Connection. The text
 below remains a proposal.
@@ -199,8 +210,8 @@ AMQP 1.0 is a different separately versioned optional adapter, not a baseline co
 ## Audio architecture
 
 Implemented part (2026-11-11; `orange-audio`, package `org.orange.audio`). Connections:
-`org.orange.audio/output` (setting `device`: a device name, `null` for the built-in
-silent device, absent for the system default) and `org.orange.audio/input` (`device`,
+`org.orange.audio/output` (setting `device`: the device's endpoint identifier or name,
+`null` for the built-in silent device, absent for the system default) and `org.orange.audio/input` (`device`,
 `threshold_db` default -30, `release_db` default 6 dB below it, `window_ms` 5 to 1,000,
 default 50, `hold_ms` 0 to 60,000, default 0: how long the level must stay at the
 threshold or above, in whole measurements, before the entry fires). Nodes: `play` (inputs `path`, `gain` 0 to 8) reads a WAV file with
@@ -249,11 +260,35 @@ runtime's entropy rules, 11) wired into `pick`; the audio package draws no rando
 itself. Device lists were read on Windows 11 (WASAPI) only (10); macOS and Linux
 listing, and devices that appear or disappear while the list is open, are not checked.
 
+Devices that come and go (2026-11-15, FR-108): devices are listed with cpal 0.18's
+`DeviceId`, persisted as `<host>:<id>` (WASAPI endpoint ID, CoreAudio UID, ALSA PCM
+name), and the choice list writes the identifier and shows the name; a setting that
+is not an identifier, or names an endpoint that is gone, is matched by name, so older
+documents still open. An output that could not be opened is not remembered: the next
+node that plays opens it again; one whose stream reported a fatal error (device not
+available, host unavailable, stream invalidated) or that stalled is dropped and
+reopened at the next play. An input whose device is missing or fails is reopened
+with backoff from 500 ms to 5 s, and `input-level` fails while it is down. Overruns
+(`Xrun`), followed route changes and a refused real-time mode are not failures. The
+error callback only stores a flag; the data callbacks are unchanged.
+
+Setting up from the editor (2026-11-15, FR-109): `play` and `loop` mark `path` as a
+sound file and `play-from` marks `folder` as a folder (definition hint `paths`, 12 §4),
+and the editor asks the application for the system's chooser. The input adapter lists
+`threshold_db`, `release_db`, `hold_ms` and `window_ms` through
+`ConnectionAdapter::fields`, and `ConnectionAdapter::probe` measures the chosen device
+apart from every flow while the connection form's live level is switched on; the
+form marks the threshold and release on the meter and lets the device go when it
+closes. Identifiers were checked on Windows (WASAPI) only (10); CoreAudio and ALSA
+identifiers, a device unplugged while playing, and silent rerouting of a default
+output are not checked. Rerouting to another device is not done: only the same
+setting is opened again.
+
 Not implemented from the design below: `AudioAsset` handles, control of one sound
 among several on a connection (separate connections are separate players),
 streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
 Opus and AAC, resampling better than linear interpolation,
-hotplug and device-change handling, and multi-device
+events for devices that appear or disappear, and multi-device
 synchronization. Crossings closer than
 10 ms are reported as one.
 
