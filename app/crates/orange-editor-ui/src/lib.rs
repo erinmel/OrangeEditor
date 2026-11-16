@@ -103,6 +103,8 @@ struct Document {
     problem_nodes: Vec<Option<NodeId>>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
+    /// The latest value of each variable a run wrote, by variable ID, as text.
+    values: std::collections::BTreeMap<String, String>,
 }
 
 pub use orange_host::MAX_UNDO;
@@ -241,6 +243,7 @@ impl Editor {
             problems: Vec::new(),
             problem_nodes: Vec::new(),
             flow: None,
+            values: std::collections::BTreeMap::new(),
         });
         self.check(host);
     }
@@ -810,6 +813,14 @@ impl Editor {
                         );
                     }
                 }
+                FlowEvent::Variables(changed) => {
+                    for (variable, value) in changed {
+                        let shown = value
+                            .as_ref()
+                            .map_or_else(|| "unset".to_owned(), orange_host::plain);
+                        let _ = document.values.insert(variable.to_string(), shown);
+                    }
+                }
                 // Values from before an edit or the end of the run are kept, dimmed.
                 FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
@@ -1244,7 +1255,16 @@ impl Editor {
             let _ = self.paste(host, &clip, at);
         }
         if let Some((definition, at)) = done.dropped {
-            let _ = self.add_node_at(host, &definition, at);
+            // A variable dragged from the Variables list becomes a Get, or a Set with Alt.
+            match definition.strip_prefix(declarations::VARIABLE_DRAG) {
+                Some(variable) => {
+                    let set = ui.input(|input| input.modifiers.alt);
+                    let _ = self.drop_variable(host, variable, set, at);
+                }
+                None => {
+                    let _ = self.add_node_at(host, &definition, at);
+                }
+            }
         }
         if let Some((from, at, screen)) = done.loose {
             self.open_quick_add(Some(from), at, screen);
@@ -1275,7 +1295,7 @@ mod tests {
     }
 
     /// A manual entry named `go` that sets the variable `count` to 7.
-    pub(super) fn graph() -> String {
+    pub(crate) fn graph() -> String {
         json!({"format": "orange.graph", "format_version": 1,
             "graph_id": "20000000-0000-4000-8000-0000000000e9", "revision": 1,
             "package_lock": [], "type_lock": [], "events": [], "connections": [],
@@ -2030,7 +2050,7 @@ mod quick_add_tests {
 #[cfg(test)]
 mod glyph_tests {
     /// Every symbol the editor draws on its own, as a button or mark.
-    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”'];
+    pub(crate) const SYMBOLS: &[char] = &['×', '—', '…', '!', '+', '·', '−', '“', '”', '•'];
 
     #[test]
     fn every_symbol_the_editor_draws_is_in_its_fonts() {

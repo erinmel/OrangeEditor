@@ -185,7 +185,7 @@ impl Host {
                 }
             })
             .collect();
-        list.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        list.sort_by_key(|adapter| adapter.label.to_lowercase());
         list
     }
 

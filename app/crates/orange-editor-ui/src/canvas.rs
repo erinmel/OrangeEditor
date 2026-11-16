@@ -323,7 +323,7 @@ impl Palette {
 
 /// The color of a value port, by the family of its type. The shape of the dot, not
 /// the color, tells a value from a step.
-fn type_color(ty: Option<&str>) -> Color32 {
+pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
     let name = ty.unwrap_or_default();
     let family = |words: &[&str]| words.iter().any(|word| name.starts_with(word));
     if family(&["core/string"]) {
