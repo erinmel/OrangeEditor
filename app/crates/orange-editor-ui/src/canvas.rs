@@ -108,6 +108,8 @@ pub struct CanvasResponse {
     pub moved: bool,
     /// The problem marker was clicked.
     pub show_problems: bool,
+    /// The marker for a failed execution step was clicked.
+    pub show_runtime_log: bool,
     /// The node that was clicked.
     pub selected: Option<NodeId>,
     /// A value was written on an input with its control on the card, typed as a
@@ -1218,7 +1220,7 @@ impl Canvas {
                     error: true,
                     text: format!("Failed in the last run: {why}"),
                 };
-                done.show_problems |= draw_mark(
+                done.show_runtime_log |= draw_mark(
                     ui,
                     &painter,
                     rect,

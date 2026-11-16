@@ -2,6 +2,64 @@
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
 use orange_host::Host;
 
+/// Full-width target shared by the docked palette and the canvas picker.
+pub(crate) fn result_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    detail: &str,
+    highlighted: bool,
+) -> egui::Response {
+    let height = if detail.is_empty() { 26.0 } else { 42.0 };
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::accesskit::Role::Button,
+            ui.is_enabled(),
+            highlighted,
+            name,
+        )
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let visuals = ui.style().interact_selectable(&response, highlighted);
+    if highlighted || response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 5.0, visuals.weak_bg_fill);
+    }
+    if response.has_focus() || highlighted {
+        ui.painter()
+            .rect_stroke(rect, 5.0, visuals.fg_stroke, egui::StrokeKind::Inside);
+    }
+    let width = (rect.width() - 16.0).max(0.0);
+    let draw = |text: egui::WidgetText, y| {
+        let galley = text.into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            width,
+            egui::TextStyle::Body,
+        );
+        ui.painter().galley(
+            egui::pos2(rect.min.x + 8.0, y),
+            galley,
+            visuals.text_color(),
+        );
+    };
+    draw(egui::RichText::new(name).strong().into(), rect.min.y + 5.0);
+    if !detail.is_empty() {
+        draw(
+            egui::RichText::new(detail)
+                .small()
+                .color(ui.visuals().weak_text_color())
+                .into(),
+            rect.min.y + 23.0,
+        );
+    }
+    response
+}
+
 /// Own only the currently displayed result, not old searches or provider snapshots.
 #[derive(Debug, Default)]
 pub(crate) struct PaletteCache {

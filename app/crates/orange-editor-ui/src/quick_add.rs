@@ -149,11 +149,10 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return;
         };
-        let choices = self.quick_choices(host, &quick.search);
         let wired = quick.from.is_some();
         let mut search = quick.search.clone();
         let mut focused = quick.focused;
-        let mut highlighted = quick.highlighted.min(choices.len().saturating_sub(1));
+        let mut highlighted = quick.highlighted;
         let mut picked = None;
         let mut close = false;
         let shown = egui::Area::new(egui::Id::unique("orange-quick-add"))
@@ -169,13 +168,6 @@ impl Editor {
                             input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
                         )
                     });
-                    let last = choices.len().min(SHOWN).saturating_sub(1);
-                    if down {
-                        highlighted = (highlighted + 1).min(last);
-                    }
-                    if up {
-                        highlighted = highlighted.saturating_sub(1);
-                    }
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut search)
                             .hint_text(if wired {
@@ -187,6 +179,15 @@ impl Editor {
                     );
                     if field.changed() {
                         highlighted = 0;
+                    }
+                    let choices = self.quick_choices(host, &search);
+                    let last = choices.len().min(SHOWN).saturating_sub(1);
+                    highlighted = highlighted.min(last);
+                    if down {
+                        highlighted = (highlighted + 1).min(last);
+                    }
+                    if up {
+                        highlighted = highlighted.saturating_sub(1);
                     }
                     if !focused {
                         field.request_focus();
@@ -213,41 +214,23 @@ impl Editor {
                             }
                             for (index, choice) in choices.iter().take(SHOWN).enumerate() {
                                 let on = index == highlighted;
-                                let row = ui.horizontal(|ui| {
-                                    let name = match &choice.input {
-                                        Some(input) => format!(
-                                            "{}  to {}",
-                                            choice.label,
-                                            crate::port_label(input)
-                                        ),
-                                        None => choice.label.clone(),
-                                    };
-                                    let pressed = ui.selectable_label(on, name);
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| ui.weak(choice.category.as_str()),
-                                    );
-                                    pressed
-                                });
-                                let mut hover = choice.definition.clone();
-                                if !choice.purpose.is_empty() {
-                                    hover = format!("{}\n{hover}", choice.purpose);
-                                }
+                                let name = match &choice.input {
+                                    Some(input) => {
+                                        format!("{} → {}", choice.label, crate::port_label(input))
+                                    }
+                                    None => choice.label.clone(),
+                                };
+                                let detail = if choice.purpose.is_empty() {
+                                    choice.category.clone()
+                                } else {
+                                    format!("{} · {}", choice.category, choice.purpose)
+                                };
+                                let row = palette::result_row(ui, &name, &detail, on);
                                 if on && (up || down) {
-                                    row.inner.scroll_to_me(None);
+                                    row.scroll_to_me(None);
                                 }
-                                if row.inner.on_hover_text(hover).clicked() {
+                                if row.on_hover_text(&choice.definition).clicked() {
                                     picked = Some(choice.clone());
-                                }
-                                if !choice.purpose.is_empty() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(choice.purpose.as_str())
-                                                .small()
-                                                .weak(),
-                                        )
-                                        .truncate(),
-                                    );
                                 }
                             }
                         });
