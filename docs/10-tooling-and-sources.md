@@ -1,5 +1,32 @@
 # Tooling, environment and research register
 
+## Audio streams — 2026-11-16
+
+Branch `claude/audio-streams-03d3be` on `e0b310e` (FR-112, 05 "Audio streams").
+Windows 11 Home 10.0.26300, Rust 1.99.1, workspace lockfile unchanged (cpal 0.18.2,
+hound 3.5.1). API evidence: installed `cpal-0.18.2/src/host/wasapi/mod.rs` (an output
+device used as an input enables loopback), `src/host/wasapi/device.rs`
+(`AUDCLNT_STREAMFLAGS_LOOPBACK` on a render endpoint; `default_input_config` refuses
+render endpoints, so loopback opens with `default_output_config`) and
+`src/host/coreaudio/macos/loopback.rs` (aggregate-device loopback, not run here).
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p orange-audio --lib` | Pass: 35 tests, the stream, pass-through, level and recording tests on the silent device and its test tone included |
+| `cargo test -p orange-audio --test audio` | Pass: a graph on the silent devices measures, records 0.2 s and plays an input through until stopped |
+| `cargo test -p orange-audio --lib -- --ignored --nocapture the_default_microphone_is_recorded` | Pass: the USB headset microphone opened at 48 kHz mono; one second gave 48,000 samples in the WAV file |
+| `cargo test -p orange-audio --lib -- --ignored --nocapture what_the_default_output_plays` (two runs) | Pass: loopback on the default output (the headset) opened at 48 kHz stereo and delivered 48,000 samples per 500 ms; other playback on the machine was captured at peaks of 0.44 and 0.63 before the test's own 0.05 tone, so the tone could not be told apart from it |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,909 tests, 0 failed |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not verified: loopback while nothing at all plays (WASAPI may then deliver no packets,
+so a recording of it would wait), a virtual cable (none is installed here; such cables
+are ordinary WASAPI endpoints and use the same code), pass-through from a real
+microphone to real speakers, a device unplugged while a stream plays, macOS loopback
+(not offered) and Linux monitor sources. The Audio in card's live meter is not built
+(22 §6).
+
 ## Service gaps from the editor audit — 2026-11-15
 
 Branch `feat/service-gaps` on `feat/editor-debugging`. Windows 11 Home 10.0.26300,

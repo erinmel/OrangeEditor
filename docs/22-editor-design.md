@@ -98,6 +98,14 @@ Audio moves from level measurement to signal routing:
 This section needs language and runtime work: an audio stream type, its bounded buffers
 and per-OS capture validation (05, V02/V07/V09/V10).
 
+Status (2026-11-16, FR-112): Audio in, Audio out, Level, Record to file, On level and
+Jump to time are implemented in `orange-audio` (05 "Audio streams"). Mixing is
+Audio out: streams played on one output are added together. Capturing what an output
+plays is offered on Windows (WASAPI loopback) only. Not done yet: the live meter and
+waveform on the Audio in card (the data is there: `Host::probe` of the node's input
+connection, as the connection form uses), Play file and a Gate as stream operators,
+and a separate Mix node.
+
 ## 7. Out of scope for now
 
 Themes beyond light and dark, touch input, collaborative editing.

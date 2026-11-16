@@ -1194,6 +1194,15 @@ package node uses one through per-connection copies made when the host links it 
 Not specified yet: adapter compatibility in validation.
 A node that receives from a connection is a package entry (§10.2).
 
+Live media references (2026-11-16, FR-112). A package may give a value that names a
+live source it holds, such as the audio package's `org.orange.audio/stream@1` record
+naming an open input connection. It is an ordinary package record, not a
+`core/stream@1` (§12): the graph never pulls its samples, it may be copied, wired to
+several consumers and stored like any record, and each consuming package node reads
+the source itself under the package's own bounded-buffer and overflow policy (05). It
+grants nothing a connection did not already grant, and once the source has closed the
+package refuses it with a fault.
+
 ## 17. Diagnostics catalog
 
 Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable. Every node a validation report leaves incomplete carries at least one diagnostic that names it: its own resolution failure, or `E-DEPENDENCY-UNAVAILABLE` when an unresolved connected node blocks its check. A language intrinsic that this core version lists but does not register yet reports `E-INTRINSIC-UNSUPPORTED`.

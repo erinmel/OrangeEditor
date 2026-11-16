@@ -284,6 +284,56 @@ identifiers, a device unplugged while playing, and silent rerouting of a default
 output are not checked. Rerouting to another device is not done: only the same
 setting is opened again.
 
+Audio streams (2026-11-16, FR-112; 22 §6): `audio-in` (Audio in) gives what an input
+connection captures as a value of the package record type `org.orange.audio/stream@1`
+(one field, `source: u64`), with the capture's `rate` and `channels`; `audio-out`
+(Audio out, inputs `stream` and `gain`), `level` (Level, output `level` in dBFS) and
+`record` (Record to file, inputs `stream`, `path` and `seconds`, output `recorded`)
+take it. The value names a live input and holds no samples, so it is not a
+`core/stream@1` (11 §12): sample-rate audio is not pulled through the graph item by
+item, and package effects cannot take core stream inputs. Copying it fans out by
+design; each consumer reads independently. It is refused (`org.orange.audio/Ended`)
+once its input connection has closed, and a value of another shape is
+`org.orange.audio/Input`.
+
+Bounded buffers and policies: each opened input keeps one ring of one second of
+interleaved `f32` samples at the device's own rate and channels, allocated when the
+device opens and never grown. The capture callback is its only writer (atomic stores,
+no lock, no allocation) and also meters, as before. Readers keep their own positions:
+a reader more than half a ring behind skips to a quarter ring before the newest
+sample (drop-oldest), and a reader that has caught up gets nothing. Audio out reads in
+the output callback through a reader made on the control thread: it starts 30 ms
+behind the capture, jumps back to 30 ms when more than 250 ms behind (clock drift, a
+paused output), plays silence when caught up, converts the rate by linear
+interpolation and maps channels as source `n` to output `n`, a mono source to every
+channel, more output channels repeating the source's in order and extra source
+channels left out. It ends when the output's sounds are stopped, the run cancels it or
+its input closes; when the input device is reopened after a failure it follows the
+new ring. Streams played on one output are mixed by the existing mixer and count
+against `MAX_VOICES`; Jump to time does not move them. Record to file writes 16-bit PCM
+WAV at the stream's rate and channels, `seconds` in (0, 3600], counted in captured
+frames, on the node's worker thread; cancelling finalizes a valid shorter file, a
+file that cannot be written is `org.orange.audio/Write`, and a device that stops
+mid-way leaves a valid file and is `org.orange.audio/Device`. Audio in and Record wait
+up to 3 s for the device to open. The silent input now captures timed silence (48 kHz,
+two channels, 10 ms blocks), so streams work on machines without devices.
+
+Endpoints: Audio in uses the input connection, so it takes any capture endpoint the
+system lists (microphones, line inputs, virtual cables such as VB-Cable, which are
+ordinary WASAPI endpoints). An input `device` of `loopback:` and an output's setting
+(`loopback:` alone is the default output) captures what that output plays; it is
+offered and listed ("<name> (what it plays)") on Windows only, through cpal 0.18.2's
+WASAPI loopback (an input stream on a render endpoint in the output's default
+format). cpal 0.18.2 also implements macOS loopback through a temporary aggregate
+device; it is not verified, so not offered, and other systems refuse the setting with
+a reason. Linux has no ALSA loopback in cpal; PulseAudio or PipeWire monitor sources
+may appear as ordinary inputs, which is not checked. Windows evidence is in 10.
+
+`entry on-level` is now labelled On level and `input-level` Input level, over any input
+connection, loopback included; Seek is labelled Jump to time and its description says
+it moves every sound on the output to the same time. `record` marks `path` with the
+`save` path hint (12 §4), and the desktop editor opens the system's save dialog for it.
+
 Not implemented from the design below: `AudioAsset` handles, control of one sound
 among several on a connection (separate connections are separate players),
 streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
