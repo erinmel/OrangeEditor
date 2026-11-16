@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub use declare::{Connection, Declarations, Variable};
+pub use declare::{AdapterInfo, Connection, Declarations, Variable, secret_name};
 pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
@@ -97,9 +97,9 @@ pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
 pub use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, Items, Probe, SERVICE_PROVIDER, ServiceNode,
-    ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices, SettingField, TARGET,
-    TypeDecl,
+    AdapterAbout, Call, ConnectionAdapter, EmitError, Emitter, Items, Probe, SERVICE_PROVIDER,
+    ServiceNode, ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices,
+    SettingField, SettingText, SettingToggle, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
