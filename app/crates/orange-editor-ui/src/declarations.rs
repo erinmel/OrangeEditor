@@ -915,14 +915,14 @@ impl Editor {
                 }
                 ui.horizontal(|ui| {
                     test = ui
-                        .button("Test")
+                        .button("Check settings")
                         .on_hover_text(
-                            "Opens it with these settings and lets it go: says whether the settings are right and every secret is found.",
+                            "Checks whether the adapter can open with these settings. Some services connect on first use.",
                         )
                         .clicked();
                     match &form.tested {
                         Some(Ok(())) => {
-                            ui.label("Opens.");
+                            ui.label("Settings accepted.");
                         }
                         Some(Err(why)) => {
                             ui.colored_label(ui.visuals().warn_fg_color, why.as_str());
@@ -1126,7 +1126,7 @@ fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, se
                         (Some(reference), None) => {
                             ui.horizontal(|ui| {
                                 let _ = ui
-                                    .weak("•••• in the credential store")
+                                    .weak("Saved in the credential store")
                                     .on_hover_text(reference.as_str());
                                 if ui.small_button("Replace").clicked() {
                                     let _ = secrets.0.insert(text.setting.clone(), String::new());

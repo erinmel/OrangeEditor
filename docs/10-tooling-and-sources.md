@@ -1,5 +1,42 @@
 # Tooling, environment and research register
 
+## Search, menus and icons — 2026-11-16
+
+Branch `claude/search-menus-icons-51fe65` on `feat/editor-design`. Windows 11 Home
+10.0.26300, Rust 1.99.1, egui 0.37.0; no new crate, lockfile unchanged.
+
+Icon font: Phosphor Regular, `src/regular/Phosphor.ttf` of the npm package
+`@phosphor-icons/web` 2.1.2 (published 2025-03-31, licence MIT, copyright Phosphor
+Icons), 488,636 bytes, SHA-256
+`06b91e022b7ee899a63efced879392a74f0bacbda54e4467e9f663220d173a10`; bundled as
+`app/crates/orange-editor-ui/fonts/Phosphor.ttf` with its licence beside it. Codepoints
+were read from the same package's `src/regular/style.css`. The crate `egui-phosphor`
+0.14.0 ships the identical file but depends on egui 0.36, so it was not taken. The
+font is not a Cargo dependency, so `deny.toml` is unchanged; MIT is already allowed.
+API read from the egui/epaint 0.37.0 sources in the cargo registry:
+`Context::add_font(FontInsert)` with `InsertFontFamily { family, priority }`, which
+creates a named family when missing and skips a font already added by name;
+`FontPriority::{Highest, Lowest}`; `Button::new` taking atoms such as
+`(RichText, &str)` and `Button::shortcut_text`; `InputState::consume_key`. In 0.37 a
+family with no font logs a warning instead of panicking.
+
+Search words: `app/crates/orange-host/locales/search-en.ftl` and `search-es.ftl`, a
+subset of Fluent (`id = text` lines, no arguments) read by the host; no Fluent crate
+was adopted (13 §3 still open).
+
+Local runs used their own `CARGO_TARGET_DIR`: the shared target directory was being
+built by other worktrees at the same time, and integration tests were compiled against
+a stale `orange-host` library.
+
+| Command | Result |
+| --- | --- |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo test --workspace --locked` | Pass: 1,911 tests, 0 failed (orange-net loopback included) |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not checked: the menus, the quick-add arrows and the icons in a real window, with a
+real pointer, on high-DPI screens or with a screen reader.
+
 ## Service gaps from the editor audit — 2026-11-15
 
 Branch `feat/service-gaps` on `feat/editor-debugging`. Windows 11 Home 10.0.26300,

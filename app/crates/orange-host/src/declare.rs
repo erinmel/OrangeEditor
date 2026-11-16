@@ -236,7 +236,10 @@ impl Host {
             .get(adapter)
             .ok_or_else(|| format!("no adapter `{adapter}` is available"))?;
         let (settings, _) = with_secrets(self.options.secrets.as_ref(), settings)?;
-        found.open(&settings).map(drop)
+        found
+            .open(&settings)
+            .map(drop)
+            .map_err(|_| "The adapter could not open with these settings. Check the connection and credentials.".into())
     }
 
     /// The settings of `adapter` an editor can offer as a list, with the values this

@@ -44,7 +44,9 @@ is typed masked; `Host::declare_connection_with_secrets` stores it with
 declaration is committed and writes only the reference, so nothing is declared when the
 store refuses. Undoing the declaration leaves the stored secret; it is replaced when
 the same setting is typed again. `Host::test_connection` resolves the references and
-opens the connection once, without keeping it. HTTP and WebSocket connections take
+opens the adapter once and releases it. Adapters that connect on first use may only
+validate settings. The editor shows a host-owned error if the adapter refuses to open
+so that an adapter's error text cannot expose a credential. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
 `org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type

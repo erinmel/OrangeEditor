@@ -55,7 +55,8 @@ impl orange_host::ConnectionAdapter for Locked {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn orange_host::Session>, String> {
         match settings.get("auth").and_then(|auth| auth.get("password")) {
             Some(Json::String(password)) if password == "open sesame" => Ok(Arc::new(Thing)),
-            _ => Err("the password is wrong".into()),
+            Some(Json::String(password)) => Err(format!("rejected password: {password}")),
+            _ => Err("missing password".into()),
         }
     }
     fn about(&self) -> AdapterAbout {
@@ -173,6 +174,11 @@ fn a_typed_secret_goes_to_the_store_and_the_document_keeps_its_reference() {
         .test_connection("acme.kit/locked", &settings)
         .unwrap_err();
     assert!(!refused.contains("xyzzy"), "{refused}");
+    let Json::Object(typed) = json!({"auth": {"password": "unsaved secret"}}) else {
+        unreachable!()
+    };
+    let refused = host.test_connection("acme.kit/locked", &typed).unwrap_err();
+    assert!(!refused.contains("unsaved secret"), "{refused}");
     let missing = json!({"auth": {"password": "credential://nowhere"}});
     let Json::Object(missing) = missing else {
         unreachable!()

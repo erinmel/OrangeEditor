@@ -32,6 +32,10 @@ pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 /// The zoom range.
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.2..=2.5;
 const GRID: f32 = 24.0;
+/// How near a wire the pointer has to be to take it, in points at zoom 1.
+const WIRE_GRAB: f32 = 7.0;
+/// How much one point of wheel movement zooms.
+const WHEEL_ZOOM: f32 = 0.0015;
 const PORT_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.75;
@@ -92,7 +96,7 @@ mod layout;
 pub use layout::auto_layout;
 mod geometry;
 mod groups;
-use geometry::{Geometry, wire_points, wire_visible};
+use geometry::{Geometry, near_wire, wire_points, wire_visible};
 pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 
 /// What the person did on the canvas this frame.
@@ -119,6 +123,10 @@ pub struct CanvasResponse {
     pub connect: Option<((NodeId, String), (NodeId, String))>,
     /// The wires at a port were taken off: the node, the port and whether it is an input.
     pub disconnect: Option<(NodeId, String, bool)>,
+    /// The selected wire was deleted: its two ends.
+    pub remove_wire: Option<WireEnds>,
+    /// A node was let go over a wire: the node and the wire it goes into.
+    pub insert: Option<(NodeId, WireEnds)>,
     /// The selected nodes were deleted.
     pub remove: Vec<NodeId>,
     /// A wire was let go where no input takes it: the output it comes from and where,
@@ -131,6 +139,9 @@ pub struct CanvasResponse {
     pub group: Option<GroupEdit>,
     /// Ctrl+G was pressed: the selected nodes are to be grouped.
     pub group_selection: bool,
+    /// The second mouse button was clicked: on what, and where in graph units and on
+    /// the screen, for the right-click menu.
+    pub context: Option<(crate::MenuTarget, [f32; 2], Pos2)>,
 }
 
 /// A value a run put on a port, short for the canvas and in full for the inspector.
@@ -158,6 +169,8 @@ pub struct Marks {
     pub nodes: std::collections::HashMap<NodeId, Mark>,
     /// By the wire's two ends, output first.
     pub wires: std::collections::HashMap<WireEnds, Mark>,
+    /// By node and port name: the port a problem is about is ringed.
+    pub ports: std::collections::HashMap<(NodeId, String), Mark>,
 }
 
 impl Marks {
@@ -196,6 +209,10 @@ struct Wiring {
 /// nodes are.
 #[derive(Debug, Clone)]
 pub struct Canvas {
+    /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
+    pub scroll_pans: bool,
+    /// Nodes let go after a move land on the grid; Alt while dragging moves freely.
+    pub snap: bool,
     /// The graph point at the top left corner of the canvas.
     origin: Pos2,
     zoom: f32,
@@ -218,6 +235,9 @@ pub struct Canvas {
     /// Show the whole graph at the next frame.
     fit: bool,
     wiring: Option<Wiring>,
+    /// The wire under the pointer at the last frame, and the selected wire.
+    hover_wire: Option<WireEnds>,
+    selected_wire: Option<WireEnds>,
     /// Problems drawn on nodes and wires.
     marks: Marks,
     /// When each node of a running flow last took a step, and whether it failed.
@@ -253,12 +273,16 @@ impl Default for Canvas {
             moving: false,
             fit: true,
             wiring: None,
+            hover_wire: None,
+            selected_wire: None,
             marks: Marks::default(),
             activity: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
             failures: std::collections::HashMap::new(),
             stale: false,
             size: Vec2::new(800.0, 600.0),
+            scroll_pans: false,
+            snap: true,
             groups: Vec::new(),
             hidden: std::collections::HashSet::new(),
             renaming: None,
@@ -719,6 +743,15 @@ impl Canvas {
         if response.clicked() {
             self.select(None);
         }
+        // A right-click on the background; a wire under it is found as wires are drawn.
+        let background_menu = response
+            .secondary_clicked()
+            .then(|| response.interact_pointer_pos())
+            .flatten();
+        let menu_at = |screen: Pos2, origin: Pos2, zoom: f32| {
+            let at = graph_point(screen, origin, zoom);
+            ([at.x, at.y], screen)
+        };
         self.pointer = response
             .hover_pos()
             .map(|at| graph_point(at, self.origin, self.zoom));
@@ -731,8 +764,23 @@ impl Canvas {
             done.dropped = Some(((*kind).clone(), [at.x, at.y]));
         }
         if let Some(pointer) = response.hover_pos() {
-            let (scroll, factor) =
-                ui.input(|input| (input.smooth_scroll_delta, input.zoom_delta()));
+            let (mut scroll, mut factor, modifiers) = ui.input(|input| {
+                (
+                    input.smooth_scroll_delta,
+                    input.zoom_delta(),
+                    input.modifiers,
+                )
+            });
+            // The wheel zooms, as in most node editors; Shift scrolls sideways and Ctrl
+            // up and down. `scroll_pans` gives the wheel back to scrolling (trackpads).
+            if !self.scroll_pans && (factor - 1.0).abs() <= f32::EPSILON && scroll != Vec2::ZERO {
+                if modifiers.shift {
+                    scroll = Vec2::new(scroll.x + scroll.y, 0.0);
+                } else if !modifiers.command {
+                    factor = (scroll.y * WHEEL_ZOOM).exp();
+                    scroll = Vec2::ZERO;
+                }
+            }
             if (factor - 1.0).abs() > f32::EPSILON {
                 let before = self.origin + (pointer - area.min) / self.zoom;
                 self.zoom = (self.zoom * factor).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
@@ -800,6 +848,22 @@ impl Canvas {
             if touched.drag_stopped() && self.moving {
                 self.moving = false;
                 done.moved = true;
+                // One node let go over a wire that is not its own goes into it.
+                if self.selection.len() == 1
+                    && let Some(wire) = self.hover_wire.clone()
+                    && wire.0.0 != node.id
+                    && wire.1.0 != node.id
+                {
+                    done.insert = Some((node.id, wire));
+                }
+                let free = ui.input(|input| input.modifiers.alt);
+                if self.snap && !free {
+                    for id in &self.selection {
+                        if let Some(place) = self.places.get_mut(id) {
+                            *place = snapped(*place);
+                        }
+                    }
+                }
             }
             if touched.clicked() {
                 if shift || command {
@@ -809,10 +873,16 @@ impl Canvas {
                 }
                 done.selected = self.selected;
             }
+            if touched.secondary_clicked()
+                && let Some(screen) = touched.interact_pointer_pos()
+            {
+                let (at, screen) = menu_at(screen, self.origin, self.zoom);
+                done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
+            }
         }
 
-        // Ports: dragging from an output draws a wire; the second mouse button on a
-        // wired port takes its wires off.
+        // Ports: dragging from an output draws a wire; the second mouse button opens
+        // the port's menu.
         let grab = (PORT_RADIUS + 5.0) * zoom.max(0.6);
         for node in &graph.nodes {
             let Some(place) = self.places.get(&node.id).copied() else {
@@ -846,8 +916,14 @@ impl Canvas {
                         exec: port.exec,
                     });
                 }
-                if touched.secondary_clicked() && port.connected {
-                    done.disconnect = Some((node.id, port.id.clone(), port.input));
+                if touched.secondary_clicked() {
+                    let target = crate::MenuTarget::Port {
+                        node: node.id,
+                        port: port.id.clone(),
+                        input: port.input,
+                    };
+                    let (at, screen) = menu_at(at, origin, zoom);
+                    done.context = Some((target, at, screen));
                 }
             }
         }
@@ -886,7 +962,9 @@ impl Canvas {
                 let at = graph_point(screen, self.origin, self.zoom);
                 done.quick_add = Some(([at.x, at.y], screen));
             }
-            if delete && !self.selection.is_empty() {
+            if delete && let Some(wire) = self.selected_wire.take() {
+                done.remove_wire = Some(wire);
+            } else if delete && !self.selection.is_empty() {
                 done.remove = self.selection();
                 self.select(None);
             }
@@ -911,6 +989,7 @@ impl Canvas {
             let place = *self.places.get(&node)?;
             Some(to_screen(place + geometry.port(node, port, input)?.offset))
         };
+        let mut nearest: Option<(f32, WireEnds)> = None;
         for wire in &graph.wires {
             if self.wire_hidden(wire) {
                 continue;
@@ -934,6 +1013,14 @@ impl Canvas {
             };
             // The wire leaves and arrives level, bending more the further it goes.
             let points = wire_points(from, to, zoom);
+            if done.context.is_none()
+                && let Some(click) = background_menu
+                && near_wire(points, click, 6.0 * zoom.max(0.6))
+            {
+                let (at, screen) = menu_at(click, origin, zoom);
+                let ends = (wire.from.clone(), wire.to.clone());
+                done.context = Some((crate::MenuTarget::Wire(ends), at, screen));
+            }
             let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6)
                 + if mark.is_some() {
                     1.5 * zoom.max(0.6)
@@ -943,12 +1030,35 @@ impl Canvas {
             if !wire_visible(&points, painter.clip_rect(), width) {
                 continue;
             }
+            let ends = (wire.from.clone(), wire.to.clone());
+            if let Some(at) = pointer {
+                let away = bezier_distance(&points, at);
+                if nearest.as_ref().is_none_or(|(best, _)| away < *best) {
+                    nearest = Some((away, ends.clone()));
+                }
+            }
+            // The wire under the pointer thickens; the selected one is drawn in the
+            // selection color.
+            let hovered = self.hover_wire.as_ref() == Some(&ends);
+            let picked = self.selected_wire.as_ref() == Some(&ends);
+            let (width, color) = match (picked, hovered) {
+                (true, _) => (width + 2.0 * zoom.max(0.6), colors.selected),
+                (false, true) => (width + 1.5 * zoom.max(0.6), color),
+                _ => (width, color),
+            };
             painter.add(CubicBezierShape::from_points_stroke(
                 points,
                 false,
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
             ));
+        }
+
+        if done.context.is_none()
+            && let Some(click) = background_menu
+        {
+            let (at, screen) = menu_at(click, origin, zoom);
+            done.context = Some((crate::MenuTarget::Canvas, at, screen));
         }
 
         // The wire being drawn follows the pointer until it is let go.
@@ -968,6 +1078,21 @@ impl Canvas {
                 Stroke::new(2.0 * zoom.max(0.6), color),
             ));
         }
+        self.hover_wire = nearest
+            .filter(|(away, _)| *away <= WIRE_GRAB * zoom.max(0.6))
+            .map(|(_, ends)| ends);
+        // A click on the background selects the wire under it, or none.
+        if response.clicked() {
+            self.selected_wire = self.hover_wire.clone();
+        }
+        if self.selected_wire.as_ref().is_some_and(|ends| {
+            !graph
+                .wires
+                .iter()
+                .any(|w| (&w.from, &w.to) == (&ends.0, &ends.1))
+        }) {
+            self.selected_wire = None;
+        }
 
         let mut glowing = false;
         // Outlines and badges go over every card, so a later card does not hide them.
@@ -984,8 +1109,24 @@ impl Canvas {
                 continue;
             }
             let selected = self.selection.contains(&node.id);
-            let fire = triggers.contains(&node.id);
+            // On manual always has its button; it fires only while the graph runs.
+            let fire = (node.definition == "core/on-manual" || triggers.contains(&node.id))
+                .then(|| triggers.contains(&node.id));
             let controls = zoom >= CONTROLS_ZOOM;
+            // An operator says what it computes, with values in place of names.
+            let formula = orange_host::formula(&node.definition).map(|formula| {
+                fill_formula(formula, |port| {
+                    node.ports
+                        .iter()
+                        .find(|p| p.input && p.id == port)
+                        .and_then(|p| {
+                            p.value.clone().or_else(|| {
+                                self.port_value(graph, node.id, port, true)
+                                    .map(|shown| shown.short.clone())
+                            })
+                        })
+                })
+            });
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
@@ -995,6 +1136,7 @@ impl Canvas {
                 &colors,
                 (selected, fire, controls),
                 response.id,
+                formula.as_deref(),
             );
             if pressed {
                 done.trigger = Some(node.id);
@@ -1053,16 +1195,32 @@ impl Canvas {
                 if age < GLOW_SECONDS {
                     let color = if failed { colors.error } else { colors.exec };
                     let strength = 1.0 - age / GLOW_SECONDS;
-                    painter.rect_stroke(
-                        rect,
-                        CARD_RADIUS * zoom,
-                        Stroke::new(3.0 * zoom.max(0.6), color.gamma_multiply(strength)),
-                        StrokeKind::Outside,
-                    );
+                    draw_top_edge(&painter, rect, zoom, color.gamma_multiply(strength));
                     glowing = true;
                 }
             }
+            for ((at, port), mark) in self.marks.ports.iter().filter(|((at, _), _)| *at == node) {
+                for input in [true, false] {
+                    let Some(found) = geometry.port(*at, port, input) else {
+                        continue;
+                    };
+                    let center = rect.min + found.offset * zoom;
+                    painter.circle_stroke(
+                        center,
+                        (PORT_RADIUS + 3.5) * zoom.max(0.6),
+                        Stroke::new(2.0 * zoom.max(0.6), colors.problem(mark.error)),
+                    );
+                    let _ = ui
+                        .interact(
+                            Rect::from_center_size(center, Vec2::splat(18.0 * zoom.max(0.6))),
+                            response.id.with(("port-mark", *at, port.as_str(), input)),
+                            Sense::hover(),
+                        )
+                        .on_hover_text(mark.text.as_str());
+                }
+            }
             if let Some(why) = self.failures.get(&node) {
+                draw_top_edge(&painter, rect, zoom, colors.error);
                 let failed = Mark {
                     error: true,
                     text: format!("Failed in the last run: {why}"),
@@ -1215,8 +1373,8 @@ impl Canvas {
                             .sense(Sense::click_and_drag()),
                     )
                 })
-                .on_hover_text("Drag to change, double-click to type.");
-                if touched.double_clicked() {
+                .on_hover_text("Click to type, drag to change.");
+                if touched.clicked() {
                     self.whole_drag = None;
                     let typed = port.value.clone().unwrap_or_default();
                     self.typing = Some((node.id, port.id.clone(), typed, false));
@@ -1289,9 +1447,9 @@ impl Canvas {
                     .as_mut()
                     .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
                 let Some((_, _, typed, focused)) = typing else {
-                    // The value shows as a pill; a double click types a new one.
+                    // The value shows as a pill; a click types a new one.
                     let touched = ui.interact(slot, id, Sense::click());
-                    if touched.double_clicked() {
+                    if touched.clicked() {
                         let shown = port.value.clone().unwrap_or_default();
                         let typed = serde_json::from_str::<String>(&shown).unwrap_or(shown);
                         self.typing = Some((node.id, port.id.clone(), typed, false));
@@ -1392,28 +1550,37 @@ fn draw_mark(
     id: egui::Id,
 ) {
     let color = colors.problem(mark.error);
-    // The card's own corners, just outside its edge, so the outline follows the card.
-    painter.rect_stroke(
-        rect,
-        CARD_RADIUS * zoom,
-        Stroke::new(2.0 * zoom.max(0.6), color),
-        StrokeKind::Outside,
+    // A small dot in the header, left of the title: quiet, inside the card, over
+    // nothing else. What is wrong is on hover; the place at fault is ringed apart.
+    let radius = 3.5 * zoom.max(0.75);
+    let center = Pos2::new(
+        rect.min.x + (CARD_PADDING / 2.0) * zoom,
+        rect.min.y + (HEADER_HEIGHT / 2.0) * zoom,
     );
-    // The badge sits on the top-right corner, clear of the title and buttons.
-    let radius = 7.0 * zoom.max(0.75);
-    let center = rect.right_top();
     painter.circle_filled(center, radius, color);
-    let _ = painter.text(
-        center,
-        egui::Align2::CENTER_CENTER,
-        "!",
-        egui::FontId::proportional(radius * 1.4),
-        Color32::WHITE,
-    );
-    let badge = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    let area = Rect::from_center_size(center, Vec2::splat(CARD_PADDING * zoom));
     let _ = ui
-        .interact(badge, id, Sense::hover())
+        .interact(area, id, Sense::hover())
         .on_hover_text(mark.text.as_str());
+}
+
+/// A thin band along a card's top edge: the failure of its last step, or the fading
+/// pulse of a step just run.
+fn draw_top_edge(painter: &egui::Painter, rect: Rect, zoom: f32, color: Color32) {
+    let band = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0 * zoom.max(0.6)));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to a corner radius"
+    )]
+    let round = (CARD_RADIUS * zoom).round().clamp(0.0, 255.0) as u8;
+    let radius = egui::CornerRadius {
+        nw: round,
+        ne: round,
+        sw: 0,
+        se: 0,
+    };
+    painter.rect_filled(band, radius, color);
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.
@@ -1427,8 +1594,9 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, controls): (bool, bool, bool),
+    (selected, fire, controls): (bool, Option<bool>, bool),
     canvas: egui::Id,
+    formula: Option<&str>,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
@@ -1472,7 +1640,11 @@ fn draw_node<'a>(
         let title = FontId::proportional(14.5 * zoom);
         let small = FontId::proportional(11.5 * zoom);
         // Long titles stay inside the header, clear of the trigger button.
-        let reserved = if fire { 80.0 * zoom } else { 8.0 * zoom };
+        let reserved = if fire.is_some() {
+            80.0 * zoom
+        } else {
+            8.0 * zoom
+        };
         let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
         let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
@@ -1487,9 +1659,8 @@ fn draw_node<'a>(
         }
         // What the node is set to (its variable), else what kind of node it is when its
         // name says something else.
-        let aside = node
-            .detail
-            .as_deref()
+        let aside = formula
+            .or(node.detail.as_deref())
             .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
         if let Some(aside) = aside {
             // What it is set to reads as text; what kind it is, quieter.
@@ -1518,27 +1689,34 @@ fn draw_node<'a>(
                 colors.weak,
             );
         }
-        if fire {
+        if let Some(live) = fire {
             let size = Vec2::new(64.0, 22.0) * zoom;
             let button = Rect::from_center_size(
                 header.right_center() - Vec2::new(size.x / 2.0 + 8.0 * zoom, 0.0),
                 size,
             );
-            let touched = ui.interact(button, canvas.with(("trigger", node.id)), Sense::click());
-            let fill = if touched.hovered() {
-                colors.selected
-            } else {
-                colors.exec
+            let sense = if live { Sense::click() } else { Sense::hover() };
+            let touched = ui
+                .interact(button, canvas.with(("trigger", node.id)), sense)
+                .on_hover_text(if live {
+                    "Fire it now."
+                } else {
+                    "Run the graph to fire it."
+                });
+            let fill = match (live, touched.hovered()) {
+                (false, _) => colors.weak.gamma_multiply(0.35),
+                (true, true) => colors.selected,
+                (true, false) => colors.exec,
             };
             painter.rect_filled(button, 5.0 * zoom, fill);
             let _ = painter.text(
                 button.center(),
                 Align2::CENTER_CENTER,
-                "Trigger",
+                "Fire",
                 small.clone(),
-                colors.card,
+                if live { colors.card } else { colors.weak },
             );
-            pressed = touched.clicked();
+            pressed = live && touched.clicked();
         }
     }
 
@@ -2433,5 +2611,121 @@ mod elide_tests {
             long.1 && long.0.ends_with('\u{2026}') && long.0.len() < 31,
             "{long:?}"
         );
+    }
+}
+
+/// A point moved to the nearest grid crossing.
+pub(crate) fn snapped(point: Pos2) -> Pos2 {
+    Pos2::new(
+        (point.x / GRID).round() * GRID,
+        (point.y / GRID).round() * GRID,
+    )
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+
+    #[test]
+    fn a_point_snaps_to_the_nearest_grid_crossing() {
+        assert_eq!(snapped(Pos2::new(13.0, 35.0)), Pos2::new(24.0, 24.0));
+        assert_eq!(snapped(Pos2::new(-13.0, 11.0)), Pos2::new(-24.0, 0.0));
+        assert!(Canvas::new().snap && !Canvas::new().scroll_pans);
+    }
+}
+
+/// How far `at` is from the curve through `points`, sampled finely enough for a pointer.
+pub(crate) fn bezier_distance(points: &[Pos2; 4], at: Pos2) -> f32 {
+    const STEPS: usize = 32;
+    let point = |t: f32| {
+        let u = 1.0 - t;
+        let v = points[0].to_vec2() * (u * u * u)
+            + points[1].to_vec2() * (3.0 * u * u * t)
+            + points[2].to_vec2() * (3.0 * u * t * t)
+            + points[3].to_vec2() * (t * t * t);
+        v.to_pos2()
+    };
+    let mut best = f32::INFINITY;
+    let mut last = point(0.0);
+    for step in 1..=STEPS {
+        #[expect(clippy::cast_precision_loss, reason = "a few steps")]
+        let next = point(step as f32 / STEPS as f32);
+        // Distance to the segment between two samples.
+        let along = next - last;
+        let t = ((at - last).dot(along) / along.length_sq().max(f32::EPSILON)).clamp(0.0, 1.0);
+        best = best.min((last + along * t).distance(at));
+        last = next;
+    }
+    best
+}
+
+#[cfg(test)]
+mod wire_hit_tests {
+    use super::*;
+
+    #[test]
+    fn a_point_on_or_beside_a_wire_is_near_it() {
+        let points = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(50.0, 0.0),
+            Pos2::new(50.0, 100.0),
+            Pos2::new(100.0, 100.0),
+        ];
+        assert!(bezier_distance(&points, Pos2::new(0.0, 0.0)) < 0.5);
+        assert!(bezier_distance(&points, Pos2::new(50.0, 50.0)) < 2.0);
+        assert!(bezier_distance(&points, Pos2::new(0.0, 100.0)) > 30.0);
+    }
+}
+
+/// A formula with each input's value, when `value_of` knows it, in place of its name;
+/// a short value is shown whole, a long one as its start.
+pub(crate) fn fill_formula(formula: &str, value_of: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        match value_of(word) {
+            Some(value) => {
+                let mut shown: String = value.chars().take(10).collect();
+                if shown.len() < value.len() {
+                    shown.push('\u{2026}');
+                }
+                out.push_str(&shown);
+            }
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in formula.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod formula_tests {
+    use super::fill_formula;
+
+    #[test]
+    fn known_inputs_take_the_place_of_their_names() {
+        let both = |port: &str| match port {
+            "a" => Some("12".to_owned()),
+            "b" => Some("7".to_owned()),
+            _ => None,
+        };
+        assert_eq!(fill_formula("a > b", both), "12 > 7");
+        assert_eq!(
+            fill_formula("a > b", |port| (port == "a").then(|| "3".to_owned())),
+            "3 > b"
+        );
+        assert_eq!(fill_formula("min(a, b)", |_| None), "min(a, b)");
     }
 }
