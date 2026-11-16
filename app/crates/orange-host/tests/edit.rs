@@ -912,3 +912,30 @@ fn two_nodes_of_one_kind_are_called_the_same_on_the_canvas() {
     assert_ne!(names.node(&a), names.node(&b));
     assert_eq!(names.without_ids().node(&a), "Whole number");
 }
+
+#[test]
+fn whole_numbers_past_two_to_the_53_are_kept_exactly() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let value = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .unwrap();
+    for typed in [
+        "9007199254740993",
+        "9223372036854775807",
+        "-9223372036854775808",
+    ] {
+        assert!(
+            host.set_input(&mut draft, (value, "value"), Some(typed))
+                .unwrap()
+        );
+        let view = host.draft_view(&draft).unwrap();
+        let node = view.nodes.iter().find(|n| n.id == value).unwrap();
+        let shown = node.ports.iter().find(|p| p.id == "value").unwrap();
+        assert_eq!(shown.value.as_deref(), Some(typed));
+    }
+    assert!(
+        host.set_input(&mut draft, (value, "value"), Some("9223372036854775808"))
+            .is_err()
+    );
+}

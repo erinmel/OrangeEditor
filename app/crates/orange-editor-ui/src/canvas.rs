@@ -198,6 +198,8 @@ pub struct Canvas {
     dragging: Option<(NodeId, String, f64)>,
     /// Text being typed on a card, and whether its field has had the keys yet.
     typing: Option<(NodeId, String, String, bool)>,
+    /// A whole number being dragged: its node, port, value before and pixels moved.
+    whole_drag: Option<(NodeId, String, i128, f32)>,
     /// A node was dragged and not yet let go.
     moving: bool,
     /// Show the whole graph at the next frame.
@@ -224,6 +226,7 @@ impl Default for Canvas {
             pointer: None,
             dragging: None,
             typing: None,
+            whole_drag: None,
             moving: false,
             fit: true,
             wiring: None,
@@ -1030,8 +1033,74 @@ impl Canvas {
                     place(ui, &mut |ui| ui.add(egui::Checkbox::without_text(&mut on))).changed();
                 changed.then(|| written(on.to_string())).flatten()
             }
-            Control::Whole | Control::Number => {
-                let whole = control == Control::Whole;
+            Control::Whole => {
+                let ty = port.ty.as_deref().unwrap_or("core/i64@1");
+                // Exact: whole numbers never pass through a float, which would round any
+                // past 2^53.
+                let stepping = self
+                    .whole_drag
+                    .as_ref()
+                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id)
+                    .map(|(_, _, base, pixels)| step_whole(*base, *pixels, ty));
+                let typing = self
+                    .typing
+                    .as_mut()
+                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
+                if let Some((_, _, typed, focused)) = typing {
+                    let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
+                    if !*focused {
+                        field.request_focus();
+                        *focused = true;
+                    }
+                    if field.lost_focus() {
+                        let text = typed.trim().to_owned();
+                        self.typing = None;
+                        return parse_whole(&text, ty)
+                            .map(|value| (node.id, port.id.clone(), value.to_string()));
+                    }
+                    return None;
+                }
+                let shown = match (&stepping, port.value.as_deref()) {
+                    (Some(value), _) => value.to_string(),
+                    (None, Some(text)) => text.to_owned(),
+                    // An input with no value says so, rather than showing a 0 it does not have.
+                    (None, None) => "â".to_owned(),
+                };
+                let touched = place(ui, &mut |ui| {
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(shown.as_str()).monospace())
+                            .sense(Sense::click_and_drag()),
+                    )
+                })
+                .on_hover_text("Drag to change, double-click to type.");
+                if touched.double_clicked() {
+                    self.whole_drag = None;
+                    let typed = port.value.clone().unwrap_or_default();
+                    self.typing = Some((node.id, port.id.clone(), typed, false));
+                    return None;
+                }
+                if touched.drag_started() {
+                    let base = port
+                        .value
+                        .as_deref()
+                        .and_then(|text| parse_whole(text, ty))
+                        .unwrap_or(0);
+                    self.whole_drag = Some((node.id, port.id.clone(), base, 0.0));
+                }
+                if touched.dragged()
+                    && let Some((_, _, _, pixels)) = self.whole_drag.as_mut()
+                {
+                    *pixels += touched.drag_delta().x;
+                    return None;
+                }
+                if touched.drag_stopped() {
+                    self.whole_drag = None;
+                    return stepping.map(|value| (node.id, port.id.clone(), value.to_string()));
+                }
+                None
+            }
+            Control::Number => {
+                let whole = false;
                 let held = self
                     .dragging
                     .as_ref()
@@ -1102,6 +1171,35 @@ impl Canvas {
             }
         }
     }
+}
+
+/// The values a whole-number type holds.
+fn whole_range(ty: &str) -> (i128, i128) {
+    match ty {
+        "core/u64@1" => (0, i128::from(u64::MAX)),
+        "core/i32@1" => (i128::from(i32::MIN), i128::from(i32::MAX)),
+        "core/u32@1" => (0, i128::from(u32::MAX)),
+        _ => (i128::from(i64::MIN), i128::from(i64::MAX)),
+    }
+}
+
+/// A whole number typed as text, if it is one that `ty` holds.
+pub(crate) fn parse_whole(text: &str, ty: &str) -> Option<i128> {
+    let value: i128 = text.trim().parse().ok()?;
+    let (least, most) = whole_range(ty);
+    (least..=most).contains(&value).then_some(value)
+}
+
+/// A whole number moved by a drag of `pixels`: one step for each five, exactly, held to
+/// what `ty` holds.
+pub(crate) fn step_whole(base: i128, pixels: f32, ty: &str) -> i128 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a drag is a few thousand pixels"
+    )]
+    let steps = (pixels / 5.0).round() as i128;
+    let (least, most) = whole_range(ty);
+    base.saturating_add(steps).clamp(least, most)
 }
 
 /// Whether a value of type `source` may go to an input of type `target`, as far as the
@@ -2055,5 +2153,29 @@ mod fit_tests {
         ));
         assert!(fits(None, Some("core/string@1")));
         assert!(fits(Some("core/string@1"), None));
+    }
+}
+
+#[cfg(test)]
+mod whole_tests {
+    use super::{parse_whole, step_whole};
+
+    #[test]
+    fn whole_numbers_are_parsed_and_stepped_exactly_within_their_type() {
+        let big = 9_007_199_254_740_993_i128;
+        assert_eq!(parse_whole("9007199254740993", "core/i64@1"), Some(big));
+        assert_eq!(step_whole(big, 5.0, "core/i64@1"), big + 1);
+        assert_eq!(step_whole(big, -10.0, "core/i64@1"), big - 2);
+        let most = i128::from(i64::MAX);
+        assert_eq!(step_whole(most, 500.0, "core/i64@1"), most);
+        assert_eq!(parse_whole("9223372036854775808", "core/i64@1"), None);
+        assert_eq!(
+            parse_whole("18446744073709551615", "core/u64@1"),
+            Some(i128::from(u64::MAX))
+        );
+        assert_eq!(parse_whole("-1", "core/u64@1"), None);
+        assert_eq!(step_whole(0, -50.0, "core/u32@1"), 0);
+        assert_eq!(parse_whole("2147483648", "core/i32@1"), None);
+        assert_eq!(parse_whole("1.5", "core/i64@1"), None);
     }
 }

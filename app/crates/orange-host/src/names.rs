@@ -256,9 +256,13 @@ pub fn literal(ty: &str, typed: &str) -> Result<String, String> {
             let value: bool = typed.parse().map_err(|_| number("true or false"))?;
             serde_json::json!({"type": ty, "value": value})
         }
-        "core/i64@1" | "core/u64@1" => {
+        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => {
             let _: i128 = typed.parse().map_err(|_| number("a whole number"))?;
             serde_json::json!({"type": ty, "value": typed})
+        }
+        "core/f32@1" => {
+            let value: f32 = typed.parse().map_err(|_| number("a number"))?;
+            serde_json::json!({"type": ty, "bits": format!("{:08x}", value.to_bits())})
         }
         "core/f64@1" => {
             let value: f64 = typed.parse().map_err(|_| number("a number"))?;
