@@ -24,6 +24,7 @@
 
 pub mod canvas;
 mod declarations;
+mod organise;
 mod properties;
 mod quick_add;
 
@@ -203,6 +204,8 @@ pub struct Editor {
     run_asked: bool,
     /// The live reading of the connection being set up, while a person asked to see it.
     pub(crate) probing: Option<Probing>,
+    /// A function being made of the selected nodes, while its preview is open.
+    extracting: Option<organise::Extracting>,
 }
 
 impl Editor {
@@ -226,6 +229,7 @@ impl Editor {
         };
         let graph = host.draft_view(&draft).unwrap_or_default();
         self.canvas.load(&graph);
+        self.canvas.set_groups(draft.groups());
         self.document = Some(Document {
             path,
             untitled: false,
@@ -288,6 +292,7 @@ impl Editor {
         document.declared = host.declarations(&document.draft);
         document.unsaved = true;
         self.canvas.update(&document.graph);
+        self.canvas.set_groups(document.draft.groups());
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
         let mut said = None;
@@ -962,6 +967,29 @@ impl Editor {
                     self.redo(host);
                 }
                 ui.separator();
+                let chosen = self.canvas.selection().len();
+                if ui
+                    .add_enabled(chosen > 0, egui::Button::new("Group"))
+                    .on_hover_text("Frame the selected nodes in a named group (Ctrl+G).")
+                    .clicked()
+                {
+                    let _ = self.group_selection(host, "Group");
+                }
+                if ui
+                    .add_enabled(chosen > 0, egui::Button::new("Make function…"))
+                    .on_hover_text("Turn the selected nodes into a reusable function.")
+                    .clicked()
+                {
+                    self.preview_function(host);
+                }
+                if ui
+                    .add_enabled(chosen > 1, egui::Button::new("Arrange"))
+                    .on_hover_text("Lay the selected nodes out along their wires.")
+                    .clicked()
+                {
+                    let _ = self.arrange_selection();
+                }
+                ui.separator();
                 if ui.button("Fit").clicked() {
                     self.canvas.fit();
                 }
@@ -1224,7 +1252,14 @@ impl Editor {
         if let Some((at, screen)) = done.quick_add {
             self.open_quick_add(None, at, screen);
         }
+        if let Some(edit) = done.group {
+            self.group_edit(host, edit);
+        }
+        if done.group_selection {
+            let _ = self.group_selection(host, "Group");
+        }
         self.quick_add_popup(ui.ctx(), host);
+        self.function_window(ui.ctx(), host);
     }
 }
 

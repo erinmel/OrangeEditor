@@ -23,6 +23,7 @@ mod flow;
 mod flows;
 mod graphs;
 mod names;
+mod organise;
 mod packages;
 mod persist;
 mod preview;
@@ -101,6 +102,7 @@ pub use orange_sdk::{
     TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
 pub use state::StoredVariable;
 pub use suggest::Suggestion;

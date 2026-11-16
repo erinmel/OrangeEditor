@@ -301,7 +301,9 @@ impl Host {
                 .get(&(node, input))
                 .is_some_and(|ports| ports.contains(port))
         };
-        let contract = registry.contract(document, node).ok().flatten();
+        let contract = call_contract(document, node, registry)
+            .map(Cow::Owned)
+            .or_else(|| registry.contract(document, node).ok().flatten());
         // What the node's definition file says about showing it.
         let shown = self.presentations.get(&node.definition);
         // A generic port shows the type its parameter has now: the chosen one, else the
@@ -466,6 +468,7 @@ impl Host {
             kind: labels
                 .get(&definition)
                 .cloned()
+                .or_else(|| (definition == "core/call").then(|| "Function".to_owned()))
                 .unwrap_or_else(|| definition.clone()),
             entry: kind == Some(NodeKind::Entry),
             definition,
@@ -514,4 +517,24 @@ impl Host {
             (edge.to.node, edge.to.port.to_string()),
         ))
     }
+}
+
+/// The contract of a call of one of the document's functions: the function's declared
+/// kind and interface, so the call is drawn and wired like any node. `None` for any
+/// other node, or a call whose function is missing or malformed.
+pub(crate) fn call_contract(
+    document: &GraphDocument,
+    node: &NodeInstance,
+    registry: &RegistrySnapshot,
+) -> Option<orange_model::catalog::NodeContract> {
+    let interface = orange_model::catalog::call_interface(document, node, registry)
+        .ok()
+        .flatten()?;
+    let function = document.functions().get(&interface.function)?;
+    Some(orange_model::catalog::NodeContract {
+        kind: function.kind,
+        suspends: None,
+        type_params: interface.type_params,
+        ports: interface.ports,
+    })
 }
