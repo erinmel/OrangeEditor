@@ -47,3 +47,9 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Optimise across crate boundaries. Unwinding stays: the runtime catches a node's panic
+# rather than losing the process with it.
+lto = "thin"
+codegen-units = 1
