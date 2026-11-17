@@ -386,6 +386,16 @@ Frequency-band energy and fundamental-pitch estimation are separate conditional 
 
 A future TTS or other generator plugin can return a validated asset handle or feed a negotiated bounded PCM sink. The service defines sample format, backpressure, end-of-stream, underflow, cancellation and ownership; selected output device/gain are the same as file playback. Plugin work stays off hardware callbacks. This path must be exercised with a synthetic producer before public audio API freeze, without shipping a TTS integration.
 
+### Sources and analyzers (2026-11-17; FR-119, ADR-30)
+
+An **audio source** connection (`org.orange.audio/input`) is a microphone or other input, what the system plays (loopback), or a **sound file**. It is opened once per flow and shared: the capture callback only stores samples in the source's ring and measures the whole-sound level. A file source plays into the same ring at real-time pace once Play source (or "Play at start") starts it, optionally also heard on an output ("Hear it"), so whatever listens to a microphone listens to a file the same way.
+
+Listening is done by **entries and nodes with their own settings**, not by the connection: On band level (band, threshold, release, hold, window; replaces the first On level), On transient (band, sensitivity, floor, minimum gap; 45–120 Hz by default for kicks) and Band level (a band of a stream). Each analyzer reads the ring with its own cursor on its own thread. A band is a 2nd-order Butterworth high-pass at `low_hz` and low-pass at `high_hz` (12 dB per octave each), so neighbouring frequencies leak in at reduced level; a side left at 0 is open. On transient fires on a rise of the band's level of 3 to 12 dB (by sensitivity) above its recent energy average, above a floor and after a minimum gap, and re-arms only once the level falls back, so a held note is one hit. This is a band-energy onset detector, not spectral flux or pitch tracking.
+
+Transport belongs to the file source: Play, Pause, Resume, Stop and Jump to time act on that source alone, and On finished fires at its end. Pause sounds, Resume sounds, Jump to time and Set volume still act on every sound of an output connection.
+
+Not done yet: signal wires (ADR-30 phase 2), a spectrum and hit-history viewer, an editor meter that reads the running flow's analyzer instead of its own capture, streaming long files from disk (files are decoded whole, up to `MAX_SECONDS`), and a band-pass or EQ in the playback path.
+
 ## Specialized integrations
 
 No OBS, Twitch, website API or browser-canvas server is bundled or required by foundation gates. Such plugins may reuse approved HTTP/WebSocket, vault, event-source and audio services. Optional webhook plugins require a host-provided listener capability with explicit authority and response lifetime; outbound HTTP alone does not provide inbound listening. A new native/privileged primitive still needs a compatible host release or the documented trusted-worker tier.

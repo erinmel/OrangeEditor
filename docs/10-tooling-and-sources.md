@@ -6329,3 +6329,16 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   `orange-host` `local_types` tests (a graph with its own enum checks and runs; draft
   edits rename, remove and undo) and the `orange-editor-ui` `types_tab` tests. The
   Types tab was not clicked through in the desktop window.
+
+### Audio sources, analyzers and file transport - 2026-11-17
+
+- Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change. On the
+  committed tree `cargo test --workspace --locked --no-fail-fast` passed 1,985 tests
+  with zero failures and 24 ignored; `cargo clippy --workspace --all-targets --locked`
+  reported nothing.
+- FR-119, ADR-30: `orange-audio` `analysis` tests (band filter, settings, onsets),
+  `analyzers_share_one_capture_and_each_hears_its_own_band` (test-tone device),
+  `a_file_source_is_heard_by_analyzers_and_finishes` (a generated WAV), the
+  `file_source` settings and transport tests, and the `audio` integration test
+  `a_saved_on_level_opens_as_on_band_level`. No real microphone, loopback device or
+  speaker was used, and On transient was not tuned against recorded music.

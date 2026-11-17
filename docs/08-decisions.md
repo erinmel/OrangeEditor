@@ -917,3 +917,13 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 **Not covered:** carrying local types through copy and paste, promoting local types to a package, and value editors for local types in the variables list.
 
 **Contracts:** 12 §6.5, FR-118. Verification is the focused tests named in FR-118.
+
+## ADR-30 — Audio sources are shared and analyzers own their settings; signal wires next
+
+**Decision (2026-11-17; FR-119):** an audio source connection is a device or a sound file and is opened once; it only captures (or plays) into a ring and measures. Entries and nodes that listen carry their own band and thresholds (On band level, On transient, Band level) and read the ring with their own cursor off the audio callback. A file source owns its transport (Play, Pause, Resume, Stop, Jump to time, On finished). The first On level is replaced through `replaces` (ADR-28).
+
+**Why:** thresholds on the device made two listeners open the device twice and hid what each entry listened to; files could not be analysed; transport paused every sound of an output. A source shared by many listeners is how mixing consoles and node tools (TouchDesigner, Bitwig Grid) separate a signal from what measures it.
+
+**Phase 2, decided but not built: signal wires.** Today an entry names its source through a connection, not a visible wire, because entries take no data inputs and a run's data edges are evaluated per epoch. The target is a port kind `signal` (type `audio/signal@1`): signal edges are routing, resolved when a flow activates, never per epoch; they fan out, fan in only at mixers, convert to nothing, and cannot be stored, emitted or exported. Entries may take signal inputs. The compiler extracts each flow's signal subgraph as an audio patch that the host instantiates on activation and tears down on stop or update, through the domain seam of ADR-21. Sources (device, file), sinks (output), analyzers (band level, onsets) and effects (filter, EQ) become patch nodes; editors tap a patch node for meters, spectra and hit markers instead of opening their own capture. Until then the audio stream record stays for Audio in, Audio out, Level and Record.
+
+**Contracts:** 05 "Sources and analyzers", FR-119. Verification is the focused tests named in FR-119.
