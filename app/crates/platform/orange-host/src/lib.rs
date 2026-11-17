@@ -22,6 +22,7 @@ mod effects;
 mod flow;
 mod flows;
 mod graphs;
+pub mod i18n;
 mod names;
 mod organise;
 mod packages;
@@ -78,6 +79,7 @@ pub use documents::{
 pub use draft::{Draft, MAX_UNDO, OpenReport};
 pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
+pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
@@ -107,7 +109,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
-pub use search::{CONCEPTS, Found, Match, SOURCE_LANGUAGE, SearchWords, SearchWordsError};
+pub use search::{CONCEPTS, Found, Match};
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
 pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula};
@@ -563,8 +565,8 @@ impl NodeInfo<'_> {
     /// Other words a person may search for this node by in English, such as `integer`
     /// for Int, from the built-in search words. [`Host::search_nodes`] also uses the
     /// active language's words and any added ones.
-    pub fn aliases(&self) -> Vec<&'static str> {
-        SearchWords::built_in().aliases(SOURCE_LANGUAGE, self.definition.definition.id.as_str())
+    pub fn aliases(&self) -> Vec<String> {
+        Catalogs::built_in().aliases(SOURCE_LANGUAGE, self.definition.definition.id.as_str())
     }
     /// The palette category in the default language: its definition file's category,
     /// "Triggers" for entries with no explicit category, or one made from its namespace.
@@ -677,7 +679,7 @@ pub struct Host {
     /// Registries with the types of recently seen documents, oldest first.
     local_registries: Mutex<Vec<LocalRegistry>>,
     /// The words the node search finds nodes by.
-    search_words: SearchWords,
+    catalogs: Catalogs,
     not_restored: Vec<(String, HostError)>,
     /// The base nodes and each service package the application was started with.
     built_in: Vec<BuiltIn>,
@@ -878,14 +880,14 @@ impl Host {
         let mut presentations = BTreeMap::new();
         let mut replacements = Replacements::new();
         // Each package's own text in other languages, beside the host's.
-        let mut search_words = SearchWords::built_in().clone();
+        let mut catalogs = Catalogs::built_in().clone();
         for package in &packages {
             if disabled.contains(package.id()) {
                 continue;
             }
             presentations.extend(package.presentations().iter().cloned());
             for (locale, catalog) in package.catalogs() {
-                search_words.add(locale, catalog).map_err(|e| {
+                catalogs.add(locale, catalog).map_err(|e| {
                     start(&format!("package {} text in {locale}: {e}", package.id()))
                 })?;
             }
@@ -947,6 +949,10 @@ impl Host {
         let pool =
             Pool::new(options.effect_workers, options.max_effect_workers).map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));
+        // A made-up language for checking layouts, from every English catalogue.
+        if cfg!(debug_assertions) {
+            catalogs.add_pseudo();
+        }
         let host = Self {
             native: Native(Arc::new(math), services),
             adapters,
@@ -958,7 +964,7 @@ impl Host {
             presentations,
             replacements,
             local_registries: Mutex::new(Vec::new()),
-            search_words,
+            catalogs,
             not_restored: Vec::new(),
             built_in,
             disabled,

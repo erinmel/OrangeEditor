@@ -523,7 +523,7 @@ fn value_nodes_are_in_the_palette_under_short_names_and_found_by_aliases() {
         .nodes()
         .find(|info| info.definition.definition.id.as_str() == "core/whole-number")
         .unwrap();
-    assert!(int.aliases().contains(&"integer"));
+    assert!(int.aliases().iter().any(|alias| alias == "integer"));
 }
 
 #[test]

@@ -30,6 +30,7 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod analysis;
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 mod device;
 mod file_source;
 mod level;
@@ -1456,7 +1457,7 @@ pub fn package() -> ServicePackage {
             "Audio",
             "Plays sound files and live audio on output devices, and listens to, measures and records microphones and other inputs.",
         )
-        .messages("es", include_str!("../locales/es.ftl"))
+        .with_catalogs(CATALOGS)
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
         .record("stream", &[("source", "core/u64@1")])

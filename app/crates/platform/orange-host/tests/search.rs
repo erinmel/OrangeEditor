@@ -122,7 +122,7 @@ fn concepts_group_nodes_by_purpose() {
 fn a_language_adds_words_without_changing_ids() {
     let mut host = host();
     assert!(host.search_nodes("déclencheur", "fr").is_empty());
-    host.add_search_words(
+    host.add_catalog(
         "fr",
         "concept-trigger = déclencheur, quand\nalias-core-wait = attendre",
     )
@@ -135,5 +135,5 @@ fn a_language_adds_words_without_changing_ids() {
     );
     // Purposes fall back to English.
     assert!(!found[0].purpose.is_empty());
-    assert!(host.add_search_words("fr", "Mauvais = x").is_err());
+    assert!(host.add_catalog("fr", "no equals sign").is_err());
 }

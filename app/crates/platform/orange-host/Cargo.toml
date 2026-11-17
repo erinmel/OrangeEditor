@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+build = "../../../build/locales.rs"
 
 [dependencies]
 orange-bundled = { path = "../../core/orange-bundled", version = "=0.0.0" }
@@ -19,6 +20,9 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+fluent-bundle.workspace = true
+fluent-syntax.workspace = true
+unic-langid.workspace = true
 
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0" }

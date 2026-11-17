@@ -4,10 +4,10 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn text<'a>(host: &'a Host, language: &str, key: &str, fallback: &'a str) -> &'a str {
+pub(crate) fn text(host: &Host, language: &str, key: &str, fallback: &str) -> String {
     key.strip_prefix("org.orange.host/")
-        .and_then(|id| host.search_words().message(language, id))
-        .unwrap_or(fallback)
+        .and_then(|id| host.catalogs().message(language, id))
+        .map_or_else(|| fallback.to_owned(), std::borrow::Cow::into_owned)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,9 +131,13 @@ impl Editor {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(160.0);
-                            for (section, title, _) in sections {
-                                if visible.contains(&section) {
-                                    ui.selectable_value(&mut self.settings_tab, section, title);
+                            for (section, title, _) in &sections {
+                                if visible.contains(section) {
+                                    ui.selectable_value(
+                                        &mut self.settings_tab,
+                                        *section,
+                                        title.as_str(),
+                                    );
                                 }
                             }
                         },
@@ -158,7 +162,7 @@ impl Editor {
                                     let heading = sections
                                         .iter()
                                         .find(|(section, _, _)| *section == self.settings_tab)
-                                        .map_or("", |(_, title, _)| *title);
+                                        .map_or("", |(_, title, _)| title.as_str());
                                     ui.heading(heading);
                                     ui.add_space(16.0);
                                     match self.settings_tab {

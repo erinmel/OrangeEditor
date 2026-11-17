@@ -864,7 +864,7 @@ impl ServicePackage {
     pub fn presentations(&self) -> &[(DefinitionRef, Presentation)] {
         &self.presentations
     }
-    /// Adds the package's text in language `locale` (such as `es`): `id = text` lines
+    /// Adds the package's text in language `locale` (such as `es`): Fluent messages
     /// whose IDs are message keys with `/`, `.` and `_` written as `-`, so
     /// `org.example.demo/fetch-label` is `org-example-demo-fetch-label`. Labels,
     /// descriptions, categories and keywords are looked up there before their English
@@ -873,6 +873,14 @@ impl ServicePackage {
     pub fn messages(mut self, locale: &str, catalog: &str) -> Self {
         self.catalogs.push((locale.to_owned(), catalog.to_owned()));
         self
+    }
+    /// Adds every `(locale, Fluent text)` pair, such as the list `app/build/locales.rs`
+    /// makes of a crate's `locales/<tag>/*.ftl` files.
+    #[must_use]
+    pub fn with_catalogs(self, catalogs: &[(&str, &str)]) -> Self {
+        catalogs.iter().fold(self, |package, (locale, catalog)| {
+            package.messages(locale, catalog)
+        })
     }
     /// The catalogues [`messages`](Self::messages) added, as (language, text).
     pub fn catalogs(&self) -> &[(String, String)] {

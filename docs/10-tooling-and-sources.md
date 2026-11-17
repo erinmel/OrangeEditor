@@ -64,9 +64,11 @@ creates a named family when missing and skips a font already added by name;
 `(RichText, &str)` and `Button::shortcut_text`; `InputState::consume_key`. In 0.37 a
 family with no font logs a warning instead of panicking.
 
-Search words: `app/crates/platform/orange-host/locales/search-en.ftl` and `search-es.ftl`, a
-subset of Fluent (`id = text` lines, no arguments) read by the host; no Fluent crate
-was adopted (13 §3 still open).
+Translated text (2026-11-17): `fluent-bundle =0.16.0`, `fluent-syntax =0.12.0` and
+`unic-langid =0.9.6` (Apache-2.0 OR MIT; their `tinystr`/`zerovec` are Unicode-3.0), with the
+concurrent bundle so a host stays `Send + Sync`; `sys-locale =0.3.2` reads the operating
+system's language for the desktop. API checked by compiling against these versions.
+Catalogues live in each crate's `locales/<tag>/*.ftl`; `app/build/locales.rs` lists them.
 
 Local runs used their own `CARGO_TARGET_DIR`: the shared target directory was being
 built by other worktrees at the same time, and integration tests were compiled against

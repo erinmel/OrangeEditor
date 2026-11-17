@@ -1462,19 +1462,22 @@ impl Editor {
 
     /// The language the node search also understands, from the host's search words.
     fn language_choice(&mut self, ui: &mut egui::Ui, host: &Host) {
-        let languages = host.search_words().languages();
+        let languages = host.catalogs().languages();
         let current = self.language().to_owned();
         let name = languages
             .iter()
             .find(|(tag, _)| *tag == current)
-            .map_or(current.as_str(), |(_, name)| name)
+            .map_or(current.as_str(), |(_, name)| name.as_ref())
             .to_owned();
         let mut chosen = None;
         let _ = egui::ComboBox::from_id_salt("orange-language")
             .selected_text((icons::text(icons::LANGUAGE), format!(" {name}")))
             .show_ui(ui, |ui| {
                 for (tag, name) in &languages {
-                    if ui.selectable_label(*tag == current, *name).clicked() {
+                    if ui
+                        .selectable_label(*tag == current, name.as_ref())
+                        .clicked()
+                    {
                         chosen = Some((*tag).to_owned());
                     }
                 }

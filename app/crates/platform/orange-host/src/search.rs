@@ -1,13 +1,14 @@
 //! Finding node kinds by what a person types, like a shop search: by name, alias,
 //! category, purpose ("concept") and description, in the active language and English,
-//! forgiving one typo. The words are catalogue data ([`SearchWords`]); which nodes a
+//! forgiving one typo. The words are catalogue data ([`Catalogs`]); which nodes a
 //! concept groups follows from their kind and ID, so new trigger kinds join "trigger"
 //! without a list to keep up.
-use std::collections::BTreeMap;
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use orange_model::document::NodeKind;
 
+use crate::i18n::{CatalogError, Catalogs};
 use crate::{Host, NodeInfo};
 use orange_model::catalog::TextRef;
 
@@ -18,112 +19,29 @@ pub const CONCEPTS: &[&str] = &[
     "loop", "list", "data",
 ];
 
-/// The language every search also matches in, and whose words are always present.
-pub const SOURCE_LANGUAGE: &str = "en";
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
-static BUILT_IN: LazyLock<SearchWords> = LazyLock::new(|| {
-    let mut words = SearchWords::default();
-    for (locale, text) in [
-        ("en", include_str!("../locales/search-en.ftl")),
-        ("es", include_str!("../locales/search-es.ftl")),
-    ] {
-        words
-            .add(locale, text)
-            .unwrap_or_else(|error| panic!("bundled search words for {locale}: {error}"));
+static BUILT_IN: LazyLock<Catalogs> = LazyLock::new(|| {
+    let mut catalogs = Catalogs::default();
+    for (locale, text) in CATALOGS {
+        // The tests read every bundled catalogue; one that fails is left out.
+        let added = catalogs.add(locale, text);
+        debug_assert!(added.is_ok(), "bundled catalogue {locale}: {added:?}");
     }
-    words
+    catalogs
 });
 
-/// Translatable words the search finds nodes by, per language: a small subset of
-/// Fluent (`id = text` lines and `#` comments). Message IDs are stable and
-/// language-free, so a language only adds words. See `locales/search-en.ftl`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SearchWords {
-    /// Lower-case language tag, then message ID, then its text.
-    languages: BTreeMap<String, BTreeMap<String, String>>,
-}
-
-/// A catalogue that could not be read, with the line it stopped at.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("line {line}: {reason}")]
-pub struct SearchWordsError {
-    pub line: usize,
-    pub reason: &'static str,
-}
-
-impl SearchWords {
-    /// The words shipped with the host, in English and Spanish.
+impl Catalogs {
+    /// The host's own catalogues: search words and host messages in every language
+    /// it ships, from `locales/<tag>/*.ftl`.
     pub fn built_in() -> &'static Self {
         &BUILT_IN
     }
 
-    /// Adds the messages of `text` to language `locale`; a message already there is
-    /// replaced. Nothing is added when a line is malformed.
-    pub fn add(&mut self, locale: &str, text: &str) -> Result<(), SearchWordsError> {
-        let locale = locale.trim().to_ascii_lowercase();
-        let valid_tag = !locale.is_empty()
-            && locale
-                .split('-')
-                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()));
-        if !valid_tag {
-            return Err(SearchWordsError {
-                line: 0,
-                reason: "the language tag is not BCP 47 shaped",
-            });
-        }
-        let mut read = BTreeMap::new();
-        for (index, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let error = |reason| SearchWordsError {
-                line: index + 1,
-                reason,
-            };
-            let (id, value) = line.split_once('=').ok_or(error("expected `id = text`"))?;
-            let id = id.trim();
-            let valid_id = id.starts_with(|c: char| c.is_ascii_lowercase())
-                && id
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-            if !valid_id {
-                return Err(error("message IDs are [a-z][a-z0-9-]*"));
-            }
-            if value.contains(['{', '}']) {
-                return Err(error("search words take no arguments"));
-            }
-            read.insert(id.to_owned(), value.trim().to_owned());
-        }
-        self.languages.entry(locale).or_default().extend(read);
-        Ok(())
-    }
-
-    /// The languages that have words, with their own names.
-    pub fn languages(&self) -> Vec<(&str, &str)> {
-        self.languages
-            .iter()
-            .map(|(tag, messages)| {
-                let name = messages
-                    .get("language-name")
-                    .map_or(tag.as_str(), String::as_str);
-                (tag.as_str(), name)
-            })
-            .collect()
-    }
-
-    /// The text of message `id` for `locale`: its exact tag, then each shorter one
-    /// (`es-mx`, then `es`), then English.
-    pub fn message(&self, locale: &str, id: &str) -> Option<&str> {
-        self.chain(locale)
-            .find_map(|messages| messages.get(id))
-            .map(String::as_str)
-    }
-
     /// The aliases of node `definition` in `locale` and in English.
-    pub fn aliases(&self, locale: &str, definition: &str) -> Vec<&str> {
+    pub fn aliases(&self, locale: &str, definition: &str) -> Vec<String> {
         let id = format!("alias-{}", node_key(definition));
-        let mut found: Vec<&str> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
         for word in self.words(locale, &id) {
             if !found.contains(&word) {
                 found.push(word);
@@ -133,34 +51,18 @@ impl SearchWords {
     }
 
     /// The comma-separated words of message `id` in `locale` and in English.
-    fn words(&self, locale: &str, id: &str) -> impl Iterator<Item = &str> + use<'_> {
-        let mut seen: Vec<&BTreeMap<String, String>> = Vec::new();
-        for messages in self.chain(locale) {
-            if !seen.iter().any(|known| std::ptr::eq(*known, messages)) {
-                seen.push(messages);
-            }
-        }
-        let texts: Vec<&String> = seen
-            .into_iter()
-            .filter_map(|messages| messages.get(id))
+    fn words(&self, locale: &str, id: &str) -> impl Iterator<Item = String> + use<'_> {
+        let texts: Vec<_> = self
+            .chain(locale)
+            .filter_map(|language| language.format(id, &[]))
             .collect();
-        texts
-            .into_iter()
-            .flat_map(|text| text.split(','))
-            .map(str::trim)
-            .filter(|word| !word.is_empty())
-    }
-
-    fn chain(&self, locale: &str) -> impl Iterator<Item = &BTreeMap<String, String>> {
-        let locale = locale.trim().to_ascii_lowercase();
-        let mut tags = Vec::new();
-        let mut tag = locale.as_str();
-        while !tag.is_empty() {
-            tags.push(tag.to_owned());
-            tag = tag.rsplit_once('-').map_or("", |(shorter, _)| shorter);
-        }
-        tags.push(SOURCE_LANGUAGE.to_owned());
-        tags.into_iter().filter_map(|tag| self.languages.get(&tag))
+        texts.into_iter().flat_map(|text| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|word| !word.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
     }
 }
 
@@ -200,15 +102,16 @@ pub struct Found {
 }
 
 impl Host {
-    /// The words the search uses: the built-in ones and any added since.
-    pub fn search_words(&self) -> &SearchWords {
-        &self.search_words
+    /// The host's and the packages' catalogues: search words, node names and host
+    /// messages in every language there is.
+    pub fn catalogs(&self) -> &Catalogs {
+        &self.catalogs
     }
 
-    /// Adds search words for `locale` from catalogue text, such as a package's or a
-    /// new language's, without changing any ID.
-    pub fn add_search_words(&mut self, locale: &str, text: &str) -> Result<(), SearchWordsError> {
-        self.search_words.add(locale, text)
+    /// Adds catalogue text for `locale`, such as a new language's, without changing
+    /// any ID.
+    pub fn add_catalog(&mut self, locale: &str, text: &str) -> Result<(), CatalogError> {
+        self.catalogs.add(locale, text)
     }
 
     /// Every node kind that matches `search` in language `locale` or English, best
@@ -256,16 +159,16 @@ impl Host {
 
     /// `text` in `locale` from the host's and the packages' catalogues, or its English
     /// text when no catalogue has it.
-    pub fn text_in<'a>(&'a self, text: &'a TextRef, locale: &str) -> &'a str {
-        self.search_words
+    pub fn text_in<'a>(&'a self, text: &'a TextRef, locale: &str) -> Cow<'a, str> {
+        self.catalogs
             .message(locale, &node_key(&text.key))
-            .unwrap_or(&text.fallback)
+            .unwrap_or(Cow::Borrowed(&text.fallback))
     }
 
     /// A node kind's name in `locale`.
     pub fn label_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         match info.presentation.and_then(|shown| shown.label.as_ref()) {
-            Some(label) => self.text_in(label, locale).to_owned(),
+            Some(label) => self.text_in(label, locale).into_owned(),
             None => info.label().into_owned(),
         }
     }
@@ -273,7 +176,7 @@ impl Host {
     /// A node kind's palette category in `locale`.
     pub fn category_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         match info.presentation.and_then(|shown| shown.category.as_ref()) {
-            Some(category) => self.text_in(category, locale).to_owned(),
+            Some(category) => self.text_in(category, locale).into_owned(),
             None => info.category().into_owned(),
         }
     }
@@ -291,9 +194,9 @@ impl Host {
         let label = fold(&self.label_in(info, locale));
         let english = fold(&info.label());
         let mut aliases: Vec<String> = self
-            .search_words
+            .catalogs
             .words(locale, &format!("alias-{key}"))
-            .map(fold)
+            .map(|word| fold(&word))
             .collect();
         if english != label {
             aliases.push(english);
@@ -301,9 +204,9 @@ impl Host {
         // The package's own keywords, translated by its catalogue and in English.
         if let Some(keywords) = info.presentation.and_then(|shown| shown.keywords.as_ref()) {
             aliases.extend(
-                self.search_words
+                self.catalogs
                     .words(locale, &node_key(&keywords.key))
-                    .map(fold),
+                    .map(|word| fold(&word)),
             );
             aliases.extend(
                 keywords
@@ -321,15 +224,15 @@ impl Host {
             .map(str::to_owned)
             .collect();
         concept_words.extend(
-            self.search_words
+            self.catalogs
                 .words(locale, &format!("category-{category_slug}"))
-                .map(fold),
+                .map(|word| fold(&word)),
         );
         for concept in concepts(info) {
             concept_words.extend(
-                self.search_words
+                self.catalogs
                     .words(locale, &format!("concept-{concept}"))
-                    .map(fold),
+                    .map(|word| fold(&word)),
             );
         }
         let mut description = fold(id);
@@ -338,13 +241,13 @@ impl Host {
             .and_then(|shown| shown.description.as_ref())
         {
             description.push(' ');
-            description.push_str(&fold(self.text_in(text, locale)));
+            description.push_str(&fold(&self.text_in(text, locale)));
             description.push(' ');
             description.push_str(&fold(&text.fallback));
         }
-        if let Some(text) = self.search_words.message(locale, &format!("purpose-{key}")) {
+        if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
             description.push(' ');
-            description.push_str(&fold(text));
+            description.push_str(&fold(&text));
         }
 
         // The whole search against the name and aliases, as a phrase.
@@ -393,25 +296,26 @@ impl Host {
 
     fn purpose(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         let key = node_key(info.definition.definition.id.as_str());
-        if let Some(text) = self.search_words.message(locale, &format!("purpose-{key}")) {
-            return text.to_owned();
+        if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
+            return text.into_owned();
         }
         if let Some(text) = info
             .presentation
             .and_then(|shown| shown.description.as_ref())
         {
-            let text = self.text_in(text, locale).trim();
+            let text = self.text_in(text, locale);
+            let text = text.trim();
             let end = text.find(". ").map_or(text.len(), |at| at + 1);
             return text[..end].to_owned();
         }
         concepts(info)
             .first()
             .and_then(|concept| {
-                self.search_words
+                self.catalogs
                     .message(locale, &format!("concept-{concept}-purpose"))
             })
+            .map(Cow::into_owned)
             .unwrap_or_default()
-            .to_owned()
     }
 }
 
@@ -596,18 +500,25 @@ mod tests {
     }
 
     #[test]
-    fn catalogues_fall_back_to_shorter_tags_then_english_and_refuse_bad_lines() {
-        let words = SearchWords::built_in();
+    fn every_bundled_catalogue_reads_and_translates_english_messages() {
+        for (locale, text) in CATALOGS {
+            assert!(Catalogs::default().add(locale, text).is_ok(), "{locale}");
+        }
+        let words = Catalogs::built_in();
+        let english = words.ids(crate::i18n::SOURCE_LANGUAGE);
+        for (tag, _) in words.languages() {
+            // Extra search words are a language's own; every other message translates one.
+            for id in words.ids(tag) {
+                let extra_words = id.starts_with("alias-") || id.starts_with("category-");
+                assert!(
+                    extra_words || english.contains(&id),
+                    "{tag} has {id}, which English lacks"
+                );
+            }
+        }
         assert_eq!(
             words.message("es-MX", "concept-text"),
             words.message("es", "concept-text")
         );
-        assert_eq!(words.message("fr", "language-name"), Some("English"));
-        assert!(words.languages().contains(&("es", "Español")));
-        let mut words = SearchWords::default();
-        assert_eq!(words.add("en", "Bad-Id = x").unwrap_err().line, 1);
-        assert!(words.add("en", "\n# note\nok = { $arg }").is_err());
-        assert!(words.add("not a tag", "ok = x").is_err());
-        assert_eq!(words, SearchWords::default());
     }
 }
