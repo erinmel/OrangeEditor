@@ -22,15 +22,14 @@
 
 use orange_sandbox::FsError;
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
-    ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
+    ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -388,10 +387,10 @@ impl ServiceNode for Operation {
 }
 
 /// Stops its watcher when the flow that owns the entry closes.
-struct Watching(Arc<AtomicBool>);
+struct Watching(Arc<Lifecycle>);
 impl Drop for Watching {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        self.0.stop();
     }
 }
 
@@ -407,8 +406,8 @@ impl ServiceSource for OnChange {
         if folder(Some(session.as_ref())).is_none() {
             return Err("the entry needs a folder connection".into());
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&stop);
+        let stop = Arc::new(Lifecycle::new());
+        let life = Arc::clone(&stop);
         let _ = thread::Builder::new()
             .name("orange-files-watch".into())
             .spawn(move || {
@@ -416,16 +415,7 @@ impl ServiceSource for OnChange {
                     return;
                 };
                 let mut before = folder.snapshot().unwrap_or_default();
-                let step = Duration::from_millis(25).min(folder.poll);
-                'watch: loop {
-                    let mut waited = Duration::ZERO;
-                    while waited < folder.poll {
-                        if stopped.load(Ordering::Acquire) {
-                            break 'watch;
-                        }
-                        thread::sleep(step);
-                        waited += step;
-                    }
+                'watch: while life.rest(folder.poll) {
                     // A folder over the limit is not watched until it is small again.
                     let Some(now) = folder.snapshot() else {
                         continue;

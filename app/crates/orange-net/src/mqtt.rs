@@ -16,15 +16,15 @@
 //! broker publishes if the connection is lost without saying goodbye. MQTT 5 is not
 //! provided.
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, Emitter, KernelFault, ListRepr, Listeners, ServiceNode,
-    ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, Emitter, KernelFault, Lifecycle, ListRepr, Listeners,
+    ServiceNode, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -321,10 +321,10 @@ struct Shared {
     outgoing: Mutex<VecDeque<Outgoing>>,
     /// Each listener with whether it takes payloads as bytes instead of text.
     listeners: Listeners<bool>,
-    started: AtomicBool,
-    stop: AtomicBool,
-    /// Set when the I/O thread has ended.
-    ended: AtomicBool,
+    /// Started once a flow has attached its triggers; stopped when the session ends.
+    life: Lifecycle,
+    /// Stopped when the I/O thread has ended.
+    io: Lifecycle,
 }
 /// The user name and password are left out.
 impl std::fmt::Debug for Shared {
@@ -338,7 +338,7 @@ impl std::fmt::Debug for Shared {
 }
 impl Shared {
     fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
+        self.life.stopped()
     }
     /// Fires the listening entries. Text entries get `[topic, text]` and skip a
     /// payload that is not UTF-8; byte entries get the payload alone.
@@ -519,11 +519,8 @@ fn serve(shared: &Shared, stream: &mut Stream, flight: &mut Flight) {
 }
 
 fn run(shared: &Shared) {
-    while !shared.started.load(Ordering::Acquire) && !shared.stopped() {
-        thread::sleep(POLL);
-    }
-    if shared.stopped() {
-        shared.ended.store(true, Ordering::Release);
+    if !shared.life.wait_started() {
+        shared.io.stop();
         return;
     }
     let mut retry = FIRST_RETRY;
@@ -537,14 +534,10 @@ fn run(shared: &Shared) {
                 retry = FIRST_RETRY;
             }
         }
-        let mut waited = Duration::ZERO;
-        while waited < retry && !shared.stopped() {
-            thread::sleep(POLL);
-            waited += POLL;
-        }
+        let _ = shared.life.rest(retry);
         retry = (retry * 2).min(MAX_RETRY);
     }
-    shared.ended.store(true, Ordering::Release);
+    shared.io.stop();
 }
 
 /// An MQTT connection. Dropping the last reference disconnects.
@@ -555,18 +548,15 @@ impl Session for MqttSession {
         self
     }
     fn start(&self) {
-        self.0.started.store(true, Ordering::Release);
+        self.0.life.start();
     }
 }
 impl Drop for MqttSession {
     fn drop(&mut self) {
-        self.0.stop.store(true, Ordering::Relaxed);
+        self.0.life.stop();
         // Give the I/O thread a moment to say goodbye: a broker that only sees the
         // connection close publishes the will, as if the client had been lost.
-        let asked = Instant::now();
-        while !self.0.ended.load(Ordering::Acquire) && asked.elapsed() < GOODBYE {
-            thread::sleep(POLL);
-        }
+        let _ = self.0.io.rest(GOODBYE);
     }
 }
 
@@ -802,9 +792,8 @@ impl ConnectionAdapter for MqttAdapter {
             },
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Listeners::new(),
-            started: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
+            life: Lifecycle::new(),
+            io: Lifecycle::new(),
         });
         let io = Arc::clone(&shared);
         thread::Builder::new()

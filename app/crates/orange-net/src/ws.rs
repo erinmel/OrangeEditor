@@ -7,7 +7,7 @@
 //! listener is fired through its emitter, so a slow or paused flow cannot stall the
 //! socket and the socket cannot stall a flow.
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, Emitter, KernelFault, Listeners, ServiceNode,
+    Call, ConnectionAdapter, Definition, Emitter, KernelFault, Lifecycle, Listeners, ServiceNode,
     ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
@@ -75,9 +75,8 @@ struct Shared {
     listeners: Listeners<Listen>,
     /// Whether the socket is open now.
     connected: AtomicBool,
-    /// Set once a flow has attached its triggers; the socket is not opened before.
-    started: AtomicBool,
-    stop: AtomicBool,
+    /// Started once a flow has attached its triggers; the socket is not opened before.
+    life: Lifecycle,
 }
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -89,7 +88,7 @@ impl std::fmt::Debug for Shared {
 }
 impl Shared {
     fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
+        self.life.stopped()
     }
     /// Fires every entry listening for `what`. A flow that has ended is forgotten; one
     /// whose mailbox is full misses this firing, as its bounded mailbox requires.
@@ -107,12 +106,12 @@ impl Session for WsSession {
         self
     }
     fn start(&self) {
-        self.0.started.store(true, Ordering::Release);
+        self.0.life.start();
     }
 }
 impl Drop for WsSession {
     fn drop(&mut self) {
-        self.0.stop.store(true, Ordering::Relaxed);
+        self.0.life.stop();
     }
 }
 
@@ -199,8 +198,8 @@ fn handshake(shared: &Shared) -> Option<tungstenite::handshake::client::Request>
 fn run(shared: &Shared) {
     // A server may speak first. Connecting only once a flow has attached its triggers
     // means its first messages have somewhere to go.
-    while !shared.started.load(Ordering::Acquire) && !shared.stopped() {
-        thread::sleep(POLL);
+    if !shared.life.wait_started() {
+        return;
     }
     let mut retry = FIRST_RETRY;
     while !shared.stopped() {
@@ -217,11 +216,7 @@ fn run(shared: &Shared) {
             }
         }
         // Wait before reconnecting, but notice the session ending promptly.
-        let mut waited = Duration::ZERO;
-        while waited < retry && !shared.stopped() {
-            thread::sleep(POLL);
-            waited += POLL;
-        }
+        let _ = shared.life.rest(retry);
         retry = (retry * 2).min(MAX_RETRY);
     }
 }
@@ -262,8 +257,7 @@ impl ConnectionAdapter for WsAdapter {
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Listeners::new(),
             connected: AtomicBool::new(false),
-            started: AtomicBool::new(false),
-            stop: AtomicBool::new(false),
+            life: Lifecycle::new(),
         });
         // Connecting happens on the session's own thread, never here.
         let io = Arc::clone(&shared);
