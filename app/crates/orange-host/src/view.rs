@@ -343,7 +343,7 @@ impl Host {
                 let value = node
                     .inputs
                     .get(&key)
-                    .and_then(|literal| self.value_of(literal).ok())
+                    .and_then(|literal| self.value_in(document, literal).ok())
                     .map(|value| plain(&value));
                 declared.push(PortView {
                     connected: wired(node.id, &id, input),

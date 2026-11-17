@@ -532,7 +532,7 @@ impl Editor {
 
     /// A field typed in place in the Variables list: `shown` until it has the focus,
     /// then what is typed. Returns the text when the field is left with it changed.
-    fn inline_field(
+    pub(crate) fn inline_field(
         &mut self,
         ui: &mut egui::Ui,
         key: (String, &'static str),
@@ -610,6 +610,9 @@ impl Editor {
                         for common in COMMON_TYPES {
                             let _ =
                                 ui.selectable_value(&mut ty, common.to_owned(), type_name(common));
+                        }
+                        for (local, name) in crate::types_tab::choices() {
+                            let _ = ui.selectable_value(&mut ty, local, name);
                         }
                     })
                     .response

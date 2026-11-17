@@ -511,7 +511,7 @@ impl Host {
                 let parsed: Literal = serde_json::from_str(&text)
                     .map_err(|error| HostError::Variable(error.to_string()))?;
                 // A literal that does not decode is not a value of the input's type.
-                let _ = self.value_of(&parsed)?;
+                let _ = self.value_in(draft.document(), &parsed)?;
                 Some(parsed)
             }
         };

@@ -43,6 +43,8 @@ pub struct Connection {
 pub struct Declarations {
     pub variables: Vec<Variable>,
     pub connections: Vec<Connection>,
+    /// The record and enum types the document declares itself.
+    pub types: Vec<LocalTypeDecl>,
 }
 
 /// A connection adapter as an editor offers it: by name and purpose, not by kind.
@@ -139,7 +141,7 @@ impl Host {
                 initial: variable
                     .init
                     .as_ref()
-                    .and_then(|literal| self.value_of(literal).ok())
+                    .and_then(|literal| self.value_in(document, literal).ok())
                     .map(|value| plain(&value)),
             })
             .collect();
@@ -157,6 +159,7 @@ impl Host {
         Declarations {
             variables,
             connections,
+            types: document.types().values().cloned().collect(),
         }
     }
 
@@ -301,7 +304,7 @@ impl Host {
                 let text = literal(&variable.ty, typed).map_err(HostError::Variable)?;
                 let parsed: Literal = serde_json::from_str(&text)
                     .map_err(|error| HostError::Variable(error.to_string()))?;
-                let _ = self.value_of(&parsed)?;
+                let _ = self.value_in(draft.document(), &parsed)?;
                 Some(parsed)
             }
         };

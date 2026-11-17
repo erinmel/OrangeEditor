@@ -61,6 +61,18 @@ impl Host {
             .map_err(|error| HostError::Variable(error.to_string()))
     }
 
+    /// [`value_of`](Self::value_of) with the types `document` declares itself, for a
+    /// literal of one of the document's own enums or records.
+    pub fn value_in(
+        &self,
+        document: &GraphDocument,
+        literal: &Literal,
+    ) -> Result<Value, HostError> {
+        let registry = self.registry_for(document);
+        orange_model::value::literal_codec::decode(literal, registry.types().as_ref())
+            .map_err(|error| HostError::Variable(error.to_string()))
+    }
+
     /// [`value_of`](Self::value_of) for a literal written as JSON text, such as
     /// `{"type": "core/i64@1", "value": "5"}`.
     pub fn value_from_json(&self, json: &str) -> Result<Value, HostError> {

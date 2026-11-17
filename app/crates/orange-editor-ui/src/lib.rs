@@ -30,6 +30,7 @@ mod organise;
 mod properties;
 mod quick_add;
 mod settings;
+mod types_tab;
 
 pub use properties::{COMMON_TYPES, port_label, set_at};
 pub use quick_add::QuickChoice;
@@ -60,7 +61,8 @@ pub use palette::{PaletteItem, palette, palette_in};
 /// A type as a person reads it: `core/string@1` is "text". Other types keep their name
 /// without the version.
 pub fn type_name(ty: &str) -> String {
-    match ty {
+    let named = types_tab::with_local_names(ty);
+    match named.as_str() {
         "core/string@1" => "Text".to_owned(),
         "core/bool@1" => "Bool".to_owned(),
         "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => "Int".to_owned(),
@@ -85,6 +87,7 @@ pub(crate) enum Tab {
     Nodes,
     Variables,
     Connections,
+    Types,
 }
 
 /// The document being edited.
@@ -275,7 +278,11 @@ impl Editor {
         self.document = Some(Document {
             path,
             untitled: false,
-            declared: host.declarations(&draft),
+            declared: {
+                let declared = host.declarations(&draft);
+                types_tab::remember(&declared.types);
+                declared
+            },
             names: Names::of_document(host, draft.document()).without_ids(),
             draft,
             graph,
@@ -338,6 +345,7 @@ impl Editor {
         document.names = Names::of_document(host, document.draft.document()).without_ids();
         document.graph = host.draft_view(&document.draft).unwrap_or_default();
         document.declared = host.declarations(&document.draft);
+        types_tab::remember(&document.declared.types);
         document.unsaved = true;
         self.canvas.update(&document.graph);
         self.canvas.set_groups(document.draft.groups());
@@ -1329,6 +1337,9 @@ impl Editor {
             let _ = ui
                 .selectable_value(&mut self.tab, Tab::Connections, "Connections")
                 .on_hover_text("The devices and services this graph uses.");
+            let _ = ui
+                .selectable_value(&mut self.tab, Tab::Types, "Types")
+                .on_hover_text("Enums and records this graph declares itself.");
         });
         ui.separator();
         match self.tab {
@@ -1339,6 +1350,10 @@ impl Editor {
             }
             Tab::Connections => {
                 self.connections_tab(ui, host);
+                return;
+            }
+            Tab::Types => {
+                self.types_tab(ui, host);
                 return;
             }
         }
