@@ -1093,6 +1093,30 @@ The angle-bracket strings describe field constraints, not literal example values
 
 `editor.category_id` is a stable namespaced category identity; `editor.category` is its TextRef caption. Optional configuration captions use `editor.config_labels` (JSON Pointer into `config_schema.properties` → TextRef) and `editor.option_labels` (the same pointer → option-token → TextRef). They never alter schema property names, defaults or enum tokens. Declarative control/action/accessibility captions use the same TextRef/MessageRef contract. These presentation maps are excluded from semantic signature projection.
 
+### 6.3 Format versions and upgrades
+
+Every file the product saves starts with `"format"` and `"format_version"`: graph documents (`orange.graph`), the package index (`orange.installed-packages`), the disabled-package list (`orange.disabled-packages`) and stored variables (`orange.variables`). Each format has one `orange_model::format::History`: the oldest version this build reads and one upgrade step per later version, so the current version is the oldest plus the number of steps.
+
+- **Reading** checks the format name, then the version. The current version is decoded as it is. An older version that the history covers runs every step from its version upward, in order, then is decoded. A version newer than the build, or older than its oldest, is refused with the version it names (`E` `core/import-unsupported-version` for graphs); nothing is guessed.
+- **Steps** are pure JSON-to-JSON functions of the whole file. They run before Rust types decode it, so a step can rename, move or drop fields the current types no longer have. A step that cannot find what it expects refuses the file with the version it upgraded from (`core/import-upgrade-failed`).
+- **Writing** always uses the current version. A host that opened an older file says so before saving replaces it (`Draft::opened().upgraded_from`).
+- **Graphs:** every import limit, the repeated-key check and the nesting budget apply to the text as saved, before any step. A current document keeps the streaming decode; only an older one is parsed into a JSON tree first. `from_json_upgrading` reports which happened; `from_json` keeps its signature. Direct Serde deserialization of `GraphDocument` reads only the current version.
+
+Raising a format version is one change that adds the step, raises the constant and adds a test that loads a file saved at the previous version. Version 1 is the first version of every format, so no step exists yet.
+
+### 6.4 Replaced definitions
+
+A definition file may say which older definition versions it takes the place of:
+
+```json
+"replaces": [{"definition_id": "org.orange.audio/on-level", "definition_version": 1,
+  "ports": {"level": "value"}, "config": {"window": "window_ms"}}]
+```
+
+`ports` maps renamed port IDs and `config` renamed top-level config fields, old to new; anything not listed keeps its name. The replacement is the file's own definition. A host collects these into one `Replacements` table from built-in packages at start and from archives when they install. Two different replacements for one definition version refuse the package, so the table never depends on install order.
+
+When a document opens (`Host::draft`, and every path that checks, previews or runs text), each node whose definition the registry lacks and the table replaces is rebuilt as a node of the replacing definition. Chains are followed while each step is unregistered, with their renames composed; a loop or a chain that ends at an unregistered definition leaves the node for validation to report. The rebuilt node keeps its ID, body, place, literals, config values, type pins, variadic instances, activation and extensions, takes the new definition's default provider binding and signature, and every wire that touched it is reconnected under the renamed port with its edge ID. The rewrite is one transaction. A node whose definition is still registered is never moved, so an installed old version keeps working and no version is chosen by precedence (ADR-07). Replacements are not part of a definition's contract or signature.
+
 ## 7. In-memory values
 
 ```rust

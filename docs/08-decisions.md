@@ -891,3 +891,17 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 **Why the name follows the connection ID:** the ID is stable across renames, unique in a document and valid as a secret name, so typing a secret again replaces it rather than leaving copies. Undo does not delete a stored secret: the store has no delete operation for hosts, and a redo needs it again.
 
 **Contracts:** 05 connection manager, FR-114 (FR-19/21/22). Verification is the focused tests named in FR-114.
+
+## ADR-28 — Saved files upgrade forward; replaced definitions are rebuilt on open
+
+**Decision (2026-11-17; FR-117):** every saved format has one `History` in `orange-model` (12 §6.3): the oldest readable version and one pure JSON step per later version. Reading runs the steps from the file's version; writing uses the current version; newer or unknown versions are refused with the version they name. Graph documents, the package index, the disabled-package list and stored variables use it. Definition files may list the definitions they replace with renamed ports and config fields (12 §6.4); a host collects them and, when a document opens, rebuilds each node of a replaced definition that is no longer registered as a node of its replacement, in one transaction.
+
+**Why now:** the product is before its first release and every format is at version 1, so the first format change will need an upgrade path and an older file to test it with. The planned audio rebuild already renames nodes and ports. Adding the mechanism before that change keeps the change itself small.
+
+**Why JSON steps, not versioned Rust types:** a step must read fields the current types no longer have. Keeping one Rust type per old version would multiply the document model; a JSON step is small, pure and tested with a saved file of the old version.
+
+**Why only unregistered definitions are rewritten:** an installed old version keeps running exactly as locked (ADR-07), and the result never depends on which package was installed last. Conflicting declarations refuse the package for the same reason.
+
+**Not covered:** config value transforms beyond renamed fields (`config_version` upgrade hooks), editor settings files, and showing `Draft::opened()` in the editor before saving.
+
+**Contracts:** 12 §6.3–6.4, 04 "Definition evolution", FR-117. Verification is the focused tests named in FR-117.

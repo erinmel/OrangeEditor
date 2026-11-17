@@ -304,6 +304,12 @@ When providers compete: no automatic last-installed-wins. User selects workspace
 
 Converter pair slots may contain distinct semantic entry contracts. An override implements the same converter ID/contract, preserving its endpoints, class, policies, errors and loss output. New-binding provider defaults are scoped to that entry contract; implementing an existing entry does not grant authority to register new foreign-to-foreign conversion semantics. Multiple providers for one entry do not increase the semantic conversion count used for auto-insertion ([11 §6](11-graph-language.md)).
 
+## Definition evolution
+
+A package version may stop shipping a definition and ship another in its place: a renamed node, renamed ports or config fields, or a new definition version whose contract changed. The new definition file lists what it replaces (`replaces`, [12 §6.4](12-graph-data-structures.md)). Opening a document rebuilds each node of a replaced definition that the host no longer has as a node of its replacement, keeping its values, wires and place, and reports the nodes it rebuilt. A replaced definition that is still installed is never moved, and two packages that disagree about one replacement are refused, so the result does not depend on install order. This is a load-time rewrite of the document, not a provider swap: running flows and locks of installed versions are untouched until the document is opened again.
+
+Built-in service packages declare replacements with `Definition::replaces`; archive definitions write the field directly. Config value upgrades beyond renamed fields (`config_version`) are not covered yet.
+
 ## Hot update/removal semantics
 
 The durable package store has one cooperating writer per directory. `FileJournal`

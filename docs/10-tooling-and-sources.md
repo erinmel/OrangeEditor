@@ -6293,3 +6293,24 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   refused wrong-type wires) and `orange-editor-ui`
   `a_value_node_from_the_palette_is_typed_wired_and_run`. The desktop window was
   not clicked through.
+
+### Saved-format upgrades and replaced definitions - 2026-11-17
+
+- Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change.
+  `cargo test --workspace --locked --no-fail-fast` passed 1,965 tests with zero
+  failures and 23 ignored (opt-in timing probes and device, network and keychain
+  tests). `cargo clippy --workspace --all-targets --locked` reported nothing.
+  The files of this change are formatted; `orange-host/src/names.rs` from the
+  previous commit is not.
+- New behavior (FR-117, ADR-28, 12 §6.3–6.4): `orange-model` `format` unit tests
+  (step order, current files untouched, newer/older/foreign refusals, envelope on
+  write); `document::codec` tests (an older graph upgraded under the same import
+  checks, the real history refusing version 0); `replace_definitions` behaviour tests
+  (identity, literals, config and wires kept under renamed ports, chains, loops,
+  missing targets, registered definitions untouched, table conflicts); the
+  definition-file `replaces` decoding test; `orange-sdk`
+  `a_package_keeps_what_its_definitions_replace`; and `orange-host`
+  `replacements::a_document_saved_with_a_replaced_node_opens_with_its_replacement`.
+- The plugin interface revision is now 6 because `ServicePackage` gained a field.
+  No editor UI shows `Draft::opened()` yet, and no format has a version 2, so the
+  upgrade path is exercised only with a test history.
