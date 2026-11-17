@@ -4,6 +4,7 @@
 //! `orange-editor-ui` in it. Everything the editor does goes through the host; this
 //! file adds only what a desktop program has: a window, files named on the command
 //! line or chosen in the system's file dialogs, and the built-in service packages.
+mod keyboard;
 mod picture;
 
 use orange_editor_ui::canvas::Canvas;
@@ -38,6 +39,7 @@ struct Shot {
 }
 
 struct Desktop {
+    keyboard: keyboard::Keyboard,
     host: Host,
     events: Receiver<HostEvent>,
     editor: Editor,
@@ -105,6 +107,11 @@ impl eframe::App for Desktop {
             }
             None => self.editor.ui(ui, &mut self.host),
         }
+        let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
+        let editing = ui.ctx().egui_wants_keyboard_input();
+        self.keyboard.handle(&events, focused, |key, modifiers| {
+            !editing && self.editor.accepts_graph_key(key, modifiers)
+        });
         // Flows report on their own threads: look again shortly while one runs.
         if self.editor.is_running() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
@@ -280,7 +287,9 @@ fn start(
         secrets: Some(Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
         ..HostOptions::default()
     };
+    let keyboard = keyboard::Keyboard::default();
     let services = vec![
+        keyboard.package().map_err(|error| error.to_string())?,
         orange_net::package(),
         orange_files::package(),
         orange_audio::package(),
@@ -295,6 +304,7 @@ fn start(
         editor.restore_preferences(&saved);
     }
     editor.file_dialogs = true;
+    editor.window_toolbar = cfg!(windows);
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
@@ -322,6 +332,7 @@ fn start(
         editor.canvas().select(first);
     }
     Ok(Desktop {
+        keyboard,
         host,
         events,
         editor,
@@ -370,7 +381,9 @@ fn main() -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(desktop.title.clone())
-            .with_inner_size([1280.0, 800.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([820.0, 560.0])
+            .with_decorations(!cfg!(windows)),
         ..eframe::NativeOptions::default()
     };
     let shown = eframe::run_native(
