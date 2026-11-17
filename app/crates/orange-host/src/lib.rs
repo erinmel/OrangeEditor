@@ -877,11 +877,18 @@ impl Host {
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
         let mut replacements = Replacements::new();
+        // Each package's own text in other languages, beside the host's.
+        let mut search_words = SearchWords::built_in().clone();
         for package in &packages {
             if disabled.contains(package.id()) {
                 continue;
             }
             presentations.extend(package.presentations().iter().cloned());
+            for (locale, catalog) in package.catalogs() {
+                search_words
+                    .add(locale, catalog)
+                    .map_err(|e| start(&format!("package {} text in {locale}: {e}", package.id())))?;
+            }
             for replacement in package.replacements() {
                 replacements
                     .add(replacement.clone())
@@ -951,7 +958,7 @@ impl Host {
             presentations,
             replacements,
             local_registries: Mutex::new(Vec::new()),
-            search_words: SearchWords::built_in().clone(),
+            search_words,
             not_restored: Vec::new(),
             built_in,
             disabled,

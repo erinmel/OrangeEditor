@@ -617,6 +617,21 @@ impl Definition {
             let _ = editor.insert(key.to_owned(), value);
         }
     }
+    /// Other words a person may search for the node by, comma separated: "sound,
+    /// music" for Play sound. Its message key is `<id>-keywords`, so a catalogue
+    /// ([`ServicePackage::messages`]) gives them in another language.
+    #[must_use]
+    pub fn keywords(mut self, words: &str) -> Self {
+        let key = format!(
+            "{}-keywords",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        self.editor(
+            "keywords",
+            serde_json::json!({"key": key, "fallback": words}),
+        );
+        self
+    }
     /// A setting of the node itself, kept in its config and shown in an editor's
     /// properties: `schema` is its JSON schema, such as
     /// `{"type": "number", "minimum": 0}`. Settings suit what is fixed while a flow
@@ -716,6 +731,7 @@ pub struct ServicePackage {
     presentations: Vec<(DefinitionRef, Presentation)>,
     replacements: Vec<Replacement>,
     types: Vec<TypeDecl>,
+    catalogs: Vec<(String, String)>,
 }
 
 /// A type a package adds: a record with named fields or an enum with variants. Its
@@ -761,6 +777,7 @@ impl ServicePackage {
             presentations: Vec::new(),
             replacements: Vec::new(),
             types: Vec::new(),
+            catalogs: Vec::new(),
         }
     }
     /// Adds a record type `<package id>/<name>@1` with required fields, each an ID and
@@ -846,6 +863,20 @@ impl ServicePackage {
     /// What each definition file says about showing its node.
     pub fn presentations(&self) -> &[(DefinitionRef, Presentation)] {
         &self.presentations
+    }
+    /// Adds the package's text in language `locale` (such as `es`): `id = text` lines
+    /// whose IDs are message keys with `/`, `.` and `_` written as `-`, so
+    /// `org.example.demo/fetch-label` is `org-example-demo-fetch-label`. Labels,
+    /// descriptions, categories and keywords are looked up there before their English
+    /// text.
+    #[must_use]
+    pub fn messages(mut self, locale: &str, catalog: &str) -> Self {
+        self.catalogs.push((locale.to_owned(), catalog.to_owned()));
+        self
+    }
+    /// The catalogues [`messages`](Self::messages) added, as (language, text).
+    pub fn catalogs(&self) -> &[(String, String)] {
+        &self.catalogs
     }
     /// The older definitions the package's definition files say their nodes replace.
     pub fn replacements(&self) -> &[Replacement] {

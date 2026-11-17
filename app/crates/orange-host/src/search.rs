@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use orange_model::document::NodeKind;
 
 use crate::{Host, NodeInfo};
+use orange_model::catalog::TextRef;
 
 /// The concepts the search groups nodes by, as stable IDs. Their words are the
 /// catalogue messages `concept-<id>`, their one-line purposes `concept-<id>-purpose`.
@@ -227,8 +228,8 @@ impl Host {
                 };
                 Some(Found {
                     definition: info.definition.definition.id.as_str().to_owned(),
-                    label: info.label().into_owned(),
-                    category: info.category().into_owned(),
+                    label: self.label_in(&info, locale),
+                    category: self.category_in(&info, locale),
                     purpose: self.purpose(&info, locale),
                     package: info
                         .provider
@@ -253,6 +254,30 @@ impl Host {
         concepts(info)
     }
 
+    /// `text` in `locale` from the host's and the packages' catalogues, or its English
+    /// text when no catalogue has it.
+    pub fn text_in<'a>(&'a self, text: &'a TextRef, locale: &str) -> &'a str {
+        self.search_words
+            .message(locale, &node_key(&text.key))
+            .unwrap_or(&text.fallback)
+    }
+
+    /// A node kind's name in `locale`.
+    pub fn label_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
+        match info.presentation.and_then(|shown| shown.label.as_ref()) {
+            Some(label) => self.text_in(label, locale).to_owned(),
+            None => info.label().into_owned(),
+        }
+    }
+
+    /// A node kind's palette category in `locale`.
+    pub fn category_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
+        match info.presentation.and_then(|shown| shown.category.as_ref()) {
+            Some(category) => self.text_in(category, locale).to_owned(),
+            None => info.category().into_owned(),
+        }
+    }
+
     fn rank(
         &self,
         info: &NodeInfo<'_>,
@@ -262,13 +287,34 @@ impl Host {
     ) -> Option<Match> {
         let id = info.definition.definition.id.as_str();
         let key = node_key(id);
-        let label = fold(&info.label());
-        let aliases: Vec<String> = self
+        // The name in the search's language, and in English too.
+        let label = fold(&self.label_in(info, locale));
+        let english = fold(&info.label());
+        let mut aliases: Vec<String> = self
             .search_words
             .words(locale, &format!("alias-{key}"))
             .map(fold)
             .collect();
-        let category = info.category();
+        if english != label {
+            aliases.push(english);
+        }
+        // The package's own keywords, translated by its catalogue and in English.
+        if let Some(keywords) = info.presentation.and_then(|shown| shown.keywords.as_ref()) {
+            aliases.extend(
+                self.search_words
+                    .words(locale, &node_key(&keywords.key))
+                    .map(fold),
+            );
+            aliases.extend(
+                keywords
+                    .fallback
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|w| !w.is_empty())
+                    .map(fold),
+            );
+        }
+        let category = self.category_in(info, locale);
         let category_slug = category.to_lowercase().replace(' ', "-");
         let mut concept_words: Vec<String> = fold(&category)
             .split_whitespace()
@@ -291,6 +337,8 @@ impl Host {
             .presentation
             .and_then(|shown| shown.description.as_ref())
         {
+            description.push(' ');
+            description.push_str(&fold(self.text_in(text, locale)));
             description.push(' ');
             description.push_str(&fold(&text.fallback));
         }
@@ -352,7 +400,7 @@ impl Host {
             .presentation
             .and_then(|shown| shown.description.as_ref())
         {
-            let text = text.fallback.trim();
+            let text = self.text_in(text, locale).trim();
             let end = text.find(". ").map_or(text.len(), |at| at + 1);
             return text[..end].to_owned();
         }

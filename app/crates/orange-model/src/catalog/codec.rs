@@ -171,6 +171,7 @@ impl NodeDefinition {
             connection_adapter: editor.connection_adapter,
             then_label: editor.then_label,
             paths: editor.paths,
+            keywords: editor.keywords,
         };
         let replaces = std::mem::take(&mut wire.replaces);
         let definition: NodeDefinition = wire.into();
@@ -245,6 +246,9 @@ pub struct Presentation {
     /// Text inputs that hold a path on this machine, so an editor can offer the
     /// system's file or folder chooser beside them.
     pub paths: Vec<PathInput>,
+    /// Other words a person may search for the node by, comma separated, such as
+    /// "sound, music" for Play sound; a catalogue gives them in other languages.
+    pub keywords: Option<TextRef>,
 }
 
 /// A text input that holds a path, from a definition file's `editor.paths`.
@@ -278,6 +282,8 @@ struct EditorWire {
     then_label: Option<TextRef>,
     #[serde(default)]
     paths: Vec<PathInput>,
+    #[serde(default)]
+    keywords: Option<TextRef>,
 }
 
 #[derive(Deserialize)]
