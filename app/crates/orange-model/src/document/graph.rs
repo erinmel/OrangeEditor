@@ -9,12 +9,12 @@ use serde_json::{Map, Value as Json};
 
 use super::literal::Literal;
 use super::{
-    ConnectionDecl, Edge, EventDecl, Extensions, FunctionDecl, NodeInstance, PortRef,
-    SignatureSnapshot, VariableDecl,
+    ConnectionDecl, Edge, EventDecl, Extensions, FunctionDecl, LocalTypeDecl, NodeInstance,
+    PortRef, SignatureSnapshot, VariableDecl,
 };
 use crate::id::{
     ConnectionId, EdgeId, EventDeclId, FunctionId, GraphId, NodeId, PortKey, SignatureKey,
-    TypeExpr, VariableId,
+    TypeDeclId, TypeExpr, VariableId,
 };
 
 /// A fresh content-state identity; see [`GraphDocument::state_id`].
@@ -42,6 +42,7 @@ pub struct GraphDocument {
     pub(crate) variables: IndexMap<VariableId, VariableDecl>,
     pub(crate) events: IndexMap<EventDeclId, EventDecl>,
     pub(crate) connections: IndexMap<ConnectionId, ConnectionDecl>,
+    pub(crate) types: IndexMap<TypeDeclId, LocalTypeDecl>,
     pub(crate) signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
     pub(crate) root: GraphBody,
@@ -82,6 +83,12 @@ pub(crate) struct DocumentWire {
         skip_serializing_if = "IndexMap::is_empty"
     )]
     connections: IndexMap<ConnectionId, ConnectionDecl>,
+    #[serde(
+        default,
+        with = "crate::document::keyed",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    types: IndexMap<TypeDeclId, LocalTypeDecl>,
     #[serde(default)]
     signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     #[serde(flatten)]
@@ -123,6 +130,7 @@ impl PartialEq for GraphDocument {
             && self.variables == other.variables
             && self.events == other.events
             && self.connections == other.connections
+            && self.types == other.types
             && self.signatures == other.signatures
             && self.root == other.root
             && self.functions == other.functions
@@ -153,6 +161,7 @@ impl GraphDocument {
             variables: IndexMap::new(),
             events: IndexMap::new(),
             connections: IndexMap::new(),
+            types: IndexMap::new(),
             signatures: BTreeMap::new(),
             root: GraphBody::default(),
             functions: IndexMap::new(),
@@ -217,6 +226,11 @@ impl GraphDocument {
 
     pub fn connections(&self) -> &IndexMap<ConnectionId, ConnectionDecl> {
         &self.connections
+    }
+
+    /// Record and enum types the document declares itself.
+    pub fn types(&self) -> &IndexMap<TypeDeclId, LocalTypeDecl> {
+        &self.types
     }
 
     pub fn functions(&self) -> &IndexMap<FunctionId, FunctionDecl> {

@@ -186,6 +186,8 @@ impl Fragment {
                             self.functions.push(decl.clone());
                         }
                     }
+                    // Config fields never name a type; types are named by expression.
+                    DeclId::Type(_) => {}
                 }
             }
         }

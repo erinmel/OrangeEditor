@@ -10,11 +10,12 @@ use serde_json::{Map, Value as Json};
 
 use crate::document::{
     BodyRef, ConnectionDecl, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, GraphExport,
-    NodeInstance, PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
+    LocalTypeDecl, NodeInstance, PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::error::TxError;
 use crate::id::{
-    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, TypeExpr, VariableId,
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, TypeDeclId, TypeExpr,
+    VariableId,
 };
 
 /// A value and its position in an ordered collection.
@@ -48,6 +49,10 @@ pub(crate) enum Patch {
     Connection {
         id: ConnectionId,
         entry: Option<Placed<ConnectionDecl>>,
+    },
+    Type {
+        id: TypeDeclId,
+        entry: Option<Placed<LocalTypeDecl>>,
     },
     Function {
         id: FunctionId,
@@ -115,6 +120,10 @@ impl Patch {
                 id,
                 entry: set_slot(&mut document.connections, id, entry),
             },
+            Patch::Type { id, entry } => Patch::Type {
+                id,
+                entry: set_slot(&mut document.types, id, entry),
+            },
             Patch::Function { id, entry } => {
                 let added: Vec<_> = entry
                     .iter()
@@ -169,6 +178,7 @@ impl Patch {
             Patch::Variable { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::Event { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::Connection { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::Type { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::Function { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&*e.value)),
             Patch::Signature { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::PackageLock { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),

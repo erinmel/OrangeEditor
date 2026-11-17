@@ -289,6 +289,13 @@ impl Tracker {
                     .entry(DeclId::Function(*id))
                     .or_insert(entry.is_some());
             }
+            // A type can be named anywhere: ports, literals, declarations.
+            Patch::Type { id, entry } => {
+                self.decls
+                    .entry(DeclId::Type(*id))
+                    .or_insert(entry.is_some());
+                self.global_dirty = true;
+            }
             Patch::Signature { .. }
             | Patch::PackageLock { .. }
             | Patch::TypeLock { .. }
@@ -400,6 +407,7 @@ impl Tracker {
                 DeclId::Event(id) => document.events().contains_key(id),
                 DeclId::Function(id) => document.functions().contains_key(id),
                 DeclId::Connection(id) => document.connections().contains_key(id),
+                DeclId::Type(id) => document.types().contains_key(id),
             }),
         }
     }

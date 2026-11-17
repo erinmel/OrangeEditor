@@ -289,7 +289,8 @@ impl FromStr for PackageId {
     type Err = ManifestError;
 
     fn from_str(text: &str) -> Result<Self, ManifestError> {
-        if is_namespace(text) {
+        // `core` is the language's and `local` holds the types documents declare.
+        if is_namespace(text) && !RESERVED_NAMESPACES.contains(&text) {
             Ok(Self(text.to_owned()))
         } else {
             Err(ManifestError::PackageId(text.into()))
@@ -895,6 +896,9 @@ fn is_hex_digest(text: &str) -> bool {
 }
 
 /// `ident { "." ident }` with `ident = [a-z][a-z0-9_]*` (11 §5.1 namespaces).
+/// Namespaces no package may take.
+pub const RESERVED_NAMESPACES: [&str; 2] = ["core", "local"];
+
 pub(crate) fn is_namespace(text: &str) -> bool {
     text.len() <= MAX_NAME_BYTES
         && text.split('.').all(|ident| {

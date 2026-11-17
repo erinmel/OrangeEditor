@@ -9,8 +9,8 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::id::{
-    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr,
-    VariableId,
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey,
+    TypeDeclId, TypeExpr, VariableId,
 };
 
 /// Input text an error refers to. Formatting shows only its length in characters.
@@ -353,6 +353,8 @@ pub enum TxError {
     EventNotFound(EventDeclId),
     #[error("connection `{0}` does not exist")]
     ConnectionNotFound(ConnectionId),
+    #[error("type `{0}` does not exist")]
+    TypeNotFound(TypeDeclId),
     #[error("function `{0}` does not exist")]
     FunctionNotFound(FunctionId),
     #[error("function body node map key `{key}` does not match item id `{item}`")]

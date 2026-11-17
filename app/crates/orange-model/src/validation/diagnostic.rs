@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, VariableId};
+use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, TypeDeclId, VariableId};
 
 /// One declaration owns wire identity, localization, severity and fallback text.
 macro_rules! diagnostics {
@@ -27,6 +27,9 @@ diagnostics! { subject;
     /// Compiler-owned warning: the constant fault remains in the plan.
     ConstError => ("W-CONST-ERROR", "core/graph-const-error", Warning, "The constant expression produces an error.".into());
     DeclarationType => ("E-DECLARATION-TYPE", "core/graph-declaration-type", Error, "Declaration type is invalid or unavailable.".into());
+    /// A local type has no name, no variants, a repeated or malformed member ID, or a
+    /// member whose type is unknown (12 §6.5).
+    TypeDeclaration => ("E-TYPE-DECLARATION", "core/graph-type-declaration", Error, "The declared type is not valid.".into());
     AnalysisLimit => ("E-ANALYSIS-LIMIT", "core/graph-analysis-limit", Error, "Graph analysis exceeds the host's admission limits.".into());
     AnalysisCancelled => ("E-ANALYSIS-CANCELLED", "core/graph-analysis-cancelled", Error, "Graph analysis was cancelled.".into());
     DomainUnsupported => ("E-DOMAIN-UNSUPPORTED", "core/graph-domain-unsupported", Error, "This execution domain is unavailable.".into());
@@ -214,6 +217,8 @@ pub struct Subject {
     pub variable: Option<VariableId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<EventDeclId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_type: Option<TypeDeclId>,
 }
 
 impl Subject {
@@ -225,10 +230,17 @@ impl Subject {
             edge,
             variable: None,
             event: None,
+            local_type: None,
         }
     }
 
     /// Adds the declared variable this diagnostic is about.
+    /// Adds the local type declaration this diagnostic is about.
+    pub const fn with_local_type(mut self, local_type: TypeDeclId) -> Self {
+        self.local_type = Some(local_type);
+        self
+    }
+
     pub const fn with_variable(mut self, variable: VariableId) -> Self {
         self.variable = Some(variable);
         self

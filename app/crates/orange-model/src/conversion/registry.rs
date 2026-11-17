@@ -500,6 +500,19 @@ impl ConverterRegistry {
         self.generation
     }
 
+    /// The same entries over `types`, a successor of this registry's type registry made
+    /// with [`TypeRegistry::extended`]: how a document's own types are added without
+    /// losing the conversions already published. Entries name types by expression, so
+    /// every one stays valid in a registry that keeps all of the old types.
+    pub fn over(&self, types: Arc<TypeRegistry>) -> Arc<Self> {
+        Arc::new(Self {
+            generation: crate::id::process_unique(),
+            types,
+            entries: self.entries.clone(),
+            pairs: self.pairs.clone(),
+        })
+    }
+
     pub fn type_registry(&self) -> &Arc<TypeRegistry> {
         &self.types
     }

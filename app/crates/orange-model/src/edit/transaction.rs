@@ -17,13 +17,14 @@ use crate::document::literal::Literal;
 use crate::document::nesting::MAX_NESTING;
 use crate::document::{
     ActivationPolicy, BodyRef, ConfigValue, ConnectionDecl, Edge, EventDecl, FunctionDecl,
-    GraphDocument, GraphExport, NodeInstance, PackageLockEntry, PortRef, ProviderBinding,
-    SignatureSnapshot, TypeLockEntry, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
+    GraphDocument, GraphExport, LocalTypeDecl, NodeInstance, PackageLockEntry, PortRef,
+    ProviderBinding, SignatureSnapshot, TypeLockEntry, TypeParamName, VariableDecl, VariadicState,
+    fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
-    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr,
-    VariableId,
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey,
+    TypeDeclId, TypeExpr, VariableId,
 };
 
 /// One edit intent. Replacing an item keeps its position; a new item is appended.
@@ -84,6 +85,9 @@ pub enum DocCommand {
     RemoveEvent(EventDeclId),
     UpsertConnection(ConnectionDecl),
     RemoveConnection(ConnectionId),
+    /// Declares or replaces a local record or enum type (12 §6.5).
+    UpsertType(LocalTypeDecl),
+    RemoveType(TypeDeclId),
     /// Replaces the whole declaration, body included.
     UpsertFunction(FunctionDecl),
     RemoveFunction(FunctionId),
@@ -490,6 +494,22 @@ impl Journal {
                     return Err(TxError::ConnectionNotFound(id));
                 }
                 self.patch(document, Patch::Connection { id, entry: None })
+            }
+            DocCommand::UpsertType(decl) => {
+                let index = placement(&document.types, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Type {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveType(id) => {
+                if !document.types.contains_key(&id) {
+                    return Err(TxError::TypeNotFound(id));
+                }
+                self.patch(document, Patch::Type { id, entry: None })
             }
             DocCommand::UpsertFunction(decl) => {
                 check_function_body(document, &decl)?;

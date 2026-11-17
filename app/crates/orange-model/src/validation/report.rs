@@ -607,6 +607,7 @@ fn run_supported_analysis(
     let node_diagnostics = nodes.diagnostics;
     let mut diagnostics = Vec::new();
     diagnostics.extend(super::inputs::validate_type_locks(document, registry));
+    diagnostics.extend(crate::local_types::validate_local_types(document, registry));
     match &local {
         Some(local) => diagnostics.extend(local.declaration_diagnostics().cloned()),
         None => diagnostics.extend(validate_declaration_types(document, registry)),

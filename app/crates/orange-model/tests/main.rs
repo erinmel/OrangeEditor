@@ -33,6 +33,7 @@ mod intrinsic_contracts;
 mod literal_aggregates;
 mod literal_props;
 mod literal_scalars;
+mod local_types;
 mod nesting_budget;
 mod new_binding;
 mod node_contracts;

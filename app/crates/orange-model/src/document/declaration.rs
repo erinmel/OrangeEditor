@@ -1,11 +1,11 @@
-//! Variable, event and graph-local function declarations.
+//! Variable, event, connection, type and graph-local function declarations.
 
 use serde::{Deserialize, Serialize};
 
 use super::keyed::Keyed;
 use super::literal::Literal;
 use super::{Extensions, GraphBody, NodeKind, PortDescriptor, TypeParamName};
-use crate::id::{ConnectionId, EventDeclId, FunctionId, TypeExpr, VariableId};
+use crate::id::{ConnectionId, EventDeclId, FunctionId, TypeDeclId, TypeExpr, VariableId};
 use serde_json::{Map, Value as Json};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,4 +146,75 @@ pub struct TypeParam {
     pub constraints: Vec<String>,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+/// A record or enum type a document declares itself (11 §5.4), so a graph can have its
+/// own choices and structures without a package. Its type is [`LocalTypeDecl::ty`],
+/// `local/t<id>@1`, fixed by `id`: renaming the type or a member changes only names.
+/// Local types derive `eq`, `hash`, `display` and `serialize` structurally.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalTypeDecl {
+    pub id: TypeDeclId,
+    /// Display only.
+    pub name: String,
+    /// `kind` with its `variants` or `fields`, flattened into the declaration.
+    #[serde(flatten)]
+    pub shape: TypeShape,
+}
+
+impl LocalTypeDecl {
+    /// The type expression values of this type carry: `local/t<32 hex digits>@1`.
+    pub fn ty(&self) -> TypeExpr {
+        local_type(self.id)
+    }
+}
+
+/// The namespace of document-local types; no package may own it.
+pub const LOCAL_NAMESPACE: &str = "local";
+
+/// The type expression of local type `id`.
+pub fn local_type(id: TypeDeclId) -> TypeExpr {
+    let text = format!("{LOCAL_NAMESPACE}/t{}@1", id.as_uuid().simple());
+    match text.parse() {
+        Ok(ty) => ty,
+        Err(_) => unreachable!("a namespace, a letter and hex digits form a type expression"),
+    }
+}
+
+impl Keyed for LocalTypeDecl {
+    type Key = TypeDeclId;
+
+    fn key(&self) -> TypeDeclId {
+        self.id
+    }
+}
+
+/// What a local type holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TypeShape {
+    /// One of several variants, each optionally carrying a value.
+    Enum { variants: Vec<VariantDecl> },
+    /// Named fields.
+    Record { fields: Vec<FieldDecl> },
+}
+
+/// One enum variant. `id` is what values and Switch cases store; `name` is shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariantDecl {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<TypeExpr>,
+}
+
+/// One record field. `id` is what values store; `name` is shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldDecl {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: TypeExpr,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }

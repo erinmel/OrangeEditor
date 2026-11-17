@@ -29,6 +29,7 @@ pub mod format;
 pub mod id;
 pub mod index;
 pub mod inference;
+pub mod local_types;
 pub mod origin;
 pub mod paste;
 pub mod rebind;

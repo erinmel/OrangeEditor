@@ -89,6 +89,8 @@ uuid_id! {
     FunctionId;
     /// A declared connection to an external service.
     ConnectionId;
+    /// A record or enum type a document declares itself.
+    TypeDeclId;
 }
 
 /// Only the lowercase hyphenated form is accepted, so load→save is byte-stable.
@@ -445,4 +447,5 @@ pub enum DeclId {
     /// their function, not individually.
     Function(FunctionId),
     Connection(ConnectionId),
+    Type(TypeDeclId),
 }
