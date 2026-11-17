@@ -220,7 +220,9 @@ impl Editor {
                         highlighted = highlighted.saturating_sub(1);
                     }
                     if !focused {
-                        field.request_focus();
+                        if ui.input(|input| input.focused) {
+                            field.request_focus();
+                        }
                         focused = true;
                     }
                     let (enter, escape) = ui.input(|input| {

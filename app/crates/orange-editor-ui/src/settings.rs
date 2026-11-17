@@ -1,8 +1,9 @@
-//! Presentation preferences shared by the sidebar and the canvas picker.
+//! Searchable preferences with stable navigation and content panes.
 use super::*;
 
-/// Parameter-free `org.orange.host` messages use the host's existing locale catalogue.
-/// The safe English fallback remains available when a host supplies no translation.
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn text<'a>(host: &'a Host, language: &str, key: &str, fallback: &'a str) -> &'a str {
     key.strip_prefix("org.orange.host/")
         .and_then(|id| host.search_words().message(language, id))
@@ -17,74 +18,10 @@ pub(crate) enum Section {
     Shortcuts,
 }
 
-const SHORTCUTS: &[(&str, &str, &str)] = &[
-    (
-        "Tab / Space",
-        "org.orange.host/editor-shortcut-find",
-        "Find a node at the pointer",
-    ),
-    (
-        "Up / Down · Enter",
-        "org.orange.host/editor-shortcut-choose",
-        "Choose a search result",
-    ),
-    (
-        "Escape",
-        "org.orange.host/editor-shortcut-close",
-        "Close search or menu",
-    ),
-    ("Ctrl+S", "org.orange.host/editor-shortcut-save", "Save"),
-    (
-        "Ctrl+Z / Ctrl+Y",
-        "org.orange.host/editor-shortcut-undo",
-        "Undo / redo",
-    ),
-    (
-        "Ctrl+C / X / V",
-        "org.orange.host/editor-shortcut-copy",
-        "Copy / cut / paste selection",
-    ),
-    (
-        "Ctrl+D",
-        "org.orange.host/editor-shortcut-duplicate",
-        "Duplicate selection",
-    ),
-    (
-        "Delete",
-        "org.orange.host/editor-shortcut-delete",
-        "Delete selected nodes or wire",
-    ),
-    (
-        "Ctrl+G",
-        "org.orange.host/editor-shortcut-group",
-        "Group selection",
-    ),
-    (
-        "Ctrl+E",
-        "org.orange.host/editor-shortcut-function",
-        "Make function from selection",
-    ),
-    (
-        "Ctrl+L",
-        "org.orange.host/editor-shortcut-arrange",
-        "Arrange selection",
-    ),
-    (
-        "Home",
-        "org.orange.host/editor-shortcut-fit",
-        "Fit graph to view",
-    ),
-    (
-        "Shift / Ctrl + wheel",
-        "org.orange.host/editor-shortcut-pan",
-        "Pan horizontally / vertically",
-    ),
-];
-
 impl Editor {
     pub(crate) fn result_style(&mut self, ui: &mut egui::Ui, host: &Host) {
-        let language = self.language().to_owned();
-        ui.horizontal_wrapped(|ui| {
+        let language = self.language.clone();
+        ui.horizontal(|ui| {
             for (mode, key, fallback) in [
                 (
                     palette::PaletteMode::Names,
@@ -97,7 +34,7 @@ impl Editor {
                     "Preview",
                 ),
             ] {
-                let _ = ui.selectable_value(
+                ui.selectable_value(
                     &mut self.palette_mode,
                     mode,
                     text(host, &language, key, fallback),
@@ -106,168 +43,182 @@ impl Editor {
         });
     }
 
-    pub(crate) fn settings_window(&mut self, ctx: &egui::Context, host: &Host) {
+    pub(crate) fn settings_window(
+        &mut self,
+        ctx: &egui::Context,
+        host: &Host,
+    ) -> Option<egui::Rect> {
         let mut open = self.settings_open;
         if !open {
-            return;
+            return None;
         }
-        let language = self.language().to_owned();
+        let language = self.language.clone();
         let tr = |key, fallback| text(host, &language, key, fallback);
-        egui::Window::new(tr("org.orange.host/editor-settings-title", "Settings"))
+        let sections = [
+            (
+                Section::Search,
+                tr("org.orange.host/editor-search-heading", "Node search"),
+                "names preview language search",
+            ),
+            (
+                Section::Display,
+                tr(
+                    "org.orange.host/editor-display-heading",
+                    "Display and canvas",
+                ),
+                "scale zoom snap grid wheel panels",
+            ),
+            (
+                Section::Shortcuts,
+                tr(
+                    "org.orange.host/editor-shortcuts-heading",
+                    "Keyboard shortcuts",
+                ),
+                "keymap keyboard shortcuts",
+            ),
+        ];
+        let shown = egui::Window::new(tr("org.orange.host/editor-settings-title", "Settings"))
             .id(egui::Id::unique("orange-settings"))
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_size([650.0, 420.0])
-            .min_width(460.0)
-            .min_height(280.0)
-            .resizable(true)
+            .default_size([760.0, 480.0])
+            .min_width(680.0)
+            .min_height(360.0)
+            .max_width(1000.0)
             .collapsible(false)
+            .resizable(true)
             .show(ctx, |ui| {
+                ui.set_min_width(680.0);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.settings_search)
                         .hint_text(tr(
                             "org.orange.host/editor-settings-search",
                             "Search settings",
                         ))
-                        .desired_width(f32::INFINITY),
+                        .desired_width(ui.available_width()),
                 );
-                ui.separator();
+                ui.add_space(8.0);
                 let query = self.settings_search.trim().to_lowercase();
-                let sections = [
-                    (
-                        Section::Search,
-                        tr("org.orange.host/editor-search-heading", "Node search"),
-                        [
-                            tr("org.orange.host/editor-result-layout", "Result layout"),
-                            tr("org.orange.host/editor-search-language", "Search language"),
-                            tr("org.orange.host/editor-result-previews", "Preview"),
-                        ],
-                    ),
-                    (
-                        Section::Display,
-                        tr(
-                            "org.orange.host/editor-display-heading",
-                            "Display and canvas",
-                        ),
-                        [
-                            tr("org.orange.host/editor-interface-scale", "Interface scale"),
-                            tr("org.orange.host/editor-snap-grid", "Snap nodes to grid"),
-                            tr(
-                                "org.orange.host/editor-wheel-pans",
-                                "Mouse wheel pans instead of zooming",
-                            ),
-                        ],
-                    ),
-                    (
-                        Section::Shortcuts,
-                        tr(
-                            "org.orange.host/editor-shortcuts-heading",
-                            "Keyboard shortcuts",
-                        ),
-                        ["Ctrl+S", "Escape", "Tab / Space"],
-                    ),
-                ];
-                let visible = |section: Section, title: &str, keywords: [&str; 3]| {
-                    (section == Section::Shortcuts
-                        && SHORTCUTS.iter().any(|(keys, key, fallback)| {
-                            keys.to_lowercase().contains(&query)
-                                || tr(key, fallback).to_lowercase().contains(&query)
-                        }))
-                        || title.to_lowercase().contains(&query)
-                        || keywords
-                            .iter()
-                            .any(|word| word.to_lowercase().contains(&query))
-                };
+                let visible: Vec<_> = sections
+                    .iter()
+                    .filter(|(section, title, terms)| {
+                        query.is_empty()
+                            || title.to_lowercase().contains(&query)
+                            || terms.contains(&query)
+                            || *section == Section::Shortcuts
+                                && keymap::ACTIONS.iter().any(|(id, label, _, _)| {
+                                    label.to_lowercase().contains(&query)
+                                        || self
+                                            .canvas
+                                            .keys
+                                            .label(id)
+                                            .to_lowercase()
+                                            .contains(&query)
+                                })
+                    })
+                    .map(|(section, _, _)| *section)
+                    .collect();
+                if !visible.contains(&self.settings_tab)
+                    && let Some(section) = visible.first()
+                {
+                    self.settings_tab = *section;
+                }
+                let height = ui.available_height().max(320.0);
                 ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(142.0);
-                        for (section, title, keywords) in sections {
-                            if visible(section, title, keywords) {
-                                let _ = ui.selectable_value(&mut self.settings_tab, section, title);
-                            }
-                        }
-                    });
-                    ui.separator();
-                    let active = sections
-                        .iter()
-                        .find(|(section, title, terms)| {
-                            *section == self.settings_tab && visible(*section, title, *terms)
-                        })
-                        .or_else(|| {
-                            sections
-                                .iter()
-                                .find(|(section, title, terms)| visible(*section, title, *terms))
-                        });
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let Some((section, title, _)) = active else {
-                            ui.weak(tr(
-                                "org.orange.host/editor-settings-empty",
-                                "No matching sections",
-                            ));
-                            return;
-                        };
-                        ui.heading(*title);
-                        ui.add_space(8.0);
-                        match section {
-                            Section::Search => {
-                                ui.label(tr(
-                                    "org.orange.host/editor-result-layout",
-                                    "Result layout",
-                                ));
-                                self.result_style(ui, host);
-                                ui.weak(tr(
-                                    "org.orange.host/editor-result-scope",
-                                    "Applies to the sidebar and canvas picker.",
-                                ));
-                                ui.label(tr(
-                                    "org.orange.host/editor-search-language",
-                                    "Search language",
-                                ));
-                                self.language_choice(ui, host);
-                            }
-                            Section::Display => {
-                                let mut scale = ctx.zoom_factor();
-                                if ui
-                                    .add(egui::Slider::new(&mut scale, 0.75..=2.0).text(tr(
-                                        "org.orange.host/editor-interface-scale",
-                                        "Interface scale",
-                                    )))
-                                    .changed()
-                                {
-                                    ctx.set_zoom_factor(scale);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(160.0, height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(160.0);
+                            for (section, title, _) in sections {
+                                if visible.contains(&section) {
+                                    ui.selectable_value(&mut self.settings_tab, section, title);
                                 }
-                                let _ = ui.checkbox(
-                                    &mut self.canvas.snap,
-                                    tr("org.orange.host/editor-snap-grid", "Snap nodes to grid"),
-                                );
-                                ui.weak(tr(
-                                    "org.orange.host/editor-snap-hint",
-                                    "Hold Alt while dragging to move freely.",
-                                ));
-                                let _ = ui.checkbox(
-                                    &mut self.canvas.scroll_pans,
-                                    tr(
-                                        "org.orange.host/editor-wheel-pans",
-                                        "Mouse wheel pans instead of zooming",
-                                    ),
-                                );
                             }
-                            Section::Shortcuts => {
-                                egui::Grid::new("orange-shortcut-reference")
-                                    .num_columns(2)
-                                    .spacing(egui::vec2(24.0, 6.0))
-                                    .show(ui, |ui| {
-                                        for &(keys, id, action) in SHORTCUTS {
-                                            ui.label(keys);
-                                            ui.label(tr(id, action));
-                                            ui.end_row();
+                        },
+                    );
+                    ui.separator();
+                    let width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_max_width(width);
+                            ui.set_min_width(width);
+                            egui::ScrollArea::vertical()
+                                .id_salt("settings-content")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_max_width(width - 16.0);
+                                    if visible.is_empty() {
+                                        ui.label("No matching settings");
+                                        return;
+                                    }
+                                    let heading = sections
+                                        .iter()
+                                        .find(|(section, _, _)| *section == self.settings_tab)
+                                        .map_or("", |(_, title, _)| *title);
+                                    ui.heading(heading);
+                                    ui.add_space(16.0);
+                                    match self.settings_tab {
+                                        Section::Search => {
+                                            ui.label(tr(
+                                                "org.orange.host/editor-result-layout",
+                                                "Result layout",
+                                            ));
+                                            self.result_style(ui, host);
+                                            ui.add_space(16.0);
+                                            ui.label(tr(
+                                                "org.orange.host/editor-search-language",
+                                                "Node language",
+                                            ));
+                                            self.language_choice(ui, host);
                                         }
-                                    });
-                            }
-                        }
-                    });
+                                        Section::Display => {
+                                            let mut scale = ctx.zoom_factor();
+                                            let slider = egui::Slider::new(&mut scale, 0.75..=2.0)
+                                                .text(tr(
+                                                    "org.orange.host/editor-interface-scale",
+                                                    "Interface scale",
+                                                ));
+                                            if ui.add(slider).changed() {
+                                                ctx.set_zoom_factor(scale);
+                                            }
+                                            ui.add_space(12.0);
+                                            ui.checkbox(
+                                                &mut self.canvas.snap,
+                                                tr(
+                                                    "org.orange.host/editor-snap-grid",
+                                                    "Snap nodes to grid",
+                                                ),
+                                            );
+                                            ui.checkbox(
+                                                &mut self.canvas.scroll_pans,
+                                                tr(
+                                                    "org.orange.host/editor-wheel-pans",
+                                                    "Mouse wheel pans instead of zooming",
+                                                ),
+                                            );
+                                            ui.add_space(12.0);
+                                            ui.checkbox(&mut self.panels.nodes, "Show left panel");
+                                            ui.checkbox(
+                                                &mut self.panels.properties,
+                                                "Show right panel",
+                                            );
+                                        }
+                                        Section::Shortcuts => self.keybindings_ui(ui),
+                                    }
+                                });
+                        },
+                    );
                 });
             });
         self.settings_open = open;
+        if !open {
+            self.key_capture = None;
+            self.key_conflict = None;
+        }
+        shown.map(|window| window.response.rect)
     }
 }

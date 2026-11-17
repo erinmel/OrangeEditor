@@ -47,6 +47,38 @@ struct Desktop {
     title: String,
 }
 
+fn preferences_path() -> Option<std::path::PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME")
+            .map(|home| std::path::PathBuf::from(home).join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+            })
+    };
+    base.map(|base| base.join("OrangeEditor").join("editor-preferences.json"))
+}
+
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        let Some(path) = preferences_path() else {
+            return;
+        };
+        let Some(parent) = path.parent() else { return };
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        let result = std::fs::create_dir_all(parent)
+            .and_then(|()| std::fs::write(&temporary, self.editor.preferences().to_string()))
+            .and_then(|()| std::fs::rename(&temporary, &path));
+        if let Err(error) = result {
+            eprintln!("Could not save editor preferences: {error}");
+        }
+    }
+}
+
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         if self.editor.take_events(&self.events) {
@@ -256,6 +288,12 @@ fn start(
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();
+    if let Some(saved) = preferences_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+    {
+        editor.restore_preferences(&saved);
+    }
     editor.file_dialogs = true;
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
@@ -338,7 +376,11 @@ fn main() -> ExitCode {
     let shown = eframe::run_native(
         "OrangeEditor",
         options,
-        Box::new(move |_creation| Ok(Box::new(desktop))),
+        Box::new(move |creation| {
+            orange_editor_ui::apply_theme(&creation.egui_ctx);
+            orange_editor_ui::icons::install(&creation.egui_ctx);
+            Ok(Box::new(desktop))
+        }),
     );
     match shown {
         Ok(()) => ExitCode::SUCCESS,

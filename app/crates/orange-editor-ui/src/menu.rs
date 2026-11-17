@@ -340,12 +340,31 @@ impl Editor {
                             ui.separator();
                         }
                         previous_group = Some(group);
+                        let action = match entry.command {
+                            Command::AddNode => Some("add"),
+                            Command::Paste => Some("paste"),
+                            Command::SelectAll => Some("select-all"),
+                            Command::Group => Some("group"),
+                            Command::Arrange => Some("arrange"),
+                            Command::Fit => Some("fit"),
+                            Command::Copy => Some("copy"),
+                            Command::Cut => Some("cut"),
+                            Command::Duplicate => Some("duplicate"),
+                            Command::MakeFunction => Some("function"),
+                            Command::Delete | Command::DeleteWire => Some("delete"),
+                            _ => None,
+                        };
+                        let shortcut = action.map_or_else(
+                            || entry.shortcut.to_owned(),
+                            |action| self.canvas.keys.label(action),
+                        );
                         let button = egui::Button::new((icons::text(entry.icon), entry.label))
-                            .shortcut_text(entry.shortcut)
+                            .shortcut_text(&shortcut)
                             .min_size(egui::vec2(ui.available_width(), 28.0))
                             .frame(false);
                         if ui
                             .add_enabled(entry.enabled, button)
+                            .on_hover_text(shortcut)
                             .on_disabled_hover_text("Select nodes first.")
                             .clicked()
                         {

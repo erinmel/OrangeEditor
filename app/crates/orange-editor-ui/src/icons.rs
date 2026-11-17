@@ -132,7 +132,7 @@ pub(crate) fn dock_toggle(
         (_, true) => RIGHT_CLOSE,
     };
     let response = ui.add(
-        egui::Button::selectable(open, text(icon).size(18.0))
+        egui::Button::selectable(open, text(icon).size(16.0))
             .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
     );
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, label));
@@ -154,7 +154,7 @@ pub(crate) fn button(
     };
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new(text(icon).size(18.0))
+        egui::Button::new(text(icon).size(16.0))
             .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, what));
@@ -170,21 +170,24 @@ pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egu
     } else {
         (RUN, "Run")
     };
-    let fill = if running {
-        egui::Color32::from_rgb(152, 40, 40)
+    let color = if running {
+        egui::Color32::from_rgb(225, 117, 125)
     } else {
-        egui::Color32::from_rgb(32, 104, 72)
+        egui::Color32::from_rgb(118, 192, 150)
     };
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new((
-            text(icon).size(16.0).color(egui::Color32::WHITE),
-            egui::RichText::new(label)
-                .strong()
-                .color(egui::Color32::WHITE),
-        ))
-        .fill(fill)
-        .min_size(egui::vec2(72.0, ui.spacing().interact_size.y)),
+        egui::Button::new(text(icon).size(16.0).color(color))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(
+                1.0,
+                if enabled {
+                    color
+                } else {
+                    ui.visuals().widgets.noninteractive.bg_stroke.color
+                },
+            ))
+            .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response.on_hover_text(if running {

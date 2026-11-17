@@ -49,6 +49,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
+* **Arithmetic.** Add and other arithmetic cards use their named ports and values.
+  Comparison cards may retain a comparison expression. Ordinary arithmetic has
+  no redundant expression footer.
+* **Configuration templates.** Scalar controls are drawn from each definition's
+  schema. Connection references use a dedicated source control. Fields preserve
+  their JSON types, and complex configuration remains available in the inspector.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.
 * **Composition.** Embedding applications may call `Editor::ui_with_layout` and
@@ -75,7 +81,7 @@ Palette and canvas search use the same full-width result rows. In preview mode t
   Promote to variable, Watch value). Every entry names its shortcut.
 * The toolbar uses icons with tooltips grouped as File | Edit | Run, from the pinned Material Symbols Rounded library (with its licence recorded in 10), so no symbol depends on system
   fonts.
-* The workspace starts with its docks closed. The bottom bar puts the node dock toggle
+* The workspace starts with both side docks visible. The bottom bar puts the node dock toggle
   and zoom at the left, the inspector dock toggle at the right, and Problems, Log and
   running status in the center. Properties and Packages share the inspector's top tabs.
   Problems and Log share the same resizable panel. The controls wrap in narrow windows.
@@ -84,6 +90,15 @@ Palette and canvas search use the same full-width result rows. In preview mode t
 * Settings is centered and resizable, with a search field, category navigation,
   and a scrolling content pane. It cannot collapse. Shortcut search matches both
   action names and keystrokes.
+  Editor command bindings can be recorded, removed and reset. Conflicts are shown
+  before assignment. The desktop saves bindings, node language and canvas preferences
+  under the user's configuration directory on exit. Graph documents carry none of
+  these preferences.
+  The desktop applies the draft's blue-gray surface hierarchy. Command icons use
+  a consistent 16-point outlined font. File and edit controls stay at the left,
+  execution and settings at the right. Run and Stop are separate icon controls
+  with state colors on their outlines. Menu and toolbar shortcut labels follow
+  the current binding.
 
 ## 5. Variables and connections
 
@@ -107,12 +122,15 @@ per-node Band level, On band level and On transient settings, source transport a
 On finished. Each analyzer names its source through a connection. Signal routing
 wires, running-analyzer telemetry, spectra and hit histories belong to phase 2.
 
-The editor uses the host's adapter label for a source control. Its settings button
-uses the first unused input row on the left of the card, or a new row when both
-sides are full. The configuration window reuses the inspector, including source
-selection, device choices and the node's schema fields. Source text, numeric and
-toggle settings are available under a disclosure. Shared source settings are
-identified by source name. Thresholds and detector options stay on the analyzer.
+The editor uses adapter metadata for device dropdowns on the card. Recording,
+playback and playback-capture choices are visually separated. Selecting a device
+creates a source declaration when one is needed. Controls use the first unused
+input row on the left, or a new row when both sides are full. Scalar configuration
+fields render from the node's schema below its ports, including detector bands,
+thresholds and timing. Complex source settings remain in the inspector.
+Stream references show their readable type without process-local record IDs.
+Pure authoring values remain on the cards when Run starts until observed values
+replace them.
 
 Opening the configuration window does not open an audio probe. The explicit
 connection test in the Connections tab remains available. A monitor of the actual

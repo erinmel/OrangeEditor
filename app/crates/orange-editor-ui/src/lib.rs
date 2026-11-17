@@ -23,13 +23,17 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod canvas;
+mod card_sources;
 mod declarations;
 pub mod icons;
+mod keymap;
 mod menu;
 mod organise;
 mod properties;
 mod quick_add;
 mod settings;
+mod theme;
+pub use theme::apply as apply_theme;
 mod types_tab;
 
 pub use properties::{COMMON_TYPES, port_label, set_at};
@@ -46,6 +50,21 @@ use std::sync::mpsc::Receiver;
 /// The nodes the Variables list adds for a variable: the button and the kind.
 const VARIABLE_NODES: [(&str, &str); 2] =
     [("Get", "core/get-variable"), ("Set", "core/set-variable")];
+
+fn presented_value(value: &orange_host::Value) -> (String, String) {
+    if let orange_host::Value::Record(record) = value
+        && record
+            .ty
+            .as_str()
+            .split('@')
+            .next()
+            .is_some_and(|name| name.ends_with("/stream"))
+    {
+        let label = type_name(record.ty.as_str());
+        return (label.clone(), label);
+    }
+    (orange_host::plain(value), orange_host::inspect(value))
+}
 
 /// Most lines the log keeps; older ones are dropped.
 pub const MAX_LOG_LINES: usize = 500;
@@ -136,7 +155,7 @@ pub use orange_host::MAX_UNDO;
 
 /// Which panels the editor shows around the canvas. The canvas and the toolbar are
 /// always there.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Panels {
     /// The node kinds, on the left.
     pub nodes: bool,
@@ -146,6 +165,17 @@ pub struct Panels {
     pub log: bool,
     /// The values of the selected node, on the right.
     pub properties: bool,
+}
+
+impl Default for Panels {
+    fn default() -> Self {
+        Self {
+            nodes: true,
+            properties: true,
+            packages: false,
+            log: false,
+        }
+    }
 }
 
 /// A file action the editor leaves to the application, which owns its file dialogs
@@ -203,6 +233,10 @@ pub struct Editor {
     settings_open: bool,
     settings_search: String,
     settings_tab: settings::Section,
+    preferred_scale: Option<f32>,
+    scale_applied: bool,
+    key_capture: Option<&'static str>,
+    key_conflict: Option<String>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
     document: Option<Document>,
     canvas: Canvas,
@@ -851,6 +885,7 @@ impl Editor {
     /// Starts the open document as a flow. A document that cannot start says why in
     /// its problems.
     pub fn run(&mut self, host: &mut Host) {
+        self.preview_values(host);
         let Some(document) = &mut self.document else {
             return;
         };
@@ -859,7 +894,7 @@ impl Editor {
         }
         match document.draft.text().and_then(|text| host.open(&text)) {
             Ok(flow) => {
-                self.canvas.clear_run();
+                self.canvas.begin_run();
                 let _ = host.observe(flow, true);
                 let entries = host
                     .info(flow)
@@ -954,12 +989,8 @@ impl Editor {
                 }
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
-                        self.canvas.show_value(
-                            *node,
-                            port.to_string(),
-                            orange_host::plain(value),
-                            orange_host::inspect(value),
-                        );
+                        let (short, full) = presented_value(value);
+                        self.canvas.show_value(*node, port.to_string(), short, full);
                     }
                 }
                 FlowEvent::Variables(changed) => {
@@ -999,6 +1030,13 @@ impl Editor {
         layout: impl FnOnce(&mut Self, &mut egui::Ui, &mut Host),
     ) {
         icons::install(ui.ctx());
+        if !self.scale_applied {
+            if let Some(scale) = self.preferred_scale {
+                ui.ctx().set_zoom_factor(scale);
+            }
+            self.scale_applied = true;
+        }
+        self.preferred_scale = Some(ui.ctx().zoom_factor());
         self.canvas.update_help(host, &self.language);
         if let Some(clip) = self.clip_out.take() {
             ui.ctx().copy_text(clip);
@@ -1007,66 +1045,10 @@ impl Editor {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
-        // Undo, redo, the file keys and the canvas commands' keys, unless a text field
-        // is being typed in.
-        if !ui.ctx().egui_wants_keyboard_input() {
-            let (undo, redo, save, save_as, open, new) = ui.input(|input| {
-                let command = input.modifiers.command;
-                let shift = input.modifiers.shift;
-                let z = input.key_pressed(egui::Key::Z);
-                let key = |key| command && input.key_pressed(key);
-                (
-                    command && z && !shift,
-                    command && (input.key_pressed(egui::Key::Y) || (z && shift)),
-                    key(egui::Key::S) && !shift,
-                    key(egui::Key::S) && shift,
-                    key(egui::Key::O),
-                    key(egui::Key::N),
-                )
-            });
-            let (duplicate, arrange, function, fit) = ui.input(|input| {
-                let key = |key| input.modifiers.command && input.key_pressed(key);
-                (
-                    key(egui::Key::D),
-                    key(egui::Key::L),
-                    key(egui::Key::E),
-                    input.key_pressed(egui::Key::Home),
-                )
-            });
-            if duplicate {
-                let _ = self.duplicate(host);
-            }
-            if arrange {
-                let _ = self.arrange_selection();
-            }
-            if function && !self.canvas.selection().is_empty() {
-                self.preview_function(host);
-            }
-            if fit {
-                self.canvas.fit();
-            }
-            if undo {
-                self.undo(host);
-            }
-            if redo {
-                self.redo(host);
-            }
-            if save && let Err(message) = self.save() {
-                self.say(message);
-            }
-            if self.file_dialogs {
-                let asked = [
-                    (save_as, FileRequest::SaveAs),
-                    (open, FileRequest::Open),
-                    (new, FileRequest::New),
-                ];
-                if let Some((_, request)) = asked.into_iter().find(|(pressed, _)| *pressed) {
-                    self.ask(request);
-                }
-            }
-        }
+        self.canvas.shortcuts_enabled = !self.settings_open;
+        self.keyboard(ui, host);
         layout(self, ui, host);
-        self.settings_window(ui.ctx(), host);
+        let _ = self.settings_window(ui.ctx(), host);
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -1109,43 +1091,94 @@ impl Editor {
                 // File
                 let open = self.document.is_some();
                 if self.file_dialogs {
-                    if icons::button(ui, true, icons::NEW, "New graph", "Ctrl+N").clicked() {
+                    if icons::button(
+                        ui,
+                        true,
+                        icons::NEW,
+                        "New graph",
+                        &self.canvas.keys.label("new"),
+                    )
+                    .clicked()
+                    {
                         self.ask(FileRequest::New);
                     }
-                    if icons::button(ui, true, icons::OPEN, "Open a graph…", "Ctrl+O").clicked() {
+                    if icons::button(
+                        ui,
+                        true,
+                        icons::OPEN,
+                        "Open a graph…",
+                        &self.canvas.keys.label("open"),
+                    )
+                    .clicked()
+                    {
                         self.ask(FileRequest::Open);
                     }
                 }
-                if icons::button(ui, open, icons::SAVE, "Save", "Ctrl+S").clicked()
+                if icons::button(
+                    ui,
+                    open,
+                    icons::SAVE,
+                    "Save",
+                    &self.canvas.keys.label("save"),
+                )
+                .clicked()
                     && let Err(message) = self.save()
                 {
                     self.say(message);
                 }
                 if self.file_dialogs
-                    && icons::button(ui, open, icons::SAVE_AS, "Save as…", "Ctrl+Shift+S").clicked()
+                    && icons::button(
+                        ui,
+                        open,
+                        icons::SAVE_AS,
+                        "Save as…",
+                        &self.canvas.keys.label("save-as"),
+                    )
+                    .clicked()
                 {
                     self.ask(FileRequest::SaveAs);
                 }
                 ui.separator();
                 // Edit
                 let (undo, redo) = self.can_undo();
-                if icons::button(ui, undo, icons::UNDO, "Undo", "Ctrl+Z").clicked() {
+                if icons::button(
+                    ui,
+                    undo,
+                    icons::UNDO,
+                    "Undo",
+                    &self.canvas.keys.label("undo"),
+                )
+                .clicked()
+                {
                     self.undo(host);
                 }
-                if icons::button(ui, redo, icons::REDO, "Redo", "Ctrl+Y").clicked() {
+                if icons::button(
+                    ui,
+                    redo,
+                    icons::REDO,
+                    "Redo",
+                    &self.canvas.keys.label("redo"),
+                )
+                .clicked()
+                {
                     self.redo(host);
                 }
                 ui.separator();
                 let chosen = self.canvas.selection().len();
                 ui.menu_button("Graph", |ui| {
                     for (enabled, icon, label, shortcut) in [
-                        (chosen > 0, icons::GROUP, "Group selection", "Ctrl+G"),
-                        (chosen > 0, icons::FUNCTION, "Make function", "Ctrl+E"),
-                        (chosen > 1, icons::ARRANGE, "Arrange selection", "Ctrl+L"),
+                        (chosen > 0, icons::GROUP, "Group selection", "group"),
+                        (chosen > 0, icons::FUNCTION, "Make function", "function"),
+                        (chosen > 1, icons::ARRANGE, "Arrange selection", "arrange"),
                         (open, icons::VARIABLE, "New variable", ""),
                     ] {
-                        let button =
-                            egui::Button::new((icons::text(icon), label)).shortcut_text(shortcut);
+                        let button = egui::Button::new((icons::text(icon), label)).shortcut_text(
+                            if shortcut.is_empty() {
+                                String::new()
+                            } else {
+                                self.canvas.keys.label(shortcut)
+                            },
+                        );
                         if ui.add_enabled(enabled, button).clicked() {
                             match icon {
                                 icons::GROUP => {
@@ -1163,7 +1196,8 @@ impl Editor {
                     }
                 });
                 ui.separator();
-                // Run
+                // Keep execution and application controls at the opposite end.
+                ui.add_space((ui.available_width() - 192.0).max(8.0));
                 let running = self
                     .document
                     .as_ref()
@@ -1173,18 +1207,31 @@ impl Editor {
                 {
                     self.check(host);
                 }
-                if running {
-                    if icons::run_button(ui, true, true).clicked() {
-                        self.stop(host);
-                    }
-                } else if icons::run_button(ui, open, false).clicked() {
+                if icons::run_button(ui, open && !running, false)
+                    .on_hover_text(format!("Run ({})", self.canvas.keys.label("run")))
+                    .clicked()
+                {
                     // A field being typed in ends its typing now, in this frame, and the
                     // run starts after it has been written: one click does both.
                     ui.memory_mut(egui::Memory::stop_text_input);
                     self.run_asked = true;
                 }
+                if icons::run_button(ui, running, true)
+                    .on_hover_text(format!("Stop ({})", self.canvas.keys.label("stop")))
+                    .clicked()
+                {
+                    self.stop(host);
+                }
                 ui.separator();
-                if icons::button(ui, true, icons::SETTINGS, "Settings", "").clicked() {
+                if icons::button(
+                    ui,
+                    true,
+                    icons::SETTINGS,
+                    "Settings",
+                    &self.canvas.keys.label("settings"),
+                )
+                .clicked()
+                {
                     self.settings_open = true;
                 }
             });
@@ -1231,7 +1278,15 @@ impl Editor {
             self.panels.nodes = !self.panels.nodes;
         }
         let open = self.document.is_some();
-        if icons::button(ui, open, icons::FIT, "Fit the graph in view", "Home").clicked() {
+        if icons::button(
+            ui,
+            open,
+            icons::FIT,
+            "Fit the graph in view",
+            &self.canvas.keys.label("fit"),
+        )
+        .clicked()
+        {
             self.canvas.fit();
         }
         if ui
@@ -1476,9 +1531,8 @@ impl Editor {
             let mut index = 0;
             for (category, items) in found {
                 egui::CollapsingHeader::new(category.as_str())
-                    .id_salt(category.as_str())
+                    .id_salt((category.as_str(), searching))
                     .default_open(searching)
-                    .open(searching.then_some(true))
                     .show(ui, |ui| {
                         for item in items {
                             let active =
@@ -1632,6 +1686,7 @@ impl Editor {
 
     /// Draws the editable canvas and handles its actions in the supplied container.
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        self.prepare_devices(host);
         let Some(document) = &self.document else {
             ui.centered_and_justified(|ui| ui.label("Open a graph file to see it here."));
             return;
@@ -1750,6 +1805,12 @@ impl Editor {
         }
         self.menu_popup(ui.ctx(), host);
         self.quick_add_popup(ui.ctx(), host);
+        if let Some((node, pointer, value)) = done.set_config {
+            self.set_setting(host, node, &pointer, Some(value));
+        }
+        if let Some((node, device)) = done.device {
+            self.choose_device(host, node, device);
+        }
         self.node_config_window(ui.ctx(), host);
         self.function_window(ui.ctx(), host);
     }
@@ -2266,6 +2327,13 @@ mod tests {
         let mut editor = Editor::new();
         let bound = host.bind(&graph()).unwrap();
         editor.open(&mut host, "graph.json", bound);
+        assert!(editor.panels.nodes && editor.panels.properties);
+        editor.panels = Panels {
+            nodes: false,
+            properties: false,
+            packages: false,
+            log: false,
+        };
         assert!(draw(&mut editor, &mut host) > 0);
         let alone = editor.canvas().size();
         editor.panels = Panels {
@@ -2277,7 +2345,12 @@ mod tests {
         assert!(draw(&mut editor, &mut host) > 0);
         let with_panels = editor.canvas().size();
         assert!(alone[0] > with_panels[0] && alone[1] > with_panels[1]);
-        editor.panels = Panels::default();
+        editor.panels = Panels {
+            nodes: false,
+            properties: false,
+            packages: false,
+            log: false,
+        };
         assert!(draw(&mut editor, &mut host) > 0);
         assert_eq!(editor.canvas().size(), alone);
     }

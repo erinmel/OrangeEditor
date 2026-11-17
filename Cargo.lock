@@ -3125,6 +3125,7 @@ dependencies = [
  "orange-net",
  "orange-vault",
  "rfd",
+ "serde_json",
 ]
 
 [[package]]

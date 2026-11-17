@@ -39,8 +39,9 @@ impl<'a> Geometry<'a> {
                     });
                 *row += 1;
             }
-            let height =
-                card_height(&node.definition, rows[0].max(rows[1])) + connection_footer(node);
+            let height = card_height(&node.definition, rows[0].max(rows[1]))
+                + connection_footer(node)
+                + super::settings::height(node);
             let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
             let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
             if let (Some(port), None) = (exec.next(), exec.next()) {

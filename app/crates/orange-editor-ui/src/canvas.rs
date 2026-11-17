@@ -77,7 +77,9 @@ pub fn node_size(node: &NodeView) -> Vec2 {
     let outputs = node.ports.len() - inputs;
     Vec2::new(
         NODE_WIDTH,
-        card_height(&node.definition, inputs.max(outputs)) + connection_footer(node),
+        card_height(&node.definition, inputs.max(outputs))
+            + connection_footer(node)
+            + settings::height(node),
     )
 }
 
@@ -88,11 +90,15 @@ pub(crate) fn card_height(definition: &str, rows: usize) -> f32 {
 }
 
 fn extra_row(definition: &str) -> f32 {
-    if definition == "core/on-manual" || orange_host::formula(definition).is_some() {
+    if definition == "core/on-manual" || comparison_formula(definition).is_some() {
         ROW_HEIGHT
     } else {
         0.0
     }
+}
+
+fn comparison_formula(definition: &str) -> Option<&'static str> {
+    orange_host::formula(definition).filter(|formula| formula.contains(['<', '>', '=']))
 }
 
 fn connection_row(node: &NodeView) -> Option<usize> {
@@ -125,6 +131,7 @@ mod layout;
 pub use layout::auto_layout;
 mod geometry;
 mod groups;
+mod settings;
 use geometry::{Geometry, near_wire, wire_points, wire_visible};
 pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 
@@ -148,6 +155,10 @@ pub struct CanvasResponse {
     pub browse_path: Option<(NodeId, String)>,
     /// A device chooser was requested at a node card.
     pub configure: Option<(NodeId, Pos2)>,
+    /// A schema-backed configuration field edited directly on the card.
+    pub set_config: Option<(NodeId, String, serde_json::Value)>,
+    /// A device selected from an adapter-provided choice list.
+    pub device: Option<(NodeId, Option<String>)>,
     /// The selected nodes are to be copied, or cut, to the clipboard.
     pub copy: bool,
     pub cut: bool,
@@ -267,6 +278,9 @@ struct StepActivity {
 /// nodes are.
 #[derive(Debug, Clone)]
 pub struct Canvas {
+    pub(crate) keys: crate::keymap::Keymap,
+    pub(crate) shortcuts_enabled: bool,
+    pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
     pub scroll_pans: bool,
     /// Nodes let go after a move land on the grid; Alt while dragging moves freely.
@@ -324,6 +338,9 @@ pub struct Canvas {
 impl Default for Canvas {
     fn default() -> Self {
         Self {
+            keys: crate::keymap::Keymap::default(),
+            shortcuts_enabled: true,
+            device_pickers: BTreeMap::new(),
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
             places: BTreeMap::new(),
@@ -853,6 +870,12 @@ impl Canvas {
         self.stale = false;
     }
 
+    pub(crate) fn begin_run(&mut self) {
+        self.activity.clear();
+        self.failures.clear();
+        self.stale = false;
+    }
+
     /// The problems to draw on nodes and wires from now on.
     pub fn set_marks(&mut self, marks: Marks) {
         self.marks = marks;
@@ -1182,18 +1205,28 @@ impl Canvas {
         }
         // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
         // selects everything, and copy, cut and paste go through the clipboard.
-        if !ui.ctx().egui_wants_keyboard_input() {
+        if self.shortcuts_enabled
+            && ui.input(|input| input.focused)
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
             let (delete, all, add, events) = ui.input(|input| {
-                done.group_selection = input.modifiers.command
-                    && input.key_pressed(egui::Key::G)
-                    && !self.selection.is_empty();
+                done.group_selection =
+                    self.keys.pressed(input, "group") && !self.selection.is_empty();
                 (
-                    input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace),
-                    input.modifiers.command && input.key_pressed(egui::Key::A),
-                    input.key_pressed(egui::Key::Tab) || input.key_pressed(egui::Key::Space),
+                    self.keys.pressed(input, "delete"),
+                    self.keys.pressed(input, "select-all"),
+                    self.keys.pressed(input, "add"),
                     input.events.clone(),
                 )
             });
+            done.copy =
+                ui.input(|input| self.keys.pressed(input, "copy")) && !self.selection.is_empty();
+            done.cut =
+                ui.input(|input| self.keys.pressed(input, "cut")) && !self.selection.is_empty();
+            if ui.input(|input| self.keys.pressed(input, "paste")) {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
             if add && let Some(screen) = response.hover_pos() {
                 let at = graph_point(screen, self.origin, self.zoom);
                 done.quick_add = Some(([at.x, at.y], screen));
@@ -1386,7 +1419,7 @@ impl Canvas {
                 .then(|| triggers.contains(&node.id));
             let controls = zoom >= CONTROLS_ZOOM;
             // An operator says what it computes, with values in place of names.
-            let formula = orange_host::formula(&node.definition).map(|formula| {
+            let formula = comparison_formula(&node.definition).map(|formula| {
                 fill_formula(formula, |port| {
                     node.ports
                         .iter()
@@ -1418,6 +1451,13 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            if controls
+                && front_rect
+                    .is_none_or(|front_rect| front == Some(node.id) || !front_rect.intersects(rect))
+                && let Some((pointer, value)) = settings::draw(ui, node, rect, zoom)
+            {
+                done.set_config = Some((node.id, pointer, value));
+            }
             if controls && let Some(row) = connection_row(node) {
                 let label = self
                     .connection_labels
@@ -1435,11 +1475,76 @@ impl Canvas {
                 let covered = front != Some(node.id)
                     && front_rect.is_some_and(|rect| rect.contains(slot.center()));
                 if !covered && area.contains_rect(slot) {
-                    let button = ui
-                        .put(slot, egui::Button::new(label).truncate())
-                        .on_hover_text(node.detail.as_deref().unwrap_or(label));
-                    if button.clicked() {
-                        done.configure = Some((node.id, slot.left_bottom()));
+                    if let Some(picker) = self.device_pickers.get(&node.id) {
+                        let mut chosen = picker.selected.clone();
+                        let mut picked = false;
+                        let shown = chosen
+                            .as_ref()
+                            .and_then(|id| picker.options.iter().find(|(value, _)| value == id))
+                            .map_or(picker.default_label.as_str(), |(_, label)| label.as_str());
+                        let file = picker
+                            .connection
+                            .as_ref()
+                            .and_then(|connection| connection.settings["file"].as_str())
+                            .and_then(|path| std::path::Path::new(path).file_name())
+                            .map(|name| name.to_string_lossy());
+                        let shown = file.as_deref().unwrap_or(shown);
+                        ui.scope_builder(
+                            UiBuilder::new().max_rect(slot).id_salt(("device", node.id)),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("endpoint")
+                                    .width(slot.width())
+                                    .truncate()
+                                    .selected_text(egui::RichText::new(shown).size(11.5 * zoom))
+                                    .show_ui(ui, |ui| {
+                                        picked |= ui
+                                            .selectable_value(
+                                                &mut chosen,
+                                                None,
+                                                &picker.default_label,
+                                            )
+                                            .clicked();
+                                        ui.separator();
+                                        for loopback in [false, true] {
+                                            let options: Vec<_> = picker
+                                                .options
+                                                .iter()
+                                                .filter(|(id, _)| {
+                                                    id.starts_with("loopback:") == loopback
+                                                })
+                                                .collect();
+                                            if options.is_empty() {
+                                                continue;
+                                            }
+                                            ui.small(if loopback {
+                                                "Playback capture"
+                                            } else {
+                                                &picker.group_label
+                                            });
+                                            for (value, label) in options {
+                                                picked |= ui
+                                                    .selectable_value(
+                                                        &mut chosen,
+                                                        Some(value.clone()),
+                                                        label,
+                                                    )
+                                                    .clicked();
+                                            }
+                                            ui.separator();
+                                        }
+                                    });
+                            },
+                        );
+                        if picked && (chosen != picker.selected || picker.connection.is_none()) {
+                            done.device = Some((node.id, chosen));
+                        }
+                    } else {
+                        let button = ui
+                            .put(slot, egui::Button::new(label).truncate())
+                            .on_hover_text(node.detail.as_deref().unwrap_or(label));
+                        if button.clicked() {
+                            done.configure = Some((node.id, slot.left_bottom()));
+                        }
                     }
                 }
             }
@@ -1688,7 +1793,9 @@ impl Canvas {
                 if let Some((_, _, typed, focused)) = typing {
                     let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
                     if !*focused {
-                        field.request_focus();
+                        if ui.input(|input| input.focused) {
+                            field.request_focus();
+                        }
                         *focused = true;
                     }
                     if field.lost_focus() {
@@ -1796,7 +1903,9 @@ impl Canvas {
                 };
                 let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
                 if !*focused {
-                    field.request_focus();
+                    if ui.input(|input| input.focused) {
+                        field.request_focus();
+                    }
                     *focused = true;
                 }
                 let entered =
@@ -2024,7 +2133,7 @@ fn draw_node<'a>(
         if let Some(live) = fire {
             let size = Vec2::new(64.0, 22.0) * zoom;
             let y = if extra_row(&node.definition) > 0.0 {
-                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0) * zoom
+                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0 + settings::height(node)) * zoom
             } else {
                 rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom
             };
@@ -2059,7 +2168,7 @@ fn draw_node<'a>(
             let (formula, _) = elide(painter, formula, &font, room);
             let at = Pos2::new(
                 rect.center().x,
-                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0) * zoom,
+                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0 + settings::height(node)) * zoom,
             );
             let _ = painter.text(at, Align2::CENTER_CENTER, formula, font, colors.text);
         }
@@ -2150,7 +2259,7 @@ pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, zoom: f32
         &Palette::of(ui),
         (false, None, false),
         ui.scope_id().with("catalogue-card"),
-        orange_host::formula(&node.definition),
+        comparison_formula(&node.definition),
         None,
     );
 }
