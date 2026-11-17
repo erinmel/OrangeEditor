@@ -402,9 +402,9 @@ pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
                 Color32::from_rgb(210, 120, 120),
             ];
             let namespace = other.split('/').next().unwrap_or(other);
-            let hash = namespace
-                .bytes()
-                .fold(2_166_136_261u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(16_777_619));
+            let hash = namespace.bytes().fold(2_166_136_261u32, |hash, byte| {
+                (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+            });
             PACKAGE_COLORS[hash as usize % PACKAGE_COLORS.len()]
         }
     }

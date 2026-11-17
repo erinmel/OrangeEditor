@@ -885,9 +885,9 @@ impl Host {
             }
             presentations.extend(package.presentations().iter().cloned());
             for (locale, catalog) in package.catalogs() {
-                search_words
-                    .add(locale, catalog)
-                    .map_err(|e| start(&format!("package {} text in {locale}: {e}", package.id())))?;
+                search_words.add(locale, catalog).map_err(|e| {
+                    start(&format!("package {} text in {locale}: {e}", package.id()))
+                })?;
             }
             for replacement in package.replacements() {
                 replacements

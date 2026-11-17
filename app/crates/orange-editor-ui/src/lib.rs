@@ -2443,7 +2443,10 @@ mod tests {
         assert_eq!(exact_type("core/u64@1"), "u64");
         assert_eq!(type_name("core/list@1<core/i64@1>"), "list<i64>");
         assert_eq!(type_name("org.example.geo/point@1"), "Geo point");
-        assert_eq!(type_name("org.example.geo/bounding-box@1"), "Geo bounding box");
+        assert_eq!(
+            type_name("org.example.geo/bounding-box@1"),
+            "Geo bounding box"
+        );
     }
 
     #[test]

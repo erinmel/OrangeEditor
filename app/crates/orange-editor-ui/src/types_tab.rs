@@ -320,7 +320,11 @@ mod tests {
         assert_eq!(type_name(&format!("core/list@1<{expr}>")), "list<Mood>");
         assert_eq!(choices(), [(expr.clone(), "Mood".to_owned())]);
         remember(&[]);
-        assert_ne!(type_name(&expr), "Mood", "a closed graph's names are forgotten");
+        assert_ne!(
+            type_name(&expr),
+            "Mood",
+            "a closed graph's names are forgotten"
+        );
     }
 
     #[test]
