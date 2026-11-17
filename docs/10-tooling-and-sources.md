@@ -53,7 +53,7 @@ Icon font: Phosphor Regular, `src/regular/Phosphor.ttf` of the npm package
 `@phosphor-icons/web` 2.1.2 (published 2025-03-31, licence MIT, copyright Phosphor
 Icons), 488,636 bytes, SHA-256
 `06b91e022b7ee899a63efced879392a74f0bacbda54e4467e9f663220d173a10`; bundled as
-`app/crates/orange-editor-ui/fonts/Phosphor.ttf` with its licence beside it. Codepoints
+`app/crates/apps/orange-editor-ui/fonts/Phosphor.ttf` with its licence beside it. Codepoints
 were read from the same package's `src/regular/style.css`. The crate `egui-phosphor`
 0.14.0 ships the identical file but depends on egui 0.36, so it was not taken. The
 font is not a Cargo dependency, so `deny.toml` is unchanged; MIT is already allowed.
@@ -64,7 +64,7 @@ creates a named family when missing and skips a font already added by name;
 `(RichText, &str)` and `Button::shortcut_text`; `InputState::consume_key`. In 0.37 a
 family with no font logs a warning instead of panicking.
 
-Search words: `app/crates/orange-host/locales/search-en.ftl` and `search-es.ftl`, a
+Search words: `app/crates/platform/orange-host/locales/search-en.ftl` and `search-es.ftl`, a
 subset of Fluent (`id = text` lines, no arguments) read by the host; no Fluent crate
 was adopted (13 §3 still open).
 
@@ -1002,7 +1002,7 @@ changed; `orange-host` now uses the already-pinned `serde_json` in product code.
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
 | `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
 | `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
-| `orange pack app/crates/orange-cli/packages/remember <out>` | Archive written, exit 0 |
+| `orange pack app/crates/apps/orange-cli/packages/remember <out>` | Archive written, exit 0 |
 | `orange check graphs/remember-on-trigger.json` without the package | Provider unavailable, exit 1 |
 | Same with `--package <out>` | `ok`, exit 0 |
 | `orange run graphs/remember-on-trigger.json --package <out>` with a piped `trigger` | Entry, three body nodes, the package node and the consumer all stepped; exit 0 |
@@ -1316,7 +1316,7 @@ allowed. Host side: `orange-guest` now depends on `orange-model` (policy updated
 
 `node tools/build-guest-fixtures.mjs` builds `sdk/guests/probe` (release, LTO,
 panic=abort, stripped) and componentizes it into
-`app/crates/orange-guest/tests/fixtures/probe.wasm` (70,093 bytes); a second local
+`app/crates/platform/orange-guest/tests/fixtures/probe.wasm` (70,093 bytes); a second local
 build was byte-identical. Builds on other OSes may differ (panic locations embed path
 separators), so CI's new `guest` job rebuilds from source and runs the host tests with
 `ORANGE_GUEST_PROBE` pointing at the fresh component; the dependency job also runs
@@ -2503,7 +2503,7 @@ Limits: file targets and JSON syntax were checked, not Markdown anchor resolutio
   ```
 
 - The workspace MSRV is Rust 1.97.1; the installed 1.99.1 satisfies it. MSRV CI coverage is recorded in the CI sections below.
-- WU-00/00b.1 (2026-10-20) added `rust-toolchain.toml` (channel `1.99.1`, components rustfmt/clippy, profile minimal), the root Cargo workspace (`resolver = "3"`, edition 2024, `rust-version = "1.97.1"`, member `app/crates/orange-model`, `plugins` excluded) and a tracked `Cargo.lock`. Cargo resolved dependencies to the highest versions compatible with Rust 1.97.1; see the 00b.1 row in the dependency ledger.
+- WU-00/00b.1 (2026-10-20) added `rust-toolchain.toml` (channel `1.99.1`, components rustfmt/clippy, profile minimal), the root Cargo workspace (`resolver = "3"`, edition 2024, `rust-version = "1.97.1"`, member `app/crates/core/orange-model`, `plugins` excluded) and a tracked `Cargo.lock`. Cargo resolved dependencies to the highest versions compatible with Rust 1.97.1; see the 00b.1 row in the dependency ledger.
 - Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
 - 00b.1 local evidence (Windows 11, Rust 1.99.1, 2026-10-20): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed (22 tests: 8 unit, 13 codec integration, 1 property test at proptest's default 256 cases). Remote `rust` CI evidence is recorded when it first runs.
 - 00b.2 local evidence (same environment, 2026-10-20): the same three commands passed with 46 tests in total. The 24 new tests are 4 for G-36 layout, 2 for G-30 literals, 5 for G-31 variadic ports, 12 for transaction structure and 1 property test of undo-all/redo-all over random edit sequences. No new dependency.
@@ -3216,7 +3216,7 @@ The regular combined graph measured about 5.6% higher than the earlier 426.640 m
 Remaining work: compiler-owned constant evaluation/error preservation; hard interruption or isolated workers for expensive individual passes; separate registry/type-schema lifecycle budgets; mixed W4/W9 NFR qualification; incremental combined diagnostics; and large-component inference (still roughly 229 ms here, beyond NFR-15). Admission estimates bound inspected input size, not elapsed time, heap/RSS or instruction counts. Existing import limits remain necessary. Next development should prioritize the bounded compiler/reference-evaluator readiness slice, with further optimization tied to measured failures and real consumers.
 ### Bundled scalar kernels verification (2026-10-23)
 
-N1a adds app/crates/orange-bundled as the second root workspace member, under the existing statically linked native-kernel exception. It publishes real org.orange.math Add/Subtract/Multiply/Divide/Not contracts, explicit scalar specialization metadata and safe typed failures. Execution binds exact definition/config/provider/type/policy once, pins the Arc registry snapshot, and performs scalar operations without runtime name lookup, I/O or success-path buffer construction. Code inspection supports this narrow allocation statement; no allocator instrumentation, throughput, audio-callback or NFR qualification is claimed. This is not graph compilation/evaluation: the product-graph integration test validates a saved graph, resolves its binding from fresh analysis and the exact lock, then calls the scalar kernel directly to obtain 42. ConstantEvaluation stays missing and final compilation readiness stays false.
+N1a adds app/crates/core/orange-bundled as the second root workspace member, under the existing statically linked native-kernel exception. It publishes real org.orange.math Add/Subtract/Multiply/Divide/Not contracts, explicit scalar specialization metadata and safe typed failures. Execution binds exact definition/config/provider/type/policy once, pins the Arc registry snapshot, and performs scalar operations without runtime name lookup, I/O or success-path buffer construction. Code inspection supports this narrow allocation statement; no allocator instrumentation, throughput, audio-callback or NFR qualification is claimed. This is not graph compilation/evaluation: the product-graph integration test validates a saved graph, resolves its binding from fresh analysis and the exact lock, then calls the scalar kernel directly to obtain 42. ConstantEvaluation stays missing and final compilation readiness stays false.
 
 Toolchain: selected rustup 1.99.1-x86_64-pc-windows-msvc, rustc 1.99.1 (58cf8f9c3 2026-10-13), Cargo 1.99.1 (5f94df478 2026-08-27), LLVM 23.1.1, workspace defaults. New crate has no optional features; its existing exact-pinned serde_json/thiserror/proptest dependencies and local orange-model dependency add no new external package versions or feature choices. Initial offline member check added only its local Cargo.lock package entry; external checksums/versions did not change. Selected post-change lock SHA-256: `956C82119B5D2545847C61978348A2C172B8CCB5690CB21135CC6403B9CA0392` (previous `39279FC3C0349B56F062BCE50CA6D0D81033E13F9CA47C5F65869ADB022A43B4`). Arithmetic APIs were checked in the selected local Rust 1.99.1 standard-library source (`core/src/num/int_macros.rs` and `uint_macros.rs`), including wrapping/saturating division and its stable-version annotations. No external crate API/version was adopted. Rust 1.97.1 MSRV and other OSs remain unexecuted.
 
@@ -3255,7 +3255,7 @@ These tests qualify the restricted eager pure scalar/JSON root-export boundary o
 
 Base a9d84ed. This evaluates document persistence, not execution layout: 12 §1 already separates GraphDocument, RegistrySnapshot, ExecutionPlan and run state. Typed values/dense slots are native in-memory data; a binary file encoding is an independent persistence choice. The product remains format-v1 compact JSON, with no binary importer or serialized PurePlan/cache. Selected local toolchain/features are unchanged: Rust/Cargo 1.99.1, x86_64-pc-windows-msvc, LLVM 23.1.1, default workspace features; MSRV remains 1.97.1 and was not executed. Root lock SHA-256 remains 2F82E8EFEE2BC8D72A49E79E8D812D5DEDD5F032D74EDAEB9826C27DBAF9DC17, with no product dependency or lock changes.
 
-The retained ignored benchmark app/crates/orange-model/tests/perf_codec.rs generates 1,000/10,000 nodes with 999/9,999 edges, a shared signature, i64 decimal literals, nested configuration and unknown extensions including u64::MAX. These are structurally loadable codec fixtures, not semantically executable graphs. It checks document equality and canonical save/load/save bytes before timing. Command: cargo test --release -p orange-model --test perf_codec --locked -- --ignored --nocapture. One warmup and nine samples per operation; medians below exclude fixture setup, destruction, disk I/O, semantic validation and compilation. The ordinary full importer still performs header/version, byte/count and duplicate-ID/lock checks.
+The retained ignored benchmark app/crates/core/orange-model/tests/perf_codec.rs generates 1,000/10,000 nodes with 999/9,999 edges, a shared signature, i64 decimal literals, nested configuration and unknown extensions including u64::MAX. These are structurally loadable codec fixtures, not semantically executable graphs. It checks document equality and canonical save/load/save bytes before timing. Command: cargo test --release -p orange-model --test perf_codec --locked -- --ignored --nocapture. One warmup and nine samples per operation; medians below exclude fixture setup, destruction, disk I/O, semantic validation and compilation. The ordinary full importer still performs header/version, byte/count and duplicate-ID/lock checks.
 
 | Nodes | Edges | Saved JSON bytes | Baseline load | Final load | Baseline save | Final save |
 |---|---|---|---|---|---|---|
@@ -6308,7 +6308,7 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   `cargo +1.99.1 test -p orange-audio --lib --locked --offline every_listed_device_is_found_again_by_what_its_setting_holds -- --ignored`.
   The other environment-dependent ignores and timing probes were not run.
 - Desktop smoke passed with `cargo +1.99.1 run -p orange-desktop --locked
-  --offline -- app/crates/orange-model/tests/fixtures/threshold-v1.json
+  --offline -- app/crates/core/orange-model/tests/fixtures/threshold-v1.json
   --screenshot <temp-png>`. The Windows window drew the fixture, its diagnostic
   marks and the persistent status. Native dialog interactions and macOS behavior
   were not verified.

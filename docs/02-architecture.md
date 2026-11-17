@@ -85,7 +85,7 @@ update, so both stay published and newly placed nodes bind to the new one.
 `NodeInfo::label` and `NodeInfo::category` give every listed node a name and a
 palette category in the default language: the definition file's text, or text made
 from the node's ID (`core/set-variable` is "Set variable" in "Core"). The example
-`app/crates/orange-host/examples/attach.rs` is a complete front end in one file.
+`app/crates/platform/orange-host/examples/attach.rs` is a complete front end in one file.
 Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
 nodes unregistered, and an application chooses its service packages (the `orange`
 command: `--no-base`, `--no-net`, `--no-audio`). Core language nodes are always present.

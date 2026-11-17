@@ -53,7 +53,7 @@ foreach ($sourceFile in $sourceTreeFiles) {
     Copy-Item -LiteralPath $sourceFile.FullName -Destination $destination
 }
 
-$measureManifest = Join-Path $scratchPath 'app/crates/orange-measure/Cargo.toml'
+$measureManifest = Join-Path $scratchPath 'app/crates/dev/orange-measure/Cargo.toml'
 $manifestText = Get-Content -LiteralPath $measureManifest -Raw
 if ($manifestText -match '(?m)^\[\[bin\]\]') { throw 'Copied orange-measure manifest already has an explicit binary target.' }
 $manifestText = $manifestText.TrimEnd() + @'
@@ -65,7 +65,7 @@ path = "src/session_memory.rs"
 '@
 Set-Content -LiteralPath $measureManifest -Value $manifestText -NoNewline
 
-$reportPath = Join-Path $scratchPath 'app/crates/orange-model/src/validation/report.rs'
+$reportPath = Join-Path $scratchPath 'app/crates/core/orange-model/src/validation/report.rs'
 $reportText = Get-Content -LiteralPath $reportPath -Raw
 $reportAnchor = 'impl ValidationAnalysis {'
 if ([regex]::Matches($reportText, [regex]::Escape($reportAnchor)).Count -ne 1) { throw 'ValidationAnalysis injection anchor must occur exactly once.' }
@@ -102,7 +102,7 @@ impl ValidationAnalysis {
 $reportText = $reportText.Replace($reportAnchor, $reportHelper)
 Set-Content -LiteralPath $reportPath -Value $reportText -NoNewline
 
-$sessionPath = Join-Path $scratchPath 'app/crates/orange-model/src/validation/session.rs'
+$sessionPath = Join-Path $scratchPath 'app/crates/core/orange-model/src/validation/session.rs'
 $sessionText = Get-Content -LiteralPath $sessionPath -Raw
 $sessionAnchor = 'impl AnalysisSession {'
 if ([regex]::Matches($sessionText, [regex]::Escape($sessionAnchor)).Count -ne 1) { throw 'AnalysisSession injection anchor must occur exactly once.' }
@@ -148,7 +148,7 @@ $probeSource = Join-Path $PSScriptRoot 'session-memory.rs'
 if (-not (Test-Path -LiteralPath $probeSource -PathType Leaf)) { throw "Missing probe source: $probeSource" }
 $probeHash = (Get-FileHash -LiteralPath $probeSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $scriptHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$probeDestination = Join-Path $scratchPath 'app/crates/orange-measure/src/session_memory.rs'
+$probeDestination = Join-Path $scratchPath 'app/crates/dev/orange-measure/src/session_memory.rs'
 Copy-Item -LiteralPath $probeSource -Destination $probeDestination
 
 $hashLines = [System.Collections.Generic.List[string]]::new()

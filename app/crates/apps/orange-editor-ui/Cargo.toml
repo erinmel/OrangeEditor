@@ -1,0 +1,19 @@
+[package]
+name = "orange-editor-ui"
+description = "OrangeEditor editor interface: an egui library that any eframe or wgpu host can show"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui_material_icons.workspace = true
+orange-host = { path = "../../platform/orange-host", version = "=0.0.0" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+orange-audio = { path = "../../services/orange-audio", version = "=0.0.0" }
