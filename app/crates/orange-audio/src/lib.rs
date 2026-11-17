@@ -1210,6 +1210,7 @@ fn unit_gain() -> Json {
 
 fn play_definition() -> String {
     Definition::node(crate::PACKAGE, "play", "Play sound")
+        .keywords("sound, music, speaker, song")
         .description("Plays a sound file on an output device and continues when it has ended.")
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
@@ -1318,6 +1319,7 @@ fn on_band_level_definition() -> String {
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
         .replaces("on-level", 1, &[])
+        .keywords("bass, loud, clap, microphone, threshold")
         .payload("core/f64@1");
     band_settings(definition, 0.0, 0.0, 50.0)
         .setting(
@@ -1338,6 +1340,7 @@ fn on_band_level_definition() -> String {
 
 fn on_transient_definition() -> String {
     let definition = Definition::entry(crate::PACKAGE, "on-transient", "On transient")
+        .keywords("kick, beat, drum, hit, onset, rhythm")
         .description("Fires on each hit in a band of an input, such as a kick drum: a sudden rise above the band's recent level. The band starts at 45 to 120 Hz for kicks; play the track and adjust it until the hits line up with what you hear.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
@@ -1353,6 +1356,7 @@ fn band_level_definition() -> String {
     let hz = |hz: f64| serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", hz.to_bits())});
     stream_input(
         Definition::node(crate::PACKAGE, "band-level", "Band level")
+            .keywords("bass, frequency, loudness, meter")
             .description("Reads how loud a band of an audio stream is now, in dBFS. Leave a side at 0 to keep it open.")
             .category("audio", "Audio"),
     )
@@ -1383,6 +1387,7 @@ fn source_definitions() -> [(String, SourceControl); 5] {
 
 fn on_finished_definition() -> String {
     Definition::entry(crate::PACKAGE, "on-finished", "On finished")
+        .keywords("end, done, track over")
         .description("Fires when a sound file source plays to its end. A looping source never finishes; a stopped one does not either.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
@@ -1451,6 +1456,7 @@ pub fn package() -> ServicePackage {
             "Audio",
             "Plays sound files and live audio on output devices, and listens to, measures and records microphones and other inputs.",
         )
+        .messages("es", include_str!("../locales/es.ftl"))
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
         .record("stream", &[("source", "core/u64@1")])

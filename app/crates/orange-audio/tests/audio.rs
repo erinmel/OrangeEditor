@@ -695,3 +695,37 @@ fn a_saved_on_level_opens_as_on_band_level() {
     assert!(node.activation.is_some() && node.provider.is_some());
     assert_eq!(host.check(&saved.to_string()).unwrap(), []);
 }
+
+/// The package's own words find its nodes, and its Spanish catalogue names them in
+/// Spanish (13 §3): no host change is needed for a package's language.
+#[test]
+fn a_package_brings_its_own_search_words_and_spanish_names() {
+    let host = host();
+    let first = |search: &str, locale: &str| {
+        host.search_nodes(search, locale)
+            .into_iter()
+            .next()
+            .map(|found| (found.definition, found.label))
+    };
+    assert_eq!(
+        first("kick", "en"),
+        Some((
+            orange_audio::ON_TRANSIENT.to_owned(),
+            "On transient".to_owned()
+        ))
+    );
+    assert_eq!(
+        first("bombo", "es"),
+        Some((orange_audio::ON_TRANSIENT.to_owned(), "Al golpe".to_owned()))
+    );
+    // A Spanish search still finds a node by its English name.
+    assert_eq!(
+        first("on transient", "es").map(|(definition, _)| definition),
+        Some(orange_audio::ON_TRANSIENT.to_owned())
+    );
+    // A language the package has no text for falls back to English.
+    assert_eq!(
+        first("kick", "fr").map(|(_, label)| label),
+        Some("On transient".to_owned())
+    );
+}
