@@ -296,13 +296,21 @@ impl Host {
         let mut definitions = Vec::with_capacity(manifest.nodes().len());
         let mut described = Vec::with_capacity(manifest.nodes().len());
         let mut definition_text = BTreeMap::new();
+        // Checked against what is installed now, kept only once the install succeeds.
+        let mut replacements = self.replacements.clone();
         for node in manifest.nodes() {
             let name = node.to_string();
             let path = format!("nodes/{}.json", local(&name));
             let text = read(&path)?;
-            let (definition, presentation) = NodeDefinition::described(text)
+            let file = NodeDefinition::read_file(text)
                 .map_err(|error| HostError::Definition(error.to_string()))?;
-            described.push((definition.definition.clone(), presentation));
+            let definition = file.definition;
+            described.push((definition.definition.clone(), file.presentation));
+            for replacement in file.replaces {
+                replacements
+                    .add(replacement)
+                    .map_err(|error| HostError::Definition(error.to_string()))?;
+            }
             if definition.definition.id != *node {
                 return Err(HostError::Definition(format!(
                     "`{path}` does not define `{name}`"
@@ -444,6 +452,7 @@ impl Host {
         self.guests.extend(guests);
         self.graphs.extend(graphs);
         self.presentations.extend(described);
+        self.replacements = replacements;
         Ok(key)
     }
 

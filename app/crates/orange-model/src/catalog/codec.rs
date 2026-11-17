@@ -7,6 +7,8 @@
 //! type parameters, ports, kinds, suspension, defaults) are checked when the definition is
 //! published through [`RegistryBuilder`](super::RegistryBuilder).
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -15,7 +17,8 @@ use crate::document::codec::{ImportBudget, ScanError, scan_json};
 use crate::document::nesting::MAX_NESTING;
 use crate::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam};
 use crate::error::{ImportResource, JsonError, Rejected};
-use crate::id::DefinitionId;
+use crate::id::{DefinitionId, PortId};
+use crate::replace::Replacement;
 
 /// Safety limits for decoding one node definition file.
 ///
@@ -96,6 +99,12 @@ impl NodeDefinition {
     /// Like [`NodeDefinition::from_json`], and also returns the file's presentation:
     /// `label`, `description` and the category of its `editor` object.
     pub fn described(text: &str) -> Result<(Self, Presentation), DefinitionError> {
+        Self::read_file(text).map(|file| (file.definition, file.presentation))
+    }
+
+    /// Everything a definition file says: the contract, its presentation and the older
+    /// definitions it replaces (`replaces`, 12 §6.4).
+    pub fn read_file(text: &str) -> Result<DefinitionFile, DefinitionError> {
         Self::decode(text, DefinitionLimits::default())
     }
 
@@ -117,13 +126,10 @@ impl NodeDefinition {
         text: &str,
         limits: DefinitionLimits,
     ) -> Result<Self, DefinitionError> {
-        Self::decode(text, limits).map(|(definition, _)| definition)
+        Self::decode(text, limits).map(|file| file.definition)
     }
 
-    fn decode(
-        text: &str,
-        limits: DefinitionLimits,
-    ) -> Result<(Self, Presentation), DefinitionError> {
+    fn decode(text: &str, limits: DefinitionLimits) -> Result<DefinitionFile, DefinitionError> {
         if text.len() > limits.max_bytes {
             return Err(DefinitionError::LimitExceeded {
                 resource: ImportResource::Bytes,
@@ -166,8 +172,48 @@ impl NodeDefinition {
             then_label: editor.then_label,
             paths: editor.paths,
         };
-        Ok((wire.into(), presentation))
+        let replaces = std::mem::take(&mut wire.replaces);
+        let definition: NodeDefinition = wire.into();
+        let replaces = replaces
+            .into_iter()
+            .map(|old| Replacement {
+                from: DefinitionRef {
+                    id: old.definition_id,
+                    version: old.definition_version,
+                },
+                to: definition.definition.clone(),
+                ports: old.ports,
+                config: old.config,
+            })
+            .collect();
+        Ok(DefinitionFile {
+            definition,
+            presentation,
+            replaces,
+        })
     }
+}
+
+/// One decoded definition file ([`NodeDefinition::read_file`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefinitionFile {
+    pub definition: NodeDefinition,
+    pub presentation: Presentation,
+    /// Older definitions this one takes the place of, each with its renames. Adding them
+    /// to a [`Replacements`](crate::replace::Replacements) table checks them.
+    pub replaces: Vec<Replacement>,
+}
+
+/// One `replaces` entry: an older definition version and what was renamed since.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplacesWire {
+    definition_id: DefinitionId,
+    definition_version: u32,
+    #[serde(default)]
+    ports: BTreeMap<PortId, PortId>,
+    #[serde(default)]
+    config: BTreeMap<String, String>,
 }
 
 /// Translatable text of a definition file (13 §2): a message key in the package's
@@ -261,6 +307,8 @@ struct DefinitionWire {
     description: Option<TextRef>,
     #[serde(default)]
     editor: Option<EditorWire>,
+    #[serde(default)]
+    replaces: Vec<ReplacesWire>,
 }
 
 #[derive(Deserialize)]
@@ -378,6 +426,48 @@ mod tests {
 
     fn decode(value: &serde_json::Value) -> Result<NodeDefinition, DefinitionError> {
         NodeDefinition::from_json(&value.to_string())
+    }
+
+    #[test]
+    fn a_definition_file_names_the_older_definitions_it_replaces() {
+        let mut file = triple();
+        file["definition_version"] = json!(2);
+        file["replaces"] = json!([
+            {"definition_id": "acme.math/triple", "definition_version": 1,
+             "ports": {"input": "value"}, "config": {"mode": "rounding"}},
+            {"definition_id": "acme.math/thrice", "definition_version": 3}
+        ]);
+        let read = NodeDefinition::read_file(&file.to_string()).unwrap();
+        let to = read.definition.definition.clone();
+        assert_eq!(read.replaces.len(), 2);
+        assert_eq!(read.replaces[0].from.id.as_str(), "acme.math/triple");
+        assert_eq!(read.replaces[0].from.version, 1);
+        assert_eq!(read.replaces[0].to, to);
+        assert_eq!(
+            read.replaces[0].ports[&"input".parse().unwrap()].as_str(),
+            "value"
+        );
+        assert_eq!(read.replaces[0].config["mode"], "rounding");
+        assert!(read.replaces[1].ports.is_empty() && read.replaces[1].config.is_empty());
+        // Replacements are not part of the contract.
+        assert_eq!(
+            read.definition,
+            NodeDefinition::from_json(&{
+                let mut plain = triple();
+                plain["definition_version"] = json!(2);
+                plain.to_string()
+            })
+            .unwrap()
+        );
+
+        file["replaces"][0]["renamed"] = json!({});
+        assert!(NodeDefinition::read_file(&file.to_string()).is_err());
+        file["replaces"] = json!([{"definition_id": "acme.math/triple",
+            "definition_version": 1, "ports": {"Input": "value"}}]);
+        assert!(
+            NodeDefinition::read_file(&file.to_string()).is_err(),
+            "port IDs are checked"
+        );
     }
 
     #[test]

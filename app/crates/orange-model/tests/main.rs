@@ -42,6 +42,7 @@ mod paste;
 mod perf_codec;
 mod perf_edit_baseline;
 mod rebind;
+mod replace_definitions;
 mod roundtrip_props;
 mod signature_vectors;
 mod suspension_signatures;

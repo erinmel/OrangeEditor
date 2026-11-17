@@ -64,6 +64,26 @@ pub struct Draft {
     analysis: Option<Analysis>,
     /// Lookups of the document that type inference keeps up to date between edits.
     index: Option<orange_model::DocIndex>,
+    /// What opening the document changed before the first edit.
+    opened: OpenReport,
+}
+
+/// What [`Host::draft`] changed while opening a document, so a front end can tell the
+/// person before saving replaces the file they opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenReport {
+    /// The format version the file was saved at, when it was older than the one saving
+    /// writes.
+    pub upgraded_from: Option<u32>,
+    /// Nodes of definitions a package replaced, rebuilt as their replacements.
+    pub replaced: Vec<orange_model::replace::Replaced>,
+}
+
+impl OpenReport {
+    /// Whether saving will write something the file did not say.
+    pub fn changed(&self) -> bool {
+        self.upgraded_from.is_some() || !self.replaced.is_empty()
+    }
 }
 
 /// Most edits a draft can undo.
@@ -77,7 +97,13 @@ impl Draft {
             redo: Vec::new(),
             analysis: None,
             index: None,
+            opened: OpenReport::default(),
         }
+    }
+
+    /// What opening the document changed before the first edit.
+    pub fn opened(&self) -> &OpenReport {
+        &self.opened
     }
 
     /// The document as it is now.
@@ -303,9 +329,19 @@ impl Host {
     /// Starts editing a document as it is written. A document written by hand can be
     /// completed with [`Host::bind`] first; until then its problems say what it lacks.
     pub fn draft(&self, json: &str) -> Result<Draft, HostError> {
-        Ok(Draft::new(
-            from_json(json).map_err(|error| refused(&error))?,
-        ))
+        let (mut document, upgrade) = orange_model::from_json_upgrading(
+            json,
+            orange_model::ImportLimits::default(),
+            orange_model::ImportBudget::default(),
+        )
+        .map_err(|error| refused(&error))?;
+        let replaced = self.replace_definitions(&mut document)?;
+        let mut draft = Draft::new(document);
+        draft.opened = OpenReport {
+            upgraded_from: upgrade.from_version(),
+            replaced,
+        };
+        Ok(draft)
     }
 
     /// What stands in the way of running the draft, as [`Host::check`] reports it for

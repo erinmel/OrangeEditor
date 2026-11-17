@@ -22,6 +22,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
 pub use orange_model::document::DefinitionRef;
+pub use orange_model::replace::Replacement;
 pub use orange_model::value::{ListRepr, RecordRepr};
 pub use orange_runtime::EffectLease;
 use serde_json::{Map, Value as Json};
@@ -635,6 +636,31 @@ impl Definition {
         );
         self
     }
+    /// This node takes the place of `<package>/<name>` version `version`, which the
+    /// package no longer ships. `ports` lists the ports renamed since, old to new. A
+    /// document that still has nodes of the old definition gets nodes of this one when
+    /// it is opened, with their values and wires kept.
+    #[must_use]
+    pub fn replaces(mut self, name: &str, version: u32, ports: &[(&str, &str)]) -> Self {
+        let ports: Map<String, Json> = ports
+            .iter()
+            .map(|(old, new)| ((*old).to_owned(), Json::from(*new)))
+            .collect();
+        let entry = serde_json::json!({
+            "definition_id": format!("{}/{name}", self.package),
+            "definition_version": version,
+            "ports": ports,
+        });
+        match self.json.get_mut("replaces") {
+            Some(Json::Array(list)) => list.push(entry),
+            _ => {
+                let _ = self
+                    .json
+                    .insert("replaces".to_owned(), Json::Array(vec![entry]));
+            }
+        }
+        self
+    }
     /// The definition file text.
     pub fn build(mut self) -> String {
         let _ = self
@@ -656,6 +682,7 @@ pub struct ServicePackage {
     sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
     adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
     presentations: Vec<(DefinitionRef, Presentation)>,
+    replacements: Vec<Replacement>,
     types: Vec<TypeDecl>,
 }
 
@@ -700,6 +727,7 @@ impl ServicePackage {
             sources: Vec::new(),
             adapters: Vec::new(),
             presentations: Vec::new(),
+            replacements: Vec::new(),
             types: Vec::new(),
         }
     }
@@ -787,15 +815,25 @@ impl ServicePackage {
     pub fn presentations(&self) -> &[(DefinitionRef, Presentation)] {
         &self.presentations
     }
+    /// The older definitions the package's definition files say their nodes replace.
+    pub fn replacements(&self) -> &[Replacement] {
+        &self.replacements
+    }
+    /// Reads a definition file and keeps what it says besides the contract.
+    fn read(&mut self, definition: &str) -> Result<NodeDefinition, DefinitionError> {
+        let file = NodeDefinition::read_file(definition)?;
+        self.presentations
+            .push((file.definition.definition.clone(), file.presentation));
+        self.replacements.extend(file.replaces);
+        Ok(file.definition)
+    }
     /// Adds an asynchronous node from its definition file text.
     pub fn node(
         mut self,
         definition: &str,
         node: impl ServiceNode,
     ) -> Result<Self, DefinitionError> {
-        let (definition, presentation) = NodeDefinition::described(definition)?;
-        self.presentations
-            .push((definition.definition.clone(), presentation));
+        let definition = self.read(definition)?;
         self.nodes.push((definition, Arc::new(node)));
         Ok(self)
     }
@@ -815,9 +853,7 @@ impl ServicePackage {
         definition: &str,
         source: impl ServiceSource,
     ) -> Result<Self, DefinitionError> {
-        let (definition, presentation) = NodeDefinition::described(definition)?;
-        self.presentations
-            .push((definition.definition.clone(), presentation));
+        let definition = self.read(definition)?;
         self.sources.push((definition, Arc::new(source)));
         Ok(self)
     }
@@ -839,7 +875,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 5",
+        "orange-plugin 6",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
@@ -931,5 +967,54 @@ mod tests {
         assert!(entry.get("suspends").is_none());
         assert_eq!(entry["ports"][0]["source"], "payload");
         assert!(NodeDefinition::described(&entry.to_string()).is_ok());
+    }
+
+    #[derive(Debug)]
+    struct Nothing;
+    impl ServiceNode for Nothing {
+        fn run(&self, _: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_package_keeps_what_its_definitions_replace() {
+        let meter = Definition::node("org.example.demo", "band-level", "Band level")
+            .replaces("level", 1, &[("stream", "signal")])
+            .replaces("input-level", 1, &[])
+            .input("signal", "core/f64@1")
+            .build();
+        let package = ServicePackage::new("org.example.demo", "2.0.0")
+            .node(&meter, Nothing)
+            .unwrap();
+        let replaced: Vec<_> = package
+            .replacements()
+            .iter()
+            .map(|step| {
+                (
+                    step.from.id.as_str().to_owned(),
+                    step.from.version,
+                    step.to.id.as_str().to_owned(),
+                    step.ports.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            replaced,
+            [
+                (
+                    "org.example.demo/level".to_owned(),
+                    1,
+                    "org.example.demo/band-level".to_owned(),
+                    1
+                ),
+                (
+                    "org.example.demo/input-level".to_owned(),
+                    1,
+                    "org.example.demo/band-level".to_owned(),
+                    0
+                ),
+            ]
+        );
     }
 }

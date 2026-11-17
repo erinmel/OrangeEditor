@@ -11,7 +11,8 @@
 //! copy/paste); `format` (versioned envelopes of saved files and their upgrade steps);
 //! `validation` (one read-only `validate` entry point over node, input,
 //! connection and function passes); `rebind` (explicit provider rebinds checked with
-//! `validate`). `binding` (new nodes bound to the registry's new-binding default) sits beside
+//! `validate`); `replace` (nodes of definitions a package replaced, rebuilt on open).
+//! `binding` (new nodes bound to the registry's new-binding default) sits beside
 //! `paste`, above `edit` and `signature` and below `validation`.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
@@ -31,6 +32,7 @@ pub mod inference;
 pub mod origin;
 pub mod paste;
 pub mod rebind;
+pub mod replace;
 pub mod scalar;
 pub mod signature;
 pub mod type_term;

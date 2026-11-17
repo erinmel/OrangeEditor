@@ -48,6 +48,7 @@ use orange_kernel::{
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::ConnectionDecl;
 pub use orange_model::document::{ConnectionScope, VarScope};
+use orange_model::replace::{Replaced, Replacements, replace_definitions};
 use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
@@ -74,7 +75,7 @@ pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
 };
-pub use draft::{Draft, MAX_UNDO};
+pub use draft::{Draft, MAX_UNDO, OpenReport};
 pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use names::{
@@ -658,6 +659,8 @@ pub struct Host {
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
+    /// Older definitions that a package's nodes replace; applied when a document opens.
+    replacements: Replacements,
     /// The words the node search finds nodes by.
     search_words: SearchWords,
     not_restored: Vec<(String, HostError)>,
@@ -847,11 +850,17 @@ impl Host {
         }));
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
+        let mut replacements = Replacements::new();
         for package in &packages {
             if disabled.contains(package.id()) {
                 continue;
             }
             presentations.extend(package.presentations().iter().cloned());
+            for replacement in package.replacements() {
+                replacements
+                    .add(replacement.clone())
+                    .map_err(|e| start(&e))?;
+            }
             let key = ProviderKey {
                 package: package.id().to_owned(),
                 version: package.version().to_owned(),
@@ -913,6 +922,7 @@ impl Host {
             graphs: Graphs::new(),
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
+            replacements,
             search_words: SearchWords::built_in().clone(),
             not_restored: Vec::new(),
             built_in,
@@ -1056,12 +1066,25 @@ impl Host {
 
     fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
         let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
-        if self.graphs.is_empty() {
-            return from_json(json).map_err(|e| document(&e));
-        }
-        let mut saved = serde_json::from_str(json).map_err(|e| document(&e))?;
-        graphs::link(&mut saved, &self.graphs);
-        from_json(&saved.to_string()).map_err(|e| document(&e))
+        let mut linked = if self.graphs.is_empty() {
+            from_json(json).map_err(|e| document(&e))?
+        } else {
+            let mut saved = serde_json::from_str(json).map_err(|e| document(&e))?;
+            graphs::link(&mut saved, &self.graphs);
+            from_json(&saved.to_string()).map_err(|e| document(&e))?
+        };
+        let _ = self.replace_definitions(&mut linked)?;
+        Ok(linked)
+    }
+
+    /// Rebuilds the nodes of `document` whose definitions a package replaced and this
+    /// host no longer has (12 §6.4).
+    fn replace_definitions(
+        &self,
+        document: &mut GraphDocument,
+    ) -> Result<Vec<Replaced>, HostError> {
+        replace_definitions(document, self.store.current(), &self.replacements)
+            .map_err(|error| HostError::Document(error.to_string()))
     }
 
     /// The packages a document is locked to and whether this host has each one: what an
