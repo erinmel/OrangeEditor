@@ -6343,6 +6343,39 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   Native dialogs, physical audio, high-DPI and macOS were not interactively
   verified. Signal wires and running-analyzer telemetry remain ADR-30 phase 2.
 
+### Editor interaction corrections - 2026-11-17
+
+- FR-113/114/119/120; ADR-21/30. Editor command bindings now drive the editor
+  keyboard handler, canvas commands, toolbar and menu labels. Settings records,
+  clears and resets bindings and rejects conflicts. Preferences are separate
+  versioned JSON owned by the desktop and saved through a temporary file on exit.
+  They include keybindings, language, result mode, interface scale and canvas options.
+  Both side panels start visible. Settings has fixed navigation and bounded content
+  widths. Search groups have independent persistent collapse state while searching.
+- Devices are chosen directly on cards from adapter-provided choices. A missing
+  source declaration is created when a device is chosen. The documented loopback
+  setting prefix separates playback capture from other endpoints. Detector scalar
+  configuration is drawn from schemas on the cards, with offscreen rows culled.
+  Stream references are presented as readable types. Pure values are retained
+  when a run starts, while later observed values replace them. Arithmetic cards
+  omit the redundant formula footer. The optional desktop theme uses the HTML
+  workspace draft's blue-gray surfaces; embedding hosts choose their own styling.
+- Window-focus checks guard editor shortcuts and text-focus requests. No recurring
+  native foreground-window request was found. External focus loss was not reproduced.
+- Windows x64, Rust/Cargo 1.99.1, Cargo.lock SHA-256
+  C5DE0907186197D8B5831F51A46D9D6EA305A77FC9238FE168A703A0A36904B0.
+  PASS, cargo +1.99.1 test -p orange-editor-ui -p orange-desktop --all-features
+  --locked --offline, 78 tests including desktop, zero failures or ignored.
+  Focused regressions cover binding persistence through the real editor entrypoint,
+  Settings width across sections and pure values after Run. The panel test now
+  checks the requested initially visible panels before exercising explicit collapse.
+- PASS, warnings-denied Clippy for both frontend crates with all targets/features,
+  changed-source rustfmt, dependency metadata checks and desktop screenshot launch.
+  Image inspection remains blocked by the image tool's sandbox path failure.
+  Physical audio, call routing and macOS were not verified. Signal-input triggers,
+  continuous gate outputs, Play Sound stream outputs and live analyzer telemetry
+  require the remaining ADR-30 engine APIs and were not implemented as UI behavior.
+
 ### Saved-format upgrades and replaced definitions - 2026-11-17
 
 - Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change.
