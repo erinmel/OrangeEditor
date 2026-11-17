@@ -6342,3 +6342,16 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   `file_source` settings and transport tests, and the `audio` integration test
   `a_saved_on_level_opens_as_on_band_level`. No real microphone, loopback device or
   speaker was used, and On transient was not tuned against recorded music.
+
+### Package words, naming and visibility - 2026-11-17
+
+- Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change. With the
+  working tree's uncommitted editor changes present, `cargo test --workspace --locked
+  --no-fail-fast` passed 1,989 tests with zero failures; `cargo clippy --workspace
+  --all-targets --locked` reported nothing.
+- FR-120: `orange-audio` `a_package_brings_its_own_search_words_and_spanish_names` and
+  `a_nodes_connection_is_named_by_its_adapter`; `orange-editor-ui`
+  `types_are_named_for_people` and `cards_name_types_shortly_and_color_families_alike`.
+- `RUSTFLAGS="-W unreachable_pub" cargo check --lib` for orange-runtime, -model, -host,
+  -compiler, -net and -packages reports no unreachable `pub` item after the sweep, and
+  the default build reports no dead code.
