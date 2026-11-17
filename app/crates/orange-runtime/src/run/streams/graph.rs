@@ -42,7 +42,7 @@ pub(in crate::run) struct PreparedRead {
     hold: Option<Hold>,
 }
 impl PreparedRead {
-    pub fn new(
+    pub(crate) fn new(
         owner: ControlIx,
         reference: Value,
         mode: ReadMode,
@@ -80,26 +80,26 @@ pub(in crate::run) struct GraphStreams {
     ready: VecDeque<u64>,
 }
 impl GraphStreams {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.reads.len()
     }
-    pub fn has_ready(&self) -> bool {
+    pub(crate) fn has_ready(&self) -> bool {
         !self.ready.is_empty()
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.reads.clear();
         self.strands.clear();
         self.waiting.clear();
         self.ready.clear();
     }
-    pub fn wake(&mut self, id: StreamNextId) {
+    pub(crate) fn wake(&mut self, id: StreamNextId) {
         if let Some(&token) = self.waiting.get(&(id.handle.resource.id(), id.sequence))
             && !self.ready.contains(&token)
         {
             self.ready.push_back(token);
         }
     }
-    pub fn revoke(&mut self, id: HandleId) {
+    pub(crate) fn revoke(&mut self, id: HandleId) {
         for (&token, read) in &mut self.reads {
             if matches!(&read.work.reference,Value::Stream(value) if value.id()==id) {
                 read.revoked = true;

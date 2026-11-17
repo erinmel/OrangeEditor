@@ -897,7 +897,7 @@ fn is_hex_digest(text: &str) -> bool {
 
 /// `ident { "." ident }` with `ident = [a-z][a-z0-9_]*` (11 §5.1 namespaces).
 /// Namespaces no package may take.
-pub const RESERVED_NAMESPACES: [&str; 2] = ["core", "local"];
+pub(crate) const RESERVED_NAMESPACES: [&str; 2] = ["core", "local"];
 
 pub(crate) fn is_namespace(text: &str) -> bool {
     text.len() <= MAX_NAME_BYTES

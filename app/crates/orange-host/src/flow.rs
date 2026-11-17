@@ -81,7 +81,7 @@ impl std::fmt::Debug for Space {
     }
 }
 impl Space {
-    pub fn snapshot(&self) -> Option<WorkspaceSnapshot> {
+    pub(crate) fn snapshot(&self) -> Option<WorkspaceSnapshot> {
         self.workspace
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -89,7 +89,7 @@ impl Space {
             .map(Workspace::snapshot)
     }
     /// Stores the persistent shared variables as they are now.
-    pub fn store(&self) -> Result<(), String> {
+    pub(crate) fn store(&self) -> Result<(), String> {
         let keep = self.keep.lock().unwrap_or_else(PoisonError::into_inner);
         let (Some(keep), Some(snapshot)) = (keep.as_ref(), self.snapshot()) else {
             return Ok(());
@@ -100,7 +100,7 @@ impl Space {
         state::save(&keep.directory, &keep.name, &now)
     }
     /// Wakes every flow, after a write the host itself made.
-    pub fn wake_all(&self) {
+    pub(crate) fn wake_all(&self) {
         let flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
         for thread in flows.values() {
             thread.unpark();

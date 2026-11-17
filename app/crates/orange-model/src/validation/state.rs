@@ -50,7 +50,7 @@ impl Write {
 
 /// Checks every Fork against the region index. Read-only; nodes or functions without
 /// accepted metadata contribute no writes (their own diagnostics keep the report invalid).
-pub fn validate_state(
+pub(crate) fn validate_state(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,

@@ -31,7 +31,7 @@ impl std::fmt::Debug for Services {
     }
 }
 impl Services {
-    pub fn add(&mut self, provider: &ProviderKey, package: &ServicePackage) {
+    pub(crate) fn add(&mut self, provider: &ProviderKey, package: &ServicePackage) {
         for (definition, node) in package.nodes() {
             let uses_connection = !definition.references.is_empty();
             let _ = self.nodes.insert(
@@ -49,7 +49,7 @@ impl Services {
     }
 
     /// The source of an entry node bound to `provider`, and whether it uses a connection.
-    pub fn source(
+    pub(crate) fn source(
         &self,
         provider: &ProviderKey,
         definition: &DefinitionRef,
@@ -61,7 +61,10 @@ impl Services {
 
     /// Binds one async service node. Exec ports carry no value; any other non-data port
     /// or an unresolved type is refused.
-    pub fn resolve(&self, request: &BindingRequest<'_>) -> Result<EffectBinding, ResolveError> {
+    pub(crate) fn resolve(
+        &self,
+        request: &BindingRequest<'_>,
+    ) -> Result<EffectBinding, ResolveError> {
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
         let (node, uses_connection) = self
             .nodes

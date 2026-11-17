@@ -11,7 +11,7 @@ use super::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 
 /// Checks all variable and event types, including unused declarations without initializers.
 /// Declarations have no generic parameter scope. Messages never contain declaration text.
-pub fn validate_declaration_types(
+pub(crate) fn validate_declaration_types(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {

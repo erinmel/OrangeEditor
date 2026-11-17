@@ -235,7 +235,7 @@ impl Default for Tracker {
 
 impl Tracker {
     /// `inverse` is what applying the patch returned; its entry is the slot's prior value.
-    pub fn record(&mut self, inverse: &Patch) {
+    pub(crate) fn record(&mut self, inverse: &Patch) {
         self.semantic |= !inverse.is_layout();
         if !matches!(
             inverse,
@@ -304,7 +304,7 @@ impl Tracker {
         }
     }
 
-    pub fn layout_only(&self) -> bool {
+    pub(crate) fn layout_only(&self) -> bool {
         !self.semantic
     }
 
@@ -378,7 +378,7 @@ impl Tracker {
         Some(NodeEdit { before })
     }
 
-    pub fn finish(
+    pub(crate) fn finish(
         self,
         document: &GraphDocument,
         from_revision: u64,

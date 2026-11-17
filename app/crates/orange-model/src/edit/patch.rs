@@ -87,7 +87,7 @@ pub(crate) enum Patch {
 impl Patch {
     /// Applies the patch and returns its inverse. Fails only if the target body or editor
     /// path cannot hold the slot; the document is then unchanged.
-    pub fn apply(self, document: &mut GraphDocument) -> Result<Patch, TxError> {
+    pub(crate) fn apply(self, document: &mut GraphDocument) -> Result<Patch, TxError> {
         Ok(match self {
             Patch::Node { body, id, entry } => {
                 let present = entry.is_some();
@@ -159,7 +159,7 @@ impl Patch {
 
     /// How deep the saved document nests at the patched entry: the containers above the
     /// entry plus the entry's own nesting. A removal adds nothing, so it reports 0.
-    pub fn nesting(&self) -> usize {
+    pub(crate) fn nesting(&self) -> usize {
         use crate::document::nesting::nesting;
         // The root object and the list or map holding a top-level entry.
         const TOP: usize = 2;
@@ -193,7 +193,7 @@ impl Patch {
     }
 
     /// True for edits that only change layout (12 §3.3 `layout_only`).
-    pub fn is_layout(&self) -> bool {
+    pub(crate) fn is_layout(&self) -> bool {
         matches!(self, Patch::Editor { .. })
     }
 }

@@ -70,7 +70,7 @@ impl GraphNode {
     /// kind, the same data ports and the same use of a connection. Whether the body is a
     /// valid function is decided by validating it, which the host does before publishing
     /// the package.
-    pub fn decode(text: &str, definition: &str) -> Result<Self, String> {
+    pub(crate) fn decode(text: &str, definition: &str) -> Result<Self, String> {
         let file: Json = serde_json::from_str(text).map_err(|error| error.to_string())?;
         let definition: Json =
             serde_json::from_str(definition).map_err(|error| error.to_string())?;

@@ -309,11 +309,11 @@ impl<'de> Deserialize<'de> for IdentifierArg {
 mod decimal_u64 {
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(value)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
         let value = String::deserialize(deserializer)?;
         let parsed = value.parse::<u64>().map_err(serde::de::Error::custom)?;
         if parsed.to_string() != value {

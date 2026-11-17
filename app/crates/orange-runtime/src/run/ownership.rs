@@ -117,20 +117,20 @@ impl<T: Copy + Ord> Spill<T> {
 }
 
 impl<T: Copy + Ord> IdSet<T> {
-    pub fn one(id: T) -> Self {
+    pub(crate) fn one(id: T) -> Self {
         Self::One(id)
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Empty => 0,
             Self::One(_) => 1,
             Self::Many(ids) => ids.live,
         }
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
     }
-    pub fn iter(&self) -> impl Iterator<Item = T> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = T> {
         let (one, many) = match self {
             Self::Empty => (None, None),
             Self::One(id) => (Some(*id), None),
@@ -139,10 +139,10 @@ impl<T: Copy + Ord> IdSet<T> {
         one.into_iter()
             .chain(many.into_iter().flat_map(|ids| ids.iter()))
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         *self = Self::Empty;
     }
-    pub fn insert(&mut self, id: T) -> bool {
+    pub(crate) fn insert(&mut self, id: T) -> bool {
         match self {
             Self::Empty => {
                 *self = Self::One(id);
@@ -157,7 +157,7 @@ impl<T: Copy + Ord> IdSet<T> {
             Self::Many(ids) => ids.insert(id),
         }
     }
-    pub fn remove(&mut self, id: &T) -> bool {
+    pub(crate) fn remove(&mut self, id: &T) -> bool {
         match self {
             Self::Empty => false,
             Self::One(old) if old == id => {

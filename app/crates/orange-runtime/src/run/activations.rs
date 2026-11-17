@@ -12,7 +12,7 @@ pub(super) struct Activations {
     high_water: usize,
 }
 impl Activations {
-    pub fn new(roots: Vec<Option<Box<ActivationState>>>) -> Self {
+    pub(crate) fn new(roots: Vec<Option<Box<ActivationState>>>) -> Self {
         let live = roots.iter().flatten().count();
         Self {
             root_live: vec![true; roots.len()],
@@ -22,13 +22,13 @@ impl Activations {
             high_water: live,
         }
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.live_roots + self.dynamic.len()
     }
-    pub fn high_water(&self) -> usize {
+    pub(crate) fn high_water(&self) -> usize {
         self.high_water
     }
-    pub fn get(&self, id: u64) -> Option<&Option<Box<ActivationState>>> {
+    pub(crate) fn get(&self, id: u64) -> Option<&Option<Box<ActivationState>>> {
         if let Ok(index) = usize::try_from(id)
             && index < self.roots.len()
         {
@@ -36,7 +36,7 @@ impl Activations {
         }
         self.dynamic.get(&id)
     }
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut Option<Box<ActivationState>>> {
+    pub(crate) fn get_mut(&mut self, id: u64) -> Option<&mut Option<Box<ActivationState>>> {
         if let Ok(index) = usize::try_from(id)
             && index < self.roots.len()
         {
@@ -44,7 +44,7 @@ impl Activations {
         }
         self.dynamic.get_mut(&id)
     }
-    pub fn insert(
+    pub(crate) fn insert(
         &mut self,
         id: u64,
         frame: Box<ActivationState>,
@@ -61,7 +61,7 @@ impl Activations {
         Ok(())
     }
     /// A live owner may have no frame after a provider unwound through its checkout.
-    pub fn remove(&mut self, id: u64) -> Result<Option<Box<ActivationState>>, RunError> {
+    pub(crate) fn remove(&mut self, id: u64) -> Result<Option<Box<ActivationState>>, RunError> {
         if let Ok(index) = usize::try_from(id)
             && index < self.roots.len()
         {
@@ -75,13 +75,13 @@ impl Activations {
         self.dynamic.remove(&id).ok_or(RunError::InvalidState)
     }
     /// Every frame currently held, in no particular order.
-    pub fn frames(&self) -> impl Iterator<Item = &ActivationState> {
+    pub(crate) fn frames(&self) -> impl Iterator<Item = &ActivationState> {
         self.roots
             .iter()
             .chain(self.dynamic.values())
             .filter_map(|frame| frame.as_deref())
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.roots.clear();
         self.root_live.clear();
         self.dynamic.clear();

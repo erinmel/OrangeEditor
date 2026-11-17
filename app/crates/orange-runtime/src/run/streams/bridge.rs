@@ -209,10 +209,10 @@ pub(in crate::run) struct Bridges {
     reconciling: bool,
 }
 impl Bridges {
-    pub fn has_ready(&self) -> bool {
+    pub(crate) fn has_ready(&self) -> bool {
         !self.ready.is_empty()
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.hubs.clear();
         self.sources.clear();
         self.ready.clear();
@@ -223,7 +223,7 @@ impl Bridges {
             self.ready.push_back(id);
         }
     }
-    pub fn wake_source(&mut self, handle: HandleId) {
+    pub(crate) fn wake_source(&mut self, handle: HandleId) {
         if let Some(&id) = self.sources.get(&handle) {
             self.wake(id);
         }

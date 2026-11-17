@@ -18,7 +18,7 @@ pub(super) struct ReadyQueue<T> {
     last: Option<usize>,
 }
 impl<T> ReadyQueue<T> {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             nodes: Vec::with_capacity(if capacity > 1 { capacity } else { 0 }),
             free: Vec::new(),
@@ -32,21 +32,21 @@ impl<T> ReadyQueue<T> {
             last: None,
         }
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         if self.indexed {
             self.index.len()
         } else {
             usize::from(self.single.is_some())
         }
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         if self.indexed {
             self.first.is_none()
         } else {
             self.single.is_none()
         }
     }
-    pub fn front(&self) -> Option<&T> {
+    pub(crate) fn front(&self) -> Option<&T> {
         if self.indexed {
             Some(&self.nodes[self.first?].as_ref()?.value)
         } else {
@@ -89,7 +89,7 @@ impl<T> ReadyQueue<T> {
         slot
     }
     #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
-    pub fn push_front(&mut self, id: StrandId, value: T) {
+    pub(crate) fn push_front(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
                 assert_ne!(old_id, id, "a strand is queued at most once");
@@ -110,7 +110,7 @@ impl<T> ReadyQueue<T> {
         self.first = Some(slot);
     }
     #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
-    pub fn push_back(&mut self, id: StrandId, value: T) {
+    pub(crate) fn push_back(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
                 assert_ne!(old_id, id, "a strand is queued at most once");
@@ -152,7 +152,7 @@ impl<T> ReadyQueue<T> {
         self.free.push(slot);
         Some(node.value)
     }
-    pub fn pop_front(&mut self) -> Option<T> {
+    pub(crate) fn pop_front(&mut self) -> Option<T> {
         if !self.indexed {
             return self.single.take().map(|(_, value)| value);
         }
@@ -162,7 +162,7 @@ impl<T> ReadyQueue<T> {
         }
         self.take(first)
     }
-    pub fn remove(&mut self, id: StrandId) -> Option<T> {
+    pub(crate) fn remove(&mut self, id: StrandId) -> Option<T> {
         if !self.indexed {
             if self.single.as_ref().is_none_or(|(queued, _)| *queued != id) {
                 return None;
@@ -172,7 +172,7 @@ impl<T> ReadyQueue<T> {
         let slot = self.index.remove(&id)?;
         self.take(slot)
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.nodes.clear();
         self.free.clear();
         self.index.clear();

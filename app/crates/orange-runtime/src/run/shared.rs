@@ -123,7 +123,7 @@ pub(super) struct Attachment {
     _hold: Tally,
 }
 impl Attachment {
-    pub fn prepare(
+    pub(crate) fn prepare(
         plan: &ControlPlan,
         snapshot: &WorkspaceSnapshot,
         budget: &Arc<Budget>,

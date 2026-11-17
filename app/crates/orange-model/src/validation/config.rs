@@ -227,7 +227,10 @@ fn compare_integer_float(integer: i128, float: f64) -> Ordering {
 /// dialect reports `E-CONFIG-SCHEMA-UNSUPPORTED` on each node that uses it and its config is
 /// not judged; otherwise a failing config reports `E-CONFIG-INVALID`. Diagnostics carry no
 /// config values. Nodes whose definition is not in the registry are left to node resolution.
-pub fn validate_config(document: &GraphDocument, registry: &RegistrySnapshot) -> Vec<Diagnostic> {
+pub(crate) fn validate_config(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut schemas = ConfigSchemas::default();
     for (body_ref, body) in document.bodies_with_refs() {

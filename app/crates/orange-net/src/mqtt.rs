@@ -33,11 +33,11 @@ use crate::fault;
 
 /// Messages a session holds while its socket is busy or down. Publishing beyond it
 /// fails.
-pub const MAX_QUEUED_MESSAGES: usize = 256;
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 256;
 /// Largest packet accepted from a broker and largest message published.
-pub const MAX_PACKET_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_PACKET_BYTES: usize = 8 * 1024 * 1024;
 /// Most topic filters one connection subscribes to.
-pub const MAX_TOPICS: usize = 64;
+pub(crate) const MAX_TOPICS: usize = 64;
 const POLL: Duration = Duration::from_millis(10);
 const FIRST_RETRY: Duration = Duration::from_millis(250);
 const MAX_RETRY: Duration = Duration::from_secs(5);

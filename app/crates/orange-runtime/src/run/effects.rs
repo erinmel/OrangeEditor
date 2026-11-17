@@ -113,16 +113,16 @@ pub(super) struct Effects {
     paused: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Effects {
-    pub fn set_paused(&self, paused: bool) {
+    pub(crate) fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.by_id.len()
     }
-    pub fn has_ready(&self) -> bool {
+    pub(crate) fn has_ready(&self) -> bool {
         !self.ready.is_empty()
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for pending in self.by_id.values() {
             pending.lease.0.store(1, Ordering::Relaxed);
         }

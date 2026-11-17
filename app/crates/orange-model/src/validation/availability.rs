@@ -27,7 +27,7 @@ use super::scope::{NodeSubset, Tally, edges_of, nodes_of};
 
 /// Result of the availability pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AvailabilityValidation {
+pub(crate) struct AvailabilityValidation {
     pub diagnostics: Vec<Diagnostic>,
 }
 

@@ -16,7 +16,7 @@ pub(crate) struct NodeSubset<'a> {
 impl<'a> NodeSubset<'a> {
     /// The subset's nodes in ID order, as a body lists them, counting each subset node
     /// looked up.
-    pub fn nodes_in(
+    pub(crate) fn nodes_in(
         &self,
         body: &'a crate::document::GraphBody,
         tally: Tally<'_>,
@@ -37,14 +37,14 @@ impl<'a> NodeSubset<'a> {
 pub(crate) struct Tally<'a>(Option<&'a std::cell::Cell<super::visits::VisitCounts>>);
 
 impl<'a> Tally<'a> {
-    pub const NONE: Self = Self(None);
+    pub(crate) const NONE: Self = Self(None);
 
-    pub fn new(cell: &'a std::cell::Cell<super::visits::VisitCounts>) -> Self {
+    pub(crate) fn new(cell: &'a std::cell::Cell<super::visits::VisitCounts>) -> Self {
         Self(Some(cell))
     }
 
     /// Adds to the counts, if any are kept.
-    pub fn add(self, add: impl FnOnce(&mut super::visits::VisitCounts)) {
+    pub(crate) fn add(self, add: impl FnOnce(&mut super::visits::VisitCounts)) {
         if let Some(cell) = self.0 {
             let mut visits = cell.get();
             add(&mut visits);

@@ -214,7 +214,7 @@ pub(crate) struct Endpoint {
     _hold: Tally,
 }
 impl Endpoint {
-    pub fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
     fn close(&self) {
@@ -226,10 +226,10 @@ pub(crate) struct BusLease {
     pub last_ingestion: u64,
 }
 impl BusLease {
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.state.close();
     }
-    pub fn matches(&self, bus: &WorkspaceBus) -> bool {
+    pub(crate) fn matches(&self, bus: &WorkspaceBus) -> bool {
         self.state.schema.id == bus.id()
     }
 }

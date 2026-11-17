@@ -34,7 +34,7 @@ impl PendingCall {
         &self.storage.arguments
     }
     /// The Call node and the function scope it enters.
-    pub fn target(&self) -> (ControlIx, usize) {
+    pub(crate) fn target(&self) -> (ControlIx, usize) {
         (self.owner, self.scope)
     }
 }
@@ -46,7 +46,7 @@ pub(super) enum FunctionReturn {
     Fault(ConstantFault),
 }
 impl FunctionReturn {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self::Values {
             values: Vec::new(),
             hold: None,
@@ -54,7 +54,7 @@ impl FunctionReturn {
     }
 }
 impl FunctionFrame {
-    pub fn uninitialized(plan: &ControlPlan, input: usize) -> FoldedValue {
+    pub(crate) fn uninitialized(plan: &ControlPlan, input: usize) -> FoldedValue {
         FoldedValue::Fault(ConstantFault {
             source: plan.data().nodes()[plan.data().host_inputs()[input].index()].node(),
             fault: KernelFault {
@@ -89,20 +89,20 @@ impl Frames {
     fn get(&self, id: FrameId) -> Result<&FunctionFrame, RunError> {
         self.map.get(&id).ok_or(RunError::InvalidState)
     }
-    pub fn arguments(&self, id: FrameId) -> Result<&[Value], RunError> {
+    pub(crate) fn arguments(&self, id: FrameId) -> Result<&[Value], RunError> {
         Ok(&self.get(id)?.arguments)
     }
     /// Drops every frame and keeps the spare buffers.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.map.clear();
     }
     /// Drops every frame and releases all frame storage.
-    pub fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         *self = Self::default();
     }
     /// A callee frame for `call`, holding its arguments and initial locals, with their bytes
     /// charged to `shared`. Nothing is stored until [`insert`](Self::insert).
-    pub fn prepare(
+    pub(crate) fn prepare(
         plan: &ControlPlan,
         call: PendingCall,
         parent: Option<FrameId>,
@@ -143,12 +143,12 @@ impl Frames {
             hold,
         })
     }
-    pub fn insert(&mut self, id: FrameId, frame: FunctionFrame) {
+    pub(crate) fn insert(&mut self, id: FrameId, frame: FunctionFrame) {
         self.map.insert(id, frame);
     }
     /// Removes frame `id`, clears its scope's call projections from `shared` with their
     /// retained bytes, and keeps its buffers for a later call.
-    pub fn retire(
+    pub(crate) fn retire(
         &mut self,
         id: FrameId,
         plan: &ControlPlan,

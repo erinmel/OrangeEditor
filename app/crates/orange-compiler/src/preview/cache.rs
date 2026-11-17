@@ -34,7 +34,7 @@ pub(crate) struct Cache {
     stats: PreviewStats,
 }
 impl Cache {
-    pub fn new(limits: PreviewLimits) -> Self {
+    pub(crate) fn new(limits: PreviewLimits) -> Self {
         Self {
             limits,
             header: None,
@@ -52,7 +52,7 @@ impl Cache {
             },
         }
     }
-    pub fn stats(&self) -> PreviewStats {
+    pub(crate) fn stats(&self) -> PreviewStats {
         PreviewStats {
             entries: self.entries.len(),
             retained_bytes: self.bytes,
@@ -64,7 +64,7 @@ impl Cache {
         self.header = None;
         self.bytes = 0;
     }
-    pub fn start_request(&mut self, request: u64, interrupted: bool) {
+    pub(crate) fn start_request(&mut self, request: u64, interrupted: bool) {
         self.stats = PreviewStats {
             request,
             folded: 0,
@@ -80,7 +80,7 @@ impl Cache {
             self.stats.reset = PreviewReset::Interrupted;
         }
     }
-    pub fn prepare(&mut self, graph: GraphId, registry: u64, sites: &[PureCallSite]) {
+    pub(crate) fn prepare(&mut self, graph: GraphId, registry: u64, sites: &[PureCallSite]) {
         let reset = match &self.header {
             None => PreviewReset::First,
             Some(h) if h.graph != graph => PreviewReset::GraphChanged,
@@ -109,7 +109,7 @@ impl Cache {
         });
         self.bytes = bytes;
     }
-    pub fn finish(&mut self, published: bool) {
+    pub(crate) fn finish(&mut self, published: bool) {
         self.stats.published = published;
         if !published {
             self.clear();
@@ -127,7 +127,7 @@ impl Cache {
         });
         self.bytes -= removed;
     }
-    pub fn fold(
+    pub(crate) fn fold(
         &mut self,
         key: FoldKey<'_>,
         binding: &KernelBinding,

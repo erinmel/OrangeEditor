@@ -3,7 +3,7 @@
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-pub fn encode(bytes: &[u8]) -> String {
+pub(crate) fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let block = [
@@ -24,7 +24,7 @@ pub fn encode(bytes: &[u8]) -> String {
 }
 
 /// `None` unless `text` is the canonical encoding of some byte string.
-pub fn decode(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode(text: &str) -> Option<Vec<u8>> {
     let text = text.as_bytes();
     if !text.len().is_multiple_of(4) {
         return None;

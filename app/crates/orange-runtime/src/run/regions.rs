@@ -123,7 +123,7 @@ impl RegionStore {
 
 impl Regions {
     /// Whether `region` is `ancestor` or one of its still-live descendants.
-    pub fn is_within(&self, mut region: RegionId, ancestor: RegionId) -> bool {
+    pub(crate) fn is_within(&self, mut region: RegionId, ancestor: RegionId) -> bool {
         loop {
             if region == ancestor {
                 return self.map.contains_key(&region);
@@ -135,7 +135,7 @@ impl Regions {
         }
     }
     /// An empty tree whose minted identities start above `activations` root identities.
-    pub fn after_roots(activations: u64) -> Self {
+    pub(crate) fn after_roots(activations: u64) -> Self {
         Self {
             map: RegionStore::default(),
             ids: OwnerIds::after_roots(activations),
@@ -144,34 +144,38 @@ impl Regions {
             spare: Vec::new(),
         }
     }
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.map.len()
     }
-    pub fn live_strands(&self) -> usize {
+    pub(crate) fn live_strands(&self) -> usize {
         self.live_strands
     }
-    pub fn observe_cause_depth(&mut self, region: RegionId, depth: u16) -> Result<(), RunError> {
+    pub(crate) fn observe_cause_depth(
+        &mut self,
+        region: RegionId,
+        depth: u16,
+    ) -> Result<(), RunError> {
         let current = self.map.get_mut(&region).ok_or(RunError::InvalidState)?;
         current.max_cause_depth = current.max_cause_depth.max(depth);
         Ok(())
     }
     /// Reserve one admitted batch, avoiding geometric over-allocation of large
     /// region values. Existing vacant slots are reused before growing storage.
-    pub fn reserve(&mut self, additional: usize) {
+    pub(crate) fn reserve(&mut self, additional: usize) {
         self.map.reserve(additional);
     }
-    pub fn contains(&self, id: RegionId) -> bool {
+    pub(crate) fn contains(&self, id: RegionId) -> bool {
         self.map.contains_key(&id)
     }
-    pub fn get(&self, id: RegionId) -> Result<&Region, RunError> {
+    pub(crate) fn get(&self, id: RegionId) -> Result<&Region, RunError> {
         self.map.get(&id).ok_or(RunError::InvalidState)
     }
-    pub fn get_mut(&mut self, id: RegionId) -> Result<&mut Region, RunError> {
+    pub(crate) fn get_mut(&mut self, id: RegionId) -> Result<&mut Region, RunError> {
         self.map.get_mut(&id).ok_or(RunError::InvalidState)
     }
     /// Whether `strands` more live strands and `regions` more regions fit the limits, with
     /// identities left for both.
-    pub fn has_room(&self, strands: usize, regions: usize, limits: &RunLimits) -> bool {
+    pub(crate) fn has_room(&self, strands: usize, regions: usize, limits: &RunLimits) -> bool {
         strands <= limits.max_strands.saturating_sub(self.live_strands)
             && regions <= limits.max_regions.saturating_sub(self.map.len())
             && strands
@@ -180,39 +184,39 @@ impl Regions {
                 .is_some_and(|n| self.ids.has_room(n))
     }
     /// Records `units` of ownership work for the pump to spend.
-    pub fn charge(&mut self, units: usize) {
+    pub(crate) fn charge(&mut self, units: usize) {
         self.work = self.work.saturating_add(units);
     }
     /// The ownership work recorded since the last call.
-    pub fn take_work(&mut self) -> usize {
+    pub(crate) fn take_work(&mut self) -> usize {
         std::mem::take(&mut self.work)
     }
     /// Keeps `strand` out of line as a region continuation, reusing a spare box.
-    pub fn hold(&mut self, strand: Strand) -> Held {
+    pub(crate) fn hold(&mut self, strand: Strand) -> Held {
         let mut slot = self.spare.pop().unwrap_or_default();
         *slot = Some(strand);
         Held(slot)
     }
     /// Returns a held continuation and keeps its box for the next [`hold`](Self::hold).
     #[expect(clippy::expect_used, reason = "a held box always contains its strand")]
-    pub fn resume(&mut self, held: Held) -> Strand {
+    pub(crate) fn resume(&mut self, held: Held) -> Strand {
         let mut slot = held.0;
         let strand = slot.take().expect("held strand");
         self.spare.push(slot);
         strand
     }
-    pub fn mint_strand(&mut self) -> Result<StrandId, RunError> {
+    pub(crate) fn mint_strand(&mut self) -> Result<StrandId, RunError> {
         self.ids.strand()
     }
-    pub fn mint_region(&mut self) -> Result<RegionId, RunError> {
+    pub(crate) fn mint_region(&mut self) -> Result<RegionId, RunError> {
         self.ids.region()
     }
-    pub fn mint_root(&mut self) -> Result<(u64, StrandId, RegionId), RunError> {
+    pub(crate) fn mint_root(&mut self) -> Result<(u64, StrandId, RegionId), RunError> {
         self.ids.root()
     }
     /// Adds a region; a child region is also listed under its parent. Its live strands
     /// join the live count.
-    pub fn open(&mut self, id: RegionId, region: Region) -> Result<(), RunError> {
+    pub(crate) fn open(&mut self, id: RegionId, region: Region) -> Result<(), RunError> {
         if let Some(parent) = region.parent {
             self.get_mut(parent)?.children.insert(id);
         }
@@ -224,7 +228,7 @@ impl Regions {
         Ok(())
     }
     /// Removes `strand` from `region`'s live strands and returns the region.
-    pub fn retire_strand(
+    pub(crate) fn retire_strand(
         &mut self,
         region: RegionId,
         strand: StrandId,
@@ -241,7 +245,7 @@ impl Regions {
     }
     /// Removes `id` once it holds no live strands and no child regions. The caller then
     /// detaches it from its parent with [`detach`](Self::detach).
-    pub fn take_if_done(&mut self, id: RegionId) -> Result<Option<Region>, RunError> {
+    pub(crate) fn take_if_done(&mut self, id: RegionId) -> Result<Option<Region>, RunError> {
         let r = self.get(id)?;
         if !r.live.is_empty() || !r.children.is_empty() {
             return Ok(None);
@@ -249,7 +253,7 @@ impl Regions {
         Ok(self.map.remove(&id))
     }
     /// Removes a completed `child` from `parent`'s children.
-    pub fn detach(&mut self, parent: RegionId, child: RegionId) -> Result<(), RunError> {
+    pub(crate) fn detach(&mut self, parent: RegionId, child: RegionId) -> Result<(), RunError> {
         if self.get_mut(parent)?.children.remove(&child) {
             Ok(())
         } else {
@@ -257,7 +261,7 @@ impl Regions {
         }
     }
     /// Every root region, in identity order.
-    pub fn roots(&self) -> Vec<RegionId> {
+    pub(crate) fn roots(&self) -> Vec<RegionId> {
         let mut roots: Vec<_> = self
             .map
             .slots
@@ -270,14 +274,18 @@ impl Regions {
         roots
     }
     /// The root region above `id`.
-    pub fn root_of(&self, mut id: RegionId) -> Result<RegionId, RunError> {
+    pub(crate) fn root_of(&self, mut id: RegionId) -> Result<RegionId, RunError> {
         while let Some(parent) = self.get(id)?.parent {
             id = parent;
         }
         Ok(id)
     }
     /// The nearest region at or above `id` that is the body of the loop `owner`.
-    pub fn loop_region(&self, mut id: RegionId, owner: ControlIx) -> Result<RegionId, RunError> {
+    pub(crate) fn loop_region(
+        &self,
+        mut id: RegionId,
+        owner: ControlIx,
+    ) -> Result<RegionId, RunError> {
         loop {
             let r = self.get(id)?;
             if matches!(r.kind, RegionKind::Body { loop_owner: Some(active) } if active == owner) {
@@ -288,7 +296,11 @@ impl Regions {
     }
     /// Fills `ids` with `root` and its descendants, breadth first, and returns how many
     /// live strands they hold. `ids` must be empty.
-    pub fn subtree(&self, root: RegionId, ids: &mut Vec<RegionId>) -> Result<usize, RunError> {
+    pub(crate) fn subtree(
+        &self,
+        root: RegionId,
+        ids: &mut Vec<RegionId>,
+    ) -> Result<usize, RunError> {
         ids.push(root);
         let mut next = 0;
         let mut live = 0usize;
@@ -308,7 +320,7 @@ impl Regions {
     /// Returns the root's activation.
     ///
     /// [`subtree`]: Self::subtree
-    pub fn prune(
+    pub(crate) fn prune(
         &mut self,
         subtree: &[RegionId],
         retired: usize,
@@ -346,12 +358,12 @@ impl Regions {
         Ok(activation)
     }
     /// Drops every region; identities stay unused.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.live_strands = 0;
     }
     /// Drops every region and releases the map's storage.
-    pub fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         self.map = RegionStore::default();
         self.spare = Vec::new();
         self.live_strands = 0;

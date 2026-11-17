@@ -17,7 +17,7 @@ use super::scope::Scope;
 
 /// Result of checking the data-dependency graph using current resolved signatures.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DataCycleValidation {
+pub(crate) struct DataCycleValidation {
     pub diagnostics: Vec<Diagnostic>,
     /// One deterministic closed witness path for each cyclic strongly connected component.
     pub cycle_paths: Vec<Vec<PortRef>>,

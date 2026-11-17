@@ -35,21 +35,21 @@ pub(super) enum TimerTarget {
 pub(super) struct TimerLimit;
 
 impl Timers {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.order.len()
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
     /// The earliest wake time.
-    pub fn next_at(&self) -> Option<u64> {
+    pub(crate) fn next_at(&self) -> Option<u64> {
         self.order.first_key_value().map(|((at, _), _)| *at)
     }
-    pub fn is_due(&self, now: u64) -> bool {
+    pub(crate) fn is_due(&self, now: u64) -> bool {
         self.next_at().is_some_and(|at| at <= now)
     }
     /// Parks `timer` until `at`, unless the run already holds `max` timers.
-    pub fn schedule(&mut self, at: u64, timer: Timer, max: usize) -> Result<(), TimerLimit> {
+    pub(crate) fn schedule(&mut self, at: u64, timer: Timer, max: usize) -> Result<(), TimerLimit> {
         if self.order.len() >= max {
             return Err(TimerLimit);
         }
@@ -58,7 +58,7 @@ impl Timers {
         self.order.insert(key, TimerTarget::Wait(timer));
         Ok(())
     }
-    pub fn schedule_await(
+    pub(crate) fn schedule_await(
         &mut self,
         at: u64,
         run: u64,
@@ -74,7 +74,7 @@ impl Timers {
         Ok(key)
     }
     /// Arms timer entry `timer`'s next tick at `at`.
-    pub fn schedule_entry(
+    pub(crate) fn schedule_entry(
         &mut self,
         at: u64,
         run: u64,
@@ -91,11 +91,11 @@ impl Timers {
         Ok(())
     }
     /// Armed timer entries; they are schedule, not parked work.
-    pub fn entry_count(&self) -> usize {
+    pub(crate) fn entry_count(&self) -> usize {
         self.by_entry.len()
     }
     /// Disarms every timer entry: a stopping run admits no further ticks.
-    pub fn remove_entries(&mut self) {
+    pub(crate) fn remove_entries(&mut self) {
         for key in std::mem::take(&mut self.by_entry).into_values() {
             self.order.remove(&key);
         }
@@ -106,7 +106,7 @@ impl Timers {
         Ok((at, sequence))
     }
     /// Removes and returns the earliest timer if it is due at `now`.
-    pub fn pop_due(&mut self, now: u64) -> Option<(TimerKey, TimerTarget)> {
+    pub(crate) fn pop_due(&mut self, now: u64) -> Option<(TimerKey, TimerTarget)> {
         if !self.is_due(now) {
             return None;
         }
@@ -125,30 +125,30 @@ impl Timers {
         Some((key, timer))
     }
     /// Requeues a partially processed entry at its original ordering key.
-    pub fn requeue_entry(&mut self, key: TimerKey, run: u64, timer: usize, at: u64) {
+    pub(crate) fn requeue_entry(&mut self, key: TimerKey, run: u64, timer: usize, at: u64) {
         self.by_entry.insert(timer, key);
         self.order
             .insert(key, TimerTarget::Entry { run, timer, at });
     }
     /// Detaches `strand`'s timer from the directory; [`remove`](Self::remove) takes it out
     /// of the order. Cancellation collects keys first so it can retire them in order.
-    pub fn detach(&mut self, strand: StrandId) -> Option<TimerKey> {
+    pub(crate) fn detach(&mut self, strand: StrandId) -> Option<TimerKey> {
         self.by_strand.remove(&strand)
     }
-    pub fn detach_await(&mut self, token: u64) -> Option<TimerKey> {
+    pub(crate) fn detach_await(&mut self, token: u64) -> Option<TimerKey> {
         self.by_awaiter.remove(&token)
     }
-    pub fn remove(&mut self, key: TimerKey) -> Option<TimerTarget> {
+    pub(crate) fn remove(&mut self, key: TimerKey) -> Option<TimerTarget> {
         self.order.remove(&key)
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.order.clear();
         self.by_strand.clear();
         self.by_awaiter.clear();
         self.by_entry.clear();
     }
     /// Drops all timers and releases their storage.
-    pub fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         let next = self.next;
         *self = Self {
             next,

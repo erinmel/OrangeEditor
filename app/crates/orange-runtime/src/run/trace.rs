@@ -12,7 +12,7 @@ pub(super) struct Trace {
 }
 
 impl Trace {
-    pub fn new(budget: Arc<Budget>) -> Self {
+    pub(crate) fn new(budget: Arc<Budget>) -> Self {
         Self {
             events: VecDeque::new(),
             dropped: 0,
@@ -29,7 +29,7 @@ impl Trace {
         })
     }
     /// Appends `event`, dropping the oldest once `max` events are kept.
-    pub fn record(&mut self, event: RunEvent, max: usize) {
+    pub(crate) fn record(&mut self, event: RunEvent, max: usize) {
         if max == 0 {
             self.dropped = self.dropped.saturating_add(1);
             return;
@@ -50,14 +50,14 @@ impl Trace {
         }
         self.events.push_back(event);
     }
-    pub fn events(&self) -> &VecDeque<RunEvent> {
+    pub(crate) fn events(&self) -> &VecDeque<RunEvent> {
         &self.events
     }
-    pub fn dropped(&self) -> u64 {
+    pub(crate) fn dropped(&self) -> u64 {
         self.dropped
     }
     /// Drops the kept events and releases their storage; the dropped count stays.
-    pub fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         self.events = VecDeque::new();
         self.text.set(0);
     }

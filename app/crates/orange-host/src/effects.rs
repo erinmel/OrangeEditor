@@ -43,7 +43,7 @@ struct Counts {
 
 impl Pool {
     /// A pool that keeps `core` threads and grows to at most `max` while all are busy.
-    pub fn new(core: usize, max: usize) -> std::io::Result<Self> {
+    pub(crate) fn new(core: usize, max: usize) -> std::io::Result<Self> {
         let (jobs, queue) = channel::<Job>();
         let core = core.max(1);
         let pool = Self {
@@ -63,7 +63,7 @@ impl Pool {
 
     /// Queues `job`, adding a thread when none is free and the pool may grow. A job
     /// submitted after the workers are gone is dropped.
-    pub fn submit(&self, job: impl FnOnce() + Send + 'static) {
+    pub(crate) fn submit(&self, job: impl FnOnce() + Send + 'static) {
         let grow = {
             let mut counts = self.shared.counts();
             counts.waiting += 1;

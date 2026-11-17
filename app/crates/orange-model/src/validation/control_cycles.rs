@@ -14,7 +14,7 @@ use super::scope::{NodeSubset, Scope, Tally};
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ControlCycleValidation {
+pub(crate) struct ControlCycleValidation {
     pub diagnostics: Vec<Diagnostic>,
     /// One deterministic closed node path per offending component, starting at its lowest node.
     pub cycle_paths: Vec<Vec<NodeId>>,

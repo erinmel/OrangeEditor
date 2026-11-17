@@ -125,7 +125,7 @@ impl KindRank {
 /// `evidence` must have been freshly constructed for this exact immutable document and its
 /// current config, provider, and lock identities. A mismatched document state produces stale
 /// metadata diagnostics and no summaries.
-pub fn analyze_functions(
+pub(crate) fn analyze_functions(
     document: &GraphDocument,
     evidence: &FunctionEvidence,
     registry: &RegistrySnapshot,

@@ -16,7 +16,7 @@ use super::scope::Scope;
 
 /// Result of validating the graph's connections using currently available metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ConnectionValidation {
+pub(crate) struct ConnectionValidation {
     pub diagnostics: Vec<Diagnostic>,
     /// Nodes whose signatures or unresolved generic types prevented a complete check.
     pub incomplete_nodes: BTreeSet<NodeId>,

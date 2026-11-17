@@ -52,7 +52,7 @@ impl Watches {
         self.faults[index] = fault;
         Ok(())
     }
-    pub fn new(
+    pub(crate) fn new(
         plan: &ControlPlan,
         prepared: Option<Arc<PreparedData>>,
         revision: u64,
@@ -84,16 +84,16 @@ impl Watches {
             evaluations: 0,
         })
     }
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
-    pub fn finish_segment(&mut self) {
+    pub(crate) fn finish_segment(&mut self) {
         self.changed.clear();
         if let Some(staged) = &mut self.staged {
             let _ = staged.try_set(0);
         }
     }
-    pub fn schedule(
+    pub(crate) fn schedule(
         &mut self,
         plan: &ControlPlan,
         changed: &[(usize, Value, Value)],
@@ -144,7 +144,7 @@ impl Watches {
             .extend(reactions.into_iter().map(|(_, _, r)| r));
         true
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         let evaluations = self.evaluations;
         *self = Self::default();
         self.evaluations = evaluations;

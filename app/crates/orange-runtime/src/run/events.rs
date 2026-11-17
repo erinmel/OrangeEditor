@@ -477,7 +477,7 @@ pub(super) struct Events {
     waiters: Awaiters,
 }
 impl Events {
-    pub fn new(plan: &ControlPlan) -> Self {
+    pub(crate) fn new(plan: &ControlPlan) -> Self {
         let mut handlers = Vec::new();
         let mut add = |handler: &orange_compiler::EventHandler| {
             handlers.push(Handler {
@@ -568,7 +568,7 @@ impl Events {
         }
         Ok(())
     }
-    pub fn pending(&self) -> usize {
+    pub(crate) fn pending(&self) -> usize {
         self.stats.pending
     }
     pub(super) fn tick_cursor(&self, timer: usize) -> Result<TickCursor, RunError> {
@@ -607,7 +607,7 @@ impl Events {
     pub(super) fn count_overflow(&mut self) {
         self.stats.overflows = self.stats.overflows.saturating_add(1);
     }
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         // Await completions share aggregate pending counters with handler deliveries.
         // Refund them first so the handler-only queue reset below runs exactly once.
         self.waiters.discard_completions(&mut self.stats);
@@ -627,7 +627,7 @@ impl Events {
             handler.pending.clear();
         }
     }
-    pub fn abort(&mut self) {
+    pub(crate) fn abort(&mut self) {
         self.clear();
         self.waiters.clear();
         self.active.clear();
@@ -637,7 +637,7 @@ impl Events {
             handler.cancel_requested = None;
         }
     }
-    pub fn release(&mut self, high_water: usize) {
+    pub(crate) fn release(&mut self, high_water: usize) {
         self.abort();
         self.stats.activation_high_water = self.stats.activation_high_water.max(high_water);
         self.handlers = Vec::new();
