@@ -8,10 +8,11 @@
 //! (persisted structures and the v1 JSON codec); `catalog` (host node contracts and provider
 //! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
-//! copy/paste); `validation` (one read-only `validate` entry point over node, input,
+//! copy/paste); `format` (versioned envelopes of saved files and their upgrade steps);
+//! `validation` (one read-only `validate` entry point over node, input,
 //! connection and function passes); `rebind` (explicit provider rebinds checked with
-//! `validate`). `binding` (new nodes bound to the registry's new-binding default) sits
-//! beside `paste`, above `edit` and `signature` and below `validation`.
+//! `validate`). `binding` (new nodes bound to the registry's new-binding default) sits beside
+//! `paste`, above `edit` and `signature` and below `validation`.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -23,6 +24,7 @@ pub mod conversion;
 pub mod document;
 pub mod edit;
 pub mod error;
+pub mod format;
 pub mod id;
 pub mod index;
 pub mod inference;
@@ -38,7 +40,8 @@ pub mod value;
 mod variable;
 
 pub use document::codec::{
-    ImportBudget, ImportLimits, from_json, from_json_with_budget, from_json_with_limits, to_json,
+    ImportBudget, ImportLimits, from_json, from_json_upgrading, from_json_with_budget,
+    from_json_with_limits, to_json,
 };
 pub use document::{BodyRef, GraphDocument};
 pub use edit::{ChangeSet, Committed, DeclId, Delta, DocCommand, Inverse, LayoutCommand};

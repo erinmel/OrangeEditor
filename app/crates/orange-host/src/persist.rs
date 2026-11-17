@@ -7,15 +7,17 @@
 //! a temporary name and renamed, so a crash leaves the previous index or the new one.
 //! `disabled.json` lists the IDs of packages a host started on the directory leaves out.
 use orange_guest::Grants;
+use orange_model::format::History;
 use orange_packages::PackageKey;
-use serde_json::{Value as Json, json};
+use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 const INDEX: &str = "installed.json";
-const FORMAT: &str = "orange.installed-packages";
+/// The versions of `installed.json`; a change to its layout adds an upgrade step here.
+const INSTALLED: History = History::new("orange.installed-packages", 1, &[]);
 
 /// One archive the index lists.
 pub(crate) struct Saved {
@@ -38,15 +40,20 @@ fn entries(directory: &Path) -> Result<Vec<Json>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(io("read the package index", &error)),
     };
-    let index: Json =
-        serde_json::from_str(&text).map_err(|_| "the package index is not JSON".to_owned())?;
-    if index["format"] != FORMAT || index["format_version"] != 1 {
-        return Err(format!("expected a `{FORMAT}` version 1 package index"));
+    let (mut index, _) = INSTALLED
+        .read(&text)
+        .map_err(|error| format!("the package index: {error}"))?;
+    match index.remove("packages") {
+        Some(Json::Array(packages)) => Ok(packages),
+        _ => Err("the package index lists no `packages`".to_owned()),
     }
-    index["packages"]
-        .as_array()
-        .cloned()
-        .ok_or_else(|| "the package index lists no `packages`".to_owned())
+}
+
+/// The index file listing `packages`, at the current version.
+fn index(packages: Vec<Json>) -> Json {
+    let mut body = Map::new();
+    let _ = body.insert("packages".to_owned(), Json::Array(packages));
+    INSTALLED.wrap(body)
 }
 
 /// A file name the index may refer to: one this module wrote, never a path.
@@ -84,7 +91,8 @@ pub(crate) fn load(directory: &Path) -> Result<Vec<Saved>, String> {
 }
 
 const DISABLED: &str = "disabled.json";
-const DISABLED_FORMAT: &str = "orange.disabled-packages";
+/// The versions of `disabled.json`.
+const DISABLED_LIST: History = History::new("orange.disabled-packages", 1, &[]);
 
 /// The package IDs the directory says to leave out; none when it says nothing.
 pub(crate) fn disabled(directory: &Path) -> Result<BTreeSet<String>, String> {
@@ -95,13 +103,12 @@ pub(crate) fn disabled(directory: &Path) -> Result<BTreeSet<String>, String> {
         }
         Err(error) => return Err(io("read the disabled packages", &error)),
     };
-    let list: Json = serde_json::from_str(&text)
-        .map_err(|_| "the disabled package list is not JSON".to_owned())?;
-    if list["format"] != DISABLED_FORMAT || list["format_version"] != 1 {
-        return Err(format!("expected a `{DISABLED_FORMAT}` version 1 list"));
-    }
-    let ids = list["packages"]
-        .as_array()
+    let (list, _) = DISABLED_LIST
+        .read(&text)
+        .map_err(|error| format!("the disabled package list: {error}"))?;
+    let ids = list
+        .get("packages")
+        .and_then(Json::as_array)
         .ok_or("the disabled package list has no `packages`")?;
     Ok(ids
         .iter()
@@ -112,7 +119,9 @@ pub(crate) fn disabled(directory: &Path) -> Result<BTreeSet<String>, String> {
 /// Replaces the list of package IDs to leave out.
 pub(crate) fn set_disabled(directory: &Path, ids: &BTreeSet<String>) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| io("create the package directory", &error))?;
-    let list = json!({"format": DISABLED_FORMAT, "format_version": 1, "packages": ids});
+    let mut body = Map::new();
+    let _ = body.insert("packages".to_owned(), json!(ids));
+    let list = DISABLED_LIST.wrap(body);
     write(directory, DISABLED, list.to_string().as_bytes())
 }
 
@@ -137,8 +146,7 @@ pub(crate) fn save(
         "files": grants.files, "http": grants.http,
         "id": key.id.as_str(), "version": key.version.as_str()}));
     write(directory, &name, archive)?;
-    let index = json!({"format": FORMAT, "format_version": 1, "packages": packages});
-    write(directory, INDEX, index.to_string().as_bytes())
+    write(directory, INDEX, index(packages).to_string().as_bytes())
 }
 
 /// Takes a package out of the index, then deletes its archive. A crash between the two
@@ -150,8 +158,7 @@ pub(crate) fn forget(directory: &Path, key: &PackageKey) -> Result<(), String> {
     if gone.is_empty() {
         return Ok(());
     }
-    let index = json!({"format": FORMAT, "format_version": 1, "packages": kept});
-    write(directory, INDEX, index.to_string().as_bytes())?;
+    write(directory, INDEX, index(kept).to_string().as_bytes())?;
     for entry in &gone {
         if let Some(name) = archive_name(entry) {
             match fs::remove_file(directory.join(name)) {

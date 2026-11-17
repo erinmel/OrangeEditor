@@ -1,5 +1,6 @@
-//! Format v1 JSON codec (12 §6). Owns the `"format"` envelope, the version gate and
-//! document-wide structural invariants. Semantic validation is not done here.
+//! Graph JSON codec (12 §6). Owns the `"format"` envelope, the version gate, the upgrade
+//! of older versions ([`HISTORY`]) and document-wide structural invariants. Semantic
+//! validation is not done here.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -15,9 +16,15 @@ use crate::document::GraphDocument;
 use crate::document::graph::DocumentWire;
 use crate::document::nesting::MAX_NESTING;
 use crate::error::{CodecError, ImportResource, JsonError};
+use crate::format::{FormatError, History, Upgrade};
 
 pub const FORMAT: &str = "orange.graph";
+/// The version every document is saved at: `HISTORY.current()`.
 pub const FORMAT_VERSION: u32 = 1;
+
+/// The graph format's versions. Version 1 is the first; a format change raises
+/// [`FORMAT_VERSION`] and appends the step from the previous version here (12 §6.3).
+pub const HISTORY: History = History::new(FORMAT, 1, &[]);
 
 /// Configurable safety limits for loading one graph document.
 ///
@@ -511,6 +518,29 @@ pub fn from_json_with_budget(
     limits: ImportLimits,
     budget: ImportBudget,
 ) -> Result<GraphDocument, CodecError> {
+    decode(text, limits, budget, &HISTORY).map(|(document, _)| document)
+}
+
+/// Like [`from_json_with_budget`], and also says whether the document was saved at an
+/// older format version and upgraded while loading. Saving it writes [`FORMAT_VERSION`],
+/// so a host can tell the person before it replaces the older file.
+pub fn from_json_upgrading(
+    text: &str,
+    limits: ImportLimits,
+    budget: ImportBudget,
+) -> Result<(GraphDocument, Upgrade), CodecError> {
+    decode(text, limits, budget, &HISTORY)
+}
+
+/// Every limit and envelope check runs on the text as saved, before any upgrade step, so
+/// an older document is held to the same budgets. A current document is deserialized
+/// straight from the text; an older one is parsed to JSON, upgraded, then deserialized.
+fn decode(
+    text: &str,
+    limits: ImportLimits,
+    budget: ImportBudget,
+    history: &History,
+) -> Result<(GraphDocument, Upgrade), CodecError> {
     enforce_limit(ImportResource::Bytes, text.len(), limits.max_bytes)?;
     let violation = Rc::new(Cell::new(None));
     let mut deserializer = serde_json::Deserializer::from_str(text);
@@ -533,16 +563,9 @@ pub fn from_json_with_budget(
         }
     };
     deserializer.end()?;
-    if header.format != FORMAT {
-        return Err(CodecError::UnsupportedFormat {
-            found: header.format.into(),
-        });
-    }
-    if header.format_version != FORMAT_VERSION {
-        return Err(CodecError::UnsupportedVersion {
-            found: header.format_version,
-        });
-    }
+    let upgrade = history
+        .check(&header.format, header.format_version)
+        .map_err(codec_error)?;
     // After the version gate, so a newer document still reports its version.
     if let Some(key) = header.duplicate {
         return Err(CodecError::DuplicateKey { key: key.into() });
@@ -550,13 +573,37 @@ pub fn from_json_with_budget(
     enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
     enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
     check_nesting(header.counts.nesting)?;
-    // Deserialize the body directly: wrapping the entire graph in another flattened
-    // struct buffers it through Serde's intermediate representation a second time. The
-    // unchecked wire form is read so `admit` reports typed codec errors.
-    let mut json = serde_json::Deserializer::from_str(text);
-    let document = DocumentWire::deserialize(&mut json)?;
-    json.end()?;
-    admit(document)
+    let document = match upgrade {
+        // Deserialize the body directly: wrapping the entire graph in another flattened
+        // struct buffers it through Serde's intermediate representation a second time.
+        // The unchecked wire form is read so `admit` reports typed codec errors.
+        Upgrade::Current => {
+            let mut json = serde_json::Deserializer::from_str(text);
+            let document = DocumentWire::deserialize(&mut json)?;
+            json.end()?;
+            document
+        }
+        Upgrade::From(_) => {
+            let mut file: serde_json::Map<String, serde_json::Value> = serde_json::from_str(text)?;
+            let _ = history.upgrade(&mut file).map_err(codec_error)?;
+            DocumentWire::deserialize(serde_json::Value::Object(file))?
+        }
+    };
+    admit(document).map(|document| (document, upgrade))
+}
+
+/// The codec's error for a refused envelope or upgrade.
+fn codec_error(error: FormatError) -> CodecError {
+    match error {
+        FormatError::WrongFormat { found, .. } => CodecError::UnsupportedFormat { found },
+        FormatError::UnsupportedVersion { found, .. } => CodecError::UnsupportedVersion { found },
+        FormatError::UpgradeFailed { from, reason } => CodecError::UpgradeFailed { from, reason },
+        // The streaming header pass already parsed the object, its format and version.
+        FormatError::NotJson
+        | FormatError::NotAnObject
+        | FormatError::MissingFormat
+        | FormatError::MissingVersion => CodecError::UnsupportedFormat { found: "".into() },
+    }
 }
 
 /// What one streaming pass over a standalone JSON text found: the first repeated object key
@@ -706,4 +753,86 @@ fn first_duplicate<'a, K: Eq + Hash + Display + 'a>(
     keys.into_iter()
         .find(|key| !seen.insert(*key))
         .map(ToString::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::StepError;
+    use serde_json::{Map, Value as Json, json};
+
+    /// A made-up version 0 that called `graph_id` `graph`, to exercise the upgrade path
+    /// before the real format has an older version.
+    fn rename_graph(file: &mut Map<String, Json>) -> Result<(), StepError> {
+        let id = file.remove("graph").ok_or(StepError {
+            reason: "no `graph` field",
+        })?;
+        let _ = file.insert("graph_id".to_owned(), id);
+        Ok(())
+    }
+
+    const WITH_V0: History = History::new(FORMAT, 0, &[rename_graph]);
+
+    fn saved(version: u32, id_field: &str) -> String {
+        let mut file = json!({"format": FORMAT, "format_version": version,
+            "revision": 0, "package_lock": [], "type_lock": [], "variables": [],
+            "events": [], "signatures": {}, "nodes": [], "edges": [], "functions": [],
+            "exports": [], "editor": {}});
+        file[id_field] = json!("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6");
+        file.to_string()
+    }
+
+    #[test]
+    fn the_graph_history_ends_at_the_saved_version() {
+        assert_eq!(HISTORY.current(), FORMAT_VERSION);
+        assert_eq!(
+            GraphDocument::new("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6".parse().unwrap())
+                .format_version(),
+            FORMAT_VERSION
+        );
+    }
+
+    #[test]
+    fn an_older_document_is_upgraded_while_loading_and_saved_at_the_current_version() {
+        let limits = (ImportLimits::default(), ImportBudget::default());
+        let (document, upgrade) =
+            decode(&saved(0, "graph"), limits.0, limits.1, &WITH_V0).expect("version 0 upgrades");
+        assert_eq!(upgrade, Upgrade::From(0));
+        assert_eq!(document.format_version(), FORMAT_VERSION);
+        let written: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+        assert_eq!(written["format_version"], json!(FORMAT_VERSION));
+        assert_eq!(
+            written["graph_id"],
+            json!("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6")
+        );
+
+        // A current document takes the streaming path and reports no upgrade.
+        let (current, upgrade) =
+            decode(&saved(1, "graph_id"), limits.0, limits.1, &WITH_V0).unwrap();
+        assert_eq!((upgrade, current), (Upgrade::Current, document));
+    }
+
+    #[test]
+    fn an_older_document_is_held_to_the_same_checks_before_its_upgrade() {
+        let limits = (ImportLimits::default(), ImportBudget::default());
+        // A step that cannot find what it expects names the version it upgraded from.
+        assert!(matches!(
+            decode(&saved(0, "graph_id"), limits.0, limits.1, &WITH_V0),
+            Err(CodecError::UpgradeFailed { from: 0, .. })
+        ));
+        // Repeated keys are found in the text as saved.
+        let repeated =
+            saved(0, "graph").replacen("\"revision\":0", "\"revision\":0,\"revision\":1", 1);
+        assert!(matches!(
+            decode(&repeated, limits.0, limits.1, &WITH_V0),
+            Err(CodecError::DuplicateKey { .. })
+        ));
+        // The real history has no version 0.
+        assert!(matches!(
+            from_json(&saved(0, "graph")),
+            Err(CodecError::UnsupportedVersion { found: 0 })
+        ));
+        let (_, upgrade) = from_json_upgrading(&saved(1, "graph_id"), limits.0, limits.1).unwrap();
+        assert_eq!(upgrade, Upgrade::Current);
+    }
 }

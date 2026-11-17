@@ -140,10 +140,10 @@ pub enum BodyRef {
 }
 
 impl GraphDocument {
-    /// An empty format v1 document at revision 0.
+    /// An empty document of the current format version at revision 0.
     pub fn new(graph_id: GraphId) -> Self {
         Self {
-            format_version: 1,
+            format_version: crate::document::codec::FORMAT_VERSION,
             graph_id,
             revision: 0,
             state_id: fresh_state_id(),

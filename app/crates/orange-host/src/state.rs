@@ -10,14 +10,16 @@
 use orange_model::Value;
 use orange_model::document::literal::Literal;
 use orange_model::document::{GraphDocument, VarScope};
+use orange_model::format::History;
 use orange_model::id::{TypeExpr, VariableId};
 use orange_model::types::TypeRegistry;
 use orange_model::value::literal_codec;
-use serde_json::{Value as Json, json};
+use serde_json::{Map, Value as Json, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "orange.variables";
+/// The versions of a stored-variables file; a layout change adds an upgrade step here.
+const VARIABLES: History = History::new("orange.variables", 1, &[]);
 /// Name of the shared variables' file, without the suffix.
 pub(crate) const SHARED: &str = "shared";
 
@@ -69,13 +71,12 @@ pub(crate) fn load(directory: &Path, name: &str) -> Result<Vec<StoredVariable>, 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(io("read the stored variables", &error)),
     };
-    let stored: Json =
-        serde_json::from_str(&text).map_err(|_| "the stored variables are not JSON".to_owned())?;
-    if stored["format"] != FORMAT || stored["format_version"] != 1 {
-        return Err(format!("expected a `{FORMAT}` version 1 file"));
-    }
-    let entries = stored["variables"]
-        .as_array()
+    let (stored, _) = VARIABLES
+        .read(&text)
+        .map_err(|error| format!("the stored variables: {error}"))?;
+    let entries = stored
+        .get("variables")
+        .and_then(Json::as_array)
         .ok_or("the stored variables list no `variables`")?;
     let mut variables = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -107,7 +108,9 @@ pub(crate) fn save(
                 "literal": variable.literal})
         })
         .collect();
-    let text = json!({"format": FORMAT, "format_version": 1, "variables": entries});
+    let mut body = Map::new();
+    let _ = body.insert("variables".to_owned(), Json::Array(entries));
+    let text = VARIABLES.wrap(body);
     let target = file(directory, name);
     let temporary = directory.join(format!("{name}.variables.json.tmp"));
     std::fs::write(&temporary, format!("{text:#}\n"))

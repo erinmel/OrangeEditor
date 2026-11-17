@@ -235,8 +235,15 @@ pub enum CodecError {
     Json(JsonError),
     #[error("unsupported document format (expected `orange.graph`)")]
     UnsupportedFormat { found: Rejected },
-    #[error("unsupported format_version {found} (this build reads version 1)")]
+    /// Newer than this build writes, or older than the oldest version it upgrades.
+    #[error("unsupported format_version {found}")]
     UnsupportedVersion { found: u32 },
+    /// An older document's upgrade step could not read what it expected.
+    #[error("upgrading from format_version {from} failed: {reason}")]
+    UpgradeFailed {
+        from: u32,
+        reason: crate::format::StepError,
+    },
     #[error("duplicate {kind} id `{id}` across graph bodies")]
     DuplicateId { kind: &'static str, id: String },
     /// A JSON object repeats a key, at any depth. `key` is the first repeat in document
@@ -272,6 +279,7 @@ impl CodecError {
             Self::Json(_) => "core/import-json",
             Self::UnsupportedFormat { .. } => "core/import-unsupported-format",
             Self::UnsupportedVersion { .. } => "core/import-unsupported-version",
+            Self::UpgradeFailed { .. } => "core/import-upgrade-failed",
             Self::DuplicateId { .. } => "core/import-duplicate-id",
             Self::DuplicateKey { .. } => "core/import-duplicate-key",
             Self::DuplicateLock { .. } => "core/import-duplicate-lock",
