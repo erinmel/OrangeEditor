@@ -14,8 +14,12 @@ scope, measurements and remaining synchronous-edit/virtualization work.
 
 Session host (2026-11-10; ADR-21): `orange-host` is the one place the layers are
 composed and the surface every front end attaches to. A `Host` owns the package store
-and its registry, the bundled native kernels, the guest engine, a fixed pool of effect
-worker threads and every running graph. `Host::open` validates, compiles and starts a
+and its registry, the bundled native kernels, the guest engine, a pool of effect worker threads and
+every running graph. The pool keeps `HostOptions::effect_workers` threads and grows
+to `max_effect_workers` while every thread is busy, so nodes that hold a thread for a
+long time (a sound playing to its end, a slow server) never stall the others; added
+threads end after ten idle seconds. Service sessions wait on `orange_sdk::Lifecycle`
+for their first flow and their stop instead of polling. `Host::open` validates, compiles and starts a
 document as a *flow*: one run, owned by one thread, driven through `RunDriver` against
 the host's monotonic clock. Flows share nothing mutable, so pausing, faulting or
 stopping one never holds another. Control (`pause`, `resume`, `stop`, `trigger`,

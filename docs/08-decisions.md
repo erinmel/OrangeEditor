@@ -905,3 +905,15 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 **Not covered:** config value transforms beyond renamed fields (`config_version` upgrade hooks), editor settings files, and showing `Draft::opened()` in the editor before saving.
 
 **Contracts:** 12 §6.3–6.4, 04 "Definition evolution", FR-117. Verification is the focused tests named in FR-117.
+
+## ADR-29 — Documents declare their own types; the registry is per document
+
+**Decision (2026-11-17; FR-118):** a graph declares enums and records in its `types` section (12 §6.5). Each is a nominal type in the reserved `local` namespace, named by a stable UUID, with structural derives where its members allow. A host checks, compiles and runs every document against the package registry plus that document's types (`Host::registry_for`), keeping recent ones so analyses stay current.
+
+**Why:** enums only existed when a package declared one, so a person could not make a Switch on their own choices. Types in the document need no install, travel with the file and keep their identity across renames, which is how variables already work.
+
+**Why a per-document registry rather than a global one:** two documents may declare different types; a global table would make one document's types depend on what else is open. Layering keeps the package registry immutable and shared.
+
+**Not covered:** carrying local types through copy and paste, promoting local types to a package, and value editors for local types in the variables list.
+
+**Contracts:** 12 §6.5, FR-118. Verification is the focused tests named in FR-118.

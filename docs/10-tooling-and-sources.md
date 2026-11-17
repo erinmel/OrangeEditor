@@ -6314,3 +6314,18 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - The plugin interface revision is now 6 because `ServicePackage` gained a field.
   No editor UI shows `Draft::opened()` yet, and no format has a version 2, so the
   upgrade path is exercised only with a test history.
+
+### Effect pool, service lifecycles and local types - 2026-11-17
+
+- Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change. On the
+  committed tree `cargo test --workspace --locked --no-fail-fast` passed 1,977 tests
+  with zero failures and 24 ignored (opt-in timing probes and device, network and
+  keychain tests); `cargo clippy --workspace --all-targets --locked` reported nothing.
+- Effect pool: `orange-host` `effects` tests show a short job running while four long
+  ones hold their threads, and the pool never growing past its maximum.
+  `orange-sdk` `lifecycle` tests show waits ending on start and stop rather than a
+  timer. The WebSocket, MQTT and folder-watch suites pass unchanged.
+- Local types (FR-118, ADR-29, 12 §6.5): `orange-model` `local_types` behaviour tests,
+  `orange-host` `local_types` tests (a graph with its own enum checks and runs; draft
+  edits rename, remove and undo) and the `orange-editor-ui` `types_tab` tests. The
+  Types tab was not clicked through in the desktop window.

@@ -1117,6 +1117,22 @@ A definition file may say which older definition versions it takes the place of:
 
 When a document opens (`Host::draft`, and every path that checks, previews or runs text), each node whose definition the registry lacks and the table replaces is rebuilt as a node of the replacing definition. Chains are followed while each step is unregistered, with their renames composed; a loop or a chain that ends at an unregistered definition leaves the node for validation to report. The rebuilt node keeps its ID, body, place, literals, config values, type pins, variadic instances, activation and extensions, takes the new definition's default provider binding and signature, and every wire that touched it is reconnected under the renamed port with its edge ID. The rewrite is one transaction. A node whose definition is still registered is never moved, so an installed old version keeps working and no version is chosen by precedence (ADR-07). Replacements are not part of a definition's contract or signature.
 
+### 6.5 Local types
+
+A document may declare its own record and enum types in an optional top-level `types` array, so a graph can have choices (Mood: calm, happy) and structures without a package:
+
+```json
+"types": [{"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name": "Mood", "kind": "enum",
+  "variants": [{"id": "calm", "name": "Calm"}, {"id": "level", "name": "Level", "payload": "core/f64@1"}]},
+ {"id": "7d1f5b63-9c20-4b6f-8d4e-2f3a4b5c6d7e", "name": "Point", "kind": "record",
+  "fields": [{"id": "x", "name": "X", "type": "core/f64@1"}, {"id": "label", "name": "Label", "type": "core/string@1", "optional": true}]}]
+```
+
+- **Identity:** a type is the nominal `local/t<id without hyphens>@1`, fixed by its UUID; values store member IDs (`[a-z][a-z0-9_-]{0,63}`), so names change freely. The `local` and `core` namespaces are reserved: no package may take them.
+- **Registry:** a host checks, compiles and runs a document against `with_document_types`, the package registry with the document's types added (`Host::registry_for`). Each local type derives `eq`, `hash`, `display` and `serialize` where its members allow: a float member has no `eq` or `hash`, and a type that contains itself has no automatic derive (11 §5.4). Members may name core, package and local types, including the type itself.
+- **Checks:** a declaration without a name, an enum without variants, more than 256 members, or a malformed or repeated member ID is `E-TYPE-DECLARATION` on the type (`subject.local_type`); a member whose type does not resolve is the same error, and that member is left out so the rest of the document still checks. Removing a variant or field that a value uses is a literal error where the value is.
+- **Edits:** `UpsertType` and `RemoveType` are ordinary undoable commands; a type change re-checks the whole document. Copy and paste does not carry local types yet.
+
 ## 7. In-memory values
 
 ```rust
