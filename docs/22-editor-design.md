@@ -30,9 +30,10 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
 | Grid | Faint dots mark the 24-unit snap grid and disappear at distant zoom. Snap is on by default and configurable in Settings. Alt while dragging moves freely. |
 | Resize | Resizing the window or a dock preserves the graph point at the center of the canvas. |
+| Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. Diagnostic marks are painted with their own card. |
 | Wires | Execution uses diamond ports and thicker amber wires. Data uses round ports and thinner typed wires. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
-| Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. Clicking a validation marker or the toolbar count opens Problems; a runtime failure marker opens Log. The two views have independent scroll positions. |
+| Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent scroll positions. |
 | Run feedback | A pulse follows an execution wire when the reported step identifies a route, such as True or False, or a successful completion has one execution output. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
@@ -48,6 +49,11 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
+* **Language.** Canvas titles use the same localized catalogue labels as search.
+  User-assigned node names are preserved. Port labels use the host's supplied text.
+* **Composition.** Embedding applications may call `Editor::ui_with_layout` and
+  place or omit the toolbar, status bar, catalogue, inspector, diagnostics and
+  editable canvas in their own containers.
 
 ## 4. Search and commands
 
@@ -67,13 +73,17 @@ Palette and canvas search use the same full-width result rows. In preview mode t
   Paste, Group, Arrange, Snap), on a card (Rename, Duplicate, Disable, Group, Make
   function, Delete, Help), on a wire (Insert node…, Delete), on a port (Disconnect,
   Promote to variable, Watch value). Every entry names its shortcut.
-* The toolbar uses icons with tooltips grouped as File | Edit | Run, from one
-  bundled icon font (with its licence recorded in 10), so no symbol depends on system
+* The toolbar uses icons with tooltips grouped as File | Edit | Run, from the pinned Material Symbols Rounded library (with its licence recorded in 10), so no symbol depends on system
   fonts.
 * The workspace starts with its docks closed. The bottom bar puts the node dock toggle
   and zoom at the left, the inspector dock toggle at the right, and Problems, Log and
   running status in the center. Properties and Packages share the inspector's top tabs.
   Problems and Log share the same resizable panel. The controls wrap in narrow windows.
+* The desktop title follows the current file name. Running, Stopped or No graph
+  and the unsaved indicator remain in the status bar.
+* Settings is centered and resizable, with a search field, category navigation,
+  and a scrolling content pane. It cannot collapse. Shortcut search matches both
+  action names and keystrokes.
 
 ## 5. Variables and connections
 
@@ -92,39 +102,34 @@ symbols until the bundled icon font (§4) lands.
 
 ## 6. Audio
 
-Audio moves from level measurement to signal routing:
+ADR-30 owns the two-phase audio design. Phase 1 supplies shared device/file sources,
+per-node Band level, On band level and On transient settings, source transport and
+On finished. Each analyzer names its source through a connection. Signal routing
+wires, running-analyzer telemetry, spectra and hit histories belong to phase 2.
 
-* **Audio in** (device): any capture endpoint, a microphone, a line input, a virtual
-  cable, or the system's playback through loopback where the OS offers it. Its output is
-  an audio stream; the card shows a live meter and, expanded, a waveform.
-* **Audio out** (device): plays an audio stream on a chosen endpoint.
-  For microphone monitoring, wire execution from On manual through Audio in to
-  Audio out, and wire Audio in's `stream` to Audio out's `stream`. Select the
-  microphone on the input connection and headphones on the output connection,
-  then Run and Fire.
-* **Level**, **Gate / threshold**, **Record to file**, **Play file**, **Mix** operate on
-  streams. "When the microphone hears sound" becomes *On level* over any Audio in.
-* Streams are a typed resource (11 §9 streams, 05); callbacks stay allocation-free
-  (AGENTS.md), and endpoint behaviour is validated per OS, never inferred.
-* Seek is renamed *Jump to time* and explained on its card; it moves every sound
-  playing on an output to a position.
+The editor uses the host's adapter label for a source control. Its settings button
+uses the first unused input row on the left of the card, or a new row when both
+sides are full. The configuration window reuses the inspector, including source
+selection, device choices and the node's schema fields. Source text, numeric and
+toggle settings are available under a disclosure. Shared source settings are
+identified by source name. Thresholds and detector options stay on the analyzer.
 
-This section needs language and runtime work: an audio stream type, its bounded buffers
-and per-OS capture validation (05, V02/V07/V09/V10).
+Opening the configuration window does not open an audio probe. The explicit
+connection test in the Connections tab remains available. A monitor of the actual
+running analyzer requires a host telemetry API. The UI must identify any standalone
+connection probe as a device test.
 
-Status (2026-11-16, FR-115): Audio in, Audio out, Level, Record to file, On level and
-Jump to time are implemented in `orange-audio` (05 "Audio streams"). Mixing is
-Audio out: streams played on one output are added together. Capturing what an output
-plays is offered on Windows (WASAPI loopback) only. Not done yet: the live meter and
-waveform on the Audio in card (the data is there: `Host::probe` of the node's input
-connection, as the connection form uses), Play file and a Gate as stream operators,
-and a separate Mix node.
+Phase 2 presentation will show a spectrum with a selected Hz range, threshold and
+release lines, measured level, and hit markers. A continuous level output supports
+animation modulation. Threshold crossings and transient events support one-shot
+effects. Preview and Listen are separate controls with explicit activation. The
+runtime decisions and migration belong to ADR-30.
 
 ## 7. Out of scope for now
 
 Themes beyond light and dark, touch input, collaborative editing.
 
-## 7. Interaction references and review checklist
+## 8. Interaction references and review checklist
 
 | Reference | Rule for OrangeEditor | Review scenario |
 |---|---|---|

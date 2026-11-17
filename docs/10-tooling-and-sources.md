@@ -6294,6 +6294,55 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   `a_value_node_from_the_palette_is_typed_wired_and_run`. The desktop window was
   not clicked through.
 
+### Editor layout and test audit - 2026-11-17
+
+- Windows x64, Rust and Cargo 1.99.1. The Cargo.lock SHA-256 was
+  `79F3AA431E51BA221D3FF8A4AF718187202F5F7364D3D4E8546EBE1A6A287F08`.
+  `cargo +1.99.1 test --workspace --all-features --locked --offline --no-fail-fast`
+  passed 1,951 tests with zero failures and 23 ignored. Coverage includes
+  overlapping node hit targets and the shared search result mode. The SDK
+  example now compiles as a doctest.
+- The 23 ignores are 15 opt-in timing probes, five device-backed audio
+  tests, two live-network tests, and one OS keychain test. The read-only
+  audio device test passed separately with
+  `cargo +1.99.1 test -p orange-audio --lib --locked --offline every_listed_device_is_found_again_by_what_its_setting_holds -- --ignored`.
+  The other environment-dependent ignores and timing probes were not run.
+- Desktop smoke passed with `cargo +1.99.1 run -p orange-desktop --locked
+  --offline -- app/crates/orange-model/tests/fixtures/threshold-v1.json
+  --screenshot <temp-png>`. The Windows window drew the fixture, its diagnostic
+  marks and the persistent status. Native dialog interactions and macOS behavior
+  were not verified.
+
+### UI review slices after the architecture follow-up - 2026-11-17
+
+- FR-01/114/119/120; ADR-21/27/30. Read the architecture review's follow-up
+  status against the current host facade. Editor source controls now use
+  Host::connection_label and reference metadata. The configuration window shares
+  the inspector's schema fields, source choices and non-secret source settings.
+  It opens no audio probe. Canvas titles use localized catalogue labels unless
+  the user has named the node.
+- UI-only dependency adoption, egui_material_icons exactly 0.9.0 with only its
+  outline feature enabled, alongside egui 0.37.0. Verified font registration and
+  codepoints against the downloaded crates.io release source. The crate is MIT;
+  Material Symbols is Apache-2.0. Removed the unused Phosphor font and its
+  bundled licence. No runtime, compiler, audio engine or host API changes.
+- Windows x64, Rust/Cargo 1.99.1. Cargo.lock SHA-256
+  58699951456DBE60A81656A5CFCB3974F2CA2E387CDFD969C1FE972764A441B3.
+  PASS, cargo +1.99.1 test -p orange-editor-ui -p orange-desktop
+  --all-features --locked --offline, 75 tests, zero failures or ignored.
+  The diagnostics tab test initializes the icon font before measuring layout.
+  The new package-reference regression checks free input rows and full cards.
+- PASS, cargo +1.99.1 clippy -p orange-editor-ui -p orange-desktop
+  --all-targets --all-features --locked --offline -- -D warnings;
+  node tools/check-cargo-metadata.mjs; git diff --check; rustfmt 1.99.1
+  --edition 2024 --config skip_children=true --check on the changed UI sources.
+  Workspace-wide cargo fmt --all -- --check still reports existing formatting
+  in orange-host/src/names.rs. That file was not edited in this UI work.
+- PASS, native desktop launch with set-on-trigger.json and --screenshot.
+  Screenshot inspection was blocked by the image tool's sandbox path error.
+  Native dialogs, physical audio, high-DPI and macOS were not interactively
+  verified. Signal wires and running-analyzer telemetry remain ADR-30 phase 2.
+
 ### Saved-format upgrades and replaced definitions - 2026-11-17
 
 - Windows x64, Rust and Cargo 1.99.1, no dependency or lockfile change.
