@@ -477,15 +477,12 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
             .iter()
             .any(|part| has(part)),
     );
-    add("audio", namespace == "org.orange.audio");
     add(
         "network",
-        namespace == "org.orange.net"
-            || ["http", "mqtt", "websocket"]
-                .iter()
-                .any(|part| slug.contains(part)),
+        ["http", "mqtt", "websocket"]
+            .iter()
+            .any(|part| slug.contains(part)),
     );
-    add("file", namespace == "org.orange.files");
     add(
         "variable",
         ["variable", "shared", "register"]
@@ -494,13 +491,19 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
     );
     add("list", namespace == "org.orange.collections");
     add("data", namespace == "org.orange.json");
-    // A package joins a concept by naming it as its category.
+    // A package joins a concept by naming it as its category, such as
+    // `org.orange.audio/category-audio`; a plural (`files`) names the same concept.
     if let Some(category) = info
         .presentation
         .and_then(|shown| shown.category_id.as_deref())
     {
         let last = category.rsplit(['/', '.']).next().unwrap_or(category);
-        if let Some(concept) = CONCEPTS.iter().find(|concept| **concept == last) {
+        let last = last.strip_prefix("category-").unwrap_or(last);
+        let singular = last.strip_suffix('s').unwrap_or(last);
+        if let Some(concept) = CONCEPTS
+            .iter()
+            .find(|concept| **concept == last || **concept == singular)
+        {
             add(concept, true);
         }
     }

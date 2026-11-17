@@ -384,9 +384,29 @@ pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
         "core/bool" => Color32::from_rgb(68, 177, 160),
         "core/i32" | "core/i64" | "core/u32" | "core/u64" | "core/f32" | "core/f64"
         | "core/duration" | "core/timestamp" => Color32::from_rgb(96, 160, 222),
-        "core/list" | "core/map" | "core/stream" | "core/option" | "core/bytes"
-        | "org.orange.audio/stream" => Color32::from_rgb(170, 132, 214),
-        _ => Color32::from_rgb(150, 160, 170),
+        "core/list" | "core/map" | "core/stream" | "core/option" | "core/bytes" => {
+            Color32::from_rgb(170, 132, 214)
+        }
+        other if other.starts_with("core/") || other.is_empty() => {
+            Color32::from_rgb(150, 160, 170)
+        }
+        // The graph's own types share one colour; a package's types share one picked
+        // from its namespace, so no package needs the editor to know it.
+        other if other.starts_with("local/") => Color32::from_rgb(224, 178, 72),
+        other => {
+            const PACKAGE_COLORS: [Color32; 5] = [
+                Color32::from_rgb(170, 132, 214),
+                Color32::from_rgb(120, 190, 120),
+                Color32::from_rgb(230, 150, 110),
+                Color32::from_rgb(110, 180, 210),
+                Color32::from_rgb(210, 120, 120),
+            ];
+            let namespace = other.split('/').next().unwrap_or(other);
+            let hash = namespace
+                .bytes()
+                .fold(2_166_136_261u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(16_777_619));
+            PACKAGE_COLORS[hash as usize % PACKAGE_COLORS.len()]
+        }
     }
 }
 
@@ -2746,7 +2766,12 @@ mod tests {
         assert_eq!(step_label(&port("in", true, false)), None);
         assert_eq!(step_label(&port("completed", false, true)), None);
         assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");
-        assert_eq!(short_type("org.example.geo/point@1"), "org.example.ge…");
+        assert_eq!(short_type("org.example.geo/point@1"), "Geo point");
+        // A package's types share a colour picked from its namespace, not a list.
+        assert_eq!(
+            type_color(Some("org.example.geo/point@1")),
+            type_color(Some("org.example.geo/route@1"))
+        );
         // Every node of one package shares a color; core has its own.
         assert_eq!(
             family_color("org.orange.math/add"),

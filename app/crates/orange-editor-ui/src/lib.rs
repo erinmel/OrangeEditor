@@ -69,10 +69,27 @@ pub fn type_name(ty: &str) -> String {
         "core/f64@1" | "core/f32@1" => "Float".to_owned(),
         "core/bytes@1" => "Bytes".to_owned(),
         "core/duration@1" => "Duration".to_owned(),
-        "org.orange.audio/stream@1" => "Audio stream".to_owned(),
+        // A package's own type reads as its package and name:
+        // `org.orange.audio/stream@1` is "Audio stream".
+        other if !other.starts_with("core/") && !other.contains(['<', '$']) => {
+            package_type_name(other).unwrap_or_else(|| other.replace("@1", ""))
+        }
         // Core types lose their namespace everywhere in the expression.
         other => other.replace("core/", "").replace("@1", ""),
     }
+}
+
+/// `namespace/name@major` as "Last-namespace-part name": `org.orange.audio/stream@1`
+/// is "Audio stream", `org.example.geo/bounding-box@1` is "Geo bounding box".
+fn package_type_name(ty: &str) -> Option<String> {
+    let (namespace, rest) = ty.split_once('/')?;
+    let name = rest.split('@').next()?;
+    let package = namespace.rsplit('.').next()?;
+    let mut text = format!("{package} {}", name.replace('-', " "));
+    if let Some(first) = text.get(..1) {
+        text.replace_range(..1, &first.to_uppercase());
+    }
+    Some(text)
 }
 
 /// A type exactly, for a tooltip beside its short name: `core/i64@1` is `i64`.
@@ -2425,10 +2442,8 @@ mod tests {
         assert_eq!(type_name("org.orange.audio/stream@1"), "Audio stream");
         assert_eq!(exact_type("core/u64@1"), "u64");
         assert_eq!(type_name("core/list@1<core/i64@1>"), "list<i64>");
-        assert_eq!(
-            type_name("org.example.geo/point@1"),
-            "org.example.geo/point"
-        );
+        assert_eq!(type_name("org.example.geo/point@1"), "Geo point");
+        assert_eq!(type_name("org.example.geo/bounding-box@1"), "Geo bounding box");
     }
 
     #[test]
