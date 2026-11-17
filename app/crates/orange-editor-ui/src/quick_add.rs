@@ -166,7 +166,11 @@ impl Editor {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_width(304.0_f32.min((bounds.width() - 20.0).max(48.0)));
-                    ui.strong(if wired { "Connect a node" } else { "Add a node" });
+                    ui.strong(if wired {
+                        "Connect a node"
+                    } else {
+                        "Add a node"
+                    });
                     // The arrows move the choice, not the caret.
                     let (up, down) = ui.input_mut(|input| {
                         (
@@ -186,6 +190,7 @@ impl Editor {
                     if field.changed() {
                         highlighted = 0;
                     }
+                    self.result_style(ui, host);
                     let key = (
                         search.clone(),
                         self.language().to_owned(),

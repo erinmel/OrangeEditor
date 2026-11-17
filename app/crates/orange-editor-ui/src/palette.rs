@@ -51,6 +51,15 @@ pub(crate) fn result_row(
     let visuals = ui.style().interact_selectable(&response, highlighted);
     if highlighted || response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 5.0, visuals.weak_bg_fill);
+    } else if card_size.is_none() {
+        ui.painter()
+            .rect_filled(rect.shrink(1.0), 5.0, ui.visuals().faint_bg_color);
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            5.0,
+            ui.visuals().widgets.noninteractive.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
     }
     if response.has_focus() || highlighted {
         ui.painter()
@@ -75,10 +84,7 @@ pub(crate) fn result_row(
     }
     if let Some(size) = card_size {
         let card = egui::Rect::from_min_size(
-            egui::pos2(
-                rect.center().x - size.x / 2.0,
-                rect.min.y + 8.0,
-            ),
+            egui::pos2(rect.center().x - size.x / 2.0, rect.min.y + 8.0),
             size,
         );
         paint_preview(ui, card, zoom);
@@ -221,7 +227,13 @@ impl PreviewCache {
                 }
                 self.rows.insert(
                     item.definition.definition.id.to_string(),
-                    inputs.max(outputs).max(1),
+                    inputs.max(outputs).max(1)
+                        + usize::from(
+                            inputs >= outputs
+                                && item.presentation.is_some_and(|presentation| {
+                                    presentation.connection_adapter.is_some()
+                                }),
+                        ),
                 );
             }
             self.generation = Some(host.registry().generation());
@@ -254,7 +266,8 @@ impl PreviewCache {
                 let inputs = card.ports.iter().filter(|port| port.input).count();
                 self.rows.insert(
                     definition.to_owned(),
-                    inputs.max(card.ports.len() - inputs).max(1),
+                    inputs.max(card.ports.len() - inputs).max(1)
+                        + usize::from(crate::canvas::connection_footer(card) > 0.0),
                 );
             }
             self.cards.insert(definition.to_owned(), card);
@@ -321,9 +334,9 @@ mod tests {
             "org.orange.collections/make-enum",
             "org.orange.collections/enum-payload",
         ] {
-            let card = cache.card(&host, None, definition).unwrap_or_else(|| {
-                panic!("missing card for {definition}")
-            });
+            let card = cache
+                .card(&host, None, definition)
+                .unwrap_or_else(|| panic!("missing card for {definition}"));
             assert!(card.ports.iter().any(|port| !port.input));
         }
     }

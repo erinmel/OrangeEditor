@@ -1,7 +1,7 @@
 //! Borrowed, frame-local geometry: one port walk instead of node scans per wire.
 //! Rebuilding from the supplied view keeps standalone Canvas callers free of cache
 //! invalidation obligations. Positions are read separately so dragging is immediate.
-use super::{BODY_TOP, NODE_WIDTH, ROW_HEIGHT, card_height};
+use super::{BODY_TOP, NODE_WIDTH, ROW_HEIGHT, card_height, connection_footer};
 use egui::{Pos2, Rect, Vec2};
 use orange_host::{GraphView, NodeId};
 use std::collections::HashMap;
@@ -39,7 +39,8 @@ impl<'a> Geometry<'a> {
                     });
                 *row += 1;
             }
-            let height = card_height(&node.definition, rows[0].max(rows[1]));
+            let height =
+                card_height(&node.definition, rows[0].max(rows[1])) + connection_footer(node);
             let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
             let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
             if let (Some(port), None) = (exec.next(), exec.next()) {

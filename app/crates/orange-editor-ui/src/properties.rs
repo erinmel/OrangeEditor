@@ -198,6 +198,43 @@ impl Editor {
             .cloned()
     }
 
+    pub(crate) fn node_config_window(&mut self, ctx: &egui::Context, host: &mut Host) {
+        let Some((node, position)) = self.node_config_menu else {
+            return;
+        };
+        if self.canvas.selected() != Some(node) {
+            self.node_config_menu = None;
+            return;
+        }
+        let Some(view) = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+        else {
+            self.node_config_menu = None;
+            return;
+        };
+        let label = host
+            .connection_label(&view.definition)
+            .unwrap_or_else(|| "Configure node".to_owned());
+        let mut open = true;
+        egui::Window::new(label)
+            .id(egui::Id::unique("node-config").with(node))
+            .default_pos(position)
+            .default_width(330.0)
+            .collapsible(false)
+            .resizable(true)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                self.properties_panel(ui, host);
+            });
+        if !open
+            || self.canvas.selected() != Some(node)
+            || ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        {
+            self.node_config_menu = None;
+        }
+    }
+
     /// Reads the fields of `node` again when another node is selected.
     fn inspect(&mut self, node: &NodeView) {
         if self.inspected == Some(node.id) {
@@ -229,7 +266,7 @@ impl Editor {
     }
 
     /// The value on an input as its field shows it before typing: text without quotes.
-    fn shown_input(port: &orange_host::PortView) -> String {
+    pub(crate) fn shown_input(port: &orange_host::PortView) -> String {
         let shown = port.value.clone().unwrap_or_default();
         serde_json::from_str::<String>(&shown).unwrap_or(shown)
     }
@@ -272,7 +309,10 @@ impl Editor {
         }
         ui.add_space(2.0);
         let _ = ui
-            .add(egui::Label::new(egui::RichText::new(node.name.as_str()).heading()).truncate())
+            .add(
+                egui::Label::new(egui::RichText::new(self.canvas.display_name(&node)).heading())
+                    .truncate(),
+            )
             .on_hover_text(node.name.as_str());
         let mut subtitle = node.kind.clone();
         if let Some(detail) = &node.detail {
@@ -286,10 +326,6 @@ impl Editor {
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
         // The kind of connection the node uses, and the one it names with its choices.
-        let adapter = host
-            .nodes()
-            .find(|info| info.definition.definition.id.as_str() == node.definition)
-            .and_then(|info| info.presentation?.connection_adapter.clone());
         let connection = self.named_connection(&node);
         let choices = connection
             .as_ref()
@@ -308,40 +344,55 @@ impl Editor {
                 if setup {
                     section(ui, "Set-up");
                     for (pointer, kind) in &node.references {
-                        if let Some(asked) = self.reference_field(
-                            ui,
-                            labels,
-                            &node,
-                            pointer,
-                            *kind,
-                            adapter.as_deref(),
-                        ) {
+                        if let Some(asked) =
+                            self.reference_field(ui, labels, &node, host, pointer, *kind)
+                        {
                             change = Some(asked);
                         }
                     }
-                    if let Some(connection) = &connection
-                        && !choices.is_empty()
-                    {
+                    if let Some(connection) = &connection {
+                        let mut current = connection.settings.clone();
                         if let Some((name, value)) = declarations::choice_fields(
                             ui,
                             "node",
                             &choices,
-                            &connection.settings,
+                            &current,
                             &mut refresh,
                         ) {
+                            current = declarations::with_setting(&current, &name, value);
+                        }
+                        let fields = host.adapter_fields(&connection.adapter);
+                        let texts: Vec<_> = host
+                            .adapter_texts(&connection.adapter)
+                            .into_iter()
+                            .filter(|field| !field.secret)
+                            .collect();
+                        let toggles = host.adapter_toggles(&connection.adapter);
+                        if !fields.is_empty() || !texts.is_empty() || !toggles.is_empty() {
+                            egui::CollapsingHeader::new("Source settings")
+                                .id_salt(("source-settings", node.id))
+                                .show(ui, |ui| {
+                                    if let Some((name, value)) =
+                                        declarations::number_fields(ui, &fields, &current)
+                                    {
+                                        current = declarations::with_number(&current, &name, value);
+                                    }
+                                    declarations::text_fields(
+                                        ui,
+                                        &texts,
+                                        &mut current,
+                                        &mut declarations::Typed::default(),
+                                    );
+                                    declarations::toggle_fields(ui, &toggles, &mut current);
+                                });
+                        }
+                        if current != connection.settings {
                             redeclare = Some(Connection {
-                                settings: declarations::with_setting(
-                                    &connection.settings,
-                                    &name,
-                                    value,
-                                ),
+                                settings: current,
                                 ..connection.clone()
                             });
                         }
-                        ui.weak(format!(
-                            "Settings of the connection “{}”, for every node that uses it.",
-                            connection.name
-                        ));
+                        ui.small(format!("Shared settings of {}", connection.name));
                     }
                     if let Some(asked) = self.settings_fields(ui, labels, &node) {
                         change = Some(asked);
@@ -419,16 +470,23 @@ impl Editor {
         ui: &mut egui::Ui,
         labels: f32,
         node: &NodeView,
+        host: &Host,
         pointer: &str,
         kind: ReferenceKind,
-        adapter: Option<&str>,
     ) -> Option<Change> {
         let named = node
             .settings
             .pointer(pointer)
             .and_then(Json::as_str)
             .map(str::to_owned);
+        let adapter = host
+            .nodes()
+            .find(|info| info.definition.definition.id.as_str() == node.definition)
+            .and_then(|info| info.presentation?.connection_adapter.as_deref());
         let declared = self.choices(kind, adapter);
+        let connection_label = (kind == ReferenceKind::Connection)
+            .then(|| host.connection_label(&node.definition))
+            .flatten();
         let what = match kind {
             ReferenceKind::Variable => "variable",
             ReferenceKind::Connection => "connection",
@@ -438,13 +496,22 @@ impl Editor {
         let shown = named
             .as_ref()
             .and_then(|id| declared.iter().find(|(known, _)| known == id))
-            .map_or_else(|| format!("choose a {what}"), |(_, name)| name.clone());
+            .map_or_else(
+                || {
+                    connection_label.as_ref().map_or_else(
+                        || format!("Choose a {what}"),
+                        |label| format!("Choose {label}"),
+                    )
+                },
+                |(_, name)| name.clone(),
+            );
+        let label = words(pointer.trim_start_matches('/'));
         let mut chosen = None;
         let mut quick = false;
         row(
             ui,
             labels,
-            &words(pointer.trim_start_matches('/')),
+            connection_label.as_deref().unwrap_or(&label),
             None,
             |ui| {
                 let _ = egui::ComboBox::from_id_salt(("orange-reference", pointer))
@@ -699,7 +766,7 @@ impl Editor {
                 }
                 let more = variadic.max.is_none_or(|max| variadic.count < max);
                 if ui
-                    .add_enabled(more, egui::Button::new("+"))
+                    .add_enabled(more, egui::Button::new(icons::text(icons::ADD)))
                     .on_hover_text("Add one more.")
                     .clicked()
                 {
@@ -727,7 +794,7 @@ impl Editor {
                     }
                     if port.value.is_some()
                         && ui
-                            .small_button("×")
+                            .small_button(icons::text(icons::CLOSE))
                             .on_hover_text("Take the value off.")
                             .clicked()
                     {
@@ -849,7 +916,7 @@ fn text_field(
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let cleared = clear
             && ui
-                .small_button("×")
+                .small_button(icons::text(icons::CLOSE))
                 .on_hover_text("Take the value off.")
                 .clicked();
         let browsed = browse.is_some_and(|what| {
@@ -1028,7 +1095,11 @@ impl Editor {
         for (port, shown, stale) in ports {
             let side = if port.input { "in" } else { "out" };
             let freshness = if stale { " (previous)" } else { "" };
-            let title = format!("{} ({side}) = {}{freshness}", port_label(&port.id), shown.short);
+            let title = format!(
+                "{} ({side}) = {}{freshness}",
+                port_label(&port.id),
+                shown.short
+            );
             egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
                 .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
                 .show(ui, |ui| {

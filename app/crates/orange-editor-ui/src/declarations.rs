@@ -130,7 +130,16 @@ pub(crate) fn choice_fields(
                 .iter()
                 .position(|known| known == value)
                 .and_then(|at| choice.labels.get(at))
-                .map_or(value, String::as_str)
+                .map_or_else(
+                    || {
+                        if choice.setting == "device" {
+                            "Unavailable device"
+                        } else {
+                            value
+                        }
+                    },
+                    String::as_str,
+                )
                 .to_owned()
         };
         ui.horizontal(|ui| {
@@ -148,12 +157,7 @@ pub(crate) fn choice_fields(
                     }
                     for value in &choice.values {
                         let selected = current == Some(value.as_str());
-                        if ui
-                            .selectable_label(selected, label(value))
-                            .on_hover_text(value.as_str())
-                            .clicked()
-                            && !selected
-                        {
+                        if ui.selectable_label(selected, label(value)).clicked() && !selected {
                             chosen = Some((choice.setting.clone(), Some(value.clone())));
                         }
                     }
@@ -205,7 +209,7 @@ pub(crate) fn number_fields(
                         changed = Some((field.setting.clone(), Some(value)));
                     }
                     if ui
-                        .small_button("×")
+                        .small_button(icons::text(icons::CLOSE))
                         .on_hover_text("Leave it out: use the default.")
                         .clicked()
                     {
@@ -231,10 +235,11 @@ pub(crate) fn number_fields(
 
 /// A switch that shows what the device of a connection being set up hears now, and
 /// the meter while it is on. It listens apart from any run, only while switched on.
-fn live_level(
+pub(crate) fn live_level(
     ui: &mut egui::Ui,
     host: &Host,
-    form: &ConnectionForm,
+    adapter: &str,
+    settings: &Json,
     choices: &[SettingChoices],
     fields: &[SettingField],
     probing: &mut Option<crate::Probing>,
@@ -251,7 +256,7 @@ fn live_level(
     if !on {
         return;
     }
-    let Ok(Json::Object(settings)) = serde_json::from_str::<Json>(&form.settings) else {
+    let Some(settings) = settings.as_object() else {
         ui.weak("The settings are not JSON.");
         return;
     };
@@ -261,17 +266,15 @@ fn live_level(
         .iter()
         .map(|choice| format!("{:?};", settings.get(&choice.setting)))
         .collect();
-    let stale = probing.as_ref().is_none_or(|probing| {
-        probing.adapter != form.adapter || probing.settings != key || probing.probe.is_err()
-    });
+    let stale = probing
+        .as_ref()
+        .is_none_or(|probing| probing.adapter != adapter || probing.settings != key);
     if stale {
-        *probing = host
-            .probe(&form.adapter, &settings)
-            .map(|probe| crate::Probing {
-                adapter: form.adapter.clone(),
-                settings: key,
-                probe,
-            });
+        *probing = host.probe(adapter, settings).map(|probe| crate::Probing {
+            adapter: adapter.to_owned(),
+            settings: key,
+            probe,
+        });
     }
     let Some(probing) = probing.as_ref() else {
         return;
@@ -907,14 +910,15 @@ impl Editor {
                         form.settings = serde_json::to_string_pretty(&current).unwrap_or_default();
                         form.tested = None;
                     }
+                    if probes {
+                        live_level(ui, host, &form.adapter, &current, &choices, &fields, probing);
+                    }
                 } else {
+                    *probing = None;
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
                         "The settings below are not JSON.",
                     );
-                }
-                if probes {
-                    live_level(ui, host, form, &choices, &fields, probing);
                 }
                 ui.horizontal(|ui| {
                     test = ui
@@ -1108,7 +1112,12 @@ fn text_at<'a>(settings: &'a Json, path: &str) -> Option<&'a Json> {
 /// Fields for an adapter's text settings. A secret is typed masked into `secrets`,
 /// never into the settings; one already stored shows as such, with a button to type
 /// another.
-fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, secrets: &mut Typed) {
+pub(super) fn text_fields(
+    ui: &mut egui::Ui,
+    texts: &[SettingText],
+    settings: &mut Json,
+    secrets: &mut Typed,
+) {
     {
         {
             for text in texts {
@@ -1135,7 +1144,7 @@ fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, se
                                     let _ = secrets.0.insert(text.setting.clone(), String::new());
                                 }
                                 if ui
-                                    .small_button("×")
+                                    .small_button(icons::text(icons::CLOSE))
                                     .on_hover_text("Leave it out.")
                                     .clicked()
                                 {
@@ -1208,7 +1217,7 @@ fn text_fields(ui: &mut egui::Ui, texts: &[SettingText], settings: &mut Json, se
 
 /// Switches for an adapter's true-or-false settings. One switched back to its default
 /// is left out.
-fn toggle_fields(ui: &mut egui::Ui, toggles: &[SettingToggle], settings: &mut Json) {
+pub(super) fn toggle_fields(ui: &mut egui::Ui, toggles: &[SettingToggle], settings: &mut Json) {
     for toggle in toggles {
         let mut on = settings
             .get(&toggle.setting)
@@ -1231,7 +1240,9 @@ fn section_heading(ui: &mut egui::Ui, title: &str, add: &str) -> bool {
     ui.horizontal(|ui| {
         ui.heading(title);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.button("+").on_hover_text(add).clicked()
+            ui.button(icons::text(icons::ADD))
+                .on_hover_text(add)
+                .clicked()
         })
         .inner
     })

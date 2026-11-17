@@ -84,14 +84,14 @@ impl Editor {
                 ui.heading("Types");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button("+ Record")
+                        .button((icons::text(icons::ADD), "Record"))
                         .on_hover_text("A value with named fields, such as a point with x and y.")
                         .clicked()
                     {
                         change = Some(Change::New(false));
                     }
                     if ui
-                        .button("+ Enum")
+                        .button((icons::text(icons::ADD), "Enum"))
                         .on_hover_text("One of a few choices, such as a mood or a mode.")
                         .clicked()
                     {
@@ -207,7 +207,10 @@ impl Editor {
         }
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            if ui.small_button("+ choice").clicked() {
+            if ui
+                .small_button((icons::text(icons::ADD), "Choice"))
+                .clicked()
+            {
                 let taken: Vec<&str> = variants.iter().map(|v| v.id.as_str()).collect();
                 let name = format!("Choice {}", variants.len() + 1);
                 let id = member_id(&name, &taken);
@@ -252,7 +255,10 @@ impl Editor {
         }
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            if ui.small_button("+ field").clicked() {
+            if ui
+                .small_button((icons::text(icons::ADD), "Field"))
+                .clicked()
+            {
                 let taken: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
                 let name = format!("Field {}", fields.len() + 1);
                 let id = member_id(&name, &taken);

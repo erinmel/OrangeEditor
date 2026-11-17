@@ -75,7 +75,10 @@ impl Control {
 pub fn node_size(node: &NodeView) -> Vec2 {
     let inputs = node.ports.iter().filter(|port| port.input).count();
     let outputs = node.ports.len() - inputs;
-    Vec2::new(NODE_WIDTH, card_height(&node.definition, inputs.max(outputs)))
+    Vec2::new(
+        NODE_WIDTH,
+        card_height(&node.definition, inputs.max(outputs)) + connection_footer(node),
+    )
 }
 
 pub(crate) fn card_height(definition: &str, rows: usize) -> f32 {
@@ -90,6 +93,20 @@ fn extra_row(definition: &str) -> f32 {
     } else {
         0.0
     }
+}
+
+fn connection_row(node: &NodeView) -> Option<usize> {
+    node.references
+        .iter()
+        .any(|(_, kind)| *kind == orange_host::ReferenceKind::Connection)
+        .then(|| node.ports.iter().filter(|port| port.input).count())
+}
+
+pub(super) fn connection_footer(node: &NodeView) -> f32 {
+    connection_row(node).map_or(0.0, |row| {
+        let outputs = node.ports.iter().filter(|port| !port.input).count();
+        if row < outputs { 0.0 } else { ROW_HEIGHT }
+    })
 }
 
 /// Where a port's dot is, relative to the top left corner of its node's card.
@@ -127,6 +144,10 @@ pub struct CanvasResponse {
     /// A value was written on an input with its control on the card, typed as a
     /// person types it.
     pub set_input: Option<(NodeId, String, String)>,
+    /// A file or folder chooser was requested from an input on a node card.
+    pub browse_path: Option<(NodeId, String)>,
+    /// A device chooser was requested at a node card.
+    pub configure: Option<(NodeId, Pos2)>,
     /// The selected nodes are to be copied, or cut, to the clipboard.
     pub copy: bool,
     pub cut: bool,
@@ -257,6 +278,7 @@ pub struct Canvas {
     /// The selected nodes, and the one whose properties are shown when it is the only one.
     selection: BTreeSet<NodeId>,
     selected: Option<NodeId>,
+    front: Option<NodeId>,
     /// Where a box selection started, in graph units.
     boxing: Option<Pos2>,
     /// Where the pointer is, in graph units, while it is over the canvas.
@@ -279,6 +301,8 @@ pub struct Canvas {
     marks: Marks,
     help_revision: Option<(u64, String)>,
     descriptions: std::collections::HashMap<String, String>,
+    labels: std::collections::HashMap<String, String>,
+    connection_labels: std::collections::HashMap<String, String>,
     /// When each node of a running flow last took a step, and whether it failed.
     activity: std::collections::HashMap<NodeId, StepActivity>,
     /// The latest value a running flow put on each output, as a person reads it.
@@ -305,6 +329,7 @@ impl Default for Canvas {
             places: BTreeMap::new(),
             selection: BTreeSet::new(),
             selected: None,
+            front: None,
             boxing: None,
             pointer: None,
             dragging: None,
@@ -319,6 +344,8 @@ impl Default for Canvas {
             activity: std::collections::HashMap::new(),
             help_revision: None,
             descriptions: std::collections::HashMap::new(),
+            labels: std::collections::HashMap::new(),
+            connection_labels: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
             failures: std::collections::HashMap::new(),
             stale: false,
@@ -387,9 +414,7 @@ pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
         "core/list" | "core/map" | "core/stream" | "core/option" | "core/bytes" => {
             Color32::from_rgb(170, 132, 214)
         }
-        other if other.starts_with("core/") || other.is_empty() => {
-            Color32::from_rgb(150, 160, 170)
-        }
+        other if other.starts_with("core/") || other.is_empty() => Color32::from_rgb(150, 160, 170),
         // The graph's own types share one colour; a package's types share one picked
         // from its namespace, so no package needs the editor to know it.
         other if other.starts_with("local/") => Color32::from_rgb(224, 178, 72),
@@ -417,17 +442,41 @@ impl Canvas {
 
     pub(crate) fn update_help(&mut self, host: &orange_host::Host, language: &str) {
         let generation = host.registry().generation();
-        if self.help_revision.as_ref().is_some_and(|(old, locale)| {
-            *old == generation && locale == language
-        }) {
+        if self
+            .help_revision
+            .as_ref()
+            .is_some_and(|(old, locale)| *old == generation && locale == language)
+        {
             return;
         }
-        self.descriptions = host.search_nodes("", language)
+        let entries = host.search_nodes("", language);
+        self.labels = entries
+            .iter()
+            .map(|item| (item.definition.clone(), item.label.clone()))
+            .collect();
+        self.descriptions = entries
             .into_iter()
             .filter(|item| !item.purpose.is_empty())
             .map(|item| (item.definition, item.purpose))
             .collect();
         self.help_revision = Some((generation, language.to_owned()));
+        self.connection_labels = host
+            .nodes()
+            .filter_map(|item| {
+                let id = item.definition.definition.id.as_str();
+                Some((id.to_owned(), host.connection_label(id)?))
+            })
+            .collect();
+    }
+
+    pub(crate) fn display_name<'a>(&'a self, node: &'a NodeView) -> &'a str {
+        if node.name == node.kind {
+            self.labels
+                .get(&node.definition)
+                .map_or(node.name.as_str(), String::as_str)
+        } else {
+            &node.name
+        }
     }
 
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
@@ -512,6 +561,9 @@ impl Canvas {
             1 => self.selection.first().copied(),
             _ => None,
         };
+        if self.selected.is_some() {
+            self.front = self.selected;
+        }
     }
 
     /// Adds a node to the selection or takes it out, as clicking it with Ctrl does.
@@ -560,7 +612,7 @@ impl Canvas {
         exec: bool,
         from: NodeId,
     ) -> Option<(NodeId, String)> {
-        for node in graph.nodes.iter().rev() {
+        for node in node_order(graph, self.front).rev() {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
@@ -678,7 +730,11 @@ impl Canvas {
         };
         let _ = self.activity.insert(
             node,
-            StepActivity { time: std::time::Instant::now(), failed, route },
+            StepActivity {
+                time: std::time::Instant::now(),
+                failed,
+                route,
+            },
         );
     }
 
@@ -823,6 +879,17 @@ impl Canvas {
         graph: &GraphView,
         triggers: &[NodeId],
     ) -> CanvasResponse {
+        self.show_with_path_controls(ui, graph, triggers, false)
+    }
+
+    pub(crate) fn show_with_path_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &GraphView,
+        triggers: &[NodeId],
+        file_dialogs: bool,
+    ) -> CanvasResponse {
+        crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let area = response.rect;
@@ -955,7 +1022,7 @@ impl Canvas {
 
         // Nodes are handled before anything is drawn, so a wire follows the node
         // being moved in the same frame.
-        for node in &graph.nodes {
+        for node in node_order(graph, self.front) {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
@@ -971,6 +1038,7 @@ impl Canvas {
                 self.select(Some(node.id));
             }
             if touched.dragged() {
+                self.front = Some(node.id);
                 // Every selected node moves together.
                 let by = touched.drag_delta() / zoom;
                 for id in &self.selection {
@@ -1012,6 +1080,7 @@ impl Canvas {
                 && let Some(screen) = touched.interact_pointer_pos()
             {
                 let (at, screen) = menu_at(screen, self.origin, self.zoom);
+                self.front = Some(node.id);
                 done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
             }
         }
@@ -1019,7 +1088,15 @@ impl Canvas {
         // Ports: dragging from an output draws a wire; the second mouse button opens
         // the port's menu.
         let grab = (PORT_RADIUS + 5.0) * zoom.max(0.6);
-        for node in &graph.nodes {
+        let front = self.front;
+        let front_rect = front
+            .filter(|id| !self.hidden.contains(id) && graph.nodes.iter().any(|node| node.id == *id))
+            .and_then(|id| {
+                self.places
+                    .get(&id)
+                    .map(|place| Rect::from_min_size(to_screen(*place), geometry.size(id) * zoom))
+            });
+        for node in node_order(graph, front) {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
@@ -1038,6 +1115,9 @@ impl Canvas {
                 };
                 let at = to_screen(place + port_geometry.offset);
                 if !area.contains(at) {
+                    continue;
+                }
+                if front != Some(node.id) && front_rect.is_some_and(|rect| rect.contains(at)) {
                     continue;
                 }
                 let touched = ui.interact(
@@ -1213,7 +1293,9 @@ impl Canvas {
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
             );
-            let passage = if wire.exec && let Some(step) = self.activity.get(&wire.from.0) {
+            let passage = if wire.exec
+                && let Some(step) = self.activity.get(&wire.from.0)
+            {
                 let port = match step.route {
                     Some(PulseRoute::Sole) => geometry.sole_exec_output(wire.from.0),
                     Some(PulseRoute::Port(port)) => Some(port),
@@ -1275,9 +1357,19 @@ impl Canvas {
             self.selected_wire = None;
         }
 
-        // Outlines and badges go over every card, so a later card does not hide them.
-        let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
-        for node in &graph.nodes {
+        // Each card owns its marks. A card in front covers the card and its marks.
+        let mut port_marks = BTreeMap::<_, Vec<_>>::new();
+        for ((node, port), mark) in &self.marks.ports {
+            for input in [true, false] {
+                if let Some(found) = geometry.port(*node, port, input) {
+                    port_marks
+                        .entry(*node)
+                        .or_default()
+                        .push((found.offset, mark.error));
+                }
+            }
+        }
+        for node in node_order(graph, front) {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
@@ -1314,6 +1406,7 @@ impl Canvas {
                 ui,
                 &painter,
                 node,
+                self.display_name(node),
                 rect,
                 zoom,
                 &colors,
@@ -1325,7 +1418,31 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
-            overlays.push((node.id, rect));
+            if controls && let Some(row) = connection_row(node) {
+                let label = self
+                    .connection_labels
+                    .get(&node.definition)
+                    .map_or("Configure", String::as_str);
+                #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
+                let y = BODY_TOP + (row as f32 + 0.5) * ROW_HEIGHT;
+                let slot = Rect::from_center_size(
+                    Pos2::new(
+                        rect.left() + (CARD_PADDING + CONTROL_WIDTH / 2.0) * zoom,
+                        rect.top() + y * zoom,
+                    ),
+                    Vec2::new(CONTROL_WIDTH * zoom, FIELD_HEIGHT * zoom),
+                );
+                let covered = front != Some(node.id)
+                    && front_rect.is_some_and(|rect| rect.contains(slot.center()));
+                if !covered && area.contains_rect(slot) {
+                    let button = ui
+                        .put(slot, egui::Button::new(label).truncate())
+                        .on_hover_text(node.detail.as_deref().unwrap_or(label));
+                    if button.clicked() {
+                        done.configure = Some((node.id, slot.left_bottom()));
+                    }
+                }
+            }
             // Values a run put on ports: beside each output, and beside each wired
             // input the value it receives. Cut short here; the inspector has them whole.
             for port in node.ports.iter().filter(|port| !port.exec) {
@@ -1357,26 +1474,42 @@ impl Canvas {
                 let _ = painter.text(at + Vec2::new(x, 10.5 * zoom), align, shown, font, tint);
             }
             for (port, slot) in slots {
-                if area.contains_rect(slot)
-                    && let Some(written) = self.control(ui, node, port, slot, response.id)
+                if !area.contains_rect(slot)
+                    || (front != Some(node.id)
+                        && front_rect.is_some_and(|rect| rect.contains(slot.center())))
                 {
+                    continue;
+                }
+                if let Some(path) = node
+                    .paths
+                    .iter()
+                    .find(|path| file_dialogs && path.port == port.id)
+                {
+                    let label = if path.folder { "Folder…" } else { "File…" };
+                    let response = ui
+                        .put(slot, egui::Button::new(label))
+                        .on_hover_text(port.value.as_deref().unwrap_or("Choose a path"));
+                    if response.clicked() {
+                        self.front = Some(node.id);
+                        done.browse_path = Some((node.id, port.id.clone()));
+                    }
+                } else if let Some(written) = self.control(ui, node, port, slot, response.id) {
+                    self.front = Some(node.id);
                     done.set_input = Some(written);
                 }
             }
-        }
-        for (node, rect) in overlays {
-            for ((at, port), mark) in self.marks.ports.iter().filter(|((at, _), _)| *at == node) {
-                for input in [true, false] {
-                    let Some(found) = geometry.port(*at, port, input) else {
-                        continue;
-                    };
-                    let center = rect.min + found.offset * zoom;
-                    painter.circle_stroke(
-                        center,
-                        (PORT_RADIUS + 3.5) * zoom.max(0.6),
-                        Stroke::new(2.0 * zoom.max(0.6), colors.problem(mark.error)),
-                    );
-                }
+            let node = node.id;
+            for &(offset, error) in port_marks.get(&node).into_iter().flatten() {
+                painter.circle_stroke(
+                    rect.min + offset * zoom,
+                    (PORT_RADIUS + 3.5) * zoom.max(0.6),
+                    Stroke::new(2.0 * zoom.max(0.6), colors.problem(error)),
+                );
+            }
+            if front != Some(node)
+                && front_rect.is_some_and(|front| front.contains(mark_position(rect, zoom)))
+            {
+                continue;
             }
             if let Some(why) = self.failures.get(&node) {
                 let failed = Mark {
@@ -1405,7 +1538,8 @@ impl Canvas {
             }
         }
         if pulsing {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
         }
         // While a wire is drawn, the inputs it could go to are ringed.
         if let Some(wiring) = &self.wiring {
@@ -1463,6 +1597,7 @@ impl Canvas {
                     ui,
                     &painter,
                     card,
+                    self.display_name(card),
                     rect,
                     zoom,
                     &colors,
@@ -1751,14 +1886,42 @@ fn draw_mark(
     mark: &Mark,
     id: egui::Id,
 ) -> bool {
-    let radius = 3.5 * zoom.max(0.75);
-    let center = Pos2::new(
-        rect.min.x + (CARD_PADDING / 2.0) * zoom,
-        rect.min.y + (HEADER_HEIGHT / 2.0) * zoom,
+    let center = mark_position(rect, zoom);
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        if mark.error {
+            crate::icons::ERROR
+        } else {
+            crate::icons::WARNING
+        },
+        FontId::new(14.0 * zoom.max(0.75), crate::icons::family()),
+        colors.problem(mark.error),
     );
-    painter.circle_filled(center, radius, colors.problem(mark.error));
-    let area = Rect::from_center_size(center, Vec2::splat(CARD_PADDING * zoom));
-    ui.interact(area, id, Sense::click()).clicked()
+    let area = Rect::from_center_size(center, Vec2::splat(20.0 * zoom.max(0.75)));
+    let response = ui.interact(area, id, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &mark.text));
+    response.on_hover_text(&mark.text).clicked()
+}
+
+fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
+    rect.right_top() + Vec2::new(-CARD_PADDING * zoom, HEADER_HEIGHT * zoom / 2.0)
+}
+
+fn node_order(
+    graph: &GraphView,
+    front: Option<NodeId>,
+) -> impl DoubleEndedIterator<Item = &NodeView> {
+    graph
+        .nodes
+        .iter()
+        .filter(move |node| Some(node.id) != front)
+        .chain(
+            graph
+                .nodes
+                .iter()
+                .filter(move |node| Some(node.id) == front),
+        )
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.
@@ -1769,6 +1932,7 @@ fn draw_node<'a>(
     ui: &egui::Ui,
     painter: &egui::Painter,
     node: &'a NodeView,
+    name: &str,
     rect: Rect,
     zoom: f32,
     colors: &Palette,
@@ -1782,7 +1946,11 @@ fn draw_node<'a>(
     painter.rect_filled(rect, radius, colors.card);
     // The header carries the node family's color: a tint, and a line along its foot,
     // so nodes of one package are told apart at a glance, even zoomed out.
-    let family = if node.entry { colors.exec } else { family_color(&node.definition) };
+    let family = if node.entry {
+        colors.exec
+    } else {
+        family_color(&node.definition)
+    };
     let header_color = mix(colors.card, family, 0.25);
     painter.rect_filled(
         header,
@@ -1821,17 +1989,18 @@ fn draw_node<'a>(
             draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
             left.x += 19.0 * zoom;
         }
-        let room = clip.right() - left.x;
-        let (shown, cut) = elide(painter, &node.name, &title, room);
+        let room = clip.right() - left.x - 20.0 * zoom;
+        let (shown, cut) = elide(painter, name, &title, room);
         let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
-        let detail = node.detail.as_deref().or_else(|| {
-            (node.name != node.kind).then_some(node.kind.as_str())
-        });
+        let detail = node
+            .detail
+            .as_deref()
+            .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
         if cut || detail.is_some() || description.is_some() {
             let _ = ui
                 .interact(clip, canvas.with(("title", node.id)), Sense::hover())
                 .on_hover_ui(|ui| {
-                    ui.strong(node.name.as_str());
+                    ui.strong(name);
                     if let Some(detail) = detail {
                         ui.label(detail);
                     }
@@ -1860,7 +2029,7 @@ fn draw_node<'a>(
                 rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom
             };
             let button = Rect::from_center_size(
-                Pos2::new(rect.center().x, y),
+                Pos2::new(rect.left() + CARD_PADDING * zoom + size.x / 2.0, y),
                 size,
             );
             let sense = if live { Sense::click() } else { Sense::hover() };
@@ -1975,6 +2144,7 @@ pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, zoom: f32
         ui,
         &painter,
         node,
+        &node.name,
         rect,
         zoom,
         &Palette::of(ui),
@@ -2088,7 +2258,11 @@ fn draw_port(
     let label_at = at - Vec2::new(0.0, 4.0 * zoom);
     let (name, _) = elide(painter, &name, &font, label_room);
     let type_hint = (style.hinted && !port.connected && !(port.input && port.value.is_some()))
-        .then(|| port.ty.as_deref().map(|ty| port_type_label(style.definition, ty)))
+        .then(|| {
+            port.ty
+                .as_deref()
+                .map(|ty| port_type_label(style.definition, ty))
+        })
         .flatten();
     if !port.input {
         let label = painter.text(
@@ -2196,12 +2370,13 @@ fn step_label(port: &PortView) -> Option<String> {
 
 /// An arrow pointing right, `width` long, from `from` (its tail, at mid height).
 fn draw_arrow(painter: &egui::Painter, from: Pos2, width: f32, color: Color32, zoom: f32) {
-    let stroke = Stroke::new(1.6 * zoom, color);
-    let tip = from + Vec2::new(width, 0.0);
-    let head = width * 0.4;
-    painter.line_segment([from, tip], stroke);
-    painter.line_segment([tip, tip + Vec2::new(-head, -head)], stroke);
-    painter.line_segment([tip, tip + Vec2::new(-head, head)], stroke);
+    painter.text(
+        from + Vec2::new(width / 2.0, 0.0),
+        Align2::CENTER_CENTER,
+        crate::icons::FLOW,
+        FontId::new(16.0 * zoom, crate::icons::family()),
+        color,
+    );
 }
 
 /// `base` moved toward `tint` by `amount` (0 keeps `base`, 1 is `tint`).
@@ -2228,10 +2403,14 @@ fn mix(base: Color32, tint: Color32, amount: f32) -> Color32 {
 fn port_type_label(definition: &str, ty: &str) -> String {
     if ty == "$T" {
         match definition {
-            "org.orange.math/greater" | "org.orange.math/greater-or-equal"
-            | "org.orange.math/less" | "org.orange.math/less-or-equal" => return "Ordered".into(),
-            "org.orange.math/float-greater" | "org.orange.math/float-greater-or-equal"
-            | "org.orange.math/float-less" | "org.orange.math/float-less-or-equal" => return "Float".into(),
+            "org.orange.math/greater"
+            | "org.orange.math/greater-or-equal"
+            | "org.orange.math/less"
+            | "org.orange.math/less-or-equal" => return "Ordered".into(),
+            "org.orange.math/float-greater"
+            | "org.orange.math/float-greater-or-equal"
+            | "org.orange.math/float-less"
+            | "org.orange.math/float-less-or-equal" => return "Float".into(),
             _ => {}
         }
     }
@@ -2251,8 +2430,11 @@ fn short_type(ty: &str) -> String {
 /// so every node of one package shares it.
 fn family_color(definition: &str) -> Color32 {
     match definition {
-        "core/get-variable" | "core/set-variable" | "core/update-variable"
-        | "core/set-shared" | "core/update-shared" => return Color32::from_rgb(75, 154, 120),
+        "core/get-variable"
+        | "core/set-variable"
+        | "core/update-variable"
+        | "core/set-shared"
+        | "core/update-shared" => return Color32::from_rgb(75, 154, 120),
         _ => {}
     }
     let family = definition.split('/').next().unwrap_or(definition);
@@ -2334,6 +2516,37 @@ mod tests {
     }
 
     #[test]
+    fn package_reference_controls_fit_free_rows_and_reserve_space_when_both_sides_are_full() {
+        let mut source = node(
+            1,
+            vec![port("out", false, true), port("level", false, false)],
+        );
+        source.definition = "org.example.analysis/detect".into();
+        source
+            .references
+            .push(("/source".into(), orange_host::ReferenceKind::Connection));
+        assert_eq!(connection_row(&source), Some(0));
+        assert_eq!(
+            node_size(&source).y,
+            BODY_TOP + 2.0 * ROW_HEIGHT + FOOTER_HEIGHT
+        );
+        source
+            .ports
+            .extend([port("in", true, true), port("gain", true, false)]);
+        assert_eq!(connection_row(&source), Some(2));
+        let graph = GraphView {
+            nodes: vec![source],
+            wires: vec![],
+        };
+        let geometry = Geometry::new(&graph);
+        assert_eq!(geometry.size(id(1)), node_size(&graph.nodes[0]));
+        assert_eq!(
+            node_size(&graph.nodes[0]).y,
+            BODY_TOP + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
+        );
+    }
+
+    #[test]
     fn a_card_is_as_tall_as_its_longer_side_and_ports_sit_on_its_edges() {
         let graph = graph();
         assert_eq!(
@@ -2355,6 +2568,31 @@ mod tests {
         );
         // A port is looked for on its own side only.
         assert_eq!(port_offset(third, "b", false), None);
+    }
+
+    #[test]
+    fn the_last_selected_card_stays_in_front_for_wire_drops() {
+        let mut graph = graph();
+        graph.nodes[1].position = Some([0.0, 0.0]);
+        graph.nodes[2].position = Some([0.0, 0.0]);
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        let at = Pos2::new(0.0, BODY_TOP + ROW_HEIGHT / 2.0);
+        canvas.select(Some(graph.nodes[1].id));
+        canvas.select(None);
+        assert_eq!(
+            canvas
+                .input_at(&graph, at, true, graph.nodes[0].id)
+                .map(|(node, _)| node),
+            Some(graph.nodes[1].id)
+        );
+        canvas.select(Some(graph.nodes[2].id));
+        assert_eq!(
+            canvas
+                .input_at(&graph, at, true, graph.nodes[0].id)
+                .map(|(node, _)| node),
+            Some(graph.nodes[2].id)
+        );
     }
 
     #[test]
@@ -2742,7 +2980,10 @@ mod tests {
         assert_eq!(short_type("org.orange.audio/stream@1"), "Audio stream");
         assert_eq!(short_type("$T"), "T");
         assert_eq!(port_type_label("org.orange.math/greater", "$T"), "Ordered");
-        assert_eq!(port_type_label("org.orange.math/float-greater", "$T"), "Float");
+        assert_eq!(
+            port_type_label("org.orange.math/float-greater", "$T"),
+            "Float"
+        );
         // The way in and the way on read as Enter and Exit; other ports keep their names.
         assert_eq!(
             step_label(&port("in", true, true)).as_deref(),
@@ -2934,11 +3175,15 @@ mod run_state_tests {
         assert!(canvas.is_stale() && canvas.failure(b).is_some());
         canvas.show_value(b, "result".into(), "9".into(), "9".into());
         assert_eq!(
-            canvas.port_sample(&graph, b, "value", true).map(|(_, stale)| stale),
+            canvas
+                .port_sample(&graph, b, "value", true)
+                .map(|(_, stale)| stale),
             Some(true)
         );
         assert_eq!(
-            canvas.port_sample(&graph, b, "result", false).map(|(_, stale)| stale),
+            canvas
+                .port_sample(&graph, b, "result", false)
+                .map(|(_, stale)| stale),
             Some(false)
         );
         canvas.recover(b);
