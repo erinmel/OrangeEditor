@@ -374,9 +374,11 @@ pub fn inspect(value: &Value) -> String {
         | Value::Record(_)
         | Value::Enum { .. }
         | Value::Some(_)
-        | Value::Err(_) => {
-            bounded_text(format_args!("{value:#?}"), MAX_INSPECT_CHARS, "\n… truncated")
-        }
+        | Value::Err(_) => bounded_text(
+            format_args!("{value:#?}"),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
         other => plain(other),
     }
 }

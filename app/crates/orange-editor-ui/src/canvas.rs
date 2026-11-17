@@ -12,13 +12,13 @@ use orange_host::{GraphView, NodeId, NodeView, PortView};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
-pub const NODE_WIDTH: f32 = 236.0;
+pub const NODE_WIDTH: f32 = 260.0;
 /// Height of a card's title.
 pub const HEADER_HEIGHT: f32 = 34.0;
 /// Where the first row of ports starts: under the title, with a little room.
 pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
-pub const ROW_HEIGHT: f32 = 32.0;
+pub const ROW_HEIGHT: f32 = 44.0;
 /// How round a card's corners are, in graph units.
 const CARD_RADIUS: f32 = 8.0;
 
@@ -43,8 +43,6 @@ const CONTROLS_ZOOM: f32 = 0.75;
 const CARD_PADDING: f32 = 12.0;
 /// Height of a field or control in a row of a card.
 const FIELD_HEIGHT: f32 = 20.0;
-/// Width of the control for an input's value on a card.
-const CONTROL_WIDTH: f32 = 96.0;
 
 /// How a value on an input is changed on its card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,27 +71,13 @@ impl Control {
 /// The size of a node's card in graph units: a title and one row for each input beside
 /// an output. A node with no ports yet keeps one row, which says to set it up.
 pub fn node_size(node: &NodeView) -> Vec2 {
-    let inputs = node.ports.iter().filter(|port| port.input).count();
-    let outputs = node.ports.len() - inputs;
-    Vec2::new(
-        NODE_WIDTH,
-        card_height(&node.definition, inputs.max(outputs))
-            + connection_footer(node)
-            + settings::height(node),
-    )
+    card_layout::CardLayout::new(node).size
 }
 
-pub(crate) fn card_height(definition: &str, rows: usize) -> f32 {
-    #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let rows = rows.max(1) as f32;
-    BODY_TOP + rows * ROW_HEIGHT + FOOTER_HEIGHT + extra_row(definition)
-}
-
-fn extra_row(definition: &str) -> f32 {
-    if definition == "core/on-manual" || comparison_formula(definition).is_some() {
-        ROW_HEIGHT
-    } else {
-        0.0
+pub(crate) fn card_height(_definition: &str, rows: usize) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
+    {
+        BODY_TOP + rows.max(1) as f32 * ROW_HEIGHT + FOOTER_HEIGHT
     }
 }
 
@@ -109,24 +93,26 @@ fn connection_row(node: &NodeView) -> Option<usize> {
 }
 
 pub(super) fn connection_footer(node: &NodeView) -> f32 {
-    connection_row(node).map_or(0.0, |row| {
-        let outputs = node.ports.iter().filter(|port| !port.input).count();
-        if row < outputs { 0.0 } else { ROW_HEIGHT }
-    })
+    if connection_row(node).is_some() {
+        card_layout::SOURCE_ROW
+    } else {
+        0.0
+    }
 }
 
-/// Where a port's dot is, relative to the top left corner of its node's card.
+/// A port position from the same template used to paint the card.
 pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
-    let row = node
+    let index = node
         .ports
         .iter()
-        .filter(|candidate| candidate.input == input)
-        .position(|candidate| candidate.id == port)?;
-    #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let y = BODY_TOP + (row as f32 + 0.5) * ROW_HEIGHT;
-    Some(Vec2::new(if input { 0.0 } else { NODE_WIDTH }, y))
+        .position(|candidate| candidate.input == input && candidate.id == port)?;
+    card_layout::CardLayout::new(node)
+        .offsets
+        .get(index)
+        .copied()
 }
 
+mod card_layout;
 mod layout;
 pub use layout::auto_layout;
 mod geometry;
@@ -205,6 +191,7 @@ pub struct Shown {
 struct PortSample {
     shown: Shown,
     epoch: u64,
+    preview: bool,
 }
 
 /// A problem shown on the canvas, on the node or wire it is about.
@@ -647,7 +634,7 @@ impl Canvas {
                 // From a little left of the dot to past the middle of the card.
                 let row = Rect::from_min_max(
                     place + Vec2::new(-14.0, offset.y - ROW_HEIGHT / 2.0),
-                    place + Vec2::new(NODE_WIDTH * 0.6, offset.y + ROW_HEIGHT / 2.0),
+                    place + Vec2::new(card_layout::width(node) * 0.6, offset.y + ROW_HEIGHT / 2.0),
                 );
                 if row.contains(at) {
                     return Some((node.id, port.id.clone()));
@@ -764,8 +751,28 @@ impl Canvas {
             PortSample {
                 shown: Shown { short, full },
                 epoch: self.value_epoch,
+                preview: false,
             },
         );
+    }
+
+    /// Authoring samples stay current independently of a running flow.
+    pub(crate) fn show_preview(&mut self, node: NodeId, port: String, short: String, full: String) {
+        self.show_value(node, port.clone(), short, full);
+        if let Some(sample) = self
+            .values
+            .get_mut(&node)
+            .and_then(|ports| ports.get_mut(&port))
+        {
+            sample.preview = true;
+        }
+    }
+
+    pub(crate) fn clear_previews(&mut self) {
+        self.values.retain(|_, ports| {
+            ports.retain(|_, sample| !sample.preview);
+            !ports.is_empty()
+        });
     }
 
     /// A node's step failed, for `why`: the node keeps an error badge until it
@@ -829,7 +836,10 @@ impl Canvas {
             (node, port)
         };
         let sample = self.output_sample(node, port)?;
-        Some((&sample.shown, sample.epoch != self.value_epoch))
+        Some((
+            &sample.shown,
+            !sample.preview && sample.epoch != self.value_epoch,
+        ))
     }
 
     fn output_sample(&self, node: NodeId, port: &str) -> Option<&PortSample> {
@@ -1451,6 +1461,29 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            if controls && settings::has_advanced(node) {
+                let slot = Rect::from_center_size(
+                    rect.right_top() + Vec2::new(-40.0 * zoom, HEADER_HEIGHT * zoom / 2.0),
+                    Vec2::splat(24.0 * zoom),
+                );
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .max_rect(slot)
+                        .id_salt(("node-options", node.id)),
+                    |ui| {
+                        ui.menu_button(
+                            crate::icons::text(crate::icons::MORE).size(16.0 * zoom),
+                            |ui| {
+                                if let Some((pointer, value)) = settings::menu(ui, node) {
+                                    done.set_config = Some((node.id, pointer, value));
+                                }
+                            },
+                        )
+                        .response
+                        .on_hover_text("Numeric policies");
+                    },
+                );
+            }
             if controls
                 && front_rect
                     .is_none_or(|front_rect| front == Some(node.id) || !front_rect.intersects(rect))
@@ -1458,19 +1491,22 @@ impl Canvas {
             {
                 done.set_config = Some((node.id, pointer, value));
             }
-            if controls && let Some(row) = connection_row(node) {
+            if controls && connection_row(node).is_some() {
                 let label = self
                     .connection_labels
                     .get(&node.definition)
                     .map_or("Configure", String::as_str);
-                #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-                let y = BODY_TOP + (row as f32 + 0.5) * ROW_HEIGHT;
-                let slot = Rect::from_center_size(
-                    Pos2::new(
-                        rect.left() + (CARD_PADDING + CONTROL_WIDTH / 2.0) * zoom,
-                        rect.top() + y * zoom,
-                    ),
-                    Vec2::new(CONTROL_WIDTH * zoom, FIELD_HEIGHT * zoom),
+                let y = card_layout::CardLayout::new(node).source_top;
+                let slot = Rect::from_min_size(
+                    rect.min + Vec2::new(CARD_PADDING, y + 19.0) * zoom,
+                    Vec2::new(rect.width() - 2.0 * CARD_PADDING * zoom, 44.0 * zoom),
+                );
+                painter.text(
+                    slot.left_top() - Vec2::new(0.0, 9.0 * zoom),
+                    Align2::LEFT_CENTER,
+                    label,
+                    FontId::proportional(11.5 * zoom),
+                    colors.weak,
                 );
                 let covered = front != Some(node.id)
                     && front_rect.is_some_and(|rect| rect.contains(slot.center()));
@@ -1494,7 +1530,7 @@ impl Canvas {
                             |ui| {
                                 egui::ComboBox::from_id_salt("endpoint")
                                     .width(slot.width())
-                                    .truncate()
+                                    .wrap_mode(egui::TextWrapMode::Wrap)
                                     .selected_text(egui::RichText::new(shown).size(11.5 * zoom))
                                     .show_ui(ui, |ui| {
                                         picked |= ui
@@ -1532,7 +1568,9 @@ impl Canvas {
                                             }
                                             ui.separator();
                                         }
-                                    });
+                                    })
+                                    .response
+                                    .on_hover_text(shown);
                             },
                         );
                         if picked && (chosen != picker.selected || picker.connection.is_none()) {
@@ -1550,7 +1588,11 @@ impl Canvas {
             }
             // Values a run put on ports: beside each output, and beside each wired
             // input the value it receives. Cut short here; the inspector has them whole.
-            for port in node.ports.iter().filter(|port| !port.exec) {
+            for port in node
+                .ports
+                .iter()
+                .filter(|port| !port.exec && !(card_layout::literal(node) && !port.input))
+            {
                 let (Some(value), Some(at)) = (
                     self.frame_port_value(&geometry, node.id, &port.id, port.input),
                     geometry
@@ -1562,21 +1604,33 @@ impl Canvas {
                 if zoom < 0.6 {
                     continue;
                 }
-                let font = FontId::monospace(10.5 * zoom);
+                let font = FontId::monospace(11.5 * zoom);
                 let inset = CARD_PADDING * zoom;
                 let (x, align) = if port.input {
                     (inset, Align2::LEFT_CENTER)
                 } else {
                     (-inset, Align2::RIGHT_CENTER)
                 };
-                let room = rect.width() / 2.0 - 2.0 * inset;
-                let tint = if value.epoch == self.value_epoch {
+                let room = if card_layout::path_port(node, port) {
+                    rect.width() - 2.0 * inset
+                } else {
+                    rect.width() / 2.0 - 2.0 * inset
+                };
+                let tint = if value.preview || value.epoch == self.value_epoch {
                     colors.text
                 } else {
-                    colors.weak.gamma_multiply(0.5)
+                    colors.weak
                 };
                 let (shown, _) = elide(&painter, &value.shown.short, &font, room);
-                let _ = painter.text(at + Vec2::new(x, 10.5 * zoom), align, shown, font, tint);
+                let text_at = at + Vec2::new(x, 0.0);
+                let galley = painter.layout_no_wrap(shown, font, tint);
+                let bounds = align.anchor_rect(Rect::from_min_size(text_at, galley.size()));
+                painter.rect_filled(
+                    bounds.expand2(Vec2::new(5.0, 2.0) * zoom),
+                    3.0 * zoom,
+                    colors.background,
+                );
+                painter.galley(bounds.min, galley, tint);
             }
             for (port, slot) in slots {
                 if !area.contains_rect(slot)
@@ -1590,9 +1644,25 @@ impl Canvas {
                     .iter()
                     .find(|path| file_dialogs && path.port == port.id)
                 {
-                    let label = if path.folder { "Folder…" } else { "File…" };
+                    let current = port.value.as_deref().map(field_text).unwrap_or_default();
+                    let label = std::path::Path::new(&current)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| {
+                            if path.folder {
+                                "Choose folder…"
+                            } else {
+                                "Choose file…"
+                            }
+                            .into()
+                        });
                     let response = ui
-                        .put(slot, egui::Button::new(label))
+                        .put(
+                            slot,
+                            egui::Button::new((crate::icons::text(crate::icons::OPEN), label))
+                                .truncate(),
+                        )
                         .on_hover_text(port.value.as_deref().unwrap_or("Choose a path"));
                     if response.clicked() {
                         self.front = Some(node.id);
@@ -1996,6 +2066,14 @@ fn draw_mark(
     id: egui::Id,
 ) -> bool {
     let center = mark_position(rect, zoom);
+    let color = colors.problem(mark.error);
+    painter.circle_filled(center, 9.0 * zoom.max(0.75), color.gamma_multiply(0.18));
+    painter.rect_stroke(
+        rect,
+        CARD_RADIUS * zoom,
+        Stroke::new(1.2, color),
+        StrokeKind::Outside,
+    );
     painter.text(
         center,
         Align2::CENTER_CENTER,
@@ -2010,7 +2088,18 @@ fn draw_mark(
     let area = Rect::from_center_size(center, Vec2::splat(20.0 * zoom.max(0.75)));
     let response = ui.interact(area, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &mark.text));
-    response.on_hover_text(&mark.text).clicked()
+    response
+        .on_hover_ui(|ui| {
+            ui.set_max_width(360.0);
+            ui.strong(if mark.error {
+                "Node needs attention"
+            } else {
+                "Node warning"
+            });
+            ui.label(&mark.text);
+            ui.small("Click to open details");
+        })
+        .clicked()
 }
 
 fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
@@ -2098,7 +2187,13 @@ fn draw_node<'a>(
             draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
             left.x += 19.0 * zoom;
         }
-        let room = clip.right() - left.x - 20.0 * zoom;
+        let room = clip.right()
+            - left.x
+            - if settings::has_advanced(node) {
+                52.0 * zoom
+            } else {
+                20.0 * zoom
+            };
         let (shown, cut) = elide(painter, name, &title, room);
         let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
         let detail = node
@@ -2132,11 +2227,7 @@ fn draw_node<'a>(
         }
         if let Some(live) = fire {
             let size = Vec2::new(64.0, 22.0) * zoom;
-            let y = if extra_row(&node.definition) > 0.0 {
-                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0 + settings::height(node)) * zoom
-            } else {
-                rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom
-            };
+            let y = rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom;
             let button = Rect::from_center_size(
                 Pos2::new(rect.left() + CARD_PADDING * zoom + size.x / 2.0, y),
                 size,
@@ -2162,54 +2253,39 @@ fn draw_node<'a>(
                 small.clone(),
                 if live { colors.card } else { colors.weak },
             );
+            touched.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, live, "Fire manual trigger")
+            });
             pressed = live && touched.clicked();
         } else if let Some(formula) = formula {
-            let font = FontId::monospace(13.0 * zoom);
-            let (formula, _) = elide(painter, formula, &font, room);
-            let at = Pos2::new(
-                rect.center().x,
-                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0 + settings::height(node)) * zoom,
-            );
-            let _ = painter.text(at, Align2::CENTER_CENTER, formula, font, colors.text);
+            ui.interact(
+                header,
+                canvas.with(("formula-help", node.id)),
+                Sense::hover(),
+            )
+            .on_hover_text(formula);
         }
     }
 
     // Where an input's value may reach: the middle of the card when an output shares
     // its row, else the card's inner right edge.
+    let layout = card_layout::CardLayout::new(node);
     let shared_rows = node.ports.iter().filter(|port| !port.input).count();
-    // The values of a card's inputs start in one column, after its longest input name,
-    // but never past the middle of the card.
-    let names = FontId::proportional(12.5 * zoom);
-    let longest = node
-        .ports
-        .iter()
-        .filter(|port| port.input && !port.exec && readable)
-        .map(|port| {
-            painter
-                .layout_no_wrap(port_title(port), names.clone(), colors.text)
-                .size()
-                .x
-        })
-        .fold(0.0, f32::max);
-    let value_start =
-        (rect.min.x + (CARD_PADDING + 10.0) * zoom + longest).min(rect.center().x - 10.0 * zoom);
-    let (mut inputs, mut outputs) = (0usize, 0usize);
+    #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
+    let shared_end = BODY_TOP + shared_rows as f32 * ROW_HEIGHT;
     let mut slots = Vec::new();
-    for port in &node.ports {
-        let row = if port.input {
-            &mut inputs
+    for (port, offset) in node.ports.iter().zip(&layout.offsets) {
+        let y = rect.top() + offset.y * zoom;
+        let x = if port.input {
+            rect.left()
         } else {
-            &mut outputs
+            rect.right()
         };
-        let index = *row;
-        *row += 1;
-        #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-        let y = rect.min.y + (BODY_TOP + (index as f32 + 0.5) * ROW_HEIGHT) * zoom;
-        let x = if port.input { rect.min.x } else { rect.max.x };
-        let value_end = if index < shared_rows {
-            rect.center().x + 6.0 * zoom
+        let path = card_layout::path_port(node, port);
+        let value_end = if !path && offset.y < shared_end && !card_layout::literal(node) {
+            rect.center().x - 8.0 * zoom
         } else {
-            rect.max.x - CARD_PADDING * zoom
+            rect.right() - CARD_PADDING * zoom
         };
         // Toggles and numbers are drawn by their control instead of a field.
         let control = Control::of(port).filter(|_| controls && readable);
@@ -2221,18 +2297,19 @@ fn draw_node<'a>(
             ),
             hinted: control.is_none(),
             definition: &node.definition,
-            value_start,
             value_end,
+            compact: card_layout::literal(node),
+            label_room: rect.width() / 2.0 - 2.0 * CARD_PADDING * zoom,
         };
-        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, style)
+        if draw_port(painter, port, Pos2::new(x, y), zoom, colors, style).is_some()
             && let Some(control) = control
         {
             let height = FIELD_HEIGHT * zoom;
-            let left = (label.max.x + 8.0 * zoom).max(value_start);
+            let left = rect.left() + CARD_PADDING * zoom;
             let width = match control {
                 Control::Toggle => 48.0 * zoom,
                 Control::Whole | Control::Number => {
-                    (value_end - left).clamp(36.0 * zoom, CONTROL_WIDTH * zoom)
+                    (value_end - left).clamp(36.0 * zoom, 140.0 * zoom)
                 }
                 Control::Text => (value_end - left).max(36.0 * zoom),
             };
@@ -2245,7 +2322,8 @@ fn draw_node<'a>(
 }
 
 /// A catalogue card uses the canvas painter, without editable fields or trigger buttons.
-pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, zoom: f32) {
+pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, _zoom: f32) {
+    let zoom = rect.width() / node_size(node).x;
     let painter = ui
         .painter()
         .with_clip_rect(rect.expand(6.0).intersect(ui.clip_rect()));
@@ -2274,10 +2352,10 @@ struct PortStyle<'a> {
     /// A short type is shown beside a value port nothing feeds.
     hinted: bool,
     definition: &'a str,
-    /// Where an input's value starts, unless its name is longer.
-    value_start: f32,
     /// The farthest right an input's value reaches.
     value_end: f32,
+    compact: bool,
+    label_room: f32,
 }
 
 /// Draws a port's dot and name, an input's value as a field, and a short type
@@ -2325,7 +2403,7 @@ fn draw_port(
     let hint = FontId::proportional(10.5 * zoom);
     let gap = CARD_PADDING * zoom;
     let name = port_title(port);
-    let label_room = (NODE_WIDTH / 2.0 - 2.0 * CARD_PADDING) * zoom;
+    let label_room = style.label_room;
     if port.exec {
         // Steps read as on a flow chart: the way in is a tinted row inside the card,
         // the ways on are named with an arrow toward their dot.
@@ -2364,15 +2442,22 @@ fn draw_port(
     // What a value port takes or gives, when nothing on the card says it already.
     // Keep data labels clear of the second line used by live values. Long names
     // stay on their side of the card; the port hover exposes the complete label.
-    let label_at = at - Vec2::new(0.0, 4.0 * zoom);
-    let (name, _) = elide(painter, &name, &font, label_room);
-    let type_hint = (style.hinted && !port.connected && !(port.input && port.value.is_some()))
-        .then(|| {
-            port.ty
-                .as_deref()
-                .map(|ty| port_type_label(style.definition, ty))
-        })
-        .flatten();
+    let label_at = at - Vec2::new(0.0, 15.0 * zoom);
+    let name = if style.compact {
+        String::new()
+    } else {
+        elide(painter, &name, &font, label_room).0
+    };
+    let type_hint = (style.hinted
+        && !port.connected
+        && port.ty.as_deref().is_some_and(|ty| ty.contains('$'))
+        && !(port.input && port.value.is_some()))
+    .then(|| {
+        port.ty
+            .as_deref()
+            .map(|ty| port_type_label(style.definition, ty))
+    })
+    .flatten();
     if !port.input {
         let label = painter.text(
             label_at - Vec2::new(gap, 0.0),
@@ -2395,7 +2480,7 @@ fn draw_port(
         return None;
     }
     let label = painter.text(
-        if port.connected { label_at } else { at } + Vec2::new(gap, 0.0),
+        label_at + Vec2::new(gap, 0.0),
         Align2::LEFT_CENTER,
         &name,
         font.clone(),
@@ -2421,7 +2506,7 @@ fn draw_port(
         None => None,
     };
     if let Some((value, ink)) = shown.filter(|_| !port.connected && style.field) {
-        let left = (label.max.x + 8.0 * zoom).max(style.value_start);
+        let left = at.x + gap;
         let room = style.value_end - left;
         let pad = 6.0 * zoom;
         if room > 3.0 * pad {
@@ -2445,7 +2530,7 @@ fn draw_port(
                 Stroke::new(1.0, colors.outline),
                 StrokeKind::Inside,
             );
-            let place = Pos2::new(field.min.x + pad, at.y - text.size().y / 2.0);
+            let place = Pos2::new(field.min.x + pad, field.center().y - text.size().y / 2.0);
             painter.galley(place, text, ink);
         }
     }
@@ -2625,7 +2710,7 @@ mod tests {
     }
 
     #[test]
-    fn package_reference_controls_fit_free_rows_and_reserve_space_when_both_sides_are_full() {
+    fn package_reference_controls_have_a_dedicated_full_width_row() {
         let mut source = node(
             1,
             vec![port("out", false, true), port("level", false, false)],
@@ -2637,7 +2722,7 @@ mod tests {
         assert_eq!(connection_row(&source), Some(0));
         assert_eq!(
             node_size(&source).y,
-            BODY_TOP + 2.0 * ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + 2.0 * ROW_HEIGHT + card_layout::SOURCE_ROW + FOOTER_HEIGHT
         );
         source
             .ports
@@ -2651,7 +2736,7 @@ mod tests {
         assert_eq!(geometry.size(id(1)), node_size(&graph.nodes[0]));
         assert_eq!(
             node_size(&graph.nodes[0]).y,
-            BODY_TOP + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + 2.0 * ROW_HEIGHT + card_layout::SOURCE_ROW + FOOTER_HEIGHT
         );
     }
 
@@ -2673,7 +2758,10 @@ mod tests {
         );
         assert_eq!(
             port_offset(&graph.nodes[1], "then", false),
-            Some(Vec2::new(NODE_WIDTH, BODY_TOP + 0.5 * ROW_HEIGHT))
+            Some(Vec2::new(
+                node_size(&graph.nodes[1]).x,
+                BODY_TOP + 0.5 * ROW_HEIGHT
+            ))
         );
         // A port is looked for on its own side only.
         assert_eq!(port_offset(third, "b", false), None);

@@ -111,13 +111,34 @@ impl Editor {
             .as_ref()
             .and_then(|id| picker.options.iter().find(|(key, _)| key == id))
             .map_or_else(|| picker.default_label.clone(), |(_, label)| label.clone());
+        let shared = picker.connection.as_ref().is_some_and(|connection| {
+            self.document.as_ref().is_some_and(|document| {
+                document.graph.nodes.iter().any(|other| {
+                    other.id != node
+                        && other.references.iter().any(|(pointer, kind)| {
+                            *kind == ReferenceKind::Connection
+                                && other
+                                    .settings
+                                    .pointer(pointer)
+                                    .and_then(serde_json::Value::as_str)
+                                    == connection.id.as_deref()
+                        })
+                })
+            })
+        });
         let mut connection = picker.connection.unwrap_or(Connection {
             id: None,
-            name,
+            name: name.clone(),
             adapter: picker.adapter,
             scope: ConnectionScope::Graph,
             settings: serde_json::json!({}),
         });
+        // Inline selection edits this card, not every card sharing its source.
+        // Explicit edits in Connections remain shared edits.
+        if shared {
+            connection.id = None;
+            connection.name = name;
+        }
         connection.settings = declarations::with_setting(&connection.settings, "device", device);
         declarations::set_text(&mut connection.settings, "file", None);
         if let Some(id) = self.declare_connection(host, &connection) {

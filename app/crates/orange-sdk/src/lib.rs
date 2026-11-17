@@ -965,8 +965,10 @@ pub const PACKAGE_SYMBOL: &str = "orange_plugin_package";
 /// Makes a `cdylib` crate a native plugin library: exports the function that returns
 /// its [`ServicePackage`] and the [`ABI`] it was built with.
 ///
-/// ```ignore
-/// fn package() -> orange_sdk::ServicePackage { /* nodes, triggers, adapters */ }
+/// ```no_run
+/// fn package() -> orange_sdk::ServicePackage {
+///     orange_sdk::ServicePackage::new("org.example.demo", "1.0.0")
+/// }
 /// orange_sdk::export_plugin!(package);
 /// ```
 ///

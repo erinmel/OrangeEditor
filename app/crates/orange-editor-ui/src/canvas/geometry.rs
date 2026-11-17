@@ -1,7 +1,7 @@
 //! Borrowed, frame-local geometry: one port walk instead of node scans per wire.
 //! Rebuilding from the supplied view keeps standalone Canvas callers free of cache
 //! invalidation obligations. Positions are read separately so dragging is immediate.
-use super::{BODY_TOP, NODE_WIDTH, ROW_HEIGHT, card_height, connection_footer};
+use super::card_layout::CardLayout;
 use egui::{Pos2, Rect, Vec2};
 use orange_host::{GraphView, NodeId};
 use std::collections::HashMap;
@@ -24,25 +24,16 @@ impl<'a> Geometry<'a> {
         let mut ports = HashMap::with_capacity(graph.nodes.iter().map(|n| n.ports.len()).sum());
         let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
-            let mut rows = [0usize; 2];
-            for port in &node.ports {
-                let row = &mut rows[usize::from(port.input)];
-                #[expect(clippy::cast_precision_loss, reason = "screen coordinates")]
-                let y = BODY_TOP + (*row as f32 + 0.5) * ROW_HEIGHT;
-                // Match port_offset: first occurrence on this side wins, even for
-                // an incomplete or malformed view supplied by an embedding host.
+            let layout = CardLayout::new(node);
+            for (port, offset) in node.ports.iter().zip(layout.offsets) {
                 let _ = ports
                     .entry((node.id, port.input, port.id.as_str()))
                     .or_insert(PortGeometry {
-                        offset: Vec2::new(if port.input { 0.0 } else { NODE_WIDTH }, y),
+                        offset,
                         ty: port.ty.as_deref(),
                     });
-                *row += 1;
             }
-            let height = card_height(&node.definition, rows[0].max(rows[1]))
-                + connection_footer(node)
-                + super::settings::height(node);
-            let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
+            let _ = sizes.insert(node.id, layout.size);
             let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
             if let (Some(port), None) = (exec.next(), exec.next()) {
                 let _ = sole_exec_outputs.insert(node.id, port.id.as_str());

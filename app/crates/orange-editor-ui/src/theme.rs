@@ -25,6 +25,9 @@ pub fn apply(ctx: &egui::Context) {
             widgets.active.bg_fill = rgb(50, 66, 86);
             widgets.active.weak_bg_fill = rgb(50, 66, 86);
         }
+        style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        style.visuals.widgets.active.bg_stroke = style.visuals.selection.stroke;
         ctx.set_style_of(theme, style);
     }
 }

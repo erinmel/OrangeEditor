@@ -206,7 +206,8 @@ pub(crate) struct PreviewCache {
 impl PreviewCache {
     pub fn height(&mut self, host: &Host, definition: &str) -> f32 {
         if let Some(Some(card)) = self.cards.get(definition) {
-            return crate::canvas::node_size(card).y;
+            let size = crate::canvas::node_size(card);
+            return size.y * crate::canvas::NODE_WIDTH / size.x;
         }
         crate::canvas::card_height(definition, self.rows(host, definition))
     }

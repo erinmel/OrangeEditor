@@ -1,0 +1,180 @@
+//! Regression checks exercise the editor through its editing and painting paths.
+use super::*;
+
+fn text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::epaint::TextShape> {
+    fn collect<'a>(shape: &'a egui::Shape, out: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for shape in shapes {
+        collect(&shape.shape, &mut out);
+    }
+    out
+}
+
+#[test]
+fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
+    for width in [820.0, 1280.0, 1600.0] {
+        for native in [false, true] {
+            let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+            let mut editor = Editor::new();
+            editor.file_dialogs = true;
+            editor.window_toolbar = native;
+            let ctx = egui::Context::default();
+            icons::install(&ctx);
+            for _ in 0..3 {
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 600.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| editor.toolbar(ui, &mut host),
+                );
+                let texts = text_shapes(&output.shapes);
+                let at = |icon: char| {
+                    texts
+                        .iter()
+                        .find(|text| text.galley.job.text == icon.to_string())
+                        .unwrap()
+                        .pos
+                };
+                let left = at(icons::NEW);
+                for icon in [
+                    icons::OPEN,
+                    icons::SAVE,
+                    icons::CHECK,
+                    icons::RUN,
+                    icons::STOP,
+                    icons::SETTINGS,
+                ] {
+                    assert!(
+                        (at(icon).y - left.y).abs() < 1.0,
+                        "{width}, native={native}, {icon}"
+                    );
+                }
+                if native {
+                    assert!(at(icons::CLOSE).x > width - 50.0);
+                }
+                output.drop_without_applying_deltas();
+            }
+        }
+    }
+}
+
+#[test]
+fn editing_a_running_128_absolute_chain_repaints_the_new_values() {
+    let (mut host, events) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&host.bind(&tests::graph()).unwrap()).unwrap();
+    let source = host
+        .add_node(&mut draft, "core/whole-number", [-400.0, 0.0])
+        .unwrap();
+    host.set_input(&mut draft, (source, "value"), Some("-187"))
+        .unwrap();
+    let mut previous = source;
+    for index in 0..128 {
+        let at = if index == 127 {
+            [0.0, 0.0]
+        } else {
+            [-800.0, 0.0]
+        };
+        let next = host
+            .add_node(&mut draft, "org.orange.math/absolute", at)
+            .unwrap();
+        host.connect(&mut draft, (previous, "result"), (next, "value"))
+            .unwrap();
+        previous = next;
+    }
+    let mut editor = Editor::new();
+    editor.open(&mut host, "chain.json", draft.text().unwrap());
+    editor.run(&mut host);
+    assert!(editor.is_running(), "{:?}", editor.problems());
+    assert!(editor.set_input(&mut host, (source, "value"), Some("-188")));
+    editor.take_events(&events);
+    let graph = editor.graph().unwrap().clone();
+    editor.canvas.focus(&graph, previous);
+    let ctx = egui::Context::default();
+    icons::install(&ctx);
+    for _ in 0..3 {
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    editor.canvas.show(ui, &graph, &[]);
+                });
+            },
+        );
+        let visible = text_shapes(&output.shapes)
+            .iter()
+            .filter(|text| text.galley.job.text == "188")
+            .count();
+        assert!(
+            visible >= 2,
+            "the last card must paint both received and produced values, got {visible}"
+        );
+        output.drop_without_applying_deltas();
+    }
+    editor.stop(&mut host);
+}
+
+#[test]
+fn changing_one_audio_card_to_loopback_leaves_the_other_source_unchanged() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut editor = Editor::new();
+    editor.open(
+        &mut host,
+        "audio.json",
+        orange_host::new_document().unwrap(),
+    );
+    let mic = editor.add_node(&mut host, orange_audio::AUDIO_IN).unwrap();
+    let band = editor
+        .add_node(&mut host, orange_audio::ON_BAND_LEVEL)
+        .unwrap();
+    let pointer = |editor: &Editor, id| {
+        editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .settings["connection"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(pointer(&editor, mic), pointer(&editor, band));
+    editor.prepare_devices(&host);
+    let original = pointer(&editor, mic);
+    editor.choose_device(&mut host, band, Some("loopback:".into()));
+    assert_eq!(pointer(&editor, mic), original);
+    assert_ne!(pointer(&editor, band), original);
+    let source = editor
+        .declarations()
+        .unwrap()
+        .connections
+        .iter()
+        .find(|connection| connection.id.as_deref() == Some(original.as_str()))
+        .unwrap();
+    assert_ne!(source.settings["device"], "loopback:");
+}

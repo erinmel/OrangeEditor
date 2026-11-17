@@ -3123,6 +3123,7 @@ dependencies = [
  "orange-files",
  "orange-host",
  "orange-net",
+ "orange-sdk",
  "orange-vault",
  "rfd",
  "serde_json",
@@ -3134,6 +3135,7 @@ version = "0.0.0"
 dependencies = [
  "egui",
  "egui_material_icons",
+ "orange-audio",
  "orange-host",
  "serde_json",
 ]

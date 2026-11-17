@@ -44,12 +44,19 @@ pub fn auto_layout(graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
             }
         }
     }
+    let mut widths = vec![NODE_WIDTH; graph.nodes.len()];
+    for (index, node) in graph.nodes.iter().enumerate() {
+        widths[column[index]] = widths[column[index]].max(node_size(node).x);
+    }
+    let mut starts = vec![0.0; graph.nodes.len()];
+    for index in 1..starts.len() {
+        starts[index] = starts[index - 1] + widths[index - 1] + LAYOUT_GAP.x;
+    }
     let mut next_y = vec![0.0; graph.nodes.len()];
     let mut places = BTreeMap::new();
     for (index, node) in graph.nodes.iter().enumerate() {
         let at = column[index];
-        #[expect(clippy::cast_precision_loss, reason = "screen coordinates")]
-        let placed = Pos2::new(at as f32 * (NODE_WIDTH + LAYOUT_GAP.x), next_y[at]);
+        let placed = Pos2::new(starts[at], next_y[at]);
         next_y[at] += node_size(node).y + LAYOUT_GAP.y;
         let place = node.position.map_or(placed, |[x, y]| Pos2::new(x, y));
         let _ = places.insert(node.id, place);

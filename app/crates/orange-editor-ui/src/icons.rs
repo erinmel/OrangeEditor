@@ -37,6 +37,9 @@ pub const LANGUAGE: char = '\u{e8e2}'; // translate
 pub const EXPAND: char = '\u{e5cc}'; // chevron_right
 pub const COLLAPSE: char = '\u{e5cf}'; // expand_more
 pub const SETTINGS: char = '\u{e8b8}'; // settings
+pub const MINIMIZE: char = '\u{e15b}'; // remove
+pub const MAXIMIZE: char = '\u{e3c6}'; // crop_square
+pub const RESTORE: char = '\u{e3e0}'; // filter_none
 pub const CLOSE: char = '\u{e5cd}'; // close
 pub const REFRESH: char = '\u{e5d5}'; // refresh
 pub const MORE: char = '\u{e5d4}'; // more_vert
@@ -84,6 +87,9 @@ pub const ALL: &[char] = &[
     COLLAPSE,
     SETTINGS,
     CLOSE,
+    MINIMIZE,
+    MAXIMIZE,
+    RESTORE,
     REFRESH,
     MORE,
     DRAG,
@@ -155,6 +161,7 @@ pub(crate) fn button(
     let response = ui.add_enabled(
         enabled,
         egui::Button::new(text(icon).size(16.0))
+            .frame(false)
             .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, what));
@@ -179,14 +186,7 @@ pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egu
         enabled,
         egui::Button::new(text(icon).size(16.0).color(color))
             .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(
-                1.0,
-                if enabled {
-                    color
-                } else {
-                    ui.visuals().widgets.noninteractive.bg_stroke.color
-                },
-            ))
+            .frame(false)
             .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
