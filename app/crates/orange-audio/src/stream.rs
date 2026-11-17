@@ -81,6 +81,20 @@ impl Ring {
             .map_or(0.0, |slot| f32::from_bits(slot.load(Ordering::Relaxed)))
     }
 
+    /// Copies the newest samples into `out`, up to its length in whole frames and no
+    /// more than the ring holds, oldest first; returns how many were copied.
+    pub(crate) fn recent(&self, out: &mut [f32]) -> usize {
+        let written = self.written();
+        let frame = usize::from(self.channels);
+        let kept = usize::try_from(written.min(self.len())).unwrap_or(usize::MAX);
+        let count = out.len().min(kept) / frame * frame;
+        let start = written - count as u64;
+        for (offset, slot) in (0u64..).zip(out.iter_mut().take(count)) {
+            *slot = self.sample(start + offset);
+        }
+        count
+    }
+
     /// The device stopped; readers end once they have read what is left.
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);

@@ -15,13 +15,21 @@
 //! and playlists are not provided.
 //!
 //! Live sound travels as an audio stream ([`STREAM_TYPE`]): [`AUDIO_IN`] gives the
-//! sound an input connection captures, and [`AUDIO_OUT`], [`LEVEL`] and [`RECORD`]
-//! take it. The value only names the input; the samples stay in a bounded ring that
-//! the capture callback fills and each consumer reads at its own pace (see `stream`).
+//! sound an input connection captures, and [`AUDIO_OUT`], [`LEVEL`], [`BAND_LEVEL`]
+//! and [`RECORD`] take it. The value only names the input; the samples stay in a
+//! bounded ring that the capture callback fills and each consumer reads at its own pace
+//! (see `stream`).
+//!
+//! An input connection is only a device. Entries that react to it, [`ON_BAND_LEVEL`]
+//! and [`ON_TRANSIENT`], carry their own band and thresholds as node settings and read
+//! the input's one shared capture with their own cursor, on their own threads (see
+//! `analysis`), so several listen to one microphone with different settings and the
+//! capture callback only measures and stores.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod analysis;
 mod device;
 mod level;
 mod mixer;
@@ -34,11 +42,12 @@ pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
 pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 
+use analysis::{BandMeter, Listening, Onsets};
 use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, Emitter, FaultText, KernelFault, Listeners, Probe,
-    RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, SettingField, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
+    Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -115,14 +124,26 @@ pub const OPEN_WAIT: Duration = Duration::from_secs(3);
 pub const SET_VOLUME: &str = "org.orange.audio/set-volume";
 /// Reads the latest measured level of an input connection in dBFS as `level`.
 pub const INPUT_LEVEL: &str = "org.orange.audio/input-level";
-/// Entry fired when an input connection's level reaches its threshold, with the level
-/// as `payload`. It fires again only after the level has fallen to the release level.
+/// The first entry on an input's level, replaced by [`ON_BAND_LEVEL`]: documents that
+/// have it open with On band level instead.
 pub const ON_LEVEL: &str = "org.orange.audio/on-level";
+/// Entry fired when a band of an input connection gets as loud as the node's threshold,
+/// with the level as `payload`; again only after it has fallen to the release level.
+/// Its band, threshold, release, hold and window are its own settings, so several
+/// listen to one device with different thresholds.
+pub const ON_BAND_LEVEL: &str = "org.orange.audio/on-band-level";
+/// Entry fired on each hit in a band of an input connection, such as a kick drum: a
+/// sudden rise of the band's level over its recent average, at most once per gap.
+pub const ON_TRANSIENT: &str = "org.orange.audio/on-transient";
+/// Reads how loud a band of an audio stream is now, in dBFS.
+pub const BAND_LEVEL: &str = "org.orange.audio/band-level";
 
 const DEFAULT_THRESHOLD_DB: f64 = -30.0;
 const DEFAULT_HYSTERESIS_DB: f64 = 6.0;
 const DEFAULT_WINDOW_MS: u64 = 50;
 const POLL: Duration = Duration::from_millis(10);
+/// How often an open input checks that its device still works.
+const DEVICE_CHECK: Duration = Duration::from_millis(100);
 /// How long an input waits before opening its device again after it failed.
 const FIRST_RETRY: Duration = Duration::from_millis(500);
 const MAX_RETRY: Duration = Duration::from_secs(5);
@@ -448,9 +469,7 @@ struct InputShared {
     ring: Mutex<Option<Arc<Ring>>>,
     device: Option<String>,
     window: Duration,
-    gate: Gate,
     levels: Arc<Levels>,
-    listeners: Listeners,
     /// Set once a flow has attached its triggers; the device is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
@@ -487,7 +506,21 @@ impl Drop for InputSession {
 /// The inputs open in this process, by the ID their stream values carry. An entry goes
 /// when its input is dropped, so a stream of a closed input is refused, not reused.
 static SOURCES: Mutex<BTreeMap<u64, Weak<InputShared>>> = Mutex::new(BTreeMap::new());
-static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
+static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
+
+/// A new input's ID. The first is taken from the clock, so a stream value kept from an
+/// earlier run of the application names no input of this one instead of another.
+fn next_source() -> u64 {
+    let _ = NEXT_SOURCE.compare_exchange(
+        0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |since| u64::try_from(since.as_nanos()).unwrap_or(1) | 1),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    NEXT_SOURCE.fetch_add(1, Ordering::Relaxed)
+}
 
 impl Drop for InputShared {
     fn drop(&mut self) {
@@ -577,9 +610,9 @@ impl InputShared {
     }
 }
 
-/// Owns the capture stream and turns threshold crossings into entry firings. A device
-/// that cannot be opened, or that fails while open, is opened again with backoff, so a
-/// microphone plugged in later is heard.
+/// Owns the capture stream; analyzers read its ring. A device that cannot be opened, or
+/// that fails while open, is opened again with backoff, so a microphone plugged in
+/// later is heard.
 fn listen(shared: &InputShared) {
     while !shared.started.load(Ordering::Acquire) {
         if shared.stopped() {
@@ -588,13 +621,11 @@ fn listen(shared: &InputShared) {
         thread::sleep(POLL);
     }
     let mut retry = FIRST_RETRY;
-    let mut seen = shared.levels.fired().0;
     while !shared.stopped() {
         let _ = shared.levels.take_broken();
         let stream = device::open_input(
             shared.device.as_deref(),
             shared.window,
-            shared.gate,
             Arc::clone(&shared.levels),
         );
         let stream = match stream {
@@ -615,14 +646,7 @@ fn listen(shared: &InputShared) {
                 shared.set_failure(Some("the input device stopped".to_owned()));
                 break;
             }
-            let (count, level) = shared.levels.fired();
-            if count != seen {
-                // Crossings closer together than one poll are reported as one.
-                seen = count;
-                let payload = Value::F64(level);
-                shared.listeners.emit(|()| Some(payload.clone()));
-            }
-            thread::sleep(POLL);
+            shared.rest(DEVICE_CHECK);
         }
         *shared.ring.lock().unwrap_or_else(PoisonError::into_inner) = None;
         // Closes the ring: its readers end or wait for the next one.
@@ -630,24 +654,10 @@ fn listen(shared: &InputShared) {
     }
 }
 
-fn number(settings: &Map<String, Json>, name: &str) -> Result<Option<f64>, String> {
-    match settings.get(name) {
-        None => Ok(None),
-        Some(value) => value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .map(Some)
-            .ok_or_else(|| format!("`{name}` must be a number")),
-    }
-}
-
-/// Starts an input's listening thread from its settings; it waits for `started`.
+/// Starts an input's listening thread from its settings; it waits for `started`. The
+/// device is the only setting that matters: thresholds belong to the entries that
+/// listen (On band level, On transient). `window_ms` sets the level meter's window.
 fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String> {
-    let threshold = number(settings, "threshold_db")?.unwrap_or(DEFAULT_THRESHOLD_DB);
-    let release = number(settings, "release_db")?.unwrap_or(threshold - DEFAULT_HYSTERESIS_DB);
-    if release > threshold {
-        return Err("`release_db` must not be above `threshold_db`".into());
-    }
     let window = match settings.get("window_ms") {
         None => DEFAULT_WINDOW_MS,
         Some(value) => value
@@ -655,22 +665,12 @@ fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String>
             .filter(|ms| (5..=1_000).contains(ms))
             .ok_or("`window_ms` must be an integer from 5 to 1000")?,
     };
-    let hold = match settings.get("hold_ms") {
-        None => 0,
-        Some(value) => value
-            .as_u64()
-            .filter(|ms| *ms <= 60_000)
-            .ok_or("`hold_ms` must be an integer from 0 to 60000")?,
-    };
-    let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
     let shared = Arc::new(InputShared {
-        id: NEXT_SOURCE.fetch_add(1, Ordering::Relaxed),
+        id: next_source(),
         ring: Mutex::new(None),
         device: device_setting(settings)?,
         window: Duration::from_millis(window),
-        gate: Gate::held(threshold, release, hold),
         levels: Arc::new(Levels::new()),
-        listeners: Listeners::new(),
         started: AtomicBool::new(false),
         stop: AtomicBool::new(false),
         failed: Mutex::new(None),
@@ -719,59 +719,6 @@ impl ConnectionAdapter for InputAdapter {
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
         device_choices(input_choices)
     }
-    fn fields(&self) -> Vec<SettingField> {
-        let field = |setting: &str, label: &str, help: &str, unit: &str| SettingField {
-            setting: setting.to_owned(),
-            label: label.to_owned(),
-            help: help.to_owned(),
-            unit: unit.to_owned(),
-            min: crate::SILENCE_DB,
-            max: 0.0,
-            default: None,
-            whole: false,
-        };
-        vec![
-            SettingField {
-                default: Some(DEFAULT_THRESHOLD_DB),
-                ..field(
-                    "threshold_db",
-                    "Threshold",
-                    "The level at which the trigger fires.",
-                    "dBFS",
-                )
-            },
-            field(
-                "release_db",
-                "Release",
-                "The level the sound must fall to before the trigger can fire again; 6 below the threshold when left out.",
-                "dBFS",
-            ),
-            SettingField {
-                min: 0.0,
-                max: 60_000.0,
-                default: Some(0.0),
-                whole: true,
-                ..field(
-                    "hold_ms",
-                    "Hold",
-                    "How long the sound must stay at the threshold before the trigger fires.",
-                    "ms",
-                )
-            },
-            SettingField {
-                min: 5.0,
-                max: 1_000.0,
-                default: Some(50.0),
-                whole: true,
-                ..field(
-                    "window_ms",
-                    "Window",
-                    "The length of each measurement.",
-                    "ms",
-                )
-            },
-        ]
-    }
     fn probes(&self) -> bool {
         true
     }
@@ -802,22 +749,172 @@ impl ServiceNode for InputLevel {
     }
 }
 
+/// What an analyzer entry does with each window's band level: fire or not.
+trait Detector: Send + 'static {
+    fn step(&mut self, level: f64) -> bool;
+}
+impl Detector for Gate {
+    fn step(&mut self, level: f64) -> bool {
+        Gate::step(self, level)
+    }
+}
+impl Detector for Onsets {
+    fn step(&mut self, level: f64) -> bool {
+        Onsets::step(self, level)
+    }
+}
+
+/// Stops an analyzer's thread when its flow drops it.
+struct Analyzing(Arc<Lifecycle>);
+impl Drop for Analyzing {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Listens to the band of `listening` on `input`'s shared capture and fires `emitter`
+/// with the level of each window `detector` accepts. Runs until its flow drops the
+/// guard; it follows the input to its next device when the device is opened again.
+fn analyze(
+    input: Arc<InputShared>,
+    listening: Listening,
+    mut detector: impl Detector,
+    emitter: Emitter,
+) -> Result<Box<dyn Send>, String> {
+    let life = Arc::new(Lifecycle::new());
+    let running = Arc::clone(&life);
+    thread::Builder::new()
+        .name("orange-audio-analyze".into())
+        .spawn(move || {
+            let mut block = vec![0.0f32; 8_192];
+            loop {
+                let Ok(ring) = input.wait_ring(None, &|| running.stopped()) else {
+                    return;
+                };
+                let mut meter = BandMeter::new(&ring, &listening);
+                let mut cursor = Cursor::new(Arc::clone(&ring));
+                // Read about four times per window: often enough to fire within one.
+                let pace = (listening.window / 4).clamp(Duration::from_millis(2), POLL);
+                while !running.stopped() {
+                    let read = cursor.read(&mut block);
+                    if read == 0 {
+                        if ring.closed() {
+                            break;
+                        }
+                        let _ = running.rest(pace);
+                        continue;
+                    }
+                    let mut fired = Vec::new();
+                    meter.push(&block[..read], |level| {
+                        if detector.step(level) {
+                            fired.push(level);
+                        }
+                    });
+                    for level in fired {
+                        if emitter.emit(Some(Value::F64(level))) == Err(EmitError::Closed) {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(Box::new(Analyzing(life)))
+}
+
+fn input_of(session: Option<&Arc<dyn Session>>) -> Result<Arc<InputShared>, String> {
+    input(session.map(AsRef::as_ref))
+        .cloned()
+        .ok_or_else(|| "the entry needs an audio input connection".to_owned())
+}
+
+/// On band level: a gate on the level of a band, with the node's own settings.
 #[derive(Debug)]
-struct OnLevel;
-impl ServiceSource for OnLevel {
-    fn start(
+struct OnBandLevel;
+impl ServiceSource for OnBandLevel {
+    fn start_with(
         &self,
         session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let shared =
-            input(session.as_deref()).ok_or("the entry needs an audio input connection")?;
-        Ok(Listeners::listen(
-            Arc::clone(shared),
-            |shared| &shared.listeners,
-            (),
+        let input = input_of(session.as_ref())?;
+        let listening = Listening::of(settings, (0.0, 0.0, 50.0))?;
+        let threshold = analysis::number(settings, "threshold_db", DEFAULT_THRESHOLD_DB)?;
+        let release = analysis::number(settings, "release_db", threshold - DEFAULT_HYSTERESIS_DB)?;
+        if release > threshold {
+            return Err("`release_db` must not be above `threshold_db`".into());
+        }
+        let hold_ms = analysis::number(settings, "hold_ms", 0.0)?;
+        if !(0.0..=60_000.0).contains(&hold_ms) {
+            return Err("`hold_ms` must be from 0 to 60000".into());
+        }
+        let window_ms = listening.window.as_secs_f64() * 1_000.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "checked above"
+        )]
+        let hold = (hold_ms / window_ms).ceil() as u32;
+        analyze(
+            input,
+            listening,
+            Gate::held(threshold, release, hold),
             emitter,
-        ))
+        )
+    }
+}
+
+/// On transient: hits in a band, such as a kick drum, with the node's own settings.
+#[derive(Debug)]
+struct OnTransient;
+impl ServiceSource for OnTransient {
+    fn start_with(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let input = input_of(session.as_ref())?;
+        // A kick drum: 45 to 120 Hz, in short windows.
+        let listening = Listening::of(settings, (45.0, 120.0, 10.0))?;
+        let sensitivity = analysis::number(settings, "sensitivity", 0.5)?;
+        let floor = analysis::number(settings, "floor_db", -50.0)?;
+        let gap_ms = analysis::number(settings, "min_gap_ms", 120.0)?;
+        if !(0.0..=1.0).contains(&sensitivity) || !(0.0..=10_000.0).contains(&gap_ms) {
+            return Err("`sensitivity` is from 0 to 1 and `min_gap_ms` from 0 to 10000".into());
+        }
+        let window_ms = listening.window.as_secs_f64() * 1_000.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "checked above"
+        )]
+        let gap = (gap_ms / window_ms).ceil() as u32;
+        analyze(
+            input,
+            listening,
+            Onsets::new(floor, sensitivity, gap),
+            emitter,
+        )
+    }
+}
+
+/// Band level: how loud a band of a stream is now.
+#[derive(Debug)]
+struct BandLevel;
+impl ServiceNode for BandLevel {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let [stream, Value::F64(low), Value::F64(high)] = call.inputs else {
+            return Err(BAD_INPUT);
+        };
+        let source = source(stream)?;
+        let mut band = Map::new();
+        let _ = band.insert("low_hz".into(), Json::from(*low));
+        let _ = band.insert("high_hz".into(), Json::from(*high));
+        let listening = Listening::of(&band, (0.0, 0.0, 50.0)).map_err(|_| BAD_INPUT)?;
+        let ring = source.wait_ring(Some(OPEN_WAIT), &|| call.lease.is_cancelled())?;
+        Ok(vec![Value::F64(analysis::recent_level(&ring, &listening))])
     }
 }
 
@@ -1067,13 +1164,67 @@ fn input_level_definition() -> String {
         .build()
 }
 
-fn on_level_definition() -> String {
-    Definition::entry(crate::PACKAGE, "on-level", "On level")
-        .description("Fires when an Audio in connection (a microphone, line input, virtual cable or what an output plays) gets as loud as its threshold, and again only after it has fallen to the release level.")
+/// A number setting with its limits and the value used when it is left out.
+fn number_setting(minimum: f64, maximum: f64, default: f64) -> Json {
+    serde_json::json!({"type": "number", "minimum": minimum, "maximum": maximum, "default": default})
+}
+
+/// The band and window settings every analyzer entry has.
+fn band_settings(definition: Definition, low: f64, high: f64, window: f64) -> Definition {
+    definition
+        .setting("low_hz", number_setting(0.0, 24_000.0, low))
+        .setting("high_hz", number_setting(0.0, 24_000.0, high))
+        .setting("window_ms", number_setting(5.0, 1_000.0, window))
+}
+
+fn on_band_level_definition() -> String {
+    let definition = Definition::entry(crate::PACKAGE, "on-band-level", "On band level")
+        .description("Fires when a band of an input (a microphone, line input, virtual cable or what an output plays) gets as loud as the threshold, and again only after it has fallen to the release level. Leave the band at 0 to hear everything.")
         .category("audio", "Audio")
         .uses(INPUT_ADAPTER)
-        .payload("core/f64@1")
+        .replaces("on-level", 1, &[])
+        .payload("core/f64@1");
+    band_settings(definition, 0.0, 0.0, 50.0)
+        .setting(
+            "threshold_db",
+            number_setting(SILENCE_DB, 0.0, DEFAULT_THRESHOLD_DB),
+        )
+        .setting(
+            "release_db",
+            number_setting(
+                SILENCE_DB,
+                0.0,
+                DEFAULT_THRESHOLD_DB - DEFAULT_HYSTERESIS_DB,
+            ),
+        )
+        .setting("hold_ms", number_setting(0.0, 60_000.0, 0.0))
         .build()
+}
+
+fn on_transient_definition() -> String {
+    let definition = Definition::entry(crate::PACKAGE, "on-transient", "On transient")
+        .description("Fires on each hit in a band of an input, such as a kick drum: a sudden rise above the band's recent level. The band starts at 45 to 120 Hz for kicks; play the track and adjust it until the hits line up with what you hear.")
+        .category("audio", "Audio")
+        .uses(INPUT_ADAPTER)
+        .payload("core/f64@1");
+    band_settings(definition, 45.0, 120.0, 10.0)
+        .setting("sensitivity", number_setting(0.0, 1.0, 0.5))
+        .setting("floor_db", number_setting(SILENCE_DB, 0.0, -50.0))
+        .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
+        .build()
+}
+
+fn band_level_definition() -> String {
+    let hz = |hz: f64| serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", hz.to_bits())});
+    stream_input(
+        Definition::node(crate::PACKAGE, "band-level", "Band level")
+            .description("Reads how loud a band of an audio stream is now, in dBFS. Leave a side at 0 to keep it open.")
+            .category("audio", "Audio"),
+    )
+    .input_default("low_hz", "core/f64@1", hz(0.0))
+    .input_default("high_hz", "core/f64@1", hz(0.0))
+    .output("level", "core/f64@1")
+    .build()
 }
 
 fn stream_input(definition: Definition) -> Definition {
@@ -1150,7 +1301,9 @@ pub fn package() -> ServicePackage {
         .and_then(|package| package.node(&seek_definition(), Control::Seek))
         .and_then(|package| package.node(&set_volume_definition(), Control::Volume))
         .and_then(|package| package.node(&input_level_definition(), InputLevel))
-        .and_then(|package| package.source(&on_level_definition(), OnLevel))
+        .and_then(|package| package.source(&on_band_level_definition(), OnBandLevel))
+        .and_then(|package| package.source(&on_transient_definition(), OnTransient))
+        .and_then(|package| package.node(&band_level_definition(), BandLevel))
         .and_then(|package| package.node(&audio_in_definition(), AudioIn))
         .and_then(|package| package.node(&audio_out_definition(), AudioOut))
         .and_then(|package| package.node(&level_definition(), Level))
@@ -1196,8 +1349,15 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 13);
-        assert_eq!(package.sources().len(), 1);
+        assert_eq!(package.nodes().len(), 14);
+        assert_eq!(package.sources().len(), 2);
+        // Documents with the first On level open with On band level.
+        let replaced: Vec<_> = package
+            .replacements()
+            .iter()
+            .map(|step| (step.from.id.as_str(), step.to.id.as_str()))
+            .collect();
+        assert_eq!(replaced, [(ON_LEVEL, ON_BAND_LEVEL)]);
         assert_eq!(package.adapters().len(), 2);
         assert_eq!(package.types().len(), 1);
     }
@@ -1212,15 +1372,65 @@ mod tests {
         );
         let null = serde_json::json!({"device": NULL_DEVICE});
         assert!(InputAdapter.open(&settings(null)).is_ok());
-        for bad in [
-            serde_json::json!({"device": NULL_DEVICE, "threshold_db": "loud"}),
-            serde_json::json!({"device": NULL_DEVICE, "threshold_db": -40, "release_db": -30}),
-            serde_json::json!({"device": NULL_DEVICE, "window_ms": 2}),
-            serde_json::json!({"device": NULL_DEVICE, "hold_ms": -1}),
-            serde_json::json!({"device": NULL_DEVICE, "hold_ms": 60_001}),
-        ] {
-            assert!(InputAdapter.open(&settings(bad)).is_err());
+        // Thresholds belong to the entries now; an old connection that still names
+        // them opens, and a bad meter window is still refused.
+        let old = serde_json::json!({"device": NULL_DEVICE, "threshold_db": -40});
+        assert!(InputAdapter.open(&settings(old)).is_ok());
+        let bad = serde_json::json!({"device": NULL_DEVICE, "window_ms": 2});
+        assert!(InputAdapter.open(&settings(bad)).is_err());
+    }
+
+    /// Two entries listen to one test tone (a 1 kHz square at -6 dBFS) through one
+    /// capture: the one whose band holds the tone fires, the bass band stays quiet.
+    #[test]
+    fn analyzers_share_one_capture_and_each_hears_its_own_band() {
+        let shared = spawn_input(&settings(
+            serde_json::json!({"device": device::TONE_DEVICE}),
+        ))
+        .unwrap();
+        let session: Arc<dyn Session> = Arc::new(InputSession(Arc::clone(&shared)));
+        let fired = |label: &'static str, heard: &Arc<Mutex<Vec<(&'static str, f64)>>>| {
+            let heard = Arc::clone(heard);
+            Emitter::new(move |payload| {
+                if let Some(Value::F64(level)) = payload {
+                    heard.lock().unwrap().push((label, level));
+                }
+                Ok(())
+            })
+        };
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let whole = OnBandLevel
+            .start_with(
+                Some(Arc::clone(&session)),
+                &settings(serde_json::json!({"threshold_db": -20})),
+                fired("whole", &heard),
+            )
+            .unwrap();
+        let bass = OnBandLevel
+            .start_with(
+                Some(Arc::clone(&session)),
+                &settings(serde_json::json!({"threshold_db": -20, "low_hz": 45, "high_hz": 120})),
+                fired("bass", &heard),
+            )
+            .unwrap();
+        let started = Instant::now();
+        while heard.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(POLL);
         }
+        thread::sleep(Duration::from_millis(200));
+        drop((whole, bass));
+        let heard = heard.lock().unwrap().clone();
+        // The whole sound crosses once and stays loud: one event, at about -6 dBFS.
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        assert_eq!(heard[0].0, "whole");
+        assert!((heard[0].1 + 6.0).abs() < 1.0, "{heard:?}");
+        // Settings that cannot work are refused when the flow starts the entry.
+        let bad = settings(serde_json::json!({"low_hz": 200, "high_hz": 100}));
+        assert!(
+            OnTransient
+                .start_with(Some(session), &bad, fired("x", &Arc::default()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1251,15 +1461,9 @@ mod tests {
     }
 
     #[test]
-    fn an_input_offers_its_trigger_settings_and_a_live_level() {
-        let fields = InputAdapter.fields();
-        let names: Vec<_> = fields.iter().map(|field| field.setting.as_str()).collect();
-        assert_eq!(
-            names,
-            ["threshold_db", "release_db", "hold_ms", "window_ms"]
-        );
-        assert_eq!(fields[0].default, Some(DEFAULT_THRESHOLD_DB));
-        assert!(fields[2].whole && fields[3].whole);
+    fn an_input_offers_a_live_level_and_no_thresholds() {
+        // Thresholds are settings of each listening entry, not of the device.
+        assert!(InputAdapter.fields().is_empty());
 
         // The silent device hears nothing, and says so as silence.
         let probe = InputAdapter

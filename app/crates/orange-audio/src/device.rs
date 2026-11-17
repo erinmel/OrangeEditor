@@ -6,7 +6,7 @@
 //!
 //! An input setting that starts with [`LOOPBACK_PREFIX`] names an output device whose
 //! playback is captured, where the system offers that (WASAPI loopback on Windows).
-use crate::level::{Gate, Meter, SILENCE_DB};
+use crate::level::{Meter, SILENCE_DB};
 use crate::mixer::{self, Command, MAX_VOICES, Mixer, Voice};
 use crate::stream::{Live, Ring};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -464,12 +464,11 @@ fn null_output(mut mixer: Mixer, heard: Arc<AtomicU32>) -> Result<Driver, String
     })
 }
 
-/// What the capture callback publishes: the latest level and each threshold crossing.
+/// What the capture callback publishes: the latest level of the whole sound. Events are
+/// made by analyzers reading the ring (`analysis`), never on the callback.
 #[derive(Debug)]
 pub(crate) struct Levels {
     latest: AtomicU64,
-    fired: AtomicU64,
-    fired_level: AtomicU64,
     /// Set by the stream's error callback: the device has gone and must be reopened.
     broken: AtomicBool,
 }
@@ -477,8 +476,6 @@ impl Levels {
     pub(crate) fn new() -> Self {
         Self {
             latest: AtomicU64::new(SILENCE_DB.to_bits()),
-            fired: AtomicU64::new(0),
-            fired_level: AtomicU64::new(SILENCE_DB.to_bits()),
             broken: AtomicBool::new(false),
         }
     }
@@ -487,30 +484,17 @@ impl Levels {
         self.broken.swap(false, Ordering::AcqRel)
     }
     /// Records one measured window.
-    pub(crate) fn record(&self, gate: &mut Gate, level: f64) {
+    pub(crate) fn record(&self, level: f64) {
         self.latest.store(level.to_bits(), Ordering::Release);
-        if gate.step(level) {
-            self.fired_level.store(level.to_bits(), Ordering::Release);
-            let _ = self.fired.fetch_add(1, Ordering::AcqRel);
-        }
     }
     pub(crate) fn latest(&self) -> f64 {
         f64::from_bits(self.latest.load(Ordering::Acquire))
-    }
-    /// How many times the threshold was crossed, and the level of the latest crossing.
-    pub(crate) fn fired(&self) -> (u64, f64) {
-        let count = self.fired.load(Ordering::Acquire);
-        (
-            count,
-            f64::from_bits(self.fired_level.load(Ordering::Acquire)),
-        )
     }
 }
 fn input_stream<T>(
     device: &cpal::Device,
     config: StreamConfig,
     mut meter: Meter,
-    mut gate: Gate,
     levels: Arc<Levels>,
     ring: Arc<Ring>,
 ) -> Result<cpal::Stream, cpal::Error>
@@ -524,7 +508,7 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             meter.push(
                 data.iter().map(|sample| f32::from_sample(*sample)),
-                |level| levels.record(&mut gate, level),
+                |level| levels.record(level),
             );
             ring.push(data.iter().map(|sample| f32::from_sample(*sample)));
         },
@@ -579,7 +563,6 @@ impl Drop for Capturing {
 fn null_input(
     tone: bool,
     mut meter: Meter,
-    mut gate: Gate,
     levels: Arc<Levels>,
     ring: Arc<Ring>,
 ) -> Result<InputDriver, String> {
@@ -601,9 +584,7 @@ fn null_input(
             let start = Instant::now();
             let mut blocks = 0u32;
             while !stopped.load(Ordering::Acquire) {
-                meter.push(block.iter().copied(), |level| {
-                    levels.record(&mut gate, level)
-                });
+                meter.push(block.iter().copied(), |level| levels.record(level));
                 ring.push(block.iter().copied());
                 blocks = blocks.wrapping_add(1);
                 if let Some(wait) = (NULL_BLOCK * blocks).checked_sub(start.elapsed()) {
@@ -620,12 +601,11 @@ fn null_input(
 
 /// Starts capturing an input device: the default one, the one a setting names, what
 /// an output plays (a [`LOOPBACK_PREFIX`] setting) or the silent device. Each window
-/// of `window` is measured and stepped through `gate`; the samples go to a new ring
+/// of `window` is measured for the input's level; the samples go to a new ring
 /// at the device's own rate and channels.
 pub(crate) fn open_input(
     device: Option<&str>,
     window: Duration,
-    gate: Gate,
     levels: Arc<Levels>,
 ) -> Result<Capturing, String> {
     let meter = |rate: u32, channels: u16| {
@@ -644,7 +624,6 @@ pub(crate) fn open_input(
         let driver = null_input(
             tone,
             meter(NULL_RATE, NULL_CHANNELS),
-            gate,
             levels,
             Arc::clone(&ring),
         )?;
@@ -663,11 +642,11 @@ pub(crate) fn open_input(
     let stream = {
         let ring = Arc::clone(&ring);
         match supported.sample_format() {
-            SampleFormat::F32 => input_stream::<f32>(&device, config, meter, gate, levels, ring),
-            SampleFormat::F64 => input_stream::<f64>(&device, config, meter, gate, levels, ring),
-            SampleFormat::I16 => input_stream::<i16>(&device, config, meter, gate, levels, ring),
-            SampleFormat::U16 => input_stream::<u16>(&device, config, meter, gate, levels, ring),
-            SampleFormat::I32 => input_stream::<i32>(&device, config, meter, gate, levels, ring),
+            SampleFormat::F32 => input_stream::<f32>(&device, config, meter, levels, ring),
+            SampleFormat::F64 => input_stream::<f64>(&device, config, meter, levels, ring),
+            SampleFormat::I16 => input_stream::<i16>(&device, config, meter, levels, ring),
+            SampleFormat::U16 => input_stream::<u16>(&device, config, meter, levels, ring),
+            SampleFormat::I32 => input_stream::<i32>(&device, config, meter, levels, ring),
             other => {
                 return Err(format!(
                     "the device's sample format {other} is not supported"
@@ -718,15 +697,11 @@ mod tests {
     }
 
     #[test]
-    fn levels_record_the_latest_window_and_each_crossing() {
+    fn levels_keep_the_latest_window() {
         let levels = Levels::new();
-        let mut gate = Gate::new(-20.0, -30.0);
         assert_eq!(levels.latest(), SILENCE_DB);
-        levels.record(&mut gate, -40.0);
-        assert_eq!((levels.latest(), levels.fired().0), (-40.0, 0));
-        levels.record(&mut gate, -10.0);
-        levels.record(&mut gate, -5.0);
-        assert_eq!(levels.fired(), (1, -10.0));
+        levels.record(-40.0);
+        levels.record(-5.0);
         assert_eq!(levels.latest(), -5.0);
     }
 

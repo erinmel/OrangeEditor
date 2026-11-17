@@ -132,15 +132,23 @@ fn document(host: &Host, path: &Path, device: &str, play: &str) -> String {
         INPUT,
         json!({}),
     );
-    place(&mut document, 12, orange_audio::ON_LEVEL, INPUT, json!({}));
+    place(
+        &mut document,
+        12,
+        orange_audio::ON_BAND_LEVEL,
+        INPUT,
+        json!({}),
+    );
     let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
     let mut level = core(11, "set-variable");
     level["config"] = json!({"variable": id(101)});
     let nodes = saved["nodes"].as_array_mut().unwrap();
     for node in nodes.iter_mut() {
-        if node["definition_id"] == orange_audio::ON_LEVEL {
+        if node["definition_id"] == orange_audio::ON_BAND_LEVEL {
             node["activation"] = json!({"mode": "queue", "capacity": 4, "overflow": "fault",
                 "on_fault": "continue", "order": 0});
+            // The threshold is the entry's own setting, not the microphone's.
+            node["config"]["threshold_db"] = json!(-20);
         }
     }
     nodes.extend([
@@ -345,7 +353,9 @@ fn the_audio_nodes_are_listed_with_their_text() {
         "Audio in",
         "Audio out",
         "Level",
-        "On level",
+        "On band level",
+        "On transient",
+        "Band level",
         "Record to file",
         "Jump to time",
     ] {
@@ -655,4 +665,33 @@ fn an_input_stream_is_measured_recorded_and_played_through_to_an_output() {
         read(&host, flow, 105).is_some()
     });
     std::fs::remove_file(&path).unwrap();
+}
+
+/// A document saved with the first On level opens with On band level in its place,
+/// keeping its connection, place and activation (12 §6.4).
+#[test]
+fn a_saved_on_level_opens_as_on_band_level() {
+    let host = host();
+    let mut saved: Json = serde_json::from_str(
+        &to_json(&GraphDocument::new(
+            "20000000-0000-4000-8000-000000000002".parse().unwrap(),
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    saved["connections"] = json!([{"id": INPUT, "name": "microphone",
+        "adapter": orange_audio::INPUT_ADAPTER, "scope": "graph",
+        "settings": {"device": orange_audio::NULL_DEVICE}}]);
+    saved["nodes"] = json!([{"id": id(12), "definition_id": orange_audio::ON_LEVEL,
+        "definition_version": 1, "config_version": 1, "config": {"connection": INPUT},
+        "activation": {"mode": "queue", "capacity": 4, "overflow": "fault",
+            "on_fault": "continue", "order": 0}}]);
+    let draft = host.draft(&saved.to_string()).unwrap();
+    let replaced = &draft.opened().replaced;
+    assert_eq!(replaced.len(), 1);
+    assert_eq!(replaced[0].to.id.as_str(), orange_audio::ON_BAND_LEVEL);
+    let node = draft.document().node(node(12)).unwrap();
+    assert_eq!(node.config["connection"], json!(INPUT));
+    assert!(node.activation.is_some() && node.provider.is_some());
+    assert_eq!(host.check(&saved.to_string()).unwrap(), []);
 }
