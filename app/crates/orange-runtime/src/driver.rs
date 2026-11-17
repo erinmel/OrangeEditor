@@ -52,10 +52,18 @@ pub enum InboxError {
     Closed(HostInput),
 }
 
-/// Cloneable, thread-safe sending side of a run's mailbox. Sending never blocks.
+/// Cloneable, thread-safe sending side of a run's mailbox. [`RunInbox::send`] never
+/// blocks; [`RunInbox::send_waiting`] waits for room.
 #[derive(Debug, Clone)]
 pub struct RunInbox(SyncSender<HostInput>);
 impl RunInbox {
+    /// Sends `input`, waiting while the mailbox is full. Use it only on a thread that is
+    /// not the run's own driver, which is the one that makes room. Returns the input when
+    /// the driver is gone.
+    pub fn send_waiting(&self, input: HostInput) -> Result<(), HostInput> {
+        self.0.send(input).map_err(|error| error.0)
+    }
+
     pub fn send(&self, input: HostInput) -> Result<(), InboxError> {
         self.0.try_send(input).map_err(|error| match error {
             TrySendError::Full(input) => InboxError::Full(input),

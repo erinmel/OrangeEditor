@@ -310,16 +310,16 @@ const NO_CONNECTION: KernelFault = KernelFault {
 };
 
 /// Hands a finished effect back to its run. The mailbox is bounded, so a full one is
-/// retried: an effect result is never dropped while its flow is alive.
-fn deliver(inbox: &RunInbox, mut input: HostInput, flow: &Thread) {
-    loop {
-        match inbox.send(input) {
-            Ok(()) => break,
-            Err(InboxError::Closed(_)) => return,
-            Err(InboxError::Full(back)) => {
-                input = back;
-                flow.unpark();
-                thread::sleep(Duration::from_millis(1));
+/// waited on: an effect result is never dropped while its flow is alive. Called from
+/// worker threads only; the flow is woken first so it makes room.
+fn deliver(inbox: &RunInbox, input: HostInput, flow: &Thread) {
+    match inbox.send(input) {
+        Ok(()) => {}
+        Err(InboxError::Closed(_)) => return,
+        Err(InboxError::Full(input)) => {
+            flow.unpark();
+            if inbox.send_waiting(input).is_err() {
+                return;
             }
         }
     }

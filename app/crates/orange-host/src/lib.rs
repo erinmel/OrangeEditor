@@ -163,8 +163,13 @@ pub enum FlowEvent {
 /// Sizes and limits of a host. Defaults suit an interactive session.
 #[derive(Debug, Clone)]
 pub struct HostOptions {
-    /// Threads that execute work runs hand to the host.
+    /// Threads that execute work runs hand to the host, kept while idle.
     pub effect_workers: usize,
+    /// Most such threads at once. While every thread is busy, as when sounds play to
+    /// their end or a server is slow, the pool adds threads up to this many so other
+    /// nodes still run; threads above [`effect_workers`](Self::effect_workers) end
+    /// when idle.
+    pub max_effect_workers: usize,
     /// Inputs one flow may have waiting; senders are refused beyond it.
     pub inbox_capacity: usize,
     /// Observations waiting to be read; further ones are counted as dropped.
@@ -211,6 +216,7 @@ impl Default for HostOptions {
     fn default() -> Self {
         Self {
             effect_workers: 4,
+            max_effect_workers: 64,
             inbox_capacity: 1024,
             event_capacity: 4096,
             turn_inputs: 64,
@@ -911,7 +917,8 @@ impl Host {
         }
         let base = defaults.build().map_err(|e| start(&e))?;
         let engine = GuestEngine::new(options.guest).map_err(|e| start(&e))?;
-        let pool = Pool::new(options.effect_workers).map_err(|e| start(&e))?;
+        let pool = Pool::new(options.effect_workers, options.max_effect_workers)
+            .map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));
         let host = Self {
             native: Native(Arc::new(math), services),
