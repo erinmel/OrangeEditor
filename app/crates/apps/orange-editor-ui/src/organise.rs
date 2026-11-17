@@ -3,6 +3,7 @@
 //! arranging the selection along its wires. Each is one edit of the draft.
 use crate::Editor;
 use crate::canvas::GroupEdit;
+use crate::i18n::{t, tf};
 use orange_host::{Extraction, Group, Host, NodeId};
 
 /// A function being made of the selected nodes: their preview and the name typed.
@@ -76,7 +77,7 @@ impl Editor {
         let count = document.draft.document().functions().len();
         self.extracting = Some(Extracting {
             nodes,
-            name: format!("Function {}", count + 1),
+            name: tf("function-name", &[("number", (count + 1).into())]),
             preview,
         });
     }
@@ -133,31 +134,33 @@ impl Editor {
         let mut open = true;
         let mut make = false;
         let mut cancel = false;
-        egui::Window::new("Make a function")
+        egui::Window::new(t("make-a-function"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| match &extracting.preview {
                 Err(why) => {
-                    ui.label(format!("These nodes cannot be a function: {why}"));
-                    if ui.button("Close").clicked() {
+                    ui.label(tf("not-a-function", &[("why", why.to_string().into())]));
+                    if ui.button(t("close")).clicked() {
                         cancel = true;
                     }
                 }
                 Ok(preview) => {
                     ui.horizontal(|ui| {
-                        ui.label("Name");
+                        ui.label(t("name"));
                         let _ = ui.text_edit_singleline(&mut extracting.name);
                     });
-                    ui.label(format!(
-                        "A {} function of {} node{}.",
-                        preview.kind,
-                        extracting.nodes.len(),
-                        if extracting.nodes.len() == 1 { "" } else { "s" }
+                    ui.label(tf(
+                        "function-summary",
+                        &[
+                            ("kind", preview.kind.to_string().into()),
+                            ("count", extracting.nodes.len().into()),
+                        ],
                     ));
-                    for (title, ports) in
-                        [("Inputs", &preview.inputs), ("Outputs", &preview.outputs)]
-                    {
+                    for (title, ports) in [
+                        (t("inputs"), &preview.inputs),
+                        (t("outputs"), &preview.outputs),
+                    ] {
                         ui.strong(title);
                         if ports.is_empty() {
                             ui.weak("none");
@@ -169,12 +172,12 @@ impl Editor {
                     ui.horizontal(|ui| {
                         let named = !extracting.name.trim().is_empty();
                         if ui
-                            .add_enabled(named, egui::Button::new("Make function"))
+                            .add_enabled(named, egui::Button::new(t("make-function")))
                             .clicked()
                         {
                             make = true;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t("cancel")).clicked() {
                             cancel = true;
                         }
                     });

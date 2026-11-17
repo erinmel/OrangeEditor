@@ -110,61 +110,73 @@ impl Editor {
         };
         match target {
             MenuTarget::Canvas => vec![
-                entry(Command::AddNode, "Add node…", "Tab", icons::ADD, true),
-                entry(Command::Paste, "Paste", "Ctrl+V", icons::PASTE, true),
+                entry(
+                    Command::AddNode,
+                    t("add-node-ellipsis"),
+                    "Tab",
+                    icons::ADD,
+                    true,
+                ),
+                entry(Command::Paste, t("paste"), "Ctrl+V", icons::PASTE, true),
                 entry(
                     Command::SelectAll,
-                    "Select all",
+                    t("select-all"),
                     "Ctrl+A",
                     icons::SELECT_ALL,
                     true,
                 ),
                 entry(
                     Command::Group,
-                    "Group selection",
+                    t("group-selection"),
                     "Ctrl+G",
                     icons::GROUP,
                     chosen > 0,
                 ),
                 entry(
                     Command::Arrange,
-                    "Arrange selection",
+                    t("arrange-selection"),
                     "Ctrl+L",
                     icons::ARRANGE,
                     chosen > 1,
                 ),
-                entry(Command::Fit, "Fit to view", "Home", icons::FIT, true),
+                entry(Command::Fit, t("fit-to-view"), "Home", icons::FIT, true),
             ],
             MenuTarget::Node(_) => vec![
-                entry(Command::Copy, "Copy", "Ctrl+C", icons::COPY, true),
-                entry(Command::Cut, "Cut", "Ctrl+X", icons::CUT, true),
+                entry(Command::Copy, t("copy"), "Ctrl+C", icons::COPY, true),
+                entry(Command::Cut, t("cut"), "Ctrl+X", icons::CUT, true),
                 entry(
                     Command::Duplicate,
-                    "Duplicate",
+                    t("duplicate"),
                     "Ctrl+D",
                     icons::DUPLICATE,
                     true,
                 ),
-                entry(Command::Group, "Group", "Ctrl+G", icons::GROUP, true),
+                entry(Command::Group, t("group"), "Ctrl+G", icons::GROUP, true),
                 entry(
                     Command::MakeFunction,
-                    "Make function…",
+                    t("make-function-ellipsis"),
                     "Ctrl+E",
                     icons::FUNCTION,
                     true,
                 ),
                 entry(
                     Command::Arrange,
-                    "Arrange",
+                    t("arrange"),
                     "Ctrl+L",
                     icons::ARRANGE,
                     chosen > 1,
                 ),
-                entry(Command::Delete, "Delete", "Del", icons::DELETE, true),
+                entry(Command::Delete, t("delete"), "Del", icons::DELETE, true),
             ],
             MenuTarget::Wire(_) => vec![
-                entry(Command::InsertNode, "Insert node…", "", icons::ADD, true),
-                entry(Command::DeleteWire, "Delete wire", "", icons::DELETE, true),
+                entry(Command::InsertNode, t("insert-node"), "", icons::ADD, true),
+                entry(
+                    Command::DeleteWire,
+                    t("delete-wire"),
+                    "",
+                    icons::DELETE,
+                    true,
+                ),
             ],
             MenuTarget::Port { node, port, input } => {
                 let connected = self
@@ -173,12 +185,18 @@ impl Editor {
                 vec![
                     entry(
                         Command::Disconnect,
-                        "Disconnect",
+                        t("disconnect"),
                         "",
                         icons::DISCONNECT,
                         connected,
                     ),
-                    entry(Command::WatchValue, "Watch value", "", icons::WATCH, true),
+                    entry(
+                        Command::WatchValue,
+                        t("watch-value"),
+                        "",
+                        icons::WATCH,
+                        true,
+                    ),
                 ]
             }
         }
@@ -219,7 +237,7 @@ impl Editor {
                 self.canvas.select_many(&every);
                 true
             }
-            (Command::Group, _) => self.group_selection(host, "Group").is_some(),
+            (Command::Group, _) => self.group_selection(host, t("group")).is_some(),
             (Command::Arrange, _) => self.arrange_selection(),
             (Command::Fit, _) => {
                 self.canvas.fit();
@@ -311,10 +329,10 @@ impl Editor {
         };
         let entries = self.entries_for(&menu.target);
         let title = match menu.target {
-            MenuTarget::Canvas => "Canvas",
-            MenuTarget::Node(_) => "Node",
-            MenuTarget::Wire(_) => "Connection",
-            MenuTarget::Port { .. } => "Port",
+            MenuTarget::Canvas => t("canvas"),
+            MenuTarget::Node(_) => t("node"),
+            MenuTarget::Wire(_) => t("connection"),
+            MenuTarget::Port { .. } => t("port"),
         };
         let (screen, shown_before) = (menu.screen, menu.shown);
         let mut chosen = None;
@@ -365,7 +383,7 @@ impl Editor {
                         if ui
                             .add_enabled(entry.enabled, button)
                             .on_hover_text(shortcut)
-                            .on_disabled_hover_text("Select nodes first.")
+                            .on_disabled_hover_text(t("select-nodes-first"))
                             .clicked()
                         {
                             chosen = Some(entry.command);

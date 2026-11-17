@@ -25,6 +25,7 @@
 pub mod canvas;
 mod card_sources;
 mod declarations;
+pub mod i18n;
 pub mod icons;
 #[cfg(test)]
 mod interaction_regressions;
@@ -42,6 +43,7 @@ pub use properties::{COMMON_TYPES, port_label, set_at};
 pub use quick_add::QuickChoice;
 
 use canvas::Canvas;
+use i18n::{t, tf};
 use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId,
     PackageKind, StopMode, describe, lines,
@@ -49,9 +51,12 @@ use orange_host::{
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 
-/// The nodes the Variables list adds for a variable: the button and the kind.
-const VARIABLE_NODES: [(&str, &str); 2] =
-    [("Get", "core/get-variable"), ("Set", "core/set-variable")];
+/// The nodes the Variables list adds for a variable: the button's message, its hint's
+/// message and the kind.
+const VARIABLE_NODES: [(&str, &str, &str); 2] = [
+    ("variable-get", "variable-get-hint", "core/get-variable"),
+    ("variable-set", "variable-set-hint", "core/set-variable"),
+];
 
 fn presented_value(value: &orange_host::Value) -> (String, String) {
     if let orange_host::Value::Record(record) = value
@@ -84,12 +89,12 @@ pub use palette::{PaletteItem, palette, palette_in};
 pub fn type_name(ty: &str) -> String {
     let named = types_tab::with_local_names(ty);
     match named.as_str() {
-        "core/string@1" => "Text".to_owned(),
-        "core/bool@1" => "Bool".to_owned(),
-        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => "Int".to_owned(),
-        "core/f64@1" | "core/f32@1" => "Float".to_owned(),
-        "core/bytes@1" => "Bytes".to_owned(),
-        "core/duration@1" => "Duration".to_owned(),
+        "core/string@1" => t("type-text").to_owned(),
+        "core/bool@1" => t("type-bool").to_owned(),
+        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => t("type-int").to_owned(),
+        "core/f64@1" | "core/f32@1" => t("type-float").to_owned(),
+        "core/bytes@1" => t("type-bytes").to_owned(),
+        "core/duration@1" => t("type-duration").to_owned(),
         // A package's own type reads as its package and name:
         // `org.orange.audio/stream@1` is "Audio stream".
         other if !other.starts_with("core/") && !other.contains(['<', '$']) => {
@@ -290,7 +295,8 @@ impl Editor {
         Self::default()
     }
 
-    /// The language the node search matches in besides English, such as `es`.
+    /// The language the editor shows its text in and the node search matches in,
+    /// besides English, such as `es`.
     pub fn language(&self) -> &str {
         if self.language.is_empty() {
             orange_host::SOURCE_LANGUAGE
@@ -299,10 +305,11 @@ impl Editor {
         }
     }
 
-    /// Makes the node search match in `language` (a BCP 47 tag) and English. Nothing
-    /// about the graph changes with it.
+    /// Shows the editor in `language` (a BCP 47 tag) and makes the node search match in
+    /// it and English. Nothing about the graph changes with it.
     pub fn set_language(&mut self, language: &str) {
         self.language = language.trim().to_owned();
+        i18n::set_language(self.language());
     }
 
     /// A port of the open graph's top level, as the canvas draws it.
@@ -328,7 +335,13 @@ impl Editor {
             Ok(draft) => draft,
             Err(error) => {
                 self.document = None;
-                self.say(format!("not opened: {path}: {error}"));
+                self.say(tf(
+                    "not-opened",
+                    &[
+                        ("path", path.to_string().into()),
+                        ("error", error.to_string().into()),
+                    ],
+                ));
                 return;
             }
         };
@@ -431,7 +444,15 @@ impl Editor {
                         .unwrap_or_default();
                 }
                 // The flow keeps running the graph it had.
-                Err(error) => said = Some(format!("[{flow}] the edit is not running yet: {error}")),
+                Err(error) => {
+                    said = Some(tf(
+                        "edit-not-running",
+                        &[
+                            ("flow", flow.to_string().into()),
+                            ("error", error.to_string().into()),
+                        ],
+                    ))
+                }
             }
         }
         if let Some(line) = said {
@@ -455,7 +476,7 @@ impl Editor {
             }
             Err(error) => {
                 for line in Self::problems_of(&error, &document.names) {
-                    self.say(format!("not done: {line}"));
+                    self.say(tf("not-done", &[("why", line.to_string().into())]));
                 }
                 false
             }
@@ -531,7 +552,7 @@ impl Editor {
         match host.copy(draft, &selection) {
             Ok(clip) => Some(clip),
             Err(error) => {
-                self.say(format!("not copied: {error}"));
+                self.say(tf("not-copied", &[("error", error.to_string().into())]));
                 None
             }
         }
@@ -760,7 +781,7 @@ impl Editor {
         let text = document.draft.text().map_err(|error| error.to_string())?;
         orange_host::save_document(path, &text).map_err(|error| error.to_string())?;
         document.unsaved = false;
-        let line = format!("saved {}", document.path);
+        let line = tf("saved", &[("path", document.path.to_string().into())]);
         self.say(line);
         Ok(())
     }
@@ -914,7 +935,13 @@ impl Editor {
                     .unwrap_or_default();
                 document.flow = Some((flow, entries));
                 document.problems.clear();
-                let line = format!("[{flow}] opened {}", document.path);
+                let line = tf(
+                    "flow-opened",
+                    &[
+                        ("flow", flow.to_string().into()),
+                        ("path", document.path.to_string().into()),
+                    ],
+                );
                 self.say(line);
             }
             Err(error) => document.problems = Self::problems_of(&error, &document.names),
@@ -934,7 +961,7 @@ impl Editor {
         let _ = host.close(flow);
         // What the run showed stays, dimmed, until the next run.
         self.canvas.mark_stale();
-        self.say(format!("[{flow}] closed"));
+        self.say(tf("flow-closed", &[("flow", flow.to_string().into())]));
     }
 
     /// Fires a manual entry of the running document.
@@ -1034,6 +1061,7 @@ impl Editor {
         host: &mut Host,
         layout: impl FnOnce(&mut Self, &mut egui::Ui, &mut Host),
     ) {
+        i18n::set_language(self.language());
         icons::install(ui.ctx());
         if !self.scale_applied {
             if let Some(scale) = self.preferred_scale {
@@ -1053,7 +1081,7 @@ impl Editor {
         self.canvas.shortcuts_enabled = !self.settings_open;
         self.keyboard(ui, host);
         layout(self, ui, host);
-        let _ = self.settings_window(ui.ctx(), host);
+        let _ = self.settings_window(ui.ctx());
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -1112,7 +1140,7 @@ impl Editor {
                         ui,
                         true,
                         icons::NEW,
-                        "New graph",
+                        t("new-graph"),
                         &self.canvas.keys.label("new"),
                     )
                     .clicked()
@@ -1123,7 +1151,7 @@ impl Editor {
                         ui,
                         true,
                         icons::OPEN,
-                        "Open a graph…",
+                        t("open-graph"),
                         &self.canvas.keys.label("open"),
                     )
                     .clicked()
@@ -1135,7 +1163,7 @@ impl Editor {
                     ui,
                     open,
                     icons::SAVE,
-                    "Save",
+                    t("save"),
                     &self.canvas.keys.label("save"),
                 )
                 .clicked()
@@ -1148,7 +1176,7 @@ impl Editor {
                         ui,
                         open,
                         icons::SAVE_AS,
-                        "Save as…",
+                        t("save-as"),
                         &self.canvas.keys.label("save-as"),
                     )
                     .clicked()
@@ -1162,7 +1190,7 @@ impl Editor {
                     ui,
                     undo,
                     icons::UNDO,
-                    "Undo",
+                    t("undo"),
                     &self.canvas.keys.label("undo"),
                 )
                 .clicked()
@@ -1173,7 +1201,7 @@ impl Editor {
                     ui,
                     redo,
                     icons::REDO,
-                    "Redo",
+                    t("redo"),
                     &self.canvas.keys.label("redo"),
                 )
                 .clicked()
@@ -1182,12 +1210,17 @@ impl Editor {
                 }
                 ui.separator();
                 let chosen = self.canvas.selection().len();
-                ui.menu_button("Graph", |ui| {
+                ui.menu_button(t("graph"), |ui| {
                     for (enabled, icon, label, shortcut) in [
-                        (chosen > 0, icons::GROUP, "Group selection", "group"),
-                        (chosen > 0, icons::FUNCTION, "Make function", "function"),
-                        (chosen > 1, icons::ARRANGE, "Arrange selection", "arrange"),
-                        (open, icons::VARIABLE, "New variable", ""),
+                        (chosen > 0, icons::GROUP, t("group-selection"), "group"),
+                        (chosen > 0, icons::FUNCTION, t("make-function"), "function"),
+                        (
+                            chosen > 1,
+                            icons::ARRANGE,
+                            t("arrange-selection"),
+                            "arrange",
+                        ),
+                        (open, icons::VARIABLE, t("new-variable"), ""),
                     ] {
                         let button = egui::Button::new((icons::text(icon), label)).shortcut_text(
                             if shortcut.is_empty() {
@@ -1199,7 +1232,7 @@ impl Editor {
                         if ui.add_enabled(enabled, button).clicked() {
                             match icon {
                                 icons::GROUP => {
-                                    let _ = self.group_selection(host, "Group");
+                                    let _ = self.group_selection(host, t("group"));
                                 }
                                 icons::FUNCTION => self.preview_function(host),
                                 icons::ARRANGE => {
@@ -1249,7 +1282,8 @@ impl Editor {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.window_toolbar {
-                        if icons::button(ui, true, icons::CLOSE, "Close window", "Alt+F4").clicked()
+                        if icons::button(ui, true, icons::CLOSE, t("close-window"), "Alt+F4")
+                            .clicked()
                         {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -1264,9 +1298,9 @@ impl Editor {
                                 icons::MAXIMIZE
                             },
                             if maximized {
-                                "Restore window"
+                                t("restore-window")
                             } else {
-                                "Maximize window"
+                                t("maximize-window")
                             },
                             "",
                         )
@@ -1275,7 +1309,8 @@ impl Editor {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                         }
-                        if icons::button(ui, true, icons::MINIMIZE, "Minimize window", "").clicked()
+                        if icons::button(ui, true, icons::MINIMIZE, t("minimize-window"), "")
+                            .clicked()
                         {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -1286,7 +1321,7 @@ impl Editor {
                         ui,
                         true,
                         icons::SETTINGS,
-                        "Settings",
+                        t("settings"),
                         &self.canvas.keys.label("settings"),
                     )
                     .clicked()
@@ -1296,21 +1331,25 @@ impl Editor {
                     ui.separator();
                     let running = self.is_running();
                     if icons::run_button(ui, running, true)
-                        .on_hover_text(format!("Stop ({})", self.canvas.keys.label("stop")))
+                        .on_hover_text(tf(
+                            "stop-with-key",
+                            &[("key", self.canvas.keys.label("stop").into())],
+                        ))
                         .clicked()
                     {
                         self.stop(host);
                     }
                     if icons::run_button(ui, open && !running, false)
-                        .on_hover_text(format!("Run ({})", self.canvas.keys.label("run")))
+                        .on_hover_text(tf(
+                            "run-with-key",
+                            &[("key", self.canvas.keys.label("run").into())],
+                        ))
                         .clicked()
                     {
                         ui.memory_mut(egui::Memory::stop_text_input);
                         self.run_asked = true;
                     }
-                    if icons::button(ui, open, icons::CHECK, "Check the graph for problems", "")
-                        .clicked()
-                    {
+                    if icons::button(ui, open, icons::CHECK, t("check-graph-hint"), "").clicked() {
                         self.check(host);
                     }
                 });
@@ -1351,7 +1390,7 @@ impl Editor {
             ui,
             self.panels.nodes,
             egui::Align::Min,
-            "Nodes, Variables and Connections",
+            t("left-panel-hint"),
         )
         .clicked()
         {
@@ -1362,7 +1401,7 @@ impl Editor {
             ui,
             open,
             icons::FIT,
-            "Fit the graph in view",
+            t("fit-graph-hint"),
             &self.canvas.keys.label("fit"),
         )
         .clicked()
@@ -1374,7 +1413,7 @@ impl Editor {
                 open,
                 egui::Button::new(format!("{:.0}%", self.canvas.zoom() * 100.0)),
             )
-            .on_hover_text("Actual size")
+            .on_hover_text(t("actual-size"))
             .clicked()
         {
             self.canvas.reset_zoom();
@@ -1384,11 +1423,11 @@ impl Editor {
     fn workspace_diagnostics(&mut self, ui: &mut egui::Ui, centered: bool) {
         let count = self.problems().len();
         let problems = if count == 0 {
-            "Problems".to_owned()
+            t("problems").to_owned()
         } else {
-            format!("Problems ({count})")
+            tf("problems-count", &[("count", count.into())])
         };
-        let tabs = [(false, problems.as_str()), (true, "Log")];
+        let tabs = [(false, problems.as_str()), (true, t("log"))];
         if centered {
             let font = egui::TextStyle::Button.resolve(ui.style());
             let width = tabs
@@ -1420,7 +1459,7 @@ impl Editor {
 
     fn workspace_right(&mut self, ui: &mut egui::Ui) {
         let open = self.panels.properties || self.panels.packages;
-        if icons::dock_toggle(ui, open, egui::Align::Max, "Properties and Packages").clicked() {
+        if icons::dock_toggle(ui, open, egui::Align::Max, t("right-panel-hint")).clicked() {
             if open {
                 self.packages_tab = self.panels.packages && !self.panels.properties;
                 self.panels.properties = false;
@@ -1431,15 +1470,15 @@ impl Editor {
             }
         }
         let state = if self.is_running() {
-            "Running"
+            t("running")
         } else if self.document.is_some() {
-            "Stopped"
+            t("stopped")
         } else {
-            "No graph"
+            t("no-graph")
         };
         ui.label(state);
         if self.is_unsaved() {
-            ui.weak("Unsaved");
+            ui.weak(t("unsaved"));
         }
     }
 
@@ -1447,8 +1486,8 @@ impl Editor {
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let mut packages = self.panels.packages && !self.panels.properties;
         ui.horizontal(|ui| {
-            let _ = ui.selectable_value(&mut packages, false, "Properties");
-            let _ = ui.selectable_value(&mut packages, true, "Packages");
+            let _ = ui.selectable_value(&mut packages, false, t("properties"));
+            let _ = ui.selectable_value(&mut packages, true, t("packages"));
         });
         ui.separator();
         self.panels.properties = !packages;
@@ -1460,9 +1499,9 @@ impl Editor {
         }
     }
 
-    /// The language the node search also understands, from the host's search words.
-    fn language_choice(&mut self, ui: &mut egui::Ui, host: &Host) {
-        let languages = host.catalogs().languages();
+    /// The language of the editor and its node search, from the editor's catalogues.
+    fn language_choice(&mut self, ui: &mut egui::Ui) {
+        let languages = i18n::catalogs().languages();
         let current = self.language().to_owned();
         let name = languages
             .iter()
@@ -1483,7 +1522,7 @@ impl Editor {
                 }
             })
             .response
-            .on_hover_text("The language node search understands, besides English.");
+            .on_hover_text(t("language-hint"));
         if let Some(tag) = chosen {
             self.set_language(&tag);
         }
@@ -1492,16 +1531,16 @@ impl Editor {
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         ui.horizontal(|ui| {
-            let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, "Nodes");
+            let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, t("nodes"));
             let _ = ui
-                .selectable_value(&mut self.tab, Tab::Variables, "Variables")
-                .on_hover_text("The values this graph keeps.");
+                .selectable_value(&mut self.tab, Tab::Variables, t("variables"))
+                .on_hover_text(t("variables-hint"));
             let _ = ui
-                .selectable_value(&mut self.tab, Tab::Connections, "Connections")
-                .on_hover_text("The devices and services this graph uses.");
+                .selectable_value(&mut self.tab, Tab::Connections, t("connections"))
+                .on_hover_text(t("connections-hint"));
             let _ = ui
-                .selectable_value(&mut self.tab, Tab::Types, "Types")
-                .on_hover_text("Enums and records this graph declares itself.");
+                .selectable_value(&mut self.tab, Tab::Types, t("types"))
+                .on_hover_text(t("types-hint"));
         });
         ui.separator();
         match self.tab {
@@ -1546,14 +1585,14 @@ impl Editor {
                     vertical_arrows: true,
                     ..Default::default()
                 })
-                .hint_text("Search by name or purpose")
+                .hint_text(t("search-hint"))
                 .desired_width(f32::INFINITY),
         );
         if field.changed() {
             self.palette_highlighted = 0;
         }
         if !self.search.trim().is_empty() {
-            self.result_style(ui, host);
+            self.result_style(ui);
         }
         let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1561,36 +1600,39 @@ impl Editor {
             // The graph's own variables first: reading or writing one is the most
             // common node, and declaring one starts here too.
             if self.document.is_some() && !searching {
-                egui::CollapsingHeader::new(format!("Variables ({})", variables.len()))
-                    .id_salt("orange-variables")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for (id, name, ty) in &variables {
-                            ui.horizontal(|ui| {
-                                let _ = ui
-                                    .add(egui::Label::new(name.as_str()).truncate())
-                                    .on_hover_text(type_name(ty));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        for (label, definition) in VARIABLE_NODES.iter().rev() {
-                                            if ui
-                                                .small_button(*label)
-                                                .on_hover_text(format!(
-                                                    "Add a {} node for {name}.",
-                                                    label.to_lowercase()
-                                                ))
-                                                .clicked()
-                                            {
-                                                variable_node = Some((*definition, id.clone()));
-                                            }
+                egui::CollapsingHeader::new(tf(
+                    "variables-count",
+                    &[("count", variables.len().into())],
+                ))
+                .id_salt("orange-variables")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for (id, name, ty) in &variables {
+                        ui.horizontal(|ui| {
+                            let _ = ui
+                                .add(egui::Label::new(name.as_str()).truncate())
+                                .on_hover_text(type_name(ty));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    for (label, hint, definition) in VARIABLE_NODES.iter().rev() {
+                                        if ui
+                                            .small_button(t(label))
+                                            .on_hover_text(tf(
+                                                hint,
+                                                &[("name", name.as_str().into())],
+                                            ))
+                                            .clicked()
+                                        {
+                                            variable_node = Some((*definition, id.clone()));
                                         }
-                                    },
-                                );
-                            });
-                        }
-                        new_variable = ui.button("New variable…").clicked();
-                    });
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    new_variable = ui.button(t("new-variable-ellipsis")).clicked();
+                });
             }
             let language = if self.language.is_empty() {
                 orange_host::SOURCE_LANGUAGE
@@ -1600,7 +1642,7 @@ impl Editor {
             let results = self.palette.get(host, &self.search, language);
             let found = results.groups;
             if searching && found.is_empty() {
-                ui.weak("No node matches. Try a name or a purpose, such as int, timer or text.");
+                ui.weak(t("no-node-matches"));
             }
             let found_count = found.iter().map(|(_, items)| items.len()).sum::<usize>();
             let last = found_count.saturating_sub(1);
@@ -1674,7 +1716,7 @@ impl Editor {
             if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
             } else {
-                self.say("open a graph before adding nodes".to_owned());
+                self.say(t("open-graph-before-adding").to_owned());
             }
         }
     }
@@ -1703,14 +1745,17 @@ impl Editor {
             for package in host.packages() {
                 let kind = match package.kind {
                     PackageKind::Base => "base",
-                    PackageKind::Native => "built in",
+                    PackageKind::Native => "built-in",
                     _ => "installed",
                 };
-                let state = if package.active { "on" } else { "off" };
-                ui.label(format!(
-                    "{} {} ({kind}, {state})",
-                    package.name().unwrap_or(package.id),
-                    package.version
+                ui.label(tf(
+                    "package-line",
+                    &[
+                        ("name", package.name().unwrap_or(package.id).into()),
+                        ("version", package.version.to_string().into()),
+                        ("kind", kind.into()),
+                        ("active", if package.active { "yes" } else { "no" }.into()),
+                    ],
                 ));
             }
         });
@@ -1741,7 +1786,7 @@ impl Editor {
             .id_salt("editor-problems")
             .show(ui, |ui| {
                 if problems.is_empty() {
-                    ui.weak("No problems found.");
+                    ui.weak(t("no-problems"));
                 } else {
                     for (index, problem) in problems.iter().enumerate() {
                         // A problem about a node takes you to it.
@@ -1749,7 +1794,7 @@ impl Editor {
                             Some(node) => {
                                 if ui
                                     .link(problem.as_str())
-                                    .on_hover_text("Show the node")
+                                    .on_hover_text(t("show-node"))
                                     .clicked()
                                 {
                                     focus = Some(node);
@@ -1771,7 +1816,7 @@ impl Editor {
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         self.prepare_devices(host);
         let Some(document) = &self.document else {
-            ui.centered_and_justified(|ui| ui.label("Open a graph file to see it here."));
+            ui.centered_and_justified(|ui| ui.label(t("open-graph-file")));
             return;
         };
         let triggers = document
@@ -1881,7 +1926,7 @@ impl Editor {
             self.group_edit(host, edit);
         }
         if done.group_selection {
-            let _ = self.group_selection(host, "Group");
+            let _ = self.group_selection(host, t("group"));
         }
         if let Some((target, at, screen)) = done.context {
             self.open_menu(target, at, screen);

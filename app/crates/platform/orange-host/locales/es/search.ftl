@@ -2,40 +2,6 @@
 
 language-name = Español
 
-# Static editor messages in the org.orange.host namespace; no arguments.
-editor-settings-title = Ajustes
-editor-settings-search = Buscar ajustes
-editor-settings-empty = No hay secciones que coincidan
-editor-search-heading = Búsqueda de nodos
-editor-result-layout = Vista de resultados
-editor-result-names = Nombres
-editor-result-previews = Vista previa
-editor-result-scope = Se aplica al panel lateral y al selector del lienzo.
-editor-search-language = Idioma de búsqueda
-editor-display-heading = Pantalla y lienzo
-editor-interface-scale = Escala de la interfaz
-editor-snap-grid = Alinear nodos a la cuadrícula
-editor-snap-hint = Mantén Alt al arrastrar para mover libremente.
-editor-wheel-pans = La rueda desplaza en lugar de cambiar el zoom
-editor-shortcuts-heading = Atajos de teclado
-editor-shortcut-find = Buscar un nodo en el puntero
-editor-shortcut-choose = Elegir un resultado
-editor-shortcut-close = Cerrar búsqueda o menú
-editor-shortcut-save = Guardar
-editor-shortcut-undo = Deshacer / rehacer
-editor-shortcut-copy = Copiar / cortar / pegar selección
-editor-shortcut-duplicate = Duplicar selección
-editor-shortcut-delete = Eliminar nodos o cable seleccionados
-editor-shortcut-group = Agrupar selección
-editor-shortcut-function = Crear función de la selección
-editor-shortcut-arrange = Organizar selección
-editor-shortcut-fit = Ajustar el gráfico a la vista
-editor-shortcut-pan = Desplazar horizontalmente / verticalmente
-editor-run = Ejecutar
-editor-stop = Detener
-editor-run-hint = Ejecutar este gráfico con los valores actuales
-editor-stop-hint = Detener este gráfico
-
 concept-trigger = disparador, desencadenante, cuando, inicio, iniciar, empezar, evento, al
 concept-trigger-purpose = Inicia el flujo cuando ocurre algo.
 concept-math = matemáticas, aritmética, calcular, número, suma, operación

@@ -85,13 +85,13 @@ fn field(
             egui::ComboBox::from_id_salt("choice")
                 .width(width)
                 .wrap_mode(egui::TextWrapMode::Wrap)
-                .selected_text(value.as_str().unwrap_or("Choose…"))
+                .selected_text(value.as_str().unwrap_or(t("choose")))
                 .show_ui(ui, |ui| {
                     for option in options {
                         ui.selectable_value(
                             value,
                             option.clone(),
-                            option.as_str().unwrap_or("Choice"),
+                            option.as_str().unwrap_or(t("choice")),
                         );
                     }
                 })
@@ -167,7 +167,7 @@ fn field(
 pub(super) fn menu(ui: &mut egui::Ui, node: &NodeView) -> Option<(String, serde_json::Value)> {
     let mut changed = None;
     ui.set_width(240.0);
-    ui.strong("Numeric policies");
+    ui.strong(t("numeric-policies"));
     for (name, schema) in all_fields(node).filter(|(name, _)| advanced(name)) {
         ui.push_id(name, |ui| {
             if let Some(edit) = field(ui, node, name, schema, 220.0) {

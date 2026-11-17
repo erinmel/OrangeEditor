@@ -4,6 +4,7 @@
 //! the canvas draws them and says what a person asked of them.
 use super::{CanvasResponse, NODE_WIDTH, Palette, auto_layout, node_size};
 use crate::canvas::Canvas;
+use crate::i18n::{t, tf};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use orange_host::{GROUP_COLORS, GraphView, Group, NodeId, NodeView, WireView};
 use std::collections::{HashMap, HashSet};
@@ -170,7 +171,7 @@ impl Canvas {
                 if renaming.0 != group.id {
                     *renaming = (group.id.clone(), group.name.clone());
                 }
-                ui.label("Name");
+                ui.label(t("name"));
                 let typed = ui.text_edit_singleline(&mut renaming.1);
                 let name = renaming.1.trim().to_owned();
                 if typed.lost_focus() && !name.is_empty() && name != group.name {
@@ -192,9 +193,9 @@ impl Canvas {
                     }
                 });
                 let fold = if group.collapsed {
-                    "Expand"
+                    t("expand")
                 } else {
-                    "Collapse"
+                    t("collapse")
                 };
                 if ui.button(fold).clicked() {
                     let mut changed = group.clone();
@@ -202,11 +203,11 @@ impl Canvas {
                     done.group = Some(GroupEdit::Change(changed));
                     ui.close();
                 }
-                if ui.button("Select its nodes").clicked() && !group.collapsed {
+                if ui.button(t("group-select-nodes")).clicked() && !group.collapsed {
                     self.select_many(&group.nodes);
                     ui.close();
                 }
-                if ui.button("Ungroup").clicked() {
+                if ui.button(t("ungroup")).clicked() {
                     done.group = Some(GroupEdit::Ungroup(group.id.clone()));
                     ui.close();
                 }
@@ -283,7 +284,7 @@ impl Canvas {
                 let _ = painter.text(
                     Pos2::new(shown.left() + 10.0 * zoom, title.bottom() + 15.0 * zoom),
                     Align2::LEFT_CENTER,
-                    format!("{count} node{}", if count == 1 { "" } else { "s" }),
+                    tf("node-count", &[("count", count.into())]),
                     FontId::proportional(11.0 * zoom.max(0.5)),
                     colors.weak,
                 );

@@ -133,7 +133,7 @@ pub(crate) fn choice_fields(
                 .map_or_else(
                     || {
                         if choice.setting == "device" {
-                            "Unavailable device"
+                            t("device-unavailable")
                         } else {
                             value
                         }
@@ -163,17 +163,20 @@ pub(crate) fn choice_fields(
                     }
                 });
             *refresh |= ui
-                .small_button("Refresh")
-                .on_hover_text("List them again")
+                .small_button(t("refresh"))
+                .on_hover_text(t("list-again"))
                 .clicked();
         });
         if let Some(problem) = &choice.problem {
-            ui.weak(format!("Could not list them: {problem}"));
+            ui.weak(tf(
+                "devices-not-listed",
+                &[("problem", problem.to_string().into())],
+            ));
         }
         if let Some(value) = current
             && !choice.values.iter().any(|known| known == value)
         {
-            ui.weak(format!("“{value}” is not on this machine now."));
+            ui.weak(tf("device-missing", &[("value", value.to_string().into())]));
         }
     }
     chosen
@@ -210,7 +213,7 @@ pub(crate) fn number_fields(
                     }
                     if ui
                         .small_button(icons::text(icons::CLOSE))
-                        .on_hover_text("Leave it out: use the default.")
+                        .on_hover_text(t("leave-out-default"))
                         .clicked()
                     {
                         changed = Some((field.setting.clone(), None));
@@ -219,11 +222,17 @@ pub(crate) fn number_fields(
                 None => {
                     let start = field.default.unwrap_or((field.min + field.max) / 2.0);
                     match field.default {
-                        Some(default) => ui.weak(format!("default, {default} {}", field.unit)),
+                        Some(default) => ui.weak(tf(
+                            "default-value",
+                            &[
+                                ("value", default.to_string().into()),
+                                ("unit", field.unit.to_string().into()),
+                            ],
+                        )),
                         None => ui.weak("automatic"),
                     }
                     .on_hover_text(field.help.as_str());
-                    if ui.small_button("Set").clicked() {
+                    if ui.small_button(t("set")).clicked() {
                         changed = Some((field.setting.clone(), Some(start)));
                     }
                 }
@@ -246,8 +255,8 @@ pub(crate) fn live_level(
 ) {
     let mut on = probing.is_some();
     if ui
-        .checkbox(&mut on, "Show the live level")
-        .on_hover_text("Listens to the device now, apart from any run.")
+        .checkbox(&mut on, t("show-live-level"))
+        .on_hover_text(t("live-level-hint"))
         .changed()
         && !on
     {
@@ -257,7 +266,7 @@ pub(crate) fn live_level(
         return;
     }
     let Some(settings) = settings.as_object() else {
-        ui.weak("The settings are not JSON.");
+        ui.weak(t("settings-not-json"));
         return;
     };
     // What chooses the device: changing it listens again; moving the trigger's levels
@@ -308,7 +317,7 @@ pub(crate) fn level_meter(ui: &mut egui::Ui, level: Result<f64, String>, marks: 
     let level = match level {
         Ok(level) => level,
         Err(why) => {
-            ui.weak(format!("No level: {why}"));
+            ui.weak(tf("no-level", &[("why", why.to_string().into())]));
             return;
         }
     };
@@ -347,7 +356,7 @@ pub(crate) fn level_meter(ui: &mut egui::Ui, level: Result<f64, String>, marks: 
         .map(|(db, what)| format!("{what}: {db:.1} dBFS"))
         .collect();
     let _ = response.on_hover_text(hover.join("\n"));
-    ui.label(format!("{level:.1} dBFS now"));
+    ui.label(tf("level-now", &[("level", format!("{level:.1}").into())]));
 }
 
 /// `settings` with `setting` set to the number `value`, or left out for `None`.
@@ -391,9 +400,9 @@ pub(crate) fn with_setting(settings: &Json, setting: &str, value: Option<String>
 
 fn scope_name(scope: VarScope) -> &'static str {
     match scope {
-        VarScope::Local => "local",
-        VarScope::Run => "each run",
-        VarScope::Workspace => "workspace",
+        VarScope::Local => t("scope-local"),
+        VarScope::Run => t("scope-run"),
+        VarScope::Workspace => t("scope-workspace"),
     }
 }
 
@@ -495,7 +504,7 @@ impl Editor {
 
     pub(crate) fn variables_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
-            ui.weak("Open a graph to see its variables.");
+            ui.weak(t("open-graph-variables"));
             return;
         };
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -505,7 +514,7 @@ impl Editor {
 
     pub(crate) fn connections_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
-            ui.weak("Open a graph to see its connections.");
+            ui.weak(t("open-graph-connections"));
             return;
         };
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -563,7 +572,7 @@ impl Editor {
             self.forms.open_variable = false;
             self.forms.variable_open = true;
         }
-        let adding = section_heading(ui, "Variables", "Add a variable");
+        let adding = section_heading(ui, t("variables"), t("add-variable"));
         if adding {
             self.forms.variable = VariableForm::default();
             self.forms.variable_open = true;
@@ -591,9 +600,7 @@ impl Editor {
                         ui.add(egui::Label::new("::").selectable(false))
                     })
                     .response
-                    .on_hover_text(
-                        "Drag onto the graph to read it (Get); hold Alt to write it (Set).",
-                    );
+                    .on_hover_text(t("variable-drag-hint"));
                 // Its name, renamed in place.
                 if let Some(name) = self.inline_field(ui, (id.clone(), "name"), &variable.name)
                     && !name.is_empty()
@@ -631,16 +638,16 @@ impl Editor {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let _ = ui.menu_button("…", |ui| {
                         let mut kept = variable.clone();
-                        ui.label("Lasts");
+                        ui.label(t("lasts"));
                         for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
                             let _ = ui.radio_value(&mut kept.scope, scope, scope_name(scope));
                         }
-                        let _ = ui.checkbox(&mut kept.persistent, "Keep between runs");
+                        let _ = ui.checkbox(&mut kept.persistent, t("keep-between-runs"));
                         if kept != *variable {
                             change = Some(kept);
                         }
                         ui.separator();
-                        if ui.button("Delete").clicked() {
+                        if ui.button(t("delete")).clicked() {
                             remove = Some(id.clone());
                             ui.close();
                         }
@@ -648,14 +655,12 @@ impl Editor {
                     // Its value now while the graph runs; the last one, dimmed, after.
                     match values.get(&id) {
                         Some(value) if running => {
-                            let _ = ui
-                                .strong(value.as_str())
-                                .on_hover_text("Its value now, in this run.");
+                            let _ = ui.strong(value.as_str()).on_hover_text(t("value-now-hint"));
                         }
                         Some(value) => {
                             let _ = ui
                                 .weak(value.as_str())
-                                .on_hover_text("Its value when the last run stopped.");
+                                .on_hover_text(t("value-last-run-hint"));
                         }
                         None => {}
                     }
@@ -664,7 +669,7 @@ impl Editor {
             // Where it starts, typed in place.
             ui.horizontal(|ui| {
                 ui.add_space(18.0);
-                ui.weak("starts at");
+                ui.weak(t("starts-at-lower"));
                 let shown = variable.initial.clone().unwrap_or_default();
                 if let Some(initial) = self.inline_field(ui, (id.clone(), "initial"), &shown) {
                     change = Some(Variable {
@@ -675,28 +680,28 @@ impl Editor {
             });
         }
         if declared.variables.is_empty() && !self.forms.variable_open {
-            ui.weak("No variables yet. + adds one.");
+            ui.weak(t("no-variables"));
         } else if !declared.variables.is_empty() {
-            ui.weak("Drag :: onto the graph for a Get node, with Alt for a Set node.");
+            ui.weak(t("variable-drag-empty-hint"));
         }
         let mut declare = false;
         let mut cancel = false;
         if self.forms.variable_open {
             let form = &mut self.forms.variable;
             egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.strong("New variable");
+                ui.strong(t("new-variable"));
                 egui::Grid::new("orange-variable-form")
                     .num_columns(2)
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("Name");
+                        ui.label(t("name"));
                         let _ = ui.add(
                             egui::TextEdit::singleline(&mut form.name)
-                                .hint_text("such as count")
+                                .hint_text(t("variable-name-hint"))
                                 .desired_width(ui.available_width()),
                         );
                         ui.end_row();
-                        ui.label("Type");
+                        ui.label(t("type"));
                         let _ = egui::ComboBox::from_id_salt("orange-variable-type")
                             .selected_text(type_name(&form.ty))
                             .show_ui(ui, |ui| {
@@ -709,8 +714,7 @@ impl Editor {
                                 }
                             });
                         ui.end_row();
-                        ui.label("Lasts")
-                            .on_hover_text("How long the value is kept while the graph runs.");
+                        ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
                         let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
                             .selected_text(scope_name(form.scope))
                             .show_ui(ui, |ui| {
@@ -723,21 +727,21 @@ impl Editor {
                                 }
                             });
                         ui.end_row();
-                        ui.label("Starts at");
+                        ui.label(t("starts-at"));
                         let _ = ui.add(
                             egui::TextEdit::singleline(&mut form.initial)
-                                .hint_text("empty until written")
+                                .hint_text(t("empty-until-written"))
                                 .desired_width(ui.available_width()),
                         );
                         ui.end_row();
                         ui.label("");
-                        let _ = ui.checkbox(&mut form.persistent, "Keep between runs");
+                        let _ = ui.checkbox(&mut form.persistent, t("keep-between-runs"));
                         ui.end_row();
                     });
                 ui.horizontal(|ui| {
                     let ready = !form.name.trim().is_empty();
-                    declare = ui.add_enabled(ready, egui::Button::new("Add")).clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    declare = ui.add_enabled(ready, egui::Button::new(t("add"))).clicked();
+                    cancel = ui.button(t("cancel")).clicked();
                 });
             });
         }
@@ -808,7 +812,7 @@ impl Editor {
                 .find(|known| known.id == adapter)
                 .map_or_else(|| adapter.to_owned(), |known| known.label.clone())
         };
-        if section_heading(ui, "Connections", "Add a connection") {
+        if section_heading(ui, t("connections"), t("add-connection")) {
             self.forms.connection = ConnectionForm::default();
             self.forms.open_connection = true;
         }
@@ -821,15 +825,19 @@ impl Editor {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(12.0);
                 if users.is_empty() {
-                    ui.weak(format!("{}, not used yet", label_of(&connection.adapter)));
+                    ui.weak(tf(
+                        "connection-unused",
+                        &[("adapter", label_of(&connection.adapter).into())],
+                    ));
                 } else {
                     let _ = ui
-                        .weak(format!(
-                            "{}, used by {} node{}: {}",
-                            label_of(&connection.adapter),
-                            users.len(),
-                            if users.len() == 1 { "" } else { "s" },
-                            users.join(", ")
+                        .weak(tf(
+                            "connection-used",
+                            &[
+                                ("adapter", label_of(&connection.adapter).into()),
+                                ("count", users.len().into()),
+                                ("nodes", users.join(", ").into()),
+                            ],
                         ))
                         .on_hover_text(users.join("\n"));
                 }
@@ -851,7 +859,7 @@ impl Editor {
             }
         }
         if declared.connections.is_empty() {
-            ui.weak("No connections yet. + adds one.");
+            ui.weak(t("no-connections"));
         }
         if self.forms.connection.adapter.is_empty()
             && let Some(first) = adapters.first()
@@ -872,9 +880,9 @@ impl Editor {
         let probing = &mut self.probing;
         let form = &mut self.forms.connection;
         let title = if form.changing.is_some() {
-            "Change connection"
+            t("change-connection")
         } else {
-            "New connection"
+            t("new-connection")
         };
         let shown = egui::CollapsingHeader::new(title)
             .id_salt("orange-connection-form")
@@ -883,15 +891,16 @@ impl Editor {
             .show(ui, |ui| {
                 let _ = ui.add(
                     egui::TextEdit::singleline(&mut form.name)
-                        .hint_text("name, such as weather api")
+                        .hint_text(t("connection-name-hint"))
                         .desired_width(f32::INFINITY),
                 );
                 adapter_picker(ui, &adapters, form);
                 ui.horizontal(|ui| {
-                    let _ = ui.radio_value(&mut form.scope, ConnectionScope::Graph, "this graph");
+                    let _ =
+                        ui.radio_value(&mut form.scope, ConnectionScope::Graph, t("this-graph"));
                     let _ = ui
                         .radio_value(&mut form.scope, ConnectionScope::Shared, "shared")
-                        .on_hover_text("The host holds the settings; graphs share one session.");
+                        .on_hover_text(t("connection-host-hint"));
                 });
                 ui.separator();
                 if let Ok(mut current) = serde_json::from_str::<Json>(&form.settings) {
@@ -911,25 +920,28 @@ impl Editor {
                         form.tested = None;
                     }
                     if probes {
-                        live_level(ui, host, &form.adapter, &current, &choices, &fields, probing);
+                        live_level(
+                            ui,
+                            host,
+                            &form.adapter,
+                            &current,
+                            &choices,
+                            &fields,
+                            probing,
+                        );
                     }
                 } else {
                     *probing = None;
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "The settings below are not JSON.",
-                    );
+                    ui.colored_label(ui.visuals().warn_fg_color, t("settings-below-not-json"));
                 }
                 ui.horizontal(|ui| {
                     test = ui
-                        .button("Check settings")
-                        .on_hover_text(
-                            "Checks whether the adapter can open with these settings. Some services connect on first use.",
-                        )
+                        .button(t("check-settings"))
+                        .on_hover_text(t("check-settings-hint"))
                         .clicked();
                     match &form.tested {
                         Some(Ok(())) => {
-                            ui.label("Settings accepted.");
+                            ui.label(t("settings-accepted"));
                         }
                         Some(Err(why)) => {
                             ui.colored_label(ui.visuals().warn_fg_color, why.as_str());
@@ -937,7 +949,7 @@ impl Editor {
                         None => {}
                     }
                 });
-                egui::CollapsingHeader::new("All settings (JSON)")
+                egui::CollapsingHeader::new(t("all-settings-json"))
                     .id_salt("orange-connection-json")
                     .default_open(texts.is_empty() && choices.is_empty() && fields.is_empty())
                     .show(ui, |ui| {
@@ -947,13 +959,17 @@ impl Editor {
                                 .desired_rows(4)
                                 .desired_width(f32::INFINITY),
                         );
-                        ui.weak("A secret is written as \"credential://name\": it stays in the system's credential store, never in the graph.");
+                        ui.weak(t("secret-hint"));
                     });
                 ui.horizontal(|ui| {
                     let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
-                    let label = if form.changing.is_some() { "Save" } else { "Add" };
+                    let label = if form.changing.is_some() {
+                        t("save")
+                    } else {
+                        t("add")
+                    };
                     declare = ui.add_enabled(ready, egui::Button::new(label)).clicked();
-                    cancel = form.changing.is_some() && ui.button("Cancel").clicked();
+                    cancel = form.changing.is_some() && ui.button(t("cancel")).clicked();
                 });
             });
         // A closed form shows no level, and the device it listened to is let go.
@@ -973,10 +989,10 @@ impl Editor {
                     }
                     match with {
                         Json::Object(settings) => host.test_connection(&form.adapter, &settings),
-                        _ => Err("the settings are not an object".to_owned()),
+                        _ => Err(t("settings-not-object").to_owned()),
                     }
                 }
-                _ => Err("the settings are not a JSON object".to_owned()),
+                _ => Err(t("settings-not-json-object").to_owned()),
             });
         }
         if declare {
@@ -1003,7 +1019,10 @@ impl Editor {
                         self.forms.connection = ConnectionForm::default();
                     }
                 }
-                Err(error) => self.say(format!("not done: the settings are not JSON: {error}")),
+                Err(error) => self.say(tf(
+                    "settings-not-json-error",
+                    &[("error", error.to_string().into())],
+                )),
             }
         }
         if cancel {
@@ -1138,14 +1157,14 @@ pub(super) fn text_fields(
                         (Some(reference), None) => {
                             ui.horizontal(|ui| {
                                 let _ = ui
-                                    .weak("Saved in the credential store")
+                                    .weak(t("saved-in-credential-store"))
                                     .on_hover_text(reference.as_str());
-                                if ui.small_button("Replace").clicked() {
+                                if ui.small_button(t("replace")).clicked() {
                                     let _ = secrets.0.insert(text.setting.clone(), String::new());
                                 }
                                 if ui
                                     .small_button(icons::text(icons::CLOSE))
-                                    .on_hover_text("Leave it out.")
+                                    .on_hover_text(t("leave-out"))
                                     .clicked()
                                 {
                                     set_text(settings, &text.setting, None);
@@ -1157,7 +1176,7 @@ pub(super) fn text_fields(
                             let response = ui.add(
                                 egui::TextEdit::singleline(&mut secret)
                                     .password(true)
-                                    .hint_text("kept in the credential store")
+                                    .hint_text(t("kept-in-credential-store"))
                                     .desired_width(f32::INFINITY),
                             );
                             if response.changed() {
@@ -1255,8 +1274,8 @@ fn declaration_row(ui: &mut egui::Ui, name: &str, detail: &str) -> (bool, bool) 
     ui.horizontal(|ui| {
         let _ = ui.strong(name).on_hover_text(detail);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let delete = ui.small_button("Delete").clicked();
-            let edit = ui.small_button("Edit").clicked();
+            let delete = ui.small_button(t("delete")).clicked();
+            let edit = ui.small_button(t("edit")).clicked();
             (edit, delete)
         })
         .inner

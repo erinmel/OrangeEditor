@@ -93,11 +93,11 @@ impl<'a> Field<'a> {
             Self::Whole => typed
                 .parse::<i64>()
                 .map(Json::from)
-                .map_err(|_| format!("`{typed}` is not a whole number")),
+                .map_err(|_| tf("not-whole-number", &[("typed", typed.into())])),
             Self::Number => typed
                 .parse::<f64>()
                 .map(Json::from)
-                .map_err(|_| format!("`{typed}` is not a number")),
+                .map_err(|_| tf("not-a-number", &[("typed", typed.into())])),
             Self::Time => typed
                 .parse::<f64>()
                 .ok()
@@ -111,7 +111,7 @@ impl<'a> Field<'a> {
                     let nanos = (millis * NANOS_PER_MILLI).round() as u64;
                     json!(nanos.to_string())
                 })
-                .ok_or_else(|| format!("`{typed}` is not a number of milliseconds")),
+                .ok_or_else(|| tf("not-milliseconds", &[("typed", typed.into())])),
             Self::Choice(_) | Self::Toggle | Self::Text => Ok(json!(typed)),
         }
     }
@@ -215,7 +215,7 @@ impl Editor {
         };
         let label = host
             .connection_label(&view.definition)
-            .unwrap_or_else(|| "Configure node".to_owned());
+            .unwrap_or_else(|| t("configure-node").to_owned());
         let mut open = true;
         egui::Window::new(label)
             .id(egui::Id::unique("node-config").with(node))
@@ -288,14 +288,14 @@ impl Editor {
             ui.add_space(4.0);
             let many = self.canvas.selection();
             if many.len() > 1 {
-                ui.strong(format!("{} nodes selected", many.len()));
-                ui.label("Ctrl+C copies them; Ctrl+V pastes where the pointer is.");
-                if ui.button("Delete them").clicked() {
+                ui.strong(tf("nodes-selected", &[("count", many.len().into())]));
+                ui.label(t("selection-copy-hint"));
+                if ui.button(t("delete-them")).clicked() {
                     let _ = self.remove_nodes(host, &many);
                 }
             } else {
-                ui.weak("Select a node to see and change its values.");
-                ui.weak("Ctrl+click or Shift+drag selects several.");
+                ui.weak(t("select-node-hint"));
+                ui.weak(t("multi-select-hint"));
             }
             return;
         };
@@ -342,7 +342,7 @@ impl Editor {
                 let setup =
                     !node.references.is_empty() || node.schema.is_some() || !node.types.is_empty();
                 if setup {
-                    section(ui, "Set-up");
+                    section(ui, t("set-up"));
                     for (pointer, kind) in &node.references {
                         if let Some(asked) =
                             self.reference_field(ui, labels, &node, host, pointer, *kind)
@@ -369,7 +369,7 @@ impl Editor {
                             .collect();
                         let toggles = host.adapter_toggles(&connection.adapter);
                         if !fields.is_empty() || !texts.is_empty() || !toggles.is_empty() {
-                            egui::CollapsingHeader::new("Source settings")
+                            egui::CollapsingHeader::new(t("source-settings"))
                                 .id_salt(("source-settings", node.id))
                                 .show(ui, |ui| {
                                     if let Some((name, value)) =
@@ -392,7 +392,10 @@ impl Editor {
                                 ..connection.clone()
                             });
                         }
-                        ui.small(format!("Shared settings of {}", connection.name));
+                        ui.small(tf(
+                            "shared-settings",
+                            &[("name", connection.name.as_str().into())],
+                        ));
                     }
                     if let Some(asked) = self.settings_fields(ui, labels, &node) {
                         change = Some(asked);
@@ -402,20 +405,20 @@ impl Editor {
                     }
                 }
                 if !node.variadic.is_empty() {
-                    section(ui, "Ports");
+                    section(ui, t("ports"));
                     if let Some(asked) = Self::variadic_fields(ui, labels, &node) {
                         change = Some(asked);
                     }
                 }
                 if node.ports.iter().any(|port| port.input && !port.exec) {
-                    section(ui, "Inputs");
+                    section(ui, t("inputs"));
                     if let Some(asked) = self.input_fields(ui, labels, &node) {
                         change = Some(asked);
                     }
                 }
                 self.values_section(ui, &node);
                 ui.add_space(10.0);
-                if ui.button("Delete node").clicked() {
+                if ui.button(t("delete-node")).clicked() {
                     change = Some(Change::Delete);
                 }
             });
@@ -499,8 +502,8 @@ impl Editor {
             .map_or_else(
                 || {
                     connection_label.as_ref().map_or_else(
-                        || format!("Choose a {what}"),
-                        |label| format!("Choose {label}"),
+                        || tf("choose-reference", &[("kind", what.into())]),
+                        |label| tf("choose-named", &[("name", label.as_str().into())]),
                     )
                 },
                 |(_, name)| name.clone(),
@@ -529,11 +532,15 @@ impl Editor {
                                 if !declared.is_empty() {
                                     ui.separator();
                                 }
-                                quick =
-                                    ui.selectable_label(false, format!("New {what}…")).clicked();
+                                quick = ui
+                                    .selectable_label(
+                                        false,
+                                        tf("new-reference", &[("kind", what.into())]),
+                                    )
+                                    .clicked();
                             }
                             _ if declared.is_empty() => {
-                                ui.weak(format!("This graph declares no {what}s."));
+                                ui.weak(tf("no-references", &[("kind", what.into())]));
                             }
                             _ => {}
                         }
@@ -571,14 +578,14 @@ impl Editor {
     ) -> Option<Change> {
         let mut change = None;
         let _ = egui::Frame::group(ui.style()).show(ui, |ui| {
-            row(ui, labels, "Name", None, |ui| {
+            row(ui, labels, t("name"), None, |ui| {
                 let _ = ui.add(
                     egui::TextEdit::singleline(&mut form.name)
-                        .hint_text("new variable")
+                        .hint_text(t("new-variable-placeholder"))
                         .desired_width(ui.available_width()),
                 );
             });
-            row(ui, labels, "Type", None, |ui| {
+            row(ui, labels, t("type"), None, |ui| {
                 let _ = egui::ComboBox::from_id_salt("orange-quick-variable-type")
                     .selected_text(type_name(&form.ty))
                     .width(ui.available_width())
@@ -591,16 +598,16 @@ impl Editor {
             ui.horizontal(|ui| {
                 let ready = !form.name.trim().is_empty();
                 if ui
-                    .add_enabled(ready, egui::Button::new("Declare"))
+                    .add_enabled(ready, egui::Button::new(t("declare")))
                     .clicked()
                 {
                     change = Some(Change::Declare(form.pointer.clone(), form.variable()));
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(t("cancel")).clicked() {
                     change = Some(Change::CancelDeclare);
                 }
             });
-            ui.weak("Scope and starting value are under Document.");
+            ui.weak(t("scope-under-document"));
         });
         change
     }
@@ -630,21 +637,23 @@ impl Editor {
             let current = &node.settings[name.as_str()];
             let needed = required.contains(&name.as_str());
             let label = if matches!(field, Field::Time) {
-                format!("{} (ms)", words(name))
+                tf("in-milliseconds", &[("name", words(name).into())])
             } else {
                 words(name)
             };
-            let hover = Some(if needed { "Required." } else { "Optional." }.to_owned());
+            let hover = Some(if needed { t("required") } else { t("optional") }.to_owned());
             let mut said = None;
             row(ui, labels, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
-                    let shown = current.as_str().unwrap_or("not set").to_owned();
+                    let shown = current.as_str().unwrap_or(t("not-set")).to_owned();
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
                         .show_ui(ui, |ui| {
                             if !needed
-                                && ui.selectable_label(current.is_null(), "not set").clicked()
+                                && ui
+                                    .selectable_label(current.is_null(), t("not-set"))
+                                    .clicked()
                                 && !current.is_null()
                             {
                                 changed = Some(Change::Setting(pointer.clone(), None));
@@ -689,7 +698,7 @@ impl Editor {
                 }
             });
             if let Some(why) = said {
-                self.say(format!("not done: {why}"));
+                self.say(tf("not-done", &[("why", why.to_string().into())]));
             }
         }
         changed
@@ -702,19 +711,19 @@ impl Editor {
             let shown = param
                 .chosen
                 .as_deref()
-                .map_or_else(|| "from the wires".to_owned(), type_name);
+                .map_or_else(|| t("from-the-wires").to_owned(), type_name);
             let hover = param.found.as_deref().map_or_else(
-                || "No type found yet.".to_owned(),
-                |found| format!("Now {}.", type_name(found)),
+                || t("no-type-yet").to_owned(),
+                |found| tf("type-now", &[("type", type_name(found).into())]),
             );
-            let label = format!("Type {}", param.name);
+            let label = tf("type-parameter", &[("name", param.name.to_string().into())]);
             row(ui, labels, &label, Some(hover), |ui| {
                 let _ = egui::ComboBox::from_id_salt(("orange-type", param.name.as_str()))
                     .selected_text(shown)
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(param.chosen.is_none(), "from the wires")
+                            .selectable_label(param.chosen.is_none(), t("from-the-wires"))
                             .clicked()
                             && param.chosen.is_some()
                         {
@@ -750,15 +759,18 @@ impl Editor {
                 })
                 .map(|port| port.id.clone());
             let hover = match variadic.max {
-                Some(max) => format!("From {} to {max}.", variadic.min),
-                None => format!("At least {}.", variadic.min),
+                Some(max) => tf(
+                    "inputs-range",
+                    &[("min", variadic.min.into()), ("max", max.into())],
+                ),
+                None => tf("inputs-at-least", &[("min", variadic.min.into())]),
             };
             row(ui, labels, &words(&variadic.port), Some(hover), |ui| {
                 ui.label(variadic.count.to_string());
                 let fewer = variadic.count > variadic.min && last.is_some();
                 if ui
                     .add_enabled(fewer, egui::Button::new("−"))
-                    .on_hover_text("Take off the last one, with its wires.")
+                    .on_hover_text(t("remove-last-input-hint"))
                     .clicked()
                     && let Some(last) = &last
                 {
@@ -767,7 +779,7 @@ impl Editor {
                 let more = variadic.max.is_none_or(|max| variadic.count < max);
                 if ui
                     .add_enabled(more, egui::Button::new(icons::text(icons::ADD)))
-                    .on_hover_text("Add one more.")
+                    .on_hover_text(t("add-one-more"))
                     .clicked()
                 {
                     change = Some(Change::AddPort(variadic.port.clone()));
@@ -784,7 +796,7 @@ impl Editor {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
             row(ui, labels, &port_label(&port.id), Some(ty.clone()), |ui| {
                 if port.connected {
-                    ui.weak("from a wire");
+                    ui.weak(t("from-a-wire"));
                     return;
                 }
                 if port.ty.as_deref() == Some("core/bool@1") {
@@ -795,7 +807,7 @@ impl Editor {
                     if port.value.is_some()
                         && ui
                             .small_button(icons::text(icons::CLOSE))
-                            .on_hover_text("Take the value off.")
+                            .on_hover_text(t("clear-value-hint"))
                             .clicked()
                     {
                         write = Some(Change::Input(port.id.clone(), None));
@@ -917,11 +929,11 @@ fn text_field(
         let cleared = clear
             && ui
                 .small_button(icons::text(icons::CLOSE))
-                .on_hover_text("Take the value off.")
+                .on_hover_text(t("clear-value-hint"))
                 .clicked();
         let browsed = browse.is_some_and(|what| {
             ui.small_button("…")
-                .on_hover_text(format!("Choose a {what}."))
+                .on_hover_text(tf("choose-path-kind", &[("kind", what.into())]))
                 .clicked()
         });
         let field = ui.add(
@@ -1088,13 +1100,16 @@ impl Editor {
         if failure.is_none() && ports.is_empty() {
             return;
         }
-        section(ui, "Values");
+        section(ui, t("values"));
         if let Some(why) = failure {
-            ui.colored_label(ui.visuals().error_fg_color, format!("Failed: {why}"));
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                tf("failed", &[("why", why.to_string().into())]),
+            );
         }
         for (port, shown, stale) in ports {
             let side = if port.input { "in" } else { "out" };
-            let freshness = if stale { " (previous)" } else { "" };
+            let freshness = if stale { t("previous-suffix") } else { "" };
             let title = format!(
                 "{} ({side}) = {}{freshness}",
                 port_label(&port.id),
@@ -1111,7 +1126,7 @@ impl Editor {
                             .desired_width(f32::INFINITY)
                             .interactive(true),
                     );
-                    if ui.small_button("Copy").clicked() {
+                    if ui.small_button(t("copy")).clicked() {
                         ui.ctx().copy_text(shown.full.clone());
                     }
                 });

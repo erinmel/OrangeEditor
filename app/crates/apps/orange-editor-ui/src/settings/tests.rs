@@ -1,7 +1,6 @@
 use super::*;
 #[test]
 fn changing_settings_sections_preserves_window_width() {
-    let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.settings_open = true;
     let context = egui::Context::default();
@@ -24,7 +23,7 @@ fn changing_settings_sections_preserves_window_width() {
                         ..Default::default()
                     },
                     |ui| {
-                        let rect = editor.settings_window(ui.ctx(), &host).unwrap();
+                        let rect = editor.settings_window(ui.ctx()).unwrap();
                         widths.push(rect.width());
                     },
                 )

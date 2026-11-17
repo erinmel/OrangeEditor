@@ -1,6 +1,7 @@
 //! Material Symbols Rounded, from the pinned egui_material_icons 0.9.0 library.
 //! Outline icons share one family and size across commands, menus and docks.
 //! Codepoints below preserve the editor's public char-based icon API.
+use crate::i18n::t;
 
 /// The icon family registered by the Material library.
 pub const FAMILY: &str = egui_material_icons::FONT_FAMILY_OUTLINED;
@@ -173,9 +174,9 @@ pub(crate) fn button(
 /// The primary action retains a readable label alongside its icon.
 pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egui::Response {
     let (icon, label) = if running {
-        (STOP, "Stop")
+        (STOP, t("stop"))
     } else {
-        (RUN, "Run")
+        (RUN, t("run"))
     };
     let color = if running {
         egui::Color32::from_rgb(225, 117, 125)
@@ -191,8 +192,8 @@ pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egu
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response.on_hover_text(if running {
-        "Stop this graph"
+        t("stop-hint")
     } else {
-        "Run this graph with the current values"
+        t("run-hint")
     })
 }

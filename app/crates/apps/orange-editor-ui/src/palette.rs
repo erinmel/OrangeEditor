@@ -1,5 +1,6 @@
 //! Node catalogue projection and its presentation cache. The search itself is the
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
+use crate::i18n::t;
 use orange_host::{Draft, Host, NodeView};
 use std::collections::HashMap;
 
@@ -108,7 +109,7 @@ pub(crate) fn missing_preview(ui: &egui::Ui, rect: egui::Rect, name: &str) {
     let _ = painter.text(
         label + egui::vec2(0.0, 20.0),
         egui::Align2::LEFT_CENTER,
-        "Configuration required",
+        t("configuration-required"),
         egui::FontId::proportional(12.0),
         visuals.weak_text_color(),
     );
@@ -118,14 +119,14 @@ pub(crate) fn missing_preview(ui: &egui::Ui, rect: egui::Rect, name: &str) {
 /// These cards are only used by search and drag previews.
 fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
     let ports: &[(&str, bool, &str, &str)] = match definition {
-        "core/get-variable" => &[("value", false, "Value", "$T")],
+        "core/get-variable" => &[("value", false, t("port-value"), "$T")],
         "org.orange.collections/make-enum" => &[
-            ("payload", true, "Payload (optional)", "$T"),
-            ("result", false, "Enum", "$Enum"),
+            ("payload", true, t("port-payload-optional"), "$T"),
+            ("result", false, t("port-enum"), "$Enum"),
         ],
         "org.orange.collections/enum-payload" => &[
-            ("value", true, "Enum", "$Enum"),
-            ("result", false, "Payload", "$T"),
+            ("value", true, t("port-enum"), "$Enum"),
+            ("result", false, t("port-payload"), "$T"),
         ],
         _ => return None,
     };

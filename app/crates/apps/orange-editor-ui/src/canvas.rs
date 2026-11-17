@@ -6,6 +6,7 @@
 //! only this: it asks its host for a [`GraphView`], calls [`Canvas::show`] each frame
 //! and acts on the [`CanvasResponse`]. Nothing here knows about files, flows or the
 //! other panels of the editor.
+use crate::i18n::{t, tf};
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use orange_host::{GraphView, NodeId, NodeView, PortView};
@@ -1176,7 +1177,7 @@ impl Canvas {
                 if touched.hovered() && self.wiring.is_none() {
                     let label = port_title(port);
                     let detail = if port.exec {
-                        Some("Execution".to_owned())
+                        Some(t("port-execution").to_owned())
                     } else {
                         port.ty.as_deref().map(|ty| {
                             if ty.starts_with('$') {
@@ -1480,7 +1481,7 @@ impl Canvas {
                             },
                         )
                         .response
-                        .on_hover_text("Numeric policies");
+                        .on_hover_text(t("numeric-policies"));
                     },
                 );
             }
@@ -1495,7 +1496,7 @@ impl Canvas {
                 let label = self
                     .connection_labels
                     .get(&node.definition)
-                    .map_or("Configure", String::as_str);
+                    .map_or(t("configure"), String::as_str);
                 let y = card_layout::CardLayout::new(node).source_top;
                 let slot = Rect::from_min_size(
                     rect.min + Vec2::new(CARD_PADDING, y + 19.0) * zoom,
@@ -1553,7 +1554,7 @@ impl Canvas {
                                                 continue;
                                             }
                                             ui.small(if loopback {
-                                                "Playback capture"
+                                                t("playback-capture")
                                             } else {
                                                 &picker.group_label
                                             });
@@ -1651,9 +1652,9 @@ impl Canvas {
                         .filter(|name| !name.is_empty())
                         .unwrap_or_else(|| {
                             if path.folder {
-                                "Choose folder…"
+                                t("choose-folder")
                             } else {
-                                "Choose file…"
+                                t("choose-file")
                             }
                             .into()
                         });
@@ -1663,7 +1664,7 @@ impl Canvas {
                             egui::Button::new((crate::icons::text(crate::icons::OPEN), label))
                                 .truncate(),
                         )
-                        .on_hover_text(port.value.as_deref().unwrap_or("Choose a path"));
+                        .on_hover_text(port.value.as_deref().unwrap_or(t("choose-path")));
                     if response.clicked() {
                         self.front = Some(node.id);
                         done.browse_path = Some((node.id, port.id.clone()));
@@ -1689,7 +1690,7 @@ impl Canvas {
             if let Some(why) = self.failures.get(&node) {
                 let failed = Mark {
                     error: true,
-                    text: format!("Failed in the last run: {why}"),
+                    text: tf("failed-last-run", &[("why", why.as_str().into())]),
                 };
                 done.show_runtime_log |= draw_mark(
                     ui,
@@ -1803,7 +1804,7 @@ impl Canvas {
                 let _ = painter.text(
                     at - Vec2::new(0.0, 8.0),
                     Align2::LEFT_BOTTOM,
-                    "Insert into wire",
+                    t("insert-into-wire"),
                     FontId::proportional(12.0),
                     colors.text,
                 );
@@ -1838,9 +1839,9 @@ impl Canvas {
             Control::Toggle => {
                 let on = port.value.as_deref() == Some("true");
                 let label = match port.value.as_deref() {
-                    Some("true") => "True",
-                    Some("false") => "False",
-                    _ => "Set",
+                    Some("true") => t("value-true"),
+                    Some("false") => t("value-false"),
+                    _ => t("set"),
                 };
                 place(ui, &mut |ui| ui.add(egui::Button::new(label).selected(on)))
                     .clicked()
@@ -1888,7 +1889,7 @@ impl Canvas {
                             .sense(Sense::click_and_drag()),
                     )
                 })
-                .on_hover_text("Click to type, drag to change.");
+                .on_hover_text(t("number-drag-hint"));
                 if touched.clicked() {
                     self.whole_drag = None;
                     let typed = port.value.clone().unwrap_or_default();
@@ -2092,12 +2093,12 @@ fn draw_mark(
         .on_hover_ui(|ui| {
             ui.set_max_width(360.0);
             ui.strong(if mark.error {
-                "Node needs attention"
+                t("node-needs-attention")
             } else {
-                "Node warning"
+                t("node-warning")
             });
             ui.label(&mark.text);
-            ui.small("Click to open details");
+            ui.small(t("open-details-hint"));
         })
         .clicked()
 }
@@ -2220,7 +2221,7 @@ fn draw_node<'a>(
                     rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom,
                 ),
                 Align2::CENTER_CENTER,
-                "Set it up in Properties",
+                t("set-up-in-properties"),
                 small.clone(),
                 colors.weak,
             );
@@ -2236,9 +2237,9 @@ fn draw_node<'a>(
             let touched = ui
                 .interact(button, canvas.with(("trigger", node.id)), sense)
                 .on_hover_text(if live {
-                    "Fire it now."
+                    t("fire-now-hint")
                 } else {
-                    "Run the graph to fire it."
+                    t("fire-run-first-hint")
                 });
             let fill = match (live, touched.hovered()) {
                 (false, _) => colors.weak.gamma_multiply(0.35),
@@ -2249,12 +2250,12 @@ fn draw_node<'a>(
             let _ = painter.text(
                 button.center(),
                 Align2::CENTER_CENTER,
-                "Fire",
+                t("fire"),
                 small.clone(),
                 if live { colors.card } else { colors.weak },
             );
             touched.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::Button, live, "Fire manual trigger")
+                egui::WidgetInfo::labeled(egui::Role::Button, live, t("fire-manual-trigger"))
             });
             pressed = live && touched.clicked();
         } else if let Some(formula) = formula {
@@ -2556,8 +2557,8 @@ fn step_label(port: &PortView) -> Option<String> {
         return Some(label.clone());
     }
     match (port.exec, port.input, port.id.as_str()) {
-        (true, true, "in") => Some("Enter".to_owned()),
-        (true, false, "then") => Some("Exit".to_owned()),
+        (true, true, "in") => Some(t("port-enter").to_owned()),
+        (true, false, "then") => Some(t("port-exit").to_owned()),
         _ => None,
     }
 }
@@ -2600,11 +2601,11 @@ fn port_type_label(definition: &str, ty: &str) -> String {
             "org.orange.math/greater"
             | "org.orange.math/greater-or-equal"
             | "org.orange.math/less"
-            | "org.orange.math/less-or-equal" => return "Ordered".into(),
+            | "org.orange.math/less-or-equal" => return t("type-ordered").into(),
             "org.orange.math/float-greater"
             | "org.orange.math/float-greater-or-equal"
             | "org.orange.math/float-less"
-            | "org.orange.math/float-less-or-equal" => return "Float".into(),
+            | "org.orange.math/float-less-or-equal" => return t("type-float").into(),
             _ => {}
         }
     }

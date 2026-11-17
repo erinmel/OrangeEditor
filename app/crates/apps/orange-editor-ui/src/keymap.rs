@@ -1,31 +1,42 @@
 //! Configurable shortcuts and presentation preferences.
 #[cfg(test)]
 mod tests;
+use crate::i18n::{t, tf};
 use egui::{Key, KeyboardShortcut, Modifiers};
 use std::collections::BTreeMap;
 
+/// Each action: its ID, the message naming it, its default key and whether that key
+/// takes the command modifier.
 pub(crate) const ACTIONS: &[(&str, &str, Key, bool)] = &[
-    ("save", "Save", Key::S, true),
-    ("save-as", "Save as", Key::S, true),
-    ("new", "New graph", Key::N, true),
-    ("open", "Open graph", Key::O, true),
-    ("undo", "Undo", Key::Z, true),
-    ("redo", "Redo", Key::Y, true),
-    ("copy", "Copy", Key::C, true),
-    ("cut", "Cut", Key::X, true),
-    ("paste", "Paste", Key::V, true),
-    ("duplicate", "Duplicate selection", Key::D, true),
-    ("arrange", "Arrange selection", Key::L, true),
-    ("function", "Make function", Key::E, true),
-    ("group", "Group selection", Key::G, true),
-    ("select-all", "Select all", Key::A, true),
-    ("fit", "Fit graph", Key::Home, false),
-    ("delete", "Delete selection", Key::Delete, false),
-    ("add", "Find node", Key::Tab, false),
-    ("run", "Run graph", Key::F5, false),
-    ("stop", "Stop graph", Key::F6, false),
-    ("settings", "Settings", Key::Comma, true),
+    ("save", "action-save", Key::S, true),
+    ("save-as", "action-save-as", Key::S, true),
+    ("new", "action-new", Key::N, true),
+    ("open", "action-open", Key::O, true),
+    ("undo", "action-undo", Key::Z, true),
+    ("redo", "action-redo", Key::Y, true),
+    ("copy", "action-copy", Key::C, true),
+    ("cut", "action-cut", Key::X, true),
+    ("paste", "action-paste", Key::V, true),
+    ("duplicate", "action-duplicate", Key::D, true),
+    ("arrange", "action-arrange", Key::L, true),
+    ("function", "action-function", Key::E, true),
+    ("group", "action-group", Key::G, true),
+    ("select-all", "action-select-all", Key::A, true),
+    ("fit", "action-fit", Key::Home, false),
+    ("delete", "action-delete", Key::Delete, false),
+    ("add", "action-add", Key::Tab, false),
+    ("run", "action-run", Key::F5, false),
+    ("stop", "action-stop", Key::F6, false),
+    ("settings", "action-settings", Key::Comma, true),
 ];
+
+/// The name of `action` in the current language, or its ID when there is none.
+pub(crate) fn action_label(action: &str) -> String {
+    ACTIONS
+        .iter()
+        .find(|(id, _, _, _)| *id == action)
+        .map_or_else(|| action.to_owned(), |(_, label, _, _)| t(label).to_owned())
+}
 
 fn original(action: &str) -> Option<KeyboardShortcut> {
     ACTIONS
@@ -84,7 +95,7 @@ impl Keymap {
     }
     pub fn label(&self, action: &str) -> String {
         self.0.get(action).and_then(Option::as_ref).map_or_else(
-            || "Unassigned".to_owned(),
+            || t("unassigned").to_owned(),
             |b| {
                 format!(
                     "{}{}{}{}{}",
@@ -265,7 +276,10 @@ impl crate::Editor {
                         .iter()
                         .find(|(id, b)| id.as_str() != action && **b == Some(binding))
                     {
-                        self.key_conflict = Some(format!("Already assigned to {other}"));
+                        self.key_conflict = Some(tf(
+                            "already-assigned",
+                            &[("action", action_label(other).into())],
+                        ));
                     } else {
                         self.canvas.keys.0.insert(action.into(), Some(binding));
                         self.key_capture = None;
@@ -274,7 +288,7 @@ impl crate::Editor {
                 }
             }
         }
-        ui.label("Select a shortcut and press a new combination. Escape cancels.");
+        ui.label(t("shortcut-edit-hint"));
         if let Some(error) = &self.key_conflict {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
@@ -284,6 +298,7 @@ impl crate::Editor {
             .show(ui, |ui| {
                 let query = self.settings_search.to_lowercase();
                 for &(id, label, _, _) in ACTIONS {
+                    let label = t(label);
                     let keys = self.canvas.keys.label(id);
                     if !query.is_empty()
                         && !label.to_lowercase().contains(&query)
@@ -297,7 +312,7 @@ impl crate::Editor {
                     ui.label(label);
                     if ui
                         .button(if self.key_capture == Some(id) {
-                            "Press keys…".into()
+                            t("press-keys").into()
                         } else {
                             keys
                         })
@@ -308,7 +323,7 @@ impl crate::Editor {
                     }
                     if ui
                         .small_button(crate::icons::text(crate::icons::CLOSE))
-                        .on_hover_text("Remove shortcut")
+                        .on_hover_text(t("remove-shortcut"))
                         .clicked()
                     {
                         self.canvas.keys.0.insert(id.into(), None);
@@ -316,7 +331,7 @@ impl crate::Editor {
                     ui.end_row();
                 }
             });
-        if ui.button("Restore default shortcuts").clicked() {
+        if ui.button(t("restore-default-shortcuts")).clicked() {
             self.canvas.keys = Keymap::default();
             self.key_capture = None;
             self.key_conflict = None;

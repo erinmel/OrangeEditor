@@ -75,24 +75,24 @@ enum Change {
 impl Editor {
     pub(crate) fn types_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
-            ui.weak("Open a graph to see its types.");
+            ui.weak(t("open-graph-types"));
             return;
         };
         let mut change = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Types");
+                ui.heading(t("types"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button((icons::text(icons::ADD), "Record"))
-                        .on_hover_text("A value with named fields, such as a point with x and y.")
+                        .button((icons::text(icons::ADD), t("record")))
+                        .on_hover_text(t("record-hint"))
                         .clicked()
                     {
                         change = Some(Change::New(false));
                     }
                     if ui
-                        .button((icons::text(icons::ADD), "Enum"))
-                        .on_hover_text("One of a few choices, such as a mood or a mode.")
+                        .button((icons::text(icons::ADD), t("enum")))
+                        .on_hover_text(t("enum-hint"))
                         .clicked()
                     {
                         change = Some(Change::New(true));
@@ -100,7 +100,7 @@ impl Editor {
                 });
             });
             if declared.types.is_empty() {
-                ui.weak("This graph declares no types. Variables and values can use one once it is added.");
+                ui.weak(t("no-types"));
             }
             for decl in &declared.types {
                 ui.separator();
@@ -123,14 +123,18 @@ impl Editor {
                     TypeShape::Enum {
                         variants: vec![VariantDecl {
                             id: "first".into(),
-                            name: "First".into(),
+                            name: t("first-choice").into(),
                             payload: None,
                         }],
                     }
                 } else {
                     TypeShape::Record { fields: Vec::new() }
                 };
-                let name = if is_enum { "New enum" } else { "New record" };
+                let name = if is_enum {
+                    t("new-enum")
+                } else {
+                    t("new-record")
+                };
                 host.declare_type(
                     draft,
                     LocalTypeDecl {
@@ -151,8 +155,8 @@ impl Editor {
         let mut asked = None;
         ui.horizontal(|ui| {
             let kind = match decl.shape {
-                TypeShape::Enum { .. } => "Enum",
-                TypeShape::Record { .. } => "Record",
+                TypeShape::Enum { .. } => t("enum"),
+                TypeShape::Record { .. } => t("record"),
             };
             if let Some(name) = self.inline_field(ui, (key.clone(), "type-name"), &decl.name)
                 && !name.trim().is_empty()
@@ -163,7 +167,7 @@ impl Editor {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button("x")
-                    .on_hover_text("Remove the type; what uses it shows as a problem.")
+                    .on_hover_text(t("remove-type-hint"))
                     .clicked()
                 {
                     asked = Some(Change::Remove(decl.id));
@@ -195,7 +199,7 @@ impl Editor {
                 variant.payload = payload_choice(ui, salt, variant.payload.take());
                 if ui
                     .small_button("x")
-                    .on_hover_text("Remove this choice")
+                    .on_hover_text(t("remove-choice"))
                     .clicked()
                 {
                     remove = Some(index);
@@ -208,11 +212,11 @@ impl Editor {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             if ui
-                .small_button((icons::text(icons::ADD), "Choice"))
+                .small_button((icons::text(icons::ADD), t("choice")))
                 .clicked()
             {
                 let taken: Vec<&str> = variants.iter().map(|v| v.id.as_str()).collect();
-                let name = format!("Choice {}", variants.len() + 1);
+                let name = tf("choice-name", &[("number", (variants.len() + 1).into())]);
                 let id = member_id(&name, &taken);
                 variants.push(VariantDecl {
                     id,
@@ -240,10 +244,10 @@ impl Editor {
                 }
                 let _ = ui
                     .checkbox(&mut field.optional, "optional")
-                    .on_hover_text("A value may leave this field out.");
+                    .on_hover_text(t("optional-field-hint"));
                 if ui
                     .small_button("x")
-                    .on_hover_text("Remove this field")
+                    .on_hover_text(t("remove-field"))
                     .clicked()
                 {
                     remove = Some(index);
@@ -256,11 +260,11 @@ impl Editor {
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             if ui
-                .small_button((icons::text(icons::ADD), "Field"))
+                .small_button((icons::text(icons::ADD), t("field")))
                 .clicked()
             {
                 let taken: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
-                let name = format!("Field {}", fields.len() + 1);
+                let name = tf("field-name", &[("number", (fields.len() + 1).into())]);
                 let id = member_id(&name, &taken);
                 if let Ok(ty) = "core/string@1".parse() {
                     fields.push(FieldDecl {
@@ -284,13 +288,13 @@ fn payload_choice(
 ) -> Option<orange_host::TypeExpr> {
     let shown = current
         .as_ref()
-        .map_or_else(|| "no value".to_owned(), |ty| type_name(ty.as_str()));
+        .map_or_else(|| t("no-value").to_owned(), |ty| type_name(ty.as_str()));
     let mut chosen = current.as_ref().map(ToString::to_string);
     let _ = egui::ComboBox::from_id_salt(salt)
         .width(90.0)
         .selected_text(shown)
         .show_ui(ui, |ui| {
-            let _ = ui.selectable_value(&mut chosen, None, "no value");
+            let _ = ui.selectable_value(&mut chosen, None, t("no-value"));
             for common in COMMON_TYPES {
                 let _ =
                     ui.selectable_value(&mut chosen, Some(common.to_owned()), type_name(common));

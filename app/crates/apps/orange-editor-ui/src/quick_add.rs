@@ -167,9 +167,9 @@ impl Editor {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_width(304.0_f32.min((bounds.width() - 20.0).max(48.0)));
                     ui.strong(if wired {
-                        "Connect a node"
+                        t("connect-a-node")
                     } else {
-                        "Add a node"
+                        t("add-a-node")
                     });
                     // The arrows move the choice, not the caret.
                     let (up, down) = ui.input_mut(|input| {
@@ -181,16 +181,16 @@ impl Editor {
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut search)
                             .hint_text(if wired {
-                                "Node to wire in… (name or purpose)"
+                                t("quick-add-wire-hint")
                             } else {
-                                "Add a node… (name or purpose)"
+                                t("quick-add-hint")
                             })
                             .desired_width(f32::INFINITY),
                     );
                     if field.changed() {
                         highlighted = 0;
                     }
-                    self.result_style(ui, host);
+                    self.result_style(ui);
                     let key = (
                         search.clone(),
                         self.language().to_owned(),
@@ -242,7 +242,7 @@ impl Editor {
                         .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
                         .show(ui, |ui| {
                             if choices.is_empty() {
-                                ui.weak("Nothing matches. Try a purpose, such as timer or text.");
+                                ui.weak(t("quick-add-no-match"));
                             }
                             for (index, choice) in choices.iter().take(SHOWN).enumerate() {
                                 let on = index == highlighted;

@@ -78,7 +78,7 @@ impl Editor {
                             .labels
                             .get(at)
                             .cloned()
-                            .unwrap_or_else(|| "Unavailable device".into()),
+                            .unwrap_or_else(|| t("device-unavailable").into()),
                     )
                 })
                 .collect();
@@ -95,9 +95,9 @@ impl Editor {
                         .connection_label(&definition)
                         .is_some_and(|label| label.to_lowercase().contains("output"))
                     {
-                        "Playback devices".into()
+                        t("playback-devices").into()
                     } else {
-                        "Recording devices".into()
+                        t("recording-devices").into()
                     },
                 },
             );
