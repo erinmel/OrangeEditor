@@ -3,8 +3,8 @@
 //! model transaction on a [`Draft`].
 use super::*;
 use orange_model::DocCommand;
-use orange_model::document::{ConnectionDecl, VariableDecl};
-use orange_model::id::{ConnectionId, TypeExpr, VariableId};
+use orange_model::document::{ConnectionDecl, LocalTypeDecl, VariableDecl};
+use orange_model::id::{ConnectionId, TypeDeclId, TypeExpr, VariableId};
 use orange_sdk::{SECRET_PREFIX, SettingText, SettingToggle};
 use serde_json::{Value as Json, json};
 
@@ -330,8 +330,40 @@ impl Host {
             }
         }
         let decl: VariableDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
-        let _ = draft.commit(self.store.current(), [DocCommand::UpsertVariable(decl)])?;
+        let _ = draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::UpsertVariable(decl)],
+        )?;
         Ok(id)
+    }
+
+    /// Declares a record or enum type in the document, or replaces the one with the same
+    /// ID: the way a person makes their own choices and structures without a package
+    /// (12 §6.5). A new type gets its ID from [`Host::new_type_id`]. Renaming the type or
+    /// a member keeps every saved value; removing a variant or field, or changing its
+    /// type, shows as problems where values use it. Returns whether anything changed.
+    pub fn declare_type(&self, draft: &mut Draft, decl: LocalTypeDecl) -> Result<bool, HostError> {
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::UpsertType(decl)],
+        )
+    }
+
+    /// An ID for a new type of `draft`, unused by anything in it.
+    pub fn new_type_id(&self, draft: &Draft) -> Result<TypeDeclId, HostError> {
+        draft
+            .fresh_id("type")
+            .parse()
+            .map_err(|_| refused(&"the new ID is not valid"))
+    }
+
+    /// Removes a type the document declares. Variables, ports and values that use it
+    /// stay and show as problems until they use another type or are removed.
+    pub fn remove_type(&self, draft: &mut Draft, id: TypeDeclId) -> Result<bool, HostError> {
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::RemoveType(id)],
+        )
     }
 
     /// Removes a variable. Nodes that name it stay and show as problems until they
@@ -340,7 +372,10 @@ impl Host {
         let id: VariableId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a variable ID")))?;
-        draft.commit(self.store.current(), [DocCommand::RemoveVariable(id)])
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::RemoveVariable(id)],
+        )
     }
 
     /// Declares a connection, or changes the one with `connection.id`. A setting whose
@@ -353,7 +388,10 @@ impl Host {
         connection: &Connection,
     ) -> Result<String, HostError> {
         let (id, decl) = self.connection_decl(draft, connection)?;
-        let _ = draft.commit(self.store.current(), [DocCommand::UpsertConnection(decl)])?;
+        let _ = draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::UpsertConnection(decl)],
+        )?;
         Ok(id)
     }
 
@@ -443,7 +481,10 @@ impl Host {
         let id: ConnectionId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a connection ID")))?;
-        draft.commit(self.store.current(), [DocCommand::RemoveConnection(id)])
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::RemoveConnection(id)],
+        )
     }
 
     /// Chooses the type of one type parameter of a generic node (a pin, 11 §5.5), such
@@ -471,7 +512,7 @@ impl Host {
             }
         }
         draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             [DocCommand::SetTypePins { node, pins }],
         )
     }

@@ -52,9 +52,9 @@ impl Host {
                     .ok_or_else(not_nodes)
             })
             .collect::<Result<_, _>>()?;
-        let registry = self.store.current();
+        let registry = self.registry_for(&source);
         let fragment =
-            Fragment::copy(&source, registry, &copied).map_err(|error| refused(&error))?;
+            Fragment::copy(&source, &registry, &copied).map_err(|error| refused(&error))?;
         let mut count = 0u32;
         let mut paste = {
             let target: &Draft = draft;
@@ -109,7 +109,10 @@ impl Host {
                 .into_iter()
                 .map(|(node, at)| edit::place_command(node, Some(at))),
         );
-        let _ = draft.commit(self.store.current(), std::mem::take(&mut paste.commands))?;
+        let _ = draft.commit(
+            &self.registry_for(draft.document()),
+            std::mem::take(&mut paste.commands),
+        )?;
         Ok(fresh)
     }
 }

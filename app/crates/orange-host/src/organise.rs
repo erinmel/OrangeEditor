@@ -310,7 +310,8 @@ impl Host {
         document: &GraphDocument,
         node: &NodeInstance,
     ) -> Option<orange_model::catalog::NodeContract> {
-        let registry = self.store.current();
+        let registry = self.registry_for(document);
+        let registry = &registry;
         if let Some(contract) = view::call_contract(document, node, registry) {
             return Some(contract);
         }
@@ -655,7 +656,7 @@ impl Host {
         }
         commands.push(edit::place_command(call, Some(at)));
 
-        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
+        let Some(redo) = draft.try_commit(&self.registry_for(draft.document()), commands)? else {
             return Err(refused(&"nothing to extract"));
         };
         let after = self.problems(draft)?;

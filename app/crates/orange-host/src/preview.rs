@@ -50,7 +50,7 @@ impl Host {
             .iter()
             .map(|export| (export.node, export.port.clone()))
             .collect();
-        let registry = Arc::clone(self.store.current());
+        let registry = self.registry_for(&document);
         let analysis = analyzed(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
             return Err(HostError::Invalid(analysis.report().diagnostics.clone()));

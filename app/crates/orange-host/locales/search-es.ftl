@@ -4,10 +4,12 @@ language-name = Español
 
 # Static editor messages in the org.orange.host namespace; no arguments.
 editor-settings-title = Ajustes
+editor-settings-search = Buscar ajustes
+editor-settings-empty = No hay secciones que coincidan
 editor-search-heading = Búsqueda de nodos
 editor-result-layout = Vista de resultados
 editor-result-names = Nombres
-editor-result-previews = Nombres y vistas previas
+editor-result-previews = Vista previa
 editor-result-scope = Se aplica al panel lateral y al selector del lienzo.
 editor-search-language = Idioma de búsqueda
 editor-display-heading = Pantalla y lienzo

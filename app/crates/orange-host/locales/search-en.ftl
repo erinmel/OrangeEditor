@@ -12,10 +12,12 @@ language-name = English
 
 # Static editor messages in the org.orange.host namespace; no arguments.
 editor-settings-title = Settings
+editor-settings-search = Search settings
+editor-settings-empty = No matching sections
 editor-search-heading = Node search
 editor-result-layout = Result layout
 editor-result-names = Names
-editor-result-previews = Names + previews
+editor-result-previews = Preview
 editor-result-scope = Applies to the sidebar and canvas picker.
 editor-search-language = Search language
 editor-display-heading = Display and canvas

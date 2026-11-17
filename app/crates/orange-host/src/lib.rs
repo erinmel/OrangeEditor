@@ -88,8 +88,9 @@ pub use orange_model::catalog::ReferenceKind;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
+pub use orange_model::document::{FieldDecl, LocalTypeDecl, TypeShape, VariantDecl};
 pub use orange_model::id::{ConnectionId, PortKey};
-pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
+pub use orange_model::id::{EventDeclId, GraphId, NodeId, TypeDeclId, VariableId};
 pub use orange_model::validation::{Diagnostic, EditStats, SessionWork, Severity};
 pub use orange_packages::{
     About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
@@ -667,6 +668,8 @@ pub struct Host {
     presentations: BTreeMap<DefinitionRef, Presentation>,
     /// Older definitions that a package's nodes replace; applied when a document opens.
     replacements: Replacements,
+    /// Registries with the types of recently seen documents, oldest first.
+    local_registries: Mutex<Vec<LocalRegistry>>,
     /// The words the node search finds nodes by.
     search_words: SearchWords,
     not_restored: Vec<(String, HostError)>,
@@ -686,6 +689,17 @@ pub struct Host {
     next_flow: u64,
     /// Made at the first preview.
     preview: Option<preview::Engine>,
+}
+
+/// Documents with their own types whose registries [`Host::registry_for`] keeps.
+const LOCAL_REGISTRIES: usize = 8;
+
+/// A registry made for one set of document types over one package registry.
+#[derive(Debug)]
+struct LocalRegistry {
+    base: u64,
+    types: Vec<orange_model::document::LocalTypeDecl>,
+    registry: Arc<RegistrySnapshot>,
 }
 
 /// Registers one declared type of package `id` in a registry being built. A type the
@@ -917,8 +931,8 @@ impl Host {
         }
         let base = defaults.build().map_err(|e| start(&e))?;
         let engine = GuestEngine::new(options.guest).map_err(|e| start(&e))?;
-        let pool = Pool::new(options.effect_workers, options.max_effect_workers)
-            .map_err(|e| start(&e))?;
+        let pool =
+            Pool::new(options.effect_workers, options.max_effect_workers).map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));
         let host = Self {
             native: Native(Arc::new(math), services),
@@ -930,6 +944,7 @@ impl Host {
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
             replacements,
+            local_registries: Mutex::new(Vec::new()),
             search_words: SearchWords::built_in().clone(),
             not_restored: Vec::new(),
             built_in,
@@ -1052,6 +1067,35 @@ impl Host {
         self.store.current()
     }
 
+    /// The registry `document` is checked, compiled and run against: [`Host::registry`]
+    /// with the record and enum types the document declares itself (12 §6.5). The same
+    /// types give the same snapshot back, so kept analyses stay current.
+    pub fn registry_for(&self, document: &GraphDocument) -> Arc<RegistrySnapshot> {
+        let base = self.store.current();
+        if document.types().is_empty() {
+            return Arc::clone(base);
+        }
+        let mut kept = self
+            .local_registries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        kept.retain(|entry| entry.base == base.generation());
+        let same = |entry: &&LocalRegistry| entry.types.iter().eq(document.types().values());
+        if let Some(entry) = kept.iter().find(same) {
+            return Arc::clone(&entry.registry);
+        }
+        let registry = orange_model::local_types::with_document_types(base, document);
+        if kept.len() >= LOCAL_REGISTRIES {
+            let _ = kept.remove(0);
+        }
+        kept.push(LocalRegistry {
+            base: base.generation(),
+            types: document.types().values().cloned().collect(),
+            registry: Arc::clone(&registry),
+        });
+        registry
+    }
+
     /// Observations that found the event channel full and were discarded.
     pub fn events_dropped(&self) -> u64 {
         self.sink.dropped.load(Ordering::Relaxed)
@@ -1151,9 +1195,9 @@ impl Host {
     /// list means [`Host::open`] would accept it as far as validation goes.
     pub fn check(&self, json: &str) -> Result<Vec<Diagnostic>, HostError> {
         let document = self.linked(json)?;
-        let registry = self.store.current();
-        let analysis = analyzed(&document, registry);
-        if analysis.is_ready_for_lowering(&document, registry) {
+        let registry = self.registry_for(&document);
+        let analysis = analyzed(&document, &registry);
+        if analysis.is_ready_for_lowering(&document, &registry) {
             Ok(Vec::new())
         } else {
             Ok(analysis.report().diagnostics.clone())

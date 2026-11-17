@@ -8,7 +8,7 @@ impl Host {
     /// being edited, reused where a connection's declaration is unchanged.
     fn prepare(&mut self, json: &str, previous: Option<&Opened>) -> Result<Prepared, HostError> {
         let document = self.linked(json)?;
-        let registry = Arc::clone(self.store.current());
+        let registry = self.registry_for(&document);
         let analysis = analyzed(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
             return Err(HostError::Invalid(analysis.report().diagnostics.clone()));

@@ -119,7 +119,7 @@ impl Host {
             .and_then(|instance| instance.variadic.get(&id))
             .map_or(0, |state| state.next);
         let _ = draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             [DocCommand::InsertVariadic {
                 node,
                 port: id.clone(),
@@ -150,7 +150,7 @@ impl Host {
             )));
         }
         draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             [DocCommand::RemoveVariadic {
                 node: at.0,
                 port: key,
@@ -180,7 +180,7 @@ impl Host {
         at: [f32; 2],
     ) -> Result<NodeId, HostError> {
         let (node, commands) = self.new_node_commands(draft, definition, at)?;
-        let _ = draft.commit(self.store.current(), commands)?;
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
     }
 
@@ -206,7 +206,7 @@ impl Host {
             .fresh_id("node")
             .parse()
             .map_err(|_| refused(&"the new ID is not valid"))?;
-        let registry = self.store.current();
+        let registry = &self.registry_for(draft.document());
         let found = registry
             .definition(&definition)
             .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
@@ -348,7 +348,7 @@ impl Host {
             .map(|node| place_command(*node, None))
             .collect();
         draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             std::iter::once(DocCommand::RemoveNodes {
                 ids: nodes.to_vec(),
             })
@@ -407,7 +407,7 @@ impl Host {
         .map_err(|error| refused(&error))?;
         let edge_id = edge.id;
         commands.push(DocCommand::Connect { edge });
-        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
+        let Some(redo) = draft.try_commit(&self.registry_for(draft.document()), commands)? else {
             return Ok(false);
         };
         // Problems that name the new wire are the reason it cannot be made.
@@ -446,7 +446,7 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        draft.commit(self.store.current(), commands)
+        draft.commit(&self.registry_for(draft.document()), commands)
     }
 
     /// Replaces a node's settings (its `config`), such as the variable a variable
@@ -464,7 +464,7 @@ impl Host {
             .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
         let config = serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
         draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             [DocCommand::SetConfig {
                 node,
                 config_version,
@@ -516,7 +516,7 @@ impl Host {
             }
         };
         draft.commit(
-            self.store.current(),
+            &self.registry_for(draft.document()),
             [DocCommand::SetLiteral { port, literal }],
         )
     }
@@ -539,7 +539,7 @@ impl Host {
             .filter(|edge| edge.from == from && edge.to == to)
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        draft.commit(self.store.current(), edges)
+        draft.commit(&self.registry_for(draft.document()), edges)
     }
 
     /// Puts `node` into the wire from `from` to `to`, as one edit: the wire is replaced
@@ -554,7 +554,7 @@ impl Host {
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
         let (commands, made) = self.splice_commands(draft, node, from, to)?;
-        let Some(redo) = draft.try_commit(self.store.current(), commands)? else {
+        let Some(redo) = draft.try_commit(&self.registry_for(draft.document()), commands)? else {
             return Ok(false);
         };
         match self.check_splice(draft, &made) {
@@ -591,16 +591,22 @@ impl Host {
         let (node, mut commands) = self.new_node_commands(draft, definition, at)?;
         let mut staged = self.staged_node(draft, &commands)?;
         let (splice, made) = self.splice_commands(&staged, node, from, to)?;
-        let _ = staged.commit(self.store.current(), splice.iter().cloned())?;
+        let _ = staged.commit(
+            &self.registry_for(staged.document()),
+            splice.iter().cloned(),
+        )?;
         self.check_splice(&mut staged, &made)?;
         commands.extend(splice);
-        let _ = draft.commit(self.store.current(), commands)?;
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
     }
 
     fn staged_node(&self, draft: &Draft, commands: &[DocCommand]) -> Result<Draft, HostError> {
         let mut staged = Draft::new(draft.document().clone());
-        let _ = staged.commit(self.store.current(), commands.iter().cloned())?;
+        let _ = staged.commit(
+            &self.registry_for(staged.document()),
+            commands.iter().cloned(),
+        )?;
         Ok(staged)
     }
 

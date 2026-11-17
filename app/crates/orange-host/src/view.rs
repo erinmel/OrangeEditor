@@ -188,7 +188,8 @@ pub struct GraphView {
 /// What every node view of one document is drawn with.
 struct ViewContext<'a> {
     document: &'a GraphDocument,
-    registry: &'a RegistrySnapshot,
+    /// The document's registry, with its own types ([`Host::registry_for`]).
+    registry: Arc<RegistrySnapshot>,
     names: Names,
     labels: BTreeMap<String, String>,
     places: Option<&'a Json>,
@@ -234,7 +235,7 @@ impl Host {
         }
         ViewContext {
             document,
-            registry: self.store.current(),
+            registry: self.registry_for(document),
             names: Names::of_document(self, document),
             labels,
             places: document.editor().get("nodes"),

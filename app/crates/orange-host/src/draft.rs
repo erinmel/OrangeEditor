@@ -294,6 +294,7 @@ impl Draft {
             || document.connections().keys().any(|c| c.to_string() == text)
             || document.events().keys().any(|e| e.to_string() == text)
             || document.functions().keys().any(|f| f.to_string() == text)
+            || document.types().keys().any(|t| t.to_string() == text)
     }
 }
 
@@ -349,7 +350,7 @@ impl Host {
     /// edit touched is checked again, unless packages changed or graph-implemented
     /// nodes have to be linked in first.
     pub fn problems(&self, draft: &mut Draft) -> Result<Vec<Diagnostic>, HostError> {
-        let registry = self.store.current();
+        let registry = &self.registry_for(&draft.document);
         if !self.graphs.is_empty() {
             // Linked graphs rewrite the document before it is checked, so there is no
             // edit of the linked form to follow.
