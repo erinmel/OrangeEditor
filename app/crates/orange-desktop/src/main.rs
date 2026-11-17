@@ -44,6 +44,7 @@ struct Desktop {
     /// With `--canvas-only`: the graph and its canvas, shown without the editor.
     bare: Option<(GraphView, Canvas)>,
     shot: Option<Shot>,
+    title: String,
 }
 
 impl eframe::App for Desktop {
@@ -54,6 +55,14 @@ impl eframe::App for Desktop {
         }
         if let Some(request) = self.editor.take_request() {
             self.carry_out(request);
+        }
+        if self.bare.is_none() {
+            let title = window_title(self.editor.path());
+            if self.title != title {
+                self.title = title.into_owned();
+                ui.ctx()
+                    .send_viewport_cmd(eframe::egui::ViewportCommand::Title(self.title.clone()));
+            }
         }
         match &mut self.bare {
             // All an embedding application does: show the canvas where it wants it.
@@ -225,6 +234,11 @@ impl Desktop {
     }
 }
 
+fn window_title(path: Option<&str>) -> std::borrow::Cow<'_, str> {
+    path.and_then(|path| Path::new(path).file_name())
+        .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy())
+}
+
 fn start(
     path: Option<String>,
     canvas_only: bool,
@@ -244,6 +258,7 @@ fn start(
     let mut editor = Editor::new();
     editor.file_dialogs = true;
     let mut bare = None;
+    let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
         if canvas_only {
@@ -273,6 +288,7 @@ fn start(
         events,
         editor,
         bare,
+        title,
         shot: screenshot.map(|path| Shot {
             path,
             frames: 0,
@@ -314,7 +330,9 @@ fn main() -> ExitCode {
         }
     };
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]),
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title(desktop.title.clone())
+            .with_inner_size([1280.0, 800.0]),
         ..eframe::NativeOptions::default()
     };
     let shown = eframe::run_native(
