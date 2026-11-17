@@ -103,14 +103,13 @@ impl Keyboard {
         let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
             .description("Fires when a logical key is pressed while this editor is focused. Editing text and editor shortcuts take priority. Primary means Ctrl on Windows/Linux and Command on macOS. Release the key to fire again; optional repeat follows the operating system. No global keyboard hook.")
             .category("input", "Input")
-            .keywords("keyboard hotkey shortcut keybind key press input trigger")
+            .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
             .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
             .setting("modifiers", json!({"title":"Modifiers", "type":"string", "enum":["None","Primary","Alt","Shift","Primary+Shift","Primary+Alt","Alt+Shift","Primary+Alt+Shift"], "default":"None"}))
             .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}))
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
-            .messages("en", "org-orange-input-on-key-pressed-keywords = keyboard hotkey shortcut keybind key press input trigger\n")
-            .messages("es", "org-orange-input-on-key-pressed-label = Al pulsar una tecla\norg-orange-input-category-input = Entrada\norg-orange-input-on-key-pressed-keywords = teclado tecla atajo pulsar entrada disparador\n")
+            .with_catalogs(crate::CATALOGS)
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 

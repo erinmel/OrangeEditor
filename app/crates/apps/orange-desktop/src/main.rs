@@ -7,7 +7,10 @@
 mod keyboard;
 mod picture;
 
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
+
 use orange_editor_ui::canvas::Canvas;
+use orange_editor_ui::i18n::{self, t};
 use orange_editor_ui::{Editor, FileRequest};
 use orange_host::{GraphView, Host, HostEvent, HostOptions};
 use std::path::Path;
@@ -168,7 +171,7 @@ impl Desktop {
             dialog = dialog.set_directory(start);
         }
         let chosen = if folder {
-            dialog.set_title("Choose a folder").pick_folder()
+            dialog.set_title(t("desktop-choose-folder")).pick_folder()
         } else {
             if !extensions.is_empty() {
                 dialog = dialog.add_filter(extensions.join(", "), extensions);
@@ -177,9 +180,9 @@ impl Desktop {
                 if let Some(name) = current.file_name() {
                     dialog = dialog.set_file_name(name.to_string_lossy());
                 }
-                dialog.set_title("Save as").save_file()
+                dialog.set_title(t("desktop-save-as")).save_file()
             } else {
-                dialog.set_title("Choose a file").pick_file()
+                dialog.set_title(t("desktop-choose-file")).pick_file()
             }
         };
         if let Some(path) = chosen {
@@ -220,8 +223,8 @@ impl Desktop {
         if matches!(request, FileRequest::New | FileRequest::Open) && self.editor.is_unsaved() {
             let answer = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
-                .set_title("Changes not saved")
-                .set_description("The graph has changes that are not saved. Leave them?")
+                .set_title(t("desktop-unsaved-title"))
+                .set_description(t("desktop-unsaved-question"))
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show();
             if answer != rfd::MessageDialogResult::Yes {
@@ -233,24 +236,27 @@ impl Desktop {
             .and_then(Path::parent)
             .filter(|folder| !folder.as_os_str().is_empty())
             .map(Path::to_path_buf);
-        let mut dialog = rfd::FileDialog::new().add_filter("OrangeEditor graph", &["json"]);
+        let mut dialog = rfd::FileDialog::new().add_filter(t("desktop-graph-filter"), &["json"]);
         if let Some(folder) = folder {
             dialog = dialog.set_directory(folder);
         }
         match request {
             FileRequest::New => match orange_host::new_document() {
                 Ok(text) => self.editor.open_untitled(&mut self.host, text),
-                Err(error) => trouble("No new graph", &error.to_string()),
+                Err(error) => trouble(t("desktop-no-new-graph"), &error.to_string()),
             },
             FileRequest::Open => {
-                let Some(path) = dialog.set_title("Open a graph").pick_file() else {
+                let Some(path) = dialog.set_title(t("desktop-open-graph")).pick_file() else {
                     return;
                 };
                 match std::fs::read_to_string(&path) {
                     Ok(text) => self
                         .editor
                         .open(&mut self.host, path.display().to_string(), text),
-                    Err(error) => trouble("Not opened", &format!("{}: {error}", path.display())),
+                    Err(error) => trouble(
+                        t("desktop-not-opened"),
+                        &format!("{}: {error}", path.display()),
+                    ),
                 }
             }
             FileRequest::ChoosePath { .. } => {}
@@ -259,14 +265,14 @@ impl Desktop {
                     .and_then(Path::file_name)
                     .map_or_else(|| "graph.json".into(), |name| name.to_string_lossy());
                 let Some(path) = dialog
-                    .set_title("Save the graph as")
+                    .set_title(t("desktop-save-graph-as"))
                     .set_file_name(name)
                     .save_file()
                 else {
                     return;
                 };
                 if let Err(message) = self.editor.save_as(path.display().to_string()) {
-                    trouble("Not saved", &message);
+                    trouble(t("desktop-not-saved"), &message);
                 }
             }
         }
@@ -297,6 +303,10 @@ fn start(
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();
+    // The system's language until the person chooses one.
+    if let Some(system) = sys_locale::get_locale() {
+        editor.set_language(&i18n::nearest_language(&system));
+    }
     if let Some(saved) = preferences_path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -348,6 +358,7 @@ fn start(
 }
 
 fn main() -> ExitCode {
+    let _ = i18n::add_application_catalogs(CATALOGS);
     let (mut graph, mut screenshot, mut canvas_only) = (None, None, false);
     let mut words = std::env::args().skip(1);
     while let Some(word) = words.next() {
@@ -400,6 +411,29 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("the window could not be opened: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use orange_host::Catalogs;
+
+    /// Every language has the desktop's English messages, and no others.
+    #[test]
+    fn the_desktop_text_is_in_every_language() {
+        let catalogs = Catalogs::from_sources(super::CATALOGS).unwrap();
+        let desktop = |tag| -> Vec<&str> {
+            catalogs
+                .ids(tag)
+                .into_iter()
+                .filter(|id| id.starts_with("desktop-"))
+                .collect()
+        };
+        let english = desktop("en");
+        assert!(!english.is_empty());
+        for (tag, _) in catalogs.languages() {
+            assert_eq!(desktop(tag), english, "{tag}");
         }
     }
 }
