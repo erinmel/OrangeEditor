@@ -553,10 +553,13 @@ impl NodeInfo<'_> {
         SearchWords::built_in().aliases(SOURCE_LANGUAGE, self.definition.definition.id.as_str())
     }
     /// The palette category in the default language: its definition file's category,
-    /// or one made from the ID's namespace (`org.orange.math/add` is in "Math").
+    /// "Triggers" for entries with no explicit category, or one made from its namespace.
     pub fn category(&self) -> Cow<'_, str> {
         match self.presentation.and_then(|shown| shown.category.as_ref()) {
             Some(category) => Cow::Borrowed(category.fallback.as_str()),
+            None if self.definition.kind == orange_model::document::NodeKind::Entry => {
+                Cow::Borrowed("Triggers")
+            }
             None => {
                 let id = self.definition.definition.id.as_str();
                 let namespace = id.split('/').next().unwrap_or(id);

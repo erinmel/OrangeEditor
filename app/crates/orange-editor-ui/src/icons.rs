@@ -111,6 +111,28 @@ pub fn text(icon: char) -> egui::RichText {
     egui::RichText::new(icon.to_string()).family(family())
 }
 
+pub(crate) fn dock_toggle(
+    ui: &mut egui::Ui,
+    open: bool,
+    side: egui::Align,
+    label: &str,
+) -> egui::Response {
+    let response = ui.add(
+        egui::Button::selectable(open, "").min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
+    );
+    let icon = egui::Rect::from_center_size(response.rect.center(), egui::vec2(15.0, 11.0));
+    let ink = ui.style().interact_selectable(&response, open).fg_stroke;
+    let x = if side == egui::Align::Min {
+        icon.left() + 4.5
+    } else {
+        icon.right() - 4.5
+    };
+    ui.painter().rect_stroke(icon, 1.5, ink, egui::StrokeKind::Inside);
+    ui.painter().vline(x, icon.y_range(), ink);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, label));
+    response.on_hover_text(label)
+}
+
 /// An icon-only button with what it does and its shortcut as its tooltip.
 pub(crate) fn button(
     ui: &mut egui::Ui,
@@ -131,15 +153,33 @@ pub(crate) fn button(
         .on_disabled_hover_text(tip)
 }
 
-/// An icon-only toggle, lit while `on`.
-pub(crate) fn toggle(ui: &mut egui::Ui, on: &mut bool, icon: char, what: &str) -> egui::Response {
-    let response = ui
-        .add(egui::Button::selectable(*on, text(icon).size(16.0)))
-        .on_hover_text(what);
-    if response.clicked() {
-        *on = !*on;
-    }
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), *on, what));
-    response
+/// The primary action retains a readable label alongside its icon.
+pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egui::Response {
+    let (icon, label) = if running {
+        (STOP, "Stop")
+    } else {
+        (RUN, "Run")
+    };
+    let fill = if running {
+        egui::Color32::from_rgb(152, 40, 40)
+    } else {
+        egui::Color32::from_rgb(32, 104, 72)
+    };
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new((
+            text(icon).size(16.0).color(egui::Color32::WHITE),
+            egui::RichText::new(label)
+                .strong()
+                .color(egui::Color32::WHITE),
+        ))
+        .fill(fill)
+        .min_size(egui::vec2(72.0, ui.spacing().interact_size.y)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    response.on_hover_text(if running {
+        "Stop this graph"
+    } else {
+        "Run this graph with the current values"
+    })
 }

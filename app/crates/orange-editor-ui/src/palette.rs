@@ -1,6 +1,7 @@
 //! Node catalogue projection and its presentation cache. The search itself is the
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
-use orange_host::Host;
+use orange_host::{Draft, Host, NodeView};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum PaletteMode {
@@ -20,14 +21,22 @@ pub(crate) fn result_row(
     ui: &mut egui::Ui,
     name: &str,
     detail: &str,
-    ports: &str,
+    preview_height: Option<f32>,
     highlighted: bool,
-    sense: egui::Sense,
+    paint_preview: impl FnOnce(&mut egui::Ui, egui::Rect, f32),
 ) -> egui::Response {
-    let height = 26.0
-        + if detail.is_empty() { 0.0 } else { 16.0 }
-        + if ports.is_empty() { 0.0 } else { 16.0 };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), sense);
+    let width = ui.available_width();
+    let zoom = ((width - 32.0) / crate::canvas::NODE_WIDTH).clamp(0.1, 0.95);
+    let card_size =
+        preview_height.map(|height| egui::vec2(crate::canvas::NODE_WIDTH, height) * zoom);
+    let height = card_size.map_or(28.0, |size| size.y + 16.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
+    let response = if detail.is_empty() {
+        response
+    } else {
+        response.on_hover_text(detail)
+    };
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::accesskit::Role::Button,
@@ -61,21 +70,91 @@ pub(crate) fn result_row(
             visuals.text_color(),
         );
     };
-    draw(egui::RichText::new(name).strong().into(), rect.min.y + 5.0);
-    if !detail.is_empty() {
-        draw(
-            egui::RichText::new(detail)
-                .small()
-                .color(ui.visuals().weak_text_color())
-                .into(),
-            rect.min.y + 23.0,
-        );
+    if card_size.is_none() {
+        draw(egui::RichText::new(name).strong().into(), rect.min.y + 5.0);
     }
-    if !ports.is_empty() {
-        let y = rect.min.y + if detail.is_empty() { 23.0 } else { 39.0 };
-        draw(egui::RichText::new(ports).small().monospace().into(), y);
+    if let Some(size) = card_size {
+        let card = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.center().x - size.x / 2.0,
+                rect.min.y + 8.0,
+            ),
+            size,
+        );
+        paint_preview(ui, card, zoom);
     }
     response
+}
+
+/// A kind can be searchable even when no declaration can configure it yet.
+pub(crate) fn missing_preview(ui: &egui::Ui, rect: egui::Rect, name: &str) {
+    let visuals = ui.visuals();
+    ui.painter().rect_filled(rect, 6.0, visuals.window_fill);
+    let label = egui::pos2(rect.left() + 10.0, rect.center().y - 9.0);
+    let painter = ui.painter().with_clip_rect(rect.shrink(4.0));
+    let _ = painter.text(
+        label,
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(14.0),
+        visuals.text_color(),
+    );
+    let _ = painter.text(
+        label + egui::vec2(0.0, 20.0),
+        egui::Align2::LEFT_CENTER,
+        "Configuration required",
+        egui::FontId::proportional(12.0),
+        visuals.weak_text_color(),
+    );
+}
+
+/// Illustrative ports for definition kinds whose actual contracts need a declaration.
+/// These cards are only used by search and drag previews.
+fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
+    let ports: &[(&str, bool, &str, &str)] = match definition {
+        "core/get-variable" => &[("value", false, "Value", "$T")],
+        "org.orange.collections/make-enum" => &[
+            ("payload", true, "Payload (optional)", "$T"),
+            ("result", false, "Enum", "$Enum"),
+        ],
+        "org.orange.collections/enum-payload" => &[
+            ("value", true, "Enum", "$Enum"),
+            ("result", false, "Payload", "$T"),
+        ],
+        _ => return None,
+    };
+    let label = host
+        .nodes()
+        .find(|node| node.definition.definition.id.as_str() == definition)?
+        .label()
+        .into_owned();
+    Some(NodeView {
+        id: "00000000-0000-4000-8000-000000000000".parse().ok()?,
+        name: label.clone(),
+        kind: label,
+        definition: definition.to_owned(),
+        detail: None,
+        entry: false,
+        ports: ports
+            .iter()
+            .map(|&(id, input, label, ty)| orange_host::PortView {
+                id: id.to_owned(),
+                input,
+                exec: false,
+                ty: Some(ty.to_owned()),
+                value: None,
+                connected: false,
+                label: Some(label.to_owned()),
+            })
+            .collect(),
+        position: None,
+        settings: serde_json::Value::Null,
+        schema: None,
+        references: Vec::new(),
+        types: Vec::new(),
+        variadic: Vec::new(),
+        paths: Vec::new(),
+    })
 }
 
 /// Own only the currently displayed result, not old searches or provider snapshots.
@@ -85,34 +164,15 @@ pub(crate) struct PaletteCache {
     search: String,
     language: String,
     groups: Vec<(String, Vec<PaletteItem>)>,
-    summaries: std::collections::HashMap<String, String>,
 }
 
 pub(crate) struct PaletteResults<'a> {
     pub groups: &'a [(String, Vec<PaletteItem>)],
-    pub summaries: &'a std::collections::HashMap<String, String>,
 }
 
 impl PaletteCache {
     pub fn get(&mut self, host: &Host, search: &str, language: &str) -> PaletteResults<'_> {
         let generation = host.registry().generation();
-        if self.generation != Some(generation) {
-            self.summaries.clear();
-            for item in host.nodes() {
-                let mut inputs = Vec::new();
-                let mut outputs = Vec::new();
-                for (name, input) in item.declared_port_names() {
-                    let side = if input { &mut inputs } else { &mut outputs };
-                    side.push(crate::port_label(name));
-                }
-                if !inputs.is_empty() || !outputs.is_empty() {
-                    self.summaries.insert(
-                        item.definition.definition.id.to_string(),
-                        format!("{} → {}", inputs.join(", "), outputs.join(", ")),
-                    );
-                }
-            }
-        }
         if self.generation != Some(generation) || self.search != search || self.language != language
         {
             self.groups = palette_in(host, search, language);
@@ -124,8 +184,82 @@ impl PaletteCache {
         }
         PaletteResults {
             groups: &self.groups,
-            summaries: &self.summaries,
         }
+    }
+}
+
+/// Builds only cards whose rows are visible. Registry changes and document edits
+/// invalidate configured cards; search text and language do not retain old result lists.
+#[derive(Debug, Default)]
+pub(crate) struct PreviewCache {
+    generation: Option<u64>,
+    rows: HashMap<String, usize>,
+    cards: HashMap<String, Option<NodeView>>,
+}
+
+impl PreviewCache {
+    pub fn height(&mut self, host: &Host, definition: &str) -> f32 {
+        crate::canvas::card_height(definition, self.rows(host, definition))
+    }
+    pub fn invalidate(&mut self) {
+        self.cards.clear();
+        self.generation = None;
+    }
+
+    pub fn rows(&mut self, host: &Host, definition: &str) -> usize {
+        if self.generation != Some(host.registry().generation()) {
+            self.rows.clear();
+            self.cards.clear();
+            for item in host.nodes() {
+                let (mut inputs, mut outputs) = (0, 0);
+                for (_, input) in item.declared_port_names() {
+                    if input {
+                        inputs += 1;
+                    } else {
+                        outputs += 1;
+                    }
+                }
+                self.rows.insert(
+                    item.definition.definition.id.to_string(),
+                    inputs.max(outputs).max(1),
+                );
+            }
+            self.generation = Some(host.registry().generation());
+        }
+        self.rows.get(definition).copied().unwrap_or(1)
+    }
+
+    pub fn card(
+        &mut self,
+        host: &Host,
+        draft: Option<&Draft>,
+        definition: &str,
+    ) -> Option<&NodeView> {
+        let _ = self.rows(host, definition);
+        if !self.cards.contains_key(definition) {
+            let configured = (|| {
+                if let Some(draft) = draft {
+                    host.placement_preview(draft, definition).ok()
+                } else {
+                    let text = orange_host::new_document().ok()?;
+                    let draft = host.draft(&text).ok()?;
+                    host.placement_preview(&draft, definition).ok()
+                }
+            })();
+            let card = match configured {
+                Some(card) if !card.ports.is_empty() => Some(card),
+                other => reference_card(host, definition).or(other),
+            };
+            if let Some(card) = &card {
+                let inputs = card.ports.iter().filter(|port| port.input).count();
+                self.rows.insert(
+                    definition.to_owned(),
+                    inputs.max(card.ports.len() - inputs).max(1),
+                );
+            }
+            self.cards.insert(definition.to_owned(), card);
+        }
+        self.cards.get(definition).and_then(Option::as_ref)
     }
 }
 
@@ -179,6 +313,96 @@ mod tests {
     use orange_host::HostOptions;
 
     #[test]
+    fn declaration_dependent_kinds_have_illustrative_ports() {
+        let (host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut cache = PreviewCache::default();
+        for definition in [
+            "core/get-variable",
+            "org.orange.collections/make-enum",
+            "org.orange.collections/enum-payload",
+        ] {
+            let card = cache.card(&host, None, definition).unwrap_or_else(|| {
+                panic!("missing card for {definition}")
+            });
+            assert!(card.ports.iter().any(|port| !port.input));
+        }
+    }
+
+    #[test]
+    fn previews_draw_the_canvas_card_and_skip_offscreen_and_names_rows() {
+        let (host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut cache = PreviewCache::default();
+        let ctx = egui::Context::default();
+        let mut preview_height = 0.0;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(280.0, 240.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let height = cache.height(&host, "core/and");
+                preview_height = result_row(
+                    ui,
+                    "AND",
+                    "Both inputs",
+                    Some(height),
+                    false,
+                    |ui, rect, zoom| {
+                        let card = cache.card(&host, None, "core/and").unwrap();
+                        crate::canvas::draw_preview(ui, card, rect, zoom);
+                    },
+                )
+                .rect
+                .height();
+                let compact = result_row(ui, "AND", "", None, false, |_, _, _| {
+                    panic!("Names does not build a card")
+                });
+                assert!(compact.rect.height() < preview_height / 2.0);
+                ui.add_space(500.0);
+                let _ = result_row(ui, "Offscreen", "", Some(100.0), false, |_, _, _| {
+                    panic!("Offscreen rows do not build cards")
+                });
+            },
+        );
+        output.textures_delta.clear();
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for label in ["And", "a", "b", "result"] {
+            assert!(
+                output.shapes.iter().any(|shape| matches!(
+                    &shape.shape, egui::Shape::Text(text) if text.galley.text() == label
+                )),
+                "missing card label {label}: {labels:?}"
+            );
+        }
+        assert!(
+            output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(shape.shape, egui::Shape::Circle(_)))
+                .count()
+                >= 3,
+            "both input ports and the output port are drawn"
+        );
+        assert_eq!(cache.cards.len(), 1);
+        let id = cache.card(&host, None, "core/and").unwrap().id;
+        assert_eq!(cache.card(&host, None, "core/and").unwrap().id, id);
+        cache.invalidate();
+        assert!(cache.cards.is_empty());
+        assert_ne!(cache.card(&host, None, "core/and").unwrap().id, id);
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
     fn the_result_can_be_dragged_from_the_preview_line() {
         let ctx = egui::Context::default();
         let mut rect = egui::Rect::NOTHING;
@@ -197,9 +421,9 @@ mod tests {
                     ui,
                     "AND",
                     "Both values must be true",
-                    "A, B → Result",
+                    Some(112.0),
                     false,
-                    egui::Sense::click_and_drag(),
+                    |_, _, _| {},
                 );
                 rect = row.rect;
                 dragged |= row.drag_started();

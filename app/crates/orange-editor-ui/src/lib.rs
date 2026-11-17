@@ -29,6 +29,7 @@ mod menu;
 mod organise;
 mod properties;
 mod quick_add;
+mod settings;
 
 pub use properties::{COMMON_TYPES, port_label, set_at};
 pub use quick_add::QuickChoice;
@@ -66,6 +67,7 @@ pub fn type_name(ty: &str) -> String {
         "core/f64@1" | "core/f32@1" => "Float".to_owned(),
         "core/bytes@1" => "Bytes".to_owned(),
         "core/duration@1" => "Duration".to_owned(),
+        "org.orange.audio/stream@1" => "Audio stream".to_owned(),
         // Core types lose their namespace everywhere in the expression.
         other => other.replace("core/", "").replace("@1", ""),
     }
@@ -114,7 +116,7 @@ pub use orange_host::MAX_UNDO;
 
 /// Which panels the editor shows around the canvas. The canvas and the toolbar are
 /// always there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Panels {
     /// The node kinds, on the left.
     pub nodes: bool,
@@ -124,16 +126,6 @@ pub struct Panels {
     pub log: bool,
     /// The values of the selected node, on the right.
     pub properties: bool,
-}
-impl Default for Panels {
-    fn default() -> Self {
-        Self {
-            nodes: true,
-            packages: false,
-            log: true,
-            properties: true,
-        }
-    }
 }
 
 /// A file action the editor leaves to the application, which owns its file dialogs
@@ -185,7 +177,10 @@ pub struct Editor {
     palette_highlighted: usize,
     palette_mode: palette::PaletteMode,
     log_events: bool,
+    packages_tab: bool,
     palette: palette::PaletteCache,
+    previews: palette::PreviewCache,
+    settings_open: bool,
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<String>,
@@ -263,6 +258,7 @@ impl Editor {
     /// checked at once; a flow of the previous document is closed.
     /// A text that is not a document opens nothing, and the log says why.
     pub fn open(&mut self, host: &mut Host, path: impl Into<String>, text: String) {
+        self.previews.invalidate();
         self.stop(host);
         let path = path.into();
         let draft = match host.draft(&text) {
@@ -332,6 +328,10 @@ impl Editor {
 
     /// After the draft changed: the canvas, the problems and a running flow follow.
     fn refresh(&mut self, host: &mut Host) {
+        self.previews.invalidate();
+        if let Some(quick) = &mut self.quick {
+            quick.invalidate();
+        }
         let Some(document) = &mut self.document else {
             return;
         };
@@ -423,10 +423,16 @@ impl Editor {
             Ok(node) => {
                 let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(node));
+                if definition == "core/get-variable" {
+                    self.panels.properties = true;
+                    self.panels.packages = false;
+                }
                 Some(node)
             }
             Err(error) => {
                 let _ = self.edited(host, Err(error));
+                self.panels.log = true;
+                self.log_events = true;
                 None
             }
         }
@@ -897,7 +903,7 @@ impl Editor {
                 continue;
             }
             let said = lines(&event, &document.names);
-            // The canvas follows the run: a node glows as it takes a step, and the
+            // The canvas follows the run: a step can pulse along an execution wire, and the
             // latest value on an output shows beside it.
             match &event.kind {
                 FlowEvent::Node(step) => {
@@ -907,7 +913,7 @@ impl Editor {
                             orange_host::ControlOutcome::Failed
                                 | orange_host::ControlOutcome::TimedOut
                         );
-                    self.canvas.pulse(step.node, failed);
+                    self.canvas.record_step(step.node, failed, step.outcome);
                     // A failure stays on its node, with what the log says about it,
                     // until the node takes a step that does not fail.
                     if failed {
@@ -953,6 +959,7 @@ impl Editor {
     /// Draws the editor into `ui` and applies what the person did.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         icons::install(ui.ctx());
+        self.canvas.update_help(host, &self.language);
         if let Some(clip) = self.clip_out.take() {
             ui.ctx().copy_text(clip);
         }
@@ -1019,29 +1026,28 @@ impl Editor {
             }
         }
         self.toolbar(ui, host);
-        if self.panels.nodes {
-            egui::Panel::left("orange-nodes")
-                .resizable(true)
-                .default_size(250.0)
-                .show(ui, |ui| self.nodes_panel(ui, host));
-        }
-        if self.panels.properties {
-            egui::Panel::right("orange-properties")
-                .resizable(true)
-                .default_size(240.0)
-                .show(ui, |ui| self.properties_panel(ui, host));
-        }
-        if self.panels.packages {
-            egui::Panel::right("orange-packages")
-                .resizable(true)
-                .default_size(230.0)
-                .show(ui, |ui| Self::packages_panel(ui, host));
-        }
+        self.workspace_bar(ui);
+        self.settings_window(ui.ctx(), host);
         if self.panels.log {
             egui::Panel::bottom("orange-log")
                 .resizable(true)
                 .default_size(170.0)
+                .min_size(90.0)
                 .show(ui, |ui| self.log_panel(ui));
+        }
+        if self.panels.nodes {
+            egui::Panel::left("orange-nodes")
+                .resizable(true)
+                .default_size(280.0)
+                .min_size(240.0)
+                .show(ui, |ui| self.nodes_panel(ui, host));
+        }
+        if self.panels.properties || self.panels.packages {
+            egui::Panel::right("orange-inspector")
+                .resizable(true)
+                .default_size(280.0)
+                .min_size(240.0)
+                .show(ui, |ui| self.right_panel(ui, host));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1055,7 +1061,7 @@ impl Editor {
 
     fn toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         egui::Panel::top("orange-toolbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 // File
                 let open = self.document.is_some();
                 if self.file_dialogs {
@@ -1085,6 +1091,7 @@ impl Editor {
                 if icons::button(ui, redo, icons::REDO, "Redo", "Ctrl+Y").clicked() {
                     self.redo(host);
                 }
+                ui.separator();
                 let chosen = self.canvas.selection().len();
                 if icons::button(
                     ui,
@@ -1142,68 +1149,30 @@ impl Editor {
                     self.check(host);
                 }
                 if running {
-                    if icons::button(ui, true, icons::STOP, "Stop", "").clicked() {
+                    if icons::run_button(ui, true, true).clicked() {
                         self.stop(host);
                     }
-                } else if icons::button(ui, open, icons::RUN, "Run", "").clicked() {
+                } else if icons::run_button(ui, open, false).clicked() {
                     // A field being typed in ends its typing now, in this frame, and the
                     // run starts after it has been written: one click does both.
                     ui.memory_mut(egui::Memory::stop_text_input);
                     self.run_asked = true;
                 }
                 ui.separator();
-                // View
-                let _ = icons::toggle(ui, &mut self.panels.nodes, icons::NODES, "Nodes panel");
-                let _ = icons::toggle(
-                    ui,
-                    &mut self.panels.properties,
-                    icons::PROPERTIES,
-                    "Properties panel",
-                );
-                let _ = icons::toggle(
-                    ui,
-                    &mut self.panels.packages,
-                    icons::PACKAGES,
-                    "Packages panel",
-                );
-                let _ = icons::toggle(ui, &mut self.panels.log, icons::LOG, "Problems and log");
-                if icons::button(ui, open, icons::FIT, "Fit the graph in view", "Home").clicked() {
-                    self.canvas.fit();
+                if ui.button("Settings").clicked() {
+                    self.settings_open = true;
                 }
-                if icons::button(ui, open, icons::ACTUAL_SIZE, "Actual size", "").clicked() {
-                    self.canvas.reset_zoom();
-                }
-                let _ = icons::toggle(ui, &mut self.canvas.snap, icons::SNAP, "Snap to grid");
-                ui.label(format!("{:.0}%", self.canvas.zoom() * 100.0));
-                self.language_choice(ui, host);
                 ui.separator();
                 let Some(document) = &self.document else {
                     ui.label("No document is open.");
                     return;
                 };
-                let problem_count = document.problems.len();
                 let title = if document.unsaved {
                     format!("{} (not saved)", document.path)
                 } else {
                     document.path.clone()
                 };
                 let path = document.path.clone();
-                if running {
-                    ui.label("Running");
-                }
-                if problem_count > 0 {
-                    let label = if problem_count == 1 {
-                        "1 problem".to_owned()
-                    } else {
-                        format!("{problem_count} problems")
-                    };
-                    if ui.button(label).clicked() {
-                        self.panels.log = true;
-                        self.log_events = false;
-                    }
-                } else if !running {
-                    ui.label("Ready");
-                }
                 // The file's name; its whole path when pointed at.
                 let name = title
                     .rsplit(['/', '\\'])
@@ -1213,6 +1182,116 @@ impl Editor {
                 let _ = ui.strong(name).on_hover_text(path);
             });
         });
+    }
+
+    fn workspace_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("orange-workspace-bar").show(ui, |ui| {
+            if ui.available_width() >= 780.0 {
+                let height = ui.spacing().interact_size.y;
+                ui.columns(3, |columns| {
+                    columns[0].horizontal(|ui| self.workspace_left(ui));
+                    columns[1].horizontal(|ui| self.workspace_diagnostics(ui, true));
+                    let size = egui::vec2(columns[2].available_width(), height);
+                    columns[2].allocate_ui_with_layout(
+                        size,
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| self.workspace_right(ui),
+                    );
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    self.workspace_left(ui);
+                    ui.separator();
+                    self.workspace_diagnostics(ui, false);
+                    ui.separator();
+                    self.workspace_right(ui);
+                });
+            }
+        });
+    }
+
+    fn workspace_left(&mut self, ui: &mut egui::Ui) {
+        if icons::dock_toggle(ui, self.panels.nodes, egui::Align::Min, "Nodes, Variables and Connections").clicked() {
+            self.panels.nodes = !self.panels.nodes;
+        }
+        let open = self.document.is_some();
+        if icons::button(ui, open, icons::FIT, "Fit the graph in view", "Home").clicked() {
+            self.canvas.fit();
+        }
+        if ui
+            .add_enabled(
+                open,
+                egui::Button::new(format!("{:.0}%", self.canvas.zoom() * 100.0)),
+            )
+            .on_hover_text("Actual size")
+            .clicked()
+        {
+            self.canvas.reset_zoom();
+        }
+    }
+
+    fn workspace_diagnostics(&mut self, ui: &mut egui::Ui, centered: bool) {
+        let count = self.problems().len();
+        let problems = if count == 0 {
+            "Problems".to_owned()
+        } else {
+            format!("Problems ({count})")
+        };
+        let tabs = [(false, problems.as_str()), (true, "Log")];
+        if centered {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let width = tabs
+                .iter()
+                .map(|(_, label)| {
+                    let text_width = ui.painter()
+                        .layout_no_wrap((*label).to_owned(), font.clone(), ui.visuals().text_color())
+                        .size()
+                        .x;
+                    text_width + 2.0 * ui.spacing().button_padding.x
+                })
+                .sum::<f32>() + ui.spacing().item_spacing.x;
+            ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+        }
+        for (events, label) in tabs {
+            let active = self.panels.log && self.log_events == events;
+            if ui.selectable_label(active, label).clicked() {
+                self.panels.log = !active;
+                self.log_events = events;
+            }
+        }
+    }
+
+    fn workspace_right(&mut self, ui: &mut egui::Ui) {
+        let open = self.panels.properties || self.panels.packages;
+        if icons::dock_toggle(ui, open, egui::Align::Max, "Properties and Packages").clicked() {
+            if open {
+                self.packages_tab = self.panels.packages && !self.panels.properties;
+                self.panels.properties = false;
+                self.panels.packages = false;
+            } else {
+                self.panels.properties = !self.packages_tab;
+                self.panels.packages = self.packages_tab;
+            }
+        }
+        if self.is_running() {
+            ui.label("Running");
+        }
+    }
+
+    fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let mut packages = self.panels.packages && !self.panels.properties;
+        ui.horizontal(|ui| {
+            let _ = ui.selectable_value(&mut packages, false, "Properties");
+            let _ = ui.selectable_value(&mut packages, true, "Packages");
+        });
+        ui.separator();
+        self.panels.properties = !packages;
+        self.panels.packages = packages;
+        if packages {
+            Self::packages_panel(ui, host);
+        } else {
+            self.properties_panel(ui, host);
+        }
     }
 
     /// The language the node search also understands, from the host's search words.
@@ -1296,15 +1375,6 @@ impl Editor {
         if field.changed() {
             self.palette_highlighted = 0;
         }
-        ui.horizontal(|ui| {
-            let _ =
-                ui.selectable_value(&mut self.palette_mode, palette::PaletteMode::Names, "Names");
-            let _ = ui.selectable_value(
-                &mut self.palette_mode,
-                palette::PaletteMode::Previews,
-                "Names + previews",
-            );
-        });
         let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
@@ -1349,7 +1419,6 @@ impl Editor {
             };
             let results = self.palette.get(host, &self.search, language);
             let found = results.groups;
-            let summaries = results.summaries;
             if searching && found.is_empty() {
                 ui.weak("No node matches. Try a name or a purpose, such as int, timer or text.");
             }
@@ -1373,27 +1442,34 @@ impl Editor {
                             let active =
                                 searching && field.has_focus() && index == self.palette_highlighted;
                             index += 1;
-                            let detail = if self.palette_mode == palette::PaletteMode::Previews {
-                                item.purpose.as_str()
-                            } else {
-                                ""
-                            };
                             let row = palette::result_row(
                                 ui,
                                 &item.label,
-                                detail,
-                                if self.palette_mode == palette::PaletteMode::Previews {
-                                    summaries.get(&item.id).map_or("", String::as_str)
-                                } else {
-                                    ""
-                                },
+                                &item.purpose,
+                                (self.palette_mode == palette::PaletteMode::Previews)
+                                    .then(|| self.previews.height(host, &item.id)),
                                 active,
-                                egui::Sense::click_and_drag(),
+                                |ui, rect, zoom| {
+                                    if let Some(card) = self.previews.card(
+                                        host,
+                                        self.document.as_ref().map(|document| &document.draft),
+                                        &item.id,
+                                    ) {
+                                        canvas::draw_preview(ui, card, rect, zoom);
+                                    } else {
+                                        palette::missing_preview(ui, rect, &item.label);
+                                    }
+                                },
                             );
                             if row.drag_started() {
-                                let card = self.document.as_ref().and_then(|document| {
-                                    host.placement_preview(&document.draft, &item.id).ok()
-                                });
+                                let card = self
+                                    .previews
+                                    .card(
+                                        host,
+                                        self.document.as_ref().map(|document| &document.draft),
+                                        &item.id,
+                                    )
+                                    .cloned();
                                 row.dnd_set_drag_payload(palette::PaletteDrag {
                                     item: item.clone(),
                                     card,
@@ -1444,7 +1520,6 @@ impl Editor {
     }
 
     fn packages_panel(ui: &mut egui::Ui, host: &Host) {
-        ui.heading("Packages");
         egui::ScrollArea::vertical().show(ui, |ui| {
             for package in host.packages() {
                 let kind = match package.kind {
@@ -1463,16 +1538,7 @@ impl Editor {
     }
 
     fn log_panel(&mut self, ui: &mut egui::Ui) {
-        let count = self.problems().len();
-        ui.horizontal(|ui| {
-            let label = if count == 0 {
-                "Problems".to_owned()
-            } else {
-                format!("Problems ({count})")
-            };
-            let _ = ui.selectable_value(&mut self.log_events, false, label);
-            let _ = ui.selectable_value(&mut self.log_events, true, "Log");
-        });
+        ui.set_min_height(ui.available_height());
         if self.log_events {
             egui::ScrollArea::vertical()
                 .id_salt("editor-events")
@@ -1531,6 +1597,14 @@ impl Editor {
             .as_ref()
             .map_or(&[][..], |(_, entries)| entries.as_slice());
         let done = self.canvas.show(ui, &document.graph, triggers);
+        if let Some(selected) = done.selected
+            && document.graph.nodes.iter().any(|node| {
+                node.id == selected && node.ports.is_empty()
+            })
+        {
+            self.panels.properties = true;
+            self.panels.packages = false;
+        }
         if done.show_problems || done.show_runtime_log {
             self.panels.log = true;
             self.log_events = done.show_runtime_log;
@@ -2122,17 +2196,19 @@ mod tests {
         let bound = host.bind(&graph()).unwrap();
         editor.open(&mut host, "graph.json", bound);
         assert!(draw(&mut editor, &mut host) > 0);
-        let with_panels = editor.canvas().size();
+        let alone = editor.canvas().size();
         editor.panels = Panels {
-            nodes: false,
+            nodes: true,
             packages: false,
-            log: false,
-            properties: false,
+            log: true,
+            properties: true,
         };
         assert!(draw(&mut editor, &mut host) > 0);
-        // The canvas takes the room the panels gave up.
-        let alone = editor.canvas().size();
+        let with_panels = editor.canvas().size();
         assert!(alone[0] > with_panels[0] && alone[1] > with_panels[1]);
+        editor.panels = Panels::default();
+        assert!(draw(&mut editor, &mut host) > 0);
+        assert_eq!(editor.canvas().size(), alone);
     }
 
     /// Draws one frame in a window `size` points large.
@@ -2149,6 +2225,44 @@ mod tests {
         let shapes = output.shapes.len();
         output.drop_without_applying_deltas();
         shapes
+    }
+
+    #[test]
+    fn diagnostics_are_centered_and_switching_tabs_preserves_canvas_height() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let bound = host.bind(&graph()).unwrap();
+        editor.open(&mut host, "graph.json", bound);
+        editor.panels.log = true;
+        editor.say("A line in the log".into());
+        let context = egui::Context::default();
+        let mut draw = |editor: &mut Editor| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| editor.ui(ui, &mut host),
+            )
+        };
+        let output = draw(&mut editor);
+        let mut group = egui::Rect::NOTHING;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape
+                && matches!(text.galley.text(), "Problems" | "Log")
+            {
+                group = group.union(egui::Rect::from_min_size(text.pos, text.galley.size()));
+            }
+        }
+        assert!((group.center().x - 640.0).abs() <= 8.0, "{group:?}");
+        output.drop_without_applying_deltas();
+        let height = editor.canvas.size()[1];
+        editor.log_events = true;
+        draw(&mut editor).drop_without_applying_deltas();
+        assert_eq!(editor.canvas.size()[1], height);
     }
 
     #[test]
@@ -2293,6 +2407,7 @@ mod tests {
         assert_eq!(type_name("core/i64@1"), "Int");
         assert_eq!(type_name("core/f64@1"), "Float");
         assert_eq!(type_name("core/bool@1"), "Bool");
+        assert_eq!(type_name("org.orange.audio/stream@1"), "Audio stream");
         assert_eq!(exact_type("core/u64@1"), "u64");
         assert_eq!(type_name("core/list@1<core/i64@1>"), "list<i64>");
         assert_eq!(
@@ -2489,6 +2604,7 @@ mod run_tests {
         editor.open(&mut host, "typed.json", text);
         editor.panels.nodes = false;
         editor.panels.log = false;
+        editor.panels.properties = panel;
         editor.canvas.select(Some(id(2).parse().unwrap()));
         let context = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
@@ -2573,9 +2689,6 @@ mod run_tests {
     }
 }
 
-/// Most outputs previewed one at a time when they cannot all be previewed together.
-const MAX_PREVIEWED: usize = 64;
-
 impl Editor {
     /// While nothing runs, shows beside each output of a pure node (a value, an
     /// operator) what it computes from what is wired into it, without running the
@@ -2595,21 +2708,26 @@ impl Editor {
             .graph
             .nodes
             .iter()
-            .filter(|node| !node.entry && node.ports.iter().all(|port| !port.exec))
+            // A pure generic kernel still needs a concrete type before it can run.
+            // Skip unbound cards rather than retrying their previews on every edit.
+            .filter(|node| {
+                !node.entry && node.ports.iter().all(|port| {
+                    !port.exec && port.ty.as_deref().is_none_or(|ty| !ty.contains('$'))
+                })
+            })
             .flat_map(|node| {
                 node.ports
                     .iter()
                     .filter(|port| !port.input)
                     .filter_map(move |port| Some((node.id, port.id.parse().ok()?)))
             })
-            .take(MAX_PREVIEWED)
             .collect();
         self.canvas.clear_run();
         if wanted.is_empty() {
             return;
         }
-        // All at once when every one can be previewed; otherwise one by one, so one
-        // output that cannot does not blank the rest.
+        // Try one batch first. Unrelated effects or invalid nodes can make the
+        // complete document unsuitable, even when a pure branch is ready.
         let found = match host.preview(&text, &wanted) {
             Ok(found) => found,
             Err(_) => {
@@ -2620,15 +2738,20 @@ impl Editor {
                 for wire in &document.graph.wires {
                     upstream.entry(wire.to.0).or_default().push(wire.from.0);
                 }
-                wanted
-                    .iter()
-                    .filter_map(|one| {
-                        let scoped = preview_dependencies(&saved, &upstream, one.0)?;
-                        host.preview(&scoped.to_string(), std::slice::from_ref(one))
-                            .ok()
-                    })
-                    .flatten()
-                    .collect()
+                let mut found = Vec::new();
+                let mut batches = vec![wanted.as_slice()];
+                while let Some(batch) = batches.pop() {
+                    let scoped = preview_dependencies(&saved, &upstream, batch.iter().map(|(node, _)| *node));
+                    if let Some(values) = scoped.and_then(|graph| {
+                        host.preview(&graph.to_string(), batch).ok()
+                    }) {
+                        found.extend(values);
+                    } else if batch.len() > 1 {
+                        let (left, right) = batch.split_at(batch.len() / 2);
+                        batches.extend([right, left]);
+                    }
+                }
+                found
             }
         };
         for previewed in found {
@@ -2644,15 +2767,15 @@ impl Editor {
     }
 }
 
-/// Retain the requested root node and its upstream dependencies. The host still
+/// Retain the requested root nodes and their upstream dependencies. The host still
 /// validates and compiles the projection, including the original providers and types.
 fn preview_dependencies(
     saved: &serde_json::Value,
     upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
-    output: NodeId,
+    outputs: impl Iterator<Item = NodeId>,
 ) -> Option<serde_json::Value> {
     let mut nodes = std::collections::BTreeSet::new();
-    let mut pending = vec![output];
+    let mut pending: Vec<_> = outputs.collect();
     while let Some(node) = pending.pop() {
         if nodes.insert(node)
             && let Some(sources) = upstream.get(&node)
@@ -2679,6 +2802,99 @@ fn preview_dependencies(
 mod preview_tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn greater_and_greater_float_enforce_different_type_families() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        for (definition, valid, invalid) in [
+            ("org.orange.math/greater", "core/i64@1", "core/f64@1"),
+            ("org.orange.math/float-greater", "core/f64@1", "core/i64@1"),
+        ] {
+            let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+            let node = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
+            host.choose_type(&mut draft, node, "T", Some(valid)).unwrap();
+            host.set_input(&mut draft, (node, "a"), Some("5")).unwrap();
+            host.set_input(&mut draft, (node, "b"), Some("3")).unwrap();
+            let wanted = [(node, "result".parse().unwrap())];
+            let values = host.preview(&draft.text().unwrap(), &wanted).unwrap();
+            assert_eq!(values[0].value, Ok(orange_host::Value::Bool(true)));
+            let mut invalid_draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+            let node = host.add_node(&mut invalid_draft, definition, [0.0, 0.0]).unwrap();
+            if host.choose_type(&mut invalid_draft, node, "T", Some(invalid)).is_ok() {
+                assert!(host.problems(&mut invalid_draft).unwrap().iter().any(|problem| {
+                    problem.code.as_str() == "E-CONSTRAINT-UNSATISFIED"
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_mixed_operator_chain_previews_past_the_old_output_limit() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let text = host.bind(&tests::graph()).unwrap();
+        let mut draft = host.draft(&text).unwrap();
+        let left = host.add_node(&mut draft, "core/whole-number", [0.0, 0.0]).unwrap();
+        let source = host.add_node(&mut draft, "core/whole-number", [0.0, 0.0]).unwrap();
+        assert!(host.set_input(&mut draft, (left, "value"), Some("12")).unwrap());
+        assert!(host.set_input(&mut draft, (source, "value"), Some("-18")).unwrap());
+        let mut previous = source;
+        let mut chain = Vec::new();
+        for definition in std::iter::repeat_n("org.orange.math/absolute", 70)
+            .chain(["org.orange.math/negate", "org.orange.math/absolute"])
+        {
+            let next = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
+            assert!(host.connect(&mut draft, (previous, "result"), (next, "value")).unwrap());
+            chain.push(next);
+            previous = next;
+        }
+        let greater = host.add_node(&mut draft, "org.orange.math/greater", [0.0, 0.0]).unwrap();
+        assert!(host.connect(&mut draft, (left, "result"), (greater, "a")).unwrap());
+        assert!(host.connect(&mut draft, (previous, "result"), (greater, "b")).unwrap());
+
+        let mut editor = Editor::new();
+        editor.open(&mut host, "long-chain.json", draft.text().unwrap());
+        for (index, node) in chain.iter().enumerate() {
+            let expected = if index == 70 { "-18" } else { "18" };
+            assert_eq!(editor.canvas().shown_value(*node, "result"), Some(expected));
+        }
+        assert_eq!(editor.canvas().shown_value(greater, "result"), Some("false"));
+        assert!(editor.set_input(&mut host, (source, "value"), Some("-8")));
+        assert_eq!(editor.canvas().shown_value(previous, "result"), Some("8"));
+        assert_eq!(editor.canvas().shown_value(greater, "result"), Some("true"));
+    }
+
+    #[test]
+    fn an_absolute_between_int_and_greater_keeps_live_values() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let activity_graph = host.bind(&tests::graph()).unwrap();
+        editor.open(&mut host, "graph.json", activity_graph);
+        let a = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let b = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let greater = editor.add_node(&mut host, "org.orange.math/greater").unwrap();
+        assert!(editor.set_input(&mut host, (a, "value"), Some("12")));
+        assert!(editor.set_input(&mut host, (b, "value"), Some("-18")));
+        assert!(editor.connect(&mut host, (a, "result"), (greater, "a")));
+        assert!(editor.connect(&mut host, (b, "result"), (greater, "b")));
+        let absolute = editor
+            .add_node_into_wire(
+                &mut host,
+                "org.orange.math/absolute",
+                [50.0, 100.0],
+                &((b, "result".into()), (greater, "b".into())),
+            )
+            .unwrap();
+        let text = editor.text().unwrap();
+        let expected = [(a, "12"), (b, "-18"), (absolute, "18"), (greater, "false")];
+        for (node, value) in expected {
+            assert_eq!(
+                editor.canvas().shown_value(node, "result"),
+                Some(value),
+                "{:?}",
+                host.preview(&text, &[(node, "result".parse().unwrap())])
+            );
+        }
+    }
 
     #[test]
     fn an_operator_shows_its_result_while_it_is_wired_without_running() {

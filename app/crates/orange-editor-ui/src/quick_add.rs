@@ -21,6 +21,14 @@ pub(crate) struct QuickAdd {
     focused: bool,
     /// The choice the arrow keys are on.
     highlighted: usize,
+    choices_key: Option<(String, String, u64)>,
+    choices: Vec<QuickChoice>,
+}
+
+impl QuickAdd {
+    pub(crate) fn invalidate(&mut self) {
+        self.choices_key = None;
+    }
 }
 
 /// One kind the search offers.
@@ -55,6 +63,8 @@ impl Editor {
             search: String::new(),
             focused: false,
             highlighted: 0,
+            choices_key: None,
+            choices: Vec::new(),
         });
     }
 
@@ -143,14 +153,20 @@ impl Editor {
         let mut search = quick.search.clone();
         let mut focused = quick.focused;
         let mut highlighted = quick.highlighted;
+        let screen = quick.screen;
+        let was_focused = quick.focused;
         let mut picked = None;
         let mut close = false;
+        let mut dragged = false;
+        let bounds = ctx.content_rect().shrink(6.0);
         let shown = egui::Area::new(egui::Id::unique("orange-quick-add"))
             .order(egui::Order::Foreground)
-            .fixed_pos(quick.screen)
+            .fixed_pos(screen)
+            .constrain_to(bounds)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(300.0);
+                    ui.set_width(304.0_f32.min((bounds.width() - 20.0).max(48.0)));
+                    ui.strong(if wired { "Connect a node" } else { "Add a node" });
                     // The arrows move the choice, not the caret.
                     let (up, down) = ui.input_mut(|input| {
                         (
@@ -170,7 +186,26 @@ impl Editor {
                     if field.changed() {
                         highlighted = 0;
                     }
-                    let choices = self.quick_choices(host, &search);
+                    let key = (
+                        search.clone(),
+                        self.language().to_owned(),
+                        host.registry().generation(),
+                    );
+                    if self
+                        .quick
+                        .as_ref()
+                        .is_some_and(|quick| quick.choices_key.as_ref() != Some(&key))
+                    {
+                        let choices = self.quick_choices(host, &search);
+                        if let Some(quick) = &mut self.quick {
+                            quick.choices_key = Some(key);
+                            quick.choices = choices;
+                        }
+                    }
+                    let choices = self
+                        .quick
+                        .as_ref()
+                        .map_or(&[][..], |quick| quick.choices.as_slice());
                     let last = choices.len().min(SHOWN).saturating_sub(1);
                     highlighted = highlighted.min(last);
                     if down {
@@ -197,7 +232,7 @@ impl Editor {
                     }
                     ui.separator();
                     egui::ScrollArea::vertical()
-                        .max_height(320.0)
+                        .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
                         .show(ui, |ui| {
                             if choices.is_empty() {
                                 ui.weak("Nothing matches. Try a purpose, such as timer or text.");
@@ -219,10 +254,41 @@ impl Editor {
                                     ui,
                                     &name,
                                     &detail,
-                                    "",
+                                    (self.palette_mode == palette::PaletteMode::Previews)
+                                        .then(|| self.previews.height(host, &choice.definition)),
                                     on,
-                                    egui::Sense::click(),
+                                    |ui, rect, zoom| {
+                                        if let Some(card) = self.previews.card(
+                                            host,
+                                            self.document.as_ref().map(|document| &document.draft),
+                                            &choice.definition,
+                                        ) {
+                                            canvas::draw_preview(ui, card, rect, zoom);
+                                        } else {
+                                            palette::missing_preview(ui, rect, &choice.label);
+                                        }
+                                    },
                                 );
+                                if row.drag_started() {
+                                    let card = self
+                                        .previews
+                                        .card(
+                                            host,
+                                            self.document.as_ref().map(|document| &document.draft),
+                                            &choice.definition,
+                                        )
+                                        .cloned();
+                                    row.dnd_set_drag_payload(palette::PaletteDrag {
+                                        item: PaletteItem {
+                                            id: choice.definition.clone(),
+                                            label: choice.label.clone(),
+                                            package: String::new(),
+                                            purpose: choice.purpose.clone(),
+                                        },
+                                        card,
+                                    });
+                                    dragged = true;
+                                }
                                 if on && (up || down) {
                                     row.scroll_to_me(None);
                                 }
@@ -233,7 +299,7 @@ impl Editor {
                         });
                 });
             });
-        if shown.response.clicked_elsewhere() && focused && quick.focused {
+        if shown.response.clicked_elsewhere() && focused && was_focused {
             close = true;
         }
         if let Some(quick) = &mut self.quick {
@@ -241,10 +307,77 @@ impl Editor {
             quick.focused = focused;
             quick.highlighted = highlighted;
         }
-        if let Some(choice) = picked {
+        if dragged {
+            self.quick = None;
+            ctx.request_repaint();
+        } else if let Some(choice) = picked {
             let _ = self.pick_quick(host, &choice);
         } else if close {
             self.quick = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn sidebar_and_picker_share_preview_mode_without_editing_the_document() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        editor.search = "and".into();
+        let before = editor.document.as_ref().unwrap().draft.text().unwrap();
+        for mode in [palette::PaletteMode::Previews, palette::PaletteMode::Names] {
+            editor.palette_mode = mode;
+            for picker in [false, true] {
+                let context = egui::Context::default();
+                if picker {
+                    editor.open_quick_add(None, [0.0, 0.0], egui::pos2(10.0, 10.0));
+                    editor.quick.as_mut().unwrap().search = "and".into();
+                }
+                // Areas settle their initial bounds on the next frame.
+                for frame in 0..3 {
+                    let mut output = context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(330.0, 600.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            if picker {
+                                editor.quick_add_popup(ui.ctx(), &mut host);
+                            } else {
+                                editor.nodes_panel(ui, &mut host);
+                            }
+                        },
+                    );
+                    output.textures_delta.clear();
+                    if frame == 2 {
+                        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "And")), "search result is visible, picker={picker}");
+                        for label in ["a", "b", "result"] {
+                            let drawn = output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label));
+                            assert_eq!(
+                                drawn,
+                                mode == palette::PaletteMode::Previews,
+                                "{label}, picker={picker}"
+                            );
+                        }
+                    }
+                    output.drop_without_applying_deltas();
+                }
+            }
+        }
+        assert_eq!(
+            editor.document.as_ref().unwrap().draft.text().unwrap(),
+            before
+        );
+        assert_eq!(editor.can_undo(), (false, false));
     }
 }

@@ -1352,6 +1352,7 @@ mod tests {
             assert_eq!(shown.settings["variable"], json!(count));
         }
         // The list draws each variable with what it carries when dragged.
+        editor.panels.nodes = true;
         editor.tab = Tab::Variables;
         draw(&mut editor, &mut host);
     }
@@ -1371,6 +1372,7 @@ mod tests {
 
         // The form starts on an adapter the host has; a typed secret stays in the form,
         // out of its debug text, until it is saved.
+        editor.panels.nodes = true;
         editor.tab = Tab::Connections;
         editor.forms.reveal_connection();
         draw(&mut editor, &mut host);

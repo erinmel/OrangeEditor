@@ -6,6 +6,7 @@
 //! same, each gets the end of its ID added. A variable is called by its declared name.
 use crate::{ControlOutcome, Diagnostic, FlowEvent, Host, HostEvent, NodeId, Value, VariableId};
 use std::collections::BTreeMap;
+use std::fmt::{self, Write};
 
 /// The names of one graph.
 #[derive(Debug, Default)]
@@ -238,7 +239,7 @@ pub fn plain(value: &Value) -> String {
             format!("{shown:?}")
         }
         Value::Bytes(bytes) => format!("<{} bytes>", bytes.len()),
-        other => format!("{other:?}"),
+        other => bounded_text(format_args!("{other:?}"), 120, "…"),
     }
 }
 
@@ -341,17 +342,21 @@ pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
     }
 }
 
-/// Most characters [`inspect`] writes; past it the text says how much was left out.
+/// Most value characters [`inspect`] writes before marking the result truncated.
 pub const MAX_INSPECT_CHARS: usize = 64 * 1024;
 /// Most bytes [`inspect`] shows of a bytes value, in hex.
 pub const MAX_INSPECT_BYTES: usize = 256;
 
-/// A value in full, for looking at it closely: text whole, numbers exact, bytes as their
+/// A value for inspection: text, exact numbers, bytes as their
 /// count and a hex preview of the first [`MAX_INSPECT_BYTES`], and lists, maps and
 /// records laid out one item a line. Bounded by [`MAX_INSPECT_CHARS`].
 pub fn inspect(value: &Value) -> String {
-    let full = match value {
-        Value::Str(text) => text.as_str().to_owned(),
+    match value {
+        Value::Str(text) => bounded_text(
+            format_args!("{}", text.as_str()),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
         Value::Bytes(bytes) => {
             let shown: Vec<String> = bytes
                 .iter()
@@ -369,25 +374,70 @@ pub fn inspect(value: &Value) -> String {
         | Value::Record(_)
         | Value::Enum { .. }
         | Value::Some(_)
-        | Value::Err(_) => format!("{value:#?}"),
+        | Value::Err(_) => {
+            bounded_text(format_args!("{value:#?}"), MAX_INSPECT_CHARS, "\n… truncated")
+        }
         other => plain(other),
-    };
-    let count = full.chars().count();
-    if count <= MAX_INSPECT_CHARS {
-        return full;
     }
-    let mut kept: String = full.chars().take(MAX_INSPECT_CHARS).collect();
-    kept.push_str(&format!(
-        "\n… {} more characters",
-        count - MAX_INSPECT_CHARS
-    ));
-    kept
+}
+
+struct TextBudget {
+    text: String,
+    remaining: usize,
+}
+
+impl Write for TextBudget {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        for (offset, _) in value.char_indices() {
+            if self.remaining == 0 {
+                self.text.push_str(&value[..offset]);
+                return Err(fmt::Error);
+            }
+            self.remaining -= 1;
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
+}
+
+fn bounded_text(value: fmt::Arguments<'_>, max_chars: usize, suffix: &str) -> String {
+    let mut budget = TextBudget {
+        text: String::new(),
+        remaining: max_chars,
+    };
+    if budget.write_fmt(value).is_err() {
+        budget.text.push_str(suffix);
+    }
+    budget.text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::HostOptions;
+
+    #[test]
+    fn formatting_stops_at_the_budget_on_a_utf8_boundary() {
+        struct Chunks<'a>(&'a std::cell::Cell<usize>);
+
+        impl fmt::Display for Chunks<'_> {
+            fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+                for _ in 0..1_000 {
+                    self.0.set(self.0.get() + 1);
+                    out.write_str("a\u{e9}")?;
+                }
+                Ok(())
+            }
+        }
+
+        let visited = std::cell::Cell::new(0);
+        assert_eq!(
+            bounded_text(format_args!("{}", Chunks(&visited)), 3, "."),
+            "a\u{e9}a."
+        );
+        assert_eq!(visited.get(), 2);
+        assert_eq!(bounded_text(format_args!("a\u{e9}"), 2, "."), "a\u{e9}");
+    }
 
     #[test]
     fn nodes_and_variables_are_found_by_name_and_same_names_are_told_apart() {

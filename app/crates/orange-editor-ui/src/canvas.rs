@@ -18,12 +18,12 @@ pub const HEADER_HEIGHT: f32 = 34.0;
 /// Where the first row of ports starts: under the title, with a little room.
 pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
-pub const ROW_HEIGHT: f32 = 26.0;
+pub const ROW_HEIGHT: f32 = 32.0;
 /// How round a card's corners are, in graph units.
 const CARD_RADIUS: f32 = 8.0;
 
-/// How long a node of a running flow glows after it takes a step.
-const GLOW_SECONDS: f32 = 0.8;
+/// Time for a run pulse to travel from one execution port to the next.
+const PULSE_SECONDS: f32 = 0.65;
 
 /// Space under the last row.
 pub const FOOTER_HEIGHT: f32 = 8.0;
@@ -75,9 +75,21 @@ impl Control {
 pub fn node_size(node: &NodeView) -> Vec2 {
     let inputs = node.ports.iter().filter(|port| port.input).count();
     let outputs = node.ports.len() - inputs;
+    Vec2::new(NODE_WIDTH, card_height(&node.definition, inputs.max(outputs)))
+}
+
+pub(crate) fn card_height(definition: &str, rows: usize) -> f32 {
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let rows = inputs.max(outputs).max(1) as f32;
-    Vec2::new(NODE_WIDTH, BODY_TOP + rows * ROW_HEIGHT + FOOTER_HEIGHT)
+    let rows = rows.max(1) as f32;
+    BODY_TOP + rows * ROW_HEIGHT + FOOTER_HEIGHT + extra_row(definition)
+}
+
+fn extra_row(definition: &str) -> f32 {
+    if definition == "core/on-manual" || orange_host::formula(definition).is_some() {
+        ROW_HEIGHT
+    } else {
+        0.0
+    }
 }
 
 /// Where a port's dot is, relative to the top left corner of its node's card.
@@ -157,6 +169,12 @@ pub struct Shown {
     pub full: String,
 }
 
+#[derive(Debug, Clone)]
+struct PortSample {
+    shown: Shown,
+    epoch: u64,
+}
+
 /// A problem shown on the canvas, on the node or wire it is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mark {
@@ -211,6 +229,19 @@ struct Wiring {
     exec: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PulseRoute {
+    Sole,
+    Port(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StepActivity {
+    time: std::time::Instant,
+    failed: bool,
+    route: Option<PulseRoute>,
+}
+
 /// The view of one graph: where it is scrolled to, how far it is zoomed and where its
 /// nodes are.
 #[derive(Debug, Clone)]
@@ -246,10 +277,13 @@ pub struct Canvas {
     selected_wire: Option<WireEnds>,
     /// Problems drawn on nodes and wires.
     marks: Marks,
+    help_revision: Option<(u64, String)>,
+    descriptions: std::collections::HashMap<String, String>,
     /// When each node of a running flow last took a step, and whether it failed.
-    activity: std::collections::HashMap<NodeId, (std::time::Instant, bool)>,
+    activity: std::collections::HashMap<NodeId, StepActivity>,
     /// The latest value a running flow put on each output, as a person reads it.
-    values: std::collections::HashMap<NodeId, std::collections::HashMap<String, Shown>>,
+    values: std::collections::HashMap<NodeId, std::collections::HashMap<String, PortSample>>,
+    value_epoch: u64,
     /// Nodes whose last step failed, with why; kept until the node succeeds or a new
     /// run starts.
     failures: std::collections::HashMap<NodeId, String>,
@@ -283,9 +317,12 @@ impl Default for Canvas {
             selected_wire: None,
             marks: Marks::default(),
             activity: std::collections::HashMap::new(),
+            help_revision: None,
+            descriptions: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
             failures: std::collections::HashMap::new(),
             stale: false,
+            value_epoch: 0,
             size: Vec2::new(800.0, 600.0),
             scroll_pans: false,
             snap: true,
@@ -305,7 +342,6 @@ struct Palette {
     grid: Color32,
     card: Color32,
     header: Color32,
-    entry_header: Color32,
     outline: Color32,
     selected: Color32,
     text: Color32,
@@ -324,28 +360,17 @@ impl Palette {
             error: visuals.error_fg_color,
             warning: visuals.warn_fg_color,
             background: visuals.extreme_bg_color,
-            // Faint enough to sit behind the cards, clear enough to judge distances by.
-            grid: visuals
-                .widgets
-                .noninteractive
-                .bg_stroke
-                .color
-                .gamma_multiply(0.45),
+            grid: mix(visuals.extreme_bg_color, visuals.text_color(), 0.21),
             card: visuals.window_fill,
             header: visuals.faint_bg_color,
-            entry_header: if dark {
-                Color32::from_rgb(92, 58, 20)
-            } else {
-                Color32::from_rgb(255, 224, 178)
-            },
             outline: visuals.widgets.noninteractive.bg_stroke.color,
             selected: visuals.selection.stroke.color,
             text: visuals.strong_text_color(),
             weak: visuals.weak_text_color(),
             exec: if dark {
-                Color32::from_rgb(140, 214, 120)
+                Color32::from_rgb(247, 187, 105)
             } else {
-                Color32::from_rgb(56, 142, 60)
+                Color32::from_rgb(142, 79, 10)
             },
         }
     }
@@ -354,30 +379,35 @@ impl Palette {
 /// The color of a value port, by the family of its type. The shape of the dot, not
 /// the color, tells a value from a step.
 pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
-    let name = ty.unwrap_or_default();
-    let family = |words: &[&str]| words.iter().any(|word| name.starts_with(word));
-    if family(&["core/string"]) {
-        Color32::from_rgb(214, 120, 170)
-    } else if family(&["core/bool"]) {
-        Color32::from_rgb(214, 96, 96)
-    } else if family(&[
-        "core/i",
-        "core/u",
-        "core/f",
-        "core/duration",
-        "core/timestamp",
-    ]) {
-        Color32::from_rgb(96, 160, 222)
-    } else if family(&["core/list", "core/map", "core/stream", "core/bytes"]) {
-        Color32::from_rgb(170, 132, 214)
-    } else {
-        Color32::from_rgb(150, 160, 170)
+    match ty.unwrap_or_default().split('@').next().unwrap_or_default() {
+        "core/string" => Color32::from_rgb(214, 120, 170),
+        "core/bool" => Color32::from_rgb(68, 177, 160),
+        "core/i32" | "core/i64" | "core/u32" | "core/u64" | "core/f32" | "core/f64"
+        | "core/duration" | "core/timestamp" => Color32::from_rgb(96, 160, 222),
+        "core/list" | "core/map" | "core/stream" | "core/option" | "core/bytes"
+        | "org.orange.audio/stream" => Color32::from_rgb(170, 132, 214),
+        _ => Color32::from_rgb(150, 160, 170),
     }
 }
 
 impl Canvas {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn update_help(&mut self, host: &orange_host::Host, language: &str) {
+        let generation = host.registry().generation();
+        if self.help_revision.as_ref().is_some_and(|(old, locale)| {
+            *old == generation && locale == language
+        }) {
+            return;
+        }
+        self.descriptions = host.search_nodes("", language)
+            .into_iter()
+            .filter(|item| !item.purpose.is_empty())
+            .map(|item| (item.definition, item.purpose))
+            .collect();
+        self.help_revision = Some((generation, language.to_owned()));
     }
 
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
@@ -603,23 +633,46 @@ impl Canvas {
         &self.marks
     }
 
-    /// A running flow's node took a step: its card glows for a moment, in the error
-    /// color when the step failed.
+    /// Records a recent step for canvas feedback and the inspector.
     pub fn pulse(&mut self, node: NodeId, failed: bool) {
-        let _ = self
-            .activity
-            .insert(node, (std::time::Instant::now(), failed));
+        self.record_step(node, failed, orange_host::ControlOutcome::Then);
+    }
+
+    pub(crate) fn record_step(
+        &mut self,
+        node: NodeId,
+        failed: bool,
+        outcome: orange_host::ControlOutcome,
+    ) {
+        use orange_host::ControlOutcome::{Body, Completed, False, Then, True};
+        let route = if failed {
+            None
+        } else {
+            match outcome {
+                Then | Completed => Some(PulseRoute::Sole),
+                True => Some(PulseRoute::Port("true")),
+                False => Some(PulseRoute::Port("false")),
+                Body => Some(PulseRoute::Port("body")),
+                _ => None,
+            }
+        };
+        let _ = self.activity.insert(
+            node,
+            StepActivity { time: std::time::Instant::now(), failed, route },
+        );
     }
 
     /// A running flow put a value on an output: `short` shows beside the port, `full`
     /// in the inspector. It stays until another comes; when the run ends it is dimmed.
     pub fn show_value(&mut self, node: NodeId, port: String, short: String, full: String) {
         self.stale = false;
-        let _ = self
-            .values
-            .entry(node)
-            .or_default()
-            .insert(port, Shown { short, full });
+        let _ = self.values.entry(node).or_default().insert(
+            port,
+            PortSample {
+                shown: Shown { short, full },
+                epoch: self.value_epoch,
+            },
+        );
     }
 
     /// A node's step failed, for `why`: the node keeps an error badge until it
@@ -642,9 +695,13 @@ impl Canvas {
     /// and said to be from the last run, until a new run starts.
     pub fn mark_stale(&mut self) {
         self.stale = true;
+        self.value_epoch = self.value_epoch.wrapping_add(1);
+        if self.value_epoch == 0 {
+            self.values.clear();
+        }
     }
 
-    /// Whether the values shown are from a run that has ended or a graph since changed.
+    /// Whether the run or graph changed since the last output value was received.
     pub fn is_stale(&self) -> bool {
         self.stale
     }
@@ -658,17 +715,31 @@ impl Canvas {
         port: &str,
         input: bool,
     ) -> Option<&Shown> {
-        if !input {
-            return self.output_value(node, port);
-        }
-        graph
-            .wires
-            .iter()
-            .find(|wire| wire.to.0 == node && wire.to.1 == port)
-            .and_then(|wire| self.output_value(wire.from.0, &wire.from.1))
+        self.port_sample(graph, node, port, input)
+            .map(|(shown, _)| shown)
     }
 
-    fn output_value(&self, node: NodeId, port: &str) -> Option<&Shown> {
+    pub(crate) fn port_sample(
+        &self,
+        graph: &GraphView,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<(&Shown, bool)> {
+        let (node, port) = if input {
+            let wire = graph
+                .wires
+                .iter()
+                .find(|wire| wire.to.0 == node && wire.to.1 == port)?;
+            (wire.from.0, wire.from.1.as_str())
+        } else {
+            (node, port)
+        };
+        let sample = self.output_sample(node, port)?;
+        Some((&sample.shown, sample.epoch != self.value_epoch))
+    }
+
+    fn output_sample(&self, node: NodeId, port: &str) -> Option<&PortSample> {
         self.values.get(&node)?.get(port)
     }
 
@@ -678,24 +749,24 @@ impl Canvas {
         node: NodeId,
         port: &str,
         input: bool,
-    ) -> Option<&Shown> {
+    ) -> Option<&PortSample> {
         let (node, port) = if input {
             geometry.source(node, port)?
         } else {
             (node, port)
         };
-        self.output_value(node, port)
+        self.output_sample(node, port)
     }
 
     /// Whether a running flow's node has taken a step, and whether that step failed.
     pub fn last_step(&self, node: NodeId) -> Option<bool> {
-        self.activity.get(&node).map(|(_, failed)| *failed)
+        self.activity.get(&node).map(|step| step.failed)
     }
 
     /// The value shown beside an output, if any.
     pub fn shown_value(&self, node: NodeId, port: &str) -> Option<&str> {
-        self.output_value(node, port)
-            .map(|shown| shown.short.as_str())
+        self.output_sample(node, port)
+            .map(|sample| sample.shown.short.as_str())
     }
 
     /// A new run starts: nothing from an earlier one is shown.
@@ -735,13 +806,16 @@ impl Canvas {
         let mut done = CanvasResponse::default();
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let area = response.rect;
-        self.size = area.size();
+        let previous_size = std::mem::replace(&mut self.size, area.size());
         let colors = Palette::of(ui);
         if self.fit {
             self.fit = false;
             if let Some(bounds) = self.bounds(graph) {
                 (self.zoom, self.origin) = Self::frame(bounds, area.size());
             }
+        } else {
+            // Resizing the window or a dock keeps the same graph point in view.
+            self.origin += (previous_size - self.size) / (2.0 * self.zoom);
         }
 
         // Dragging the background scrolls; the wheel scrolls, and zooms with the
@@ -835,18 +909,21 @@ impl Canvas {
 
         painter.rect_filled(area, 0.0, colors.background);
         let step = GRID * zoom;
-        if step >= 8.0 {
-            let stroke = Stroke::new(1.0, colors.grid);
-            let mut x = area.min.x - (origin.x * zoom).rem_euclid(step);
-            while x < area.max.x {
-                painter.line_segment([Pos2::new(x, area.min.y), Pos2::new(x, area.max.y)], stroke);
-                x += step;
-            }
+        if step >= 14.0 {
+            // Batch the dots into one mesh. Their positions match the snap grid.
+            let mut dots = egui::Mesh::default();
+            let first_x = area.min.x - (origin.x * zoom).rem_euclid(step);
             let mut y = area.min.y - (origin.y * zoom).rem_euclid(step);
             while y < area.max.y {
-                painter.line_segment([Pos2::new(area.min.x, y), Pos2::new(area.max.x, y)], stroke);
+                let mut x = first_x;
+                while x < area.max.x {
+                    let dot = Rect::from_center_size(Pos2::new(x, y), Vec2::splat(1.35));
+                    dots.add_colored_rect(dot, colors.grid);
+                    x += step;
+                }
                 y += step;
             }
+            painter.add(egui::Shape::mesh(dots));
         }
 
         // Groups: their title bars are handled under the cards, and their frames drawn
@@ -963,6 +1040,25 @@ impl Canvas {
                     let (at, screen) = menu_at(at, origin, zoom);
                     done.context = Some((target, at, screen));
                 }
+                if touched.hovered() && self.wiring.is_none() {
+                    let label = port_title(port);
+                    let detail = if port.exec {
+                        Some("Execution".to_owned())
+                    } else {
+                        port.ty.as_deref().map(|ty| {
+                            if ty.starts_with('$') {
+                                port_type_label(&node.definition, ty)
+                            } else {
+                                crate::type_name(ty)
+                            }
+                        })
+                    };
+                    let hint = match detail {
+                        Some(ty) => format!("{label} · {ty}"),
+                        None => label,
+                    };
+                    let _ = touched.on_hover_text(hint);
+                }
             }
         }
         let pointer = ui
@@ -1030,6 +1126,7 @@ impl Canvas {
             Some(to_screen(place + geometry.port(node, port, input)?.offset))
         };
         let mut nearest: Option<(f32, WireEnds)> = None;
+        let mut pulsing = false;
         for wire in &graph.wires {
             if self.wire_hidden(wire) {
                 continue;
@@ -1061,7 +1158,7 @@ impl Canvas {
                 let ends = (wire.from.clone(), wire.to.clone());
                 done.context = Some((crate::MenuTarget::Wire(ends), at, screen));
             }
-            let width = if wire.exec { 2.5 } else { 2.0 } * zoom.max(0.6)
+            let width = if wire.exec { 3.0 } else { 1.8 } * zoom.max(0.6)
                 + if mark.is_some() {
                     1.5 * zoom.max(0.6)
                 } else {
@@ -1090,12 +1187,29 @@ impl Canvas {
                 (false, true) => (width + 1.5 * zoom.max(0.6), color),
                 _ => (width, color),
             };
-            painter.add(CubicBezierShape::from_points_stroke(
+            let curve = CubicBezierShape::from_points_stroke(
                 points,
                 false,
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
-            ));
+            );
+            let passage = if wire.exec && let Some(step) = self.activity.get(&wire.from.0) {
+                let port = match step.route {
+                    Some(PulseRoute::Sole) => geometry.sole_exec_output(wire.from.0),
+                    Some(PulseRoute::Port(port)) => Some(port),
+                    None => None,
+                };
+                let progress = step.time.elapsed().as_secs_f32() / PULSE_SECONDS;
+                (port == Some(wire.from.1.as_str()) && progress < 1.0)
+                    .then(|| curve.sample(progress))
+            } else {
+                None
+            };
+            painter.add(curve);
+            if let Some(at) = passage {
+                painter.circle_filled(at, 4.0 * zoom.max(0.65), colors.text);
+                pulsing = true;
+            }
         }
 
         if done.context.is_none()
@@ -1141,7 +1255,6 @@ impl Canvas {
             self.selected_wire = None;
         }
 
-        let mut glowing = false;
         // Outlines and badges go over every card, so a later card does not hide them.
         let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
         for node in &graph.nodes {
@@ -1167,10 +1280,13 @@ impl Canvas {
                         .iter()
                         .find(|p| p.input && p.id == port)
                         .and_then(|p| {
-                            p.value.clone().or_else(|| {
+                            if p.connected {
                                 self.frame_port_value(&geometry, node.id, port, true)
-                                    .map(|shown| shown.short.clone())
-                            })
+                                    .filter(|sample| sample.epoch == self.value_epoch)
+                                    .map(|sample| sample.shown.short.clone())
+                            } else {
+                                p.value.clone()
+                            }
                         })
                 })
             });
@@ -1184,6 +1300,7 @@ impl Canvas {
                 (selected, fire, controls),
                 response.id,
                 formula.as_deref(),
+                self.descriptions.get(&node.definition).map(String::as_str),
             );
             if pressed {
                 done.trigger = Some(node.id);
@@ -1191,11 +1308,6 @@ impl Canvas {
             overlays.push((node.id, rect));
             // Values a run put on ports: beside each output, and beside each wired
             // input the value it receives. Cut short here; the inspector has them whole.
-            let tint = if self.stale {
-                colors.weak.gamma_multiply(0.5)
-            } else {
-                colors.weak
-            };
             for port in node.ports.iter().filter(|port| !port.exec) {
                 let (Some(value), Some(at)) = (
                     self.frame_port_value(&geometry, node.id, &port.id, port.input),
@@ -1208,7 +1320,7 @@ impl Canvas {
                 if zoom < 0.6 {
                     continue;
                 }
-                let font = FontId::monospace(9.0 * zoom);
+                let font = FontId::monospace(10.5 * zoom);
                 let inset = CARD_PADDING * zoom;
                 let (x, align) = if port.input {
                     (inset, Align2::LEFT_CENTER)
@@ -1216,8 +1328,13 @@ impl Canvas {
                     (-inset, Align2::RIGHT_CENTER)
                 };
                 let room = rect.width() / 2.0 - 2.0 * inset;
-                let (shown, _) = elide(&painter, &value.short, &font, room);
-                let _ = painter.text(at + Vec2::new(x, 9.0 * zoom), align, shown, font, tint);
+                let tint = if value.epoch == self.value_epoch {
+                    colors.text
+                } else {
+                    colors.weak.gamma_multiply(0.5)
+                };
+                let (shown, _) = elide(&painter, &value.shown.short, &font, room);
+                let _ = painter.text(at + Vec2::new(x, 10.5 * zoom), align, shown, font, tint);
             }
             for (port, slot) in slots {
                 if area.contains_rect(slot)
@@ -1228,15 +1345,6 @@ impl Canvas {
             }
         }
         for (node, rect) in overlays {
-            if let Some((at, failed)) = self.activity.get(&node).copied() {
-                let age = at.elapsed().as_secs_f32();
-                if age < GLOW_SECONDS {
-                    let color = if failed { colors.error } else { colors.exec };
-                    let strength = 1.0 - age / GLOW_SECONDS;
-                    draw_top_edge(&painter, rect, zoom, color.gamma_multiply(strength));
-                    glowing = true;
-                }
-            }
             for ((at, port), mark) in self.marks.ports.iter().filter(|((at, _), _)| *at == node) {
                 for input in [true, false] {
                     let Some(found) = geometry.port(*at, port, input) else {
@@ -1251,7 +1359,6 @@ impl Canvas {
                 }
             }
             if let Some(why) = self.failures.get(&node) {
-                draw_top_edge(&painter, rect, zoom, colors.error);
                 let failed = Mark {
                     error: true,
                     text: format!("Failed in the last run: {why}"),
@@ -1277,9 +1384,8 @@ impl Canvas {
                 );
             }
         }
-        // A glow fades on its own, so the canvas is drawn again until it has.
-        if glowing {
-            ui.ctx().request_repaint();
+        if pulsing {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
         }
         // While a wire is drawn, the inputs it could go to are ringed.
         if let Some(wiring) = &self.wiring {
@@ -1342,6 +1448,7 @@ impl Canvas {
                     &colors,
                     (true, None, false),
                     response.id,
+                    None,
                     None,
                 );
             } else {
@@ -1634,25 +1741,6 @@ fn draw_mark(
     ui.interact(area, id, Sense::click()).clicked()
 }
 
-/// A thin band along a card's top edge: the failure of its last step, or the fading
-/// pulse of a step just run.
-fn draw_top_edge(painter: &egui::Painter, rect: Rect, zoom: f32, color: Color32) {
-    let band = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0 * zoom.max(0.6)));
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to a corner radius"
-    )]
-    let round = (CARD_RADIUS * zoom).round().clamp(0.0, 255.0) as u8;
-    let radius = egui::CornerRadius {
-        nw: round,
-        ne: round,
-        sw: 0,
-        se: 0,
-    };
-    painter.rect_filled(band, radius, color);
-}
-
 /// Draws one card. Returns whether its trigger button was pressed.
 /// `flags` are whether the card is selected, has a trigger button and shows controls
 /// for its values. Also returns where each input's control goes.
@@ -1667,18 +1755,15 @@ fn draw_node<'a>(
     (selected, fire, controls): (bool, Option<bool>, bool),
     canvas: egui::Id,
     formula: Option<&str>,
+    description: Option<&str>,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
     // The header carries the node family's color: a tint, and a line along its foot,
     // so nodes of one package are told apart at a glance, even zoomed out.
-    let family = family_color(&node.definition);
-    let header_color = if node.entry {
-        colors.entry_header
-    } else {
-        mix(colors.header, family, 0.18)
-    };
+    let family = if node.entry { colors.exec } else { family_color(&node.definition) };
+    let header_color = mix(colors.card, family, 0.25);
     painter.rect_filled(
         header,
         egui::CornerRadius {
@@ -1709,43 +1794,31 @@ fn draw_node<'a>(
     if readable {
         let title = FontId::proportional(14.5 * zoom);
         let small = FontId::proportional(11.5 * zoom);
-        // Long titles stay inside the header, clear of the trigger button.
-        let reserved = if fire.is_some() {
-            80.0 * zoom
-        } else {
-            8.0 * zoom
-        };
-        let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
+        let clip = header.shrink2(Vec2::new(CARD_PADDING * zoom, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
-        let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
-        // A title too long for the header ends in an ellipsis; the whole name is on hover.
-        let room = (clip.max.x - left.x).max(0.0);
+        let mut left = clip.left_center();
+        if node.entry {
+            draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
+            left.x += 19.0 * zoom;
+        }
+        let room = clip.right() - left.x;
         let (shown, cut) = elide(painter, &node.name, &title, room);
-        let named = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
-        if cut {
+        let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
+        let detail = node.detail.as_deref().or_else(|| {
+            (node.name != node.kind).then_some(node.kind.as_str())
+        });
+        if cut || detail.is_some() || description.is_some() {
             let _ = ui
                 .interact(clip, canvas.with(("title", node.id)), Sense::hover())
-                .on_hover_text(node.name.as_str());
-        }
-        // What the node is set to (its variable), else what kind of node it is when its
-        // name says something else.
-        let aside = formula
-            .or(node.detail.as_deref())
-            .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
-        if let Some(aside) = aside {
-            // What it is set to reads as text; what kind it is, quieter.
-            let color = if node.detail.is_some() {
-                colors.text.gamma_multiply(0.8)
-            } else {
-                colors.weak
-            };
-            let _ = header_painter.text(
-                Pos2::new(named.max.x + 8.0 * zoom, header.center().y),
-                Align2::LEFT_CENTER,
-                aside,
-                small.clone(),
-                color,
-            );
+                .on_hover_ui(|ui| {
+                    ui.strong(node.name.as_str());
+                    if let Some(detail) = detail {
+                        ui.label(detail);
+                    }
+                    if let Some(description) = description {
+                        ui.label(description);
+                    }
+                });
         }
         if node.ports.is_empty() {
             let _ = painter.text(
@@ -1761,8 +1834,13 @@ fn draw_node<'a>(
         }
         if let Some(live) = fire {
             let size = Vec2::new(64.0, 22.0) * zoom;
+            let y = if extra_row(&node.definition) > 0.0 {
+                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0) * zoom
+            } else {
+                rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom
+            };
             let button = Rect::from_center_size(
-                header.right_center() - Vec2::new(size.x / 2.0 + 8.0 * zoom, 0.0),
+                Pos2::new(rect.center().x, y),
                 size,
             );
             let sense = if live { Sense::click() } else { Sense::hover() };
@@ -1787,6 +1865,14 @@ fn draw_node<'a>(
                 if live { colors.card } else { colors.weak },
             );
             pressed = live && touched.clicked();
+        } else if let Some(formula) = formula {
+            let font = FontId::monospace(13.0 * zoom);
+            let (formula, _) = elide(painter, formula, &font, room);
+            let at = Pos2::new(
+                rect.center().x,
+                rect.max.y - (FOOTER_HEIGHT + ROW_HEIGHT / 2.0) * zoom,
+            );
+            let _ = painter.text(at, Align2::CENTER_CENTER, formula, font, colors.text);
         }
     }
 
@@ -1802,7 +1888,7 @@ fn draw_node<'a>(
         .filter(|port| port.input && !port.exec && readable)
         .map(|port| {
             painter
-                .layout_no_wrap(crate::port_label(&port.id), names.clone(), colors.text)
+                .layout_no_wrap(port_title(port), names.clone(), colors.text)
                 .size()
                 .x
         })
@@ -1836,6 +1922,7 @@ fn draw_node<'a>(
                 Some(Control::Toggle | Control::Whole | Control::Number)
             ),
             hinted: control.is_none(),
+            definition: &node.definition,
             value_start,
             value_end,
         };
@@ -1859,15 +1946,35 @@ fn draw_node<'a>(
     (pressed, slots)
 }
 
+/// A catalogue card uses the canvas painter, without editable fields or trigger buttons.
+pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, zoom: f32) {
+    let painter = ui
+        .painter()
+        .with_clip_rect(rect.expand(6.0).intersect(ui.clip_rect()));
+    let _ = draw_node(
+        ui,
+        &painter,
+        node,
+        rect,
+        zoom,
+        &Palette::of(ui),
+        (false, None, false),
+        ui.scope_id().with("catalogue-card"),
+        orange_host::formula(&node.definition),
+        None,
+    );
+}
+
 /// How one port of a card is drawn.
 #[derive(Debug, Clone, Copy)]
-struct PortStyle {
+struct PortStyle<'a> {
     /// Big enough to read: names and values are drawn.
     readable: bool,
     /// An input's value is drawn as a field (no control draws it).
     field: bool,
     /// A short type is shown beside a value port nothing feeds.
     hinted: bool,
+    definition: &'a str,
     /// Where an input's value starts, unless its name is longer.
     value_start: f32,
     /// The farthest right an input's value reaches.
@@ -1882,7 +1989,7 @@ fn draw_port(
     at: Pos2,
     zoom: f32,
     colors: &Palette,
-    style: PortStyle,
+    style: PortStyle<'_>,
 ) -> Option<Rect> {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
@@ -1890,13 +1997,27 @@ fn draw_port(
     } else {
         type_color(port.ty.as_deref())
     };
-    // Every port is a dot on the card's edge: filled once wired, a ring before. A step
-    // is told from a value by its color and by the arrow beside its name.
-    if port.connected {
-        painter.circle_filled(at, radius, color);
+    // A diamond marks an execution port even when zoom hides every label.
+    let fill = if port.connected { color } else { colors.card };
+    let outline = if port.connected {
+        Stroke::NONE
     } else {
-        painter.circle_filled(at, radius, colors.card);
-        painter.circle_stroke(at, radius, Stroke::new(1.5, color));
+        Stroke::new(1.5 * zoom.max(0.6), color)
+    };
+    if port.exec {
+        let outer = radius * 1.2;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                at - Vec2::new(outer, 0.0),
+                at - Vec2::new(0.0, outer),
+                at + Vec2::new(outer, 0.0),
+                at + Vec2::new(0.0, outer),
+            ],
+            fill,
+            outline,
+        ));
+    } else {
+        painter.circle(at, radius, fill, outline);
     }
     if !style.readable {
         return None;
@@ -1904,11 +2025,13 @@ fn draw_port(
     let font = FontId::proportional(12.5 * zoom);
     let hint = FontId::proportional(10.5 * zoom);
     let gap = CARD_PADDING * zoom;
-    let name = step_label(port).unwrap_or_else(|| crate::port_label(&port.id));
+    let name = port_title(port);
+    let label_room = (NODE_WIDTH / 2.0 - 2.0 * CARD_PADDING) * zoom;
     if port.exec {
         // Steps read as on a flow chart: the way in is a tinted row inside the card,
         // the ways on are named with an arrow toward their dot.
         let arrow = 11.0 * zoom;
+        let (name, _) = elide(painter, &name, &font, label_room - arrow - 12.0 * zoom);
         if port.input {
             let text = painter.layout_no_wrap(name, font, colors.text);
             let height = FIELD_HEIGHT * zoom;
@@ -1940,20 +2063,26 @@ fn draw_port(
         return None;
     }
     // What a value port takes or gives, when nothing on the card says it already.
+    // Keep data labels clear of the second line used by live values. Long names
+    // stay on their side of the card; the port hover exposes the complete label.
+    let label_at = at - Vec2::new(0.0, 4.0 * zoom);
+    let (name, _) = elide(painter, &name, &font, label_room);
     let type_hint = (style.hinted && !port.connected && !(port.input && port.value.is_some()))
-        .then(|| port.ty.as_deref().map(short_type))
+        .then(|| port.ty.as_deref().map(|ty| port_type_label(style.definition, ty)))
         .flatten();
     if !port.input {
         let label = painter.text(
-            at - Vec2::new(gap, 0.0),
+            label_at - Vec2::new(gap, 0.0),
             Align2::RIGHT_CENTER,
             &name,
             font,
             colors.text,
         );
-        if let Some(ty) = type_hint {
+        let room = label_room - label.width() - 6.0 * zoom;
+        if let Some(ty) = type_hint.filter(|_| room >= 20.0 * zoom) {
+            let (ty, _) = elide(painter, &ty, &hint, room);
             let _ = painter.text(
-                Pos2::new(label.min.x - 6.0 * zoom, at.y),
+                Pos2::new(label.min.x - 6.0 * zoom, label_at.y),
                 Align2::RIGHT_CENTER,
                 ty,
                 hint,
@@ -1963,13 +2092,15 @@ fn draw_port(
         return None;
     }
     let label = painter.text(
-        at + Vec2::new(gap, 0.0),
+        if port.connected { label_at } else { at } + Vec2::new(gap, 0.0),
         Align2::LEFT_CENTER,
         &name,
         font.clone(),
         colors.text,
     );
-    if let Some(ty) = type_hint.filter(|_| style.field) {
+    let room = label_room - label.width() - 6.0 * zoom;
+    if let Some(ty) = type_hint.filter(|_| style.field && room >= 20.0 * zoom) {
+        let (ty, _) = elide(painter, &ty, &hint, room);
         let _ = painter.text(
             Pos2::new(label.max.x + 6.0 * zoom, at.y),
             Align2::LEFT_CENTER,
@@ -2026,6 +2157,12 @@ fn field_text(value: &str) -> String {
 
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
+fn port_title(port: &PortView) -> String {
+    step_label(port)
+        .or_else(|| port.label.clone())
+        .unwrap_or_else(|| crate::port_label(&port.id))
+}
+
 fn step_label(port: &PortView) -> Option<String> {
     if let Some(label) = &port.label {
         return Some(label.clone());
@@ -2068,11 +2205,21 @@ fn mix(base: Color32, tint: Color32, amount: f32) -> Color32 {
 
 /// A type in a few letters for a card: "text", "number", "list<…>"; a type not found
 /// yet (`$T`) is "any".
-fn short_type(ty: &str) -> String {
-    if ty.starts_with('$') {
-        return "any".to_owned();
+fn port_type_label(definition: &str, ty: &str) -> String {
+    if ty == "$T" {
+        match definition {
+            "org.orange.math/greater" | "org.orange.math/greater-or-equal"
+            | "org.orange.math/less" | "org.orange.math/less-or-equal" => return "Ordered".into(),
+            "org.orange.math/float-greater" | "org.orange.math/float-greater-or-equal"
+            | "org.orange.math/float-less" | "org.orange.math/float-less-or-equal" => return "Float".into(),
+            _ => {}
+        }
     }
-    let name = crate::type_name(ty);
+    short_type(ty)
+}
+
+fn short_type(ty: &str) -> String {
+    let name = crate::type_name(ty.strip_prefix('$').unwrap_or(ty));
     let mut short: String = name.chars().take(14).collect();
     if short.len() < name.len() {
         short.push('…');
@@ -2083,6 +2230,11 @@ fn short_type(ty: &str) -> String {
 /// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
 /// so every node of one package shares it.
 fn family_color(definition: &str) -> Color32 {
+    match definition {
+        "core/get-variable" | "core/set-variable" | "core/update-variable"
+        | "core/set-shared" | "core/update-shared" => return Color32::from_rgb(75, 154, 120),
+        _ => {}
+    }
     let family = definition.split('/').next().unwrap_or(definition);
     if family == "core" {
         return Color32::from_rgb(232, 140, 48);
@@ -2284,6 +2436,30 @@ mod tests {
         let places = auto_layout(&fan);
         assert_eq!(places[&id(2)].x, places[&id(3)].x);
         assert!(places[&id(3)].y >= places[&id(2)].y + node_size(&fan.nodes[1]).y);
+    }
+
+    #[test]
+    fn resizing_keeps_the_same_graph_point_in_the_middle() {
+        let graph = graph();
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        let context = egui::Context::default();
+        let mut draw = |width, height| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height))),
+                ..Default::default()
+            };
+            context
+                .run_ui(input, |ui| {
+                    let _ = canvas.show(ui, &graph, &[]);
+                })
+                .drop_without_applying_deltas();
+            canvas.center()
+        };
+        let [x, y] = draw(1280.0, 800.0);
+        let [smaller_x, smaller_y] = draw(740.0, 570.0);
+        assert!((smaller_x - x).abs() < 0.01);
+        assert!((smaller_y - y).abs() < 0.01);
     }
 
     #[test]
@@ -2543,7 +2719,10 @@ mod tests {
     #[test]
     fn cards_name_types_shortly_and_color_families_alike() {
         assert_eq!(short_type("core/string@1"), "Text");
-        assert_eq!(short_type("$T"), "any");
+        assert_eq!(short_type("org.orange.audio/stream@1"), "Audio stream");
+        assert_eq!(short_type("$T"), "T");
+        assert_eq!(port_type_label("org.orange.math/greater", "$T"), "Ordered");
+        assert_eq!(port_type_label("org.orange.math/float-greater", "$T"), "Float");
         // The way in and the way on read as Enter and Exit; other ports keep their names.
         assert_eq!(
             step_label(&port("in", true, true)).as_deref(),
@@ -2559,6 +2738,11 @@ mod tests {
             ..port("then", false, true)
         };
         assert_eq!(step_label(&queued).as_deref(), Some("Queued"));
+        let labeled_data = PortView {
+            label: Some("Response status".into()),
+            ..port("status", false, false)
+        };
+        assert_eq!(port_title(&labeled_data), "Response status");
         assert_eq!(step_label(&port("in", true, false)), None);
         assert_eq!(step_label(&port("completed", false, true)), None);
         assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");
@@ -2723,6 +2907,15 @@ mod run_state_tests {
         // The run ends: values stay, dimmed; the failure stays too.
         canvas.mark_stale();
         assert!(canvas.is_stale() && canvas.failure(b).is_some());
+        canvas.show_value(b, "result".into(), "9".into(), "9".into());
+        assert_eq!(
+            canvas.port_sample(&graph, b, "value", true).map(|(_, stale)| stale),
+            Some(true)
+        );
+        assert_eq!(
+            canvas.port_sample(&graph, b, "result", false).map(|(_, stale)| stale),
+            Some(false)
+        );
         canvas.recover(b);
         assert!(canvas.failure(b).is_none());
         // A new run starts from nothing.

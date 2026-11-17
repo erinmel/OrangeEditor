@@ -1,7 +1,7 @@
 //! Borrowed, frame-local geometry: one port walk instead of node scans per wire.
 //! Rebuilding from the supplied view keeps standalone Canvas callers free of cache
 //! invalidation obligations. Positions are read separately so dragging is immediate.
-use super::{BODY_TOP, FOOTER_HEIGHT, NODE_WIDTH, ROW_HEIGHT};
+use super::{BODY_TOP, NODE_WIDTH, ROW_HEIGHT, card_height};
 use egui::{Pos2, Rect, Vec2};
 use orange_host::{GraphView, NodeId};
 use std::collections::HashMap;
@@ -15,12 +15,14 @@ pub(super) struct Geometry<'a> {
     sizes: HashMap<NodeId, Vec2>,
     ports: HashMap<(NodeId, bool, &'a str), PortGeometry<'a>>,
     incoming: HashMap<(NodeId, &'a str), (NodeId, &'a str)>,
+    sole_exec_outputs: HashMap<NodeId, &'a str>,
 }
 
 impl<'a> Geometry<'a> {
     pub fn new(graph: &'a GraphView) -> Self {
         let mut sizes = HashMap::with_capacity(graph.nodes.len());
         let mut ports = HashMap::with_capacity(graph.nodes.iter().map(|n| n.ports.len()).sum());
+        let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
             let mut rows = [0usize; 2];
             for port in &node.ports {
@@ -37,9 +39,12 @@ impl<'a> Geometry<'a> {
                     });
                 *row += 1;
             }
-            #[expect(clippy::cast_precision_loss, reason = "screen coordinates")]
-            let height = BODY_TOP + rows[0].max(rows[1]) as f32 * ROW_HEIGHT + FOOTER_HEIGHT;
+            let height = card_height(&node.definition, rows[0].max(rows[1]));
             let _ = sizes.insert(node.id, Vec2::new(NODE_WIDTH, height));
+            let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
+            if let (Some(port), None) = (exec.next(), exec.next()) {
+                let _ = sole_exec_outputs.insert(node.id, port.id.as_str());
+            }
         }
         let mut incoming = HashMap::with_capacity(graph.wires.len());
         for wire in &graph.wires {
@@ -51,6 +56,7 @@ impl<'a> Geometry<'a> {
             sizes,
             ports,
             incoming,
+            sole_exec_outputs,
         }
     }
 
@@ -60,6 +66,10 @@ impl<'a> Geometry<'a> {
 
     pub fn source(&self, node: NodeId, port: &str) -> Option<(NodeId, &'a str)> {
         self.incoming.get(&(node, port)).copied()
+    }
+
+    pub fn sole_exec_output(&self, node: NodeId) -> Option<&'a str> {
+        self.sole_exec_outputs.get(&node).copied()
     }
 
     pub fn port<'b>(

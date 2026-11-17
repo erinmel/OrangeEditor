@@ -78,7 +78,7 @@ fn trigger_words_find_every_entry_kind_in_english_and_spanish() {
         .into_iter()
         .find(|found| found.definition == "core/on-manual")
         .unwrap();
-    assert_eq!(manual.category, "Core");
+    assert_eq!(manual.category, "Triggers");
     assert_eq!(manual.purpose, "Empieza al pulsar Ejecutar.");
     let manual = &host.search_nodes("on manual", "en")[0];
     assert_eq!(manual.purpose, "Starts when you press Run.");

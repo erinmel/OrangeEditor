@@ -28,11 +28,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Area | Decision |
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
-| Grid | Snap to grid is on by default (24 units), shown in the toolbar; Alt while dragging moves freely. |
-| Wires | A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
+| Grid | Faint dots mark the 24-unit snap grid and disappear at distant zoom. Snap is on by default and configurable in Settings. Alt while dragging moves freely. |
+| Resize | Resizing the window or a dock preserves the graph point at the center of the canvas. |
+| Wires | Execution uses diamond ports and thicker amber wires. Data uses round ports and thinner typed wires. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
 | Problems | A small red or amber dot on the header's left with a count; the port or wire at fault is ringed in the same colour. No outline around the whole card. Clicking a validation marker or the toolbar count opens Problems; a runtime failure marker opens Log. The two views have independent scroll positions. |
-| Run feedback | A brief pulse along the card's top edge when a step runs; a failed step keeps a red top edge and the dot until it succeeds. |
+| Run feedback | A pulse follows an execution wire when the reported step identifies a route, such as True or False, or a successful completion has one execution output. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
 ## 3. Cards
@@ -40,17 +41,17 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Inline values.** A literal input is edited on the card: a single click on a number
   types it, a drag scrubs it; text is typed in place; a choice is a dropdown; a path
   opens the system's file or folder chooser on click.
-* **Expressions.** Operators show what they compute under the title with their inputs'
+* **Expressions.** Operators show what they compute in a dedicated body row with their inputs'
   names or values: Greater shows `a > b`, or `12 > 7` when both are known. Comparison,
   arithmetic and logic nodes get this from their definition's `formula` presentation hint.
-* **Triggers.** A trigger shows its contents: On manual has a Fire button always present
+* **Triggers.** A trigger shows its contents: On manual has a Fire button in the body
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 
 ## 4. Search and commands
 
-Palette and canvas search use the same full-width result rows. The title identifies the node and the secondary line says what it does. Up and Down move the visible highlight, and Enter adds the highlighted result. Dragging a palette result shows a labeled placement preview before dropping it.
+Palette and canvas search use the same full-width result rows. In preview mode the card provides the title and ports; descriptions appear on hover in both result modes. Get variable and enum nodes have illustrative cards until their declarations determine the real ports. Up and Down move the visible highlight, and Enter adds the highlighted result. Dragging a palette result shows a labeled placement preview before dropping it.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts and the words of each node's description, in the
@@ -58,7 +59,7 @@ Palette and canvas search use the same full-width result rows. The title identif
   start* finds every entry kind (On manual, On timer, On start, On event, On level);
   *math*, *compare*, *text*, *time*, *audio*, *network*, *file*, *variable*, *loop*.
 * Results rank: exact name, name start, word start, alias, concept, description, fuzzy
-  (one typo). Each result shows its category and a one-line purpose; arrow keys move,
+  (one typo). Each result has a category and a purpose available on hover; arrow keys move,
   Enter adds.
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
@@ -66,9 +67,13 @@ Palette and canvas search use the same full-width result rows. The title identif
   Paste, Group, Arrange, Snap), on a card (Rename, Duplicate, Disable, Group, Make
   function, Delete, Help), on a wire (Insert node…, Delete), on a port (Disconnect,
   Promote to variable, Watch value). Every entry names its shortcut.
-* The toolbar uses icons with tooltips grouped as File | Edit | Run | View, from one
+* The toolbar uses icons with tooltips grouped as File | Edit | Run, from one
   bundled icon font (with its licence recorded in 10), so no symbol depends on system
   fonts.
+* The workspace starts with its docks closed. The bottom bar puts the node dock toggle
+  and zoom at the left, the inspector dock toggle at the right, and Problems, Log and
+  running status in the center. Properties and Packages share the inspector's top tabs.
+  Problems and Log share the same resizable panel. The controls wrap in narrow windows.
 
 ## 5. Variables and connections
 
@@ -93,6 +98,10 @@ Audio moves from level measurement to signal routing:
   cable, or the system's playback through loopback where the OS offers it. Its output is
   an audio stream; the card shows a live meter and, expanded, a waveform.
 * **Audio out** (device): plays an audio stream on a chosen endpoint.
+  For microphone monitoring, wire execution from On manual through Audio in to
+  Audio out, and wire Audio in's `stream` to Audio out's `stream`. Select the
+  microphone on the input connection and headphones on the output connection,
+  then Run and Fire.
 * **Level**, **Gate / threshold**, **Record to file**, **Play file**, **Mix** operate on
   streams. "When the microphone hears sound" becomes *On level* over any Audio in.
 * Streams are a typed resource (11 §9 streams, 05); callbacks stay allocation-free

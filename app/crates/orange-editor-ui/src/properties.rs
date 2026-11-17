@@ -1007,30 +1007,28 @@ impl Editor {
             return;
         };
         let failure = self.canvas.failure(node.id);
-        let ports: Vec<(&orange_host::PortView, &canvas::Shown)> = node
+        let ports: Vec<_> = node
             .ports
             .iter()
             .filter(|port| !port.exec)
             .filter_map(|port| {
-                let shown = self
+                let (shown, stale) = self
                     .canvas
-                    .port_value(graph, node.id, &port.id, port.input)?;
-                Some((port, shown))
+                    .port_sample(graph, node.id, &port.id, port.input)?;
+                Some((port, shown, stale))
             })
             .collect();
         if failure.is_none() && ports.is_empty() {
             return;
         }
         section(ui, "Values");
-        if self.canvas.is_stale() {
-            ui.weak("From the last run; run again to see them now.");
-        }
         if let Some(why) = failure {
             ui.colored_label(ui.visuals().error_fg_color, format!("Failed: {why}"));
         }
-        for (port, shown) in ports {
+        for (port, shown, stale) in ports {
             let side = if port.input { "in" } else { "out" };
-            let title = format!("{} ({side}) = {}", port_label(&port.id), shown.short);
+            let freshness = if stale { " (previous)" } else { "" };
+            let title = format!("{} ({side}) = {}{freshness}", port_label(&port.id), shown.short);
             egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
                 .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
                 .show(ui, |ui| {

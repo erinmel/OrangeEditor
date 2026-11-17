@@ -1,5 +1,45 @@
 # Editor performance and representation costs
 
+## Preview and value observation review (2026-11-17)
+
+The former 64-output cap controlled coverage, not latency. The compiler admits
+at most 100,000 graph items and 20,000 potential fold operations per request by
+default. A compile has a 16 MiB nominal constant budget and the preview cache
+has its own 16 MiB nominal retention budget. Those budgets do not bound the
+editor's cumulative cost across retries or cap process memory.
+
+The editor runs preview synchronously on open and after semantic changes. When
+the full graph cannot compile, it projects upstream nodes for a batch of outputs.
+If every batch fails, bisection can attempt up to `2P - 1` projections for `P`
+outputs, in addition to the full-graph attempt. Every projection clones and
+scans the saved graph, and every attempt invokes host parsing and validation.
+The next performance work should move that evaluation off the UI thread, bound
+work across retries, cancel obsolete edit revisions and publish staged results.
+There is no large-graph frame-time qualification for this path.
+
+Run observation still scans the current output ports on each observed turn. The
+editor's per-poll event limit bounds the number of events, while a single event
+can carry many port changes. Wired input presentation is a projection of the
+latest producer sample through the current wire, not an execution-time record of
+the consumer's input.
+
+Port cards and Properties now retain freshness per output across a run end or
+graph replacement. Receiving one fresh output leaves older outputs marked
+previous. Formulas use fresh connected values and use saved literals for unwired
+inputs. Value summaries and detailed inspection stop formatting at their text
+budgets on UTF-8 boundaries. This bounds formatted text per value; it does not
+limit the number of observed values retained by the editor.
+
+Windows verification used Rust 1.99.1 (`58cf8f9c3`), Cargo 1.99.1
+(`5f94df478`), and unchanged Cargo.lock SHA-256
+`79f3aa431e51ba221d3ff8a4af718187202f5f7364d3d4e8546ebe1a6a287f08`.
+`cargo test --workspace --all-features --locked --offline --no-fail-fast`
+reported 1,948 passed, zero failed and 24 ignored. The regressions cover
+freshness after one output updates, stopping UTF-8 formatting at the budget,
+preserving the byte inspector's truncation marker, and the 71-Absolute chain.
+The workspace format check reported differences. The Clippy command did not
+launch through the IDE runner.
+
 Work: PERF-EDITOR, 2026-11-14 (America/Mexico_City). Baseline:
 `af99e1d6a2356357970ed89a1eadb36b128041a3` (PR179). Scope: the desktop editor,
 standalone canvas and host graph-view projection. Runtime execution, audio callbacks,

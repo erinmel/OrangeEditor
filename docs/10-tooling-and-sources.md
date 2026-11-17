@@ -1,5 +1,49 @@
 # Tooling, environment and research register
 
+## Long operator previews and audio monitoring - 2026-11-17
+
+FR-104, FR-115. Windows, Rust 1.99.1, default features and unchanged
+Cargo.lock SHA-256 `79f3aa431e51ba221d3ff8a4af718187202f5f7364d3d4e8546ebe1a6a287f08`.
+The desktop project build and
+`cargo test -p orange-editor-ui -p orange-audio --locked --offline --no-fail-fast`
+passed: 70 editor tests and 44 audio tests. The editor test evaluates a chain with
+71 Absolute nodes and one Negate, then checks Greater again after editing the
+source. Another test checks valid and incompatible Int and Float comparison
+types. The Audio in to Audio out graph test uses silent virtual endpoints; the
+signal-path test passes a synthetic tone through the mixer and checks its gain.
+Five device-dependent tests remained ignored. Physical microphone and speaker
+routing was not exercised.
+
+## Card, search and dock follow-up - 2026-11-16
+
+FR-100, FR-104 (22, sections 2–4). Windows, Rust 1.99.1 (`58cf8f9c3`), egui/epaint
+0.37.0, default features and unchanged Cargo.lock SHA-256
+`79f3aa431e51ba221d3ff8a4af718187202f5f7364d3d4e8546ebe1a6a287f08`.
+The RustRover project build and
+`cargo test -p orange-editor-ui -p orange-host --locked --offline` passed
+(68 editor tests and 77 host tests). New checks cover inserting Absolute into a
+wired Greater comparison in a graph with a manual trigger, rendering Get variable
+and enum previews without declarations, and keeping the centered diagnostic tabs
+at a shared height. A native launch with `set-on-trigger.json` confirmed the
+card-body Fire button and the centered controls at 1296 pixels wide. Native
+pointer input and animation timing were not exercised.
+
+## Canvas workspace polish - 2026-11-16
+
+FR-100 (22, sections 2–4). Windows, Rust 1.99.1 (`58cf8f9c3`), egui/epaint 0.37.0,
+default features, unchanged Cargo.lock SHA-256
+`79f3aa431e51ba221d3ff8a4af718187202f5f7364d3d4e8546ebe1a6a287f08`.
+`cargo test -p orange-editor-ui --locked --offline` passed all 65 tests, including
+the resize regression and the existing edit, search and run interactions.
+
+Opened the newly linked desktop executable with `set-on-trigger.json` and resized
+its native window from 1296 × 839 to 740 × 570 pixels. Both cards and their wire
+remained in view, with the docks closed and the workspace controls visible. The
+desktop build linked the executable under `debug/deps` but could not replace
+`debug/orange-editor.exe`. Native click and keyboard injection could not be
+confirmed. High display scale and a dense graph were not exercised in the desktop
+session.
+
 ## Search, menus and icons — 2026-11-16
 
 Branch `claude/search-menus-icons-51fe65` on `feat/editor-design`. Windows 11 Home

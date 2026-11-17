@@ -10,6 +10,38 @@
 
 language-name = English
 
+# Static editor messages in the org.orange.host namespace; no arguments.
+editor-settings-title = Settings
+editor-search-heading = Node search
+editor-result-layout = Result layout
+editor-result-names = Names
+editor-result-previews = Names + previews
+editor-result-scope = Applies to the sidebar and canvas picker.
+editor-search-language = Search language
+editor-display-heading = Display and canvas
+editor-interface-scale = Interface scale
+editor-snap-grid = Snap nodes to grid
+editor-snap-hint = Hold Alt while dragging to move freely.
+editor-wheel-pans = Mouse wheel pans instead of zooming
+editor-shortcuts-heading = Keyboard shortcuts
+editor-shortcut-find = Find a node at the pointer
+editor-shortcut-choose = Choose a search result
+editor-shortcut-close = Close search or menu
+editor-shortcut-save = Save
+editor-shortcut-undo = Undo / redo
+editor-shortcut-copy = Copy / cut / paste selection
+editor-shortcut-duplicate = Duplicate selection
+editor-shortcut-delete = Delete selected nodes or wire
+editor-shortcut-group = Group selection
+editor-shortcut-function = Make function from selection
+editor-shortcut-arrange = Arrange selection
+editor-shortcut-fit = Fit graph to view
+editor-shortcut-pan = Pan horizontally / vertically
+editor-run = Run
+editor-stop = Stop
+editor-run-hint = Run this graph with the current values
+editor-stop-hint = Stop this graph
+
 concept-trigger = trigger, when, start, event, on, entry, begin, run
 concept-trigger-purpose = Starts the flow when something happens.
 concept-math = math, maths, arithmetic, calculate, number, sum
