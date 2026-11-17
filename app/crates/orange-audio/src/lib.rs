@@ -31,6 +31,7 @@
 
 mod analysis;
 mod device;
+mod file_source;
 mod level;
 mod mixer;
 mod stream;
@@ -47,7 +48,7 @@ use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
     Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
-    Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
+    Listeners, Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -137,6 +138,18 @@ pub const ON_BAND_LEVEL: &str = "org.orange.audio/on-band-level";
 pub const ON_TRANSIENT: &str = "org.orange.audio/on-transient";
 /// Reads how loud a band of an audio stream is now, in dBFS.
 pub const BAND_LEVEL: &str = "org.orange.audio/band-level";
+/// Plays a file source from its start; continues at once.
+pub const SOURCE_PLAY: &str = "org.orange.audio/source-play";
+/// Holds a file source where it is.
+pub const SOURCE_PAUSE: &str = "org.orange.audio/source-pause";
+/// Lets a held file source go on.
+pub const SOURCE_RESUME: &str = "org.orange.audio/source-resume";
+/// Stops a file source and returns it to its start.
+pub const SOURCE_STOP: &str = "org.orange.audio/source-stop";
+/// Moves a file source to `seconds` from its start.
+pub const SOURCE_SEEK: &str = "org.orange.audio/source-seek";
+/// Entry fired when a file source reaches its end (not when it loops or is stopped).
+pub const ON_FINISHED: &str = "org.orange.audio/on-finished";
 
 const DEFAULT_THRESHOLD_DB: f64 = -30.0;
 const DEFAULT_HYSTERESIS_DB: f64 = 6.0;
@@ -189,6 +202,11 @@ const BUSY: KernelFault = fault(
     "org.orange.audio/Busy",
     "org.orange.audio/too-many-sounds",
     "Too many sounds are already playing on the device.",
+);
+const NOT_FILE: KernelFault = fault(
+    "org.orange.audio/NotFile",
+    "org.orange.audio/source-not-file",
+    "The node controls a sound file source, and this source is a device.",
 );
 const ENDED: KernelFault = fault(
     "org.orange.audio/Ended",
@@ -470,6 +488,12 @@ struct InputShared {
     device: Option<String>,
     window: Duration,
     levels: Arc<Levels>,
+    /// The sound file this source plays instead of capturing a device.
+    file: Option<file_source::FileSettings>,
+    /// Where a file source is; unused for a device.
+    transport: Mutex<file_source::Transport>,
+    /// On finished entries of a file source.
+    finished: Listeners,
     /// Set once a flow has attached its triggers; the device is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
@@ -604,9 +628,19 @@ impl InputShared {
     fn rest(&self, time: Duration) {
         let mut waited = Duration::ZERO;
         while waited < time && !self.stopped() {
-            thread::sleep(POLL);
+            thread::sleep(POLL.min(time - waited));
             waited += POLL;
         }
+    }
+    /// [`rest`](Self::rest), then whether the session is still open.
+    fn rest_ended(&self, time: Duration) -> bool {
+        self.rest(time);
+        !self.stopped()
+    }
+    fn transport(&self) -> std::sync::MutexGuard<'_, file_source::Transport> {
+        self.transport
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -619,6 +653,10 @@ fn listen(shared: &InputShared) {
             return;
         }
         thread::sleep(POLL);
+    }
+    if let Some(file) = &shared.file {
+        file_source::run(shared, file);
+        return;
     }
     let mut retry = FIRST_RETRY;
     while !shared.stopped() {
@@ -668,6 +706,9 @@ fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String>
     let shared = Arc::new(InputShared {
         id: next_source(),
         ring: Mutex::new(None),
+        file: file_source::FileSettings::of(settings)?,
+        transport: Mutex::new(file_source::Transport::default()),
+        finished: Listeners::new(),
         device: device_setting(settings)?,
         window: Duration::from_millis(window),
         levels: Arc::new(Levels::new()),
@@ -709,9 +750,45 @@ struct InputAdapter;
 impl ConnectionAdapter for InputAdapter {
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
-            label: "Audio input".into(),
-            purpose: "Listens to a microphone or other input device.".into(),
+            label: "Audio source".into(),
+            purpose: "A microphone or other input, what the system plays, or a sound file the graph plays and listens to.".into(),
         }
+    }
+    fn texts(&self) -> Vec<orange_sdk::SettingText> {
+        vec![orange_sdk::SettingText {
+            setting: "file".into(),
+            label: "Sound file".into(),
+            help: "Play and listen to this file instead of a device.".into(),
+            hint: "C:/Music/track.ogg".into(),
+            secret: false,
+            required: false,
+            list: false,
+        }]
+    }
+    fn toggles(&self) -> Vec<orange_sdk::SettingToggle> {
+        let toggle = |setting: &str, label: &str, help: &str| orange_sdk::SettingToggle {
+            setting: setting.into(),
+            label: label.into(),
+            help: help.into(),
+            default: false,
+        };
+        vec![
+            toggle(
+                "loop",
+                "Loop",
+                "A file starts again at its end until it is stopped.",
+            ),
+            toggle(
+                "autoplay",
+                "Play at start",
+                "A file plays as soon as a flow uses it, without a Play node.",
+            ),
+            toggle(
+                "monitor",
+                "Hear it",
+                "A file is also played on the default output; otherwise it is only listened to.",
+            ),
+        ]
     }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         Ok(Arc::new(InputSession(spawn_input(settings)?)))
@@ -915,6 +992,64 @@ impl ServiceNode for BandLevel {
         let listening = Listening::of(&band, (0.0, 0.0, 50.0)).map_err(|_| BAD_INPUT)?;
         let ring = source.wait_ring(Some(OPEN_WAIT), &|| call.lease.is_cancelled())?;
         Ok(vec![Value::F64(analysis::recent_level(&ring, &listening))])
+    }
+}
+
+/// What a transport node does to its file source.
+#[derive(Debug, Clone, Copy)]
+enum SourceControl {
+    Play,
+    Pause,
+    Resume,
+    Stop,
+    Seek,
+}
+impl ServiceNode for SourceControl {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let shared = input(call.session).ok_or(NO_SESSION)?;
+        if shared.file.is_none() {
+            return Err(NOT_FILE);
+        }
+        let seconds = match (self, call.inputs) {
+            (Self::Seek, [Value::F64(seconds)]) if (0.0..=MAX_RECORD_SECONDS).contains(seconds) => {
+                *seconds
+            }
+            (Self::Seek, _) => return Err(BAD_INPUT),
+            _ => 0.0,
+        };
+        // Using the source starts its thread, as a flow does for an entry.
+        shared.started.store(true, Ordering::Release);
+        let mut transport = shared.transport();
+        match self {
+            Self::Play => transport.play(),
+            Self::Pause => transport.pause(),
+            Self::Resume => transport.resume(),
+            Self::Stop => transport.stop(),
+            Self::Seek => transport.seek(seconds),
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// On finished: a file source reached its end.
+#[derive(Debug)]
+struct OnFinished;
+impl ServiceSource for OnFinished {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let shared = input_of(session.as_ref())?;
+        if shared.file.is_none() {
+            return Err("On finished needs a sound file source".into());
+        }
+        Ok(Listeners::listen(
+            shared,
+            |shared| &shared.finished,
+            (),
+            emitter,
+        ))
     }
 }
 
@@ -1227,6 +1362,33 @@ fn band_level_definition() -> String {
     .build()
 }
 
+fn source_control_definition(name: &str, label: &str, description: &str) -> Definition {
+    Definition::node(crate::PACKAGE, name, label)
+        .description(description)
+        .category("audio", "Audio")
+        .uses(INPUT_ADAPTER)
+}
+
+fn source_definitions() -> [(String, SourceControl); 5] {
+    let seconds =
+        serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 0.0f64.to_bits())});
+    [
+        (source_control_definition("source-play", "Play source", "Plays a sound file source from its start and continues at once. Its listeners hear it; it is heard on an output when the source says so.").build(), SourceControl::Play),
+        (source_control_definition("source-pause", "Pause source", "Holds a sound file source where it is.").build(), SourceControl::Pause),
+        (source_control_definition("source-resume", "Resume source", "Lets a held sound file source go on.").build(), SourceControl::Resume),
+        (source_control_definition("source-stop", "Stop source", "Stops a sound file source and returns it to its start.").build(), SourceControl::Stop),
+        (source_control_definition("source-seek", "Jump source to time", "Moves a sound file source to a time from its start, playing or not.").input_default("seconds", "core/f64@1", seconds).build(), SourceControl::Seek),
+    ]
+}
+
+fn on_finished_definition() -> String {
+    Definition::entry(crate::PACKAGE, "on-finished", "On finished")
+        .description("Fires when a sound file source plays to its end. A looping source never finishes; a stopped one does not either.")
+        .category("audio", "Audio")
+        .uses(INPUT_ADAPTER)
+        .build()
+}
+
 fn stream_input(definition: Definition) -> Definition {
     definition.input("stream", STREAM_TYPE)
 }
@@ -1304,6 +1466,12 @@ pub fn package() -> ServicePackage {
         .and_then(|package| package.source(&on_band_level_definition(), OnBandLevel))
         .and_then(|package| package.source(&on_transient_definition(), OnTransient))
         .and_then(|package| package.node(&band_level_definition(), BandLevel))
+        .and_then(|package| package.source(&on_finished_definition(), OnFinished))
+        .and_then(|package| {
+            source_definitions()
+                .into_iter()
+                .try_fold(package, |package, (definition, control)| package.node(&definition, control))
+        })
         .and_then(|package| package.node(&audio_in_definition(), AudioIn))
         .and_then(|package| package.node(&audio_out_definition(), AudioOut))
         .and_then(|package| package.node(&level_definition(), Level))
@@ -1349,8 +1517,8 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 14);
-        assert_eq!(package.sources().len(), 2);
+        assert_eq!(package.nodes().len(), 19);
+        assert_eq!(package.sources().len(), 3);
         // Documents with the first On level open with On band level.
         let replaced: Vec<_> = package
             .replacements()
@@ -1431,6 +1599,67 @@ mod tests {
                 .start_with(Some(session), &bad, fired("x", &Arc::default()))
                 .is_err()
         );
+    }
+
+    /// A file source plays a short tone into its ring when told to: an analyzer hears
+    /// it, and On finished fires at its end.
+    #[test]
+    fn a_file_source_is_heard_by_analyzers_and_finishes() {
+        let path =
+            std::env::temp_dir().join(format!("orange-file-source-{}.wav", std::process::id()));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for n in 0..14_400 {
+            // 0.3 s of a 1 kHz square at half scale.
+            let sample = if n / 24 % 2 == 0 {
+                i16::MAX / 2
+            } else {
+                -(i16::MAX / 2)
+            };
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let shared = spawn_input(&settings(
+            serde_json::json!({"file": path.to_str().unwrap()}),
+        ))
+        .unwrap();
+        let session: Arc<dyn Session> = Arc::new(InputSession(Arc::clone(&shared)));
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let record = |what: &'static str| {
+            let heard = Arc::clone(&heard);
+            Emitter::new(move |_| {
+                heard.lock().unwrap().push(what);
+                Ok(())
+            })
+        };
+        let level = OnBandLevel
+            .start_with(
+                Some(Arc::clone(&session)),
+                &settings(serde_json::json!({"threshold_db": -20})),
+                record("loud"),
+            )
+            .unwrap();
+        let finished = OnFinished
+            .start(Some(Arc::clone(&session)), record("finished"))
+            .unwrap();
+        // Nothing plays before Play.
+        thread::sleep(Duration::from_millis(100));
+        assert!(heard.lock().unwrap().is_empty());
+        shared.started.store(true, Ordering::Release);
+        shared.transport().play();
+        let started = Instant::now();
+        while heard.lock().unwrap().len() < 2 && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(POLL);
+        }
+        drop((level, finished, session));
+        assert_eq!(*heard.lock().unwrap(), ["loud", "finished"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
