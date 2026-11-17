@@ -163,6 +163,18 @@ impl Host {
         }
     }
 
+    /// What the connection a node of `definition` uses is called by its adapter, such
+    /// as "Audio source" for On transient: the label an editor shows beside the
+    /// connection picker, so it needs no list of package node IDs. `None` when the
+    /// node names no connection kind or the host has no such adapter.
+    pub fn connection_label(&self, definition: &str) -> Option<String> {
+        let kind = self
+            .nodes()
+            .filter(|info| info.definition.definition.id.as_str() == definition)
+            .find_map(|info| info.presentation?.connection_adapter.clone())?;
+        Some(self.adapters.get(&kind)?.about().label)
+    }
+
     /// The connection adapters this host has, such as `org.orange.net/http`, sorted.
     pub fn adapters(&self) -> Vec<String> {
         self.adapters.keys().cloned().collect()

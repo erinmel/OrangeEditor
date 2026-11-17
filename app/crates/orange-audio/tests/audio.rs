@@ -729,3 +729,24 @@ fn a_package_brings_its_own_search_words_and_spanish_names() {
         Some("On transient".to_owned())
     );
 }
+
+/// Editors label a node's connection by what its adapter calls itself.
+#[test]
+fn a_nodes_connection_is_named_by_its_adapter() {
+    let host = host();
+    for listener in [
+        orange_audio::ON_TRANSIENT,
+        orange_audio::ON_BAND_LEVEL,
+        orange_audio::AUDIO_IN,
+    ] {
+        assert_eq!(
+            host.connection_label(listener).as_deref(),
+            Some("Audio source")
+        );
+    }
+    assert_eq!(
+        host.connection_label(orange_audio::AUDIO_OUT).as_deref(),
+        Some("Audio output")
+    );
+    assert_eq!(host.connection_label(orange_audio::LEVEL), None);
+}
