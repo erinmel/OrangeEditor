@@ -331,7 +331,13 @@ fn analyzed(document: &GraphDocument, registry: &RegistrySnapshot) -> Validation
 
 /// Sessions by connection, with the declaration each was opened from.
 type Opened = BTreeMap<ConnectionId, (ConnectionDecl, Arc<dyn Session>)>;
-type Feed = (NodeId, Arc<dyn ServiceSource>, Option<Arc<dyn Session>>);
+/// An entry to start: its node, its source, the session it names and its settings.
+type Feed = (
+    NodeId,
+    Arc<dyn ServiceSource>,
+    Option<Arc<dyn Session>>,
+    orange_model::document::ConfigValue,
+);
 
 fn sessions_of(opened: &Opened) -> BTreeMap<ConnectionId, Arc<dyn Session>> {
     opened

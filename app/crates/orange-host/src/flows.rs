@@ -62,7 +62,7 @@ impl Host {
             } else {
                 None
             };
-            feeds.push((node.id, source, session));
+            feeds.push((node.id, source, session, node.config.clone()));
         }
         Ok(Prepared {
             semantic: semantic(json)?,
@@ -78,7 +78,7 @@ impl Host {
     /// Starts the source of every package entry of a flow. On a failure the sources
     /// already started are stopped again.
     fn feed(flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
-        for (node, source, session) in feeds {
+        for (node, source, session, settings) in feeds {
             let inbox = flow.inbox.clone();
             let thread = flow
                 .thread
@@ -97,7 +97,7 @@ impl Host {
                 thread.unpark();
                 Ok(())
             });
-            match source.start(session, emitter) {
+            match source.start_with(session, &settings, emitter) {
                 Ok(guard) => flow.feeds.push(guard),
                 Err(reason) => {
                     flow.feeds.clear();

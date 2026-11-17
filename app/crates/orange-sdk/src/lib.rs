@@ -453,14 +453,29 @@ impl ServiceNode for Streaming {
 
 /// The implementation of one entry node: something outside the graph that fires it.
 ///
-/// `start` is called once per entry node when its flow opens and must not block. It
-/// returns a guard; dropping the guard stops the source for that node.
+/// A source is started once per entry node when its flow opens and must not block. It
+/// returns a guard; dropping the guard stops the source for that node. Implement
+/// [`start`](Self::start), or [`start_with`](Self::start_with) for an entry whose own
+/// settings (its definition's `config_schema`) say how it fires.
 pub trait ServiceSource: Send + Sync + 'static {
     fn start(
         &self,
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String>;
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = (session, emitter);
+        Err("the entry needs its settings to start".to_owned())
+    }
+    /// Starts the source with the entry node's settings. By default it ignores them.
+    fn start_with(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = settings;
+        self.start(session, emitter)
+    }
 }
 
 /// Builds the definition file text of a service node, so a package states what is
@@ -601,6 +616,21 @@ impl Definition {
         if let Json::Object(editor) = editor {
             let _ = editor.insert(key.to_owned(), value);
         }
+    }
+    /// A setting of the node itself, kept in its config and shown in an editor's
+    /// properties: `schema` is its JSON schema, such as
+    /// `{"type": "number", "minimum": 0}`. Settings suit what is fixed while a flow
+    /// runs, such as an entry's threshold; values that change belong on inputs.
+    #[must_use]
+    pub fn setting(mut self, name: &str, schema: Json) -> Self {
+        let config = self
+            .json
+            .entry("config_schema")
+            .or_insert_with(|| serde_json::json!({"type": "object", "properties": {}}));
+        if let Some(properties) = config.get_mut("properties").and_then(Json::as_object_mut) {
+            let _ = properties.insert(name.to_owned(), schema);
+        }
+        self
     }
     /// A data input of type `ty`, such as `core/string@1`. Inputs reach
     /// [`Call::inputs`] in the order they are added.
@@ -877,7 +907,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 6",
+        "orange-plugin 7",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
