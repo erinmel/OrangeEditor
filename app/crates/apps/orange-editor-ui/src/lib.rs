@@ -58,7 +58,11 @@ const VARIABLE_NODES: [(&str, &str, &str); 2] = [
     ("variable-set", "variable-set-hint", "core/set-variable"),
 ];
 
-fn presented_value(value: &orange_host::Value) -> (String, String) {
+fn presented_value(
+    enums: &canvas::Enums,
+    ty: Option<&str>,
+    value: &orange_host::Value,
+) -> (String, String) {
     if let orange_host::Value::Record(record) = value
         && record
             .ty
@@ -70,7 +74,10 @@ fn presented_value(value: &orange_host::Value) -> (String, String) {
         let label = type_name(record.ty.as_str());
         return (label.clone(), label);
     }
-    (orange_host::plain(value), orange_host::inspect(value))
+    (
+        canvas::value_text(enums, ty, value),
+        orange_host::inspect(value),
+    )
 }
 
 /// Most lines the log keeps; older ones are dropped.
@@ -131,6 +138,30 @@ pub(crate) enum Tab {
     Variables,
     Connections,
     Types,
+}
+
+impl Tab {
+    const ALL: [(Self, &str); 4] = [
+        (Self::Nodes, "nodes"),
+        (Self::Variables, "variables"),
+        (Self::Connections, "connections"),
+        (Self::Types, "types"),
+    ];
+
+    /// The name preferences keep the tab by.
+    fn key(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(tab, _)| *tab == self)
+            .map_or("nodes", |(_, key)| key)
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(_, known)| *known == key)
+            .map(|(tab, _)| *tab)
+    }
 }
 
 /// The document being edited.
@@ -347,7 +378,7 @@ impl Editor {
         };
         let graph = host.draft_view(&draft).unwrap_or_default();
         self.canvas.load(&graph);
-        self.canvas.enums = canvas::enums_of(host, &draft, &graph);
+        self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
         self.canvas.set_groups(draft.groups());
         self.document = Some(Document {
             path,
@@ -422,7 +453,8 @@ impl Editor {
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
         self.canvas.update(&document.graph);
-        self.canvas.enums = canvas::enums_of(host, &document.draft, &document.graph);
+        self.canvas.enums =
+            canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
         self.canvas.set_groups(document.draft.groups());
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
@@ -1019,15 +1051,31 @@ impl Editor {
                 }
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
-                        let (short, full) = presented_value(value);
+                        let id = port.to_string();
+                        let ty = document
+                            .graph
+                            .nodes
+                            .iter()
+                            .find(|view| view.id == *node)
+                            .and_then(|view| view.ports.iter().find(|shown| shown.id == id))
+                            .and_then(|shown| shown.ty.as_deref());
+                        let (short, full) = presented_value(&self.canvas.enums, ty, value);
                         self.canvas.show_value(*node, port.to_string(), short, full);
                     }
                 }
                 FlowEvent::Variables(changed) => {
                     for (variable, value) in changed {
-                        let shown = value
-                            .as_ref()
-                            .map_or_else(|| "unset".to_owned(), orange_host::plain);
+                        let id = variable.to_string();
+                        let ty = document
+                            .declared
+                            .variables
+                            .iter()
+                            .find(|declared| declared.id.as_deref() == Some(id.as_str()))
+                            .map(|declared| declared.ty.as_str());
+                        let shown = value.as_ref().map_or_else(
+                            || "unset".to_owned(),
+                            |value| canvas::value_text(&self.canvas.enums, ty, value),
+                        );
                         let _ = document.values.insert(variable.to_string(), shown);
                     }
                 }

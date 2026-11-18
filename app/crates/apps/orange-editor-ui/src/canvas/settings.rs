@@ -105,7 +105,8 @@ fn variable_field(
             |(_, name)| name.clone(),
         );
     let mut edit = None;
-    ui.label(t("variable"));
+    let strong = ui.visuals().strong_text_color();
+    ui.label(egui::RichText::new(t("variable")).color(strong));
     let _ = egui::ComboBox::from_id_salt("variable")
         .width(width)
         .wrap_mode(egui::TextWrapMode::Truncate)

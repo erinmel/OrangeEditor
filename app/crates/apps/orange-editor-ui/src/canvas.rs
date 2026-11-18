@@ -59,28 +59,47 @@ enum Control {
 /// The choices of the enum types a document's inputs use, by type.
 pub(crate) type Enums = std::collections::HashMap<String, Vec<orange_host::EnumChoice>>;
 
-/// The choices of every enum type an input of `graph` takes.
+/// The choices of every enum type a port of `graph`, a variable or the document's
+/// own types use.
 pub(crate) fn enums_of(
     host: &orange_host::Host,
     draft: &orange_host::Draft,
     graph: &GraphView,
+    declared: &orange_host::Declarations,
 ) -> Enums {
     let mut enums = Enums::new();
-    let types = graph
+    let ports = graph
         .nodes
         .iter()
         .flat_map(|node| &node.ports)
-        .filter(|port| port.input && !port.exec)
-        .filter_map(|port| port.ty.as_deref())
-        .filter(|ty| !ty.starts_with("core/"));
-    for ty in types {
-        if !enums.contains_key(ty)
-            && let Some(choices) = host.enum_choices(draft, ty)
+        .filter(|port| !port.exec)
+        .filter_map(|port| port.ty.clone());
+    let variables = declared
+        .variables
+        .iter()
+        .map(|variable| variable.ty.clone());
+    let own = declared.types.iter().map(|decl| decl.ty().to_string());
+    for ty in ports.chain(variables).chain(own) {
+        if !ty.starts_with("core/")
+            && !enums.contains_key(&ty)
+            && let Some(choices) = host.enum_choices(draft, &ty)
         {
-            let _ = enums.insert(ty.to_owned(), choices);
+            let _ = enums.insert(ty, choices);
         }
     }
     enums
+}
+
+/// `value` of type `ty` as a person reads it: an enum's choice by its name.
+pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::Value) -> String {
+    if let orange_host::Value::Enum { tag, payload: None } = value
+        && let Some(choice) = ty
+            .and_then(|ty| enums.get(ty))
+            .and_then(|choices| choices.get(usize::try_from(*tag).ok()?))
+    {
+        return choice.name.clone();
+    }
+    orange_host::plain(value)
 }
 
 impl Control {

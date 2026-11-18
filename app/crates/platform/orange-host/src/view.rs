@@ -192,7 +192,7 @@ impl Host {
     }
 }
 
-fn enum_choices_in(
+pub(crate) fn enum_choices_in(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     ty: &str,
@@ -226,8 +226,8 @@ fn enum_choices_in(
     )
 }
 
-/// A value on an input as a person reads it: an enum's choice by its name.
-fn value_text(
+/// A value as a person reads it: an enum's choice by its name.
+pub(crate) fn value_text(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     ty: Option<&str>,

@@ -133,3 +133,28 @@ fn an_enum_input_offers_its_choices_by_name_and_shows_the_one_written() {
     assert_eq!(value(&draft).as_deref(), Some("Calm"));
     assert_eq!(host.problems(&mut draft).unwrap(), []);
 }
+
+/// A variable's starting value reads by its choice's name, and declaring the variable
+/// again with what Declarations shows (a rename keeps it) or with another name works.
+#[test]
+fn an_enum_variable_starts_at_a_choice_given_by_name() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&graph()).unwrap();
+    let feeling = host.declarations(&draft).variables.remove(0);
+    assert_eq!(feeling.initial.as_deref(), Some("Calm"));
+    let renamed = orange_host::Variable {
+        name: "mood".into(),
+        ..feeling.clone()
+    };
+    host.declare_variable(&mut draft, &renamed).unwrap();
+    let happy = orange_host::Variable {
+        initial: Some("Happy".into()),
+        ..renamed
+    };
+    host.declare_variable(&mut draft, &happy).unwrap();
+    let declared = host.declarations(&draft).variables.remove(0);
+    assert_eq!(
+        (declared.name.as_str(), declared.initial.as_deref()),
+        ("mood", Some("Happy"))
+    );
+}

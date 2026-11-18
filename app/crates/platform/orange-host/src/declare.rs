@@ -129,6 +129,7 @@ impl Host {
     /// The variables and connections a document declares.
     pub fn declarations(&self, draft: &Draft) -> Declarations {
         let document = draft.document();
+        let registry = self.registry_for(document);
         let variables = document
             .variables()
             .values()
@@ -142,7 +143,10 @@ impl Host {
                     .init
                     .as_ref()
                     .and_then(|literal| self.value_in(document, literal).ok())
-                    .map(|value| plain(&value)),
+                    .map(|value| {
+                        let ty = variable.ty.to_string();
+                        crate::view::value_text(document, &registry, Some(&ty), &value)
+                    }),
             })
             .collect();
         let connections = document
@@ -313,7 +317,22 @@ impl Host {
         let init = match &variable.initial {
             None => None,
             Some(typed) => {
-                let text = literal(&variable.ty, typed).map_err(HostError::Variable)?;
+                // An enum's choice may be given by name or ID, as Declarations shows it.
+                let document = draft.document();
+                let choice = crate::view::enum_choices_in(
+                    document,
+                    &self.registry_for(document),
+                    &variable.ty,
+                )
+                .and_then(|choices| {
+                    choices
+                        .into_iter()
+                        .find(|choice| choice.name == typed.trim() || choice.id == typed.trim())
+                });
+                let text = match choice {
+                    Some(choice) => choice.literal,
+                    None => literal(&variable.ty, typed).map_err(HostError::Variable)?,
+                };
                 let parsed: Literal = serde_json::from_str(&text)
                     .map_err(|error| HostError::Variable(error.to_string()))?;
                 let _ = self.value_in(draft.document(), &parsed)?;
