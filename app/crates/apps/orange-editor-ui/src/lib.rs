@@ -2226,6 +2226,9 @@ impl Editor {
             let _ = self.connect(host, (from.0, &from.1), (to.0, &to.1));
         }
         self.conversion_menu(ui.ctx(), host);
+        if let Some((node, port)) = done.add_port {
+            let _ = self.add_port(host, node, &port);
+        }
         if let Some((node, port, input)) = done.disconnect {
             let _ = self.disconnect(host, (node, &port), input);
         }

@@ -390,3 +390,4 @@ conversion-exact = Exact: loses nothing.
 choose-conversion = Join through a conversion
 choose-conversion-hint = These two kinds of value differ. Pick how to convert.
 conversion-title = { $from } to { $to }
+add-port = Add { $name }

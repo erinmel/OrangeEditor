@@ -209,3 +209,34 @@ fn a_dropdown_writes_the_chosen_setting() {
     }
     assert_eq!(written, Some((id(1), "/mode".into(), "slow".into())));
 }
+
+/// A port the node may have more of ends the card with a button, and clicking it asks
+/// for one more instance.
+#[test]
+fn a_card_adds_one_more_of_a_growing_port() {
+    let mut session = Session::new();
+    session.graph.nodes[0]
+        .variadic
+        .push(orange_host::VariadicView {
+            port: "branch".into(),
+            input: false,
+            count: 2,
+            min: 1,
+            max: None,
+        });
+    let _ = session.frame(vec![]);
+    let last = card::Card::new(&session.graph.nodes[0]).rows.len() - 1;
+    let button = session.control(last);
+    let done = session.click(button.center());
+    assert_eq!(done.add_port, Some((id(1), "branch".into())));
+    // At its most, the button is gone.
+    session.graph.nodes[0].variadic[0].max = Some(2);
+    let layout = card::Card::new(&session.graph.nodes[0]);
+    assert!(!layout.rows.iter().any(|row| matches!(
+        row.left,
+        Some(card::Left::Field {
+            editor: card::FieldOf::AddPort(_),
+            ..
+        })
+    )));
+}

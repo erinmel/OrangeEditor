@@ -166,6 +166,8 @@ pub struct CanvasResponse {
     pub new_variable: Option<(NodeId, String)>,
     /// A device selected from an adapter-provided choice list.
     pub device: Option<(NodeId, Option<String>)>,
+    /// One more instance of a variadic port was asked for on a card.
+    pub add_port: Option<(NodeId, String)>,
     /// The selected nodes are to be copied, or cut, to the clipboard.
     pub copy: bool,
     pub cut: bool,
@@ -1605,6 +1607,7 @@ impl Canvas {
                     fields::FieldEdit::Browse(port) => {
                         done.browse_path = Some((node.id, port));
                     }
+                    fields::FieldEdit::AddPort(port) => done.add_port = Some((node.id, port)),
                 }
             }
             let node = node.id;

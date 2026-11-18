@@ -88,6 +88,9 @@ other code places anything on a card.
   "…" and shown whole on hover; a file or folder is a field with the name and a browse
   button inside its right end. An empty field shows the default dimmed, or "—" when
   there is none.
+* **Ports a node may have more of grow on the card.** A variadic port (a Fork's
+  branches, a Sequence's steps) ends the card with a quiet "+ Add branch" button until
+  it reaches its most; removing one is in Properties.
 * **A wired input keeps its name line only**, with the value it received in a pill
   at the right while a run reports it. Unwiring brings its field back.
 * **No menus on cards.** Everything a card shows is edited on the card; there is no

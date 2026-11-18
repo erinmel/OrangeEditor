@@ -30,6 +30,9 @@ pub(super) enum FieldOf<'a> {
     Variable(&'a str),
     /// The connection or device the node uses.
     Connection,
+    /// One more instance of a port the node has as many of as it is given, such as
+    /// a Fork's branches.
+    AddPort(&'a orange_host::VariadicView),
 }
 
 impl FieldOf<'_> {
@@ -206,6 +209,16 @@ impl<'a> Card<'a> {
             editor: FieldOf::Setting(name, schema),
             named: true,
         }));
+        // A port the node may have more of ends the card with a button that adds one.
+        let growing: Vec<Left<'a>> = node
+            .variadic
+            .iter()
+            .filter(|variadic| variadic.max.is_none_or(|max| variadic.count < max))
+            .map(|variadic| Left::Field {
+                editor: FieldOf::AddPort(variadic),
+                named: false,
+            })
+            .collect();
         // A picker that is the only thing to set needs no name: the title says it.
         if let [Left::Field { editor, named }] = lefts.as_mut_slice()
             && matches!(editor, FieldOf::Variable(_) | FieldOf::Connection)
@@ -226,6 +239,9 @@ impl<'a> Card<'a> {
         }
         for output in outputs {
             push(&mut rows, None, Some(output));
+        }
+        for add in growing {
+            push(&mut rows, Some(add), None);
         }
         let empty = rows.is_empty();
         if empty {

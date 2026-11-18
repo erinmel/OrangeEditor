@@ -22,6 +22,8 @@ pub(super) enum FieldEdit {
     Configure(Pos2),
     /// The system's chooser is to pick the input's path.
     Browse(String),
+    /// One more instance of this variadic port.
+    AddPort(String),
 }
 
 /// The kind of control a value gets.
@@ -150,7 +152,15 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             .detail
             .clone()
             .map_or_else(|| (t("choose").to_owned(), true), |name| (name, false)),
+        FieldOf::AddPort(variadic) => (add_port_text(variadic), true),
     }
+}
+
+fn add_port_text(variadic: &orange_host::VariadicView) -> String {
+    tf(
+        "add-port",
+        &[("name", crate::properties::words(&variadic.port).into())],
+    )
 }
 
 /// The name line's text of a field.
@@ -166,6 +176,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         }
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
+        FieldOf::AddPort(variadic) => add_port_text(variadic),
     }
 }
 
@@ -471,6 +482,34 @@ impl Canvas {
                 edit
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
+            FieldOf::AddPort(variadic) => {
+                // A quiet button across the card: "+ Add branch".
+                let touched = ui.interact(slot, id, Sense::click());
+                let painter = ui.painter();
+                if touched.hovered() {
+                    painter.rect_filled(slot, 5.0 * zoom, colors.background);
+                }
+                painter.rect_stroke(
+                    slot,
+                    5.0 * zoom,
+                    Stroke::new(1.0, colors.outline),
+                    StrokeKind::Inside,
+                );
+                let _ = painter.text(
+                    slot.center(),
+                    Align2::CENTER_CENTER,
+                    format!("+  {}", add_port_text(variadic)),
+                    FontId::proportional(12.0 * zoom),
+                    if touched.hovered() {
+                        colors.text
+                    } else {
+                        colors.weak
+                    },
+                );
+                touched
+                    .clicked()
+                    .then(|| FieldEdit::AddPort(variadic.port.clone()))
+            }
         }
     }
 
