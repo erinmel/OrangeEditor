@@ -10,6 +10,7 @@ pub(crate) struct DevicePicker {
     pub options: Vec<(String, String)>,
     pub default_label: String,
     pub group_label: String,
+    pub problem: Option<String>,
 }
 impl Editor {
     pub(crate) fn prepare_devices(&mut self, host: &Host) {
@@ -91,6 +92,7 @@ impl Editor {
                     connection,
                     selected,
                     options,
+                    problem: devices.problem.clone(),
                     default_label: devices.unset.clone(),
                     group_label: if host
                         .connection_label(&definition)

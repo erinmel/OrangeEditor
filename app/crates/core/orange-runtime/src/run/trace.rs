@@ -20,13 +20,17 @@ impl Trace {
         }
     }
     fn text_bytes(event: &RunEvent) -> usize {
-        event.fault.as_ref().map_or(0, |fault| {
+        let route = event
+            .route
+            .as_ref()
+            .map_or(0, |port| port.port().as_str().len());
+        route.saturating_add(event.fault.as_ref().map_or(0, |fault| {
             fault
                 .fault
                 .code
                 .retained_bytes()
                 .saturating_add(fault.fault.message_key.retained_bytes())
-        })
+        }))
     }
     /// Appends `event`, dropping the oldest once `max` events are kept.
     pub(crate) fn record(&mut self, event: RunEvent, max: usize) {
@@ -75,6 +79,7 @@ mod tests {
         let code: Arc<str> = Arc::from("acme/Failed");
         let weak = Arc::downgrade(&code);
         let event = RunEvent {
+            route: None,
             activation: 1,
             node,
             outcome: ControlOutcome::Failed,
@@ -96,6 +101,7 @@ mod tests {
         assert_eq!(trace.events().len(), 1);
         assert_eq!(trace.dropped(), 1);
         let static_event = RunEvent {
+            route: None,
             activation: 2,
             node,
             outcome: ControlOutcome::Then,

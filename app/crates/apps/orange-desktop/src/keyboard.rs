@@ -54,12 +54,24 @@ fn modifiers(name: &str) -> Option<Modifiers> {
         match part {
             "None" => {}
             "Primary" => modifiers.command = true,
+            "Ctrl" => modifiers.ctrl = true,
+            "Command" => modifiers.mac_cmd = true,
             "Alt" => modifiers.alt = true,
             "Shift" => modifiers.shift = true,
             _ => return None,
         }
     }
     Some(modifiers)
+}
+
+fn same_chord(actual: Modifiers, expected: Modifiers) -> bool {
+    let primary_is_command = cfg!(target_os = "macos");
+    let ctrl = expected.ctrl || (expected.command && !primary_is_command);
+    let command = expected.mac_cmd || (expected.command && primary_is_command);
+    actual.ctrl == ctrl
+        && actual.mac_cmd == command
+        && actual.alt == expected.alt
+        && actual.shift == expected.shift
 }
 
 impl ServiceSource for Source {
@@ -117,24 +129,34 @@ impl ServiceSource for Source {
 impl Keyboard {
     pub fn package(&self) -> Result<ServicePackage, orange_sdk::DefinitionError> {
         let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
-            .description("Fires when a logical key is pressed while this editor is focused. Editing text and editor shortcuts take priority. Primary means Ctrl on Windows/Linux and Command on macOS. Release the key to fire again; optional repeat follows the operating system. No global keyboard hook.")
+            .description("Fires on the selected key combination while the editor has focus. Left and right modifier keys are equivalent.")
             .category("input", "Input")
             .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
             .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
             .setting("modifiers", json!({"title":"Modifiers", "type":"string", "enum":["None","Primary","Alt","Shift","Primary+Shift","Primary+Alt","Alt+Shift","Primary+Alt+Shift"], "default":"None"}))
             .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}));
         let previous = definition.clone().hidden().build();
-        let definition = definition
+        let wired = definition
+            .clone()
             .version(2)
             .input_default(
                 "key",
                 "core/string@1",
                 json!({"type": "core/string@1", "value": ""}),
             )
+            .hidden()
+            .build();
+        let definition = definition
+            .version(3)
+            .setting(
+                "modifiers",
+                json!({"title":"Modifiers", "type":"string", "enum":["None","Ctrl","Alt","Shift","Ctrl+Shift","Ctrl+Alt","Alt+Shift","Ctrl+Alt+Shift","Command","Command+Shift","Command+Alt","Command+Alt+Shift"], "default":"None"}),
+            )
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
             .with_catalogs(crate::CATALOGS)
             .source(&previous, Source(Arc::clone(&self.state)))?
+            .source(&wired, Source(Arc::clone(&self.state)))?
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 
@@ -182,7 +204,7 @@ impl Keyboard {
                 .values()
                 .filter(|(binding, _)| {
                     binding.key == *key
-                        && modifiers.matches_logically(binding.modifiers)
+                        && same_chord(*modifiers, binding.modifiers)
                         && ((!was_down && !repeat) || binding.repeat)
                 })
                 .map(|(_, emitter)| emitter.clone())
@@ -266,8 +288,12 @@ mod tests {
         );
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let entry = host.add_node(&mut draft, ON_KEY, [0.0, 0.0]).unwrap();
-        host.set_input(&mut draft, (entry, "key"), Some("F9"))
-            .unwrap();
+        host.set_config(
+            &mut draft,
+            entry,
+            &json!({"key": "F9", "modifiers": "Ctrl"}),
+        )
+        .unwrap();
         let variable = host
             .declare_variable(
                 &mut draft,
@@ -308,7 +334,23 @@ mod tests {
                 .unwrap(),
             None
         );
-        keyboard.handle(&[event_for(Key::F9, true, false)], true, |_, _| true);
+        keyboard.handle(
+            &[
+                event_for(Key::F9, true, false),
+                event_for(Key::F9, false, false),
+            ],
+            true,
+            |_, _| true,
+        );
+        let mut ctrl_f9 = event_for(Key::F9, true, false);
+        if let Event::Key { modifiers, .. } = &mut ctrl_f9 {
+            *modifiers = Modifiers {
+                ctrl: true,
+                command: !cfg!(target_os = "macos"),
+                ..Modifiers::NONE
+            };
+        }
+        keyboard.handle(&[ctrl_f9], true, |_, _| true);
         loop {
             if host
                 .inspect(flow, move |run| run.variable(variable_id).cloned())

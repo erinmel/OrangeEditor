@@ -156,6 +156,8 @@ pub enum FlowEvent {
     /// constants, faults and outputs nothing reads are not reported, and several values
     /// between two reports appear as the latest only.
     Ports(Vec<(NodeId, PortKey, Value)>),
+    /// Continuous outputs whose reading became unavailable.
+    PortsCleared(Vec<(NodeId, PortKey)>),
     /// The flow's graph was replaced by an edited version. Events after this come
     /// from the new graph, starting with its state.
     Updated {

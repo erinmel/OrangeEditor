@@ -542,7 +542,11 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
 
         if observed {
             let mut changed = Vec::new();
+            let mut cleared = Vec::new();
             for ((node, port), value) in driver.run_mut().port_values().into_iter().flatten() {
+                if cx.plan.live_port_index(*node, port).is_some() {
+                    continue;
+                }
                 let key = (*node, port.clone());
                 if ports.get(&key) != Some(value) {
                     let _ = ports.insert(key, value.clone());
@@ -551,10 +555,13 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             }
             // A live value is on its output whether or not a node has read it yet.
             for live in cx.plan.lives() {
-                let Some(value) = driver.run().live_value(live.node()) else {
+                let key = (live.node(), live.port().clone());
+                let Some(value) = driver.run().live_port_value(live.node(), live.port()) else {
+                    if ports.remove(&key).is_some() {
+                        cleared.push(key);
+                    }
                     continue;
                 };
-                let key = (live.node(), live.port().clone());
                 if ports.get(&key) != Some(value) {
                     let _ = ports.insert(key, value.clone());
                     changed.push((live.node(), live.port().clone(), value.clone()));
@@ -562,6 +569,9 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             }
             if !changed.is_empty() {
                 cx.sink.send(cx.id, FlowEvent::Ports(changed));
+            }
+            if !cleared.is_empty() {
+                cx.sink.send(cx.id, FlowEvent::PortsCleared(cleared));
             }
         } else if !ports.is_empty() {
             ports.clear();

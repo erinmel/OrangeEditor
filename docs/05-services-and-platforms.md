@@ -451,13 +451,45 @@ record. Level and Band level take that stream and publish `f64` dBFS values.
 Audio format returns its sample rate and channel count. Transient and Source
 finished take the stream as a root argument. Source control applies transport to
 that file source, and Sound control applies transport and gain to the chosen
-output. A Band trigger template places Band level and When with a default
-threshold of −20 dBFS, release at −26 dBFS and hold of 50 ms. These nodes share
-the existing capture ring and use provider workers for analysis. The older
-definitions remain usable in saved graphs and are hidden from new placement.
+output. Band trigger takes the stream directly and emits the measured dBFS on
+each qualifying threshold crossing. The lower and upper frequency inputs default
+to open boundaries. The entry includes threshold, reset level, hold time and
+measurement time. Level, Band level and Band trigger share the capture ring and
+perform analysis on provider workers. Older saved graphs retain their definitions.
 
-A spectrum and hit-history viewer, disk-streamed file transport and an output
-EQ remain future work.
+Audio Out version 2 starts when its stream and its `enabled` input are available.
+Enable defaults to true and can be wired to a Boolean value. Disabling it stops
+its voice on the shared mixer. The `playing` output reports that the voice is
+active. A stream, enable or gain change re-arms the source. Version 1 remains
+available to saved graphs with execution wires.
+
+Frequency Splitter uses one capture cursor and worker per node. Its chart uses 96
+logarithmic peak-amplitude buckets from 20 Hz to 24 kHz in dBFS, measured over
+4,096 Hann-windowed frames and published at most once per 50 ms. Buckets between
+measured Fourier bins are interpolated for display. Versions 2 and 3
+publishes a distinct audio stream for each selected band. A derived ring keeps
+the input sample rate and channel count, with each channel filtered independently
+by two cascaded band-pass sections, with a high-pass fallback when the upper
+edge reaches Nyquist. These filters have finite roll-off.
+The same spectrum worker runs the filters and fills the derived one-second rings.
+At most 12 bands are active. Version 1 retains its 25 ms band levels and
+Above or Below routes for saved graphs. Editing a version 1 card to add a band
+upgrades it to version 3, retaining its existing routes and adding a filtered
+stream to each existing band as well as the new one.
+Ranges beginning outside the supported filter range of the negotiated sample
+rate remain unavailable. Capture overruns and ring replacement clear affected
+readings and reset filter and trigger state. A source gap closes the old
+derived rings. Supported bands receive new rings when capture resumes.
+Legacy Spectrum, Band Level and Band Trigger
+remain available to saved graphs.
+
+Audio Level Trigger measures full-stream RMS over 25 ms and publishes `level: f64`
+in dBFS and `condition_met: bool`. It fires once when the configured above or
+below condition holds for the requested time. The defaults are -35 dBFS,
+150 ms hold and a 4 dB reset margin. Time advances with completed audio windows.
+Missing audio clears the reading and qualification. Real silence can qualify
+for a below rule. Both nodes analyze off the audio callback, and their graph
+events have their own bounded ingress independent of chart updates.
 
 ### Application playback and virtual cables
 

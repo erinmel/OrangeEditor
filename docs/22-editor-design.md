@@ -29,12 +29,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
 | Grid | Faint dots mark the 24-unit snap grid and disappear at distant zoom. Snap is on by default and configurable in Settings. Alt while dragging moves freely. |
-| Resize | Resizing the window or a dock preserves the graph point at the center of the canvas. |
-| Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. Diagnostic marks are painted with their own card. |
+| Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
+| Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Execution uses diamond ports and thicker amber wires. Data uses round ports and thinner typed wires. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
 | Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent scroll positions. |
-| Run feedback | A pulse follows an execution wire when the reported step identifies a route, such as True or False, or a successful completion has one execution output. A failed step retains its diagnostic dot until it succeeds. |
+| Run feedback | The reported execution route glows briefly along the whole wire. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
 ## 3. Cards
@@ -69,10 +69,12 @@ first.
 * **One line per port.** A data row is 28 graph units tall and holds, on one line, the
   input's dot, its name and its value or field, and on the same line the output's live
   value, its name and its dot. Names never sit on a line of their own above their value.
-  The way in and out (Enter / Exit) is the first row.
+  Execution routes occupy their own rows first. A path editor gets a dedicated row
+  with separate areas for typing and browsing.
 * **Width follows content.** A card is as wide as its title, its widest input (name plus
   field) and its widest output (value plus name) need, between 160 and 320 units. No
-  kind of node gets a fixed wide width; long values and device names are cut with an
+  ordinary port card gets a fixed wide width; the Frequency Splitter's plot and
+  band controls use a 400-unit card. Long values and device names are cut with an
   ellipsis and shown whole on hover.
 * **Values line up.** Input fields start in one column, just after the longest input
   name, so a card reads as a small table.
@@ -92,14 +94,17 @@ first.
   one row after Enter / Exit: a short name on the left and a list filling the rest.
 * **Settings are few and plain.** A card shows only the settings a person sets for the
   node to do its job, named in plain words with units (Threshold dBFS). Tuning settings
-  (analysis window, numeric policies) are in the card's ⋯ menu and in Properties. A
-  setting changed on one node never changes the palette's preview of that kind.
+  (measurement time, numeric policies) are in Properties. The workspace dock and
+  the card's context menu open Properties for the selected card. A setting changed
+  on one node never changes the palette's preview of that kind.
 * **No empty space.** Header 30, row 28, padding 8; a card ends 6 units after its last
   row.
 
 ## 4. Search and commands
 
-Palette and canvas search use the same full-width result rows. In preview mode the card provides the title and ports; descriptions appear on hover in both result modes. Get variable and enum nodes have illustrative cards until their declarations determine the real ports. Up and Down move the visible highlight, and Enter adds the highlighted result. Dragging a palette result shows a labeled placement preview before dropping it.
+Palette and canvas search use the same full-width name rows. Purpose and category
+appear together on hover. Up and Down move the highlight, and Enter adds the
+highlighted result. Dragging a result shows a placement preview under the pointer.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts and the words of each node's description, in the
@@ -112,9 +117,9 @@ Palette and canvas search use the same full-width result rows. In preview mode t
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
 * The right-click menu is the command centre: on the canvas (Add node… with search,
-  Paste, Group, Arrange, Snap), on a card (Rename, Duplicate, Disable, Group, Make
-  function, Delete, Help), on a wire (Insert node…, Delete), on a port (Disconnect,
-  Promote to variable, Watch value). Every entry names its shortcut.
+  Paste, Group, Arrange, Snap), on a card (Properties, Rename, Duplicate, Disable,
+  Group, Make function, Delete, Help), on a wire (Insert node…, Delete), on a port
+  (Disconnect, Promote to variable, Watch value). Entries show their assigned shortcuts.
 * The toolbar uses icons with tooltips grouped as File | Edit | Run, from the pinned Material Symbols Rounded library (with its licence recorded in 10), so no symbol depends on system
   fonts.
 * The workspace starts with both side docks visible. The bottom bar puts the node dock toggle
@@ -123,11 +128,13 @@ Palette and canvas search use the same full-width result rows. In preview mode t
   Problems and Log share the same resizable panel. The controls wrap in narrow windows.
 * The desktop title follows the current file name. Running, Stopped or No graph
   and the unsaved indicator remain in the status bar.
-* Settings is centered and resizable, with a search field, category navigation,
-  and a scrolling content pane. It cannot collapse. Shortcut search matches both
-  action names and keystrokes.
-  Editor command bindings can be recorded, removed and reset. Conflicts are shown
-  before assignment. The desktop saves bindings, node language and canvas preferences
+* Settings uses a centered, resizable dialog with persistent category navigation,
+  a scrolling content pane and a fixed Done button. The Keymap page groups actions
+  and has its own search for action names or shortcuts, following the workflow in
+  [IntelliJ IDEA Keymap](https://www.jetbrains.com/help/idea/settings-keymap.html).
+  Actions and shortcuts use separate single-line columns. Select a binding to type
+  or record a replacement. Shortcuts can be removed or reset, and conflicts require
+  explicit reassignment. The desktop saves bindings, node language and canvas preferences
   under the user's configuration directory on exit. Graph documents carry none of
   these preferences.
   The desktop applies the draft's blue-gray surface hierarchy. Command icons use
@@ -153,31 +160,42 @@ symbols until the bundled icon font (§4) lands.
 
 ## 6. Audio
 
-ADR-30 owns the two-phase audio design. Phase 1 supplies shared device/file sources,
-per-node Band level, On band level and On transient settings, source transport and
-On finished. Each analyzer names its source through a connection. Signal routing
-wires, running-analyzer telemetry, spectra and hit histories belong to phase 2.
+Connect Audio Source to Frequency Splitter to view its live frequency line. Drag
+across the plot and release to add one filtered audio stream output to the card.
+Draw across another range to add another output. Use the selected band's inline
+editor to change its name and frequency limits. The arrow buttons move the band
+up or down in the port list. Rename, range and display-order edits keep the same
+port keys and wires. Removing a band removes its wire connections in one
+undoable edit. Drawing on an older spectrum card upgrades it in the same edit
+and preserves existing level and execution outputs and their wires.
 
-The editor uses adapter metadata for device dropdowns on the card. Recording,
-playback and playback-capture choices are visually separated. Selecting a device
-creates a source declaration when one is needed. Controls use the first unused
-input row on the left, or a new row when both sides are full. Scalar configuration
-fields render from the node's schema below its ports, including detector bands,
-thresholds and timing. Complex source settings remain in the inspector.
-Stream references show their readable type without process-local record IDs.
-Pure authoring values remain on the cards when Run starts until observed values
-replace them.
+The plot, bands and ports use the card's zoom scale. The band controls use their
+own bounded area above the ports and are hidden at distant zoom. The pointer
+shows the frequency under it. Turn off Live trace to hide the moving spectrum
+while keeping the chart axes, selected ranges and filtered outputs available.
 
-Opening the configuration window does not open an audio probe. The explicit
-connection test in the Connections tab remains available. A monitor of the actual
-running analyzer requires a host telemetry API. The UI must identify any standalone
-connection probe as a device test.
+The Audio group starts with Audio Source, Frequency Splitter, Audio Level Trigger
+and Audio Out when browsing or searching for audio. Audio Source uses the full
+connection row for its device picker. Searching for Audio In finds Audio Source.
+Transient remains searchable for graphs that react to sudden hits, such as kicks.
 
-Phase 2 presentation will show a spectrum with a selected Hz range, threshold and
-release lines, measured level, and hit markers. A continuous level output supports
-animation modulation. Threshold crossings and transient events support one-shot
-effects. Preview and Listen are separate controls with explicit activation. The
-runtime decisions and migration belong to ADR-30.
+Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
+The vertical green, yellow and red meter rises immediately, decays smoothly and
+briefly holds the recent peak. It shows the current reading once. Drag its
+threshold line and choose a trigger direction and hold duration on the card.
+Level and Condition met are live data outputs. Triggered continues execution
+after qualification.
+
+New Audio Out cards play the wired stream while Enabled is on. The inline switch
+is available on an unwired input, and a Boolean wire can control the same input.
+
+The source picker separates recording devices, playback capture and current
+application sessions. Refresh the list after an application starts playing audio.
+Long device names stay on one line. Level and Band Level show a value after the
+first measured window. File operations show an editable relative path alongside a
+browse button where the operation allows selecting a path. Folder-scoped choices
+are stored relative to the connection's root. The standalone connection probe is
+available in Connections. See ADR-30 and [05](05-services-and-platforms.md).
 
 ## 7. Out of scope for now
 

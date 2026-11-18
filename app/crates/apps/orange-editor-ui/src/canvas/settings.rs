@@ -1,5 +1,4 @@
-//! Common card settings, with numeric policies disclosed in the header menu, and the
-//! variable a node names, chosen at the top of the card.
+//! Common card settings and the declaration a node names.
 use super::*;
 use crate::properties::{watch_field_entries, watch_label, watch_number_value};
 
@@ -50,7 +49,7 @@ fn all_fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Va
         })
 }
 
-/// Tuning settings: in the card's ⋯ menu and Properties, not on the card (22 §3.1).
+/// Tuning settings belong in Properties.
 fn advanced(name: &str) -> bool {
     matches!(name, "int_overflow" | "float_policy" | "window_ms")
 }
@@ -59,10 +58,6 @@ pub(super) fn fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_j
     watch_field_entries(node).chain(
         all_fields(node).filter(|(name, _)| node.definition != "core/on-watch" && !advanced(name)),
     )
-}
-
-pub(super) fn has_advanced(node: &NodeView) -> bool {
-    all_fields(node).any(|(name, _)| advanced(name))
 }
 
 /// Every setting is one line: its name and its field (22 §3.1).
@@ -152,6 +147,17 @@ fn name_cell(ui: &mut egui::Ui, width: f32, text: egui::RichText) -> egui::Respo
 }
 
 fn label(name: &str, schema: &serde_json::Value) -> String {
+    let audio_label = match name {
+        "window_ms" => Some("audio-setting-window-ms"),
+        "threshold_db" => Some("audio-setting-threshold-db"),
+        "release_db" => Some("audio-setting-release-db"),
+        "hold_ms" => Some("audio-setting-hold-ms"),
+        "reset_db" => Some("audio-reset-margin"),
+        _ => None,
+    };
+    if let Some(key) = audio_label {
+        return t(key).to_owned();
+    }
     schema["title"]
         .as_str()
         .map(str::to_owned)
@@ -228,6 +234,16 @@ fn field(
         .unwrap_or_else(|| schema["default"].clone());
     let mut value = current.clone();
     let is_watch = node.definition == "core/on-watch";
+    let option_title = |item: &str| {
+        if is_watch {
+            watch_label(item)
+        } else if name == "direction" && super::spectrum::is_noise(node) {
+            super::spectrum::direction(item)
+        } else {
+            item
+        }
+        .to_owned()
+    };
     let caption = if is_watch {
         watch_label(name).to_owned()
     } else {
@@ -240,20 +256,20 @@ fn field(
         if let Some(options) = schema["enum"].as_array() {
             egui::ComboBox::from_id_salt("choice")
                 .width(width)
-                .wrap_mode(egui::TextWrapMode::Wrap)
-                .selected_text(value.as_str().map_or_else(
-                    || t("choose"),
-                    |item| if is_watch { watch_label(item) } else { item },
-                ))
+                .truncate()
+                .selected_text(
+                    value
+                        .as_str()
+                        .map_or_else(|| t("choose").to_owned(), option_title),
+                )
                 .show_ui(ui, |ui| {
                     for option in options {
                         ui.selectable_value(
                             value,
                             option.clone(),
-                            option.as_str().map_or_else(
-                                || t("choice"),
-                                |item| if is_watch { watch_label(item) } else { item },
-                            ),
+                            option
+                                .as_str()
+                                .map_or_else(|| t("choice").to_owned(), option_title),
                         );
                     }
                 })
@@ -272,6 +288,8 @@ fn field(
             let mut number = value.as_f64().unwrap_or(0.0);
             let suffix = if name.ends_with("_hz") {
                 " Hz"
+            } else if name == "reset_db" {
+                " dB"
             } else if name.ends_with("_db") {
                 " dBFS"
             } else if name.ends_with("_ms") {
@@ -309,8 +327,13 @@ fn field(
         }
     };
     ui.horizontal(|ui| {
-        name_cell(ui, label_width, egui::RichText::new(caption))
-            .on_hover_text(schema["description"].as_str().unwrap_or(name));
+        name_cell(ui, label_width, egui::RichText::new(caption)).on_hover_text(
+            if name == "window_ms" {
+                t("audio-setting-window-help")
+            } else {
+                schema["description"].as_str().unwrap_or(name)
+            },
+        );
         edit(ui, &mut value);
     });
     (value != current).then(|| {
@@ -319,20 +342,6 @@ fn field(
             value,
         )
     })
-}
-
-pub(super) fn menu(ui: &mut egui::Ui, node: &NodeView) -> Option<(String, serde_json::Value)> {
-    let mut changed = None;
-    ui.set_width(240.0);
-    ui.strong(t("numeric-policies"));
-    for (name, schema) in all_fields(node).filter(|(name, _)| advanced(name)) {
-        ui.push_id(name, |ui| {
-            if let Some(edit) = field(ui, node, name, schema, 220.0) {
-                changed = Some(edit);
-            }
-        });
-    }
-    changed
 }
 
 pub(super) fn draw(
@@ -345,9 +354,7 @@ pub(super) fn draw(
     let mut y = rect.top() + super::card_layout::CardLayout::new(node).reference_top * zoom;
     let mut changed = None;
     let scoped = |ui: &mut egui::Ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0) * zoom;
-        ui.spacing_mut().interact_size.y = FIELD_HEIGHT * zoom;
-        ui.style_mut().override_font_id = Some(FontId::proportional(12.0 * zoom));
+        super::card_layout::style_controls(ui, zoom);
         // Every field on a card has the same framed look (22 §3.1).
         let colors = Palette::of(ui);
         let widgets = &mut ui.visuals_mut().widgets;
@@ -404,6 +411,7 @@ pub(super) fn draw(
                 .max_rect(slot)
                 .id_salt(("node-setting", node.id, name)),
             |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(slot));
                 scoped(ui);
                 if let Some((pointer, value)) = field(ui, node, name, schema, slot.width()) {
                     changed = Some(CardEdit::Set(pointer, value));

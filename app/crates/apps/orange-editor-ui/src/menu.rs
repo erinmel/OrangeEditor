@@ -26,6 +26,7 @@ pub enum MenuTarget {
 #[non_exhaustive]
 pub enum Command {
     AddNode,
+    Properties,
     Paste,
     SelectAll,
     Group,
@@ -142,6 +143,13 @@ impl Editor {
                 entry(Command::Fit, t("fit-to-view"), "Home", icons::FIT, true),
             ],
             MenuTarget::Node(_) => vec![
+                entry(
+                    Command::Properties,
+                    t("properties"),
+                    "",
+                    icons::SETTINGS,
+                    true,
+                ),
                 entry(Command::Copy, t("copy"), "Ctrl+C", icons::COPY, true),
                 entry(Command::Cut, t("cut"), "Ctrl+X", icons::CUT, true),
                 entry(
@@ -219,6 +227,12 @@ impl Editor {
         match (command, &menu.target) {
             (Command::AddNode, _) => {
                 self.open_quick_add(None, menu.at, menu.screen);
+                true
+            }
+            (Command::Properties, MenuTarget::Node(node)) => {
+                self.canvas.select(Some(*node));
+                self.panels.properties = true;
+                self.panels.packages = false;
                 true
             }
             (Command::Paste, _) => match self.clip.clone() {
@@ -430,7 +444,7 @@ mod tests {
 
     #[test]
     fn each_target_offers_its_commands_and_canvas_and_card_entries_name_shortcuts() {
-        let (mut editor, _host) = opened();
+        let (mut editor, mut host) = opened();
         editor.open_menu(MenuTarget::Canvas, [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(
             commands(&editor),
@@ -451,14 +465,24 @@ mod tests {
         // A right-clicked card becomes the selection and gets the card commands.
         editor.open_menu(MenuTarget::Node(id(2)), [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(editor.canvas.selection(), [id(2)]);
-        assert!(commands(&editor).starts_with(&[Command::Copy, Command::Cut, Command::Duplicate]));
+        assert!(commands(&editor).starts_with(&[
+            Command::Properties,
+            Command::Copy,
+            Command::Cut,
+            Command::Duplicate
+        ]));
         assert!(commands(&editor).contains(&Command::MakeFunction));
         assert!(
             editor
                 .menu_entries()
                 .iter()
-                .all(|entry| !entry.shortcut.is_empty())
+                .all(|entry| entry.command == Command::Properties || !entry.shortcut.is_empty())
         );
+        editor.panels.properties = false;
+        editor.panels.packages = true;
+        assert!(editor.run_command(&mut host, Command::Properties));
+        assert!(editor.panels.properties && !editor.panels.packages);
+        assert_eq!(editor.canvas.selected(), Some(id(2)));
         let wire = ((id(1), "then".to_owned()), (id(2), "in".to_owned()));
         editor.open_menu(MenuTarget::Wire(wire), [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(

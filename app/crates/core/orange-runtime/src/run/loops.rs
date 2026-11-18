@@ -200,6 +200,7 @@ impl Loops<'_> {
                     activation.pc = *body;
                     activation.yielded = true;
                     self.record(RunEvent {
+                        route: None,
                         activation: activation.sequence,
                         node: node.node(),
                         outcome: ControlOutcome::Body,
@@ -209,6 +210,7 @@ impl Loops<'_> {
                     Run::publish_index(plan, self.layout, shared, owner, None)?;
                     activation.pc = *completed;
                     self.record(RunEvent {
+                        route: None,
                         activation: activation.sequence,
                         node: node.node(),
                         outcome: ControlOutcome::Completed,
@@ -229,6 +231,7 @@ impl Loops<'_> {
                         next: next + 1,
                     });
                     self.record(RunEvent {
+                        route: None,
                         activation: activation.sequence,
                         node: plan.nodes()[owner.index()].node(),
                         outcome: ControlOutcome::Step(next),

@@ -37,6 +37,8 @@ pub const ACTUAL_SIZE: char = '\u{e8ff}'; // zoom_in
 pub const LANGUAGE: char = '\u{e8e2}'; // translate
 pub const EXPAND: char = '\u{e5cc}'; // chevron_right
 pub const COLLAPSE: char = '\u{e5cf}'; // expand_more
+pub const MOVE_UP: char = '\u{e5d8}'; // arrow_upward
+pub const MOVE_DOWN: char = '\u{e5db}'; // arrow_downward
 pub const SETTINGS: char = '\u{e8b8}'; // settings
 pub const MINIMIZE: char = '\u{e15b}'; // remove
 pub const MAXIMIZE: char = '\u{e3c6}'; // crop_square
@@ -86,6 +88,8 @@ pub const ALL: &[char] = &[
     LANGUAGE,
     EXPAND,
     COLLAPSE,
+    MOVE_UP,
+    MOVE_DOWN,
     SETTINGS,
     CLOSE,
     MINIMIZE,

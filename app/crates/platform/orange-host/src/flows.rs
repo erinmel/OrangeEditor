@@ -63,6 +63,9 @@ impl Host {
         // Every package entry needs a source before anything starts.
         let mut feeds = Vec::new();
         let mut manual_entries = Vec::new();
+        let mut package_order = Vec::new();
+        let mut package_entries =
+            std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
         for entry in plan.manuals() {
             let node = document
                 .node(entry.node())
@@ -71,6 +74,27 @@ impl Host {
                 manual_entries.push((entry.node(), entry.payload_type().is_some()));
                 continue;
             }
+            package_entries
+                .entry(node.id)
+                .or_insert_with(|| {
+                    package_order.push(node.id);
+                    Default::default()
+                })
+                .insert(entry.port().clone());
+        }
+        for source in plan.sources() {
+            if source.kind() == orange_compiler::SourceKind::Entry {
+                package_entries.entry(source.node()).or_insert_with(|| {
+                    package_order.push(source.node());
+                    Default::default()
+                });
+            }
+        }
+        for id in package_order {
+            let routes = package_entries.remove(&id).unwrap_or_default();
+            let node = document
+                .node(id)
+                .ok_or_else(|| HostError::Source(id, "node not found".into()))?;
             let refused = |reason: &str| HostError::Source(node.id, reason.to_owned());
             let provider = node
                 .provider
@@ -88,19 +112,30 @@ impl Host {
                 None
             };
             // An entry with data inputs starts once its run has their values.
-            match arguments(node.id) {
-                Some(ports) => armables.push(armed::Armable {
+            let outputs: Vec<_> = plan.live_outputs(node.id).cloned().collect();
+            let ports = arguments(node.id);
+            if ports.is_some()
+                || !outputs.is_empty()
+                || routes.iter().any(|port| port.port().as_str() != "then")
+            {
+                armables.push(armed::Armable {
                     node: node.id,
                     provider: armed::Provider::Entry(source),
                     session,
                     settings: node.config.clone(),
-                    ports,
-                }),
-                None => feeds.push((node.id, source, session, node.config.clone())),
+                    ports: ports.unwrap_or_default(),
+                    outputs,
+                    routes,
+                });
+            } else {
+                feeds.push((node.id, source, session, node.config.clone()));
             }
         }
         // Every live node needs the provider that publishes its value.
         for live in plan.lives() {
+            if plan.live_index(live.node()).is_none() {
+                continue;
+            }
             let node = document
                 .node(live.node())
                 .ok_or_else(|| HostError::Source(live.node(), "node not found".into()))?;
@@ -126,6 +161,8 @@ impl Host {
                 session,
                 settings: node.config.clone(),
                 ports: arguments(node.id).unwrap_or_default(),
+                outputs: vec![live.port().clone()],
+                routes: Default::default(),
             });
         }
         Ok(Prepared {

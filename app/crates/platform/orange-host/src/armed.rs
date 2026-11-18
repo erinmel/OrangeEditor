@@ -2,11 +2,11 @@
 //! publish (11 §10.5). Everything here runs on the flow's own thread.
 use crate::{FlowEvent, FlowId, flow::Sink};
 use orange_model::Value;
-use orange_model::id::NodeId;
+use orange_model::id::{NodeId, PortKey};
 use orange_runtime::{HostInput, InboxError, Run, RunInbox};
 use orange_sdk::{Arguments, EmitError, Emitter, LiveSource, Publisher, ServiceSource, Session};
 use serde_json::Value as Json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::Thread;
@@ -26,13 +26,20 @@ pub(crate) struct Armable {
     pub settings: serde_json::Map<String, Json>,
     /// The names of its data inputs, in the order the run hands their values.
     pub ports: Vec<String>,
+    pub outputs: Vec<PortKey>,
+    pub routes: BTreeSet<PortKey>,
 }
 
 /// The latest value a live provider published, until the flow passes it to its run.
 #[derive(Default)]
 struct Slot {
-    latest: Mutex<Option<Value>>,
+    latest: Mutex<Option<Option<Value>>>,
     fresh: AtomicBool,
+}
+
+struct OutputSlot {
+    pending: Arc<Slot>,
+    published: Option<Instant>,
 }
 
 /// Least time between two values of one live node reaching the run. A faster provider
@@ -54,8 +61,7 @@ impl Drop for ArmedProvider {
 pub(crate) struct Armed {
     armables: BTreeMap<NodeId, Armable>,
     guards: BTreeMap<NodeId, ArmedProvider>,
-    slots: BTreeMap<NodeId, Arc<Slot>>,
-    published: BTreeMap<NodeId, Instant>,
+    slots: BTreeMap<NodeId, BTreeMap<PortKey, OutputSlot>>,
 }
 impl std::fmt::Debug for Armed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -127,8 +133,32 @@ impl Armed {
         );
         let session = armable.session.clone();
         let active = Arc::new(AtomicBool::new(true));
+        let slots: BTreeMap<_, _> = armable
+            .outputs
+            .iter()
+            .map(|port| (port.clone(), Arc::new(Slot::default())))
+            .collect();
+        self.slots.insert(
+            node,
+            slots
+                .iter()
+                .map(|(port, pending)| {
+                    (
+                        port.clone(),
+                        OutputSlot {
+                            pending: Arc::clone(pending),
+                            published: None,
+                        },
+                    )
+                })
+                .collect(),
+        );
         let started = match &armable.provider {
             Provider::Entry(source) => {
+                let (route_inbox, route_thread, publish_thread) =
+                    (inbox.clone(), flow.clone(), flow.clone());
+                let (route_active, publish_active) = (Arc::clone(&active), Arc::clone(&active));
+                let routes = armable.routes.clone();
                 let (inbox, thread) = (inbox.clone(), flow.clone());
                 let (send_active, fault_active) = (Arc::clone(&active), Arc::clone(&active));
                 let (sink, id) = (events.0.clone(), events.1);
@@ -156,22 +186,39 @@ impl Armed {
                         sink.send(id, FlowEvent::SourceFault { node, fault });
                         Ok(())
                     },
+                )
+                .with_outputs(
+                    move |port| {
+                        if !route_active.load(Ordering::Acquire) || !routes.contains(port) {
+                            return Err(EmitError::Closed);
+                        }
+                        route_inbox
+                            .send(HostInput::TriggerOn {
+                                node,
+                                port: port.clone(),
+                                wall_ns: crate::wall_ns(),
+                                active: Some(Arc::clone(&route_active)),
+                            })
+                            .map_err(|error| match error {
+                                InboxError::Full(_) => EmitError::Busy,
+                                InboxError::Closed(_) => EmitError::Closed,
+                            })?;
+                        route_thread.unpark();
+                        Ok(())
+                    },
+                    move |port, value| {
+                        let slot = slots.get(port).ok_or(EmitError::Closed)?;
+                        slot.publish(&publish_active, &publish_thread, value)
+                    },
                 );
                 source.start_with_arguments(session, &armable.settings, &arguments, emitter)
             }
             Provider::Live(source) => {
-                let slot = Arc::clone(self.slots.entry(node).or_default());
+                let slot = slots.into_values().next().ok_or("missing live output")?;
                 let thread = flow.clone();
                 let publishing = Arc::clone(&active);
-                let publisher = Publisher::new(move |value| {
-                    if !publishing.load(Ordering::Acquire) {
-                        return Err(EmitError::Closed);
-                    }
-                    *slot.latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
-                    slot.fresh.store(true, Ordering::Release);
-                    thread.unpark();
-                    Ok(())
-                });
+                let publisher =
+                    Publisher::new(move |value| slot.publish(&publishing, &thread, Some(value)));
                 source.start(session, &armable.settings, &arguments, publisher)
             }
         };
@@ -194,33 +241,36 @@ impl Armed {
         }
     }
 
-    /// Passes each live node's latest value to `run`, at most one per
+    /// Passes each live port's latest value to `run`, at most one per
     /// [`LIVE_INTERVAL`]. Returns how long until a value held back may go.
     pub(crate) fn flush(&mut self, run: &mut Run) -> Option<Duration> {
         let now = Instant::now();
         let mut wait: Option<Duration> = None;
-        for (node, slot) in &self.slots {
-            if !slot.fresh.load(Ordering::Acquire) {
-                continue;
-            }
-            if let Some(since) = self.published.get(node).map(|at| now - *at)
-                && since < LIVE_INTERVAL
-            {
-                let left = LIVE_INTERVAL - since;
-                wait = Some(wait.map_or(left, |w| w.min(left)));
-                continue;
-            }
-            slot.fresh.store(false, Ordering::Release);
-            let value = slot
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some(value) = value {
-                // A value of the wrong type or past the run's limits is not taken; the
-                // provider's next one may be.
-                let _ = run.publish_live(*node, value);
-                let _ = self.published.insert(*node, now);
+        for (node, slots) in &mut self.slots {
+            for (port, output) in slots {
+                let slot = &output.pending;
+                if !slot.fresh.load(Ordering::Acquire) {
+                    continue;
+                }
+                if let Some(since) = output.published.map(|at| now - at)
+                    && since < LIVE_INTERVAL
+                {
+                    let left = LIVE_INTERVAL - since;
+                    wait = Some(wait.map_or(left, |w| w.min(left)));
+                    continue;
+                }
+                slot.fresh.store(false, Ordering::Release);
+                let value = slot
+                    .latest
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(value) = value {
+                    // A value of the wrong type or past the run's limits is not taken; the
+                    // provider's next one may be.
+                    let _ = run.publish_live_port(*node, port, value);
+                    output.published = Some(now);
+                }
             }
         }
         wait
@@ -230,5 +280,22 @@ impl Armed {
     pub(crate) fn stop(&mut self) {
         self.guards.clear();
         self.slots.clear();
+    }
+}
+
+impl Slot {
+    fn publish(
+        &self,
+        active: &AtomicBool,
+        flow: &Thread,
+        value: Option<Value>,
+    ) -> Result<(), EmitError> {
+        if !active.load(Ordering::Acquire) {
+            return Err(EmitError::Closed);
+        }
+        *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
+        self.fresh.store(true, Ordering::Release);
+        flow.unpark();
+        Ok(())
     }
 }

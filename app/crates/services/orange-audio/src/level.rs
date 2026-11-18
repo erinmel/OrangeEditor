@@ -89,13 +89,17 @@ impl Meter {
     pub(crate) fn push(&mut self, samples: impl Iterator<Item = f32>, mut window: impl FnMut(f64)) {
         for sample in samples {
             let sample = f64::from(sample);
-            self.sum += sample * sample;
-            self.count += 1;
-            if self.count == self.size {
-                window(level_db(self.sum, self.count));
-                self.sum = 0.0;
-                self.count = 0;
-            }
+            self.push_power(sample * sample, &mut window);
+        }
+    }
+
+    pub(crate) fn push_power(&mut self, power: f64, window: &mut impl FnMut(f64)) {
+        self.sum += power;
+        self.count += 1;
+        if self.count == self.size {
+            window(level_db(self.sum, self.count));
+            self.sum = 0.0;
+            self.count = 0;
         }
     }
 }

@@ -5,6 +5,36 @@ use orange_model::catalog::{NominalAccess, Ports};
 use orange_model::document::{ConfigValue, NodeInstance, NodeKind, PortDirection, PortKind};
 use serde_json::{Value as Json, json};
 
+fn spectrum_band_label(node: &NodeInstance, key: &PortKey) -> Option<String> {
+    if node.definition.id.as_str() != "org.orange.audio/multiband-spectrum" {
+        return None;
+    }
+    let id = key.instance()?;
+    let bands = node.config.get("bands")?.as_object()?;
+    let band = match key.port().as_str() {
+        "band_stream" => {
+            let band = bands.get(&id.to_string())?;
+            let low = band["low_hz"].as_f64()?;
+            let high = band["high_hz"].as_f64()?;
+            let name = band["name"].as_str()?;
+            return Some(if name == format!("Band {}", u32::from(id) + 1) {
+                format!("{low}–{high} Hz")
+            } else {
+                format!("{name} · {low}–{high} Hz")
+            });
+        }
+        "band_level" => bands.get(&id.to_string()),
+        "band_above" => bands
+            .values()
+            .find(|band| band["above_port"].as_u64() == Some(u64::from(id))),
+        "band_below" => bands
+            .values()
+            .find(|band| band["below_port"].as_u64() == Some(u64::from(id))),
+        _ => None,
+    }?;
+    band.get("name")?.as_str().map(str::to_owned)
+}
+
 /// One port of a node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortView {
@@ -415,6 +445,13 @@ impl Host {
             for instance in instances {
                 let key = PortKey::new(port.port_id.clone(), instance);
                 let id = key.to_string();
+                if node.definition.version >= 2
+                    && node.definition.id.as_str() == "org.orange.audio/multiband-spectrum"
+                    && id == "spectrum"
+                    && !wired(node.id, &id, input)
+                {
+                    continue;
+                }
                 let ty = port.ty.as_ref().map(|ty| match &settled {
                     Some(args) => orange_model::signature::substitute_params(ty, args).to_string(),
                     None => ty.to_string(),
@@ -437,7 +474,7 @@ impl Host {
                         .and_then(|literal| self.value_in(document, literal).ok())
                         .map(|value| plain(&value)),
                     id,
-                    label: None,
+                    label: spectrum_band_label(node, &key),
                 });
             }
         }
@@ -464,7 +501,11 @@ impl Host {
                 .map(|found| found.kind)
         });
         if let Some(kind) = kind {
-            let outcomes = declared.iter().any(|port| port.exec && !port.input);
+            let outcomes = contract.as_ref().is_some_and(|contract| {
+                contract.ports.iter().any(|port| {
+                    port.kind == PortKind::Exec && port.direction == PortDirection::Output
+                })
+            });
             for name in orange_model::catalog::implicit_port_names(
                 node.definition.id.as_str(),
                 kind,
@@ -554,7 +595,7 @@ impl Host {
                 .cloned()
                 .or_else(|| (definition == "core/call").then(|| "Function".to_owned()))
                 .unwrap_or_else(|| definition.clone()),
-            entry: kind == Some(NodeKind::Entry),
+            entry: kind == Some(NodeKind::Entry) && ports.iter().any(|port| port.exec),
             definition,
             ports,
             position,

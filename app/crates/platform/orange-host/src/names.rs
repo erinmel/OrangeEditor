@@ -306,6 +306,9 @@ pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
     match &event.kind {
         FlowEvent::State(state) => vec![format!("[{flow}] state {state:?}")],
         FlowEvent::Node(step) => vec![match &step.fault {
+            None if let Some(port) = &step.route => {
+                format!("[{flow}] {}: {port}", names.node(&step.node))
+            }
             None => format!(
                 "[{flow}] {}: {}",
                 names.node(&step.node),
@@ -336,6 +339,10 @@ pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
             .map(|(node, port, value)| {
                 format!("[{flow}] {} {port} = {}", names.node(node), plain(value))
             })
+            .collect(),
+        FlowEvent::PortsCleared(cleared) => cleared
+            .iter()
+            .map(|(node, port)| format!("[{flow}] {} {port} is unavailable", names.node(node)))
             .collect(),
         FlowEvent::Updated { .. } => vec![format!("[{flow}] graph replaced")],
         FlowEvent::SourceRefused { node, reason } => vec![format!(

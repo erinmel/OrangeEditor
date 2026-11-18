@@ -6546,3 +6546,95 @@ Objects made with `implement` are agile already; also listing `IAgileObject` is 
 Not verified: that another application's sound is excluded (it needs two apps playing at
 once), and Windows builds before 2004, where activation is expected to fail with the
 capture message.
+
+### Spectrum display and placement checks (2026-11-18)
+
+On Windows x86_64 MSVC with Rust 1.99.1 and default crate features,
+`cargo test --locked --offline --target-dir target -p orange-editor-ui -p orange-audio -p orange-host --quiet`
+passed 243 tests with 8 ignored. The lockfile's SHA-256 was
+`bb1ff13707aef0abb53c15aca1ef1ecb593aaaf117af5ee68c42c2065c8fac51`.
+The tests cover bilingual audio search, placement of Band Trigger as one card,
+undo of a wired spectrum selection, and opening Properties from a card's menu.
+A rebuilt editor opened in Windows. The pointer smoke test was interrupted before
+a drop, and the new spectrum line was checked by compilation in the test suite.
+
+### Combined spectrum and noise nodes (2026-11-18)
+
+Verification on Windows x86_64 MSVC used Rust 1.99.1, default crate features and the
+lockfile SHA-256 recorded above. The synthetic WAV integration test exercised
+two independent band levels, separate rising and falling routes, exact routed
+tracing, whole-stream qualification and persistent port keys through reorder,
+remove and undo. The `orange-audio` portion of
+`cargo test --workspace --locked --offline --target-dir target --quiet`
+passed 64 tests with 8 ignored. The focused command
+`cargo test --locked --offline --target-dir target -p orange-editor-ui drawing_a_band_and_setting_the_noise_threshold_use_the_canvas_widgets -- --nocapture`
+passed. Physical microphone and per-application capture were not exercised for
+these changes.
+
+With `CARGO_TARGET_DIR` set to the absolute workspace `target` directory so
+the nested native plugin fixture build shares the test output directory,
+`cargo build --locked --offline -p orange-desktop --quiet` built the Windows
+editor and `cargo test --workspace --locked --offline --quiet` passed
+2,049 tests with 29 ignored. `git diff --check` passed.
+
+### Filtered Spectrum streams and placement previews (2026-11-18)
+
+Windows x86_64 MSVC, Rust 1.99.1, default features and the same locked
+dependencies as above. The Windows editor built with
+`cargo build --locked --offline -p orange-desktop --quiet`.
+The audio portion of `cargo test --workspace --locked --offline --quiet`
+passed 65 tests with 8 ignored. The new WAV regression wires 400–600 Hz
+and 1,000–1,100 Hz outputs to separate meters and checks at least 16 dB
+of separation for 500 Hz and 1,050 Hz tones. It also checks that display
+reordering, renaming, deletion and undo preserve the expected wire keys.
+The canvas regression verifies the larger meter responds to pointer input
+and the drag preview draws its scale and hold field. Physical capture was
+outside this verification.
+
+The full workspace rerun of `cargo test --workspace --locked --offline --quiet`
+passed 2,050 tests with 29 ignored. The earlier sandboxed run reached the
+same audio and editor results before two AMQP tests timed out. The rerun
+completed the AMQP tests through the IDE terminal. `git diff --check` passed.
+
+### Audio card zoom and band controls (2026-11-18)
+
+Windows x86_64 MSVC, Rust and Cargo 1.99.1, default features. `Cargo.lock`
+SHA-256 is `BB1FF13707AEF0ABB53C15ACA1EF1ECB593AAAF117AF5EE68C42C2065C8FAC51`.
+With `CARGO_TARGET_DIR` set to the absolute workspace `target` directory,
+`cargo test --locked --offline -p orange-audio -p orange-editor-ui -p orange-host --quiet`
+passed 249 tests with 8 ignored. The canvas regression checks chart labels,
+fields and button positions at 62% and 155% zoom and clicks the band reorder
+button at both scales. WAV tests exercise the two filtered PCM outputs and
+legacy wire preservation. Physical capture and desktop visual inspection were
+outside this run.
+
+`cargo build --locked --offline -p orange-desktop --quiet` linked the Windows
+executable under `target/debug/deps`. Windows denied replacement of the usual
+`target/debug/orange-editor.exe` path. A byte-identical copy at
+`target/debug/orange-editor-audio-zoom.exe` printed the CLI usage and returned
+the expected exit code 2 for `--help`.
+
+### RustRover shared Cargo target (2026-11-18)
+
+The failed IDE build stored ten `orange-host` diagnostics in the user-level
+`.cargo-target`. They referred to runtime, model and compiler APIs present in
+the checkout. The workspace now defaults to `target/` via `.cargo/config.toml`.
+With Rust and Cargo 1.99.1, default features and the same lockfile as above,
+`cargo metadata --locked --offline --no-deps --format-version 1` resolved to
+the workspace `target/`, and `cargo check --locked --offline -p orange-desktop`
+passed without a `CARGO_TARGET_DIR` override. A subsequent RustRover project
+build also succeeded and reported incremental-cache hard-link warnings for the
+workspace `target/` directory.
+
+### Audio card overlap and Settings Keymap (2026-11-18)
+
+Windows x86_64 MSVC, Rust and Cargo 1.99.1, default features and the same
+lockfile. Incremental compilation is disabled by the workspace Cargo config.
+RustRover rebuilt the desktop app with zero warnings. The command
+`cargo test --locked --offline -p orange-audio -p orange-editor-ui -p orange-host --quiet`
+passed 253 tests with 8 ignored. The audio integration drove the new Audio Out
+enable input off, on, then off with a Boolean wire and the silent output device.
+Canvas regressions checked exposed settings on overlapping cards and the live
+trace toggle. Settings regressions checked single-line shortcuts, direct typed
+replacement, and explicit handling of conflicts. Physical audio hardware and
+desktop visual inspection were outside this run.

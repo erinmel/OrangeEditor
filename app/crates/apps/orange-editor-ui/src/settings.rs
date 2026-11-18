@@ -1,4 +1,4 @@
-//! Searchable preferences with stable navigation and content panes.
+//! Searchable preferences with independent navigation and content panes.
 use super::*;
 
 #[cfg(test)]
@@ -35,127 +35,150 @@ impl Editor {
                 t("shortcuts-section-words"),
             ),
         ];
+        let viewport =
+            (ctx.content_rect().size() - egui::vec2(24.0, 36.0)).max(egui::vec2(250.0, 220.0));
+        let min_size = egui::vec2(680.0, 380.0).min(viewport);
+        let max_size = egui::vec2(1050.0, 700.0).min(viewport);
         let shown = egui::Window::new(t("settings-title"))
             .id(egui::Id::unique("orange-settings"))
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_size([760.0, 480.0])
-            .min_width(680.0)
-            .min_height(360.0)
-            .max_width(1000.0)
+            .default_size(egui::vec2(840.0, 510.0).min(viewport))
+            .min_size(min_size)
+            .max_size(max_size)
             .collapsible(false)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.set_min_width(680.0);
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                ui.add(
+                let size = ui.available_size().clamp(min_size, max_size);
+                let (content, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let footer_y = content.bottom() - 41.0;
+                let split = content.left() + (content.width() * 0.26).clamp(116.0, 210.0);
+                let nav = egui::Rect::from_min_max(content.min, egui::pos2(split, footer_y));
+                let page = egui::Rect::from_min_max(
+                    egui::pos2(split + 16.0, content.top() + 9.0),
+                    egui::pos2(content.right() - 10.0, footer_y - 8.0),
+                );
+                ui.painter()
+                    .rect_filled(nav, 6.0, ui.visuals().faint_bg_color);
+                let mut nav_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("settings-navigation")
+                        .max_rect(nav.shrink(8.0)),
+                );
+                nav_ui.set_clip_rect(nav_ui.clip_rect().intersect(nav));
+                nav_ui.add(
                     egui::TextEdit::singleline(&mut self.settings_search)
                         .hint_text(t("settings-search"))
-                        .desired_width(ui.available_width()),
+                        .desired_width(nav_ui.available_width()),
                 );
-                ui.add_space(8.0);
                 let query = self.settings_search.trim().to_lowercase();
-                let visible: Vec<_> = sections
-                    .iter()
-                    .filter(|(section, title, terms)| {
-                        query.is_empty()
-                            || title.to_lowercase().contains(&query)
-                            || terms.contains(&query)
-                            || *section == Section::Shortcuts
-                                && keymap::ACTIONS.iter().any(|(id, label, _, _)| {
-                                    t(label).to_lowercase().contains(&query)
-                                        || self
-                                            .canvas
-                                            .keys
-                                            .label(id)
-                                            .to_lowercase()
-                                            .contains(&query)
-                                })
-                    })
-                    .map(|(section, _, _)| *section)
-                    .collect();
-                if !visible.contains(&self.settings_tab)
-                    && let Some(section) = visible.first()
-                {
-                    self.settings_tab = *section;
+                nav_ui.add_space(10.0);
+                let mut matching = [false; 3];
+                let mut section_matched = [false; 3];
+                for (index, (section, title, words)) in sections.iter().enumerate() {
+                    section_matched[index] = query.is_empty()
+                        || title.to_lowercase().contains(&query)
+                        || words.to_lowercase().contains(&query);
+                    matching[index] = section_matched[index]
+                        || *section == Section::Shortcuts
+                            && keymap::ACTIONS.iter().any(|(id, label, _, _)| {
+                                t(label).to_lowercase().contains(&query)
+                                    || self.canvas.keys.label(id).to_lowercase().contains(&query)
+                            });
                 }
-                let height = ui.available_height().max(320.0);
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(160.0, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(160.0);
-                            for (section, title, _) in &sections {
-                                if visible.contains(section) {
-                                    ui.selectable_value(&mut self.settings_tab, *section, *title);
-                                }
-                            }
-                        },
-                    );
-                    ui.separator();
-                    let width = ui.available_width();
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(width, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_max_width(width);
-                            ui.set_min_width(width);
+                if !sections
+                    .iter()
+                    .zip(matching)
+                    .any(|((section, _, _), matched)| *section == self.settings_tab && matched)
+                    && let Some(index) = matching.iter().position(|&matched| matched)
+                {
+                    self.settings_tab = sections[index].0;
+                }
+                for ((section, title, _), matched) in sections.iter().zip(matching) {
+                    if matched {
+                        let button =
+                            egui::Button::selectable(self.settings_tab == *section, *title)
+                                .truncate();
+                        if nav_ui
+                            .add_sized([nav_ui.available_width(), 31.0], button)
+                            .clicked()
+                        {
+                            self.settings_tab = *section;
+                        }
+                    }
+                }
+                let mut page_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("settings-page")
+                        .max_rect(page),
+                );
+                page_ui.set_clip_rect(page_ui.clip_rect().intersect(page));
+                if let Some(index) = sections
+                    .iter()
+                    .zip(matching)
+                    .position(|((section, _, _), matched)| *section == self.settings_tab && matched)
+                {
+                    page_ui.heading(sections[index].1);
+                    page_ui.add_space(12.0);
+                    match self.settings_tab {
+                        Section::Shortcuts => self.keybindings_ui(
+                            &mut page_ui,
+                            if section_matched[index] { "" } else { &query },
+                        ),
+                        Section::Search | Section::Display => {
                             egui::ScrollArea::vertical()
-                                .id_salt("settings-content")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_max_width(width - 16.0);
-                                    if visible.is_empty() {
-                                        ui.label(t("settings-empty"));
-                                        return;
-                                    }
-                                    let heading = sections
-                                        .iter()
-                                        .find(|(section, _, _)| *section == self.settings_tab)
-                                        .map_or("", |(_, title, _)| *title);
-                                    ui.heading(heading);
-                                    ui.add_space(16.0);
-                                    match self.settings_tab {
-                                        Section::Search => {
-                                            ui.label(t("language"));
-                                            self.language_choice(ui);
-                                        }
-                                        Section::Display => {
-                                            let mut scale = ctx.zoom_factor();
-                                            let slider = egui::Slider::new(&mut scale, 0.75..=2.0)
-                                                .text(t("interface-scale"));
-                                            if ui.add(slider).changed() {
-                                                ctx.set_zoom_factor(scale);
-                                            }
-                                            ui.add_space(12.0);
-                                            ui.checkbox(&mut self.canvas.snap, t("snap-grid"));
-                                            ui.checkbox(
-                                                &mut self.canvas.scroll_pans,
-                                                t("wheel-pans"),
-                                            );
-                                            ui.add_space(12.0);
-                                            ui.checkbox(
-                                                &mut self.panels.nodes,
-                                                t("show-left-panel"),
-                                            );
-                                            ui.checkbox(
-                                                &mut self.panels.properties,
-                                                t("show-right-panel"),
-                                            );
-                                        }
-                                        Section::Shortcuts => self.keybindings_ui(ui),
+                                .id_salt("settings-fields")
+                                .show(&mut page_ui, |ui| {
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                    if self.settings_tab == Section::Search {
+                                        ui.label(t("settings-language-help"));
+                                        self.language_choice(ui);
+                                    } else {
+                                        self.display_settings(ui, ctx);
                                     }
                                 });
-                        },
-                    );
-                });
+                        }
+                    }
+                } else {
+                    page_ui.weak(t("settings-empty"));
+                }
+                ui.painter().hline(
+                    content.x_range(),
+                    footer_y,
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                );
+                let done = egui::Rect::from_min_size(
+                    egui::pos2(content.right() - 103.0, footer_y + 8.0),
+                    egui::vec2(95.0, 28.0),
+                );
+                ui.put(done, egui::Button::new(t("settings-done")))
+                    .clicked()
             });
-        self.settings_open = open;
-        if !open {
-            self.key_capture = None;
-            self.key_conflict = None;
+        self.settings_open = open
+            && !shown
+                .as_ref()
+                .is_some_and(|window| window.inner == Some(true));
+        if !self.settings_open {
+            self.shortcut_edit = None;
         }
         shown.map(|window| window.response.rect)
+    }
+
+    fn display_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.strong(t("settings-interface"));
+        let mut scale = ctx.zoom_factor();
+        let slider = egui::Slider::new(&mut scale, 0.75..=2.0).text(t("interface-scale"));
+        if ui.add(slider).changed() {
+            ctx.set_zoom_factor(scale);
+        }
+        ui.add_space(14.0);
+        ui.checkbox(&mut self.panels.nodes, t("show-left-panel"));
+        ui.checkbox(&mut self.panels.properties, t("show-right-panel"));
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(10.0);
+        ui.strong(t("settings-canvas"));
+        ui.checkbox(&mut self.canvas.snap, t("snap-grid"));
+        ui.checkbox(&mut self.canvas.scroll_pans, t("wheel-pans"));
     }
 }

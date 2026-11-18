@@ -34,14 +34,17 @@ mod file_source;
 mod level;
 mod live_nodes;
 mod mixer;
+mod reactive;
+mod spectrum;
 mod stream;
 mod wav;
 
 pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
 pub use live_nodes::{
-    AUDIO_FORMAT, AUDIO_SOURCE, FORMAT_TYPE, LIVE_BAND_LEVEL, LIVE_LEVEL, SOUND_CONTROL,
-    SOURCE_CONTROL, SOURCE_FINISHED, TRANSIENT,
+    AUDIO_FORMAT, AUDIO_SOURCE, AUDIO_SPECTRUM, BAND_TRIGGER, FORMAT_TYPE, LIVE_BAND_LEVEL,
+    LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL, SOURCE_FINISHED,
+    TRANSIENT,
 };
 pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
@@ -610,6 +613,40 @@ fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
 }
 
 impl InputShared {
+    fn register(
+        file: Option<file_source::FileSettings>,
+        device: Option<String>,
+        window: Duration,
+    ) -> Arc<Self> {
+        let shared = Arc::new(Self {
+            id: next_source(),
+            ring: Mutex::new(None),
+            file,
+            device,
+            window,
+            transport: Mutex::new(file_source::Transport::default()),
+            finished: Listeners::new(),
+            levels: Arc::new(Levels::new()),
+            started: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            failed: Mutex::new(None),
+        });
+        SOURCES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(shared.id, Arc::downgrade(&shared));
+        shared
+    }
+
+    fn replace_ring(&self, ring: Option<Arc<Ring>>) {
+        let previous = std::mem::replace(
+            &mut *self.ring.lock().unwrap_or_else(PoisonError::into_inner),
+            ring,
+        );
+        if let Some(previous) = previous {
+            previous.close();
+        }
+    }
     /// The device's ring once it is open and capturing, opening it first when no flow
     /// has started the input yet. Waits up to `patience` (for ever when `None`) while
     /// the device is not open, and gives up when `cancelled`. An input that cannot be
@@ -736,23 +773,11 @@ fn spawn_input(settings: &Map<String, Json>) -> Result<Arc<InputShared>, String>
             .filter(|ms| (5..=1_000).contains(ms))
             .ok_or("`window_ms` must be an integer from 5 to 1000")?,
     };
-    let shared = Arc::new(InputShared {
-        id: next_source(),
-        ring: Mutex::new(None),
-        file: file_source::FileSettings::of(settings)?,
-        transport: Mutex::new(file_source::Transport::default()),
-        finished: Listeners::new(),
-        device: device_setting(settings)?,
-        window: Duration::from_millis(window),
-        levels: Arc::new(Levels::new()),
-        started: AtomicBool::new(false),
-        stop: AtomicBool::new(false),
-        failed: Mutex::new(None),
-    });
-    let _ = SOURCES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(shared.id, Arc::downgrade(&shared));
+    let shared = InputShared::register(
+        file_source::FileSettings::of(settings)?,
+        device_setting(settings)?,
+        Duration::from_millis(window),
+    );
     let worker = Arc::clone(&shared);
     let _ = thread::Builder::new()
         .name("orange-audio-input".into())
@@ -971,31 +996,39 @@ impl ServiceSource for OnBandLevel {
         settings: &Map<String, Json>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let input = input_of(session.as_ref())?;
         let listening = Listening::of(settings, (0.0, 0.0, 50.0))?;
-        let threshold = analysis::number(settings, "threshold_db", DEFAULT_THRESHOLD_DB)?;
-        let release = analysis::number(settings, "release_db", threshold - DEFAULT_HYSTERESIS_DB)?;
-        if release > threshold {
-            return Err("`release_db` must not be above `threshold_db`".into());
-        }
-        let hold_ms = analysis::number(settings, "hold_ms", 0.0)?;
-        if !(0.0..=60_000.0).contains(&hold_ms) {
-            return Err("`hold_ms` must be from 0 to 60000".into());
-        }
-        let window_ms = listening.window.as_secs_f64() * 1_000.0;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "checked above"
-        )]
-        let hold = (hold_ms / window_ms).ceil() as u32;
-        analyze(
-            input,
-            listening,
-            Gate::held(threshold, release, hold),
-            emitter,
-        )
+        band_trigger(input_of(session.as_ref())?, listening, settings, emitter)
     }
+}
+
+fn band_trigger(
+    input: Arc<InputShared>,
+    listening: Listening,
+    settings: &Map<String, Json>,
+    emitter: Emitter,
+) -> Result<Box<dyn Send>, String> {
+    let threshold = analysis::number(settings, "threshold_db", DEFAULT_THRESHOLD_DB)?;
+    let release = analysis::number(settings, "release_db", threshold - DEFAULT_HYSTERESIS_DB)?;
+    if release > threshold {
+        return Err("`release_db` must not be above `threshold_db`".into());
+    }
+    let hold_ms = analysis::number(settings, "hold_ms", 0.0)?;
+    if !(0.0..=60_000.0).contains(&hold_ms) {
+        return Err("`hold_ms` must be from 0 to 60000".into());
+    }
+    let window_ms = listening.window.as_secs_f64() * 1_000.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above"
+    )]
+    let hold = (hold_ms / window_ms).ceil() as u32;
+    analyze(
+        input,
+        listening,
+        Gate::held(threshold, release, hold),
+        emitter,
+    )
 }
 
 /// On transient: hits in a band, such as a kick drum, with the node's own settings.
@@ -1149,32 +1182,56 @@ impl ServiceNode for AudioOut {
             return Err(BAD_INPUT);
         };
         let session = output(call)?;
-        if !(0.0..=8.0).contains(gain) {
-            return Err(BAD_INPUT);
-        }
-        #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
-        let gain = *gain as f32;
         let source = source(stream)?;
-        let cancelled = || call.lease.is_cancelled();
-        loop {
-            let ring = match source.wait_ring(None, &cancelled) {
-                Ok(ring) => ring,
-                // The input closed or the run stopped the node: it has ended.
-                Err(fault) if fault == ENDED => return Ok(Vec::new()),
-                Err(fault) => return Err(fault),
-            };
-            let output = session.output()?;
-            let id = output.play_live(Arc::clone(&ring), gain).ok_or(BUSY)?;
-            match output.wait(id, cancelled) {
-                Ended::Stalled => {
-                    session.forget(&output);
-                    return Err(DEVICE);
-                }
-                // Stopped, or the run no longer wants it.
-                Ended::Done if cancelled() || !ring.closed() => return Ok(Vec::new()),
-                // The input device closed; follow it to the next one.
-                Ended::Done => {}
+        play_stream(
+            session,
+            &source,
+            stream_gain(*gain)?,
+            || call.lease.is_cancelled(),
+            |_| {},
+        )?;
+        Ok(Vec::new())
+    }
+}
+
+fn stream_gain(gain: f64) -> Result<f32, KernelFault> {
+    if !(0.0..=8.0).contains(&gain) {
+        return Err(BAD_INPUT);
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
+    let gain = gain as f32;
+    Ok(gain)
+}
+
+fn play_stream(
+    session: &OutputSession,
+    source: &InputShared,
+    gain: f32,
+    cancelled: impl Fn() -> bool,
+    mut playing: impl FnMut(bool),
+) -> Result<(), KernelFault> {
+    loop {
+        let ring = match source.wait_ring(None, &cancelled) {
+            Ok(ring) => ring,
+            Err(fault) if fault == ENDED => return Ok(()),
+            Err(fault) => return Err(fault),
+        };
+        let output = session.output()?;
+        if cancelled() {
+            return Ok(());
+        }
+        let id = output.play_live(Arc::clone(&ring), gain).ok_or(BUSY)?;
+        playing(true);
+        let outcome = output.wait(id, &cancelled);
+        playing(false);
+        match outcome {
+            Ended::Stalled => {
+                session.forget(&output);
+                return Err(DEVICE);
             }
+            Ended::Done if cancelled() || !ring.closed() => return Ok(()),
+            // The input device closed; follow it to the next one.
+            Ended::Done => {}
         }
     }
 }
@@ -1406,7 +1463,11 @@ fn on_band_level_definition() -> String {
         .replaces("on-level", 1, &[])
         .keywords("bass, loud, clap, microphone, threshold")
         .payload("core/f64@1");
-    band_settings(definition, 0.0, 0.0, 50.0)
+    threshold_settings(band_settings(definition, 0.0, 0.0, 50.0), 0.0).build()
+}
+
+fn threshold_settings(definition: Definition, hold_ms: f64) -> Definition {
+    definition
         .setting(
             "threshold_db",
             number_setting(SILENCE_DB, 0.0, DEFAULT_THRESHOLD_DB),
@@ -1419,8 +1480,7 @@ fn on_band_level_definition() -> String {
                 DEFAULT_THRESHOLD_DB - DEFAULT_HYSTERESIS_DB,
             ),
         )
-        .setting("hold_ms", number_setting(0.0, 60_000.0, 0.0))
-        .build()
+        .setting("hold_ms", number_setting(0.0, 60_000.0, hold_ms))
 }
 
 fn on_transient_definition() -> String {
@@ -1487,6 +1547,7 @@ fn audio_in_definition() -> String {
     Definition::node(crate::PACKAGE, "audio-in", "Audio in")
         .description("Listens to an input: a microphone, a line input, a virtual cable, or what an output device plays where the system offers that. Gives its sound as an audio stream, with the stream's rate and channels, for Audio out, Level and Record to file.")
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
         .output("stream", STREAM_TYPE)
         .output("rate", "core/u64@1")
@@ -1499,6 +1560,7 @@ fn audio_out_definition() -> String {
         Definition::node(crate::PACKAGE, "audio-out", "Audio out")
             .description("Plays an audio stream on an output device until Stop sounds stops it or its input closes. Streams played on the same output are mixed together, so this is also how inputs are mixed.")
             .category("audio", "Audio")
+            .hidden()
             .uses(OUTPUT_ADAPTER),
     )
     .input_default("gain", "core/f64@1", unit_gain())
@@ -1611,8 +1673,8 @@ mod tests {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
         assert_eq!(package.nodes().len(), 21);
-        assert_eq!(package.sources().len(), 5);
-        assert_eq!(package.lives().len(), 4);
+        assert_eq!(package.sources().len(), 11);
+        assert_eq!(package.lives().len(), 5);
         // Documents with the first On level open with On band level.
         let replaced: Vec<_> = package
             .replacements()

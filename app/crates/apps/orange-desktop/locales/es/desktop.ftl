@@ -11,3 +11,5 @@ desktop-open-graph = Abrir un grafo
 desktop-not-opened = No se abrió
 desktop-save-graph-as = Guardar el grafo como
 desktop-not-saved = No se guardó
+desktop-configure-folder = Elige primero una carpeta raíz en la conexión del nodo.
+desktop-outside-folder = Elige una ruta dentro de la carpeta raíz del nodo.

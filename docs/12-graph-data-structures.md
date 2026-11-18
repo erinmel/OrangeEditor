@@ -397,6 +397,27 @@ Implementation correction (00b review): replacing an existing entry at its curre
 
 `PortDescriptor` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
+For `org.orange.audio/multiband-spectrum`, `config.bands` maps a decimal
+stable band counter to its name, frequency limits, threshold rule and enabled
+route counters. The band counter is the instance of `band_level`. Optional
+`above_port` and `below_port` counters identify the independent
+`band_above` and `band_below` instances. Their allocation and order are stored
+in ordinary variadic state. Changing a range or reordering updates the node in
+one transaction, preserving the port keys. Deleting a band or disabling a
+route removes affected ports and edges atomically. A later route allocation
+receives a fresh counter. The graph document format is unchanged.
+
+This describes version 1. Version 2 uses the same band map and names, with one
+`band_stream#k` instance per band and no threshold route counters. The port
+carries the existing `org.orange.audio/stream@1` reference. The provider
+publishes a filtered source identity allocated for the running node. Version 3
+uses the same stream projection and also permits the version 1 level and event
+ports on imported bands. The editor upgrades legacy spectrum cards when a user
+adds a range. Imported version 1 bands keep their level keys, threshold route
+counters, and wires and receive a `band_stream#k` with the same band counter `k`.
+The `legacy_level` band setting enables the imported level and threshold rule.
+Undo restores the original definition, settings, and wires in one edit.
+
 `suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. For a current synchronous definition, absence means `never`. For a current `async` or `iterator` definition, absence means unknown metadata and reports `E-SUSPENDS-MISSING`; it is not silently changed to `maybe` or `always`. A value on an incompatible kind, or an invalid value, reports `E-SUSPENDS-INVALID`. Exact historical snapshot bytes remain preserved until an explicit re-projection/migration; validators do not rewrite old snapshots to manufacture a fact. The current host may re-project a supported intrinsic or exact provider definition and compare semantic signatures.
 
 At registry publication, the same kind/value matrix is enforced on definition metadata before either declared ports or contextual variable ports are processed. `async` and `iterator` require `maybe` or `always`; synchronous kinds may omit the field or use `never`. Typed `RegistryError` variants distinguish missing from incompatible metadata and identify the definition. This publication check does not change passive snapshot deserialization, so legacy saved signatures remain available to validation and repair.

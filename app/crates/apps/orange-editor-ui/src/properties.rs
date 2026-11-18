@@ -199,6 +199,18 @@ pub(crate) fn watch_label(name: &str) -> &'static str {
 }
 
 impl Editor {
+    /// The configured root for a folder-scoped file node's path picker.
+    pub fn file_picker_root(&self, node: NodeId) -> Option<Option<String>> {
+        let node = self.graph()?.nodes.iter().find(|view| view.id == node)?;
+        if !node.definition.starts_with("org.orange.files/") {
+            return None;
+        }
+        Some(
+            self.named_connection(node)
+                .and_then(|connection| connection.settings["path"].as_str().map(str::to_owned)),
+        )
+    }
+
     /// Changes one setting of a node, keeping the others: `value` at the JSON
     /// `pointer`, or the setting taken off with `None`.
     pub fn set_setting(
@@ -508,7 +520,9 @@ impl Editor {
                         change = Some(asked);
                     }
                 }
-                if !node.variadic.is_empty() {
+                if !node.variadic.is_empty()
+                    && node.definition != "org.orange.audio/multiband-spectrum"
+                {
                     section(ui, t("ports"));
                     if let Some(asked) = Self::variadic_fields(ui, labels, &node) {
                         change = Some(asked);
@@ -735,6 +749,9 @@ impl Editor {
         let watch = node.definition == "core/on-watch";
         let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
         for (name, schema) in fields {
+            if name == "bands" && node.definition == "org.orange.audio/multiband-spectrum" {
+                continue;
+            }
             let pointer = format!("/{name}");
             if node.references.iter().any(|(at, _)| *at == pointer) {
                 continue;
@@ -743,14 +760,27 @@ impl Editor {
             let current = &node.settings[name.as_str()];
             let needed = required.contains(&name.as_str())
                 || (watch && matches!(name.as_str(), "threshold" | "low" | "high"));
+            let measurement_time =
+                name == "window_ms" && node.definition.starts_with("org.orange.audio/");
             let label = if watch {
                 watch_label(name).to_owned()
+            } else if measurement_time {
+                t("audio-setting-window-ms").to_owned()
             } else if matches!(field, Field::Time) {
                 tf("in-milliseconds", &[("name", words(name).into())])
             } else {
                 words(name)
             };
-            let hover = Some(if needed { t("required") } else { t("optional") }.to_owned());
+            let hover = Some(
+                if measurement_time {
+                    t("audio-setting-window-help")
+                } else if needed {
+                    t("required")
+                } else {
+                    t("optional")
+                }
+                .to_owned(),
+            );
             let mut said = None;
             row(ui, labels, &label, hover, |ui| match &field {
                 Field::Choice(options) => {

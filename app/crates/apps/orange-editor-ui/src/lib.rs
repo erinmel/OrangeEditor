@@ -58,6 +58,105 @@ const VARIABLE_NODES: [(&str, &str, &str); 2] = [
     ("variable-set", "variable-set-hint", "core/set-variable"),
 ];
 
+/// Lets a window without the system's frame be resized from its edges and corners,
+/// as a framed one is: the cursor shows the direction and a press hands the resize to
+/// the operating system. Nothing while maximized or full screen. The bands sit above
+/// every other layer, so the toolbar's drag region does not take the press.
+fn resize_borders(ctx: &egui::Context) {
+    use egui::{CursorIcon, ResizeDirection as To};
+    let fixed = ctx.input(|input| {
+        let viewport = input.viewport();
+        viewport.maximized.unwrap_or(false) || viewport.fullscreen.unwrap_or(false)
+    });
+    if fixed {
+        return;
+    }
+    const BAND: f32 = 5.0;
+    const CORNER: f32 = 14.0;
+    let screen = ctx.viewport_rect();
+    let (l, r, t, b) = (screen.left(), screen.right(), screen.top(), screen.bottom());
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    };
+    let borders = [
+        (
+            To::North,
+            CursorIcon::ResizeVertical,
+            rect(l + CORNER, t, r - CORNER, t + BAND),
+        ),
+        (
+            To::South,
+            CursorIcon::ResizeVertical,
+            rect(l + CORNER, b - BAND, r - CORNER, b),
+        ),
+        (
+            To::West,
+            CursorIcon::ResizeHorizontal,
+            rect(l, t + CORNER, l + BAND, b - CORNER),
+        ),
+        (
+            To::East,
+            CursorIcon::ResizeHorizontal,
+            rect(r - BAND, t + CORNER, r, b - CORNER),
+        ),
+        (
+            To::NorthWest,
+            CursorIcon::ResizeNwSe,
+            rect(l, t, l + CORNER, t + BAND),
+        ),
+        (
+            To::NorthWest,
+            CursorIcon::ResizeNwSe,
+            rect(l, t, l + BAND, t + CORNER),
+        ),
+        (
+            To::NorthEast,
+            CursorIcon::ResizeNeSw,
+            rect(r - CORNER, t, r, t + BAND),
+        ),
+        (
+            To::NorthEast,
+            CursorIcon::ResizeNeSw,
+            rect(r - BAND, t, r, t + CORNER),
+        ),
+        (
+            To::SouthWest,
+            CursorIcon::ResizeNeSw,
+            rect(l, b - BAND, l + CORNER, b),
+        ),
+        (
+            To::SouthWest,
+            CursorIcon::ResizeNeSw,
+            rect(l, b - CORNER, l + BAND, b),
+        ),
+        (
+            To::SouthEast,
+            CursorIcon::ResizeNwSe,
+            rect(r - CORNER, b - BAND, r, b),
+        ),
+        (
+            To::SouthEast,
+            CursorIcon::ResizeNwSe,
+            rect(r - BAND, b - CORNER, r, b),
+        ),
+    ];
+    for (index, (direction, cursor, band)) in borders.into_iter().enumerate() {
+        let _ = egui::Area::new(egui::Id::unique("orange-resize").with(index))
+            .order(egui::Order::Foreground)
+            .fixed_pos(band.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (_, response) = ui.allocate_exact_size(band.size(), egui::Sense::drag());
+                if response.hovered() || response.dragged() {
+                    ctx.set_cursor_icon(cursor);
+                }
+                if response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            });
+    }
+}
+
 /// What a card shows of a value on a port, short and whole; nothing for a stream, which
 /// is a connection rather than a value (22 §3.1).
 fn presented_value(
@@ -289,8 +388,8 @@ pub struct Editor {
     settings_tab: settings::Section,
     preferred_scale: Option<f32>,
     scale_applied: bool,
-    key_capture: Option<&'static str>,
-    key_conflict: Option<String>,
+    shortcut_search: String,
+    shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
     document: Option<Document>,
     canvas: Canvas,
@@ -558,11 +657,7 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
-        let result = if definition == palette::BAND_TRIGGER {
-            host.add_band_trigger(draft, at)
-        } else {
-            host.add_node(draft, definition, at)
-        };
+        let result = host.add_node(draft, definition, at);
         match result {
             Ok(node) => {
                 let _ = self.edited(host, Ok(true));
@@ -1061,6 +1156,9 @@ impl Editor {
                                 | orange_host::ControlOutcome::TimedOut
                         );
                     self.canvas.record_step(step.node, failed, step.outcome);
+                    if let Some(port) = &step.route {
+                        self.canvas.record_entry_route(step.node, port.to_string());
+                    }
                     // A failure stays on its node, with what the log says about it,
                     // until the node takes a step that does not fail.
                     if failed {
@@ -1073,18 +1171,75 @@ impl Editor {
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
                         let id = port.to_string();
-                        let ty = document
-                            .graph
-                            .nodes
-                            .iter()
-                            .find(|view| view.id == *node)
+                        let view = document.graph.nodes.iter().find(|view| view.id == *node);
+                        if id == "spectrum"
+                            && view.is_some_and(|view| {
+                                matches!(
+                                    view.definition.as_str(),
+                                    "org.orange.audio/spectrum"
+                                        | "org.orange.audio/multiband-spectrum"
+                                )
+                            })
+                            && let orange_host::Value::List(values) = value
+                        {
+                            let bins = (0..values.len().min(96))
+                                .filter_map(|index| match values.get(index) {
+                                    Some(orange_host::Value::F64(db)) => Some(db),
+                                    _ => None,
+                                })
+                                .collect();
+                            let _ = self.canvas.spectra.insert(*node, bins);
+                        }
+                        if id == "level"
+                            && view.is_some_and(|view| {
+                                view.definition == "org.orange.audio/noise-level"
+                            })
+                            && let orange_host::Value::F64(level) = value
+                        {
+                            self.canvas.noise_readings.insert(*node, *level);
+                        }
+                        let ty = view
                             .and_then(|view| view.ports.iter().find(|shown| shown.id == id))
                             .and_then(|shown| shown.ty.as_deref());
+                        if ty.is_some_and(|ty| {
+                            ty == "org.orange.audio/stream@1" || ty.starts_with("core/stream@1<")
+                        }) {
+                            self.canvas.show_value(
+                                *node,
+                                port.to_string(),
+                                String::new(),
+                                String::new(),
+                            );
+                            continue;
+                        }
                         let Some((short, full)) = presented_value(&self.canvas.enums, ty, value)
                         else {
                             continue;
                         };
-                        self.canvas.show_value(*node, port.to_string(), short, full);
+                        let decibels = view.is_some_and(|view| {
+                            view.definition.starts_with("org.orange.audio/")
+                                && (id == "level"
+                                    || id.starts_with("band_level#")
+                                    || id == "payload"
+                                        && matches!(
+                                            view.definition.as_str(),
+                                            "org.orange.audio/band-trigger"
+                                                | "org.orange.audio/transient"
+                                                | "org.orange.audio/on-band-level"
+                                                | "org.orange.audio/on-transient"
+                                        ))
+                        });
+                        let short = if decibels {
+                            format!("{short} dBFS")
+                        } else {
+                            short
+                        };
+                        self.canvas.show_value(*node, id, short, full);
+                    }
+                }
+                FlowEvent::PortsCleared(ports) => {
+                    for (node, port) in ports {
+                        self.canvas.clear_value(*node, &port.to_string());
                     }
                 }
                 FlowEvent::Variables(changed) => {
@@ -1156,6 +1311,9 @@ impl Editor {
         self.canvas.shortcuts_enabled = !self.settings_open;
         self.keyboard(ui, host);
         layout(self, ui, host);
+        if self.window_toolbar {
+            resize_borders(ui.ctx());
+        }
         let _ = self.settings_window(ui.ctx());
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
@@ -1605,7 +1763,10 @@ impl Editor {
 
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().button_padding.x = 6.0;
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().interact_size.x = 0.0;
             let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, t("nodes"));
             let _ = ui
                 .selectable_value(&mut self.tab, Tab::Variables, t("variables"))
@@ -2005,6 +2166,22 @@ impl Editor {
         }
         if let Some((node, device)) = done.device {
             self.choose_device(host, node, device);
+        }
+        if let Some((node, edit)) = done.spectrum_edit
+            && let Some(draft) = self.editing()
+        {
+            let result = match edit {
+                canvas::BandEdit::Add(range) => host.add_filtered_audio_band(draft, node, range),
+                canvas::BandEdit::Change(band, settings) => {
+                    host.change_audio_band(draft, node, band, settings)
+                }
+                canvas::BandEdit::Move(band, at) => host.move_audio_band(draft, node, band, at),
+            };
+            let _ = self.edited(host, result);
+        }
+        if let Some(adapter) = done.refresh_devices {
+            let _ = self.adapter_choices.remove(&adapter);
+            ui.ctx().request_repaint();
         }
         self.node_config_window(ui.ctx(), host);
         self.function_window(ui.ctx(), host);
@@ -2618,9 +2795,11 @@ mod tests {
         editor.open(&mut host, "all.json", blank());
         for kind in &kinds {
             let before = editor.log().count();
+            let node_count = editor.graph().unwrap().nodes.len();
             match editor.add_node(&mut host, kind) {
                 Some(node) => {
                     let graph = editor.graph().unwrap();
+                    assert_eq!(graph.nodes.len(), node_count + 1, "{kind}");
                     let view = graph.nodes.iter().find(|found| found.id == node).unwrap();
                     // A node shows each port once.
                     let mut seen = std::collections::BTreeSet::new();

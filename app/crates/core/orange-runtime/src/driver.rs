@@ -33,6 +33,14 @@ pub enum HostInput {
         payload: Option<Value>,
         wall_ns: Option<i64>,
     },
+    /// A package source firing one declared outcome.
+    TriggerOn {
+        node: NodeId,
+        port: orange_model::id::PortKey,
+        wall_ns: Option<i64>,
+        /// Optional provider lifetime, checked again when the mailbox is drained.
+        active: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    },
     /// A value a live node's provider published (11 §10.5).
     Live {
         node: NodeId,
@@ -244,6 +252,23 @@ impl RunDriver {
                 .publish_live(*node, value.clone())
                 .map(drop)
                 .map_err(RefusedReason::Ingress),
+            HostInput::TriggerOn {
+                node,
+                port,
+                wall_ns,
+                active,
+            } => {
+                if active
+                    .as_ref()
+                    .is_some_and(|active| !active.load(std::sync::atomic::Ordering::Acquire))
+                {
+                    return Err(RefusedReason::Ingress(IngressError::NotRunning));
+                }
+                self.run
+                    .trigger_on(*node, port, None, *wall_ns)
+                    .map(drop)
+                    .map_err(RefusedReason::Ingress)
+            }
             HostInput::EffectDone { id, outcome } => self
                 .run
                 .complete_effect(*id, outcome.as_deref().map_err(Clone::clone))

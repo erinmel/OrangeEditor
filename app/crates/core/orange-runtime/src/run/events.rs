@@ -817,6 +817,17 @@ impl Run {
         payload: Option<&Value>,
         wall_ns: Option<i64>,
     ) -> Result<EventMetadata, IngressError> {
+        self.trigger_on(node, &orange_model::id::fixed_id("then"), payload, wall_ns)
+    }
+
+    /// Admit one trigger on an explicit execution output of a bound entry.
+    pub fn trigger_on(
+        &mut self,
+        node: NodeId,
+        port: &orange_model::id::PortKey,
+        payload: Option<&Value>,
+        wall_ns: Option<i64>,
+    ) -> Result<EventMetadata, IngressError> {
         if self.pump_open || !self.accepts_input() {
             return Err(IngressError::NotRunning);
         }
@@ -828,7 +839,7 @@ impl Run {
         let manual = plan
             .manuals()
             .iter()
-            .position(|manual| manual.node() == node)
+            .position(|manual| manual.node() == node && manual.port() == port)
             .ok_or(IngressError::UnknownEntry)?;
         let payload = match (plan.manuals()[manual].payload_type(), payload) {
             (Some(shape), Some(payload)) => {

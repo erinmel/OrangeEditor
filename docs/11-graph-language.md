@@ -866,16 +866,22 @@ C05 refuses this external profile. Contracts/limits/verification are in03/10/12.
 
 **Graph resources (C08a/C08b, 2026-11-07).** A run owns registered handle-kind resources through a generation-checked table. Direct `core/handle@1<K>` values are admitted on trusted effect ports, Action/Async function interfaces and `core/close-handle@1`; a handle-valued effect must have exactly one data result. Async acquisition through `complete_effect_resource` belongs to the executing dynamic region, while `resource_value` on an existing host resource preserves its run owner. Descendants borrow ancestor handles; sibling resources are unavailable. Successful Return transfers returned callee-owned handles to the caller; unreturned resources close on scope retirement. Cancellation retains acquired objects through connected bounded cleanup, then closes them once. The generic Close Handle Action has one required `handle` input, no data outputs/config, ordinary `then`/`failed`, never suspends and is cleanup-safe; authentic already-closed aliases close idempotently. Host revocation invalidates aliases and pending dependent completions. Consumption and publication authenticate issuer, run, generation, exact kind and owner ancestry; a stale reference faults `core/StaleHandle`, wrong owner `core/ResourceOwner`, other invalid references `core/InvalidHandle`. The bounded executable profile excludes resource containers, variables/registers/events, pure handle kernels, serialization and graph streams. [03](03-data-and-execution.md#graph-resource-ownership-c08b-2026-11-07) defines host admission, quotas and cleanup; verification is in 10.
 
-**Package entries (2026-11-10; FR-61).** A package or service may define an entry
-node: a definition of kind `entry` with the implicit `then` outcome and at most one
-data output, named `payload`, of a concrete non-handle, non-stream type. It is valid at
-the root only, carries an activation policy like every entry, and must be bound to an
-exact provider that offers it. The run treats it exactly as `core/on-manual`: the host
-fires it by node with a payload of the declared type, and admission, reentrancy,
-overflow and `while_paused` are the entry's own policy. What fires it is outside the
-graph: the provider's source (02). A package entry may take data inputs whose
-dependencies are available at the root (§10.5). The compiler refuses unsupported
-ports, function-local entries and missing providers.
+**Package entries (FR-61, FR-123).** A package source binds to an exact root
+entry definition and its activation policy. An implicit `then` permits a single
+optional `payload` of a concrete non-handle, non-stream type. Declared outcome
+outputs replace `then`. For the named-outcome profile, the host fires one resolved
+execution port by its full `PortKey`, including the instance counter where
+applicable. Each outcome has independent delivery capacity, reentrancy, sequence
+and pause bookkeeping under the entry's saved policy. Named outcomes carry no
+event payload in this profile. The trace names the exact port that fired.
+
+An entry can also expose computed data outputs of concrete non-handle,
+non-stream types. These receive independent continuous publications from the
+same provider. A publication stages the latest value for that port at a run
+boundary. Revoking a value makes subsequent reads fault with `core/NoValueYet`.
+Deliveries and continuous values use separate ingress paths. Variadic outputs
+require finite declared bounds. Root arguments retain the rules in §10.5.
+The compiler refuses unsupported ports, function-local entries and missing providers.
 
 ### 10.3 Envelope and causal depth
 
@@ -934,7 +940,7 @@ typed run ingress. Reads use the most recently applied sample in their consumpti
 epoch. Reading an unset slot faults with `core/NoValueYet` at the live node.
 The runtime stages one value per source and applies it at a boundary. The SDK
 host also coalesces provider bursts to the latest value and applies a 10 ms minimum
-interval per node. Intermediate externally published samples can be coalesced.
+interval per port. Intermediate externally published samples can be coalesced.
 
 Arguments of live nodes and package entries are evaluated in a single root epoch.
 The compiler accepts literals, pure cones, initialized run variables and live

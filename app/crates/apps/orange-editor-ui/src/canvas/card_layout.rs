@@ -1,8 +1,20 @@
 //! Card dimensions and port rows shared by painting, wires and hit testing.
 use super::*;
 
-pub(super) const PATH_ROW: f32 = 30.0;
-pub(super) const SOURCE_ROW: f32 = 32.0;
+pub(super) const PATH_ROW: f32 = ROW_HEIGHT;
+pub(super) const SOURCE_ROW: f32 = ROW_HEIGHT;
+
+pub(super) fn style_controls(ui: &mut egui::Ui, zoom: f32) {
+    let style = ui.style_mut();
+    style.override_font_id = Some(FontId::proportional(12.0 * zoom));
+    style.wrap_mode = Some(egui::TextWrapMode::Truncate);
+    style.spacing.item_spacing = Vec2::new(6.0, 4.0) * zoom;
+    style.spacing.button_padding = Vec2::new(6.0, 2.0) * zoom;
+    style.spacing.interact_size = Vec2::new(24.0, FIELD_HEIGHT) * zoom;
+    style.spacing.icon_width = 12.0 * zoom;
+    style.spacing.icon_width_inner = 8.0 * zoom;
+    style.spacing.icon_spacing = 4.0 * zoom;
+}
 
 /// Narrowest and widest a card is, in graph units (22 §3.1).
 const MIN_WIDTH: f32 = 160.0;
@@ -54,49 +66,72 @@ pub(super) fn literal(node: &NodeView) -> bool {
 }
 
 pub(super) fn path_port(node: &NodeView, port: &PortView) -> bool {
-    port.input && node.paths.iter().any(|path| path.port == port.id)
+    port.input && !port.connected && node.paths.iter().any(|path| path.port == port.id)
+}
+
+pub(super) fn stream_type(ty: Option<&str>) -> bool {
+    ty.is_some_and(|ty| ty == "org.orange.audio/stream@1" || ty.starts_with("core/stream@1<"))
 }
 
 /// As wide as the card's title and its widest row need (22 §3.1).
 pub(super) fn width(node: &NodeView) -> f32 {
+    if spectrum::combined(node) {
+        return 400.0;
+    }
+    if spectrum::is_noise(node) {
+        return 244.0;
+    }
     if literal(node) {
         return MIN_WIDTH;
     }
     let pad = 2.0 * CARD_PADDING;
-    // The title, the trigger arrow and the settings menu.
-    let title = text_width(&node.name) * 1.16 + pad + 44.0;
+    // Leave room for the entry arrow and any diagnostic marker.
+    let title = text_width(&node.name) * 1.12 + pad + 18.0 * f32::from(node.entry) + 20.0;
     let column = input_column(node);
-    let side = |input: bool| -> Vec<&PortView> {
+    let side = |input: bool, exec: bool| -> Vec<&PortView> {
         node.ports
             .iter()
-            .filter(|port| port.input == input && !path_port(node, port))
+            .filter(|port| port.input == input && port.exec == exec && !path_port(node, port))
             .collect()
     };
-    let (inputs, outputs) = (side(true), side(false));
     let mut widest = title;
-    for row in 0..inputs.len().max(outputs.len()) {
-        let left = inputs.get(row).map_or(0.0, |port| {
-            if port.exec {
-                text_width(&super::port_title(port)) + 36.0
-            } else {
-                let value = port.value.as_deref().unwrap_or("—");
-                let field = if has_field(port) {
-                    (text_width(value) + 14.0).clamp(44.0, 140.0)
+    for exec in [true, false] {
+        let (inputs, outputs) = (side(true, exec), side(false, exec));
+        for row in 0..inputs.len().max(outputs.len()) {
+            let left = inputs.get(row).map_or(0.0, |port| {
+                if port.exec {
+                    text_width(&super::port_title(port)) + 36.0
                 } else {
-                    0.0
-                };
-                column + 8.0 + field
-            }
-        });
-        let right = outputs.get(row).map_or(0.0, |port| {
-            // An output's name, and room for the value a run shows beside it.
-            text_width(&super::port_title(port)) + if port.exec { 22.0 } else { 64.0 }
-        });
-        widest = widest.max(pad + left + 16.0 + right);
+                    let value = port.value.as_deref().unwrap_or("—");
+                    let field = if has_field(port) {
+                        (text_width(value) + 14.0).clamp(44.0, 140.0)
+                    } else {
+                        0.0
+                    };
+                    if port.connected && !stream_type(port.ty.as_deref()) {
+                        column + 52.0
+                    } else {
+                        column + 8.0 + field
+                    }
+                }
+            });
+            let right = outputs.get(row).map_or(0.0, |port| {
+                // An output's name, and room for the value a run shows beside it.
+                text_width(&super::port_title(port))
+                    + if port.exec {
+                        22.0
+                    } else if stream_type(port.ty.as_deref()) {
+                        0.0
+                    } else {
+                        64.0
+                    }
+            });
+            widest = widest.max(pad + left + 16.0 + right);
+        }
     }
     // Pickers, paths and settings need room for a list or a field beside their name.
     if !node.paths.is_empty() || !node.references.is_empty() || settings::height(node) > 0.0 {
-        widest = widest.max(240.0);
+        widest = widest.max(204.0);
     }
     widest.clamp(MIN_WIDTH, MAX_WIDTH)
 }
@@ -111,30 +146,26 @@ pub(super) struct CardLayout {
 }
 
 impl CardLayout {
+    #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
     pub fn new(node: &NodeView) -> Self {
         let width = width(node);
         // The pickers of what the node names come after the row of steps (Enter and
         // Exit) and before the values, so Set variable reads: in, which variable,
         // which value.
         let references = settings::reference_height(node);
-        // Steps come first in a node's ports.
-        let first_shifted = usize::from(node.ports.first().is_some_and(|port| port.exec));
-        #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-        let reference_top = BODY_TOP + first_shifted as f32 * ROW_HEIGHT;
-        let input_count = node
-            .ports
-            .iter()
-            .filter(|port| port.input && !path_port(node, port))
-            .count();
-        let output_count = node.ports.iter().filter(|port| !port.input).count();
-        // A node that is only waiting for its variable shows the picker alone.
-        let rows = match input_count.max(output_count) {
-            0 if settings::has_references(node) => 0,
-            rows => rows.max(1),
-        };
-        #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-        let body_end = BODY_TOP + references + rows as f32 * ROW_HEIGHT;
-        let mut sides = [0usize; 2];
+        let mut counts = [[0usize; 2]; 2];
+        for port in node.ports.iter().filter(|port| !path_port(node, port)) {
+            counts[usize::from(!port.exec)][usize::from(port.input)] += 1;
+        }
+        let [exec, data] = counts.map(|[input, output]| input.max(output));
+        let body_top = BODY_TOP + spectrum::chart_height(node);
+        let reference_top = body_top + exec as f32 * ROW_HEIGHT;
+        let source = super::connection_footer(node);
+        let source_top = reference_top + references;
+        let data_top = source_top + source;
+        let extra = usize::from(node.ports.is_empty() && references == 0.0 && source == 0.0);
+        let body_end = data_top + (data + extra) as f32 * ROW_HEIGHT;
+        let mut sides = [[0usize; 2]; 2];
         let mut path_index = 0usize;
         let offsets = node
             .ports
@@ -146,13 +177,9 @@ impl CardLayout {
                     path_index += 1;
                     y
                 } else {
-                    let row = &mut sides[usize::from(port.input)];
-                    let shift = if *row >= first_shifted {
-                        references
-                    } else {
-                        0.0
-                    };
-                    let y = BODY_TOP + shift + (*row as f32 + 0.5) * ROW_HEIGHT;
+                    let row = &mut sides[usize::from(!port.exec)][usize::from(port.input)];
+                    let top = if port.exec { body_top } else { data_top };
+                    let y = top + (*row as f32 + 0.5) * ROW_HEIGHT;
                     *row += 1;
                     y
                 };
@@ -160,13 +187,9 @@ impl CardLayout {
             })
             .collect();
         #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-        let source_top = body_end + path_index as f32 * PATH_ROW;
-        let source = super::connection_footer(node);
+        let bottom = body_end + path_index as f32 * PATH_ROW;
         Self {
-            size: Vec2::new(
-                width,
-                source_top + source + settings::height(node) + FOOTER_HEIGHT,
-            ),
+            size: Vec2::new(width, bottom + settings::height(node) + FOOTER_HEIGHT),
             offsets,
             source_top,
             reference_top,
@@ -250,7 +273,6 @@ mod tests {
         let graph = host.draft_view(&draft).unwrap();
         let manual = graph.nodes.iter().find(|node| node.id == manual).unwrap();
         let math = graph.nodes.iter().find(|node| node.id == math).unwrap();
-        assert!(settings::has_advanced(math));
         assert_eq!(settings::height(math), 0.0);
         assert_eq!(node_size(manual).y, BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT);
         let ctx = egui::Context::default();

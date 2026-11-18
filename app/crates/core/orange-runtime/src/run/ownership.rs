@@ -574,6 +574,7 @@ impl Run {
             } = r.kind
             {
                 self.record(RunEvent {
+                    route: None,
                     activation: r.activation,
                     node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()[owner.index()]
                         .node(),
@@ -639,6 +640,7 @@ impl Run {
         let detach = *join == ForkJoin::Detach;
         let continuation = if detach {
             self.record(RunEvent {
+                route: None,
                 activation,
                 node: plan.nodes()[owner.index()].node(),
                 outcome: ControlOutcome::Completed,
@@ -706,6 +708,7 @@ impl Run {
         let activation = r.activation;
         let caller = r.continuation.take();
         self.record(RunEvent {
+            route: None,
             activation,
             node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()[owner.index()].node(),
             outcome: ControlOutcome::Completed,
@@ -870,6 +873,7 @@ impl Run {
     ) {
         let node = &plan.nodes()[owner.index()];
         self.record(RunEvent {
+            route: None,
             activation: strand.sequence,
             node: node.node(),
             outcome: ControlOutcome::Cancelled,
