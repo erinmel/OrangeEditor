@@ -104,3 +104,32 @@ fn editing_the_type_through_a_draft_keeps_the_graph_valid_until_a_used_variant_g
     let fresh = host.new_type_id(&draft).unwrap();
     assert_ne!(fresh, id);
 }
+
+#[test]
+fn an_enum_input_offers_its_choices_by_name_and_shows_the_one_written() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&graph()).unwrap();
+    let choices = host.enum_choices(&draft, &mood()).unwrap();
+    let names: Vec<_> = choices.iter().map(|choice| choice.name.as_str()).collect();
+    assert_eq!(names, ["Calm", "Happy"]);
+    assert!(host.enum_choices(&draft, "core/i64@1").is_none());
+    let value = |draft: &orange_host::Draft| {
+        let graph = host.draft_view(draft).unwrap();
+        let set = graph
+            .nodes
+            .iter()
+            .find(|shown| shown.id == node(2))
+            .unwrap();
+        set.ports
+            .iter()
+            .find(|port| port.id == "value")
+            .unwrap()
+            .value
+            .clone()
+    };
+    assert_eq!(value(&draft).as_deref(), Some("Happy"));
+    host.set_input(&mut draft, (node(2), "value"), Some(&choices[0].literal))
+        .unwrap();
+    assert_eq!(value(&draft).as_deref(), Some("Calm"));
+    assert_eq!(host.problems(&mut draft).unwrap(), []);
+}

@@ -170,6 +170,78 @@ fn nominal_schema(
     json!({"type": "object", "required": ["type"], "properties": properties})
 }
 
+/// One choice of an enum type, as an editor offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumChoice {
+    /// What values store, such as `happy`.
+    pub id: String,
+    /// What a person reads: the document's name for it, or its ID.
+    pub name: String,
+    /// The choice carries a value, so it cannot be written by name alone.
+    pub payload: bool,
+    /// The literal that writes this choice on an input, for [`Host::set_input`].
+    pub literal: String,
+}
+
+impl Host {
+    /// The choices of enum type `ty` in a draft, in declared order, named as the
+    /// document declares them; `None` when `ty` is not an enum it knows.
+    pub fn enum_choices(&self, draft: &Draft, ty: &str) -> Option<Vec<EnumChoice>> {
+        let document = draft.document();
+        enum_choices_in(document, &self.registry_for(document), ty)
+    }
+}
+
+fn enum_choices_in(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    ty: &str,
+) -> Option<Vec<EnumChoice>> {
+    let found = registry
+        .types()
+        .nominal_types()
+        .into_iter()
+        .find(|nominal| !nominal.record && nominal.name == ty)?;
+    let declared = document
+        .types()
+        .values()
+        .find(|local| local.ty().to_string() == ty)
+        .and_then(|local| match &local.shape {
+            orange_model::document::TypeShape::Enum { variants } => Some(variants),
+            orange_model::document::TypeShape::Record { .. } => None,
+        });
+    Some(
+        found
+            .members
+            .iter()
+            .map(|id| EnumChoice {
+                name: declared
+                    .and_then(|variants| variants.iter().find(|variant| &variant.id == id))
+                    .map_or_else(|| id.clone(), |variant| variant.name.clone()),
+                payload: found.with_payload.contains(id),
+                literal: json!({"type": ty, "value": {"variant": id}}).to_string(),
+                id: id.clone(),
+            })
+            .collect(),
+    )
+}
+
+/// A value on an input as a person reads it: an enum's choice by its name.
+fn value_text(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    ty: Option<&str>,
+    value: &Value,
+) -> String {
+    if let (Value::Enum { tag, payload: None }, Some(ty)) = (value, ty)
+        && let Some(choice) = enum_choices_in(document, registry, ty)
+            .and_then(|choices| choices.into_iter().nth(usize::try_from(*tag).ok()?))
+    {
+        return choice.name;
+    }
+    plain(value)
+}
+
 /// One wire from an output to an input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireView {
@@ -340,21 +412,20 @@ impl Host {
             for instance in instances {
                 let key = PortKey::new(port.port_id.clone(), instance);
                 let id = key.to_string();
+                let ty = port.ty.as_ref().map(|ty| match &settled {
+                    Some(args) => orange_model::signature::substitute_params(ty, args).to_string(),
+                    None => ty.to_string(),
+                });
                 let value = node
                     .inputs
                     .get(&key)
                     .and_then(|literal| self.value_in(document, literal).ok())
-                    .map(|value| plain(&value));
+                    .map(|value| value_text(document, registry, ty.as_deref(), &value));
                 declared.push(PortView {
                     connected: wired(node.id, &id, input),
                     input,
                     exec: port.kind != PortKind::Data,
-                    ty: port.ty.as_ref().map(|ty| match &settled {
-                        Some(args) => {
-                            orange_model::signature::substitute_params(ty, args).to_string()
-                        }
-                        None => ty.to_string(),
-                    }),
+                    ty,
                     value: value.filter(|_| input),
                     id,
                     label: None,

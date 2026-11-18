@@ -112,7 +112,9 @@ pub use preview::Previewed;
 pub use search::{CONCEPTS, Found, Match};
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
-pub use view::{GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula};
+pub use view::{
+    EnumChoice, GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula,
+};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

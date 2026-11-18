@@ -347,6 +347,7 @@ impl Editor {
         };
         let graph = host.draft_view(&draft).unwrap_or_default();
         self.canvas.load(&graph);
+        self.canvas.enums = canvas::enums_of(host, &draft, &graph);
         self.canvas.set_groups(draft.groups());
         self.document = Some(Document {
             path,
@@ -421,6 +422,7 @@ impl Editor {
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
         self.canvas.update(&document.graph);
+        self.canvas.enums = canvas::enums_of(host, &document.draft, &document.graph);
         self.canvas.set_groups(document.draft.groups());
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;

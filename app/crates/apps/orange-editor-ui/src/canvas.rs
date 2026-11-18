@@ -52,12 +52,44 @@ enum Control {
     Whole,
     Number,
     Text,
+    /// One of an enum's choices.
+    Choice,
+}
+
+/// The choices of the enum types a document's inputs use, by type.
+pub(crate) type Enums = std::collections::HashMap<String, Vec<orange_host::EnumChoice>>;
+
+/// The choices of every enum type an input of `graph` takes.
+pub(crate) fn enums_of(
+    host: &orange_host::Host,
+    draft: &orange_host::Draft,
+    graph: &GraphView,
+) -> Enums {
+    let mut enums = Enums::new();
+    let types = graph
+        .nodes
+        .iter()
+        .flat_map(|node| &node.ports)
+        .filter(|port| port.input && !port.exec)
+        .filter_map(|port| port.ty.as_deref())
+        .filter(|ty| !ty.starts_with("core/"));
+    for ty in types {
+        if !enums.contains_key(ty)
+            && let Some(choices) = host.enum_choices(draft, ty)
+        {
+            let _ = enums.insert(ty.to_owned(), choices);
+        }
+    }
+    enums
 }
 
 impl Control {
-    fn of(port: &PortView) -> Option<Self> {
+    fn of(port: &PortView, enums: &Enums) -> Option<Self> {
         if !port.input || port.exec || port.connected {
             return None;
+        }
+        if enums.contains_key(port.ty.as_deref()?) {
+            return Some(Self::Choice);
         }
         match port.ty.as_deref()? {
             "core/bool@1" => Some(Self::Toggle),
@@ -274,6 +306,8 @@ pub struct Canvas {
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
     /// The document's variables, as (ID, name), for the pickers on cards.
     pub(crate) variables: Vec<(String, String)>,
+    /// The choices of the enum types the document's inputs take.
+    pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
     pub scroll_pans: bool,
     /// Nodes let go after a move land on the grid; Alt while dragging moves freely.
@@ -334,6 +368,7 @@ impl Default for Canvas {
             shortcuts_enabled: true,
             device_pickers: BTreeMap::new(),
             variables: Vec::new(),
+            enums: Enums::new(),
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
             places: BTreeMap::new(),
@@ -1465,7 +1500,7 @@ impl Canvas {
                 rect,
                 zoom,
                 &colors,
-                (selected, fire, controls),
+                (selected, fire, controls.then_some(&self.enums)),
                 response.id,
                 formula.as_deref(),
                 self.descriptions.get(&node.definition).map(String::as_str),
@@ -1795,7 +1830,7 @@ impl Canvas {
                     rect,
                     zoom,
                     &colors,
-                    (true, None, false),
+                    (true, None, None),
                     response.id,
                     None,
                     None,
@@ -1841,7 +1876,7 @@ impl Canvas {
         slot: Rect,
         canvas: egui::Id,
     ) -> Option<(NodeId, String, String)> {
-        let control = Control::of(port)?;
+        let control = Control::of(port, &self.enums)?;
         let id = canvas.with(("control", node.id, port.id.as_str()));
         let place = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| {
             ui.scope_builder(
@@ -1854,6 +1889,26 @@ impl Canvas {
         };
         let written = |text: String| Some((node.id, port.id.clone(), text));
         match control {
+            Control::Choice => {
+                let choices = self.enums.get(port.ty.as_deref()?)?;
+                let mut chosen = None;
+                place(ui, &mut |ui| {
+                    egui::ComboBox::from_id_salt("choice")
+                        .width(slot.width())
+                        .selected_text(port.value.as_deref().unwrap_or(t("choose")))
+                        .show_ui(ui, |ui| {
+                            for choice in choices.iter().filter(|choice| !choice.payload) {
+                                let current = port.value.as_deref() == Some(choice.name.as_str());
+                                if ui.selectable_label(current, &choice.name).clicked() && !current
+                                {
+                                    chosen = Some(choice.literal.clone());
+                                }
+                            }
+                        })
+                        .response
+                });
+                chosen.and_then(written)
+            }
             Control::Toggle => {
                 let on = port.value.as_deref() == Some("true");
                 let label = match port.value.as_deref() {
@@ -2171,11 +2226,14 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, controls): (bool, Option<bool>, bool),
+    (selected, fire, enums): (bool, Option<bool>, Option<&Enums>),
     canvas: egui::Id,
     formula: Option<&str>,
     description: Option<&str>,
 ) -> (bool, Vec<(&'a PortView, Rect)>) {
+    let controls = enums.is_some();
+    let no_enums = Enums::new();
+    let enums = enums.unwrap_or(&no_enums);
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
@@ -2325,12 +2383,12 @@ fn draw_node<'a>(
             rect.right() - CARD_PADDING * zoom
         };
         // Toggles and numbers are drawn by their control instead of a field.
-        let control = Control::of(port).filter(|_| controls && readable);
+        let control = Control::of(port, enums).filter(|_| controls && readable);
         let style = PortStyle {
             readable,
             field: !matches!(
                 control,
-                Some(Control::Toggle | Control::Whole | Control::Number)
+                Some(Control::Toggle | Control::Whole | Control::Number | Control::Choice)
             ),
             hinted: control.is_none(),
             definition: &node.definition,
@@ -2348,7 +2406,7 @@ fn draw_node<'a>(
                 Control::Whole | Control::Number => {
                     (value_end - left).clamp(36.0 * zoom, 140.0 * zoom)
                 }
-                Control::Text => (value_end - left).max(36.0 * zoom),
+                Control::Text | Control::Choice => (value_end - left).max(36.0 * zoom),
             };
             let slot =
                 Rect::from_min_size(Pos2::new(left, y - height / 2.0), Vec2::new(width, height));
@@ -2373,7 +2431,7 @@ pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, name: &str, rect: Rec
         rect,
         zoom,
         &Palette::of(ui),
-        (false, None, false),
+        (false, None, None),
         ui.scope_id().with("catalogue-card"),
         comparison_formula(&node.definition),
         None,
@@ -3189,24 +3247,27 @@ mod tests {
             label: None,
         };
         assert_eq!(
-            Control::of(&port("core/bool@1", false)),
+            Control::of(&port("core/bool@1", false), &Enums::new()),
             Some(Control::Toggle)
         );
         assert_eq!(
-            Control::of(&port("core/i64@1", false)),
+            Control::of(&port("core/i64@1", false), &Enums::new()),
             Some(Control::Whole)
         );
         assert_eq!(
-            Control::of(&port("core/f64@1", false)),
+            Control::of(&port("core/f64@1", false), &Enums::new()),
             Some(Control::Number)
         );
         assert_eq!(
-            Control::of(&port("core/string@1", false)),
+            Control::of(&port("core/string@1", false), &Enums::new()),
             Some(Control::Text)
         );
         // A wired input and a type without a control get none.
-        assert_eq!(Control::of(&port("core/i64@1", true)), None);
-        assert_eq!(Control::of(&port("core/list@1<core/i64@1>", false)), None);
+        assert_eq!(Control::of(&port("core/i64@1", true), &Enums::new()), None);
+        assert_eq!(
+            Control::of(&port("core/list@1<core/i64@1>", false), &Enums::new()),
+            None
+        );
     }
 
     #[test]

@@ -803,6 +803,24 @@ impl Editor {
                     ui.weak(t("from-a-wire"));
                     return;
                 }
+                if let Some(choices) = port.ty.as_deref().and_then(|ty| self.canvas.enums.get(ty)) {
+                    let _ = egui::ComboBox::from_id_salt(("orange-choice", port.id.as_str()))
+                        .width(ui.available_width())
+                        .selected_text(port.value.as_deref().unwrap_or(t("choose")))
+                        .show_ui(ui, |ui| {
+                            for choice in choices.iter().filter(|choice| !choice.payload) {
+                                let current = port.value.as_deref() == Some(choice.name.as_str());
+                                if ui.selectable_label(current, &choice.name).clicked() && !current
+                                {
+                                    write = Some(Change::Input(
+                                        port.id.clone(),
+                                        Some(choice.literal.clone()),
+                                    ));
+                                }
+                            }
+                        });
+                    return;
+                }
                 if port.ty.as_deref() == Some("core/bool@1") {
                     let mut on = port.value.as_deref() == Some("true");
                     if ui.checkbox(&mut on, "").changed() {
