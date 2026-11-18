@@ -2367,7 +2367,7 @@ fn draw_node<'a>(
     let layout = card_layout::CardLayout::new(node);
     let shared_rows = node.ports.iter().filter(|port| !port.input).count();
     #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-    let shared_end = BODY_TOP + shared_rows as f32 * ROW_HEIGHT;
+    let shared_end = BODY_TOP + settings::reference_height(node) + shared_rows as f32 * ROW_HEIGHT;
     let mut slots = Vec::new();
     for (port, offset) in node.ports.iter().zip(&layout.offsets) {
         let y = rect.top() + offset.y * zoom;

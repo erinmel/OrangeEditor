@@ -1,5 +1,5 @@
 //! Common card settings, with numeric policies disclosed in the header menu, and the
-//! variable a node names, chosen on the card.
+//! variable a node names, chosen at the top of the card.
 use super::*;
 
 /// Height of a row that chooses a declaration, such as a node's variable.
@@ -69,16 +69,20 @@ fn row_height(schema: &serde_json::Value) -> f32 {
     }
 }
 
+/// The height of the settings rows under a card's ports.
 pub(super) fn height(node: &NodeView) -> f32 {
+    fields(node).map(|(_, schema)| row_height(schema)).sum()
+}
+
+/// The height of the pickers over a card's ports: what a node names comes first, so
+/// Set variable reads "this variable, this value".
+pub(super) fn reference_height(node: &NodeView) -> f32 {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a node names a few declarations"
     )]
-    let references = variable_pointers(node).count() as f32 * REFERENCE_ROW;
-    references
-        + fields(node)
-            .map(|(_, schema)| row_height(schema))
-            .sum::<f32>()
+    let rows = variable_pointers(node).count() as f32;
+    rows * REFERENCE_ROW
 }
 
 /// The chooser of the variable at `pointer` among `variables` (ID, name), with a way
@@ -101,7 +105,7 @@ fn variable_field(
             |(_, name)| name.clone(),
         );
     let mut edit = None;
-    ui.label(egui::RichText::new(t("variable")).small());
+    ui.label(t("variable"));
     let _ = egui::ComboBox::from_id_salt("variable")
         .width(width)
         .wrap_mode(egui::TextWrapMode::Truncate)
@@ -264,7 +268,7 @@ pub(super) fn draw(
     zoom: f32,
     variables: &[(String, String)],
 ) -> Option<CardEdit> {
-    let mut y = rect.bottom() - (FOOTER_HEIGHT + height(node)) * zoom;
+    let mut y = rect.top() + super::card_layout::CardLayout::new(node).reference_top * zoom;
     let mut changed = None;
     let scoped = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0) * zoom;
@@ -295,6 +299,7 @@ pub(super) fn draw(
             },
         );
     }
+    y = rect.bottom() - (FOOTER_HEIGHT + height(node)) * zoom;
     for (name, schema) in fields(node) {
         let slot = Rect::from_min_size(
             egui::pos2(rect.left() + CARD_PADDING * zoom, y),

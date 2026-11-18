@@ -37,11 +37,21 @@ pub(super) struct CardLayout {
     pub size: Vec2,
     pub offsets: Vec<Vec2>,
     pub source_top: f32,
+    /// Where the pickers of what the node names start, in graph units from the top.
+    pub reference_top: f32,
 }
 
 impl CardLayout {
     pub fn new(node: &NodeView) -> Self {
         let width = width(node);
+        // The pickers of what the node names come after the row of steps (Enter and
+        // Exit) and before the values, so Set variable reads: in, which variable,
+        // which value.
+        let references = settings::reference_height(node);
+        // Steps come first in a node's ports.
+        let first_shifted = usize::from(node.ports.first().is_some_and(|port| port.exec));
+        #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
+        let reference_top = BODY_TOP + first_shifted as f32 * ROW_HEIGHT;
         let input_count = node
             .ports
             .iter()
@@ -54,7 +64,7 @@ impl CardLayout {
             rows => rows.max(1),
         };
         #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-        let body_end = BODY_TOP + rows as f32 * ROW_HEIGHT;
+        let body_end = BODY_TOP + references + rows as f32 * ROW_HEIGHT;
         let mut sides = [0usize; 2];
         let mut path_index = 0usize;
         let offsets = node
@@ -68,7 +78,12 @@ impl CardLayout {
                     y
                 } else {
                     let row = &mut sides[usize::from(port.input)];
-                    let y = BODY_TOP + (*row as f32 + 0.5) * ROW_HEIGHT;
+                    let shift = if *row >= first_shifted {
+                        references
+                    } else {
+                        0.0
+                    };
+                    let y = BODY_TOP + shift + (*row as f32 + 0.5) * ROW_HEIGHT;
                     *row += 1;
                     y
                 };
@@ -85,6 +100,7 @@ impl CardLayout {
             ),
             offsets,
             source_top,
+            reference_top,
         }
     }
 }
@@ -204,7 +220,7 @@ mod reference_tests {
     use super::*;
 
     /// A variable node chooses its variable on the card: before it names one, the
-    /// picker is its whole body, and once it does, the picker sits under its ports.
+    /// picker is its whole body, and once it does, the picker comes before its ports.
     #[test]
     fn variable_nodes_carry_their_picker_on_the_card() {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
@@ -217,7 +233,10 @@ mod reference_tests {
         assert!(node.ports.is_empty());
         assert!(settings::has_references(node));
         let layout = CardLayout::new(node);
-        assert_eq!(layout.source_top, BODY_TOP);
-        assert!(layout.size.y >= BODY_TOP + settings::height(node) + FOOTER_HEIGHT);
+        assert_eq!(
+            layout.source_top,
+            BODY_TOP + settings::reference_height(node)
+        );
+        assert!(settings::reference_height(node) > 0.0);
     }
 }
