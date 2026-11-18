@@ -61,6 +61,20 @@ cargo run -p orange-cli --locked -- check app/crates/apps/orange-cli/graphs/set-
 cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/set-on-trigger.json
 ```
 
+Open [connection-smoke.json](app/crates/apps/orange-cli/graphs/connection-smoke.json)
+in the desktop editor to try JSON, feedback and connections. Start the graph and
+trigger **Run JSON and feedback** three times. **Runs** reaches 3, **Threshold
+crossings** reaches 1, and **Previous run count** reaches 2. **Reject an invalid
+HTTP path** takes the failed route without a server. The HTTP, HTTPS and WebSocket
+groups name the local endpoints they use. HTTP and HTTPS expect JSON at `/demo`.
+HTTPS requires a certificate valid under the adapter's trust policy. The
+WebSocket group expects a JSON echo at `/echo`. The HTTP and WebSocket success
+test starts its own peers on available loopback ports:
+
+```console
+cargo test -p orange-net --locked --test connection_smoke -- --ignored
+```
+
 A front end attaches through `orange-host` alone; [examples/attach.rs](app/crates/platform/orange-host/examples/attach.rs) is a complete one in a single file (`cargo run -p orange-host --example attach --locked`). `orange nodes` lists every usable node with its name and category, `orange packages` the built-in and stored packages, `orange remove <id> <version>` takes one out of the store, and `orange updates [--apply]` reads each stored package's update feed and installs newer releases after checking their digest. [orange-audio](app/crates/services/orange-audio) is the base audio package: output and input device connections (`orange devices` lists the names), play, stop and input-level nodes and an entry fired when the input level reaches a threshold; `--no-audio` leaves it out. Linux builds need the ALSA development headers (`libasound2-dev`).
 
 A Rust plugin can also be a dynamic library: [orange-plugin-example](app/crates/dev/orange-plugin-example) is one (`crate-type = ["cdylib"]`, `orange-sdk`, one `export_plugin!` line), and `orange --plugins <dir>` loads every library in a directory at start through [orange-native](app/crates/platform/orange-native). Such a plugin must be built with the application's compiler and lockfile, is not sandboxed, and runs at your own risk.

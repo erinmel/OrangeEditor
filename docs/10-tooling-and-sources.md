@@ -6439,3 +6439,85 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - `RUSTFLAGS="-W unreachable_pub" cargo check --lib` for orange-runtime, -model, -host,
   -compiler, -net and -packages reports no unreachable `pub` item after the sweep, and
   the default build reports no dead code.
+
+### Live sources, conditions, audio, brokers and files - 2026-11-17
+
+Verification used Rust and Cargo 1.99.1 (`x86_64-pc-windows-msvc`), the
+workspace's default features unless specified and the unchanged locked dependency
+set. `Cargo.lock` SHA-256 is
+`01032f6d4c5dfb897f7f5c1284a9e30c7650d82db94936340b45432cf07c06be`.
+Cargo used the checkout's ignored `target` because the configured global target
+directory denied writes. OneDrive reported fallback copies for incremental cache
+hard links.
+
+- `cargo test --workspace --exclude orange-net --locked --no-fail-fast`
+  passed 1,995 tests, with zero failures and 23 ignored. This includes the three
+  `orange-host` live integration tests for typed coalescing, source re-arming,
+  stale callbacks and disposal. `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` and
+  `node tools/check-cargo-metadata.mjs` passed.
+- `cargo test -p orange-bundled --locked --test integration run_events::watch::`
+  passed nine tests, including the version-1 compatibility and numeric Watch
+  cases. `cargo test -p orange-desktop --locked --bin orange-editor keyboard::`
+  passed two keyboard tests. The keyboard graph overrides its F8 setting with F9.
+- `cargo test -p orange-audio --locked --lib --tests` passed 60 tests with six
+  hardware tests ignored. A generated 120 BPM WAV drove both level reads, three
+  When crossings, three onsets and one finish event. The same target exercised
+  the Band trigger template, independent readers and source close/reopen. No
+  physical playback device, desktop audio screenshots or capture device was used.
+- `cargo test -p orange-files -p orange-sandbox --locked --lib --tests` passed
+  13 tests. Windows denied `mklink /J`. The manual junction check is
+  `cargo test -p orange-files --locked recursive_actions_and_enumeration_do_not_follow_a_real_escape_link -- --ignored`.
+- `cargo test -p orange-net --locked --lib` passed 13 tests and
+  `cargo test -p orange-net --locked --test mqtt new_mqtt_entries` passed.
+  AMQP handshakes, confirms, content frames and consumer acknowledgements ran
+  against in-memory protocol transcripts. On the full workspace run the AMQP,
+  HTTP, MQTT and WebSocket targets requiring socket access timed out. A separate
+  TCP listener/client probe on loopback returned Windows socket access denied.
+  The host test fixture's stop-state check was corrected and passed in the
+  subsequent non-network workspace run. The broker check requires `ORANGE_AMQP_BROKER` and
+  `ORANGE_AMQP_QUEUE`, then `cargo test -p orange-net --locked --test amqp -- --ignored`.
+  Protocol sources: [AMQP 0-9-1 reference](https://www.rabbitmq.com/resources/specs/amqp-xml-doc0-9-1.pdf)
+  and [RabbitMQ acknowledgements and confirms](https://www.rabbitmq.com/docs/confirms).
+- PipeWire 1.6.11 command behavior was checked against its
+  [pw-cat documentation](https://docs.pipewire.org/page_man_pw-cat_1.html).
+  Windows tests exercised the PipeWire parser and PCM assembly. On a Linux host
+  playing audio in the selected app, set `ORANGE_AUDIO_TEST_APP` to a unique
+  label substring and run
+  `cargo test -p orange-audio --locked --lib the_selected_application_feeds_the_capture_ring -- --ignored`.
+  Linux live routing remains unverified. Windows process capture remains pending:
+  the pinned-candidate WASAPI wrapper was unavailable in the Cargo cache and
+  the registry and crate download host did not resolve. Review platform APIs in
+  [05, Application playback and virtual cables](05-services-and-platforms.md#application-playback-and-virtual-cables).
+
+### Connection and feedback audit - 2026-11-17
+
+The Windows x64 run used Rust and Cargo 1.99.1, default features and the same
+locked dependency set as above. No dependencies changed.
+
+- `cargo test --workspace --exclude orange-net --locked --offline --no-fail-fast`
+  passed 1,998 tests with 23 ignored. Two feedback regressions first failed
+  with `InvalidState` and a stale Watch result of 11 (expected 21). They passed
+  after retaining each host write's payload and restarting an interrupted
+  consumption epoch. The live-value test also publishes to an unrelated node
+  whose ID sorts in a different order from the document, with no extra Watch
+  evaluation.
+- `cargo test -p orange-net --locked --offline --lib --test connection_smoke`
+  exercised endpoint validation, the WebSocket queue limits and a complete
+  close exchange in memory, plus persisted graph execution without a server.
+  The active TCP probe returned Windows socket access denied. The HTTP and
+  WebSocket success test is opt-in because it needs loopback. HTTPS connection
+  settings were checked locally. A successful TLS exchange was not verified here.
+- The smoke graph opened at 1280×800 in the native Windows editor. Before
+  cleanup the Variables list occupied most of the node palette and Properties
+  showed an empty Set-up section for a JSON node. After cleanup the palette
+  categories were visible, Properties went straight to Inputs, and the five
+  named groups identified the graph's lanes. The desktop could not persist
+  preferences in this environment. The editor suite checks the When field
+  order and exact `u64::MAX` threshold.
+- `cargo run --release -p orange-measure --locked -- --warmup 3 --runs 15 scalar-chain`
+  measured a 16-add chain over 1,000 iterations at 1.462 ms median per run and
+  1.40 µs p95 per pump at budget 64. This is a local measurement of that workload.
+  Separately, live dispatch now uses compiled dependency lists, and JSON Get
+  scans for the last matching member directly. No before/after timing was taken
+  for those paths.

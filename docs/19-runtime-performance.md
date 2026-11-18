@@ -318,3 +318,77 @@ and peak live bytes in every Fork and serial workload; Fork 4,000 peaks 28% lowe
 allocates 97% less often. Map memos are created when the plan checks its literals,
 outside the measured window. These are requested/live allocator measurements, not
 resident-set measurements, and no reference-machine or tail qualification is claimed.
+
+## Core verification on `polish/ui-reinforcement` (2026-11-18)
+
+Baseline `3a7f22e` was compared with an isolated snapshot of the current core
+changes, including the segment fix below. Both snapshots used the same `Cargo.lock`
+(SHA-256 `01032F6D4C5DFB897F7F5C1284A9E30C7650D82DB94936340B45432CF07C06BE`).
+The SHA-256 of the candidate's core file manifest is
+`8B7EA3527844E6D5DA505D21DB7AD4D29CBCFFB4E32D333891F591D99F974753`.
+The host was Windows x64 (build 26300) on a Ryzen 9 9900X3D with 12 physical cores,
+24 logical CPUs and approximately 31 GiB available to the runtime. Power plan was
+High performance. Rust and Cargo were both 1.99.1 with the MSVC target. These
+local measurements cover runtime sessions with a virtual clock. Compilation,
+editor rendering and external I/O are outside the measurement window. The
+reference-machine gates described in [06](06-quality-and-validation.md) remain open.
+
+### Method
+
+- Each snapshot used its own Cargo target directory. Builds ran with
+  `CARGO_INCREMENTAL=0`, empty `RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`, and the
+  workspace's release profile (thin LTO and one codegen unit). The timing build
+  command was `cargo build --manifest-path <snapshot>/Cargo.toml --target-dir <target> --release --locked --offline -p orange-measure --bin orange-measure --example feedback --no-default-features`.
+  The allocation build used the default features and `--example feedback_memory`.
+- The full execution suite ran with `--execution --budget 64 --warmup-seconds 1 --runs 30`.
+  Three fresh processes per build ran in baseline, candidate, candidate,
+  baseline, baseline, candidate order. A filtered retest used 100 runs per
+  process for scalar-chain and the 1,000-entry host-map input. Another filtered
+  retest used 80 runs per process with the same build order and a one-CPU process
+  affinity mask of `4`. Each reported percentile is the median of three process
+  percentiles unless specified. Allocation windows were captured separately with
+  `--execution --budget 64 --warmup 3 --runs 5`.
+- The feedback graph contains one `On Variable Changed` entry and 1, 128 or 512
+  `On Watch` entries. Only one watched variable changes. Each independent write
+  is followed by pumps to idle, and each run checks the last `previous` value and
+  the count of accepted notifications. The timing probe uses a budget of 64,
+  at least five warmups and a second of warmup per graph size, and 30 measured
+  runs per process. The allocator probe uses five warmups and five measured runs.
+  Both source probes and the raw output are under `.artifacts/core-perf-pass/`.
+
+### Feedback delivery and scaling
+
+On the baseline, after 1,000 independent writes, the `previous` output was 63
+instead of 999. A completed segment was keeping its owner, so an idle host write
+could inherit the previous handler's causal depth. The segment now releases its
+owner at close. The candidate delivered all 2,000 notifications in each stress
+session. `independent_host_writes_do_not_inherit_a_finished_segments_causal_depth`
+regresses this case with and without an `On Watch` entry. The existing causal
+recursion guard also passed its test.
+
+Both builds completed the 48-write comparison with 96 notifications. The allocator
+counts include startup, feedback and disposal.
+
+| Watches | Baseline pumps | Candidate pumps | Baseline peak heap bytes | Candidate peak heap bytes | Baseline cumulative requested bytes | Candidate cumulative requested bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 96 | 49 | 9,220 | 9,525 | 164,406 | 173,599 |
+| 128 | 101 | 54 | 101,991 | 111,519 | 1,185,179 | 1,203,579 |
+| 512 | 119 | 72 | 383,463 | 421,023 | 4,273,691 | 4,320,123 |
+
+At 1,000 writes the candidate requested 3.48 MB, 22.16 MB and 78.65 MB cumulatively
+as the Watch count increased. Peak incremental live heap stayed at 9,525, 111,519
+and 421,023 bytes. `Watches::schedule` walks the dependency lists of all Watches
+to schedule changes to run variables. Live-value updates already have reverse
+dependency lists in `Watches::schedule_live`. Also, `Run::dispatch_event`
+creates a new `DataActivation` per accepted entry it dispatches. That activation
+allocates registers, memo slots and work capacity from the shared data plan,
+including slots for inactive Watch reads in this graph. These code paths account
+for scaling with graph size. This pass measured whole sessions, so the contribution
+of each path to wall time was not isolated.
+
+### Verification commands
+
+- `cargo test --target-dir target -p orange-runtime -p orange-bundled --locked --offline`
+  passed with 877 tests, zero failures and six ignored.
+- `cargo clippy --target-dir target -p orange-runtime -p orange-bundled --all-targets --locked --offline -- -D warnings`
+  passed. `cargo fmt --all --check` and `git diff --check` passed.

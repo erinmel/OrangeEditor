@@ -14,6 +14,12 @@ The manual node exposes an accessible on-node test button; it enqueues one activ
 
 Global registration, permission/session restrictions, conflict handling, release detection and teardown require per-OS evidence (P-07), not an inference from editor keyboard shortcuts. A plugin-defined trigger registers its payload schema and source lifetime through the normal event-source service; it cannot invoke a graph handler directly or inject arbitrary OS hooks into the core.
 
+The desktop's On key pressed definition version 2 accepts a logical key name
+through its `key` input. An empty input uses the node's configured key (F8 by
+default), modifiers and repeat rules remain settings, and focused editing and
+reserved editor shortcuts retain priority. Version 1 remains loadable. Global
+registration requires a separate platform adapter.
+
 ## Files and paths
 
 `FileService` exposes bounded read/write streams, text codecs, replace/append, list/filter/watch and native path picker handles. User-selected roots become grants bound to package/workspace, requested operations and resolved directory identity. Path text is not an authorization boundary: reject traversal, resolve symlinks/reparse points under platform semantics, and use directory-relative handles/no-follow primitives where available to avoid check-then-open races. If the adapter cannot enforce a restricted-root operation safely it refuses it. Paths are OS-native data internally; UI display may be lossy but stored paths must not assume every Unix filename is valid UTF-8. Graph portable paths are workspace-relative or user-remappable asset references. Case sensitivity, normalization, reserved names and rename semantics are tested per filesystem; no global lowercasing.
@@ -129,11 +135,27 @@ and links leading out of the folder are refused. A write goes to a temporary fil
 the same directory, is flushed and renamed over the target. A read or write of a
 whole file, and one piece read or appended, is at most 64 MiB; a larger file is walked
 with `size`, `read-range` and `append-bytes`, and `copy` and `move` have no size limit
-because they never hold the content; a listing or a watched folder holds at most 10,000 entries.
-`on-change` compares sizes and modification times every `poll_ms`, so several changes
-to one file within that time fire once and a change that restores both is not seen.
-Not provided: streams for larger files, operating-system change notifications, text encodings other than
-UTF-8.
+because they never hold the content. Listings, recursive operations and watcher snapshots
+are bounded to 10,000 descendants. `copy-directory` also caps copied bytes at 1 GiB.
+`copy-directory` and `move-directory` require a new destination under an existing
+parent, and a move stays on the same filesystem. `delete-directory` cannot remove
+the connected root. Tree mutations refuse links and reparse points and tree listings
+skip them. Concurrent external mutation can interrupt an operation.
+
+`list-filtered` accepts a relative `path`, `pattern` and `recursive` switch.
+Patterns are case-sensitive. `*` and `?` match within a path component, and a
+standalone `**` matches zero or more components. A pattern without a slash matches
+the basename. `file-info` reports `is_directory`, `bytes` (zero for a directory),
+optional `modified_unix_ms` and `read_only`.
+
+`on-path-change` accepts a wired `folder` relative to the connection. An empty
+input watches the connected folder. It publishes JSON with `kind`, `path`,
+`previous_path` and `is_directory`. The legacy `on-change` emits string paths
+and uses both old and new paths for recognized renames. Polling starts from a
+silent baseline and coalesces changes between polls. Renames are inferred from
+file identity on Unix and matching metadata on Windows. Ambiguous matches are
+reported as deletion and creation. Oversized snapshots report a source fault
+and recovery takes a new silent baseline. These are bounded polling snapshots.
 
 Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
 (11 §16.1), graph and shared scope, and adapter-owned sessions (02).
@@ -145,7 +167,9 @@ takes the node's `failed` route with an `org.orange.net/*` code. `http://` and
 `https://` endpoints work. TLS is rustls with the ring provider; certificates and host
 names are verified against the bundled Mozilla roots (`webpki-roots`), not the system
 trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
-are not implemented.
+are not implemented. The HTTP base must be absolute, with an explicit host and
+without URL user information, a query or a fragment. Put the query on the
+individual request path. A WebSocket URL may include its resource query.
 
 Answers and failures (2026-11-15, FR-107): the request nodes also return `success`,
 true for 200 to 299, so a graph branches on it while a 404 or 500 still arrives as
@@ -158,9 +182,13 @@ WebSocket (2026-11-10): adapter `org.orange.net/websocket`, setting `url` (`ws:/
 `wss://`, same TLS stack). A session is one socket with its own I/O thread, started
 when the connection is opened; it connects in the background and reconnects with
 backoff from 250 ms to 5 s. `org.orange.net/ws-send` queues one text message (input
-`text`) and completes at once: `then` means queued, not delivered. Up to 256 messages
-wait while the socket is down or busy and are written in order when it is up; beyond
-that the node fails with `org.orange.net/Busy`. The entry `org.orange.net/ws-message`
+`text`) and completes at once: `then` means queued, not delivered. Up to 256 text
+or binary messages and 16 MiB of payload wait while the socket is down or busy.
+The limits include the head being written. The worker checks incoming traffic
+between batches, bounds socket writes to two seconds each and flushes its close
+reply when the server initiates shutdown. A failed write can be retried after
+reconnection, so delivery needs an application-level receipt when duplicates
+matter. Sending beyond the limits fails with `org.orange.net/Busy`. The entry `org.orange.net/ws-message`
 fires once per received text message with the text as `payload`, for every diagram
 listening on that session, so diagrams sharing a connection share one socket and all
 hear each message. A diagram whose mailbox is full misses that message. Binary
@@ -209,13 +237,36 @@ Each request carries owner/generation/deadline, typed payload/stream and a check
 | HTTP/HTTPS | HTTP/1.1 and HTTP/2 via compatible client; methods/headers/query/multipart/JSON/bytes/streams; retain status, headers and body separately. Automatic retry only with explicit safe/idempotent/replayable-body rule; 429/Retry-After observed. TLS and redirect policy from profile. HTTP/3 is later. |
 | WebSocket | RFC6455 text/binary, fragmentation/message limits, ping/pong/close, subprotocols and bounded receiver. One stream consumer owner with explicit fan-out subscriptions. Reconnect opens a new session; delivery/replay of lost messages is application policy. |
 | MQTT | **Conditional; FR-25.** Select 5.0 or 3.1.1; client ID, clean start/session expiry, topic filters, QoS 0/1/2, retain and last will. Preserve retained/duplicate/QoS metadata; protocol QoS does not make downstream file writes exactly once. Limit inflight publishes and account for broker/session reconnect state. |
-| AMQP | **Outside foundation delivery.** A later package must explicitly select **AMQP 0-9-1** or a separately implemented version. Typed virtual host/exchange/queue/routing key/bindings; channel lifetime, consumer prefetch, publisher confirms, manual ack/nack/requeue and redelivery metadata. Ack after declared graph processing success; failure/deadline applies configured reject/requeue policy. RabbitMQ initial fixture; no claim Azure/AMQP1.0 interoperability. |
+| AMQP | The built-in adapter implements AMQP 0-9-1, using existing broker topology, publisher confirms and manual consumer acknowledgements after host mailbox admission. Processing-success acknowledgement remains a separate capability. AMQP 1.0 requires a different adapter. |
 | REST | **Outside foundation delivery.** HTTP-oriented convenience nodes for resource paths, status mapping, pagination and schema decoding. No separate transport or universal service schema. |
 | GraphQL | **Outside foundation delivery.** Query/mutation operationName/variables over HTTP; retain GraphQL `data` and `errors` together, separate from HTTP failure. Subscription uses explicitly negotiated **graphql-transport-ws**; legacy `graphql-ws` subprotocol is not silently substituted. Schema import/introspection optional; credentials and introspection permission explicit. |
 | gRPC | **Outside foundation delivery.** HTTP/2 plus protobuf `FileDescriptorSet`/import resolution; select fully qualified service/method and reflect dynamic messages. Unary/client-stream/server-stream/bidirectional have separate node contracts and bounded stream handles. Preserve status/details/trailers/metadata/deadlines; cancel each direction and drain half-close correctly. Reflection is optional and server-dependent; descriptor import works without it. gRPC-Web and arbitrary custom codecs are later. |
 | Webhooks | **Optional plugin; FR-29.** Outbound HTTP node templates. Inbound explicit listener with default loopback bind, chosen port, route/method, finite body/deadline/concurrency limits and provider-specific bearer/HMAC signature verification, replay window/dedup policy. Public bind/TLS requires explicit configuration; no automatic firewall/NAT/tunnel changes. A response token is completed once before timeout; stop closes owned listeners and outstanding responses safely. |
 
 AMQP 1.0 is a different separately versioned optional adapter, not a baseline commitment. The broker matrix must name versions and test features; shared terminology such as queue/ack does not prove wire compatibility. Long-running gRPC/GraphQL streams and MQTT subscriptions use the runtime's bounded event policy, with transport-specific recovery; loss is reported rather than fabricated catch-up.
+
+### AMQP 0-9-1 and wired MQTT filters
+
+`org.orange.net/amqp` accepts `amqp://` (5672) or `amqps://` (5671). Settings
+include a URL or separate virtual host, username and a credential-backed password,
+exchange, queue, routing key, optional queue binding keys, prefetch (1–256),
+heartbeat (5–300 seconds) and an optional custom `ca_file`. Broker topology is
+provisioned separately, and setting binding keys requests the corresponding bindings.
+
+`amqp-publish` and `amqp-publish-bytes` take a wireable routing key with a profile
+fallback. The publisher has a 16-item queue, accepts payloads up to 8 MiB and waits
+up to 15 seconds for a confirm. A return, NACK or connection loss is a typed failure.
+An ambiguous in-flight publish is released to the caller as a failure for an
+explicit retry decision. `amqp-message` and `amqp-binary` take a queue input with
+a profile fallback. They deliver exchange, routing key, redelivery status and
+text or bytes in typed records. Each armed consumer uses one worker and reconnects
+with bounded backoff. The consumer acknowledges on admission to the host
+mailbox. Busy or closed admission requests broker requeue, and invalid UTF-8 on
+the text entry rejects without requeue.
+
+MQTT message entry version 2 accepts a wireable topic filter. Empty input uses
+the connection's configured filters, and version 1 stays available to saved
+graphs. QoS 2 is selectable in the profile settings.
 
 ## Audio architecture
 
@@ -394,7 +445,44 @@ Listening is done by **entries and nodes with their own settings**, not by the c
 
 Transport belongs to the file source: Play, Pause, Resume, Stop and Jump to time act on that source alone, and On finished fires at its end. Pause sounds, Resume sounds, Jump to time and Set volume still act on every sound of an output connection.
 
-Not done yet: signal wires (ADR-30 phase 2), a spectrum and hit-history viewer, an editor meter that reads the running flow's analyzer instead of its own capture, streaming long files from disk (files are decoded whole, up to `MAX_SECONDS`), and a band-pass or EQ in the playback path.
+The live Audio source node publishes the existing `org.orange.audio/stream@1`
+record. Level and Band level take that stream and publish `f64` dBFS values.
+Audio format returns its sample rate and channel count. Transient and Source
+finished take the stream as a root argument. Source control applies transport to
+that file source, and Sound control applies transport and gain to the chosen
+output. A Band trigger template places Band level and When with a default
+threshold of −20 dBFS, release at −26 dBFS and hold of 50 ms. These nodes share
+the existing capture ring and use provider workers for analysis. The older
+definitions remain usable in saved graphs and are hidden from new placement.
+
+A spectrum and hit-history viewer, disk-streamed file transport and an output
+EQ remain future work.
+
+### Application playback and virtual cables
+
+On Linux, the source selector uses `pw-dump` to list active playback streams
+and `pw-record` to feed the selected stream's raw stereo samples into the
+capture ring. The identifier combines the PipeWire session and stream serial.
+If the session changes or the stream ends, select the app's new stream. Capture
+requests disable WirePlumber fallback, reconnection and moving so a missing
+target cannot silently redirect the capture. Missing tools or a running
+PipeWire server surface as a source-picker status.
+[PipeWire pw-cat 1.6.11](https://docs.pipewire.org/page_man_pw-cat_1.html)
+[WirePlumber linking policy](https://pipewire.pages.freedesktop.org/wireplumber/policies/linking.html)
+
+Windows keeps WASAPI device and system loopback. Native app capture is pending a
+verified safe Rust binding. The process-loopback API requires Windows build
+20348 or later. The selector labels recognized VB-Cable and VoiceMeeter
+endpoints so the app can be routed to their capture side.
+[Microsoft process-loopback parameters](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params)
+
+macOS reports native app capture unavailable. Route the app through a virtual
+endpoint such as BlackHole and select its capture device. A future native
+adapter can use Core Audio process taps on macOS 14.2 or later with the
+system-audio recording permission. ScreenCaptureKit has a separate screen
+recording permission and capture lifecycle.
+[Apple Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+[Apple ScreenCaptureKit sample](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos)
 
 ## Specialized integrations
 
