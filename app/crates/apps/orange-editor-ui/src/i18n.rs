@@ -7,7 +7,7 @@
 //! English.
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, OnceLock};
 
 pub use orange_host::Arg;
@@ -36,6 +36,8 @@ thread_local! {
     /// Text formatted once for a language and kept for the life of the program:
     /// at most every message in every language.
     static KEPT: RefCell<HashSet<&'static str>> = RefCell::new(HashSet::new());
+    /// The host's names of ports in the current language, by port ID with "_" as "-".
+    static PORTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 
 /// Adds an application's own catalogues, such as the desktop's dialog text, to the
@@ -51,6 +53,18 @@ pub fn set_language(tag: &str) {
             tag.clone_into(language);
         }
     });
+}
+
+/// Names ports with `names` from now on, on this thread: the host's port names in
+/// the current language ([`orange_host::Host::port_names`]).
+pub fn set_port_names(names: Vec<(String, String)>) {
+    PORTS.set(names.into_iter().collect());
+}
+
+/// The name of port `id`, such as `max_items`, in the current language, if the
+/// host gave one.
+pub(crate) fn port_name(id: &str) -> Option<String> {
+    PORTS.with_borrow(|names| names.get(&id.replace('_', "-")).cloned())
 }
 
 /// The language text is shown in on this thread.

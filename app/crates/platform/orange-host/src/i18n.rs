@@ -199,12 +199,7 @@ impl Catalogs {
             .languages
             .get(&tag.to_ascii_lowercase())
             .into_iter()
-            .flat_map(|language| &language.resources)
-            .flat_map(|resource| resource.entries())
-            .filter_map(|entry| match entry {
-                ast::Entry::Message(message) => Some(message.id.name),
-                _ => None,
-            })
+            .flat_map(Language::ids)
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -228,6 +223,17 @@ impl Catalogs {
 }
 
 impl Language {
+    /// The IDs of the messages of this language itself, in file order.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
+        self.resources
+            .iter()
+            .flat_map(|resource| resource.entries())
+            .filter_map(|entry| match entry {
+                ast::Entry::Message(message) => Some(message.id.name),
+                _ => None,
+            })
+    }
+
     fn new(id: LanguageIdentifier, resources: Vec<Arc<FluentResource>>, pseudo: bool) -> Self {
         let mut language = Self {
             bundle: Arc::new(Bundle::new_concurrent(vec![id.clone()])),

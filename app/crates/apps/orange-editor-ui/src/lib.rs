@@ -1670,13 +1670,13 @@ impl Editor {
                                 (self.palette_mode == palette::PaletteMode::Previews)
                                     .then(|| self.previews.height(host, &item.id)),
                                 active,
-                                |ui, rect, zoom| {
+                                |ui, rect, _zoom| {
                                     if let Some(card) = self.previews.card(
                                         host,
                                         self.document.as_ref().map(|document| &document.draft),
                                         &item.id,
                                     ) {
-                                        canvas::draw_preview(ui, card, rect, zoom);
+                                        canvas::draw_preview(ui, card, &item.label, rect);
                                     } else {
                                         palette::missing_preview(ui, rect, &item.label);
                                     }

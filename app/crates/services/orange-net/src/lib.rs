@@ -25,6 +25,8 @@ pub use ws::MAX_QUEUED_MESSAGES;
 use orange_sdk::{FaultText, KernelFault, ServicePackage, SettingText};
 use serde_json::{Map, Value as Json};
 
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
+
 /// Package namespace of the definitions and adapter kinds here.
 pub const PACKAGE: &str = "org.orange.net";
 /// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…` or `https://…`),
@@ -219,6 +221,7 @@ pub fn package() -> ServicePackage {
             "Network",
             "HTTP requests and WebSocket connections, with TLS.",
         )
+        .with_catalogs(CATALOGS)
         .adapter(HTTP_ADAPTER, http::HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
         .adapter(MQTT_ADAPTER, mqtt::MqttAdapter)

@@ -78,7 +78,7 @@ fn trigger_words_find_every_entry_kind_in_english_and_spanish() {
         .into_iter()
         .find(|found| found.definition == "core/on-manual")
         .unwrap();
-    assert_eq!(manual.category, "Triggers");
+    assert_eq!(manual.category, "Disparadores");
     assert_eq!(manual.purpose, "Empieza al pulsar Ejecutar.");
     let manual = &host.search_nodes("on manual", "en")[0];
     assert_eq!(manual.purpose, "Starts when you press Run.");
@@ -136,4 +136,35 @@ fn a_language_adds_words_without_changing_ids() {
     // Purposes fall back to English.
     assert!(!found[0].purpose.is_empty());
     assert!(host.add_catalog("fr", "no equals sign").is_err());
+}
+
+#[test]
+fn node_category_and_port_names_follow_the_language_and_fall_back_to_english() {
+    let host = host();
+    let found = |search: &str, locale: &str, definition: &str| {
+        host.search_nodes(search, locale)
+            .into_iter()
+            .find(|found| found.definition == definition)
+            .unwrap()
+    };
+    let manual = found("", "es-MX", "core/on-manual");
+    assert_eq!(
+        (manual.label.as_str(), manual.category.as_str()),
+        ("Manual", "Disparadores")
+    );
+    let add = found("", "es", "org.orange.math/add");
+    assert_eq!(
+        (add.label.as_str(), add.category.as_str()),
+        ("Sumar", "Matemáticas")
+    );
+    let english = found("", "en", "org.orange.math/add");
+    assert_eq!(
+        (english.label.as_str(), english.category.as_str()),
+        ("Add", "Math")
+    );
+    // A category keeps its search words across languages: "datos" finds JSON nodes.
+    assert!(ids(&host.search_nodes("datos", "es")).contains(&"org.orange.json/get"));
+    let ports = host.port_names("es");
+    assert!(ports.contains(&("result".to_owned(), "resultado".to_owned())));
+    assert!(host.port_names("en").is_empty());
 }

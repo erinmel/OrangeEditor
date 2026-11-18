@@ -33,6 +33,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+include!(concat!(env!("OUT_DIR"), "/locales.rs"));
+
 /// Package namespace of the definitions and adapter kind here.
 pub const PACKAGE: &str = "org.orange.files";
 /// Adapter kind of a folder. Settings: `path` (required, an existing directory),
@@ -578,6 +580,7 @@ pub fn package() -> ServicePackage {
             "Files",
             "Reads, writes, lists and watches files in folders the document names.",
         )
+        .with_catalogs(CATALOGS)
         .adapter(FOLDER_ADAPTER, FolderAdapter));
     for (name, label, description, operation, ports) in nodes {
         package = package.and_then(|package| {

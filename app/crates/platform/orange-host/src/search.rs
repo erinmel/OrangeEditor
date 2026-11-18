@@ -165,20 +165,54 @@ impl Host {
             .unwrap_or(Cow::Borrowed(&text.fallback))
     }
 
-    /// A node kind's name in `locale`.
+    /// A node kind's name in `locale`: its definition file's label in that language, or
+    /// for a node without one the catalogue message `name-<node key>`, or the English
+    /// name made from its ID.
     pub fn label_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         match info.presentation.and_then(|shown| shown.label.as_ref()) {
             Some(label) => self.text_in(label, locale).into_owned(),
-            None => info.label().into_owned(),
+            None => self
+                .catalogs
+                .message(
+                    locale,
+                    &format!("name-{}", node_key(info.definition.definition.id.as_str())),
+                )
+                .map_or_else(|| info.label().into_owned(), Cow::into_owned),
         }
     }
 
-    /// A node kind's palette category in `locale`.
+    /// A node kind's palette category in `locale`: its definition file's category in
+    /// that language, or for a node without one the catalogue message
+    /// `palette-<category>`, such as `palette-math`, or the English category.
     pub fn category_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         match info.presentation.and_then(|shown| shown.category.as_ref()) {
             Some(category) => self.text_in(category, locale).into_owned(),
-            None => info.category().into_owned(),
+            None => self
+                .catalogs
+                .message(locale, &format!("palette-{}", category_key(info)))
+                .map_or_else(|| info.category().into_owned(), Cow::into_owned),
         }
+    }
+
+    /// The names of ports in `locale` where a catalogue gives one, by port ID with
+    /// "_" written as "-": the messages `port-<id>` of the host's and the packages'
+    /// catalogues, such as `port-result`. A port without one is named from its ID.
+    pub fn port_names(&self, locale: &str) -> Vec<(String, String)> {
+        let mut names: Vec<(String, String)> = Vec::new();
+        for language in self.catalogs.chain(locale) {
+            for id in language.ids() {
+                let Some(port) = id.strip_prefix("port-") else {
+                    continue;
+                };
+                if names.iter().any(|(known, _)| known == port) {
+                    continue;
+                }
+                if let Some(text) = language.format(id, &[]) {
+                    names.push((port.to_owned(), text.into_owned()));
+                }
+            }
+        }
+        names
     }
 
     fn rank(
@@ -218,7 +252,7 @@ impl Host {
             );
         }
         let category = self.category_in(info, locale);
-        let category_slug = category.to_lowercase().replace(' ', "-");
+        let category_slug = category_key(info);
         let mut concept_words: Vec<String> = fold(&category)
             .split_whitespace()
             .map(str::to_owned)
@@ -316,6 +350,18 @@ impl Host {
             })
             .map(Cow::into_owned)
             .unwrap_or_default()
+    }
+}
+
+/// The stable key of a node kind's palette category, whatever the language: its
+/// definition file's category ID, or its English category in lower case, such as `math`.
+fn category_key(info: &NodeInfo<'_>) -> String {
+    match info
+        .presentation
+        .and_then(|shown| shown.category_id.as_deref())
+    {
+        Some(id) => id.to_owned(),
+        None => info.category().to_lowercase().replace(' ', "-"),
     }
 }
 
@@ -507,9 +553,13 @@ mod tests {
         let words = Catalogs::built_in();
         let english = words.ids(crate::i18n::SOURCE_LANGUAGE);
         for (tag, _) in words.languages() {
-            // Extra search words are a language's own; every other message translates one.
+            // Extra search words are a language's own, and so are the names of nodes,
+            // categories and ports that English makes from their IDs; every other
+            // message translates one.
             for id in words.ids(tag) {
-                let extra_words = id.starts_with("alias-") || id.starts_with("category-");
+                let extra_words = ["alias-", "category-", "name-", "palette-", "port-"]
+                    .iter()
+                    .any(|prefix| id.starts_with(prefix));
                 assert!(
                     extra_words || english.contains(&id),
                     "{tag} has {id}, which English lacks"

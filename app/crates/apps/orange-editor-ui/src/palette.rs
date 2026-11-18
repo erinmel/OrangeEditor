@@ -368,9 +368,9 @@ mod tests {
                     "Both inputs",
                     Some(height),
                     false,
-                    |ui, rect, zoom| {
+                    |ui, rect, _zoom| {
                         let card = cache.card(&host, None, "core/and").unwrap();
-                        crate::canvas::draw_preview(ui, card, rect, zoom);
+                        crate::canvas::draw_preview(ui, card, "And", rect);
                     },
                 )
                 .rect
@@ -473,8 +473,8 @@ mod tests {
         assert_eq!(first("integer", "en"), "Int");
         assert_eq!(first("boolean", "en"), "Bool");
         assert_eq!(first("wait", "en"), "Wait");
-        assert_eq!(first("temporizador", "es"), "On timer");
-        assert_eq!(first("entero", "es"), "Int");
+        assert_eq!(first("temporizador", "es"), "Con temporizador");
+        assert_eq!(first("entero", "es"), "Entero");
         // "trigger" lists the triggers, each with what it is for.
         let triggers = palette_in(&host, "trigger", "en");
         let core = &triggers[0].1;

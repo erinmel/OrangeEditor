@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+build = "../../../build/locales.rs"
 
 [dependencies]
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }

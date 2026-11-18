@@ -314,7 +314,7 @@ impl Editor {
                     .truncate(),
             )
             .on_hover_text(node.name.as_str());
-        let mut subtitle = node.kind.clone();
+        let mut subtitle = self.canvas.kind_name(&node).to_owned();
         if let Some(detail) = &node.detail {
             subtitle.push_str(" · ");
             subtitle.push_str(detail);
@@ -1001,13 +1001,15 @@ pub(crate) fn words(name: &str) -> String {
 
 /// A port's name as a card or the panel shows it: an instance of a variadic port
 /// (`branch#0`) is counted from one ("branch 1"), and words are spaced.
+/// A port the host's catalogues name in the current language shows that name.
 pub fn port_label(id: &str) -> String {
+    let name = |id: &str| crate::i18n::port_name(id).unwrap_or_else(|| id.replace(['_', '-'], " "));
     match id.split_once('#') {
-        Some((name, instance)) => match instance.parse::<u32>() {
-            Ok(number) => format!("{} {}", name.replace(['_', '-'], " "), number + 1),
+        Some((base, instance)) => match instance.parse::<u32>() {
+            Ok(number) => format!("{} {}", name(base), number + 1),
             Err(_) => id.to_owned(),
         },
-        None => id.replace(['_', '-'], " "),
+        None => name(id),
     }
 }
 

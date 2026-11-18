@@ -464,6 +464,7 @@ impl Canvas {
             .filter(|item| !item.purpose.is_empty())
             .map(|item| (item.definition, item.purpose))
             .collect();
+        crate::i18n::set_port_names(host.port_names(language));
         self.help_revision = Some((generation, language.to_owned()));
         self.connection_labels = host
             .nodes()
@@ -476,12 +477,18 @@ impl Canvas {
 
     pub(crate) fn display_name<'a>(&'a self, node: &'a NodeView) -> &'a str {
         if node.name == node.kind {
-            self.labels
-                .get(&node.definition)
-                .map_or(node.name.as_str(), String::as_str)
+            self.kind_name(node)
         } else {
             &node.name
         }
+    }
+
+    /// What a node's kind is called in the editor's language, such as "Escribir
+    /// archivo de texto".
+    pub(crate) fn kind_name<'a>(&'a self, node: &'a NodeView) -> &'a str {
+        self.labels
+            .get(&node.definition)
+            .map_or(node.kind.as_str(), String::as_str)
     }
 
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
@@ -1450,7 +1457,7 @@ impl Canvas {
                 ui,
                 &painter,
                 node,
-                self.display_name(node),
+                (self.display_name(node), self.kind_name(node)),
                 rect,
                 zoom,
                 &colors,
@@ -1773,7 +1780,7 @@ impl Canvas {
                     ui,
                     &painter,
                     card,
-                    self.display_name(card),
+                    (self.display_name(card), self.kind_name(card)),
                     rect,
                     zoom,
                     &colors,
@@ -2131,7 +2138,7 @@ fn draw_node<'a>(
     ui: &egui::Ui,
     painter: &egui::Painter,
     node: &'a NodeView,
-    name: &str,
+    (name, kind): (&str, &str),
     rect: Rect,
     zoom: f32,
     colors: &Palette,
@@ -2200,7 +2207,7 @@ fn draw_node<'a>(
         let detail = node
             .detail
             .as_deref()
-            .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
+            .or_else(|| (node.name != node.kind).then_some(kind));
         if cut || detail.is_some() || description.is_some() {
             let _ = ui
                 .interact(clip, canvas.with(("title", node.id)), Sense::hover())
@@ -2323,7 +2330,8 @@ fn draw_node<'a>(
 }
 
 /// A catalogue card uses the canvas painter, without editable fields or trigger buttons.
-pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, _zoom: f32) {
+/// It is titled `name`, the kind's name in the editor's language.
+pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, name: &str, rect: Rect) {
     let zoom = rect.width() / node_size(node).x;
     let painter = ui
         .painter()
@@ -2332,7 +2340,7 @@ pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, rect: Rect, _zoom: f3
         ui,
         &painter,
         node,
-        &node.name,
+        (name, name),
         rect,
         zoom,
         &Palette::of(ui),

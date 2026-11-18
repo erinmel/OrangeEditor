@@ -28,3 +28,23 @@ org-orange-audio-source-pause-label = Pausar fuente
 org-orange-audio-source-resume-label = Reanudar fuente
 org-orange-audio-source-stop-label = Detener fuente
 org-orange-audio-source-seek-label = Saltar fuente al tiempo
+
+org-orange-audio-audio-in-label = Entrada de audio
+org-orange-audio-audio-out-label = Salida de audio
+org-orange-audio-input-level-label = Nivel de entrada
+org-orange-audio-level-label = Nivel
+org-orange-audio-play-from-label = Reproducir sonido de carpeta
+org-orange-audio-record-label = Grabar en archivo
+org-orange-audio-seek-label = Saltar al tiempo
+
+port-rate = frecuencia
+port-channels = canales
+port-gain = ganancia
+port-low-hz = Hz mínimo
+port-high-hz = Hz máximo
+port-level = nivel
+port-folder = carpeta
+port-pick = elegir
+port-file = archivo
+port-seconds = segundos
+port-recorded = grabado
