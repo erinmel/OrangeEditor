@@ -191,6 +191,10 @@ impl Keyboard {
             .input_default("repeat", "core/bool@1", off())
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
+            .about(
+                "Keyboard",
+                "Starts flows when keys are pressed while this editor has focus.",
+            )
             .with_catalogs(crate::CATALOGS)
             .source(&previous, Source(Arc::clone(&self.state)))?
             .source(&wired, Source(Arc::clone(&self.state)))?

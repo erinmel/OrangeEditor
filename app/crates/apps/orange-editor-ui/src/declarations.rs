@@ -559,18 +559,9 @@ impl Editor {
         Some(node)
     }
 
-    /// A field typed in place in the Variables list: `shown` until it has the focus,
-    /// then what is typed. Returns the text when the field is left with it changed.
-    pub(crate) fn inline_field(
-        &mut self,
-        ui: &mut egui::Ui,
-        key: (String, &'static str),
-        shown: &str,
-    ) -> Option<String> {
-        self.inline_field_sized(ui, key, shown, 110.0)
-    }
-
-    /// [`Self::inline_field`] `width` wide.
+    /// A field typed in place in the Variables list, `width` wide: `shown` until it has
+    /// the focus, then what is typed. Returns the text when the field is left with it
+    /// changed.
     pub(crate) fn inline_field_sized(
         &mut self,
         ui: &mut egui::Ui,
@@ -629,107 +620,148 @@ impl Editor {
             let Some(id) = variable.id.clone() else {
                 continue;
             };
-            ui.horizontal(|ui| {
-                // Dragged by its handle onto the graph, it becomes a Get, or a Set with Alt.
-                let drag = ui.scope_id().with(("orange-variable", id.as_str()));
-                let _ = ui
-                    .dnd_drag_source(drag, format!("{VARIABLE_DRAG}{id}"), |ui| {
-                        ui.add(egui::Label::new("::").selectable(false))
-                    })
-                    .response
-                    .on_hover_text(t("variable-drag-hint"));
-                // Its name, renamed in place.
-                if let Some(name) = self.inline_field(ui, (id.clone(), "name"), &variable.name)
-                    && !name.is_empty()
-                {
-                    change = Some(Variable {
-                        name,
-                        ..variable.clone()
+            let _ = item_frame(ui).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    // Dragged by its handle onto the graph, it becomes a Get, or a Set
+                    // with Alt.
+                    let drag = ui.scope_id().with(("orange-variable", id.as_str()));
+                    let _ = ui
+                        .dnd_drag_source(drag, format!("{VARIABLE_DRAG}{id}"), |ui| {
+                            ui.add(
+                                egui::Label::new(icons::text(icons::DRAG).weak())
+                                    .selectable(false)
+                                    .sense(egui::Sense::drag()),
+                            )
+                        })
+                        .response
+                        .on_hover_cursor(egui::CursorIcon::Grab)
+                        .on_hover_text(t("variable-drag-hint"));
+                    // The menu and the value now take their room first; the name fills
+                    // what is left.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let _ = ui
+                            .menu_button(icons::text(icons::MORE), |ui| {
+                                let mut kept = variable.clone();
+                                ui.label(t("lasts"));
+                                for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
+                                    let _ =
+                                        ui.radio_value(&mut kept.scope, scope, scope_name(scope));
+                                }
+                                let _ = ui.checkbox(&mut kept.persistent, t("keep-between-runs"));
+                                if kept != *variable {
+                                    change = Some(kept);
+                                }
+                                ui.separator();
+                                if ui.button(t("delete")).clicked() {
+                                    remove = Some(id.clone());
+                                    ui.close();
+                                }
+                            })
+                            .response
+                            .on_hover_text(t("more-options"));
+                        // Its value now while the graph runs; the last one, dimmed, after.
+                        match values.get(&id) {
+                            Some(value) if running => {
+                                let _ = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(value.as_str())
+                                                .strong()
+                                                .monospace(),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(t("value-now-hint"));
+                            }
+                            Some(value) => {
+                                let _ = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(value.as_str()).weak().monospace(),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(t("value-last-run-hint"));
+                            }
+                            None => {}
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let width = ui.available_width();
+                            if let Some(name) = self.inline_field_sized(
+                                ui,
+                                (id.clone(), "name"),
+                                &variable.name,
+                                width,
+                            ) && !name.is_empty()
+                            {
+                                change = Some(Variable {
+                                    name,
+                                    ..variable.clone()
+                                });
+                            }
+                        });
                     });
-                }
-                // Its type, as a coloured chip that changes it.
-                let color = crate::canvas::type_color(Some(&variable.ty));
-                let mut ty = variable.ty.clone();
-                let _ = egui::ComboBox::from_id_salt(("orange-variable-type", id.as_str()))
-                    .width(70.0)
-                    .selected_text(egui::RichText::new(type_name(&variable.ty)).color(color))
-                    .show_ui(ui, |ui| {
-                        for common in COMMON_TYPES {
-                            let _ =
-                                ui.selectable_value(&mut ty, common.to_owned(), type_name(common));
-                        }
-                        for (local, name) in crate::types_tab::choices() {
-                            let _ = ui.selectable_value(&mut ty, local, name);
-                        }
-                    })
-                    .response
-                    .on_hover_text(exact_type(&variable.ty));
-                if ty != variable.ty {
-                    // A start value of the old type is dropped with it.
-                    change = Some(Variable {
-                        ty,
-                        initial: None,
-                        ..variable.clone()
-                    });
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let _ = ui.menu_button("…", |ui| {
-                        let mut kept = variable.clone();
-                        ui.label(t("lasts"));
-                        for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                            let _ = ui.radio_value(&mut kept.scope, scope, scope_name(scope));
-                        }
-                        let _ = ui.checkbox(&mut kept.persistent, t("keep-between-runs"));
-                        if kept != *variable {
-                            change = Some(kept);
-                        }
-                        ui.separator();
-                        if ui.button(t("delete")).clicked() {
-                            remove = Some(id.clone());
-                            ui.close();
-                        }
-                    });
-                    // Its value now while the graph runs; the last one, dimmed, after.
-                    match values.get(&id) {
-                        Some(value) if running => {
-                            let _ = ui.strong(value.as_str()).on_hover_text(t("value-now-hint"));
-                        }
-                        Some(value) => {
-                            let _ = ui
-                                .weak(value.as_str())
-                                .on_hover_text(t("value-last-run-hint"));
-                        }
-                        None => {}
-                    }
                 });
-            });
-            // Where it starts, typed in place.
-            ui.horizontal(|ui| {
-                ui.add_space(18.0);
-                ui.weak(t("starts-at-lower"));
-                if let Some(choices) = self.canvas.enums.get(&variable.ty) {
-                    let mut initial = variable.initial.clone();
-                    choice_list(
-                        ui,
-                        egui::IdSalt::new(("orange-variable-initial", id.as_str())),
-                        choices,
-                        &mut initial,
-                    );
-                    if initial != variable.initial {
+                // Its type and where it starts, on one line.
+                ui.horizontal(|ui| {
+                    let color = crate::canvas::type_color(Some(&variable.ty));
+                    let mut ty = variable.ty.clone();
+                    let _ = egui::ComboBox::from_id_salt(("orange-variable-type", id.as_str()))
+                        .width(84.0)
+                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .selected_text(egui::RichText::new(type_name(&variable.ty)).color(color))
+                        .show_ui(ui, |ui| {
+                            for common in COMMON_TYPES {
+                                let _ = ui.selectable_value(
+                                    &mut ty,
+                                    common.to_owned(),
+                                    type_name(common),
+                                );
+                            }
+                            for (local, name) in crate::types_tab::choices() {
+                                let _ = ui.selectable_value(&mut ty, local, name);
+                            }
+                        })
+                        .response
+                        .on_hover_text(exact_type(&variable.ty));
+                    if ty != variable.ty {
+                        // A start value of the old type is dropped with it.
                         change = Some(Variable {
-                            initial,
+                            ty,
+                            initial: None,
                             ..variable.clone()
                         });
                     }
-                    return;
-                }
-                let shown = variable.initial.clone().unwrap_or_default();
-                if let Some(initial) = self.inline_field(ui, (id.clone(), "initial"), &shown) {
-                    change = Some(Variable {
-                        initial: Some(initial).filter(|text| !text.is_empty()),
-                        ..variable.clone()
-                    });
-                }
+                    if let Some(choices) = self.canvas.enums.get(&variable.ty) {
+                        let mut initial = variable.initial.clone();
+                        choice_list(
+                            ui,
+                            egui::IdSalt::new(("orange-variable-initial", id.as_str())),
+                            choices,
+                            &mut initial,
+                        );
+                        if initial != variable.initial {
+                            change = Some(Variable {
+                                initial,
+                                ..variable.clone()
+                            });
+                        }
+                        return;
+                    }
+                    let shown = variable.initial.clone().unwrap_or_default();
+                    let width = ui.available_width();
+                    if let Some(initial) =
+                        self.inline_field_sized(ui, (id.clone(), "initial"), &shown, width)
+                    {
+                        change = Some(Variable {
+                            initial: Some(initial).filter(|text| !text.is_empty()),
+                            ..variable.clone()
+                        });
+                    }
+                })
+                .response
+                .on_hover_text(t("starts-at"));
             });
         }
         if declared.variables.is_empty() && !self.forms.variable_open {
@@ -890,27 +922,30 @@ impl Editor {
             let id = connection.id.clone().unwrap_or_default();
             let users = self.connection_users(host, &id);
             let detail = format!("{}\n{}", label_of(&connection.adapter), connection.adapter);
-            let (edit, delete) = declaration_row(ui, &connection.name, &detail);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(12.0);
-                if users.is_empty() {
-                    ui.weak(tf(
-                        "connection-unused",
-                        &[("adapter", label_of(&connection.adapter).into())],
-                    ));
-                } else {
-                    let _ = ui
-                        .weak(tf(
-                            "connection-used",
-                            &[
-                                ("adapter", label_of(&connection.adapter).into()),
-                                ("count", users.len().into()),
-                                ("nodes", users.join(", ").into()),
-                            ],
-                        ))
-                        .on_hover_text(users.join("\n"));
-                }
-            });
+            let (edit, delete) = item_frame(ui)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let pressed = declaration_row(ui, &connection.name, &detail);
+                    if users.is_empty() {
+                        ui.weak(tf(
+                            "connection-unused",
+                            &[("adapter", label_of(&connection.adapter).into())],
+                        ));
+                    } else {
+                        let _ = ui
+                            .weak(tf(
+                                "connection-used",
+                                &[
+                                    ("adapter", label_of(&connection.adapter).into()),
+                                    ("count", users.len().into()),
+                                    ("nodes", users.join(", ").into()),
+                                ],
+                            ))
+                            .on_hover_text(users.join("\n"));
+                    }
+                    pressed
+                })
+                .inner;
             if edit {
                 self.forms.connection = ConnectionForm {
                     changing: connection.id.clone(),
@@ -1366,15 +1401,39 @@ fn section_heading(ui: &mut egui::Ui, title: &str, add: &str) -> bool {
 /// buttons at the right end. `detail` is shown on hover. Returns whether each was pressed.
 fn declaration_row(ui: &mut egui::Ui, name: &str, detail: &str) -> (bool, bool) {
     ui.horizontal(|ui| {
-        let _ = ui.strong(name).on_hover_text(detail);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let delete = ui.small_button(t("delete")).clicked();
-            let edit = ui.small_button(t("edit")).clicked();
+            let delete = ui
+                .small_button(icons::text(icons::DELETE))
+                .on_hover_text(t("delete"))
+                .clicked();
+            let edit = ui
+                .small_button(icons::text(icons::SETTINGS))
+                .on_hover_text(t("edit"))
+                .clicked();
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let _ = ui
+                    .add(egui::Label::new(egui::RichText::new(name).strong()).truncate())
+                    .on_hover_text(detail);
+            });
             (edit, delete)
         })
         .inner
     })
     .inner
+}
+
+/// The frame around one declaration in a list: the panel's faint fill, rounded, with
+/// room inside and a gap below.
+fn item_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .outer_margin(egui::Margin {
+            bottom: 6,
+            ..egui::Margin::ZERO
+        })
 }
 
 #[cfg(test)]

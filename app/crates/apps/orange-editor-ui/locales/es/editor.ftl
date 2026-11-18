@@ -61,12 +61,13 @@ value-now-hint = Su valor ahora, en esta ejecución.
 value-last-run-hint = Su valor cuando se detuvo la última ejecución.
 starts-at-lower = empieza en
 no-variables = Aún no hay variables. + añade una.
-variable-drag-empty-hint = Arrastra :: al grafo para un nodo Obtener, con Alt para un nodo Fijar.
+variable-drag-empty-hint = Arrastra una variable por su asa al grafo para un nodo Obtener, con Alt para un nodo Fijar.
 new-variable = Nueva variable
 variable-name-hint = por ejemplo, contador
 type = Tipo
 lasts-hint = Cuánto tiempo se conserva el valor mientras el grafo se ejecuta.
 starts-at = Empieza en
+more-options = Más opciones
 empty-until-written = vacía hasta que se escriba
 add = Añadir
 cancel = Cancelar
@@ -295,15 +296,17 @@ problems-count = Problemas ({ $count })
 variables-count = Variables ({ $count })
 variable-get-hint = Añadir un nodo Obtener para { $name }.
 variable-set-hint = Añadir un nodo Fijar para { $name }.
-package-line =
-    { $name } { $version } ({ $kind ->
-        [base] base
-        [built-in] integrado
-       *[installed] instalado
-    }, { $active ->
-        [yes] activo
-       *[no] inactivo
-    })
+package-status =
+    { $kind ->
+        [base] Base
+        [built-in] Integrado
+       *[installed] Instalado
+    } · { $active ->
+        [yes] en uso
+       *[no] apagado
+    }
+search-packages-hint = Buscar paquetes
+no-package-matches = Ningún paquete coincide.
 function-name = Función { $number }
 not-a-function = Estos nodos no pueden ser una función: { $why }
 function-summary =

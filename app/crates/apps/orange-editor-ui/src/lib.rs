@@ -381,6 +381,8 @@ pub struct Editor {
     palette_highlighted: usize,
     log_events: bool,
     packages_tab: bool,
+    /// What the Packages tab is filtered by.
+    package_search: String,
     palette: palette::PaletteCache,
     previews: palette::PreviewCache,
     settings_open: bool,
@@ -1670,7 +1672,7 @@ impl Editor {
         self.panels.properties = !packages;
         self.panels.packages = packages;
         if packages {
-            Self::packages_panel(ui, host);
+            Self::packages_panel(ui, host, &mut self.package_search);
         } else {
             self.properties_panel(ui, host);
         }
@@ -1913,23 +1915,82 @@ impl Editor {
             .unwrap_or_default()
     }
 
-    fn packages_panel(ui: &mut egui::Ui, host: &Host) {
+    /// The packages this host has, found by name, ID or description: each a framed row
+    /// with its name and version, what it adds, and whether it is in use.
+    fn packages_panel(ui: &mut egui::Ui, host: &Host, search: &mut String) {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let _ = ui.add(
+            egui::TextEdit::singleline(search)
+                .hint_text(t("search-packages-hint"))
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(4.0);
+        let wanted = search.trim().to_lowercase();
         egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut shown = 0;
             for package in host.packages() {
+                let name = package.name().unwrap_or(package.id);
+                let about = package.description().unwrap_or_default();
+                if !wanted.is_empty()
+                    && ![name, package.id, about]
+                        .iter()
+                        .any(|text| text.to_lowercase().contains(&wanted))
+                {
+                    continue;
+                }
+                shown += 1;
                 let kind = match package.kind {
                     PackageKind::Base => "base",
                     PackageKind::Native => "built-in",
                     _ => "installed",
                 };
-                ui.label(tf(
-                    "package-line",
-                    &[
-                        ("name", package.name().unwrap_or(package.id).into()),
-                        ("version", package.version.to_string().into()),
-                        ("kind", kind.into()),
-                        ("active", if package.active { "yes" } else { "no" }.into()),
-                    ],
-                ));
+                let _ = egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .outer_margin(egui::Margin {
+                        bottom: 6,
+                        ..egui::Margin::ZERO
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.weak(package.version);
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let _ = ui
+                                                .add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(name).strong(),
+                                                    )
+                                                    .truncate(),
+                                                )
+                                                .on_hover_text(package.id);
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                        if !about.is_empty() {
+                            let _ =
+                                ui.add(egui::Label::new(egui::RichText::new(about).small()).wrap());
+                        }
+                        ui.weak(tf(
+                            "package-status",
+                            &[
+                                ("kind", kind.into()),
+                                ("active", if package.active { "yes" } else { "no" }.into()),
+                            ],
+                        ));
+                    });
+            }
+            if shown == 0 {
+                ui.weak(t("no-package-matches"));
             }
         });
     }

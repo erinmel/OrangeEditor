@@ -62,12 +62,13 @@ value-now-hint = Its value now, in this run.
 value-last-run-hint = Its value when the last run stopped.
 starts-at-lower = starts at
 no-variables = No variables yet. + adds one.
-variable-drag-empty-hint = Drag :: onto the graph for a Get node, with Alt for a Set node.
+variable-drag-empty-hint = Drag a variable by its handle onto the graph for a Get node, with Alt for a Set node.
 new-variable = New variable
 variable-name-hint = such as count
 type = Type
 lasts-hint = How long the value is kept while the graph runs.
 starts-at = Starts at
+more-options = More options
 empty-until-written = empty until written
 add = Add
 cancel = Cancel
@@ -296,15 +297,17 @@ problems-count = Problems ({ $count })
 variables-count = Variables ({ $count })
 variable-get-hint = Add a Get node for { $name }.
 variable-set-hint = Add a Set node for { $name }.
-package-line =
-    { $name } { $version } ({ $kind ->
-        [base] base
-        [built-in] built in
-       *[installed] installed
-    }, { $active ->
-        [yes] on
+package-status =
+    { $kind ->
+        [base] Base
+        [built-in] Built in
+       *[installed] Installed
+    } · { $active ->
+        [yes] in use
        *[no] off
-    })
+    }
+search-packages-hint = Search packages
+no-package-matches = No package matches.
 function-name = Function { $number }
 not-a-function = These nodes cannot be a function: { $why }
 function-summary =
