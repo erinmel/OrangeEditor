@@ -386,3 +386,4 @@ conversion-checked = Falla cuando el valor no cabe.
 conversion-exact = Exacta: no pierde nada.
 choose-conversion = Unir con una conversión
 choose-conversion-hint = Estos dos tipos de valor difieren. Elige cómo convertir.
+conversion-title = { $from } a { $to }

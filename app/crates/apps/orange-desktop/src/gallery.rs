@@ -34,6 +34,18 @@ fn write_package_galleries() {
         groups.entry(package).or_default().push(id);
     }
     let folder = std::env::var("ORANGE_GALLERY_DIR").unwrap();
+    // A page of conversions, as search adds them.
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    for (index, conversion) in host.conversions().iter().step_by(6).take(12).enumerate() {
+        #[expect(clippy::cast_precision_loss, reason = "a small grid")]
+        let at = [(index % 4) as f32 * 260.0, (index / 4) as f32 * 200.0];
+        host.add_conversion(&mut draft, conversion, at).unwrap();
+    }
+    std::fs::write(
+        format!("{folder}/conversions-0.json"),
+        draft.text().unwrap(),
+    )
+    .unwrap();
     for (package, ids) in groups {
         for (page, chunk) in ids.chunks(12).enumerate() {
             let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();

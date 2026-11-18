@@ -88,6 +88,25 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
     orange_host::plain(value)
 }
 
+/// What conversions are called on their cards: the type they take and the type they
+/// give, "Int to Text".
+fn titles(graph: &GraphView) -> std::collections::HashMap<NodeId, String> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.definition == "core/convert")
+        .filter_map(|node| {
+            let ty = |input: bool| {
+                node.ports
+                    .iter()
+                    .find(|port| port.input == input && !port.exec)
+                    .and_then(|port| port.ty.clone())
+            };
+            Some((node.id, crate::conversion_name(&ty(true)?, &ty(false)?)))
+        })
+        .collect()
+}
+
 /// The size of a node's card in graph units: a title and one row for each input beside
 /// an output. A node with no ports yet keeps one row, which says to set it up.
 pub fn node_size(node: &NodeView) -> Vec2 {
@@ -308,6 +327,9 @@ pub struct Canvas {
     help_revision: Option<(u64, String)>,
     descriptions: std::collections::HashMap<String, String>,
     labels: std::collections::HashMap<String, String>,
+    /// Titles of nodes named by what they hold rather than their kind: a conversion is
+    /// "Int to Text".
+    titles: std::collections::HashMap<NodeId, String>,
     connection_labels: std::collections::HashMap<String, String>,
     /// When each node of a running flow last took a step, and whether it failed.
     activity: std::collections::HashMap<NodeId, StepActivity>,
@@ -355,6 +377,7 @@ impl Default for Canvas {
             help_revision: None,
             descriptions: std::collections::HashMap::new(),
             labels: std::collections::HashMap::new(),
+            titles: std::collections::HashMap::new(),
             connection_labels: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
             failures: std::collections::HashMap::new(),
@@ -486,6 +509,9 @@ impl Canvas {
     }
 
     pub(crate) fn display_name<'a>(&'a self, node: &'a NodeView) -> &'a str {
+        if let Some(title) = self.titles.get(&node.id) {
+            return title;
+        }
         if node.name == node.kind {
             self.kind_name(node)
         } else {
@@ -504,6 +530,7 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.titles = titles(graph);
         self.places = auto_layout(graph);
         self.forget_missing();
         self.fit = true;
@@ -513,6 +540,7 @@ impl Canvas {
     /// gives them or an automatic one, nodes that are gone are forgotten, and every
     /// other node stays where it is. The view is not moved.
     pub fn update(&mut self, graph: &GraphView) {
+        self.titles = titles(graph);
         // Most edits only change values or wires. Layout is needed only for a new
         // node without a saved position; existing nodes keep their dragged places.
         let needs_layout = graph

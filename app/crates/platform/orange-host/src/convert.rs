@@ -344,4 +344,17 @@ mod tests {
             "{ports:?}"
         );
     }
+
+    /// A package that declares its own types, as audio does, leaves every core
+    /// conversion in place.
+    #[test]
+    fn packages_with_their_own_types_keep_the_core_conversions() {
+        let bare = host().conversions();
+        let typed = orange_sdk::ServicePackage::new("org.example.typed", "1.0.0")
+            .enumeration("mood", &[("calm", None), ("loud", None)]);
+        let (with_audio, _) =
+            Host::with_services(crate::HostOptions::default(), vec![typed]).unwrap();
+        assert!(!bare.is_empty());
+        assert_eq!(with_audio.conversions(), bare);
+    }
 }

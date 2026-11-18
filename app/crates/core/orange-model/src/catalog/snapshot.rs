@@ -314,9 +314,17 @@ impl RegistryBuilder {
         }
     }
 
-    /// Replaces the type registry; converters restart empty over it.
+    /// Replaces the type registry, with the core conversions registered over it: a
+    /// package that adds types must not take the language's own conversions away.
     pub fn types(mut self, types: Arc<TypeRegistry>) -> Self {
-        self.converters = ConverterRegistryBuilder::new(Arc::clone(&types)).build();
+        #[expect(
+            clippy::expect_used,
+            reason = "the built-in conversions are fixed and covered by the core registry tests"
+        )]
+        let converters = ConverterRegistryBuilder::with_core_conversions(Arc::clone(&types))
+            .expect("the built-in core conversions are valid")
+            .build();
+        self.converters = converters;
         self.types = types;
         self
     }

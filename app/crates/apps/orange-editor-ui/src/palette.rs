@@ -307,7 +307,7 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
 }
 
 /// Other words for the two types a conversion ID names, so "whole number text" finds
-/// Int → Text.
+/// Int to Text.
 fn conversion_words(id: &str) -> String {
     let converter = id
         .trim_start_matches(CONVERSION)
@@ -350,14 +350,9 @@ pub(crate) fn conversion_named(host: &Host, id: &str) -> Option<orange_host::Con
         .find(|conversion| conversion_id(conversion) == id)
 }
 
-/// A conversion as search shows it: "Decimal → Whole number (floor)", and whether it
-/// can lose or fail.
+/// A conversion as search shows it: "Float to Int (floor)".
 pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
-    let mut label = format!(
-        "{} → {}",
-        crate::type_name(&conversion.from),
-        crate::type_name(&conversion.to)
-    );
+    let mut label = crate::conversion_name(&conversion.from, &conversion.to);
     if !conversion.options.is_empty() {
         let choices: Vec<&str> = conversion.options.values().map(String::as_str).collect();
         label.push_str(&format!(" ({})", choices.join(", ")));

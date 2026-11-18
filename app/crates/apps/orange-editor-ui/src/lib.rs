@@ -209,6 +209,26 @@ pub use palette::{PaletteItem, palette, palette_in};
 
 /// A type as a person reads it: `core/string@1` is "text". Other types keep their name
 /// without the version.
+/// A conversion's name from the type it takes to the type it gives: "Int to Text".
+/// Two types that read alike, such as i32 and i64, are named exactly.
+pub(crate) fn conversion_name(from: &str, to: &str) -> String {
+    let (mut from_name, mut to_name) = (type_name(from), type_name(to));
+    if from_name == to_name {
+        let exact = |ty: &str| {
+            ty.trim_start_matches("core/")
+                .split('@')
+                .next()
+                .unwrap_or(ty)
+                .to_owned()
+        };
+        (from_name, to_name) = (exact(from), exact(to));
+    }
+    tf(
+        "conversion-title",
+        &[("from", from_name.into()), ("to", to_name.into())],
+    )
+}
+
 pub fn type_name(ty: &str) -> String {
     let named = types_tab::with_local_names(ty);
     match named.as_str() {
@@ -2389,7 +2409,7 @@ mod tests {
         assert_eq!(count(&all), offered + host.conversions().len());
         let to_text = palette(&host, "whole number text");
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
-            item.id.starts_with(palette::CONVERSION) && item.label.contains('→')
+            item.id.starts_with(palette::CONVERSION) && item.label.contains("Text")
         }));
         assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
         // Every word must match, in any letter case, in the label, definition or category.
