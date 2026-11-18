@@ -26,9 +26,12 @@ use crate::fault;
 
 /// Messages a session holds while its socket is busy or down. Sending beyond it fails.
 pub const MAX_QUEUED_MESSAGES: usize = 256;
+/// Total payload bytes retained while the socket is busy or down.
+const MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 /// How long the I/O thread waits for incoming data before it looks at the outgoing
 /// queue again; the longest a queued message waits on an idle socket.
 const POLL: Duration = Duration::from_millis(10);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const FIRST_RETRY: Duration = Duration::from_millis(250);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 
@@ -45,7 +48,7 @@ const BAD_MESSAGE: KernelFault = fault(
 const QUEUE_FULL: KernelFault = fault(
     "org.orange.net/Busy",
     "org.orange.net/send-queue-full",
-    "The connection has too many messages waiting to be sent.",
+    "The connection's waiting messages exceed its count or byte limit.",
 );
 
 /// What a listening entry fires for.
@@ -62,15 +65,127 @@ pub(crate) enum Listen {
 /// One message waiting to be sent.
 #[derive(Debug, Clone)]
 enum Outgoing {
-    Text(String),
-    Binary(Vec<u8>),
+    Text(Arc<String>),
+    Binary(Arc<Vec<u8>>),
+}
+
+impl Outgoing {
+    fn len(&self) -> usize {
+        match self {
+            Self::Text(text) => text.len(),
+            Self::Binary(bytes) => bytes.len(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Outbox {
+    messages: VecDeque<Outgoing>,
+    bytes: usize,
+}
+
+impl Outbox {
+    fn push(&mut self, message: Outgoing) -> Result<(), KernelFault> {
+        let total = self
+            .bytes
+            .checked_add(message.len())
+            .filter(|bytes| *bytes <= MAX_QUEUED_BYTES)
+            .ok_or(QUEUE_FULL)?;
+        if self.messages.len() >= MAX_QUEUED_MESSAGES {
+            return Err(QUEUE_FULL);
+        }
+        self.messages.push_back(message);
+        self.bytes = total;
+        Ok(())
+    }
+
+    fn sent(&mut self) {
+        if let Some(message) = self.messages.pop_front() {
+            self.bytes -= message.len();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Read, Write};
+    use tungstenite::protocol::Role;
+
+    #[test]
+    fn limits_cover_backlog_and_the_message_being_written() {
+        let mut queue = Outbox::default();
+        let text = Arc::new("é".to_owned());
+        let binary = Arc::new(vec![0; MAX_QUEUED_BYTES - 2]);
+        queue.push(Outgoing::Binary(binary)).unwrap();
+        queue.push(Outgoing::Text(Arc::clone(&text))).unwrap();
+        assert_eq!(queue.bytes, MAX_QUEUED_BYTES);
+        assert!(queue.push(Outgoing::Text(Arc::clone(&text))).is_err());
+        let in_flight = queue.messages.front().cloned().unwrap();
+        assert!(queue.push(Outgoing::Text(Arc::clone(&text))).is_err());
+        assert_eq!(in_flight.len(), MAX_QUEUED_BYTES - 2);
+        queue.sent();
+        assert_eq!(queue.bytes, 2);
+        for _ in 1..MAX_QUEUED_MESSAGES {
+            queue.push(Outgoing::Text(Arc::clone(&text))).unwrap();
+        }
+        assert!(queue.push(Outgoing::Text(text)).is_err());
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            queue.sent();
+        }
+        assert_eq!(queue.bytes, 0);
+    }
+
+    #[derive(Default)]
+    struct MemorySocket {
+        input: Cursor<Vec<u8>>,
+        output: Vec<u8>,
+    }
+
+    impl Read for MemorySocket {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            self.input.read(bytes)
+        }
+    }
+
+    impl Write for MemorySocket {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.output.write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_peer_close_is_answered_before_the_socket_is_released() {
+        let mut peer = WebSocket::from_raw_socket(MemorySocket::default(), Role::Server, None);
+        peer.send(Message::Close(None)).unwrap();
+        let wire = MemorySocket {
+            input: Cursor::new(std::mem::take(&mut peer.get_mut().output)),
+            output: Vec::new(),
+        };
+        let mut socket = WebSocket::from_raw_socket(wire, Role::Client, None);
+        let shared = Shared {
+            url: "ws://example.invalid".into(),
+            headers: Vec::new(),
+            outgoing: Mutex::new(Outbox::default()),
+            listeners: Listeners::new(),
+            connected: AtomicBool::new(true),
+            life: Lifecycle::new(),
+        };
+        assert_eq!(serve(&shared, &mut socket), CLOSED);
+        peer.get_mut().input = Cursor::new(std::mem::take(&mut socket.get_mut().output));
+        assert_eq!(peer.read().unwrap(), Message::Close(None));
+    }
 }
 
 struct Shared {
     url: String,
     /// Headers of the opening handshake; they can be credentials.
     headers: Vec<(String, String)>,
-    outgoing: Mutex<VecDeque<Outgoing>>,
+    outgoing: Mutex<Outbox>,
     /// Each listener with what it fires for.
     listeners: Listeners<Listen>,
     /// Whether the socket is open now.
@@ -122,6 +237,7 @@ fn set_poll(socket: &WebSocket<MaybeTlsStream<TcpStream>>) {
         _ => return,
     };
     let _ = stream.set_read_timeout(Some(POLL));
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
 }
 
 /// Why a served socket stopped, as the disconnected entry's payload says it.
@@ -130,36 +246,40 @@ const FAILED: &str = "connection lost";
 
 /// Serves one established socket until it fails, closes or the session ends, and says
 /// why it stopped.
-fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> &'static str {
-    set_poll(socket);
+fn serve(
+    shared: &Shared,
+    socket: &mut WebSocket<impl std::io::Read + std::io::Write>,
+) -> &'static str {
     loop {
         if shared.stopped() {
             let _ = socket.close(None);
             let _ = socket.flush();
             return "connection closed";
         }
-        loop {
+        // Give incoming messages and stop requests a turn even under steady writes.
+        for _ in 0..16 {
             let next = shared
                 .outgoing
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .pop_front();
-            let Some(text) = next else { break };
-            let message = match text.clone() {
-                Outgoing::Text(text) => Message::text(text),
-                Outgoing::Binary(data) => Message::binary(data),
+                .messages
+                .front()
+                .cloned();
+            let Some(next) = next else { break };
+            let message = match next {
+                Outgoing::Text(text) => Message::text(text.as_ref().clone()),
+                Outgoing::Binary(data) => Message::binary(data.as_ref().clone()),
             };
-            if let Err(error) = socket.send(message) {
-                // Not written: keep it for the next socket, in order.
-                if !matches!(error, Error::Io(ref io) if io.kind() == ErrorKind::WouldBlock) {
-                    shared
-                        .outgoing
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push_front(text);
-                    return FAILED;
-                }
+            if socket.send(message).is_err() {
+                // Keep the message for the next socket. WebSocket has no delivery
+                // receipt, so a failure after a partial write can lead to a retry.
+                return FAILED;
             }
+            shared
+                .outgoing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .sent();
         }
         match socket.read() {
             Ok(Message::Text(text)) => {
@@ -171,7 +291,10 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> 
             Ok(Message::Binary(data)) => {
                 shared.deliver(Listen::Binary, &Value::Bytes(Arc::new(data.to_vec())));
             }
-            Ok(Message::Close(_)) => return CLOSED,
+            Ok(Message::Close(_)) => {
+                let _ = socket.flush();
+                return CLOSED;
+            }
             Ok(_) => {}
             Err(Error::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
@@ -206,6 +329,7 @@ fn run(shared: &Shared) {
         if let Some(request) = handshake(shared)
             && let Ok((mut socket, _)) = tungstenite::connect(request)
         {
+            set_poll(&socket);
             retry = FIRST_RETRY;
             shared.connected.store(true, Ordering::Release);
             shared.deliver(Listen::Connected, &Value::Str(Arc::new(shared.url.clone())));
@@ -248,13 +372,12 @@ impl ConnectionAdapter for WsAdapter {
             .get("url")
             .and_then(Json::as_str)
             .ok_or("`url` is required")?;
-        if !url.starts_with("ws://") && !url.starts_with("wss://") {
-            return Err("`url` must start with ws:// or wss://".into());
-        }
+        crate::connection_uri(url, ["ws", "wss"])
+            .ok_or("`url` must be an absolute WebSocket address without user info or fragment")?;
         let shared = Arc::new(Shared {
             url: url.to_owned(),
             headers: crate::auth_headers(settings)?,
-            outgoing: Mutex::new(VecDeque::new()),
+            outgoing: Mutex::new(Outbox::default()),
             listeners: Listeners::new(),
             connected: AtomicBool::new(false),
             life: Lifecycle::new(),
@@ -286,18 +409,15 @@ impl ServiceNode for WsSend {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let shared = session(call.session).ok_or(NO_SESSION)?;
         let message = match (self.binary, call.inputs) {
-            (false, [Value::Str(text)]) => Outgoing::Text(text.as_str().to_owned()),
-            (true, [Value::Bytes(data)]) => Outgoing::Binary(data.as_ref().clone()),
+            (false, [Value::Str(text)]) => Outgoing::Text(Arc::clone(text)),
+            (true, [Value::Bytes(data)]) => Outgoing::Binary(Arc::clone(data)),
             _ => return Err(BAD_MESSAGE),
         };
         let mut outgoing = shared
             .outgoing
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if outgoing.len() >= MAX_QUEUED_MESSAGES {
-            return Err(QUEUE_FULL);
-        }
-        outgoing.push_back(message);
+        outgoing.push(message)?;
         Ok(Vec::new())
     }
 }
@@ -313,6 +433,7 @@ impl ServiceNode for WsStatus {
             .outgoing
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .messages
             .len();
         Ok(vec![
             Value::Bool(shared.connected.load(Ordering::Acquire)),

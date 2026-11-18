@@ -16,20 +16,22 @@
 //! broker publishes if the connection is lost without saying goodbye. MQTT 5 is not
 //! provided.
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, Emitter, KernelFault, Lifecycle, ListRepr, Listeners,
-    ServiceNode, ServiceSource, Session, Value,
+    Arguments, Call, ConnectionAdapter, Definition, Emitter, KernelFault, Lifecycle, ListRepr,
+    Listeners, ServiceNode, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::fault;
+use crate::{
+    fault,
+    transport::{self, Authorities, Stream},
+};
 
 /// Messages a session holds while its socket is busy or down. Publishing beyond it
 /// fails.
@@ -128,6 +130,14 @@ fn subscribe_packet(id: u16, filters: &[String], qos: u8) -> Vec<u8> {
     packet(0x82, &body)
 }
 
+fn unsubscribe_packet(id: u16, filters: &[String]) -> Vec<u8> {
+    let mut body = id.to_be_bytes().to_vec();
+    for filter in filters {
+        text(&mut body, filter.as_bytes());
+    }
+    packet(0xa2, &body)
+}
+
 fn publish_packet(message: &Outgoing, qos: u8, id: u16, duplicate: bool) -> Vec<u8> {
     let mut body = Vec::with_capacity(message.topic.len() + message.payload.len() + 4);
     text(&mut body, message.topic.as_bytes());
@@ -200,71 +210,6 @@ fn answer(first: u8, id: u16) -> [u8; 4] {
 
 // ---- connection ----------------------------------------------------------------
 
-enum Stream {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-}
-impl Read for Stream {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
-        }
-    }
-}
-impl Write for Stream {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buffer),
-            Self::Tls(stream) => stream.write(buffer),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
-
-fn open(settings: &Settings) -> Option<Stream> {
-    use std::net::ToSocketAddrs;
-    let address = (settings.host.as_str(), settings.port)
-        .to_socket_addrs()
-        .ok()?
-        .next()?;
-    let tcp = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).ok()?;
-    let _ = tcp.set_nodelay(true);
-    // Short timeouts make reads and writes steps of the session loop.
-    tcp.set_read_timeout(Some(POLL)).ok()?;
-    tcp.set_write_timeout(Some(CONNECT_TIMEOUT)).ok()?;
-    if !settings.tls {
-        return Some(Stream::Plain(tcp));
-    }
-    let roots = match &settings.authorities {
-        // A private broker is trusted through its own authority only.
-        Some(authorities) => {
-            let mut roots = rustls::RootCertStore::empty();
-            for authority in authorities {
-                roots.add(authority.clone()).ok()?;
-            }
-            roots
-        }
-        None => rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
-    };
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .ok()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let name = rustls::pki_types::ServerName::try_from(settings.host.clone()).ok()?;
-    let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
-    Some(Stream::Tls(Box::new(rustls::StreamOwned::new(
-        connection, tcp,
-    ))))
-}
-
 /// One message waiting to be published.
 #[derive(Debug, Clone)]
 struct Outgoing {
@@ -278,7 +223,7 @@ struct Settings {
     port: u16,
     tls: bool,
     /// The certificate authorities of `ca_file`, replacing the bundled ones.
-    authorities: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+    authorities: Option<Authorities>,
     client_id: String,
     username: Option<String>,
     password: Option<String>,
@@ -301,6 +246,7 @@ struct Flight {
     /// Packet IDs of messages received with quality of service 2 and already handed
     /// to the entries, until the broker releases them.
     received: VecDeque<u16>,
+    subscribed: BTreeSet<String>,
     last_id: u16,
 }
 impl Flight {
@@ -312,6 +258,37 @@ impl Flight {
             }
         }
     }
+
+    fn sync_topics(
+        &mut self,
+        shared: &Shared,
+        stream: &mut Stream,
+        reassert: bool,
+    ) -> Option<bool> {
+        let desired = shared.topics();
+        let add: Vec<_> = if reassert {
+            desired.iter().cloned().collect()
+        } else {
+            desired.difference(&self.subscribed).cloned().collect()
+        };
+        let remove: Vec<_> = self.subscribed.difference(&desired).cloned().collect();
+        if !remove.is_empty() {
+            if !send(stream, &unsubscribe_packet(self.new_id(), &remove)) {
+                return None;
+            }
+            self.subscribed.retain(|filter| desired.contains(filter));
+        }
+        if !add.is_empty() {
+            if !send(
+                stream,
+                &subscribe_packet(self.new_id(), &add, shared.settings.qos),
+            ) {
+                return None;
+            }
+            self.subscribed.extend(add.iter().cloned());
+        }
+        Some(!add.is_empty() || !remove.is_empty())
+    }
 }
 /// Most received packet IDs remembered; a broker sends far fewer at once.
 const MAX_RECEIVED: usize = 1024;
@@ -319,12 +296,43 @@ const MAX_RECEIVED: usize = 1024;
 struct Shared {
     settings: Settings,
     outgoing: Mutex<VecDeque<Outgoing>>,
-    /// Each listener with whether it takes payloads as bytes instead of text.
-    listeners: Listeners<bool>,
+    listeners: Listeners<Listener>,
+    topics: Mutex<Topics>,
     /// Started once a flow has attached its triggers; stopped when the session ends.
     life: Lifecycle,
     /// Stopped when the I/O thread has ended.
     io: Lifecycle,
+}
+
+struct Listener {
+    binary: bool,
+    topic: Option<String>,
+}
+
+struct Topics {
+    filters: BTreeMap<String, usize>,
+    generation: u64,
+}
+
+struct TopicGuard {
+    shared: Arc<Shared>,
+    topic: String,
+}
+impl Drop for TopicGuard {
+    fn drop(&mut self) {
+        let mut topics = self
+            .shared
+            .topics
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = topics.filters.get_mut(&self.topic) {
+            *count -= 1;
+            if *count == 0 {
+                let _ = topics.filters.remove(&self.topic);
+                topics.generation = topics.generation.wrapping_add(1);
+            }
+        }
+    }
 }
 /// The user name and password are left out.
 impl std::fmt::Debug for Shared {
@@ -340,6 +348,23 @@ impl Shared {
     fn stopped(&self) -> bool {
         self.life.stopped()
     }
+
+    fn topics(&self) -> BTreeSet<String> {
+        let topics = self.topics.lock().unwrap_or_else(PoisonError::into_inner);
+        self.settings
+            .topics
+            .iter()
+            .chain(topics.filters.keys())
+            .cloned()
+            .collect()
+    }
+
+    fn topic_generation(&self) -> u64 {
+        self.topics
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .generation
+    }
     /// Fires the listening entries. Text entries get `[topic, text]` and skip a
     /// payload that is not UTF-8; byte entries get the payload alone.
     fn deliver(&self, topic: &str, payload: &[u8]) {
@@ -348,8 +373,18 @@ impl Shared {
             Value::List(Arc::new(ListRepr::Str(Box::new(pair))))
         });
         let as_bytes = Value::Bytes(Arc::new(payload.to_vec()));
-        self.listeners.emit(|bytes| {
-            if *bytes {
+        self.listeners.emit(|listener| {
+            let subscribed = match &listener.topic {
+                Some(filter) => matches_filter(filter, topic),
+                None => self
+                    .settings
+                    .topics
+                    .iter()
+                    .any(|filter| matches_filter(filter, topic)),
+            };
+            if !subscribed {
+                None
+            } else if listener.binary {
                 Some(as_bytes.clone())
             } else {
                 as_text.clone()
@@ -378,10 +413,20 @@ fn serve(shared: &Shared, stream: &mut Stream, flight: &mut Flight) {
     let opened = Instant::now();
     let mut last_sent = Instant::now();
     let mut last_heard = Instant::now();
+    let mut generation = 0;
     let keep_alive = Duration::from_secs(u64::from(settings.keep_alive.max(1)));
     let mut ok = true;
     while ok && !shared.stopped() {
         if connected {
+            let next_generation = shared.topic_generation();
+            if generation != next_generation {
+                match flight.sync_topics(shared, stream, false) {
+                    Some(true) => last_sent = Instant::now(),
+                    Some(false) => {}
+                    None => break,
+                }
+                generation = next_generation;
+            }
             while flight.sent.len() < 16 {
                 let mut outgoing = shared
                     .outgoing
@@ -445,16 +490,12 @@ fn serve(shared: &Shared, stream: &mut Stream, flight: &mut Flight) {
                             // exchange it had confirmed cannot be completed any more.
                             flight.received.clear();
                             flight.sent.retain(|(_, _, confirmed)| !confirmed);
+                            flight.subscribed.clear();
                         }
                         // Subscribing comes first, so a message that returns to
                         // this connection finds its subscription.
-                        if !settings.topics.is_empty() {
-                            let id = flight.new_id();
-                            ok = send(
-                                stream,
-                                &subscribe_packet(id, &settings.topics, settings.qos),
-                            );
-                        }
+                        generation = shared.topic_generation();
+                        ok = flight.sync_topics(shared, stream, true).is_some();
                         // Then what the last connection left unfinished.
                         for (id, message, confirmed) in &flight.sent {
                             ok = ok
@@ -526,7 +567,14 @@ fn run(shared: &Shared) {
     let mut retry = FIRST_RETRY;
     let mut flight = Flight::default();
     while !shared.stopped() {
-        if let Some(mut stream) = open(&shared.settings) {
+        if let Some(mut stream) = transport::open(
+            &shared.settings.host,
+            shared.settings.port,
+            shared.settings.tls,
+            shared.settings.authorities.as_ref(),
+            POLL,
+            CONNECT_TIMEOUT,
+        ) {
             let before = Instant::now();
             serve(shared, &mut stream, &mut flight);
             // A connection that lasted is not a failing one.
@@ -562,10 +610,40 @@ impl Drop for MqttSession {
 
 /// A topic name or filter the protocol can carry.
 fn is_topic(topic: &str, filter: bool) -> bool {
-    !topic.is_empty()
-        && topic.len() <= usize::from(u16::MAX)
-        && !topic.contains('\0')
-        && (filter || !topic.contains(['+', '#']))
+    if topic.is_empty() || topic.len() > usize::from(u16::MAX) || topic.contains('\0') {
+        return false;
+    }
+    if !filter {
+        return !topic.contains(['+', '#']);
+    }
+    let mut levels = topic.split('/').peekable();
+    while let Some(level) = levels.next() {
+        if (level.contains('#') && (level != "#" || levels.peek().is_some()))
+            || (level.contains('+') && level != "+")
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn matches_filter(filter: &str, topic: &str) -> bool {
+    if topic.starts_with('$') && !filter.starts_with('$') {
+        return false;
+    }
+    let mut levels = topic.split('/');
+    for wanted in filter.split('/') {
+        if wanted == "#" {
+            return true;
+        }
+        let Some(actual) = levels.next() else {
+            return false;
+        };
+        if wanted != "+" && wanted != actual {
+            return false;
+        }
+    }
+    levels.next().is_none()
 }
 
 static CLIENTS: AtomicU64 = AtomicU64::new(0);
@@ -626,10 +704,10 @@ impl ConnectionAdapter for MqttAdapter {
             orange_sdk::SettingField {
                 setting: "qos".into(),
                 label: "Quality of service".into(),
-                help: "0 sends at most once, 1 at least once.".into(),
+                help: "0 sends at most once, 1 at least once, and 2 uses the four-step delivery exchange.".into(),
                 unit: String::new(),
                 min: 0.0,
-                max: 1.0,
+                max: 2.0,
                 default: Some(0.0),
                 whole: true,
             },
@@ -763,17 +841,7 @@ impl ConnectionAdapter for MqttAdapter {
         let authorities = match short("ca_file")? {
             None => None,
             Some(_) if !tls => return Err("`ca_file` needs an mqtts:// URL".into()),
-            Some(path) => {
-                use rustls::pki_types::pem::PemObject;
-                let pem = std::fs::read(&path).map_err(|_| "`ca_file` could not be read")?;
-                let found: Vec<_> = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
-                    .collect::<Result<_, _>>()
-                    .map_err(|_| "`ca_file` is not a PEM certificate file")?;
-                if found.is_empty() {
-                    return Err("`ca_file` holds no certificate".into());
-                }
-                Some(found)
-            }
+            Some(path) => Some(transport::load_authorities(&path)?),
         };
         let shared = Arc::new(Shared {
             settings: Settings {
@@ -792,6 +860,10 @@ impl ConnectionAdapter for MqttAdapter {
             },
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Listeners::new(),
+            topics: Mutex::new(Topics {
+                filters: BTreeMap::new(),
+                generation: 0,
+            }),
             life: Lifecycle::new(),
             io: Lifecycle::new(),
         });
@@ -858,14 +930,63 @@ impl ServiceSource for MqttMessage {
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
+        self.start_with_arguments(session, &Map::new(), &Arguments::default(), emitter)
+    }
+
+    fn start_with_arguments(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        _settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
         let shared =
             crate::mqtt::session(session.as_deref()).ok_or("the entry needs an MQTT connection")?;
-        Ok(Listeners::listen(
+        let topic = match arguments.get("topic") {
+            None => None,
+            Some(Value::Str(topic)) if topic.is_empty() => None,
+            Some(Value::Str(topic)) if is_topic(topic, true) => Some(topic.as_str().to_owned()),
+            _ => return Err("the entry needs a valid MQTT topic filter".into()),
+        };
+        let mut topics = shared.topics.lock().unwrap_or_else(PoisonError::into_inner);
+        let guard = if let Some(topic) = &topic {
+            let configured = &shared.settings.topics;
+            let distinct = configured.iter().collect::<BTreeSet<_>>();
+            let additional = topics
+                .filters
+                .keys()
+                .filter(|filter| !distinct.contains(filter))
+                .count();
+            if !distinct.contains(topic)
+                && !topics.filters.contains_key(topic)
+                && distinct.len() + additional >= MAX_TOPICS
+            {
+                return Err(
+                    "the connection already has its maximum number of topic filters".into(),
+                );
+            }
+            let count = topics.filters.entry(topic.clone()).or_default();
+            *count += 1;
+            if *count == 1 {
+                topics.generation = topics.generation.wrapping_add(1);
+            }
+            Some(TopicGuard {
+                shared: Arc::clone(shared),
+                topic: topic.clone(),
+            })
+        } else {
+            None
+        };
+        let listener = Listeners::listen(
             Arc::clone(shared),
             |shared| &shared.listeners,
-            self.binary,
+            Listener {
+                binary: self.binary,
+                topic,
+            },
             emitter,
-        ))
+        );
+        Ok(Box::new((listener, guard)))
     }
 }
 
@@ -896,14 +1017,41 @@ pub(crate) fn publish_bytes_definition() -> String {
 pub(crate) fn message_definition() -> String {
     Definition::entry(crate::PACKAGE, "mqtt-message", "On MQTT message")
         .category("network", "Network")
+        .hidden()
         .uses(crate::MQTT_ADAPTER)
         .payload("core/list@1<core/string@1>")
+        .build()
+}
+
+pub(crate) fn topic_definition(binary: bool) -> String {
+    let (name, label, payload) = if binary {
+        ("mqtt-binary", "On MQTT binary message", "core/bytes@1")
+    } else {
+        (
+            "mqtt-message",
+            "On MQTT message",
+            "core/list@1<core/string@1>",
+        )
+    };
+    Definition::entry(crate::PACKAGE, name, label)
+        .version(2)
+        .category("network", "Network")
+        .uses(crate::MQTT_ADAPTER)
+        .input_default(
+            "topic",
+            "core/string@1",
+            serde_json::json!({
+                "type": "core/string@1", "value": ""
+            }),
+        )
+        .payload(payload)
         .build()
 }
 
 pub(crate) fn binary_definition() -> String {
     Definition::entry(crate::PACKAGE, "mqtt-binary", "On MQTT binary message")
         .category("network", "Network")
+        .hidden()
         .uses(crate::MQTT_ADAPTER)
         .payload("core/bytes@1")
         .build()
@@ -1050,5 +1198,65 @@ mod tests {
             assert!(open(json(bad)).is_err(), "{bad}");
         }
         assert!(is_topic("a/b", false) && !is_topic("a/#", false) && is_topic("a/#", true));
+        assert_eq!(MqttAdapter.fields()[0].max, 2.0);
+    }
+
+    #[test]
+    fn wired_topic_filters_are_routed_and_removed_with_their_guard() {
+        let session = MqttAdapter
+            .open(
+                serde_json::json!({"url": "mqtt://localhost", "topics": ["default/#"]})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        let shared = super::session(Some(session.as_ref())).unwrap();
+        let payloads = Arc::new(Mutex::new(Vec::new()));
+        let collect = |payloads: &Arc<Mutex<Vec<Value>>>| {
+            let payloads = Arc::clone(payloads);
+            Emitter::new(move |payload| {
+                payloads.lock().unwrap().extend(payload);
+                Ok(())
+            })
+        };
+        let source = MqttMessage { binary: true };
+        let default = source
+            .start(Some(Arc::clone(&session)), collect(&payloads))
+            .unwrap();
+        let listen = |filter: &str| {
+            source.start_with_arguments(
+                Some(Arc::clone(&session)),
+                &Map::new(),
+                &Arguments::new(vec![(
+                    "topic".into(),
+                    Value::Str(Arc::new(filter.to_owned())),
+                )]),
+                collect(&payloads),
+            )
+        };
+        let guard = listen("rooms/+/temp").unwrap();
+        assert!(listen("rooms/#/temp").is_err());
+        assert_eq!(
+            shared.topics(),
+            BTreeSet::from(["default/#".into(), "rooms/+/temp".into()])
+        );
+        assert!(matches_filter("rooms/#", "rooms"));
+        assert!(!matches_filter("#", "$SYS/broker"));
+        shared.deliver("rooms/bedroom/temp", &[1]);
+        shared.deliver("rooms/bedroom/humidity", &[2]);
+        shared.deliver("default/info", &[3]);
+        drop(guard);
+        let _new = listen("rooms/+/humidity").unwrap();
+        shared.deliver("rooms/bedroom/temp", &[4]);
+        shared.deliver("rooms/bedroom/humidity", &[5]);
+        assert_eq!(
+            *payloads.lock().unwrap(),
+            [1, 3, 5].map(|byte| Value::Bytes(Arc::new(vec![byte]))),
+        );
+        assert_eq!(
+            shared.topics(),
+            BTreeSet::from(["default/#".into(), "rooms/+/humidity".into()])
+        );
+        drop(default);
     }
 }

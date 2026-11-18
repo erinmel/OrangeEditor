@@ -1,11 +1,12 @@
-//! The base network package: HTTP and WebSocket connections and the nodes that use them.
+//! The base network package: HTTP, WebSocket and broker connections.
 //!
 //! It is an ordinary [`ServicePackage`]: an application adds [`package`] to its host and
 //! documents can then declare `org.orange.net/http` and `org.orange.net/websocket`
 //! connections and use the request, send and message nodes. Nothing here is special to the host; another crate can
 //! provide a better HTTP node, or a different protocol, the same way.
 //!
-//! `http://`, `https://`, `ws://`, `wss://`, `mqtt://` and `mqtts://` endpoints are supported. TLS is rustls with the ring
+//! HTTP, WebSocket, MQTT and AMQP endpoints are available over plain TCP or TLS.
+//! TLS is rustls with the ring
 //! provider; server certificates are verified against the bundled Mozilla roots
 //! (`webpki-roots`), not the operating system's store, and there is no way to disable
 //! verification.
@@ -13,10 +14,12 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod amqp;
 mod feed;
 mod http;
 mod mqtt;
 pub mod oauth;
+mod transport;
 mod ws;
 
 pub use feed::{download, fetch, new_feed_key, sha256, sign_feed, verify_feed};
@@ -40,6 +43,76 @@ pub const PACKAGE: &str = "org.orange.net";
 /// `stream_timeout_ms` (default 600,000) limits one streamed response. A document
 /// writes a secret value as `credential://<name>`; the host supplies it.
 pub const HTTP_ADAPTER: &str = "org.orange.net/http";
+
+/// Checks an absolute adapter URL before an I/O worker can use it.
+fn connection_uri(text: &str, schemes: [&str; 2]) -> Option<ureq::http::Uri> {
+    let uri: ureq::http::Uri = text.parse().ok()?;
+    let authority = uri.authority()?;
+    (schemes.contains(&uri.scheme_str()?)
+        && uri.path_and_query().is_some()
+        && !authority.host().is_empty()
+        && (authority.as_str() == authority.host()
+            || authority.port_u16().is_some_and(|port| port != 0))
+        && !authority.as_str().contains('@')
+        && !text.contains('#'))
+    .then_some(uri)
+}
+
+#[cfg(test)]
+#[test]
+fn web_adapters_refuse_malformed_endpoints_before_network_io() {
+    use orange_sdk::ConnectionAdapter;
+    let settings = |name: &str, address: &str| {
+        serde_json::json!({name: address})
+            .as_object()
+            .unwrap()
+            .clone()
+    };
+    for address in [
+        "http://",
+        "https://",
+        "http://bad host",
+        "http://test.local:wrong",
+        "https://[::1",
+        "http://test.local/?x=1",
+        "https://test.local/#fragment",
+        "http://user@test.local",
+    ] {
+        assert!(
+            http::HttpAdapter
+                .open(&settings("base_url", address))
+                .is_err(),
+            "{address}"
+        );
+    }
+    for address in [
+        "ws://",
+        "wss://",
+        "ws://bad host",
+        "ws://test.local:65536",
+        "wss://user@test.local",
+        "wss://test.local/socket#fragment",
+    ] {
+        assert!(
+            ws::WsAdapter.open(&settings("url", address)).is_err(),
+            "{address}"
+        );
+    }
+    for address in ["http://localhost", "https://[::1]:9443/api/"] {
+        assert!(
+            http::HttpAdapter
+                .open(&settings("base_url", address))
+                .is_ok(),
+            "{address}"
+        );
+    }
+    for address in ["ws://localhost:8765", "wss://[::1]:9443/chat?room=1"] {
+        assert!(
+            ws::WsAdapter.open(&settings("url", address)).is_ok(),
+            "{address}"
+        );
+    }
+}
 /// Sends one request on an HTTP connection. Inputs `method` (default `GET`), `path`
 /// (default empty) and `content`, the request body (empty sends none); outputs `status`,
 /// `success` (true for 200 to 299) and `response`. Any HTTP status, such as 404 or 500,
@@ -83,7 +156,7 @@ pub const WS_STATUS: &str = "org.orange.net/ws-status";
 /// Adapter kind of an MQTT 3.1.1 connection. Settings: `url` (required, `mqtt://host`
 /// or `mqtts://host` for TLS, with an optional `:port`), `username` and `password`
 /// (each can be a `credential://<name>` reference), `client_id` (generated when
-/// absent), `topics` (the topic filters to subscribe to), `qos` (0 or 1, default 0,
+/// absent), `topics` (the topic filters to subscribe to), `qos` (0, 1 or 2, default 0,
 /// for subscriptions and publishing), `keep_alive_s` (5 to 3,600, default 30) and, for
 /// a broker with a private certificate authority, `ca_file` (a PEM file whose
 /// authorities are then the only ones trusted).
@@ -94,12 +167,23 @@ pub const MQTT_PUBLISH: &str = "org.orange.net/mqtt-publish";
 /// Queues one binary message for a topic. Inputs `topic`, `data` and `retain`.
 pub const MQTT_PUBLISH_BYTES: &str = "org.orange.net/mqtt-publish-bytes";
 /// Entry fired once per message received on an MQTT connection's topics whose payload
-/// is text, with `[topic, text]` as `payload`.
+/// is text, with `[topic, text]` as `payload`. Version 2 takes a topic filter input.
 pub const MQTT_MESSAGE: &str = "org.orange.net/mqtt-message";
 /// Entry fired once per message received on an MQTT connection's topics, with the
 /// payload bytes as `payload`. A connection that needs to tell topics apart for
-/// binary messages subscribes to one topic.
+/// binary messages subscribes to one topic. Version 2 takes a topic filter input.
 pub const MQTT_BINARY: &str = "org.orange.net/mqtt-binary";
+
+/// Adapter kind for AMQP 0-9-1 using `amqp://` or verified `amqps://`.
+pub const AMQP_ADAPTER: &str = "org.orange.net/amqp";
+/// Publishes UTF-8 text and continues when the broker confirms it.
+pub const AMQP_PUBLISH: &str = "org.orange.net/amqp-publish";
+/// Publishes raw bytes and continues when the broker confirms them.
+pub const AMQP_PUBLISH_BYTES: &str = "org.orange.net/amqp-publish-bytes";
+/// Consumes UTF-8 messages from the queue named on the node or connection.
+pub const AMQP_MESSAGE: &str = "org.orange.net/amqp-message";
+/// Consumes raw messages from the queue named on the node or connection.
+pub const AMQP_BINARY: &str = "org.orange.net/amqp-binary";
 
 /// Largest response body a request node returns.
 pub const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
@@ -219,12 +303,15 @@ pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
         .about(
             "Network",
-            "HTTP requests and WebSocket connections, with TLS.",
+            "HTTP requests, WebSocket connections, MQTT and AMQP 0-9-1.",
         )
         .with_catalogs(CATALOGS)
         .adapter(HTTP_ADAPTER, http::HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
         .adapter(MQTT_ADAPTER, mqtt::MqttAdapter)
+        .adapter(AMQP_ADAPTER, amqp::AmqpAdapter)
+        .record("amqp-text-delivery", &amqp::TEXT_FIELDS)
+        .record("amqp-binary-delivery", &amqp::BYTES_FIELDS)
         .node(&http::http_request_definition(), http::HttpRequest)
         .and_then(|package| {
             package.node(
@@ -295,6 +382,42 @@ pub fn package() -> ServicePackage {
             package.source(
                 &mqtt::binary_definition(),
                 mqtt::MqttMessage { binary: true },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                &mqtt::topic_definition(false),
+                mqtt::MqttMessage { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                &mqtt::topic_definition(true),
+                mqtt::MqttMessage { binary: true },
+            )
+        })
+        .and_then(|package| {
+            package.node(
+                &amqp::publish_definition(false),
+                amqp::AmqpPublish { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.node(
+                &amqp::publish_definition(true),
+                amqp::AmqpPublish { binary: true },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                &amqp::consumer_definition(false),
+                amqp::AmqpConsumer { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                &amqp::consumer_definition(true),
+                amqp::AmqpConsumer { binary: true },
             )
         });
     match package {

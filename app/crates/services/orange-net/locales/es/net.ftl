@@ -3,6 +3,19 @@
 
 org-orange-net-category-network = Red
 
+org-orange-net-amqp-binary-label = Al mensaje AMQP binario
+org-orange-net-amqp-message-label = Al mensaje AMQP
+org-orange-net-amqp-publish-label = Publicar mensaje AMQP
+org-orange-net-amqp-publish-bytes-label = Publicar mensaje AMQP binario
+org-orange-net-amqp-publish-then = Confirmado
+org-orange-net-amqp-publish-bytes-then = Confirmado
+org-orange-net-amqp-message-invalid = La clave de enrutamiento o el mensaje no es válido o es demasiado grande.
+org-orange-net-amqp-confirm-timeout = Venció el plazo para recibir la confirmación de la publicación AMQP.
+org-orange-net-amqp-confirm-connection = La conexión AMQP terminó antes de la confirmación.
+org-orange-net-amqp-publish-rejected = El intermediario AMQP rechazó la publicación.
+org-orange-net-amqp-publish-unroutable = El intercambio AMQP no pudo dirigir el mensaje a una cola.
+org-orange-net-amqp-consume-refused = El intermediario AMQP rechazó al consumidor o envió una entrega no válida.
+org-orange-net-amqp-delivery-too-large = La entrega AMQP supera el tamaño máximo permitido.
 org-orange-net-http-request-label = Petición HTTP
 org-orange-net-http-request-bytes-label = Petición HTTP (binaria)
 org-orange-net-http-stream-label = Petición HTTP (por partes)
@@ -29,6 +42,8 @@ port-response = respuesta
 port-response-type = tipo de respuesta
 port-lines = líneas
 port-topic = tema
+port-queue = cola
+port-routing-key = clave de enrutamiento
 port-retain = retener
 port-connected = conectado
 port-queued = en cola

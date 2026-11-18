@@ -247,9 +247,9 @@ impl ConnectionAdapter for HttpAdapter {
             .get("base_url")
             .and_then(Json::as_str)
             .ok_or("`base_url` is required")?;
-        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-            return Err("`base_url` must start with http:// or https://".into());
-        }
+        crate::connection_uri(base_url, ["http", "https"])
+            .filter(|uri| uri.query().is_none())
+            .ok_or("`base_url` must be an absolute http:// or https:// address without user info, query or fragment")?;
         let timeout = match settings.get("timeout_ms") {
             None => DEFAULT_TIMEOUT_MS,
             Some(value) => value

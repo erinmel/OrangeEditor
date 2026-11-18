@@ -314,6 +314,27 @@ fn host() -> Host {
 }
 
 #[test]
+fn new_mqtt_entries_use_the_wirable_version_and_saved_v1_entries_still_check() {
+    let host = host();
+    let graph = document(&host, "mqtt://localhost");
+    assert!(host.check(&graph).unwrap().is_empty());
+    let mut draft = host.draft(&graph).unwrap();
+    let added = host
+        .add_node(&mut draft, orange_net::MQTT_MESSAGE, [0.0, 0.0])
+        .unwrap();
+    let new = draft.document().node(added).unwrap();
+    assert_eq!(new.definition.version, 2);
+    let visible = host.search_nodes("On MQTT message", "en");
+    assert_eq!(
+        visible
+            .iter()
+            .filter(|item| item.definition == orange_net::MQTT_MESSAGE)
+            .count(),
+        1,
+    );
+}
+
+#[test]
 fn a_graph_publishes_and_is_triggered_by_the_topics_it_subscribes_to() {
     let (url, seen, logins) = broker();
     let mut host = host();
