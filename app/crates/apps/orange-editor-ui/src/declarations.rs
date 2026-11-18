@@ -148,10 +148,21 @@ pub(crate) fn choice_fields(
                 )
                 .to_owned()
         };
+        // Its name over the list, which fills the row beside a Refresh button.
+        let _ = ui.add(
+            egui::Label::new(
+                egui::RichText::new(crate::properties::words(&choice.setting))
+                    .small()
+                    .weak(),
+            )
+            .truncate(),
+        );
         ui.horizontal(|ui| {
-            ui.label(choice.setting.as_str());
             let shown = current.map_or_else(|| choice.unset.clone(), label);
+            let refresh_width = 72.0;
             let _ = egui::ComboBox::from_id_salt(("orange-setting-choice", salt, &choice.setting))
+                .width((ui.available_width() - refresh_width).max(60.0))
+                .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
                     if ui

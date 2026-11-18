@@ -1782,10 +1782,9 @@ impl Editor {
                 .default_open(variables.len() <= 4)
                 .show(ui, |ui| {
                     for (id, name, ty) in &variables {
+                        // The buttons take their room first; the name is cut to what
+                        // is left, so a long name never runs under them.
                         ui.horizontal(|ui| {
-                            let _ = ui
-                                .add(egui::Label::new(name.as_str()).truncate())
-                                .on_hover_text(type_name(ty));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1801,6 +1800,18 @@ impl Editor {
                                             variable_node = Some((*definition, id.clone()));
                                         }
                                     }
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let _ = ui
+                                                .add(egui::Label::new(name.as_str()).truncate())
+                                                .on_hover_text(format!(
+                                                    "{name}
+{}",
+                                                    type_name(ty)
+                                                ));
+                                        },
+                                    );
                                 },
                             );
                         });

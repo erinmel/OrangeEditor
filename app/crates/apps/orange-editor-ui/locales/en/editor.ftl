@@ -4,7 +4,7 @@
 language-name = English
 
 port-execution = Execution
-numeric-policies = Numeric policies
+advanced = Advanced
 configure = Configure
 playback-capture = Playback capture
 applications = Applications

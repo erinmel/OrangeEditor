@@ -3,7 +3,7 @@
 language-name = Español
 
 port-execution = Ejecución
-numeric-policies = Políticas numéricas
+advanced = Avanzado
 configure = Configurar
 playback-capture = Captura de reproducción
 applications = Aplicaciones

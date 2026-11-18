@@ -108,6 +108,7 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
 }
 
 mod card;
+pub(crate) use settings::advanced as advanced_setting;
 #[cfg(test)]
 mod field_tests;
 mod fields;
@@ -477,6 +478,11 @@ impl Canvas {
                 Some((id.to_owned(), host.connection_label(id)?))
             })
             .collect();
+    }
+
+    /// What a node kind does, in the editor's language, when its package says.
+    pub(crate) fn description(&self, definition: &str) -> Option<&str> {
+        self.descriptions.get(definition).map(String::as_str)
     }
 
     pub(crate) fn display_name<'a>(&'a self, node: &'a NodeView) -> &'a str {

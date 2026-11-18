@@ -372,8 +372,10 @@ impl Editor {
     }
 
     pub(crate) fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        // What the panel holds never widens it; only dragging its edge does.
+        // What the panel holds never widens it; only dragging its edge does. Text is cut
+        // short with an ellipsis and shown whole on hover.
         ui.set_max_width(ui.available_width());
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
         let selected = self.canvas.selected().and_then(|id| {
             self.graph()?
@@ -422,6 +424,10 @@ impl Editor {
         let _ = ui
             .add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
             .on_hover_text(node.definition.as_str());
+        if let Some(description) = self.canvas.description(&node.definition) {
+            ui.add_space(4.0);
+            let _ = ui.add(egui::Label::new(description).wrap());
+        }
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
@@ -436,9 +442,6 @@ impl Editor {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // One label width keeps the fields in line; a narrow panel gives the
-                // room to the fields.
-                let labels = (ui.available_width() * 0.4).clamp(48.0, LABEL_WIDTH);
                 let has_settings = node
                     .schema
                     .as_ref()
@@ -448,9 +451,7 @@ impl Editor {
                 if setup {
                     section(ui, t("set-up"));
                     for (pointer, kind) in &node.references {
-                        if let Some(asked) =
-                            self.reference_field(ui, labels, &node, host, pointer, *kind)
-                        {
+                        if let Some(asked) = self.reference_field(ui, &node, host, pointer, *kind) {
                             change = Some(asked);
                         }
                     }
@@ -501,24 +502,35 @@ impl Editor {
                             &[("name", connection.name.as_str().into())],
                         ));
                     }
-                    if let Some(asked) = self.settings_fields(ui, labels, &node) {
-                        change = Some(asked);
-                    }
-                    if let Some(asked) = Self::type_fields(ui, labels, &node) {
+                    if let Some(asked) = self.settings_fields(ui, &node, false) {
                         change = Some(asked);
                     }
                 }
                 if !node.variadic.is_empty() {
                     section(ui, t("ports"));
-                    if let Some(asked) = Self::variadic_fields(ui, labels, &node) {
+                    if let Some(asked) = Self::variadic_fields(ui, &node) {
                         change = Some(asked);
                     }
                 }
                 if node.ports.iter().any(|port| port.input && !port.exec) {
                     section(ui, t("inputs"));
-                    if let Some(asked) = self.input_fields(ui, labels, &node) {
+                    if let Some(asked) = self.input_fields(ui, &node) {
                         change = Some(asked);
                     }
+                }
+                // Tuning settings and type pins: rarely changed, never on the card.
+                let tuning = Self::has_tuning(&node);
+                if tuning || !node.types.is_empty() {
+                    egui::CollapsingHeader::new(egui::RichText::new(t("advanced")).strong())
+                        .id_salt(("orange-advanced", node.id))
+                        .show(ui, |ui| {
+                            if tuning && let Some(asked) = self.settings_fields(ui, &node, true) {
+                                change = Some(asked);
+                            }
+                            if let Some(asked) = Self::type_fields(ui, &node) {
+                                change = Some(asked);
+                            }
+                        });
                 }
                 self.values_section(ui, &node);
                 ui.add_space(10.0);
@@ -575,7 +587,6 @@ impl Editor {
     fn reference_field(
         &mut self,
         ui: &mut egui::Ui,
-        labels: f32,
         node: &NodeView,
         host: &Host,
         pointer: &str,
@@ -617,7 +628,6 @@ impl Editor {
         let mut quick = false;
         row(
             ui,
-            labels,
             connection_label.as_deref().unwrap_or(&label),
             None,
             |ui| {
@@ -668,28 +678,24 @@ impl Editor {
                 .as_mut()
                 .filter(|form| form.pointer == pointer)
         {
-            chosen = Self::quick_variable_form(ui, labels, form).or(chosen);
+            chosen = Self::quick_variable_form(ui, form).or(chosen);
         }
         chosen
     }
 
     /// The short form for a variable declared from the node that will name it: a name
     /// and a type. The Document tab has the whole form.
-    fn quick_variable_form(
-        ui: &mut egui::Ui,
-        labels: f32,
-        form: &mut QuickVariable,
-    ) -> Option<Change> {
+    fn quick_variable_form(ui: &mut egui::Ui, form: &mut QuickVariable) -> Option<Change> {
         let mut change = None;
         let _ = egui::Frame::group(ui.style()).show(ui, |ui| {
-            row(ui, labels, t("name"), None, |ui| {
+            row(ui, t("name"), None, |ui| {
                 let _ = ui.add(
                     egui::TextEdit::singleline(&mut form.name)
                         .hint_text(t("new-variable-placeholder"))
                         .desired_width(ui.available_width()),
                 );
             });
-            row(ui, labels, t("type"), None, |ui| {
+            row(ui, t("type"), None, |ui| {
                 let _ = egui::ComboBox::from_id_salt("orange-quick-variable-type")
                     .selected_text(type_name(&form.ty))
                     .width(ui.available_width())
@@ -721,8 +727,8 @@ impl Editor {
     fn settings_fields(
         &mut self,
         ui: &mut egui::Ui,
-        labels: f32,
         node: &NodeView,
+        tuning: bool,
     ) -> Option<Change> {
         let properties = node.schema.as_ref()?["properties"].as_object()?;
         let required: Vec<&str> = node.schema.as_ref()?["required"]
@@ -736,7 +742,9 @@ impl Editor {
         let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
         for (name, schema) in fields {
             let pointer = format!("/{name}");
-            if node.references.iter().any(|(at, _)| *at == pointer) {
+            if node.references.iter().any(|(at, _)| *at == pointer)
+                || crate::canvas::advanced_setting(name) != tuning
+            {
                 continue;
             }
             let field = Field::for_node(node, name, schema);
@@ -752,7 +760,7 @@ impl Editor {
             };
             let hover = Some(if needed { t("required") } else { t("optional") }.to_owned());
             let mut said = None;
-            row(ui, labels, &label, hover, |ui| match &field {
+            row(ui, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
                     let shown = current.as_str().map_or(t("not-set"), |mode| {
                         if watch { watch_label(mode) } else { mode }
@@ -780,8 +788,8 @@ impl Editor {
                         });
                 }
                 Field::Toggle => {
-                    let mut on = current.as_bool().unwrap_or(false);
-                    if ui.checkbox(&mut on, "").changed() {
+                    let on = current.as_bool().or_else(|| schema["default"].as_bool());
+                    if let Some(on) = yes_no(ui, on) {
                         changed = Some(Change::Setting(pointer.clone(), Some(json!(on))));
                     }
                 }
@@ -820,8 +828,20 @@ impl Editor {
         changed
     }
 
+    /// Whether the node has tuning settings, shown under Advanced.
+    fn has_tuning(node: &NodeView) -> bool {
+        node.schema
+            .as_ref()
+            .and_then(|schema| schema["properties"].as_object())
+            .is_some_and(|fields| {
+                fields
+                    .keys()
+                    .any(|name| crate::canvas::advanced_setting(name))
+            })
+    }
+
     /// Choosers of the types of a generic node's parameters.
-    fn type_fields(ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
+    fn type_fields(ui: &mut egui::Ui, node: &NodeView) -> Option<Change> {
         let mut typing = None;
         for param in &node.types {
             let shown = param
@@ -833,7 +853,7 @@ impl Editor {
                 |found| tf("type-now", &[("type", type_name(found).into())]),
             );
             let label = tf("type-parameter", &[("name", param.name.to_string().into())]);
-            row(ui, labels, &label, Some(hover), |ui| {
+            row(ui, &label, Some(hover), |ui| {
                 let _ = egui::ComboBox::from_id_salt(("orange-type", param.name.as_str()))
                     .selected_text(shown)
                     .width(ui.available_width())
@@ -860,7 +880,7 @@ impl Editor {
 
     /// How many instances each variadic port has, with buttons for one more or one
     /// fewer (the last one, with its wires).
-    fn variadic_fields(ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
+    fn variadic_fields(ui: &mut egui::Ui, node: &NodeView) -> Option<Change> {
         let mut change = None;
         for variadic in &node.variadic {
             let last = node
@@ -881,7 +901,7 @@ impl Editor {
                 ),
                 None => tf("inputs-at-least", &[("min", variadic.min.into())]),
             };
-            row(ui, labels, &words(&variadic.port), Some(hover), |ui| {
+            row(ui, &words(&variadic.port), Some(hover), |ui| {
                 ui.label(variadic.count.to_string());
                 let fewer = variadic.count > variadic.min && last.is_some();
                 if ui
@@ -906,11 +926,11 @@ impl Editor {
     }
 
     /// Fields for the values on the node's inputs.
-    fn input_fields(&mut self, ui: &mut egui::Ui, labels: f32, node: &NodeView) -> Option<Change> {
+    fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView) -> Option<Change> {
         let mut write = None;
         for port in node.ports.iter().filter(|port| port.input && !port.exec) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
-            row(ui, labels, &port_label(&port.id), Some(ty.clone()), |ui| {
+            row(ui, &port_label(&port.id), Some(ty.clone()), |ui| {
                 if port.connected {
                     ui.weak(t("from-a-wire"));
                     return;
@@ -934,17 +954,13 @@ impl Editor {
                     return;
                 }
                 if port.ty.as_deref() == Some("core/bool@1") {
-                    let mut on = port.value.as_deref() == Some("true");
-                    if ui.checkbox(&mut on, "").changed() {
+                    let on = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .map(|value| value == "true");
+                    if let Some(on) = yes_no(ui, on) {
                         write = Some(Change::Input(port.id.clone(), Some(on.to_string())));
-                    }
-                    if port.value.is_some()
-                        && ui
-                            .small_button(icons::text(icons::CLOSE))
-                            .on_hover_text(t("clear-value-hint"))
-                            .clicked()
-                    {
-                        write = Some(Change::Input(port.id.clone(), None));
                     }
                     return;
                 }
@@ -958,7 +974,8 @@ impl Editor {
                     .filter(|_| self.file_dialogs);
                 let browse = path.map(|path| if path.folder { "folder" } else { "file" });
                 let typed = self.typed.entry(port.id.clone()).or_default();
-                match text_field(ui, typed, &ty, port.value.is_some(), browse) {
+                let hint = port.default.as_deref().unwrap_or(&ty);
+                match text_field(ui, typed, hint, port.value.is_some(), browse) {
                     Edit::Done if *typed != before => {
                         let value = (!typed.is_empty()).then(|| typed.clone());
                         write = Some(Change::Input(port.id.clone(), value));
@@ -983,9 +1000,6 @@ impl Editor {
         write
     }
 }
-
-/// Widest the label column of the properties panel gets.
-const LABEL_WIDTH: f32 = 120.0;
 
 /// A variable being declared from a node's properties, for the node to name.
 #[derive(Debug, Clone, PartialEq)]
@@ -1104,34 +1118,42 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(egui::RichText::new(title).strong());
 }
 
-/// One row of the panel: a label in a column `labels` wide, then the field filling
-/// the rest. A label too long for the column is shortened and shown whole on hover,
-/// with `hover` under it.
-fn row(
-    ui: &mut egui::Ui,
-    labels: f32,
-    label: &str,
-    hover: Option<String>,
-    field: impl FnOnce(&mut egui::Ui),
-) {
+/// One row of the panel, as a card's field is laid out (22 §3.1): its name on one
+/// line, cut short and shown whole on hover with `hover` under it, and its field
+/// across the panel's whole width on the next.
+fn row(ui: &mut egui::Ui, label: &str, hover: Option<String>, field: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(2.0);
+    let _ = ui
+        .add(egui::Label::new(egui::RichText::new(label).small().weak()).truncate())
+        .on_hover_text(match hover {
+            Some(more) => format!("{label}\n{more}"),
+            None => label.to_owned(),
+        });
     let _ = ui.horizontal(|ui| {
-        let height = ui.spacing().interact_size.y;
-        let _ = ui
-            .allocate_ui_with_layout(
-                egui::vec2(labels, height),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_width(labels);
-                    ui.add(egui::Label::new(label).truncate())
-                },
-            )
-            .inner
-            .on_hover_text(match hover {
-                Some(more) => format!("{label}\n{more}"),
-                None => label.to_owned(),
-            });
+        ui.set_width(ui.available_width());
         field(ui);
     });
+}
+
+/// A No | Yes switch across the row; `None` chooses neither. Returns the half clicked
+/// when it is not the one chosen.
+fn yes_no(ui: &mut egui::Ui, on: Option<bool>) -> Option<bool> {
+    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+    let mut clicked = None;
+    for (value, label) in [(false, t("no")), (true, t("yes"))] {
+        let chosen = on == Some(value);
+        if ui
+            .add_sized(
+                egui::vec2(width, ui.spacing().interact_size.y),
+                egui::Button::selectable(chosen, label),
+            )
+            .clicked()
+            && !chosen
+        {
+            clicked = Some(value);
+        }
+    }
+    clicked
 }
 
 /// A setting's name as a person reads it: `max_iterations` is "Max iterations".
@@ -1233,7 +1255,7 @@ mod width_tests {
                     .default_size(200.0)
                     .show(ui, |ui| {
                         ui.set_max_width(ui.available_width());
-                        row(ui, 80.0, "Value", None, |ui| {
+                        row(ui, "Value", None, |ui| {
                             let _ = text_field(ui, &mut typed, "a number", true, None);
                         });
                     });
@@ -1247,6 +1269,44 @@ mod width_tests {
                 .all(|pair| (pair[0] - pair[1]).abs() < 0.5),
             "{widths:?}"
         );
+    }
+
+    /// A node whose input holds a very long path keeps the whole panel at the width it
+    /// was given: every line is cut short, none pushes the edge out.
+    #[test]
+    fn a_long_value_never_widens_the_properties_panel() {
+        let (mut host, _) = Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_audio::package()],
+        )
+        .unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let play = host
+            .add_node(&mut draft, orange_audio::PLAY, [0.0, 0.0])
+            .unwrap();
+        let long = format!(r"C:\{}\sound.wav", "a very long folder name\\".repeat(12));
+        host.set_input(&mut draft, (play, "path"), Some(&long))
+            .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, draft.text().unwrap());
+        editor.canvas().select(Some(play));
+        // And a run showed the same long value on the input.
+        editor
+            .canvas()
+            .show_preview(play, "path".into(), long.clone(), long.clone());
+        let context = egui::Context::default();
+        let mut widths = Vec::new();
+        for _ in 0..6 {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                let shown = egui::Panel::right("long-value-test")
+                    .resizable(true)
+                    .default_size(260.0)
+                    .show(ui, |ui| editor.properties_panel(ui, &mut host));
+                widths.push(shown.response.rect.width());
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(widths.iter().all(|width| *width <= 262.0), "{widths:?}");
     }
 }
 
