@@ -558,6 +558,29 @@ impl ControlWatch {
     }
 }
 
+/// What reads one run variable: the reactions a write to it may schedule, so the
+/// run finds them without walking every Watch, source and change entry.
+#[derive(Debug, Clone, Default)]
+pub struct VariableDependents {
+    watches: Vec<usize>,
+    sources: Vec<usize>,
+    changes: Vec<usize>,
+}
+impl VariableDependents {
+    /// Watch indices in saved activation order.
+    pub fn watches(&self) -> &[usize] {
+        &self.watches
+    }
+    /// Source indices in node order.
+    pub fn sources(&self) -> &[usize] {
+        &self.sources
+    }
+    /// On Variable Changed entries, in [`ControlPlan::changes`] order.
+    pub fn changes(&self) -> &[usize] {
+        &self.changes
+    }
+}
+
 /// A package node whose value its provider publishes and the run reads like a variable
 /// (11 §10.5).
 #[derive(Debug, Clone)]
@@ -656,6 +679,7 @@ pub struct ControlPlan {
     timers: Box<[ControlTimer]>,
     changes: Box<[ControlChange]>,
     pub(crate) variables: Box<[ControlVariable]>,
+    dependents: Box<[VariableDependents]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
     root_inputs: Box<[Arc<[usize]>]>,
@@ -724,6 +748,10 @@ impl ControlPlan {
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
+    }
+    /// What reads run variable `variable`.
+    pub fn variable_dependents(&self, variable: usize) -> &VariableDependents {
+        &self.dependents[variable]
     }
     pub fn states(&self) -> &[ControlState] {
         &self.states
@@ -1224,6 +1252,31 @@ fn compile_control_inner(
             lives[live].source_dependents.push(index);
         }
     }
+    let mut dependents = vec![VariableDependents::default(); variables.len()];
+    for (index, (_, watch)) in watches.iter().enumerate() {
+        charge(
+            &mut projection_items,
+            watch.variables.len(),
+            options.limits.max_graph_items,
+        )?;
+        for &variable in &watch.variables {
+            dependents[variable].watches.push(index);
+        }
+    }
+    for (index, source) in sources.iter().enumerate() {
+        charge(
+            &mut projection_items,
+            source.variables.len(),
+            options.limits.max_graph_items,
+        )?;
+        for &variable in &source.variables {
+            dependents[variable].sources.push(index);
+        }
+    }
+    for (index, change) in changes.iter().enumerate() {
+        charge(&mut projection_items, 1, options.limits.max_graph_items)?;
+        dependents[change.variable()].changes.push(index);
+    }
     for node in &mut nodes {
         if let ControlOperation::Update { demand, .. }
         | ControlOperation::Call { demand, .. }
@@ -1254,6 +1307,7 @@ fn compile_control_inner(
         manuals: manuals.into(),
         timers: timers.into(),
         changes: changes.into(),
+        dependents: dependents.into(),
         variables: variables.into(),
         states: states.into(),
         host_sources: host_sources.into(),

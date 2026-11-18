@@ -33,7 +33,8 @@ pub use control::{
     ControlManual, ControlNode, ControlOperation, ControlPlan, ControlSource, ControlState,
     ControlTimer, ControlVariable, EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout,
     HostSource, IterationProjection, SourceKind, SwitchCase, SwitchKey, TickProjection,
-    UpdateDemand, UpdateOperation, UpdateProjection, compile_control, compile_control_with_effects,
+    UpdateDemand, UpdateOperation, UpdateProjection, VariableDependents, compile_control,
+    compile_control_with_effects,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;

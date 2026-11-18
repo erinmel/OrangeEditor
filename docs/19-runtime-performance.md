@@ -321,11 +321,17 @@ resident-set measurements, and no reference-machine or tail qualification is cla
 
 ## Core verification on `polish/ui-reinforcement` (2026-11-18)
 
-Baseline `3a7f22e` was compared with an isolated snapshot of the current core
-changes, including the segment fix below. Both snapshots used the same `Cargo.lock`
+Baseline `3a7f22e` was compared with an isolated snapshot of the core changes,
+including the segment fix below. Both snapshots used the same `Cargo.lock`
 (SHA-256 `01032F6D4C5DFB897F7F5C1284A9E30C7650D82DB94936340B45432CF07C06BE`).
-The SHA-256 of the candidate's core file manifest is
+The SHA-256 of the initial candidate's core file manifest is
 `8B7EA3527844E6D5DA505D21DB7AD4D29CBCFFB4E32D333891F591D99F974753`.
+The branch advanced to `69d6c92` during the pass. Its core changes are in
+`2854e43`. The initial snapshot differs from that revision in `run/watch.rs`,
+which gained causal tracking for already-queued Watches and clears a live value
+when its source is re-armed. The final feedback and allocator reruns use the
+updated core. All 22 changed core files were checked against this snapshot, whose
+manifest SHA-256 is `5587BACEB3EB9443C0FAB4A45E0415A2D6878B08A64FD0CB18DFF14B39904658`.
 The host was Windows x64 (build 26300) on a Ryzen 9 9900X3D with 12 physical cores,
 24 logical CPUs and approximately 31 GiB available to the runtime. Power plan was
 High performance. Rust and Cargo were both 1.99.1 with the MSVC target. These
@@ -346,7 +352,9 @@ reference-machine gates described in [06](06-quality-and-validation.md) remain o
   process for scalar-chain and the 1,000-entry host-map input. Another filtered
   retest used 80 runs per process with the same build order and a one-CPU process
   affinity mask of `4`. Each reported percentile is the median of three process
-  percentiles unless specified. Allocation windows were captured separately with
+  percentiles unless specified. A final map retest used the same affinity mask,
+  five alternating process pairs, two seconds of warmup and 120 runs per process.
+  Allocation windows were captured separately with
   `--execution --budget 64 --warmup 3 --runs 5`.
 - The feedback graph contains one `On Variable Changed` entry and 1, 128 or 512
   `On Watch` entries. Only one watched variable changes. Each independent write
@@ -356,6 +364,43 @@ reference-machine gates described in [06](06-quality-and-validation.md) remain o
   runs per process. The allocator probe uses five warmups and five measured runs.
   Both source probes and the raw output are under `.artifacts/core-perf-pass/`.
 
+### Standard execution workloads
+
+All 16 workloads passed their output checks. Pump counts, allocation counts,
+cumulative requested bytes and peak incremental live heap matched the baseline
+in every workload, including the allocator rerun at `69d6c92`. Standard execution
+timings below used the initial candidate. Full-suite timing moved substantially
+between processes. For example, candidate scalar-chain p50 ranged from 1.405 to
+2.407 ms. The filtered
+100-run retests moved scalar-chain p50 from 1.4405 to 1.4860 ms and host-map input
+p50 from 0.0431 to 0.0451 ms. Scalar-chain p95 ranged from 1.65 to 3.11 ms across
+the candidate processes.
+
+Single-CPU filtered retest, with times in milliseconds per complete session:
+
+| Workload | Baseline p50 | Candidate p50 | Baseline p95 | Candidate p95 |
+|---|---:|---:|---:|---:|
+| Scalar chain | 2.0663 | 1.4456 | 4.4454 | 1.8148 |
+| 384 host inputs | 4.7002 | 4.7061 | 5.4929 | 5.0043 |
+| Fork race and cancel | 1.1806 | 1.1774 | 1.2820 | 1.5406 |
+| Fork fan-out 256 | 3.9010 | 3.7691 | 4.2559 | 4.4493 |
+| Reordered map CAS, 16 entries | 0.9179 | 0.9509 | 0.9797 | 1.1118 |
+| Reordered map CAS, 1,000 entries | 30.0934 | 30.5972 | 46.7475 | 40.8029 |
+| Reordered enum payload CAS, 1,000 entries | 30.8639 | 30.8032 | 47.1187 | 42.6049 |
+| Host map input, 1,000 entries | 0.0318 | 0.0318 | 0.0319 | 0.0341 |
+| Map Zone, 10,000 items | 14.4992 | 14.5119 | 14.8679 | 14.9877 |
+
+The scalar p50 improvement in that table depended on one slow baseline
+process. The other two paired p50 differences were within 1%. Fork cancellation
+p95 ranges overlapped across builds, with similar p50s. The larger apparent
+slowdowns in the full sweep did not reproduce in this retest.
+
+In the 120-run map retest the reordered 16-entry case moved from 0.9276 to
+0.9215 ms at p50 and from 0.9541 to 0.9472 ms at p95. The earlier p95 increase
+did not repeat. The same-order 16-entry comparison moved from 0.4080 to
+0.4192 ms at p50 and from 0.4137 to 0.4269 ms at p95. The per-process p95
+ranges overlapped.
+
 ### Feedback delivery and scaling
 
 On the baseline, after 1,000 independent writes, the `previous` output was 63
@@ -363,11 +408,22 @@ instead of 999. A completed segment was keeping its owner, so an idle host write
 could inherit the previous handler's causal depth. The segment now releases its
 owner at close. The candidate delivered all 2,000 notifications in each stress
 session. `independent_host_writes_do_not_inherit_a_finished_segments_causal_depth`
-regresses this case with and without an `On Watch` entry. The existing causal
+covers this case with and without an `On Watch` entry. The existing causal
 recursion guard also passed its test.
 
-Both builds completed the 48-write comparison with 96 notifications. The allocator
-counts include startup, feedback and disposal.
+Both builds completed the 48-write comparison with 96 notifications. A single-CPU
+rerun against `69d6c92` measured these session times in milliseconds. The 512-Watch
+p50 increase of 33% in the first sweep fell to 1%. At 128 Watches the final p50
+was 10% higher, or about 0.017 ms per session. The previous retest for that size
+showed differences in both directions across process pairs.
+
+| Watches | Baseline p50 | Candidate p50 | Baseline p95 | Candidate p95 |
+|---|---:|---:|---:|---:|
+| 1 | 0.0936 | 0.0944 | 0.0959 | 0.0970 |
+| 128 | 0.1658 | 0.1827 | 0.1691 | 0.1926 |
+| 512 | 0.3960 | 0.3998 | 0.4406 | 0.4350 |
+
+The allocator counts include startup, feedback and disposal.
 
 | Watches | Baseline pumps | Candidate pumps | Baseline peak heap bytes | Candidate peak heap bytes | Baseline cumulative requested bytes | Candidate cumulative requested bytes |
 |---|---:|---:|---:|---:|---:|---:|
@@ -375,10 +431,17 @@ counts include startup, feedback and disposal.
 | 128 | 101 | 54 | 101,991 | 111,519 | 1,185,179 | 1,203,579 |
 | 512 | 119 | 72 | 383,463 | 421,023 | 4,273,691 | 4,320,123 |
 
-At 1,000 writes the candidate requested 3.48 MB, 22.16 MB and 78.65 MB cumulatively
-as the Watch count increased. Peak incremental live heap stayed at 9,525, 111,519
-and 421,023 bytes. `Watches::schedule` walks the dependency lists of all Watches
-to schedule changes to run variables. Live-value updates already have reverse
+The 1,000-write run at `69d6c92` showed the following growth even though the same
+single variable changes in each case. Timing values use three single-CPU processes.
+
+| Watches | Pumps | p50 ms | p95 ms | Cumulative requested bytes | Peak incremental live bytes |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1,001 | 1.9233 | 1.9409 | 3,477,039 | 9,525 |
+| 128 | 1,006 | 3.1181 | 3.3343 | 22,159,003 | 111,519 |
+| 512 | 1,024 | 7.0019 | 7.3099 | 78,648,475 | 421,023 |
+
+`Watches::schedule` walks the dependency lists of all Watches to schedule changes
+to run variables. Live-value updates already have reverse
 dependency lists in `Watches::schedule_live`. Also, `Run::dispatch_event`
 creates a new `DataActivation` per accepted entry it dispatches. That activation
 allocates registers, memo slots and work capacity from the shared data plan,
@@ -387,6 +450,8 @@ for scaling with graph size. This pass measured whole sessions, so the contribut
 of each path to wall time was not isolated.
 
 ### Verification commands
+
+These checks were repeated against `69d6c92`.
 
 - `cargo test --target-dir target -p orange-runtime -p orange-bundled --locked --offline`
   passed with 877 tests, zero failures and six ignored.

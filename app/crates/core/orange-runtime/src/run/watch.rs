@@ -218,13 +218,9 @@ impl Watches {
         // Each segment has its own stamp and payloads. Only variables with
         // change-entry consumers occupy staging storage.
         for (variable, value, previous) in changed {
-            let receivers = plan
-                .changes()
-                .iter()
-                .enumerate()
-                .filter(|(_, change)| change.variable() == *variable);
             let mut matched = false;
-            for (entry, change) in receivers {
+            for &entry in plan.variable_dependents(*variable).changes() {
+                let change = &plan.changes()[entry];
                 matched = true;
                 reactions.push((
                     change.handler().order(),
@@ -269,14 +265,16 @@ impl Watches {
                 remaining,
             });
         }
-        for (i, watch) in plan.watches().iter().enumerate() {
-            if !watch
-                .variables()
-                .iter()
-                .any(|v| changed.iter().any(|(id, _, _)| id == v))
-            {
-                continue;
-            }
+        // Only the Watches that read a changed variable, each once, in plan order.
+        let mut watches: Vec<usize> = changed
+            .iter()
+            .flat_map(|(variable, _, _)| plan.variable_dependents(*variable).watches())
+            .copied()
+            .collect();
+        watches.sort_unstable();
+        watches.dedup();
+        for i in watches {
+            let watch = &plan.watches()[i];
             if self.watch_queued[i] {
                 // Already queued, perhaps by a live value with no cause: it keeps its
                 // place but descends from the deepest write, so the causal-depth guard
@@ -298,15 +296,10 @@ impl Watches {
                 Reaction::Watch(i, Some(cause)),
             ));
         }
-        for (i, source) in plan.sources().iter().enumerate() {
-            if !self.source_queued[i]
-                && source
-                    .variables()
-                    .iter()
-                    .any(|v| changed.iter().any(|(id, _, _)| id == v))
-            {
+        for i in Self::sources_reading(plan, changed) {
+            if !self.source_queued[i] {
                 self.source_queued[i] = true;
-                reactions.push((0, source.node(), Reaction::Source(i)));
+                reactions.push((0, plan.sources()[i].node(), Reaction::Source(i)));
             }
         }
         reactions.sort_by_key(|(order, node, _)| (*order, *node));
@@ -339,17 +332,23 @@ impl Watches {
         plan: &ControlPlan,
         changed: &[(usize, Value, Value)],
     ) {
-        for (i, source) in plan.sources().iter().enumerate() {
-            if !self.source_queued[i]
-                && source
-                    .variables()
-                    .iter()
-                    .any(|v| changed.iter().any(|(id, _, _)| id == v))
-            {
+        for i in Self::sources_reading(plan, changed) {
+            if !self.source_queued[i] {
                 self.source_queued[i] = true;
                 self.pending.push_back(Reaction::Source(i));
             }
         }
+    }
+    /// The sources whose arguments read a changed variable, each once, in plan order.
+    fn sources_reading(plan: &ControlPlan, changed: &[(usize, Value, Value)]) -> Vec<usize> {
+        let mut sources: Vec<usize> = changed
+            .iter()
+            .flat_map(|(variable, _, _)| plan.variable_dependents(*variable).sources())
+            .copied()
+            .collect();
+        sources.sort_unstable();
+        sources.dedup();
+        sources
     }
     pub(crate) fn schedule_deadline(&mut self, index: usize) {
         if !self.watch_queued[index] {
