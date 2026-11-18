@@ -304,7 +304,10 @@ fn preflight_node(
             );
             return false;
         }
-        if node.definition.version != 1 || node.config_version != 1 {
+        if node.definition.version != 1
+            || (node.config_version != 1
+                && !(node.definition.id.as_str() == ids::ON_WATCH && node.config_version == 2))
+        {
             unresolved(
                 node.id,
                 DiagnosticCode::ProviderUnavailable,
@@ -656,19 +659,14 @@ fn project_nodes(
         match projection {
             Ok(projected) => {
                 if node.definition.id.as_str() == ids::ON_WATCH
-                    && node.config.get("mode").and_then(|v| v.as_str()) == Some("rising")
-                    && projected
-                        .ports
-                        .iter()
-                        .find(|p| p.port_id.as_str() == "watch")
-                        .and_then(|p| p.ty.as_ref())
-                        .map(|t| t.as_str())
-                        != Some("core/bool@1")
+                    && let Some(config) = crate::catalog::WatchConfig::from_node(node)
+                    && let Some(code) =
+                        watch_type_diagnostic(config, &projected, pass.registry.types())
                 {
                     diagnostics.push(port_type_diagnostic(
                         *id,
                         crate::port_id!("watch"),
-                        DiagnosticCode::TypeMismatch,
+                        code,
                         pass.origin,
                     ));
                     report.incomplete_nodes.insert(*id);
@@ -686,6 +684,24 @@ fn project_nodes(
                 report.incomplete_nodes.insert(*id);
             }
         }
+    }
+}
+
+fn watch_type_diagnostic(
+    config: crate::catalog::WatchConfig<'_>,
+    signature: &SignatureSnapshot,
+    types: &TypeRegistry,
+) -> Option<DiagnosticCode> {
+    let shape = signature
+        .ports
+        .iter()
+        .find(|port| port.port_id.as_str() == "watch")
+        .and_then(|port| port.ty.as_ref())
+        .and_then(|ty| crate::value::shape::ValueShape::of_in(ty, types));
+    match shape {
+        Some(shape) if config.resolve(&shape).is_some() => None,
+        Some(shape) if config.accepts_type(&shape) => Some(DiagnosticCode::WatchConfig),
+        _ => Some(DiagnosticCode::TypeMismatch),
     }
 }
 

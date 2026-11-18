@@ -33,6 +33,11 @@ pub enum HostInput {
         payload: Option<Value>,
         wall_ns: Option<i64>,
     },
+    /// A value a live node's provider published (11 §10.5).
+    Live {
+        node: NodeId,
+        value: Value,
+    },
     /// The result of an effect the host took from the run.
     EffectDone {
         id: EffectId,
@@ -232,6 +237,11 @@ impl RunDriver {
             } => self
                 .run
                 .trigger(*node, payload.as_ref(), *wall_ns)
+                .map(drop)
+                .map_err(RefusedReason::Ingress),
+            HostInput::Live { node, value } => self
+                .run
+                .publish_live(*node, value.clone())
                 .map(drop)
                 .map_err(RefusedReason::Ingress),
             HostInput::EffectDone { id, outcome } => self

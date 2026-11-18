@@ -15,6 +15,7 @@ pub(super) struct Timers {
     by_awaiter: IdMap<u64, TimerKey>,
     /// The armed tick of each timer entry, by its index in `ControlPlan::timers()`.
     by_entry: BTreeMap<usize, TimerKey>,
+    by_watch: BTreeMap<usize, TimerKey>,
     order: BTreeMap<TimerKey, TimerTarget>,
 }
 
@@ -29,6 +30,7 @@ pub(super) enum TimerTarget {
     Wait(Timer),
     Await { run: u64, token: u64 },
     Entry { run: u64, timer: usize, at: u64 },
+    Watch(usize),
 }
 
 /// [`Timers::schedule`] refused a timer: the run's timer limit or sequence is exhausted.
@@ -92,11 +94,38 @@ impl Timers {
     }
     /// Armed timer entries; they are schedule, not parked work.
     pub(crate) fn entry_count(&self) -> usize {
-        self.by_entry.len()
+        self.by_entry.len() + self.by_watch.len()
+    }
+    /// Keeps at most one deadline per Watch and counts it against the shared timer limit.
+    pub(crate) fn set_watch(
+        &mut self,
+        watch: usize,
+        at: Option<u64>,
+        max: usize,
+    ) -> Result<(), TimerLimit> {
+        if let Some(key) = self.by_watch.get(&watch).copied() {
+            if at == Some(key.0) {
+                return Ok(());
+            }
+            self.by_watch.remove(&watch);
+            self.order.remove(&key);
+        }
+        if let Some(at) = at {
+            if self.order.len() >= max {
+                return Err(TimerLimit);
+            }
+            let key = self.next_key(at)?;
+            self.by_watch.insert(watch, key);
+            self.order.insert(key, TimerTarget::Watch(watch));
+        }
+        Ok(())
     }
     /// Disarms every timer entry: a stopping run admits no further ticks.
     pub(crate) fn remove_entries(&mut self) {
         for key in std::mem::take(&mut self.by_entry).into_values() {
+            self.order.remove(&key);
+        }
+        for key in std::mem::take(&mut self.by_watch).into_values() {
             self.order.remove(&key);
         }
     }
@@ -120,6 +149,9 @@ impl Timers {
             }
             TimerTarget::Entry { timer, .. } => {
                 self.by_entry.remove(timer);
+            }
+            TimerTarget::Watch(watch) => {
+                self.by_watch.remove(watch);
             }
         }
         Some((key, timer))
@@ -146,6 +178,7 @@ impl Timers {
         self.by_strand.clear();
         self.by_awaiter.clear();
         self.by_entry.clear();
+        self.by_watch.clear();
     }
     /// Drops all timers and releases their storage.
     pub(crate) fn release(&mut self) {

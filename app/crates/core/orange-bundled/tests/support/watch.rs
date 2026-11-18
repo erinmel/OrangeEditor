@@ -19,6 +19,96 @@ fn seen(run: &Run, n: u32) -> Option<u64> {
         other => panic!("{other:?}"),
     }
 }
+
+fn numeric_watch_run(
+    config: Json,
+) -> (
+    orange_model::GraphDocument,
+    std::sync::Arc<orange_compiler::ControlPlan>,
+) {
+    let mut trigger = watch(10, "above", "core/f64@1");
+    trigger["config_version"] = json!(2);
+    trigger["config"] = config;
+    let initial = json!({"id":id(100), "name":"input", "type":"core/f64@1", "scope":"run",
+        "init":{"type":"core/f64@1","bits":"0000000000000000"}});
+    compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            trigger,
+            update_local(11, 101),
+        ],
+        vec![
+            edge(1, 1, "value", 10, "watch"),
+            edge(2, 10, "then", 11, "in"),
+        ],
+        vec![initial, variable(101, "run", Some(0))],
+    )
+}
+
+#[test]
+fn numeric_watch_releases_holds_and_observes_cooldown_in_virtual_time() {
+    let (doc, plan) = numeric_watch_run(json!({
+        "mode":"above", "threshold":10, "release":8, "hold":50, "cooldown":200
+    }));
+    let mut run = run(&doc, plan);
+    let sample = |run: &mut Run, at_ms: u64, value| {
+        run.advance_to(at_ms * 1_000_000).unwrap();
+        run.set_variable(id(100).parse().unwrap(), Value::F64(value))
+            .unwrap();
+        pump_until_idle(run);
+    };
+    pump_until_idle(&mut run);
+    sample(&mut run, 0, 11.0);
+    sample(&mut run, 20, 9.0);
+    assert_eq!(seen(&run, 101), Some(0));
+    sample(&mut run, 25, 11.0);
+    run.advance_to(74_000_000).unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(0));
+    run.advance_to(75_000_000).unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(1));
+
+    sample(&mut run, 85, 9.0);
+    sample(&mut run, 100, 12.0);
+    assert_eq!(run.pump(1).unwrap().next_wakeup, None);
+    sample(&mut run, 110, 8.0);
+    sample(&mut run, 120, 12.0);
+    run.advance_to(274_000_000).unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(1));
+    run.advance_to(275_000_000).unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(2));
+}
+
+#[test]
+fn range_watches_use_closed_bounds_and_ignore_unordered_samples() {
+    for (mode, samples) in [
+        ("inside", [0.0, 2.0, f64::NAN, 3.0, 4.0, 3.0]),
+        ("outside", [2.0, 4.0, f64::NAN, 0.0, 3.0, 0.0]),
+        ("below", [0.0, -2.0, f64::NAN, -3.0, 1.0, -3.0]),
+    ] {
+        let config = if mode == "below" {
+            json!({"mode":mode, "threshold":-1, "release":1})
+        } else {
+            json!({"mode":mode, "low":2, "high":3})
+        };
+        let (doc, plan) = numeric_watch_run(config);
+        let mut run = run(&doc, plan);
+        for (value, expected) in samples.into_iter().zip([0, 1, 1, 1, 1, 2]) {
+            run.set_variable(id(100).parse().unwrap(), Value::F64(value))
+                .unwrap();
+            pump_until_idle(&mut run);
+            assert_eq!(
+                seen(&run, 101),
+                Some(expected),
+                "mode {mode}, sample {value}"
+            );
+        }
+    }
+}
+
 #[test]
 fn diamond_observes_both_final_writes_once_across_pump_slices() {
     let nodes = vec![
@@ -195,6 +285,121 @@ fn unrelated_variable_writes_do_not_open_watch_epochs() {
     run.stop().unwrap();
     pump_until_idle(&mut run);
     assert_eq!(run.watch_evaluations(), 2);
+}
+
+#[test]
+fn host_writes_before_a_pump_keep_their_own_change_payloads() {
+    let mut first_change = variable_node(20, "on-variable-changed", 100);
+    first_change["activation"] = activation(0, 8, "fault");
+    let mut second_change = variable_node(21, "on-variable-changed", 101);
+    second_change["activation"] = activation(0, 8, "fault");
+    let (doc, plan) = compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            watch(10, "changed", "core/u64@1"),
+            first_change,
+            second_change,
+            variable_node(30, "set-variable", 102),
+            variable_node(31, "set-variable", 103),
+        ],
+        vec![
+            edge(1, 1, "value", 10, "watch"),
+            edge(2, 20, "then", 30, "in"),
+            edge(3, 20, "previous", 30, "value"),
+            edge(4, 21, "then", 31, "in"),
+            edge(5, 21, "value", 31, "value"),
+        ],
+        (100..=103).map(|id| variable(id, "run", Some(0))).collect(),
+    );
+    let mut run = run(&doc, plan);
+    pump_until_idle(&mut run);
+    for (variable, value) in [(100, 7), (101, 12), (100, 15)] {
+        run.set_variable(id(variable).parse().unwrap(), Value::U64(value))
+            .unwrap();
+    }
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 102), Some(7));
+    assert_eq!(seen(&run, 103), Some(12));
+    assert_eq!(run.event_stats().accepted, 4);
+}
+
+#[test]
+fn independent_host_writes_do_not_inherit_a_finished_segments_causal_depth() {
+    for with_watch in [false, true] {
+        let mut change = variable_node(1, "on-variable-changed", 100);
+        change["activation"] = activation(0, 8, "fault");
+        let mut nodes = vec![change, variable_node(2, "set-variable", 101)];
+        let mut edges = vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "previous", 2, "value"),
+        ];
+        if with_watch {
+            nodes.extend([
+                variable_node(3, "get-variable", 100),
+                watch(4, "changed", "core/u64@1"),
+            ]);
+            edges.push(edge(3, 3, "value", 4, "watch"));
+        }
+        let (doc, plan) = compile(
+            nodes,
+            edges,
+            vec![variable(100, "run", Some(0)), variable(101, "run", None)],
+        );
+        let mut run = run(&doc, plan);
+        let source = id(100).parse().unwrap();
+        pump_until_idle(&mut run);
+        for value in 1..=96 {
+            run.set_variable(source, Value::U64(value)).unwrap();
+            pump_until_idle(&mut run);
+            assert_eq!(seen(&run, 101), Some(value - 1), "host write {value}");
+        }
+        assert_eq!(
+            run.event_stats().accepted,
+            if with_watch { 192 } else { 96 }
+        );
+    }
+}
+
+#[test]
+fn a_host_write_during_a_sliced_watch_is_observed() {
+    let (doc, plan) = compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            variable_node(2, "get-variable", 101),
+            math(3, "add", 0, 0),
+            watch(10, "changed", "core/u64@1"),
+            variable_node(11, "set-variable", 102),
+        ],
+        vec![
+            edge(1, 1, "value", 3, "a"),
+            edge(2, 2, "value", 3, "b"),
+            edge(3, 3, "sum", 10, "watch"),
+            edge(4, 10, "then", 11, "in"),
+            edge(5, 10, "value", 11, "value"),
+        ],
+        vec![
+            variable(100, "run", Some(0)),
+            variable(101, "run", Some(10)),
+            variable(102, "run", Some(0)),
+        ],
+    );
+    for slice in 0..16 {
+        let mut run = run(&doc, plan.clone());
+        pump_until_idle(&mut run);
+        run.set_variable(id(100).parse().unwrap(), Value::U64(1))
+            .unwrap();
+        for _ in 0..slice {
+            run.pump(1).unwrap();
+        }
+        run.set_variable(id(101).parse().unwrap(), Value::U64(20))
+            .unwrap();
+        pump_until_idle(&mut run);
+        assert_eq!(
+            seen(&run, 102),
+            Some(21),
+            "after {slice} single-operation pumps"
+        );
+    }
 }
 
 #[test]

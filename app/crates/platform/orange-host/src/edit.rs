@@ -65,6 +65,9 @@ fn new_config(
     if found.definition.id.as_str() == "core/while" {
         let _ = config.insert("max_iterations".to_owned(), json!(NEW_WHILE_BOUND));
     }
+    if found.definition.id.as_str() == "core/on-watch" {
+        let _ = config.insert("mode".to_owned(), json!("changed"));
+    }
     if let Ports::Nominal(access) = found.ports {
         let record = matches!(
             access,
@@ -184,11 +187,51 @@ impl Host {
         Ok(node)
     }
 
+    /// Adds a Band level read wired into When, as one undoable edit.
+    pub fn add_band_trigger(&self, draft: &mut Draft, at: [f32; 2]) -> Result<NodeId, HostError> {
+        let (level, mut commands) =
+            self.new_node_commands(draft, "org.orange.audio/live-band-level", at)?;
+        let (when, entry) = self.node_commands(
+            draft,
+            "core/on-watch",
+            [at[0] + 360.0, at[1]],
+            "node:band-trigger",
+        )?;
+        commands.extend(entry);
+        commands.push(DocCommand::SetConfig {
+            node: when,
+            config_version: 2,
+            config: serde_json::from_value(json!({
+                "mode": "above", "threshold": -20, "release": -26, "hold": 50
+            }))
+            .map_err(|error| refused(&error))?,
+        });
+        let wire = serde_json::from_value(json!({
+            "id": draft.fresh_id("edge"),
+            "from": {"node": level, "port": "level"},
+            "to": {"node": when, "port": "watch"}
+        }))
+        .map_err(|error| refused(&error))?;
+        commands.push(DocCommand::Connect { edge: wire });
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(when)
+    }
+
     fn new_node_commands(
         &self,
         draft: &Draft,
         definition: &str,
         at: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        self.node_commands(draft, definition, at, "node")
+    }
+
+    fn node_commands(
+        &self,
+        draft: &Draft,
+        definition: &str,
+        at: [f32; 2],
+        identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let version = self
             .nodes()
@@ -203,7 +246,7 @@ impl Host {
             version,
         };
         let node: NodeId = draft
-            .fresh_id("node")
+            .fresh_id(identity)
             .parse()
             .map_err(|_| refused(&"the new ID is not valid"))?;
         let registry = &self.registry_for(draft.document());
@@ -460,7 +503,13 @@ impl Host {
         let config_version = draft
             .document()
             .node(node)
-            .map(|found| found.config_version)
+            .map(|found| {
+                if found.definition.id.as_str() == "core/on-watch" && found.config_version == 1 {
+                    2
+                } else {
+                    found.config_version
+                }
+            })
             .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
         let config = serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
         draft.commit(

@@ -558,6 +558,11 @@ Definition files (2026-11-03): `NodeDefinition::from_json` and `from_json_with_l
 
 `Ports::Variable(VariableAccess::Update)` is a reusable synchronous Action contract; registry publication rejects other kinds with `RegistryError::VariableUpdateKind`. Package definitions may use this contextual port shape with their own exact provider bindings. The shape grants no built-in write-effect authority: function analysis still requires explicit host-supplied leaf effects for package nodes. Only the exact host intrinsic uses the built-in Update effect rule, and that rule rechecks its current contextual operation/type contract even when the caller supplies a projection.
 
+Package live definitions use `volatility: "live"` and `determinism: "external"`.
+Their one computed output and data-argument layout are checked at publication
+and lowering (11 §10.5). The optional boolean `editor.hidden` defaults to false.
+It suppresses palette search and preserves definition resolution for saved documents.
+
 Generic pure definition (replaces the earlier `add-i64` example):
 
 ```json
@@ -868,6 +873,7 @@ Semantics: [11 §5.10](11-graph-language.md).
 
 | ID suffix | Inputs | Output |
 |---|---|---|
+| `parse` | `text: core/string@1` | `core/json@1` |
 | `kind` | `value: json` | `core/string@1` |
 | `is-null` | `value` | `core/bool@1` |
 | `get` | `value`, `key: core/string@1` | `core/option@1<core/json@1>` |

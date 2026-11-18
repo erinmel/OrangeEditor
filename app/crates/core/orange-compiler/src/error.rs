@@ -21,6 +21,10 @@ pub enum CompileError {
     KernelContract { node: NodeId },
     #[error("The executable provider does not support this node's resolved types.")]
     KernelUnsupportedType { node: NodeId },
+    #[error(
+        "This input is read when the run starts, so it can only come from literals, run variables with a starting value and live values."
+    )]
+    RootInput { node: NodeId, port: PortKey },
     #[error("The input literal cannot supply its declared slot type.")]
     InvalidLiteral { node: NodeId, port: PortKey },
     #[error("Compilation exceeds the host's resource limits.")]
@@ -40,6 +44,7 @@ impl CompileError {
             Self::KernelUnavailable { .. } => "core/compile-kernel-unavailable",
             Self::KernelContract { .. } => "core/compile-kernel-contract",
             Self::KernelUnsupportedType { .. } => "core/compile-kernel-unsupported-type",
+            Self::RootInput { .. } => "core/compile-root-input",
             Self::InvalidLiteral { .. } => "core/compile-invalid-literal",
             Self::ResourceLimit => "core/compile-resource-limit",
             Self::Cancelled => "core/compile-cancelled",

@@ -2,6 +2,17 @@
 //! while it runs, controlling and observing it, and closing it.
 use super::*;
 
+struct ActiveFeed {
+    active: Arc<AtomicBool>,
+    _guard: Box<dyn Send>,
+}
+
+impl Drop for ActiveFeed {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
 impl Host {
     /// Validates and compiles a saved document and resolves everything it needs from
     /// the host, without starting anything. `previous` are the sessions of the flow
@@ -26,6 +37,29 @@ impl Host {
             CompileOptions::default(),
         )?);
         let opened = self.sessions(&document, previous)?;
+        // The session of a node that uses a connection: the one it names.
+        let session_of = |node: &orange_model::document::NodeInstance,
+                          refused: &dyn Fn(&str) -> HostError|
+         -> Result<Option<Arc<dyn Session>>, HostError> {
+            let id: ConnectionId = node
+                .config
+                .get("connection")
+                .and_then(|value| value.as_str())
+                .and_then(|text| text.parse().ok())
+                .ok_or_else(|| refused("the node names no connection"))?;
+            let (_, session) = opened.get(&id).ok_or_else(|| {
+                refused("the node names a connection this document does not declare")
+            })?;
+            Ok(Some(Arc::clone(session)))
+        };
+        // The data inputs a source is armed with, by name, in the run's order.
+        let arguments = |node: NodeId| -> Option<Vec<String>> {
+            plan.sources()
+                .iter()
+                .find(|source| source.node() == node)
+                .map(|source| source.ports().iter().map(ToString::to_string).collect())
+        };
+        let mut armables = Vec::new();
         // Every package entry needs a source before anything starts.
         let mut feeds = Vec::new();
         let mut manual_entries = Vec::new();
@@ -49,20 +83,50 @@ impl Host {
                 .source(&provider, &node.definition)
                 .ok_or_else(|| refused("no service provides this entry"))?;
             let session = if uses_connection {
-                let id: ConnectionId = node
-                    .config
-                    .get("connection")
-                    .and_then(|value| value.as_str())
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| refused("the node names no connection"))?;
-                let (_, session) = opened.get(&id).ok_or_else(|| {
-                    refused("the node names a connection this document does not declare")
-                })?;
-                Some(Arc::clone(session))
+                session_of(node, &refused)?
             } else {
                 None
             };
-            feeds.push((node.id, source, session, node.config.clone()));
+            // An entry with data inputs starts once its run has their values.
+            match arguments(node.id) {
+                Some(ports) => armables.push(armed::Armable {
+                    node: node.id,
+                    provider: armed::Provider::Entry(source),
+                    session,
+                    settings: node.config.clone(),
+                    ports,
+                }),
+                None => feeds.push((node.id, source, session, node.config.clone())),
+            }
+        }
+        // Every live node needs the provider that publishes its value.
+        for live in plan.lives() {
+            let node = document
+                .node(live.node())
+                .ok_or_else(|| HostError::Source(live.node(), "node not found".into()))?;
+            let refused = |reason: &str| HostError::Source(node.id, reason.to_owned());
+            let provider = node
+                .provider
+                .as_ref()
+                .and_then(|binding| ProviderKey::of(&document, binding))
+                .ok_or_else(|| refused("the node has no exact provider"))?;
+            let (source, uses_connection) = self
+                .native
+                .1
+                .live(&provider, &node.definition)
+                .ok_or_else(|| refused("no service provides this live value"))?;
+            let session = if uses_connection {
+                session_of(node, &refused)?
+            } else {
+                None
+            };
+            armables.push(armed::Armable {
+                node: node.id,
+                provider: armed::Provider::Live(source),
+                session,
+                settings: node.config.clone(),
+                ports: arguments(node.id).unwrap_or_default(),
+            });
         }
         Ok(Prepared {
             semantic: semantic(json)?,
@@ -71,35 +135,70 @@ impl Host {
             plan,
             opened,
             feeds,
+            armables,
             manual_entries,
         })
     }
 
     /// Starts the source of every package entry of a flow. On a failure the sources
     /// already started are stopped again.
-    fn feed(flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
+    fn feed(
+        sink: &flow::Sink,
+        id: FlowId,
+        flow: &mut Flow,
+        feeds: Vec<Feed>,
+    ) -> Result<(), HostError> {
         for (node, source, session, settings) in feeds {
             let inbox = flow.inbox.clone();
             let thread = flow
                 .thread
                 .as_ref()
                 .map_or_else(thread::current, |t| t.thread().clone());
-            let emitter = Emitter::new(move |payload| {
-                let input = HostInput::Trigger {
-                    node,
-                    payload,
-                    wall_ns: wall_ns(),
-                };
-                inbox.send(input).map_err(|error| match error {
-                    InboxError::Full(_) => EmitError::Busy,
-                    InboxError::Closed(_) => EmitError::Closed,
-                })?;
-                thread.unpark();
-                Ok(())
-            });
+            let (sink, shared) = (sink.clone(), Arc::clone(&flow.shared));
+            let active = Arc::new(AtomicBool::new(true));
+            let (can_emit, can_fault) = (Arc::clone(&active), Arc::clone(&active));
+            let emitter = Emitter::with_faults(
+                move |payload| {
+                    if !can_emit.load(Ordering::Acquire) {
+                        return Err(EmitError::Closed);
+                    }
+                    let input = HostInput::Trigger {
+                        node,
+                        payload,
+                        wall_ns: wall_ns(),
+                    };
+                    inbox.send(input).map_err(|error| match error {
+                        InboxError::Full(_) => EmitError::Busy,
+                        InboxError::Closed(_) => EmitError::Closed,
+                    })?;
+                    thread.unpark();
+                    Ok(())
+                },
+                move |fault| {
+                    if !can_fault.load(Ordering::Acquire) || shared.closing.load(Ordering::Acquire)
+                    {
+                        return Err(EmitError::Closed);
+                    }
+                    // Keep diagnostics ahead of the final Finished observation, even
+                    // when the flow stops on its own while this callback is pending.
+                    let state = shared.state.try_lock().map_err(|_| EmitError::Busy)?;
+                    if matches!(
+                        *state,
+                        RunState::Stopped | RunState::Faulted | RunState::Disposed
+                    ) {
+                        return Err(EmitError::Closed);
+                    }
+                    sink.send(id, FlowEvent::SourceFault { node, fault });
+                    Ok(())
+                },
+            );
             match source.start_with(session, &settings, emitter) {
-                Ok(guard) => flow.feeds.push(guard),
+                Ok(guard) => flow.feeds.push(Box::new(ActiveFeed {
+                    active,
+                    _guard: guard,
+                })),
                 Err(reason) => {
+                    active.store(false, Ordering::Release);
                     flow.feeds.clear();
                     return Err(HostError::Source(node, reason));
                 }
@@ -177,6 +276,7 @@ impl Host {
             clock: self.clock,
             turn_inputs: self.options.turn_inputs.max(1),
             turn_budget: self.options.turn_budget.max(1),
+            armed: armed::Armed::new(prepared.armables),
         };
         let thread = thread::Builder::new()
             .name(format!("orange-flow-{id}"))
@@ -198,7 +298,7 @@ impl Host {
             opened: prepared.opened,
             semantic: prepared.semantic,
         };
-        if let Err(error) = Self::feed(&mut flow, prepared.feeds) {
+        if let Err(error) = Self::feed(&self.sink, id, &mut flow, prepared.feeds) {
             // Nothing has been reported as opened: stop the flow again.
             flow.shared.closing.store(true, Ordering::Relaxed);
             flow.wake();
@@ -248,6 +348,7 @@ impl Host {
             options: self.options.run.clone(),
             inbox_capacity: self.options.inbox_capacity.max(1),
             sessions: sessions_of(&prepared.opened),
+            armables: prepared.armables,
             reply,
         };
         let current = self.flows.get_mut(&flow).ok_or(HostError::UnknownFlow)?;
@@ -277,7 +378,7 @@ impl Host {
         current.sources = swapped.sources;
         current.opened = prepared.opened;
         current.semantic = prepared.semantic;
-        Self::feed(current, prepared.feeds)?;
+        Self::feed(&self.sink, flow, current, prepared.feeds)?;
         for (_, session) in current.opened.values() {
             session.start();
         }

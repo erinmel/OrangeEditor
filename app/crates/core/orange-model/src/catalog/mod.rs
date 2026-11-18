@@ -12,6 +12,7 @@ pub mod nominal;
 pub mod provider;
 pub mod snapshot;
 mod timer;
+mod watch;
 
 pub use call::{CallInterface, CallInterfaceError, call_interface};
 pub(crate) use call::{
@@ -32,3 +33,4 @@ pub(crate) use language::{
 pub use provider::{ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};
 pub use timer::{MissedTicks, TimerFirst, TimerSchedule};
+pub use watch::{NumericWatch, WatchCondition, WatchConfig};

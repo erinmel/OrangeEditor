@@ -312,6 +312,8 @@ pub enum HostSource {
     Change(ControlIx, ChangeProjection),
     /// `core/now`: the run's virtual time since its clock's zero, read once per epoch.
     Clock,
+    /// The latest value the host published for live node [`ControlPlan::lives`]`[i]`.
+    Live(usize),
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -515,10 +517,11 @@ pub struct ControlWatch {
     node: NodeId,
     root: usize,
     ty: ValueShape,
-    rising: bool,
+    condition: orange_model::catalog::WatchCondition,
     handler: EventHandler,
     inputs: Arc<[usize]>,
     variables: Box<[usize]>,
+    lives: Box<[usize]>,
 }
 impl ControlWatch {
     pub fn node(&self) -> NodeId {
@@ -531,7 +534,14 @@ impl ControlWatch {
         &self.ty
     }
     pub fn rising(&self) -> bool {
-        self.rising
+        matches!(
+            self.condition,
+            orange_model::catalog::WatchCondition::Rising
+        )
+    }
+    /// Condition checked against the watched input type during lowering.
+    pub fn condition(&self) -> &orange_model::catalog::WatchCondition {
+        &self.condition
     }
     pub fn handler(&self) -> &EventHandler {
         &self.handler
@@ -542,6 +552,88 @@ impl ControlWatch {
     pub fn variables(&self) -> &[usize] {
         &self.variables
     }
+    /// Live values the watched cone reads: a new published value re-evaluates it.
+    pub fn lives(&self) -> &[usize] {
+        &self.lives
+    }
+}
+
+/// A package node whose value its provider publishes and the run reads like a variable
+/// (11 §10.5).
+#[derive(Debug, Clone)]
+pub struct ControlLive {
+    node: NodeId,
+    ty: ValueShape,
+    watch_dependents: Vec<usize>,
+    source_dependents: Vec<usize>,
+}
+impl ControlLive {
+    /// Watch indices in saved activation order.
+    pub fn watch_dependents(&self) -> &[usize] {
+        &self.watch_dependents
+    }
+    /// Source indices in node order.
+    pub fn source_dependents(&self) -> &[usize] {
+        &self.source_dependents
+    }
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    pub fn ty(&self) -> &ValueShape {
+        &self.ty
+    }
+}
+
+/// What a source armed with arguments delivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    /// A package entry: its provider fires activations.
+    Entry,
+    /// A live node, [`ControlPlan::lives`]`[i]`: its provider publishes values.
+    Live(usize),
+}
+
+/// A package entry or live node whose provider is armed with arguments: the values of its
+/// data inputs, evaluated at the root when the run starts and again whenever a run
+/// variable or live value they read changes (11 §10.5).
+#[derive(Debug, Clone)]
+pub struct ControlSource {
+    node: NodeId,
+    kind: SourceKind,
+    ports: Box<[orange_model::id::PortKey]>,
+    types: Box<[ValueShape]>,
+    roots: Box<[usize]>,
+    inputs: Arc<[usize]>,
+    variables: Box<[usize]>,
+    lives: Box<[usize]>,
+}
+impl ControlSource {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    pub fn kind(&self) -> SourceKind {
+        self.kind
+    }
+    /// The argument ports, in declared order, with their types and demand roots.
+    pub fn ports(&self) -> &[orange_model::id::PortKey] {
+        &self.ports
+    }
+    pub fn types(&self) -> &[ValueShape] {
+        &self.types
+    }
+    pub fn roots(&self) -> &[usize] {
+        &self.roots
+    }
+    /// Host inputs the arguments read, in host-input index order.
+    pub fn inputs(&self) -> &[usize] {
+        &self.inputs
+    }
+    pub fn variables(&self) -> &[usize] {
+        &self.variables
+    }
+    pub fn lives(&self) -> &[usize] {
+        &self.lives
+    }
 }
 
 /// Private checked construction, no serde/default bypass. Debug omits payloads.
@@ -551,6 +643,9 @@ impl ControlWatch {
 /// ```
 pub struct ControlPlan {
     watches: Box<[ControlWatch]>,
+    lives: Box<[ControlLive]>,
+    live_nodes: BTreeMap<NodeId, usize>,
+    sources: Box<[ControlSource]>,
     functions: Box<[Option<FunctionLayout>]>,
     pub(crate) data: Arc<DataPlan>,
     pub(crate) nodes: Box<[ControlNode]>,
@@ -584,6 +679,18 @@ impl std::fmt::Debug for ControlPlan {
 impl ControlPlan {
     pub fn watches(&self) -> &[ControlWatch] {
         &self.watches
+    }
+    /// Root live nodes, in node order.
+    pub fn lives(&self) -> &[ControlLive] {
+        &self.lives
+    }
+    /// Slot of the live value published by this node.
+    pub fn live_index(&self, node: NodeId) -> Option<usize> {
+        self.live_nodes.get(&node).copied()
+    }
+    /// Package entries and live nodes armed with arguments, in node order.
+    pub fn sources(&self) -> &[ControlSource] {
+        &self.sources
     }
     pub fn function(&self, scope: usize) -> Option<&FunctionLayout> {
         self.functions.get(scope.checked_sub(1)?)?.as_ref()
@@ -787,6 +894,7 @@ fn compile_control_inner(
     let (edges, producers) = exec_edges(&cx, &controls, &control_ix)?;
     let mut lowering = NodeLowering {
         watches: Vec::new(),
+        sources: Vec::new(),
         cx: &cx,
         edges: &edges,
         control_ix: &control_ix,
@@ -807,6 +915,7 @@ fn compile_control_inner(
     }
     let NodeLowering {
         watches: watch_roots,
+        sources: mut source_roots,
         mut roots,
         mut starts,
         mut stops,
@@ -823,6 +932,43 @@ fn compile_control_inner(
     };
     starts.sort_by_key(activation_order);
     stops.sort_by_key(activation_order);
+    // Root live nodes: the host publishes each one's value; its inputs are arguments.
+    let mut lives = Vec::new();
+    let mut live_nodes = BTreeMap::new();
+    for node in document.root().nodes.values() {
+        options.checkpoint()?;
+        let signature = calls.signature(analysis, 0, node.id);
+        if signature.kind != NodeKind::Volatile || !crate::compile::is_live(&snapshot, node) {
+            continue;
+        }
+        let output = signature
+            .ports
+            .iter()
+            .find(|p| p.direction == PortDirection::Output)
+            .ok_or(CompileError::UnsupportedNode { node: node.id })?;
+        charge(&mut graph_items, 1, options.limits.max_graph_items)?;
+        live_nodes.insert(node.id, lives.len());
+        lives.push(ControlLive {
+            node: node.id,
+            ty: port_type(&snapshot, node.id, output)?,
+            watch_dependents: Vec::new(),
+            source_dependents: Vec::new(),
+        });
+        let arguments: Vec<_> = signature
+            .ports
+            .iter()
+            .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
+            .map(|p| {
+                (
+                    port_key(p),
+                    input_root(&mut roots, 0, node.id, p.port_id.clone()),
+                )
+            })
+            .collect();
+        if !arguments.is_empty() {
+            source_roots.push(((0, node.id), arguments));
+        }
+    }
     for export in document.exports() {
         roots.push(DemandRoot {
             scope: 0,
@@ -880,6 +1026,7 @@ fn compile_control_inner(
         variables: &variables,
         variable_nodes: &variable_nodes,
         state_nodes: &state_nodes,
+        lives: &live_nodes,
     };
     let host_sources = data
         .host_inputs()
@@ -933,6 +1080,7 @@ fn compile_control_inner(
             | HostSource::Argument { .. }
             | HostSource::State(_)
             | HostSource::Clock
+            | HostSource::Live(_)
             | HostSource::Iteration(_, _) => {}
         }
     }
@@ -950,23 +1098,21 @@ fn compile_control_inner(
     let mut watches = Vec::new();
     for (key, root) in watch_roots {
         let ty = port_type(cx.snapshot, key.1, cx.port(key, "watch")?)?;
-        let rising = match cx.node(key).config.get("mode").and_then(|v| v.as_str()) {
-            Some("changed") => false,
-            Some("rising") if ty == ValueShape::Bool => true,
-            _ => return Err(CompileError::UnsupportedNode { node: key.1 }),
-        };
-        if !ty.host_eq() {
-            return Err(CompileError::UnsupportedNode { node: key.1 });
-        }
+        let condition = orange_model::catalog::WatchConfig::from_node(cx.node(key))
+            .and_then(|config| config.resolve(&ty))
+            .ok_or(CompileError::UnsupportedNode { node: key.1 })?;
         let mut variables_used = BTreeSet::new();
+        let mut lives_used = BTreeSet::new();
         for &input in root_inputs[root].iter() {
             match host_sources[input] {
                 HostSource::Variable(i)
                     if variables[i].scope() == VarScope::Run
-                        && variables[i].initial().is_some()
-                        && variables[i].ty().host_eq() =>
+                        && variables[i].initial().is_some() =>
                 {
                     variables_used.insert(i);
+                }
+                HostSource::Live(i) => {
+                    lives_used.insert(i);
                 }
                 _ => return Err(CompileError::UnsupportedNode { node: key.1 }),
             }
@@ -993,14 +1139,91 @@ fn compile_control_inner(
                 node: key.1,
                 root,
                 ty,
-                rising,
+                condition,
                 handler,
                 inputs: root_inputs[root].clone(),
                 variables: variables_used.into_iter().collect(),
+                lives: lives_used.into_iter().collect(),
             },
         ));
     }
     watches.sort_by_key(|(order, w)| (*order, w.node));
+    let mut sources = Vec::with_capacity(source_roots.len());
+    source_roots.sort_by_key(|(key, _)| key.1);
+    for (key, arguments) in source_roots {
+        let mut variables_used = BTreeSet::new();
+        let mut lives_used = BTreeSet::new();
+        let mut types = Vec::with_capacity(arguments.len());
+        for (port, root) in &arguments {
+            let refused = || CompileError::RootInput {
+                node: key.1,
+                port: port.clone(),
+            };
+            for &input in root_inputs[*root].iter() {
+                match host_sources[input] {
+                    HostSource::Variable(i)
+                        if variables[i].scope() == VarScope::Run
+                            && variables[i].initial().is_some() =>
+                    {
+                        variables_used.insert(i);
+                    }
+                    HostSource::Live(i) => {
+                        lives_used.insert(i);
+                    }
+                    _ => return Err(refused()),
+                }
+            }
+            if root_cone_has_entropy(&data, *root)? {
+                return Err(refused());
+            }
+            let descriptor = cx
+                .ports(key)
+                .iter()
+                .find(|p| p.direction == PortDirection::Input && port_key(p) == *port)
+                .ok_or(CompileError::ValidationIncomplete)?;
+            types.push(port_type(&snapshot, key.1, descriptor)?);
+        }
+        let kind = match live_nodes.get(&key.1) {
+            Some(&live) => SourceKind::Live(live),
+            None => SourceKind::Entry,
+        };
+        let inputs = union_inputs(
+            arguments.iter().map(|(_, root)| &root_inputs[*root]),
+            options,
+            &mut projection_items,
+            &mut scratch,
+        )?;
+        sources.push(ControlSource {
+            node: key.1,
+            kind,
+            ports: arguments.iter().map(|(port, _)| port.clone()).collect(),
+            types: types.into(),
+            roots: arguments.iter().map(|(_, root)| *root).collect(),
+            inputs,
+            variables: variables_used.into_iter().collect(),
+            lives: lives_used.into_iter().collect(),
+        });
+    }
+    for (index, (_, watch)) in watches.iter().enumerate() {
+        charge(
+            &mut projection_items,
+            watch.lives.len(),
+            options.limits.max_graph_items,
+        )?;
+        for &live in &watch.lives {
+            lives[live].watch_dependents.push(index);
+        }
+    }
+    for (index, source) in sources.iter().enumerate() {
+        charge(
+            &mut projection_items,
+            source.lives.len(),
+            options.limits.max_graph_items,
+        )?;
+        for &live in &source.lives {
+            lives[live].source_dependents.push(index);
+        }
+    }
     for node in &mut nodes {
         if let ControlOperation::Update { demand, .. }
         | ControlOperation::Call { demand, .. }
@@ -1019,6 +1242,9 @@ fn compile_control_inner(
     let boxed = |targets: Vec<Vec<usize>>| targets.into_iter().map(Vec::into_boxed_slice).collect();
     Ok(ControlPlan {
         watches: watches.into_iter().map(|(_, w)| w).collect(),
+        lives: lives.into(),
+        live_nodes,
+        sources: sources.into(),
         functions: functions.into(),
         data: Arc::new(data),
         nodes: nodes.into(),
@@ -1036,6 +1262,27 @@ fn compile_control_inner(
         index_targets: boxed(index_targets),
         error_targets: boxed(error_targets),
     })
+}
+
+/// Whether the cone behind demand root `root` draws entropy, which a value read at the
+/// root may not.
+fn root_cone_has_entropy(data: &DataPlan, root: usize) -> Result<bool, CompileError> {
+    let mut pending = vec![
+        data.export_node(root)
+            .ok_or(CompileError::ValidationIncomplete)?,
+    ];
+    let mut seen = BTreeSet::new();
+    while let Some(ix) = pending.pop() {
+        if !seen.insert(ix.index()) {
+            continue;
+        }
+        let node = &data.nodes()[ix.index()];
+        if matches!(node.operation(), DataOperation::Entropy(_)) {
+            return Ok(true);
+        }
+        pending.extend(node.inputs().iter().filter_map(|i| i.producer));
+    }
+    Ok(false)
 }
 
 /// Admit every executable control node before any table is built or callback runs.
@@ -1067,8 +1314,9 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                                 && port.port_id.as_str() == "then"
                         }
                         PortKind::Data => {
-                            port.direction == PortDirection::Output
-                                && port.port_id.as_str() == "payload"
+                            // Its data inputs are the arguments its source is armed with.
+                            (port.direction == PortDirection::Input
+                                || port.port_id.as_str() == "payload")
                                 && port.variadic.is_none()
                                 && !matches!(
                                     port_type(cx.snapshot, node.id, port)?,
@@ -1168,7 +1416,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::CONTINUE
                     | ids::WHILE
             ) || node.definition.version != 1
-                || node.config_version != 1
+                || (node.config_version != 1
+                    && !(node.definition.id.as_str() == ids::ON_WATCH && node.config_version == 2))
                 || node.provider.is_some()
             {
                 return Err(CompileError::UnsupportedNode { node: node.id });
@@ -1666,6 +1915,8 @@ fn exec_edges(
 /// Per-node lowering state; demand roots and entry lists accumulate across nodes.
 struct NodeLowering<'a, 'c> {
     watches: Vec<(ControlKey, usize)>,
+    /// Package entries with arguments: each data input port and its demand root.
+    sources: Vec<(ControlKey, Vec<(orange_model::id::PortKey, usize)>)>,
     cx: &'a Cx<'c>,
     edges: &'a BTreeMap<PortSite, ExecTarget>,
     control_ix: &'a BTreeMap<ControlKey, ControlIx>,
@@ -1776,6 +2027,19 @@ impl NodeLowering<'_, '_> {
             });
             if !offered {
                 return Err(CompileError::KernelUnavailable { node: id });
+            }
+            let arguments: Vec<_> = signature
+                .ports
+                .iter()
+                .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
+                .map(|p| (port_key(p), p.port_id.clone()))
+                .collect();
+            if !arguments.is_empty() {
+                let roots = arguments
+                    .into_iter()
+                    .map(|(port, id)| (port, self.input(key, id)))
+                    .collect();
+                self.sources.push((key, roots));
             }
             return Ok(ControlOperation::Entry);
         }
@@ -2218,6 +2482,7 @@ struct HostTables<'a> {
     variables: &'a [ControlVariable],
     variable_nodes: &'a BTreeMap<NodeId, usize>,
     state_nodes: &'a BTreeMap<ControlKey, usize>,
+    lives: &'a BTreeMap<NodeId, usize>,
 }
 
 /// Where the runtime supplies one host input of the data plan.
@@ -2240,6 +2505,11 @@ fn host_source(
             (Some(_), true) => HostSource::CallLocal(variable),
             _ => HostSource::Variable(variable),
         });
+    }
+    if scope == 0
+        && let Some(&live) = tables.lives.get(&node.node())
+    {
+        return Ok(HostSource::Live(live));
     }
     let source = &data.slot_sources()[node.outputs()[0].index()];
     if cx.node((scope, source.node)).definition.id.as_str() == ids::NOW {

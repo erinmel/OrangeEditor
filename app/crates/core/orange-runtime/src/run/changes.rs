@@ -33,6 +33,11 @@ impl Changes {
                 watched[variable] = true;
             }
         }
+        for source in plan.sources() {
+            for &variable in source.variables() {
+                watched[variable] = true;
+            }
+        }
         Self {
             watched: watched.into(),
             previous: vec![None; plan.variables().len()].into(),
@@ -75,6 +80,7 @@ impl Run {
     /// per changed watched variable and entry. Refusals count as overflows and never fault
     /// the run, because no graph node asked for the notification.
     pub(super) fn end_segment(&mut self, plan: &ControlPlan) {
+        self.segment_owner = None;
         if self.changes.touched.is_empty() {
             return;
         }
@@ -86,16 +92,16 @@ impl Run {
             };
             let current = &self.variables[self.layout.variables[variable]];
             if let (Some(previous), Some(current)) = (previous, current)
-                && plan.variables()[variable]
-                    .ty()
-                    .equal_values(current, &previous)
-                    == Some(false)
+                && values_differ(plan.variables()[variable].ty(), current, &previous)
             {
                 changed.push((variable, current.clone(), previous));
             }
         }
         self.changes.touched = touched;
         self.changes.touched.clear();
+        // A host write between two pump slices can replace an input that the
+        // currently suspended reaction has already pulled.
+        self.watches.invalidate_reads(plan, &changed);
         // Accepted graph work only: Draining and cancellation take no new triggers.
         if changed.is_empty() || self.state != RunState::Running {
             return;
@@ -112,6 +118,7 @@ impl Run {
             }
             return;
         }
+        self.watches.schedule_sources(plan, &changed);
         let depth = depth
             .checked_add(1)
             .filter(|depth| *depth <= self.options.max_cause_depth);
@@ -145,6 +152,15 @@ impl Run {
             }
         }
     }
+}
+
+fn values_differ(
+    ty: &orange_model::value::shape::ValueShape,
+    current: &Value,
+    previous: &Value,
+) -> bool {
+    !ty.equal_values(current, previous)
+        .unwrap_or(current == previous)
 }
 
 /// The output a delivered change publishes for one host source.

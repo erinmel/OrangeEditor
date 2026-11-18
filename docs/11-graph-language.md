@@ -31,22 +31,21 @@ cleanup. These package leaves are not cleanup-safe in this profile. Host executo
 concrete services, replay and worker isolation remain
 separate gates; a cancellation signal cannot undo a remote side effect.
 
-**Runtime Watch.** `core/on-watch@1`, config version 1, is a generic host Entry with
-required `watch: T` input and payload-sourced `value: T` output, requiring `eq` and
-the ordinary saved activation policy. `config.mode` is required and is `changed` or
-`rising`; no other config fields are accepted. Rising requires `T = core/bool@1`
-(`E-TYPE-MISMATCH` otherwise). Changed compares under host-supported exact Eq;
-rising fires only from false to true. The current compiler admits pure cones over
-initialized, host-Eq run variables; entropy, clock, locals, register reads and
-execution outputs in a watched cone remain refused. The cold baseline is computed
+**Runtime Watch.** `core/on-watch@1` (When) is a generic host Entry with required
+`watch: T` input, payload-sourced `value: T` output and the ordinary saved activation
+policy. Config versions 1 and 2 share `changed` (host-supported exact Eq) and
+`rising` (false to true on `core/bool@1`). Version 2 also supports the numeric
+conditions in §10.5. The input can read literals, pure nodes, initialized run
+variables and live values. The cold baseline is computed
 under pump fuel before ordinary strands and does not fire. A failed evaluation
 suppresses delivery, preserves the previous successful baseline and exposes the
 original producer through `Run::watch_fault`; the next success clears that fault.
 The first successful sample is a baseline even after earlier faults.
 
-At a semantic segment end, only Watches whose run-variable dependencies actually
-changed are scheduled. Their resumable evaluation holds the post-segment state
-stable before the next strand runs. Watch and On Variable Changed deliveries share
+At a semantic segment end, Watches whose run-variable dependencies actually
+changed are scheduled. A live publication schedules its dependents at a boundary.
+Resumable evaluation holds the state stable across pump slices. Watch and On
+Variable Changed deliveries share
 one saved `(order, node ID)` ordering, existing bounded handler admission and causal
 depth plus one. Origin is `Watch`, target is `Watch(node)`, and source sequences count
 admitted deliveries. A refused delivery/depth overflow is counted without faulting
@@ -837,8 +836,8 @@ Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-sto
 | `core/on-timer` | Interval or once (`core/on-timeout`); monotonic; scheduled against a base time, so no cumulative drift; config `first: immediate/after-interval`, missed-tick `skip`/`coalesce` (default)/`catch-up(max)` | `scheduled_at`, `missed: u64` |
 | `core/on-event` | Matching custom emit | Event payload type |
 | `core/on-variable-changed` | Segment end, if the value changed (`eq`) | `value`, `previous` |
-| `core/on-watch` | Segment end, when the watched cone's dependencies changed and the result changed (`changed`) or became true (`rising`) | `value` |
-| Package entries | Event-source contract; the subscription is acquired in the Starting phase ([03](03-data-and-execution.md)) | Declared type |
+| `core/on-watch` | A watched value changes, becomes true or qualifies under its numeric condition (§10.5) | `value` |
+| Package entries | Event-source contract with root data inputs (§10.5) | Declared type |
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
 
@@ -874,9 +873,9 @@ the root only, carries an activation policy like every entry, and must be bound 
 exact provider that offers it. The run treats it exactly as `core/on-manual`: the host
 fires it by node with a payload of the declared type, and admission, reentrancy,
 overflow and `while_paused` are the entry's own policy. What fires it is outside the
-graph and outside this document: the provider's source (02). Any other port on a
-package entry is `UnsupportedPort`; an entry inside a function or without a provider is
-`UnsupportedNode`.
+graph: the provider's source (02). A package entry may take data inputs whose
+dependencies are available at the root (§10.5). The compiler refuses unsupported
+ports, function-local entries and missing providers.
 
 ### 10.3 Envelope and causal depth
 
@@ -916,6 +915,62 @@ original timer ordering key, so equal-deadline ordering does not depend on slice
 size. Completing a window arms its next tick with the ordinary fresh insertion
 sequence. Cancellation is observed between attempts; stop/fault clears pending
 windows with the timer entries. `pump(0)` performs no timer admission.
+
+### 10.5 Live values, source inputs and When
+
+Successive host writes before a pump keep their own previous/current payloads
+for On Variable Changed. The run charges pending batches to its staging budget.
+After a segment ends, an independent host write starts with a fresh causal
+depth even if the previous handler was triggered by a variable change.
+An affected Watch or source argument that already started a consumption epoch
+restarts from the current inputs after an intervening write. Its queued position
+is preserved.
+
+A package live node is `kind: volatile`, `volatility: live` and
+`determinism: external`. It has one computed data output, optional data arguments
+and no execution ports. The control compiler resolves the exact provider and
+assigns each live value a slot. A live value is published by the provider into
+typed run ingress. Reads use the most recently applied sample in their consumption
+epoch. Reading an unset slot faults with `core/NoValueYet` at the live node.
+The runtime stages one value per source and applies it at a boundary. The SDK
+host also coalesces provider bursts to the latest value and applies a 10 ms minimum
+interval per node. Intermediate externally published samples can be coalesced.
+
+Arguments of live nodes and package entries are evaluated in a single root epoch.
+The compiler accepts literals, pure cones, initialized run variables and live
+values. Entropy, clocks, activation locals, registers, execution outputs and
+entry payloads are rejected. The run announces the initial successful arguments
+and later changed ones through `Run::take_arguments`. The host drops the preceding
+provider guard before calling the replacement source. An argument fault retains
+the previous arguments and is inspectable by node. The next successful evaluation
+clears the fault. Detached publishers and emitters lose authority when their guard
+is retired. Stop releases the provider guards. Entries retain their usual queue,
+reentrancy and pause policies. An entry with no input uses its original acquisition
+path. Action-owned subscriptions in §10.4 remain a separate capability.
+
+When version 2 accepts numeric modes for `i32`, `i64`, `u32`, `u64`, `f32`
+and `f64`. Bounds are JSON numbers of the watched kind. Integer bounds are exact
+JSON integers, and float bounds must be finite in the watched format. Invalid
+configurations report `E-WATCH-CONFIG`. An incompatible type reports
+`E-TYPE-MISMATCH`.
+
+| Mode | Fires | Rearms |
+|---|---|---|
+| `above` | Value strictly greater than `threshold` | Value at or below `release` |
+| `below` | Value strictly less than `threshold` | Value at or above `release` |
+| `inside` | Value in the closed interval `[low, high]` | Value outside the interval |
+| `outside` | Value outside the closed interval `[low, high]` | Value in the interval |
+
+For above/below, omitted `release` uses the threshold. A release must be on the
+reset side of its threshold. Ranges require `low <= high`. An unordered sample
+(NaN) satisfies neither firing nor reset. The first successful sample establishes
+the baseline. A cold condition that already matches must release before it fires.
+Optional `hold` and `cooldown` are nonnegative integer milliseconds on numeric
+modes. A failed sample or a sample outside the firing condition breaks a hold.
+A crossing held through its cooldown can fire once both deadlines are reached.
+Hold and cooldown share the bounded timer queue and use virtual time. A fire
+publishes the qualifying sample through `value`. A live-triggered Watch has no
+graph cause and starts at causal depth zero.
 
 ## 11. State
 

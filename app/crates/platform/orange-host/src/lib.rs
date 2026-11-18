@@ -12,6 +12,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod armed;
 mod authoring;
 mod clip;
 mod declare;
@@ -161,6 +162,11 @@ pub enum FlowEvent {
         kept_variables: usize,
         reset_variables: usize,
     },
+    /// The provider of a live node or of an entry with data inputs did not start, so
+    /// the node publishes or fires nothing until its inputs change again.
+    SourceRefused { node: NodeId, reason: String },
+    /// A running package entry reported a diagnostic without firing.
+    SourceFault { node: NodeId, fault: KernelFault },
     /// The flow's thread has ended and its run is disposed. Last event of a flow.
     Finished,
 }
@@ -369,6 +375,8 @@ struct Prepared {
     plan: Arc<orange_compiler::ControlPlan>,
     opened: Opened,
     feeds: Vec<Feed>,
+    /// Live nodes and entries with data inputs, armed on the flow's thread.
+    armables: Vec<armed::Armable>,
     manual_entries: Vec<(NodeId, bool)>,
     semantic: String,
 }
@@ -913,7 +921,8 @@ impl Host {
                 .nodes()
                 .iter()
                 .map(|(definition, _)| definition)
-                .chain(package.sources().iter().map(|(definition, _)| definition));
+                .chain(package.sources().iter().map(|(definition, _)| definition))
+                .chain(package.lives().iter().map(|(definition, _)| definition));
             for definition in definitions {
                 let _ = provider
                     .implements
@@ -1288,6 +1297,8 @@ fn short_label(id: &str) -> Option<&'static str> {
         "core/number" => "Float",
         "core/true-or-false" => "Bool",
         "core/text" => "Text",
+        "core/on-watch" => "When",
+        "org.orange.json/parse" => "Parse JSON",
         _ => return None,
     })
 }

@@ -4,7 +4,7 @@ use orange_kernel::{BindingRequest, EffectBinding, ResolveError};
 use orange_model::catalog::ProviderKey;
 use orange_model::document::{DefinitionRef, NodeKind, PortDirection, PortKind};
 use orange_model::id::{ConnectionId, PortKey};
-use orange_sdk::{ServiceNode, ServicePackage, ServiceSource};
+use orange_sdk::{LiveSource, ServiceNode, ServicePackage, ServiceSource};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ pub(crate) struct ServiceEffect {
 pub(crate) struct Services {
     nodes: BTreeMap<(ProviderKey, DefinitionRef), (Arc<dyn ServiceNode>, bool)>,
     sources: BTreeMap<(ProviderKey, DefinitionRef), (Arc<dyn ServiceSource>, bool)>,
+    lives: BTreeMap<(ProviderKey, DefinitionRef), (Arc<dyn LiveSource>, bool)>,
 }
 impl std::fmt::Debug for Services {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,6 +47,24 @@ impl Services {
                 (Arc::clone(source), uses_connection),
             );
         }
+        for (definition, source) in package.lives() {
+            let uses_connection = !definition.references.is_empty();
+            let _ = self.lives.insert(
+                (provider.clone(), definition.definition.clone()),
+                (Arc::clone(source), uses_connection),
+            );
+        }
+    }
+
+    /// The provider of a live node bound to `provider`, and whether it uses a connection.
+    pub(crate) fn live(
+        &self,
+        provider: &ProviderKey,
+        definition: &DefinitionRef,
+    ) -> Option<(Arc<dyn LiveSource>, bool)> {
+        self.lives
+            .get(&(provider.clone(), definition.clone()))
+            .cloned()
     }
 
     /// The source of an entry node bound to `provider`, and whether it uses a connection.

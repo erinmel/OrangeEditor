@@ -132,6 +132,7 @@ pub(crate) struct Swap {
     pub inbox_capacity: usize,
     pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
     pub keep: Option<Keep>,
+    pub armables: Vec<crate::armed::Armable>,
     pub reply: Sender<Result<Swapped, RunError>>,
 }
 
@@ -239,6 +240,7 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
     let _ = old.dispose();
 
     cx.inbox = inbox.clone();
+    cx.armed.replace(swap.armables);
     cx.sessions = swap.sessions;
     cx.plan = swap.plan;
     cx.keep = swap.keep;
@@ -258,7 +260,7 @@ pub(crate) struct Sink {
     pub dropped: Arc<AtomicU64>,
 }
 impl Sink {
-    fn send(&self, flow: FlowId, kind: FlowEvent) {
+    pub(crate) fn send(&self, flow: FlowId, kind: FlowEvent) {
         if self.events.try_send(HostEvent { flow, kind }).is_err() {
             let _ = self.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -288,6 +290,8 @@ pub(crate) struct Context {
     pub clock: Instant,
     pub turn_inputs: usize,
     pub turn_budget: usize,
+    /// Live nodes and entries with data inputs, armed with what the run evaluates.
+    pub armed: crate::armed::Armed,
 }
 
 fn terminal(state: RunState) -> bool {
@@ -344,6 +348,10 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut shared_dirty = false;
     // The value of each output port as last reported to the observer.
     let mut ports: PortValues = PortValues::new();
+    for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
+        cx.sink
+            .send(cx.id, FlowEvent::SourceRefused { node, reason });
+    }
     loop {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
@@ -367,6 +375,10 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 last_state = None;
                 reported.clear();
                 ports.clear();
+                for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
+                    cx.sink
+                        .send(cx.id, FlowEvent::SourceRefused { node, reason });
+                }
                 cx.sink.send(
                     cx.id,
                     FlowEvent::Updated {
@@ -388,6 +400,8 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         // Read before the turn, so input sent after observation began is observed.
         let observed = cx.shared.observed.load(Ordering::Relaxed);
         driver.run_mut().keep_port_values(observed);
+        // Live values published since the last turn, at most one each per interval.
+        let live_wait = cx.armed.flush(driver.run_mut());
         let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let mut refused = |refusal: Refused| {
             cx.sink.send(cx.id, FlowEvent::Refused(refusal.reason));
@@ -422,6 +436,24 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 Err(refused) => {
                     let _ = driver.run_mut().fail_shared(refused.value, UNAVAILABLE);
                 }
+            }
+        }
+        // Sources whose data inputs changed are started again with the new values.
+        while let Some(arguments) = driver.run_mut().take_arguments() {
+            if let Err(reason) = cx.armed.arm(
+                arguments.node,
+                &arguments.values,
+                &cx.inbox,
+                &me,
+                (&cx.sink, cx.id),
+            ) {
+                cx.sink.send(
+                    cx.id,
+                    FlowEvent::SourceRefused {
+                        node: arguments.node,
+                        reason,
+                    },
+                );
             }
         }
         while let Some(request) = driver.run_mut().take_effect() {
@@ -621,10 +653,14 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 if !guest_work.is_empty() || closing_since.is_some() {
                     wait = wait.min(WATCH);
                 }
+                if let Some(live) = live_wait {
+                    wait = wait.min(live);
+                }
                 thread::park_timeout(wait);
             }
         }
     }
+    cx.armed.stop();
     for (_, cancellation) in &guest_work {
         cancellation.cancel();
     }

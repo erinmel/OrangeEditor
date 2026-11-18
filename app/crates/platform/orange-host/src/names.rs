@@ -338,6 +338,16 @@ pub fn lines(event: &HostEvent, names: &Names) -> Vec<String> {
             })
             .collect(),
         FlowEvent::Updated { .. } => vec![format!("[{flow}] graph replaced")],
+        FlowEvent::SourceRefused { node, reason } => vec![format!(
+            "[{flow}] {} did not start: {reason}",
+            names.node(node)
+        )],
+        FlowEvent::SourceFault { node, fault } => vec![format!(
+            "[{flow}] {}: {} ({})",
+            names.node(node),
+            fault.message,
+            fault.code,
+        )],
         FlowEvent::Finished => vec![format!("[{flow}] finished")],
     }
 }

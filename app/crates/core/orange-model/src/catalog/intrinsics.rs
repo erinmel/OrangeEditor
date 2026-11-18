@@ -111,11 +111,10 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
             ],
         ),
         "T",
-        &["eq"],
+        &[],
     );
-    watch.config_schema = Some(
-        serde_json::json!({"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["changed","rising"]}},"additionalProperties":false}),
-    );
+    watch.config_version = 2;
+    watch.config_schema = Some(super::watch::schema());
     definitions.push(watch);
     definitions.push(NodeDefinition {
         ports: Ports::ForEach,

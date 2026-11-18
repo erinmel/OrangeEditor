@@ -25,7 +25,7 @@ pub use orange_model::Value;
 pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::replace::Replacement;
-pub use orange_model::value::{ListRepr, RecordRepr};
+pub use orange_model::value::{JsonText, ListRepr, RecordRepr};
 pub use orange_runtime::EffectLease;
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -316,8 +316,12 @@ pub enum EmitError {
 /// Fires one entry node of one flow. Cloneable and usable from any thread; firing never
 /// blocks. What a paused or busy flow does with a firing is the entry's own policy.
 #[derive(Clone)]
-pub struct Emitter(Arc<Fire>);
+pub struct Emitter {
+    fire: Arc<Fire>,
+    fault: Option<Arc<ReportFault>>,
+}
 type Fire = dyn Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync;
+type ReportFault = dyn Fn(KernelFault) -> Result<(), EmitError> + Send + Sync;
 impl std::fmt::Debug for Emitter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Emitter").finish_non_exhaustive()
@@ -329,11 +333,28 @@ impl Emitter {
     pub fn new(
         fire: impl Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
     ) -> Self {
-        Self(Arc::new(fire))
+        Self {
+            fire: Arc::new(fire),
+            fault: None,
+        }
+    }
+    /// Wraps the host's firing and diagnostic callbacks for this entry.
+    pub fn with_faults(
+        fire: impl Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
+        fault: impl Fn(KernelFault) -> Result<(), EmitError> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            fire: Arc::new(fire),
+            fault: Some(Arc::new(fault)),
+        }
     }
     /// Fires the entry with its payload, or `None` for an entry that declares none.
     pub fn emit(&self, payload: Option<Value>) -> Result<(), EmitError> {
-        (self.0)(payload)
+        (self.fire)(payload)
+    }
+    /// Reports a typed fault from an already-started source without firing it.
+    pub fn fault(&self, fault: KernelFault) -> Result<(), EmitError> {
+        self.fault.as_ref().map_or(Ok(()), |report| report(fault))
     }
 }
 
@@ -451,6 +472,68 @@ impl ServiceNode for Streaming {
     }
 }
 
+/// The values a source's data inputs have, by input name: what a node's wires carry
+/// when the run arms its source (11 §10.5).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Arguments(Vec<(String, Value)>);
+impl Arguments {
+    /// Arguments from input names and values, as the host hands them over.
+    pub fn new(values: Vec<(String, Value)>) -> Self {
+        Self(values)
+    }
+    /// The value of input `name`.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.0
+            .iter()
+            .find_map(|(input, value)| (input == name).then_some(value))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(name, value)| (name.as_str(), value))
+    }
+}
+
+/// Publishes the value of one live node of one flow. Cloneable and usable from any
+/// thread; publishing never blocks. The run keeps only the latest value, so a burst
+/// is read as its last value.
+#[derive(Clone)]
+pub struct Publisher(Arc<Publish>);
+type Publish = dyn Fn(Value) -> Result<(), EmitError> + Send + Sync;
+impl std::fmt::Debug for Publisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Publisher").finish_non_exhaustive()
+    }
+}
+impl Publisher {
+    /// Wraps the host's way of publishing one live node's value. Hosts call this; a
+    /// plugin only receives publishers.
+    pub fn new(publish: impl Fn(Value) -> Result<(), EmitError> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(publish))
+    }
+    /// Publishes the node's value now.
+    pub fn publish(&self, value: Value) -> Result<(), EmitError> {
+        (self.0)(value)
+    }
+}
+
+/// The implementation of one live node ([`Definition::read`]): something outside the
+/// graph whose value the graph reads, such as a sound's level.
+///
+/// It is started when its flow runs, with the node's settings and the values of its
+/// data inputs, and started again (the previous guard dropped first) whenever those
+/// change. It must not block. Dropping the guard stops it.
+pub trait LiveSource: Send + Sync + 'static {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        publisher: Publisher,
+    ) -> Result<Box<dyn Send>, String>;
+}
+
 /// The implementation of one entry node: something outside the graph that fires it.
 ///
 /// A source is started once per entry node when its flow opens and must not block. It
@@ -476,13 +559,26 @@ pub trait ServiceSource: Send + Sync + 'static {
         let _ = settings;
         self.start(session, emitter)
     }
+    /// Starts the source of an entry with data inputs, with their values. It is started
+    /// again, the previous guard dropped first, whenever they change. By default the
+    /// arguments are ignored.
+    fn start_with_arguments(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let _ = arguments;
+        self.start_with(session, settings, emitter)
+    }
 }
 
 /// Builds the definition file text of a service node, so a package states what is
 /// particular to each node and nothing else. [`ServicePackage::node`] and
 /// [`ServicePackage::source`] take the result of [`build`](Self::build).
 ///
-/// Every definition made here is version 1, takes its label, description and category
+/// Definitions default to version 1 and take their label, description and category
 /// keys from its ID, and is marked as reaching outside the graph. A node is
 /// asynchronous; an entry has a `then` outcome and at most one `payload` output.
 #[derive(Debug, Clone)]
@@ -525,6 +621,35 @@ impl Definition {
     /// An entry node `<package>/<name>` shown as `label`.
     pub fn entry(package: &str, name: &str, label: &str) -> Self {
         Self::new(package, name, label, true)
+    }
+    /// Sets a node definition version. Keep older definitions registered when
+    /// saved graphs must continue to resolve their exact version.
+    #[must_use]
+    pub fn version(mut self, version: u32) -> Self {
+        let _ = self
+            .json
+            .insert("definition_version".to_owned(), version.into());
+        self
+    }
+    /// A live node `<package>/<name>` shown as `label`: a value its provider publishes,
+    /// declared with [`live`](Self::live), that the graph reads anywhere like a variable.
+    /// Its data inputs are the arguments its [`LiveSource`] is started with.
+    pub fn read(package: &str, name: &str, label: &str) -> Self {
+        let mut definition = Self::new(package, name, label, false);
+        let _ = definition.json.insert("kind".to_owned(), "volatile".into());
+        let _ = definition.json.remove("suspends");
+        let _ = definition
+            .json
+            .insert("volatility".to_owned(), "live".into());
+        definition
+    }
+    /// The one value of a live node.
+    #[must_use]
+    pub fn live(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "output",
+            "kind": "data", "type": ty, "source": "computed"}));
+        self
     }
     /// One sentence on what the node does.
     #[must_use]
@@ -632,6 +757,12 @@ impl Definition {
         );
         self
     }
+    /// Keep this definition available to saved graphs while omitting it from node search.
+    #[must_use]
+    pub fn hidden(mut self) -> Self {
+        self.editor("hidden", true.into());
+        self
+    }
     /// A setting of the node itself, kept in its config and shown in an editor's
     /// properties: `schema` is its JSON schema, such as
     /// `{"type": "number", "minimum": 0}`. Settings suit what is fixed while a flow
@@ -727,6 +858,7 @@ pub struct ServicePackage {
     update_key: Option<String>,
     nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
     sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
+    lives: Vec<(NodeDefinition, Arc<dyn LiveSource>)>,
     adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
     presentations: Vec<(DefinitionRef, Presentation)>,
     replacements: Vec<Replacement>,
@@ -773,6 +905,7 @@ impl ServicePackage {
             update_key: None,
             nodes: Vec::new(),
             sources: Vec::new(),
+            lives: Vec::new(),
             adapters: Vec::new(),
             presentations: Vec::new(),
             replacements: Vec::new(),
@@ -856,6 +989,10 @@ impl ServicePackage {
     pub fn sources(&self) -> &[(NodeDefinition, Arc<dyn ServiceSource>)] {
         &self.sources
     }
+    /// The live nodes, each with its definition.
+    pub fn lives(&self) -> &[(NodeDefinition, Arc<dyn LiveSource>)] {
+        &self.lives
+    }
     /// The connection adapters by adapter kind.
     pub fn adapters(&self) -> &[(String, Arc<dyn ConnectionAdapter>)] {
         &self.adapters
@@ -928,6 +1065,16 @@ impl ServicePackage {
         self.sources.push((definition, Arc::new(source)));
         Ok(self)
     }
+    /// Adds a live node from its definition file text ([`Definition::read`]).
+    pub fn live(
+        mut self,
+        definition: &str,
+        source: impl LiveSource,
+    ) -> Result<Self, DefinitionError> {
+        let definition = self.read(definition)?;
+        self.lives.push((definition, Arc::new(source)));
+        Ok(self)
+    }
     /// Adds the adapter for connections whose `adapter` is `kind`.
     pub fn adapter(mut self, kind: impl Into<String>, adapter: impl ConnectionAdapter) -> Self {
         self.adapters.push((kind.into(), Arc::new(adapter)));
@@ -946,7 +1093,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 7",
+        "orange-plugin 8",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

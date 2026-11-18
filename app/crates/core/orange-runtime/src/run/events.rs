@@ -192,12 +192,15 @@ pub enum IngressError {
     UnknownEntry,
     #[error("The run is paused and this source rejects input until it resumes.")]
     Paused,
+    #[error("The node is not a live value in the checked run plan.")]
+    UnknownLive,
 }
 impl IngressError {
     pub const fn message_key(self) -> &'static str {
         match self {
             Self::WrongRun => "core/ingress-wrong-run",
             Self::NotRunning => "core/event-run-stopping",
+            Self::UnknownLive => "core/ingress-unknown-live",
             Self::UnknownEvent => "core/ingress-unknown-event",
             Self::SourceLimit => "core/ingress-source-limit",
             Self::IdentityExhausted => "core/ingress-identity-exhausted",

@@ -29,11 +29,11 @@ mod zones;
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::ControlWatch;
 pub use control::{
-    ChangeProjection, ControlCell, ControlChange, ControlEvent, ControlIx, ControlManual,
-    ControlNode, ControlOperation, ControlPlan, ControlState, ControlTimer, ControlVariable,
-    EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout, HostSource, IterationProjection,
-    SwitchCase, SwitchKey, TickProjection, UpdateDemand, UpdateOperation, UpdateProjection,
-    compile_control, compile_control_with_effects,
+    ChangeProjection, ControlCell, ControlChange, ControlEvent, ControlIx, ControlLive,
+    ControlManual, ControlNode, ControlOperation, ControlPlan, ControlSource, ControlState,
+    ControlTimer, ControlVariable, EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout,
+    HostSource, IterationProjection, SourceKind, SwitchCase, SwitchKey, TickProjection,
+    UpdateDemand, UpdateOperation, UpdateProjection, compile_control, compile_control_with_effects,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;

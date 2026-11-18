@@ -252,16 +252,23 @@ pub(crate) fn validate_node_config(
 ) -> Option<Diagnostic> {
     // A schema describes exactly its own config version; other versions are a
     // resolution matter and are not judged against it.
-    let (schema, supported) = schemas.schema(node, registry)?;
-    let code = if !supported {
-        DiagnosticCode::ConfigSchemaUnsupported
-    } else if schema
-        .as_object()
-        .is_some_and(|schema| satisfies_object(&node.config, schema))
-    {
-        return None;
+    let code = if node.definition.id.as_str() == crate::catalog::intrinsic_id::ON_WATCH {
+        if crate::catalog::WatchConfig::from_node(node).is_some() {
+            return None;
+        }
+        DiagnosticCode::WatchConfig
     } else {
-        DiagnosticCode::ConfigInvalid
+        let (schema, supported) = schemas.schema(node, registry)?;
+        if !supported {
+            DiagnosticCode::ConfigSchemaUnsupported
+        } else if schema
+            .as_object()
+            .is_some_and(|schema| satisfies_object(&node.config, schema))
+        {
+            return None;
+        } else {
+            DiagnosticCode::ConfigInvalid
+        }
     };
     let subject = Subject::new(Some(node.id), None, None);
     let subject = match body {

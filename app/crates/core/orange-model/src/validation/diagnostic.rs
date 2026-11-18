@@ -154,6 +154,9 @@ diagnostics! { subject;
     TimerConfig => ("E-TIMER-CONFIG", "core/graph-timer-config", Error, {
                 "A timer entry needs a positive interval or a non-negative delay in nanoseconds, and only its documented fields.".into()
             });
+    WatchConfig => ("E-WATCH-CONFIG", "core/graph-watch-config", Error, {
+                "When needs valid settings for its mode and ordered bounds that fit the watched type.".into()
+            });
     VariableChanged => ("E-VARIABLE-CHANGED", "core/graph-variable-changed", Error, {
                 "A variable-changed entry needs a run variable with an initial value and a type with eq.".into()
             });

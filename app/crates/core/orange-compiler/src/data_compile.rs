@@ -419,10 +419,17 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         let (analysis, calls, scope) = (self.analysis, self.calls.clone(), self.scope);
         let document = self.document;
         let sig = calls.signature(analysis, scope, node_id);
+        // A live value's inputs are its provider's arguments, evaluated at the root by
+        // the control plan; the data plan only reads the published value.
+        let live = scope == 0
+            && crate::compile::is_live(
+                &self.plan.snapshot,
+                &calls.body(document, scope).nodes[&node_id],
+            );
         let inputs_ports: Vec<_> = sig
             .ports
             .iter()
-            .filter(|p| p.direction == PortDirection::Input)
+            .filter(|p| p.direction == PortDirection::Input && !live)
             .filter(|p| {
                 selection.as_ref().is_none_or(|selection| {
                     p.port_id == *selection.selector.source.port.port()
@@ -503,7 +510,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     crate::projection::ProjectionMode::Value,
                 )),
             }
-        } else if is_host_read(&self.plan.snapshot, node) {
+        } else if live || is_host_read(&self.plan.snapshot, node) {
             DataOperation::Input
         } else {
             let abi = |inputs: &[PortKey], outputs: &[PortKey]| {

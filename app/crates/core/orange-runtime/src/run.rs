@@ -26,6 +26,7 @@ mod iteration;
 mod loops;
 mod watch;
 use loops::Loops;
+pub use watch::SourceArguments;
 mod retained;
 mod select;
 use cells::SegmentWrites;
@@ -789,6 +790,10 @@ pub struct Run {
     bridges: streams::Bridges,
     replay: Option<replay::Session>,
     watches: watch::Watches,
+    /// Published values and the coalesced ingress waiting for an epoch boundary.
+    lives: Vec<Option<Value>>,
+    pending_lives: BTreeMap<usize, Value>,
+    live_bytes: Tally,
     /// The last value seen on each output port, while the host asks for them.
     port_values: Option<PortValues>,
 }
@@ -1039,12 +1044,12 @@ impl Run {
         )?;
         // Every start and On Stop frame reserves its storage now, so admit the
         // aggregate before constructing any of them.
-        let watch_storage = if plan.watches().is_empty() {
+        let watch_storage = if plan.watches().is_empty() && plan.sources().is_empty() {
             0
         } else {
             crate::data::activation_storage(plan.data())
                 .and_then(|bytes| {
-                    bytes.checked_add(plan.watches().len().checked_mul(
+                    bytes.checked_add((plan.watches().len() + plan.sources().len()).checked_mul(
                         std::mem::size_of::<Option<Value>>() + std::mem::size_of::<u64>(),
                     )?)
                 })
@@ -1064,6 +1069,7 @@ impl Run {
             || !plan.timers().is_empty()
             || !plan.changes().is_empty()
             || !plan.watches().is_empty()
+            || !plan.sources().is_empty()
             || plan
                 .nodes()
                 .iter()
@@ -1177,6 +1183,8 @@ impl Run {
         };
         let events = events::Events::new(&plan);
         let changes = changes::Changes::new(&plan);
+        let plan_lives = plan.lives().len();
+        let live_bytes = Tally::new(Some(budget.clone()), 0);
         let watches = watch::Watches::new(
             &plan,
             event_template.as_ref().map(|t| t.prepared.clone()),
@@ -1229,6 +1237,9 @@ impl Run {
             replay: None,
             changes,
             watches,
+            lives: vec![None; plan_lives],
+            pending_lives: BTreeMap::new(),
+            live_bytes,
             port_values: None,
         };
         run.arm_timer_entries()?;
@@ -1525,12 +1536,23 @@ impl Run {
             )
         {
             self.observe_cancellation()?;
+            if self.state == RunState::Running
+                && self.can_apply_live()
+                && !self
+                    .ready
+                    .front()
+                    .is_some_and(|a| Some(a.id) == self.segment_owner)
+            {
+                self.end_segment(&plan);
+                remaining -= 1;
+                if let Err(error) = self.apply_live(&plan) {
+                    return self.fail(error);
+                }
+                continue;
+            }
             if self.watches.has_pending() && self.state == RunState::Running {
                 if let Err(error) = self.evaluate_watch(&plan, &mut remaining) {
                     return self.fail(error);
-                }
-                if !self.watches.has_pending() {
-                    self.watches.finish_segment();
                 }
                 continue;
             }
@@ -1572,6 +1594,10 @@ impl Run {
                         if let Err(error) = self.complete_waiter_timeout(token) {
                             return self.fail(error);
                         }
+                    }
+                    TimerTarget::Watch(index) => {
+                        remaining -= 1;
+                        self.watches.schedule_deadline(index);
                     }
                     TimerTarget::Entry { run, timer, at } => {
                         if run != self.id {
@@ -1932,6 +1958,7 @@ impl Run {
     fn has_runnable(&self) -> bool {
         !self.ready.is_empty()
             || self.watches.has_pending()
+            || (self.state == RunState::Running && self.can_apply_live())
             || self.timers.is_due(self.now)
             || self.pending_await_completions()
             || self.effects.has_ready()
@@ -2654,6 +2681,9 @@ impl Run {
         self.graph_streams = streams::GraphStreams::default();
         self.bridges = streams::Bridges::default();
         self.watches.clear();
+        self.lives = Vec::new();
+        self.pending_lives = BTreeMap::new();
+        let _ = self.live_bytes.try_set(0);
         self.transition(RunState::Disposed);
         Ok(())
     }

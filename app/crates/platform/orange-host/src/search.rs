@@ -123,6 +123,7 @@ impl Host {
         let words: Vec<&str> = search.split_whitespace().collect();
         let mut found: Vec<Found> = self
             .nodes()
+            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
             .filter_map(|info| {
                 let matched = if words.is_empty() {
                     None

@@ -1016,6 +1016,18 @@ pub(crate) fn is_host_read(
             )
         })
 }
+/// A package's live value: the host publishes its single output, and its inputs are
+/// arguments evaluated at the root, never read by the data plan (11 §10.5).
+pub(crate) fn is_live(
+    snapshot: &RegistrySnapshot,
+    node: &orange_model::document::NodeInstance,
+) -> bool {
+    snapshot
+        .definition(&node.definition)
+        .is_some_and(|definition| {
+            definition.volatility == Some(orange_model::catalog::Volatility::Live)
+        })
+}
 /// State and clock readers have the same host-input ABI in roots and called bodies.
 pub(crate) fn admit_state_read(
     node: NodeId,
@@ -1164,6 +1176,20 @@ pub(crate) fn admit_roots<'a>(
         if state_read {
             admit_state_read(*node, sig)?;
         }
+        // A live value is a host input slot too; its inputs are the provider's arguments.
+        let live =
+            data_plan && sig.kind == NodeKind::Volatile && is_live(snapshot, &body.nodes[node]);
+        if live
+            && sig
+                .ports
+                .iter()
+                .filter(|port| port.direction == PortDirection::Output)
+                .count()
+                != 1
+        {
+            return Err(CompileError::UnsupportedNode { node: *node });
+        }
+        let state_read = state_read || live;
         let call = body.nodes[node].definition.id.as_str() == ids::CALL;
         let zone = data_plan
             .then(|| crate::zones::marker(analysis, *node))
@@ -1189,7 +1215,7 @@ pub(crate) fn admit_roots<'a>(
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
-        let output_source = if state_read {
+        let output_source = if state_read && !live {
             OutputSource::State
         } else if zone == Some(false) {
             OutputSource::Iteration

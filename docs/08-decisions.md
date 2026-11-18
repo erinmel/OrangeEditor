@@ -924,6 +924,22 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 
 **Why:** thresholds on the device made two listeners open the device twice and hid what each entry listened to; files could not be analysed; transport paused every sound of an output. A source shared by many listeners is how mixing consoles and node tools (TouchDesigner, Bitwig Grid) separate a signal from what measures it.
 
-**Phase 2, decided but not built: signal wires.** Today an entry names its source through a connection, not a visible wire, because entries take no data inputs and a run's data edges are evaluated per epoch. The target is a port kind `signal` (type `audio/signal@1`): signal edges are routing, resolved when a flow activates, never per epoch; they fan out, fan in only at mixers, convert to nothing, and cannot be stored, emitted or exported. Entries may take signal inputs. The compiler extracts each flow's signal subgraph as an audio patch that the host instantiates on activation and tears down on stop or update, through the domain seam of ADR-21. Sources (device, file), sinks (output), analyzers (band level, onsets) and effects (filter, EQ) become patch nodes; editors tap a patch node for meters, spectra and hit markers instead of opening their own capture. Until then the audio stream record stays for Audio in, Audio out, Level and Record.
+**Future audio patch domain.** ADR-31 adds visible graph wiring using the shared stream record. The separate proposal for sample-routing patches uses a port kind `signal` (type `audio/signal@1`): signal edges are routing, resolved when a flow activates, never per epoch; they fan out, fan in only at mixers, convert to nothing, and cannot be stored, emitted or exported. Entries may take signal inputs. The compiler extracts each flow's signal subgraph as an audio patch that the host instantiates on activation and tears down on stop or update, through the domain seam of ADR-21. Sources (device, file), sinks (output), analyzers (band level, onsets) and effects (filter, EQ) become patch nodes; editors tap a patch node for meters, spectra and hit markers instead of opening their own capture. Until then the audio stream record stays for Audio in, Audio out, Level and Record.
 
 **Contracts:** 05 "Sources and analyzers", FR-119. Verification is the focused tests named in FR-119.
+
+## ADR-31 - Live reads and root arguments for sources
+
+**Decision:** The graph can wire inputs to an always-armed package entry or live
+read. Both use one checked root demand per input and one consumption epoch for the
+argument set. The run stages incoming typed values. Provider callbacks stay in
+the host, which retains or replaces guards as arguments change. Changes in
+published signals can drive the same When entry as run variables.
+
+The audio route uses the existing typed audio stream record and shared ring. The
+editor hides superseded nodes from search and the registry continues resolving
+their saved definitions. Flow-started subscriptions and audio-specific signal
+ports remain separate future work. The native Rust SDK ABI identifier is
+`orange-plugin 8` for the source and emitter interface changes.
+
+**Contracts:** 05, 11 §10.5, 12 §4, FR-121–FR-123.

@@ -1,7 +1,7 @@
-//! `org.orange.json` read vocabulary over validated `core/json@1` text. Navigation works
+//! `org.orange.json` parsing and reads over validated `core/json@1` text. Navigation works
 //! on the text itself, so extracted values keep their exact number text (03).
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use orange_model::Value;
 use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
@@ -15,6 +15,7 @@ use crate::{BindingError, CatalogError, KernelError, MathPackage};
 /// Pure JSON reads. Inputs are strict; results never invent null or missing values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonOperation {
+    Parse,
     Kind,
     IsNull,
     Get,
@@ -30,7 +31,8 @@ pub enum JsonOperation {
 const JSON: &str = "core/json@1";
 
 impl JsonOperation {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::Parse,
         Self::Kind,
         Self::IsNull,
         Self::Get,
@@ -45,6 +47,7 @@ impl JsonOperation {
 
     pub const fn definition_id(self) -> &'static str {
         match self {
+            Self::Parse => "org.orange.json/parse",
             Self::Kind => "org.orange.json/kind",
             Self::IsNull => "org.orange.json/is-null",
             Self::Get => "org.orange.json/get",
@@ -64,6 +67,7 @@ impl JsonOperation {
 
     pub const fn inputs(self) -> &'static [(&'static str, &'static str)] {
         match self {
+            Self::Parse => &[("text", "core/string@1")],
             Self::Get => &[("value", JSON), ("key", "core/string@1")],
             Self::At => &[("value", JSON), ("index", "core/u64@1")],
             _ => &[("value", JSON)],
@@ -72,6 +76,7 @@ impl JsonOperation {
 
     pub const fn output_type(self) -> &'static str {
         match self {
+            Self::Parse => JSON,
             Self::Kind => "core/string@1",
             Self::IsNull => "core/bool@1",
             Self::Get | Self::At => "core/option@1<core/json@1>",
@@ -210,7 +215,7 @@ impl<'a> Scan<'a> {
         }
     }
     /// An object key at the cursor, unescaped, then steps past the `:`.
-    fn key(&mut self) -> Result<String, KernelError> {
+    fn key(&mut self) -> Result<Cow<'a, str>, KernelError> {
         let (start, end) = self.value();
         let raw =
             std::str::from_utf8(&self.text[start..end]).map_err(|_| KernelError::InputContract)?;
@@ -218,9 +223,11 @@ impl<'a> Scan<'a> {
         self.at += 1; // ':'
         self.skip_space();
         if raw[1..raw.len() - 1].contains('\\') {
-            serde_json::from_str(raw).map_err(|_| KernelError::InputContract)
+            serde_json::from_str::<String>(raw)
+                .map(Cow::Owned)
+                .map_err(|_| KernelError::InputContract)
         } else {
-            Ok(raw[1..raw.len() - 1].to_owned())
+            Ok(Cow::Borrowed(&raw[1..raw.len() - 1]))
         }
     }
     fn slice(&self, (start, end): (usize, usize)) -> &'a str {
@@ -235,10 +242,10 @@ fn json_value(text: &str) -> Result<Value, KernelError> {
 }
 
 /// Object members as (unescaped key, value byte span), in text order.
-type Members = Vec<(String, (usize, usize))>;
+type Members<'a> = Vec<(Cow<'a, str>, (usize, usize))>;
 
 /// The members of an object at the cursor, in text order.
-fn members(scan: &mut Scan<'_>) -> Result<Members, KernelError> {
+fn members<'a>(scan: &mut Scan<'a>) -> Result<Members<'a>, KernelError> {
     let mut members = Vec::new();
     if scan.open() {
         return Ok(members);
@@ -280,12 +287,20 @@ impl ResolvedJson {
         if inputs.len() != self.operation.inputs().len() {
             return Err(KernelError::InputContract);
         }
+        if self.operation == Parse {
+            let Value::Str(text) = &inputs[0] else {
+                return Err(KernelError::InputContract);
+            };
+            let value = JsonText::try_from(text.as_str()).map_err(|_| KernelError::Domain)?;
+            return Ok(Value::Json(Arc::new(value)));
+        }
         let Value::Json(text) = &inputs[0] else {
             return Err(KernelError::InputContract);
         };
         let mut scan = Scan::new(text.as_str());
         let first = scan.peek().ok_or(KernelError::InputContract)?;
         Ok(match self.operation {
+            Parse => return Err(KernelError::InputContract),
             Kind => Value::Str(Arc::new(
                 match first {
                     b'n' => "null",
@@ -347,12 +362,21 @@ impl ResolvedJson {
                 if first != b'{' {
                     return Err(KernelError::Domain);
                 }
-                match members(&mut scan)?
-                    .iter()
-                    .rev()
-                    .find(|(name, _)| name == key.as_str())
-                {
-                    Some((_, span)) => json_value(scan.slice(*span))?,
+                let mut found = None;
+                if !scan.open() {
+                    loop {
+                        let name = scan.key()?;
+                        let span = scan.value();
+                        if name == key.as_str() {
+                            found = Some(span);
+                        }
+                        if !scan.next() {
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(span) => json_value(scan.slice(span))?,
                     None => Value::None,
                 }
             }
@@ -393,7 +417,7 @@ impl ResolvedJson {
                     Value::U64(count)
                 }
                 b'{' => {
-                    let mut keys: Vec<String> = members(&mut scan)?
+                    let mut keys: Vec<Cow<'_, str>> = members(&mut scan)?
                         .into_iter()
                         .map(|(key, _)| key)
                         .collect();
