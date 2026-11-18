@@ -61,6 +61,42 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   place or omit the toolbar, status bar, catalogue, inspector, diagnostics and
   editable canvas in their own containers.
 
+### 3.1 Card anatomy (rules, 2026-11-18)
+
+Every card follows these rules; a card that needs to break one is a design change here
+first.
+
+* **One line per port.** A data row is 28 graph units tall and holds, on one line, the
+  input's dot, its name and its value or field, and on the same line the output's live
+  value, its name and its dot. Names never sit on a line of their own above their value.
+  The way in and out (Enter / Exit) is the first row.
+* **Width follows content.** A card is as wide as its title, its widest input (name plus
+  field) and its widest output (value plus name) need, between 160 and 320 units. No
+  kind of node gets a fixed wide width; long values and device names are cut with an
+  ellipsis and shown whole on hover.
+* **Values line up.** Input fields start in one column, just after the longest input
+  name, so a card reads as a small table.
+* **Every literal input has a field.** An input that is not wired and whose type can be
+  typed (numbers, text, true or false, a choice of an enum, a length of time) shows a
+  field, always the same framed shape. An empty field shows the input's default dimmed
+  (gain shows 1), and "—" only when there is none. Inputs that cannot be typed (a stream,
+  a list, a record) show no field and no placeholder.
+* **No redundant type labels.** A port's type is not printed under or beside it. It is
+  shown only while a generic port's type is still unknown, and always on hover.
+* **Outputs show what they last produced.** While a run reports values, each data
+  output shows its latest value in a pill beside its name: numbers with their unit
+  (`-18.2 dBFS`), text quoted when short, enums by choice name. A live value (a level, a
+  stream format) updates as it changes, at most every frame. A stream output shows no
+  value; it is a connection, not a number.
+* **What a node names comes first.** The variable, connection or device a node uses is
+  one row after Enter / Exit: a short name on the left and a list filling the rest.
+* **Settings are few and plain.** A card shows only the settings a person sets for the
+  node to do its job, named in plain words with units (Threshold dBFS). Tuning settings
+  (analysis window, numeric policies) are in the card's ⋯ menu and in Properties. A
+  setting changed on one node never changes the palette's preview of that kind.
+* **No empty space.** Header 30, row 28, padding 8; a card ends 6 units after its last
+  row.
+
 ## 4. Search and commands
 
 Palette and canvas search use the same full-width result rows. In preview mode the card provides the title and ports; descriptions appear on hover in both result modes. Get variable and enum nodes have illustrative cards until their declarations determine the real ports. Up and Down move the visible highlight, and Enter adds the highlighted result. Dragging a palette result shows a labeled placement preview before dropping it.
