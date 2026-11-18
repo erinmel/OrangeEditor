@@ -549,6 +549,17 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                     changed.push((*node, port.clone(), value.clone()));
                 }
             }
+            // A live value is on its output whether or not a node has read it yet.
+            for live in cx.plan.lives() {
+                let Some(value) = driver.run().live_value(live.node()) else {
+                    continue;
+                };
+                let key = (live.node(), live.port().clone());
+                if ports.get(&key) != Some(value) {
+                    let _ = ports.insert(key, value.clone());
+                    changed.push((live.node(), live.port().clone(), value.clone()));
+                }
+            }
             if !changed.is_empty() {
                 cx.sink.send(cx.id, FlowEvent::Ports(changed));
             }

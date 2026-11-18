@@ -58,11 +58,13 @@ const VARIABLE_NODES: [(&str, &str, &str); 2] = [
     ("variable-set", "variable-set-hint", "core/set-variable"),
 ];
 
+/// What a card shows of a value on a port, short and whole; nothing for a stream, which
+/// is a connection rather than a value (22 §3.1).
 fn presented_value(
     enums: &canvas::Enums,
     ty: Option<&str>,
     value: &orange_host::Value,
-) -> (String, String) {
+) -> Option<(String, String)> {
     if let orange_host::Value::Record(record) = value
         && record
             .ty
@@ -71,13 +73,24 @@ fn presented_value(
             .next()
             .is_some_and(|name| name.ends_with("/stream"))
     {
-        let label = type_name(record.ty.as_str());
-        return (label.clone(), label);
+        return None;
     }
-    (
-        canvas::value_text(enums, ty, value),
-        orange_host::inspect(value),
-    )
+    let short = match value {
+        orange_host::Value::F64(number) => decimal(*number),
+        orange_host::Value::F32(number) => decimal(f64::from(*number)),
+        _ => canvas::value_text(enums, ty, value),
+    };
+    Some((short, orange_host::inspect(value)))
+}
+
+/// A decimal as a card shows it: at most two places, without trailing zeros.
+fn decimal(number: f64) -> String {
+    if !number.is_finite() {
+        return number.to_string();
+    }
+    let text = format!("{number:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" { "0".to_owned() } else { text.to_owned() }
 }
 
 /// Most lines the log keeps; older ones are dropped.
@@ -1064,7 +1077,10 @@ impl Editor {
                             .find(|view| view.id == *node)
                             .and_then(|view| view.ports.iter().find(|shown| shown.id == id))
                             .and_then(|shown| shown.ty.as_deref());
-                        let (short, full) = presented_value(&self.canvas.enums, ty, value);
+                        let Some((short, full)) = presented_value(&self.canvas.enums, ty, value)
+                        else {
+                            continue;
+                        };
                         self.canvas.show_value(*node, port.to_string(), short, full);
                     }
                 }

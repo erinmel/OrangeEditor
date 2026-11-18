@@ -586,6 +586,7 @@ impl VariableDependents {
 #[derive(Debug, Clone)]
 pub struct ControlLive {
     node: NodeId,
+    port: orange_model::id::PortKey,
     ty: ValueShape,
     watch_dependents: Vec<usize>,
     source_dependents: Vec<usize>,
@@ -601,6 +602,10 @@ impl ControlLive {
     }
     pub fn node(&self) -> NodeId {
         self.node
+    }
+    /// The output the value is published on.
+    pub fn port(&self) -> &orange_model::id::PortKey {
+        &self.port
     }
     pub fn ty(&self) -> &ValueShape {
         &self.ty
@@ -978,6 +983,7 @@ fn compile_control_inner(
         live_nodes.insert(node.id, lives.len());
         lives.push(ControlLive {
             node: node.id,
+            port: port_key(output),
             ty: port_type(&snapshot, node.id, output)?,
             watch_dependents: Vec::new(),
             source_dependents: Vec::new(),
