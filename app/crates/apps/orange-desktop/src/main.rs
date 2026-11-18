@@ -4,6 +4,8 @@
 //! `orange-editor-ui` in it. Everything the editor does goes through the host; this
 //! file adds only what a desktop program has: a window, files named on the command
 //! line or chosen in the system's file dialogs, and the built-in service packages.
+#[cfg(test)]
+mod gallery;
 mod keyboard;
 mod picture;
 

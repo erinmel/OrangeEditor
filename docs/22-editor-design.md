@@ -96,9 +96,36 @@ other code places anything on a card.
 * **No redundant words.** No type labels (hover shows the type); a field's name is
   left out when it only repeats the card's title (Audio source's device list, Get
   variable's variable).
-* **Measurements:** header 30, flow and output rows 26, a field block 46 (name 18,
-  control 24, gap 4), padding 10, the card ends 8 units after its last row. Text never
+* **Problems stay inside the card.** A node's problem is an icon at the right end of
+  its header, in space the title leaves free, and a thin outline inside the card's edge
+  (the selection outline stays outside). A port's problem is a thin ring around its
+  dot. Hovering the icon says what is wrong; clicking it opens Problems.
+* **Defaults read like values.** An empty field shows its default the way a value is
+  shown (an enum by its choice's name), dimmed.
+* **Measurements:** header 30, flow and output rows 26, a field block 48 (name 18,
+  control 24, gap 6), padding 10, the card ends 8 units after its last row. Text never
   overflows its row: names are elided and shown whole on hover.
+
+#### Where the rules live in code
+
+* `canvas/card.rs` is the only place a card's geometry is decided: its rows, their
+  heights, where each dot is, where each control goes, and every metric above.
+* `canvas/fields.rs` is the only place a value's control is drawn and read; the
+  card and Properties use the same kinds (switch, dropdown, number, text, path).
+* Colors come from the host application's egui `Visuals` (`Palette::of`), so an
+  application that embeds the canvas restyles cards with its own theme. Metrics are
+  constants in `card.rs`; making them a runtime theme is a change to that one file.
+* A new kind of value gets a `Kind` in `fields.rs`; a new kind of row (for example a
+  level meter or a spectrum drawn in the card) gets a `Left`/row variant in
+  `card.rs` with a fixed height, so wires and hit tests keep working. A package never
+  draws on a card directly.
+
+#### Review gallery
+
+`orange-desktop` has an ignored test that writes one graph per package with every
+searchable node (`ORANGE_GALLERY_DIR=<folder> cargo test -p orange-desktop
+package_galleries -- --ignored`); open each with `--canvas-only --screenshot` and
+check every card against these rules after a rendering change.
 
 ## 4. Search and commands
 
