@@ -27,6 +27,9 @@ use windows::Win32::Media::Audio::{
     VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eRender,
 };
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
+use windows::Win32::Storage::FileSystem::{
+    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+};
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
     BLOB, CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemAlloc,
@@ -37,7 +40,7 @@ use windows::Win32::System::Threading::{
     QueryFullProcessImageNameW, WaitForSingleObject,
 };
 use windows::Win32::System::Variant::VT_BLOB;
-use windows::core::{Interface, PWSTR, Ref, implement};
+use windows::core::{HSTRING, Interface, PWSTR, Ref, implement};
 
 const RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
@@ -95,6 +98,55 @@ impl Drop for Com {
 
 /// The executable name of process `pid`, without its folder or extension.
 fn process_name(pid: u32) -> Option<String> {
+    let path = process_path(pid)?;
+    std::path::Path::new(&path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+}
+
+/// What a program calls itself: the file description of its version information,
+/// such as "Microsoft Edge" for msedge.exe, when it has one.
+fn description(path: &str) -> Option<String> {
+    let file = HSTRING::from(path);
+    // SAFETY: the buffer is as large as Windows says the version information is, and
+    // the strings read from it are within the length VerQueryValueW returns.
+    unsafe {
+        let size = GetFileVersionInfoSizeW(&file, None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(&file, None, size, data.as_mut_ptr().cast()).ok()?;
+        let block = data.as_ptr().cast();
+        let query = |key: &str| -> Option<(*mut std::ffi::c_void, u32)> {
+            let mut found = std::ptr::null_mut();
+            let mut length = 0u32;
+            VerQueryValueW(block, &HSTRING::from(key), &raw mut found, &raw mut length)
+                .as_bool()
+                .then_some((found, length))
+                .filter(|(found, length)| !found.is_null() && *length > 0)
+        };
+        // The first language the file lists, else US English in Unicode.
+        let language = query("\\VarFileInfo\\Translation")
+            .filter(|(_, length)| *length >= 4)
+            .map_or_else(
+                || "040904b0".to_owned(),
+                |(found, _)| {
+                    let pair = found.cast::<u16>();
+                    format!("{:04x}{:04x}", *pair, *pair.add(1))
+                },
+            );
+        let (text, length) = query(&format!("\\StringFileInfo\\{language}\\FileDescription"))?;
+        let chars = std::slice::from_raw_parts(text.cast::<u16>(), length as usize);
+        let end = chars.iter().position(|c| *c == 0).unwrap_or(chars.len());
+        let name = String::from_utf16_lossy(&chars[..end]).trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+/// The full path of process `pid`'s executable.
+fn process_path(pid: u32) -> Option<String> {
     // SAFETY: the handle is checked and closed; the buffer outlives the call and its
     // length is passed in and updated by Windows.
     unsafe {
@@ -109,11 +161,7 @@ fn process_name(pid: u32) -> Option<String> {
         );
         let _ = CloseHandle(process);
         named.ok()?;
-        let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        std::path::Path::new(&path)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .filter(|stem| !stem.is_empty())
+        Some(String::from_utf16_lossy(&buffer[..size as usize]))
     }
 }
 
@@ -169,8 +217,9 @@ fn sessions() -> windows::core::Result<Vec<App>> {
     Ok(apps)
 }
 
-/// Each application playing sound now, as (setting, label). Two processes of one
-/// program are told apart by their process ID.
+/// Each application playing sound now, as (setting, label): the name the program
+/// gives itself, such as "Microsoft Edge", or its executable name. Two processes of
+/// one program are told apart by their process ID.
 pub(super) fn choices() -> Result<Vec<(String, String)>, &'static str> {
     // On its own thread, so the caller's COM apartment never matters.
     let apps = thread::Builder::new()
@@ -184,10 +233,13 @@ pub(super) fn choices() -> Result<Vec<(String, String)>, &'static str> {
         .iter()
         .map(|app| {
             let twin = apps.iter().filter(|other| other.name == app.name).count() > 1;
+            let name = process_path(app.pid)
+                .and_then(|path| description(&path))
+                .unwrap_or_else(|| app.name.clone());
             let label = if twin {
-                format!("{} ({}) (application)", app.name, app.pid)
+                format!("{name} ({})", app.pid)
             } else {
-                format!("{} (application)", app.name)
+                name
             };
             (app.setting(), label)
         })

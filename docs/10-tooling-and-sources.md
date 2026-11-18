@@ -6527,6 +6527,7 @@ locked dependency set as above. No dependencies changed.
 `orange-audio` depends on `windows =0.62.2` and `windows-core =0.62.2`, the versions
 cpal 0.18.2 already pulls in, so the lockfile gains no new crate. Features:
 `Win32_Foundation`, `Win32_Media_Audio`, `Win32_Media_Multimedia`, `Win32_Security`,
+`Win32_Storage_FileSystem` (version information for application names),
 `Win32_System_Com`, `Win32_System_Com_StructuredStorage`, `Win32_System_Threading`,
 `Win32_System_Variant`. API evidence: installed `windows-0.62.2/src/Windows/Win32/Media/Audio/mod.rs`
 (`ActivateAudioInterfaceAsync`, `AUDIOCLIENT_ACTIVATION_PARAMS`,

@@ -351,7 +351,11 @@ pub(super) fn draw(
         // Every field on a card has the same framed look (22 §3.1).
         let colors = Palette::of(ui);
         let widgets = &mut ui.visuals_mut().widgets;
-        for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+        for state in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+        ] {
             state.bg_fill = colors.background;
             state.weak_bg_fill = colors.background;
         }

@@ -6,6 +6,7 @@ port-execution = Ejecución
 numeric-policies = Políticas numéricas
 configure = Configurar
 playback-capture = Captura de reproducción
+applications = Aplicaciones
 choose-folder = Elegir carpeta…
 choose-file = Elegir archivo…
 choose-path = Elige una ruta

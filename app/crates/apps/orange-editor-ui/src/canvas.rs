@@ -1612,21 +1612,29 @@ impl Canvas {
                                             )
                                             .clicked();
                                         ui.separator();
-                                        for loopback in [false, true] {
+                                        // Devices, what an output plays, then applications.
+                                        let group = |id: &str| {
+                                            if id.starts_with("loopback:") {
+                                                1
+                                            } else if id.starts_with("app:") {
+                                                2
+                                            } else {
+                                                0
+                                            }
+                                        };
+                                        for kind in 0..3 {
                                             let options: Vec<_> = picker
                                                 .options
                                                 .iter()
-                                                .filter(|(id, _)| {
-                                                    id.starts_with("loopback:") == loopback
-                                                })
+                                                .filter(|(id, _)| group(id) == kind)
                                                 .collect();
                                             if options.is_empty() {
                                                 continue;
                                             }
-                                            ui.small(if loopback {
-                                                t("playback-capture")
-                                            } else {
-                                                &picker.group_label
+                                            ui.small(match kind {
+                                                1 => t("playback-capture"),
+                                                2 => t("applications"),
+                                                _ => &picker.group_label,
                                             });
                                             for (value, label) in options {
                                                 picked |= ui
