@@ -13,6 +13,31 @@ struct Binding {
     key: Key,
     modifiers: Modifiers,
     repeat: bool,
+    /// The chord is exactly the modifiers held, each one named on its own (version
+    /// 3); older nodes name the Primary modifier and match logically.
+    exact: bool,
+}
+
+impl Binding {
+    fn matches(&self, held: Modifiers) -> bool {
+        if !self.exact {
+            return held.matches_logically(self.modifiers);
+        }
+        // egui reports Ctrl as `command` too on Windows and Linux; Command is the
+        // macOS key only.
+        held.ctrl == self.modifiers.ctrl
+            && held.shift == self.modifiers.shift
+            && held.alt == self.modifiers.alt
+            && held.mac_cmd == self.modifiers.mac_cmd
+    }
+}
+
+/// The value of a true-or-false argument, if the node has that input.
+fn flag(arguments: &Arguments, name: &str) -> Option<bool> {
+    match arguments.get(name) {
+        Some(Value::Bool(on)) => Some(*on),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -87,18 +112,35 @@ impl ServiceSource for Source {
             .or_else(|| settings.get("key").and_then(Json::as_str))
             .unwrap_or("F8");
         let key = Key::from_name(key).ok_or("Choose a supported logical key")?;
-        let modifier_name = settings
-            .get("modifiers")
-            .and_then(Json::as_str)
-            .unwrap_or("None");
-        let modifiers = modifiers(modifier_name).ok_or("Choose supported modifiers")?;
+        // Version 3 names each modifier as a true-or-false input; older versions
+        // name a chord in a setting.
+        let exact = flag(arguments, "ctrl").is_some();
+        let modifiers = if exact {
+            Modifiers {
+                ctrl: flag(arguments, "ctrl").unwrap_or(false),
+                shift: flag(arguments, "shift").unwrap_or(false),
+                alt: flag(arguments, "alt").unwrap_or(false),
+                mac_cmd: flag(arguments, "command").unwrap_or(false),
+                command: false,
+            }
+        } else {
+            let modifier_name = settings
+                .get("modifiers")
+                .and_then(Json::as_str)
+                .unwrap_or("None");
+            modifiers(modifier_name).ok_or("Choose supported modifiers")?
+        };
+        let repeat = flag(arguments, "repeat").unwrap_or_else(|| {
+            settings
+                .get("repeat")
+                .and_then(Json::as_bool)
+                .unwrap_or(false)
+        });
         let binding = Binding {
             key,
             modifiers,
-            repeat: settings
-                .get("repeat")
-                .and_then(Json::as_bool)
-                .unwrap_or(false),
+            repeat,
+            exact,
         };
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state
@@ -124,17 +166,34 @@ impl Keyboard {
             .setting("modifiers", json!({"title":"Modifiers", "type":"string", "enum":["None","Primary","Alt","Shift","Primary+Shift","Primary+Alt","Alt+Shift","Primary+Alt+Shift"], "default":"None"}))
             .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}));
         let previous = definition.clone().hidden().build();
-        let definition = definition
+        let wired = definition
+            .clone()
             .version(2)
             .input_default(
                 "key",
                 "core/string@1",
                 json!({"type": "core/string@1", "value": ""}),
             )
+            .hidden()
+            .build();
+        // Version 3: the key from a list, and each modifier its own No | Yes input.
+        let off = || json!({"type": "core/bool@1", "value": false});
+        let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
+            .version(3)
+            .description("Fires when the chosen key is pressed with exactly the modifiers set to Yes, while this editor has focus. Editing text and editor shortcuts take priority. Command is the macOS key. Release the key to fire again, unless Repeat is Yes. No global keyboard hook.")
+            .category("input", "Input")
+            .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
+            .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
+            .input_default("ctrl", "core/bool@1", off())
+            .input_default("shift", "core/bool@1", off())
+            .input_default("alt", "core/bool@1", off())
+            .input_default("command", "core/bool@1", off())
+            .input_default("repeat", "core/bool@1", off())
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
             .with_catalogs(crate::CATALOGS)
             .source(&previous, Source(Arc::clone(&self.state)))?
+            .source(&wired, Source(Arc::clone(&self.state)))?
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 
@@ -182,7 +241,7 @@ impl Keyboard {
                 .values()
                 .filter(|(binding, _)| {
                     binding.key == *key
-                        && modifiers.matches_logically(binding.modifiers)
+                        && binding.matches(*modifiers)
                         && ((!was_down && !repeat) || binding.repeat)
                 })
                 .map(|(_, emitter)| emitter.clone())
@@ -266,7 +325,10 @@ mod tests {
         );
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let entry = host.add_node(&mut draft, ON_KEY, [0.0, 0.0]).unwrap();
-        host.set_input(&mut draft, (entry, "key"), Some("F9"))
+        // Ctrl+F9: the key from its list, Ctrl set to Yes.
+        host.set_config(&mut draft, entry, &json!({"key": "F9"}))
+            .unwrap();
+        host.set_input(&mut draft, (entry, "ctrl"), Some("true"))
             .unwrap();
         let variable = host
             .declare_variable(
@@ -308,7 +370,39 @@ mod tests {
                 .unwrap(),
             None
         );
-        keyboard.handle(&[event_for(Key::F9, true, false)], true, |_, _| true);
+        // F9 alone is not the chord; Ctrl+Shift+F9 is not either.
+        keyboard.handle(
+            &[
+                event_for(Key::F9, true, false),
+                event_for(Key::F9, false, false),
+            ],
+            true,
+            |_, _| true,
+        );
+        let chord = |shift| {
+            let mut press = event_for(Key::F9, true, false);
+            if let Event::Key { modifiers, .. } = &mut press {
+                *modifiers = Modifiers {
+                    ctrl: true,
+                    shift,
+                    command: !cfg!(target_os = "macos"),
+                    ..Modifiers::NONE
+                };
+            }
+            press
+        };
+        keyboard.handle(
+            &[chord(true), event_for(Key::F9, false, false)],
+            true,
+            |_, _| true,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            host.inspect(flow, move |run| run.variable(variable_id).cloned())
+                .unwrap(),
+            None
+        );
+        keyboard.handle(&[chord(false)], true, |_, _| true);
         loop {
             if host
                 .inspect(flow, move |run| run.variable(variable_id).cloned())
