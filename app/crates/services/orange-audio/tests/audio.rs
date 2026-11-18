@@ -1,5 +1,5 @@
 //! A graph plays a sound file on a declared output connection and listens to an input.
-use orange_testkit::{core, edge, id, node, until, variable};
+use orange_testkit::{activation, core, edge, id, node, until, variable};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,10 @@ fn read(host: &Host, flow: FlowId, n: u32) -> Option<Value> {
 
 /// Writes a mono 8 kHz tone of `millis` and returns its path.
 fn tone(name: &str, millis: u32) -> PathBuf {
+    wav_signal(name, millis, |n| if n % 16 < 8 { 8_000 } else { -8_000 })
+}
+
+fn wav_signal(name: &str, millis: u32, sample: impl Fn(u32) -> i16) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("orange-audio-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
@@ -48,7 +52,7 @@ fn tone(name: &str, millis: u32) -> PathBuf {
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data.to_le_bytes());
     for n in 0..samples {
-        let value: i16 = if n % 16 < 8 { 8_000 } else { -8_000 };
+        let value = sample(n);
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     std::fs::write(&path, bytes).unwrap();
@@ -362,6 +366,223 @@ fn the_audio_nodes_are_listed_with_their_text() {
         assert!(labels.iter().any(|label| label == wanted), "{labels:?}");
     }
     assert!(!labels.iter().any(|label| label.contains("Seek")));
+
+    let palette = host.search_nodes("", "es");
+    assert!(palette.iter().any(|item| {
+        item.definition == orange_audio::AUDIO_SOURCE && item.label == "Fuente de audio"
+    }));
+    for former in [
+        orange_audio::ON_BAND_LEVEL,
+        orange_audio::ON_TRANSIENT,
+        orange_audio::BAND_LEVEL,
+        orange_audio::SEEK,
+    ] {
+        assert!(!palette.iter().any(|item| item.definition == former));
+    }
+}
+
+#[test]
+fn the_band_trigger_template_places_and_undoes_the_pair_as_one_edit() {
+    let mut host = host();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let source = host
+        .add_node(&mut draft, orange_audio::AUDIO_SOURCE, [-300.0, 30.0])
+        .unwrap();
+    let when = host.add_band_trigger(&mut draft, [20.0, 30.0]).unwrap();
+    let view = host.view(&draft.text().unwrap()).unwrap();
+    assert_eq!(view.nodes.len(), 3);
+    let band = view
+        .nodes
+        .iter()
+        .find(|node| node.definition == orange_audio::LIVE_BAND_LEVEL)
+        .unwrap();
+    let watch = view.nodes.iter().find(|node| node.id == when).unwrap();
+    assert_eq!(band.position, Some([20.0, 30.0]));
+    assert_eq!(
+        watch.settings,
+        json!({"mode": "above", "threshold": -20, "release": -26, "hold": 50})
+    );
+    assert_ne!(band.position, watch.position);
+    assert_eq!(
+        view.wires,
+        [orange_host::WireView {
+            from: (band.id, "level".into()),
+            to: (when, "watch".into()),
+            exec: false,
+        }]
+    );
+    assert!(draft.undo());
+    let undone = host.view(&draft.text().unwrap()).unwrap();
+    assert_eq!(
+        undone.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+        [source]
+    );
+    assert!(undone.wires.is_empty());
+    assert!(draft.redo());
+
+    assert!(
+        host.connect(&mut draft, (source, "stream"), (band.id, "stream"))
+            .unwrap()
+    );
+    let mut input = host.declarations(&draft).connections.remove(0);
+    input.settings = json!({"device": orange_audio::NULL_DEVICE});
+    let _ = host.declare_connection(&mut draft, &input).unwrap();
+    let text = draft.text().unwrap();
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let flow = host.open(&text).unwrap();
+    host.close(flow).unwrap();
+}
+
+/// One connected file supplies two live meters and the stream-wired entries. Manual
+/// playback waits for the live baseline, making the test independent of decode time.
+fn live_file_document(host: &Host, path: &Path) -> String {
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000007".parse().unwrap());
+    let connection = json!({"id": INPUT, "name": "track",
+        "adapter": orange_audio::INPUT_ADAPTER, "scope": "graph",
+        "settings": {"file": path.to_str().unwrap()}});
+    let _ = document
+        .apply([orange_model::DocCommand::UpsertConnection(
+            serde_json::from_value(connection).unwrap(),
+        )])
+        .unwrap();
+    let literal = |value: f64| json!({"type": F64, "bits": format!("{:016x}", value.to_bits())});
+    for (n, definition, config, inputs) in [
+        (
+            1,
+            orange_audio::AUDIO_SOURCE,
+            json!({"connection": INPUT}),
+            json!({}),
+        ),
+        (
+            2,
+            orange_audio::LIVE_BAND_LEVEL,
+            json!({}),
+            json!({"low_hz": literal(45.0), "high_hz": literal(120.0)}),
+        ),
+        (3, orange_audio::LIVE_LEVEL, json!({}), json!({})),
+        (4, orange_audio::TRANSIENT, json!({}), json!({})),
+        (5, orange_audio::SOURCE_FINISHED, json!({}), json!({})),
+        (6, orange_audio::SOURCE_CONTROL, json!({}), json!({})),
+        (7, orange_audio::AUDIO_FORMAT, json!({}), json!({})),
+    ] {
+        let mut new = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: definition.parse().unwrap(),
+                version: 1,
+            },
+        );
+        new.config = serde_json::from_value(config).unwrap();
+        new.inputs = serde_json::from_value(inputs).unwrap();
+        let edit = new_node_edit(&document, host.registry(), new).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter(|node| {
+            matches!(
+                node["definition_id"].as_str(),
+                Some(orange_audio::TRANSIENT | orange_audio::SOURCE_FINISHED)
+            )
+        })
+    {
+        entry["activation"] = activation();
+    }
+    let mut when = core(9, "on-watch");
+    when["config_version"] = json!(2);
+    when["config"] = json!({"mode": "above", "threshold": -20.0, "release": -28.0, "hold": 40});
+    let count = |n, target| {
+        let mut node = core(n, "update-variable");
+        node["config"] = json!({"variable": id(target), "operation": "add"});
+        node["inputs"] = json!({"value": {"type": "core/u64@1", "value": "1"}});
+        node
+    };
+    saved["nodes"].as_array_mut().unwrap().extend([
+        core(8, "on-manual"),
+        when,
+        count(10, 100),
+        count(11, 101),
+        count(12, 102),
+    ]);
+    saved["edges"] = json!([
+        edge(1, 1, "stream", 2, "stream"),
+        edge(2, 1, "stream", 3, "stream"),
+        edge(3, 1, "stream", 4, "stream"),
+        edge(4, 1, "stream", 5, "stream"),
+        edge(5, 1, "stream", 6, "stream"),
+        edge(6, 1, "stream", 7, "stream"),
+        edge(7, 8, "then", 6, "in"),
+        edge(8, 2, "level", 9, "watch"),
+        edge(9, 9, "then", 10, "in"),
+        edge(10, 4, "then", 11, "in"),
+        edge(11, 5, "then", 12, "in"),
+    ]);
+    saved["variables"] = json!([("crossings", 100), ("hits", 101), ("finished", 102)].map(
+        |(name, n)| json!({"id": id(n), "name": name, "type": "core/u64@1", "scope": "run",
+            "init": {"type": "core/u64@1", "value": "0"}})
+    ));
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn a_wired_file_source_drives_when_transient_and_finished_from_one_stream() {
+    let mut host = host();
+    // A strong 80 Hz signal for 140 ms, repeated twice a second (120 BPM).
+    let path = wav_signal("source-kicks.wav", 1_600, |frame| {
+        if (160..300).contains(&(frame / 8 % 500)) {
+            if frame % 100 < 50 { 16_000 } else { -16_000 }
+        } else {
+            0
+        }
+    });
+    let graph = live_file_document(&host, &path);
+    let diagnostics = host.check(&graph).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let flow = host.open(&graph).unwrap();
+    let live = |host: &Host, flow, n| {
+        host.inspect(flow, move |run| run.live_value(node(n)).cloned())
+            .unwrap()
+    };
+    until("audio readers to establish their baselines", || {
+        live(&host, flow, 2) == Some(Value::F64(orange_audio::SILENCE_DB))
+            && live(&host, flow, 3) == Some(Value::F64(orange_audio::SILENCE_DB))
+            && live(&host, flow, 7).is_some()
+    });
+    let first_source = live(&host, flow, 1).unwrap();
+    let Some(Value::Record(format)) = live(&host, flow, 7) else {
+        panic!("no stream format")
+    };
+    assert_eq!(
+        &*format.fields,
+        &[Some(Value::U64(48_000)), Some(Value::U64(2))]
+    );
+
+    host.trigger(flow, node(8), None).unwrap();
+    until(
+        "the source to finish with exactly three analyzed hits",
+        || read(&host, flow, 102) == Some(Value::U64(1)),
+    );
+    assert_eq!(read(&host, flow, 100), Some(Value::U64(3)));
+    assert_eq!(read(&host, flow, 101), Some(Value::U64(3)));
+    until(
+        "both readers to return to silence at the end of the file",
+        || {
+            live(&host, flow, 2) == Some(Value::F64(orange_audio::SILENCE_DB))
+                && live(&host, flow, 3) == Some(Value::F64(orange_audio::SILENCE_DB))
+        },
+    );
+    host.close(flow).unwrap();
+    let reopened = host.open(&graph).unwrap();
+    until("the new stream value", || {
+        live(&host, reopened, 1).is_some()
+    });
+    assert_ne!(live(&host, reopened, 1), Some(first_source));
+    host.close(reopened).unwrap();
+    std::fs::remove_file(path).unwrap();
 }
 
 /// Plays a short tone on the real default device. Run by hand:
@@ -709,24 +930,21 @@ fn a_package_brings_its_own_search_words_and_spanish_names() {
     };
     assert_eq!(
         first("kick", "en"),
-        Some((
-            orange_audio::ON_TRANSIENT.to_owned(),
-            "On transient".to_owned()
-        ))
+        Some((orange_audio::TRANSIENT.to_owned(), "Transient".to_owned()))
     );
     assert_eq!(
         first("bombo", "es"),
-        Some((orange_audio::ON_TRANSIENT.to_owned(), "Al golpe".to_owned()))
+        Some((orange_audio::TRANSIENT.to_owned(), "Transitorio".to_owned()))
     );
     // A Spanish search still finds a node by its English name.
     assert_eq!(
-        first("on transient", "es").map(|(definition, _)| definition),
-        Some(orange_audio::ON_TRANSIENT.to_owned())
+        first("transient", "es").map(|(definition, _)| definition),
+        Some(orange_audio::TRANSIENT.to_owned())
     );
     // A language the package has no text for falls back to English.
     assert_eq!(
         first("kick", "fr").map(|(_, label)| label),
-        Some("On transient".to_owned())
+        Some("Transient".to_owned())
     );
 }
 

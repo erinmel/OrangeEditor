@@ -14,17 +14,15 @@
 //! sounds that need separate control play on separate connections. Streaming from disk
 //! and playlists are not provided.
 //!
-//! Live sound travels as an audio stream ([`STREAM_TYPE`]): [`AUDIO_IN`] gives the
-//! sound an input connection captures, and [`AUDIO_OUT`], [`LEVEL`], [`BAND_LEVEL`]
-//! and [`RECORD`] take it. The value only names the input; the samples stay in a
-//! bounded ring that the capture callback fills and each consumer reads at its own pace
-//! (see `stream`).
+//! [`AUDIO_SOURCE`] publishes an audio stream ([`STREAM_TYPE`]) from a device or
+//! sound file. [`LIVE_LEVEL`], [`LIVE_BAND_LEVEL`], [`TRANSIENT`], [`AUDIO_OUT`]
+//! and [`RECORD`] take the stream as an input. The value names the capture but
+//! carries no samples. Samples stay in a bounded ring that each consumer reads at
+//! its own pace (see `stream`).
 //!
-//! An input connection is only a device. Entries that react to it, [`ON_BAND_LEVEL`]
-//! and [`ON_TRANSIENT`], carry their own band and thresholds as node settings and read
-//! the input's one shared capture with their own cursor, on their own threads (see
-//! `analysis`), so several listen to one microphone with different settings and the
-//! capture callback only measures and stores.
+//! Analyzers carry their own band or window and read with their own cursor on a
+//! worker. The audio callback only measures and stores. The earlier connection-based
+//! entries [`ON_BAND_LEVEL`] and [`ON_TRANSIENT`] remain available to saved graphs.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -34,12 +32,17 @@ include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 mod device;
 mod file_source;
 mod level;
+mod live_nodes;
 mod mixer;
 mod stream;
 mod wav;
 
 pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
+pub use live_nodes::{
+    AUDIO_FORMAT, AUDIO_SOURCE, FORMAT_TYPE, LIVE_BAND_LEVEL, LIVE_LEVEL, SOUND_CONTROL,
+    SOURCE_CONTROL, SOURCE_FINISHED, TRANSIENT,
+};
 pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
 pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
@@ -232,11 +235,25 @@ fn device_setting(settings: &Map<String, Json>) -> Result<Option<String>, String
 /// now, by identifier and shown by name, then [`NULL_DEVICE`]. Listing asks the OS
 /// audio host, so it is done only when an editor asks, never on a flow's or the
 /// device's thread.
-fn device_choices(pick: fn(Devices) -> Vec<(String, String)>) -> Vec<orange_sdk::SettingChoices> {
-    let (found, problem) = match devices() {
+fn device_choices(
+    pick: fn(Devices) -> Vec<(String, String)>,
+    include_apps: bool,
+) -> Vec<orange_sdk::SettingChoices> {
+    let (mut found, mut problem) = match devices() {
         Ok(found) => (pick(found), None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
+    if include_apps {
+        match device::apps::choices() {
+            Ok(apps) => found.extend(apps),
+            Err(reason) => {
+                problem = Some(problem.map_or_else(
+                    || reason.to_owned(),
+                    |problem| format!("{problem}\n{reason}"),
+                ));
+            }
+        }
+    }
     let (mut values, mut labels): (Vec<String>, Vec<String>) = found.into_iter().unzip();
     values.push(NULL_DEVICE.to_owned());
     labels.push("Silent (no device)".to_owned());
@@ -251,7 +268,10 @@ fn device_choices(pick: fn(Devices) -> Vec<(String, String)>) -> Vec<orange_sdk:
 
 /// A listed device as a choice: the value its setting holds and its name.
 fn choice(device: Device) -> (String, String) {
-    (device.setting().to_owned(), device.name)
+    (
+        device.setting().to_owned(),
+        device::apps::device_label(&device.name),
+    )
 }
 
 /// The `device` choices of an input: its capture devices, then what each output device
@@ -262,7 +282,10 @@ fn input_choices(found: Devices) -> Vec<(String, String)> {
         choices.extend(found.outputs.into_iter().map(|device| {
             (
                 format!("{LOOPBACK_PREFIX}{}", device.setting()),
-                format!("{} (what it plays)", device.name),
+                format!(
+                    "{} (what it plays)",
+                    device::apps::device_label(&device.name)
+                ),
             )
         }));
     }
@@ -330,7 +353,10 @@ impl ConnectionAdapter for OutputAdapter {
         }))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
-        device_choices(|found| found.outputs.into_iter().map(choice).collect())
+        device_choices(
+            |found| found.outputs.into_iter().map(choice).collect(),
+            false,
+        )
     }
 }
 
@@ -572,12 +598,15 @@ fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
     let [Some(Value::U64(id))] = &record.fields[..] else {
         return Err(BAD_INPUT);
     };
-    SOURCES
+    if record.ty.as_str() != STREAM_TYPE {
+        return Err(BAD_INPUT);
+    }
+    let source = SOURCES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(id)
-        .and_then(Weak::upgrade)
-        .ok_or(ENDED)
+        .and_then(Weak::upgrade);
+    source.filter(|source| !source.stopped()).ok_or(ENDED)
 }
 
 impl InputShared {
@@ -597,12 +626,7 @@ impl InputShared {
             if self.stopped() || cancelled() {
                 return Err(ENDED);
             }
-            let ring = self
-                .ring
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
-            if let Some(ring) = ring.filter(|ring| !ring.closed()) {
+            if let Some(ring) = self.current_ring() {
                 return Ok(ring);
             }
             if patience.is_some_and(|patience| started.elapsed() >= patience)
@@ -615,6 +639,14 @@ impl InputShared {
     }
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+    fn current_ring(&self) -> Option<Arc<Ring>> {
+        self.ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|ring| !ring.closed())
+            .cloned()
     }
     fn failure(&self) -> Option<String> {
         self.failed
@@ -752,7 +784,7 @@ impl ConnectionAdapter for InputAdapter {
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
             label: "Audio source".into(),
-            purpose: "A microphone or other input, what the system plays, or a sound file the graph plays and listens to.".into(),
+            purpose: "A microphone, system or app audio where available, or a sound file the graph plays and listens to.".into(),
         }
     }
     fn texts(&self) -> Vec<orange_sdk::SettingText> {
@@ -795,7 +827,7 @@ impl ConnectionAdapter for InputAdapter {
         Ok(Arc::new(InputSession(spawn_input(settings)?)))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
-        device_choices(input_choices)
+        device_choices(input_choices, true)
     }
     fn probes(&self) -> bool {
         true
@@ -828,7 +860,7 @@ impl ServiceNode for InputLevel {
 }
 
 /// What an analyzer entry does with each window's band level: fire or not.
-trait Detector: Send + 'static {
+trait Detector: Clone + Send + 'static {
     fn step(&mut self, level: f64) -> bool;
 }
 impl Detector for Gate {
@@ -850,14 +882,12 @@ impl Drop for Analyzing {
     }
 }
 
-/// Listens to the band of `listening` on `input`'s shared capture and fires `emitter`
-/// with the level of each window `detector` accepts. Runs until its flow drops the
-/// guard; it follows the input to its next device when the device is opened again.
-fn analyze(
+/// Sends each measured window and signals gaps with `None`. Returns a cancellation
+/// guard; every reader follows the same connection to a replacement capture ring.
+fn watch_windows(
     input: Arc<InputShared>,
     listening: Listening,
-    mut detector: impl Detector,
-    emitter: Emitter,
+    mut observe: impl FnMut(Option<f64>) -> bool + Send + 'static,
 ) -> Result<Box<dyn Send>, String> {
     let life = Arc::new(Lifecycle::new());
     let running = Arc::clone(&life);
@@ -874,6 +904,7 @@ fn analyze(
                 // Read about four times per window: often enough to fire within one.
                 let pace = (listening.window / 4).clamp(Duration::from_millis(2), POLL);
                 while !running.stopped() {
+                    let previous_dropped = cursor.dropped;
                     let read = cursor.read(&mut block);
                     if read == 0 {
                         if ring.closed() {
@@ -882,22 +913,46 @@ fn analyze(
                         let _ = running.rest(pace);
                         continue;
                     }
-                    let mut fired = Vec::new();
-                    meter.push(&block[..read], |level| {
-                        if detector.step(level) {
-                            fired.push(level);
-                        }
-                    });
-                    for level in fired {
-                        if emitter.emit(Some(Value::F64(level))) == Err(EmitError::Closed) {
+                    if previous_dropped != cursor.dropped {
+                        meter = BandMeter::new(&ring, &listening);
+                        if !observe(None) {
                             return;
                         }
                     }
+                    let mut active = true;
+                    meter.push(&block[..read], |level| {
+                        active = active && observe(Some(level))
+                    });
+                    if !active {
+                        return;
+                    }
+                }
+                if !running.stopped() && !observe(None) {
+                    return;
                 }
             }
         })
         .map_err(|error| error.to_string())?;
     Ok(Box::new(Analyzing(life)))
+}
+
+/// Fires the entry for each qualifying window. An overwritten or replaced ring
+/// cannot carry a hold or an onset detector's state across a missing interval.
+fn analyze(
+    input: Arc<InputShared>,
+    listening: Listening,
+    initial: impl Detector,
+    emitter: Emitter,
+) -> Result<Box<dyn Send>, String> {
+    let mut detector = initial.clone();
+    watch_windows(input, listening, move |window| {
+        if let Some(level) = window {
+            !detector.step(level) || emitter.emit(Some(Value::F64(level))) != Err(EmitError::Closed)
+        } else {
+            detector = initial.clone();
+            true
+        }
+    })
 }
 
 fn input_of(session: Option<&Arc<dyn Session>>) -> Result<Arc<InputShared>, String> {
@@ -953,29 +1008,35 @@ impl ServiceSource for OnTransient {
         settings: &Map<String, Json>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let input = input_of(session.as_ref())?;
-        // A kick drum: 45 to 120 Hz, in short windows.
-        let listening = Listening::of(settings, (45.0, 120.0, 10.0))?;
-        let sensitivity = analysis::number(settings, "sensitivity", 0.5)?;
-        let floor = analysis::number(settings, "floor_db", -50.0)?;
-        let gap_ms = analysis::number(settings, "min_gap_ms", 120.0)?;
-        if !(0.0..=1.0).contains(&sensitivity) || !(0.0..=10_000.0).contains(&gap_ms) {
-            return Err("`sensitivity` is from 0 to 1 and `min_gap_ms` from 0 to 10000".into());
-        }
-        let window_ms = listening.window.as_secs_f64() * 1_000.0;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "checked above"
-        )]
-        let gap = (gap_ms / window_ms).ceil() as u32;
-        analyze(
-            input,
-            listening,
-            Onsets::new(floor, sensitivity, gap),
-            emitter,
-        )
+        transient(input_of(session.as_ref())?, settings, emitter)
     }
+}
+
+fn transient(
+    input: Arc<InputShared>,
+    settings: &Map<String, Json>,
+    emitter: Emitter,
+) -> Result<Box<dyn Send>, String> {
+    let listening = Listening::of(settings, (45.0, 120.0, 10.0))?;
+    let sensitivity = analysis::number(settings, "sensitivity", 0.5)?;
+    let floor = analysis::number(settings, "floor_db", -50.0)?;
+    let gap_ms = analysis::number(settings, "min_gap_ms", 120.0)?;
+    if !(0.0..=1.0).contains(&sensitivity) || !(0.0..=10_000.0).contains(&gap_ms) {
+        return Err("`sensitivity` is from 0 to 1 and `min_gap_ms` from 0 to 10000".into());
+    }
+    let window_ms = listening.window.as_secs_f64() * 1_000.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked settings"
+    )]
+    let gap = (gap_ms / window_ms).ceil() as u32;
+    analyze(
+        input,
+        listening,
+        Onsets::new(floor, sensitivity, gap),
+        emitter,
+    )
 }
 
 /// Band level: how loud a band of a stream is now.
@@ -1008,10 +1069,16 @@ enum SourceControl {
 impl ServiceNode for SourceControl {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let shared = input(call.session).ok_or(NO_SESSION)?;
+        self.apply(shared, call.inputs)
+    }
+}
+
+impl SourceControl {
+    fn apply(self, shared: &InputShared, inputs: &[Value]) -> Result<Vec<Value>, KernelFault> {
         if shared.file.is_none() {
             return Err(NOT_FILE);
         }
-        let seconds = match (self, call.inputs) {
+        let seconds = match (self, inputs) {
             (Self::Seek, [Value::F64(seconds)]) if (0.0..=MAX_RECORD_SECONDS).contains(seconds) => {
                 *seconds
             }
@@ -1041,17 +1108,20 @@ impl ServiceSource for OnFinished {
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let shared = input_of(session.as_ref())?;
-        if shared.file.is_none() {
-            return Err("On finished needs a sound file source".into());
-        }
-        Ok(Listeners::listen(
-            shared,
-            |shared| &shared.finished,
-            (),
-            emitter,
-        ))
+        when_finished(input_of(session.as_ref())?, emitter)
     }
+}
+
+fn when_finished(shared: Arc<InputShared>, emitter: Emitter) -> Result<Box<dyn Send>, String> {
+    if shared.file.is_none() {
+        return Err("Source finished needs a sound file source".into());
+    }
+    Ok(Listeners::listen(
+        shared,
+        |shared| &shared.finished,
+        (),
+        emitter,
+    ))
 }
 
 #[derive(Debug)]
@@ -1254,6 +1324,7 @@ fn pause_definition() -> String {
     Definition::node(crate::PACKAGE, "pause", "Pause sounds")
         .description("Holds every sound playing on an output device where it is.")
         .category("audio", "Audio")
+        .hidden()
         .uses(OUTPUT_ADAPTER)
         .build()
 }
@@ -1262,6 +1333,7 @@ fn resume_definition() -> String {
     Definition::node(crate::PACKAGE, "resume", "Resume sounds")
         .description("Lets the paused sounds of an output device continue.")
         .category("audio", "Audio")
+        .hidden()
         .uses(OUTPUT_ADAPTER)
         .build()
 }
@@ -1270,6 +1342,7 @@ fn seek_definition() -> String {
     Definition::node(crate::PACKAGE, "seek", "Jump to time")
         .description("Moves every sound playing on an output to the same time, in seconds from each sound's start: 0 starts them all again. A sound shorter than that ends, a looping one wraps around, and live audio is not moved.")
         .category("audio", "Audio")
+        .hidden()
         .uses(OUTPUT_ADAPTER)
         .input("seconds", "core/f64@1")
         .build()
@@ -1279,6 +1352,7 @@ fn set_volume_definition() -> String {
     Definition::node(crate::PACKAGE, "set-volume", "Set volume")
         .description("Sets the volume of everything an output device plays.")
         .category("audio", "Audio")
+        .hidden()
         .uses(OUTPUT_ADAPTER)
         .input("gain", "core/f64@1")
         .build()
@@ -1288,6 +1362,7 @@ fn stop_definition() -> String {
     Definition::node(crate::PACKAGE, "stop", "Stop sounds")
         .description("Stops every sound playing on an output device.")
         .category("audio", "Audio")
+        .hidden()
         .uses(OUTPUT_ADAPTER)
         .build()
 }
@@ -1296,6 +1371,7 @@ fn input_level_definition() -> String {
     Definition::node(crate::PACKAGE, "input-level", "Input level")
         .description("Reads how loud an input connection (a microphone, line input, virtual cable or what an output plays) is now, in dBFS. Level does the same for an audio stream.")
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
         .output("level", "core/f64@1")
         .build()
@@ -1314,10 +1390,18 @@ fn band_settings(definition: Definition, low: f64, high: f64, window: f64) -> De
         .setting("window_ms", number_setting(5.0, 1_000.0, window))
 }
 
+fn transient_settings(definition: Definition) -> Definition {
+    band_settings(definition, 45.0, 120.0, 10.0)
+        .setting("sensitivity", number_setting(0.0, 1.0, 0.5))
+        .setting("floor_db", number_setting(SILENCE_DB, 0.0, -50.0))
+        .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
+}
+
 fn on_band_level_definition() -> String {
     let definition = Definition::entry(crate::PACKAGE, "on-band-level", "On band level")
         .description("Fires when a band of an input (a microphone, line input, virtual cable or what an output plays) gets as loud as the threshold, and again only after it has fallen to the release level. Leave the band at 0 to hear everything.")
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
         .replaces("on-level", 1, &[])
         .keywords("bass, loud, clap, microphone, threshold")
@@ -1344,13 +1428,10 @@ fn on_transient_definition() -> String {
         .keywords("kick, beat, drum, hit, onset, rhythm")
         .description("Fires on each hit in a band of an input, such as a kick drum: a sudden rise above the band's recent level. The band starts at 45 to 120 Hz for kicks; play the track and adjust it until the hits line up with what you hear.")
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
         .payload("core/f64@1");
-    band_settings(definition, 45.0, 120.0, 10.0)
-        .setting("sensitivity", number_setting(0.0, 1.0, 0.5))
-        .setting("floor_db", number_setting(SILENCE_DB, 0.0, -50.0))
-        .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
-        .build()
+    transient_settings(definition).build()
 }
 
 fn band_level_definition() -> String {
@@ -1359,7 +1440,8 @@ fn band_level_definition() -> String {
         Definition::node(crate::PACKAGE, "band-level", "Band level")
             .keywords("bass, frequency, loudness, meter")
             .description("Reads how loud a band of an audio stream is now, in dBFS. Leave a side at 0 to keep it open.")
-            .category("audio", "Audio"),
+            .category("audio", "Audio")
+            .hidden(),
     )
     .input_default("low_hz", "core/f64@1", hz(0.0))
     .input_default("high_hz", "core/f64@1", hz(0.0))
@@ -1371,6 +1453,7 @@ fn source_control_definition(name: &str, label: &str, description: &str) -> Defi
     Definition::node(crate::PACKAGE, name, label)
         .description(description)
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
 }
 
@@ -1391,6 +1474,7 @@ fn on_finished_definition() -> String {
         .keywords("end, done, track over")
         .description("Fires when a sound file source plays to its end. A looping source never finishes; a stopped one does not either.")
         .category("audio", "Audio")
+        .hidden()
         .uses(INPUT_ADAPTER)
         .build()
 }
@@ -1427,7 +1511,8 @@ fn level_definition() -> String {
             .description(
                 "Reads how loud an audio stream is now, in dBFS: 0 is full scale, -120 silence.",
             )
-            .category("audio", "Audio"),
+            .category("audio", "Audio")
+            .hidden(),
     )
     .output("level", "core/f64@1")
     .build()
@@ -1482,7 +1567,8 @@ pub fn package() -> ServicePackage {
         .and_then(|package| package.node(&audio_in_definition(), AudioIn))
         .and_then(|package| package.node(&audio_out_definition(), AudioOut))
         .and_then(|package| package.node(&level_definition(), Level))
-        .and_then(|package| package.node(&record_definition(), Record));
+        .and_then(|package| package.node(&record_definition(), Record))
+        .and_then(live_nodes::add);
     match package {
         Ok(package) => package,
         // The definitions are constants of this crate, checked by its tests.
@@ -1524,8 +1610,9 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 19);
-        assert_eq!(package.sources().len(), 3);
+        assert_eq!(package.nodes().len(), 21);
+        assert_eq!(package.sources().len(), 5);
+        assert_eq!(package.lives().len(), 4);
         // Documents with the first On level open with On band level.
         let replaced: Vec<_> = package
             .replacements()
@@ -1534,7 +1621,7 @@ mod tests {
             .collect();
         assert_eq!(replaced, [(ON_LEVEL, ON_BAND_LEVEL)]);
         assert_eq!(package.adapters().len(), 2);
-        assert_eq!(package.types().len(), 1);
+        assert_eq!(package.types().len(), 4);
     }
 
     #[test]

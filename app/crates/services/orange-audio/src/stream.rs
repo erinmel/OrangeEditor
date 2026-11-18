@@ -296,6 +296,29 @@ mod tests {
     }
 
     #[test]
+    fn lagging_and_prompt_readers_share_one_ring_without_changing_each_other() {
+        let ring = Ring::new(1_024, 2);
+        let mut prompt = Cursor::new(Arc::clone(&ring));
+        let mut lagging = Cursor::new(Arc::clone(&ring));
+        let samples = u16::try_from(ring.len()).unwrap();
+        let mut read = [0.0; 64];
+        for start in (0..samples).step_by(read.len()) {
+            let end = start + u16::try_from(read.len()).unwrap();
+            ring.push((start..end).map(f32::from));
+            assert_eq!(prompt.read(&mut read), 64);
+            assert!(read.iter().copied().eq((start..end).map(f32::from)));
+        }
+        assert_eq!(prompt.dropped, 0);
+        assert_eq!(lagging.read(&mut read), 64);
+        assert_eq!(lagging.dropped, u64::from(samples / 4 * 3));
+        assert_eq!(read[0], f32::from(samples / 4 * 3));
+        assert_eq!(prompt.read(&mut read), 0);
+        ring.push([0.25, -0.25].into_iter());
+        assert_eq!(prompt.read(&mut read), 2);
+        assert_eq!(read[..2], [0.25, -0.25]);
+    }
+
+    #[test]
     fn a_live_sound_converts_channels_and_rate_and_waits_for_samples() {
         // Mono at 8 kHz plays on both channels of a 16 kHz output: every captured
         // frame becomes two, the second halfway to the next.

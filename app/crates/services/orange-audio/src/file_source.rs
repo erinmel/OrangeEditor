@@ -163,6 +163,9 @@ pub(crate) fn run(shared: &InputShared, file: &FileSettings) {
                 let part = sound.get(transport.at..end).unwrap_or_default();
                 ring.push(part.iter().copied());
                 meter.push(part.iter().copied(), |level| shared.levels.record(level));
+                let rest = std::iter::repeat_n(0.0, block.saturating_sub(part.len()));
+                ring.push(rest.clone());
+                meter.push(rest, |level| shared.levels.record(level));
                 transport.at = end;
                 if transport.at >= sound.len() {
                     if file.looped {
@@ -172,6 +175,10 @@ pub(crate) fn run(shared: &InputShared, file: &FileSettings) {
                         finished = true;
                     }
                 }
+            } else {
+                let silence = std::iter::repeat_n(0.0, block);
+                ring.push(silence.clone());
+                meter.push(silence, |level| shared.levels.record(level));
             }
         }
         if finished {

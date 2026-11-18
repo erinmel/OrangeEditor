@@ -6,6 +6,8 @@
 //!
 //! An input setting that starts with [`LOOPBACK_PREFIX`] names an output device whose
 //! playback is captured, where the system offers that (WASAPI loopback on Windows).
+//! An `app:` input selects an application playback stream on supported systems.
+pub(crate) mod apps;
 use crate::level::{Meter, SILENCE_DB};
 use crate::mixer::{self, Command, MAX_VOICES, Mixer, Voice};
 use crate::stream::{Live, Ring};
@@ -490,6 +492,11 @@ impl Levels {
     pub(crate) fn latest(&self) -> f64 {
         f64::from_bits(self.latest.load(Ordering::Acquire))
     }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn mark_broken(&self) {
+        self.broken.store(true, Ordering::Release);
+    }
 }
 fn input_stream<T>(
     device: &cpal::Device,
@@ -533,6 +540,8 @@ enum InputDriver {
         stop: Arc<AtomicBool>,
         thread: Option<JoinHandle<()>>,
     },
+    #[cfg(any(target_os = "linux", test))]
+    App(apps::Recording),
 }
 
 /// An input device being captured: measured, and its samples kept in [`Ring`] for
@@ -548,11 +557,16 @@ impl Capturing {
 }
 impl Drop for Capturing {
     fn drop(&mut self) {
-        if let InputDriver::Null { stop, thread } = &mut self.driver {
-            stop.store(true, Ordering::Release);
-            if let Some(thread) = thread.take() {
-                let _ = thread.join();
+        match &mut self.driver {
+            InputDriver::Null { stop, thread } => {
+                stop.store(true, Ordering::Release);
+                if let Some(thread) = thread.take() {
+                    let _ = thread.join();
+                }
             }
+            #[cfg(any(target_os = "linux", test))]
+            InputDriver::App(recording) => recording.stop(),
+            InputDriver::Stream(_) => {}
         }
         self.ring.close();
     }
@@ -612,6 +626,9 @@ pub(crate) fn open_input(
         let samples = u128::from(rate) * u128::from(channels) * window.as_millis() / 1_000;
         Meter::new(usize::try_from(samples).unwrap_or(usize::MAX))
     };
+    if let Some(app) = device.and_then(|device| device.strip_prefix(apps::PREFIX)) {
+        return apps::open(app, meter, levels);
+    }
     let null = device == Some(NULL_DEVICE);
     #[cfg(test)]
     let null = null || device == Some(TONE_DEVICE);
