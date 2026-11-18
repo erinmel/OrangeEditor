@@ -55,6 +55,9 @@ enum Field<'a> {
     Toggle,
     Whole,
     Number,
+    WatchNumber {
+        whole: bool,
+    },
     /// A length of time, typed in milliseconds and kept as nanoseconds in digits.
     Time,
     Text,
@@ -72,6 +75,15 @@ impl<'a> Field<'a> {
             (Some("string"), Some("duration-ns")) => Self::Time,
             _ => Self::Text,
         }
+    }
+
+    fn for_node(node: &NodeView, name: &str, schema: &'a Json) -> Self {
+        if node.definition == "core/on-watch" && name != "mode" {
+            return Self::WatchNumber {
+                whole: matches!(name, "hold" | "cooldown"),
+            };
+        }
+        Self::of(schema)
     }
 
     /// The setting as it is typed in.
@@ -98,6 +110,7 @@ impl<'a> Field<'a> {
                 .parse::<f64>()
                 .map(Json::from)
                 .map_err(|_| tf("not-a-number", &[("typed", typed.into())])),
+            Self::WatchNumber { whole } => watch_number_value(typed, *whole),
             Self::Time => typed
                 .parse::<f64>()
                 .ok()
@@ -122,6 +135,69 @@ fn setting_key(pointer: &str) -> String {
     format!("@{pointer}")
 }
 
+pub(crate) fn watch_fields(mode: Option<&str>) -> &'static [&'static str] {
+    match mode {
+        Some("above" | "below") => &["mode", "threshold", "release", "hold", "cooldown"],
+        Some("inside" | "outside") => &["mode", "low", "high", "hold", "cooldown"],
+        _ => &["mode"],
+    }
+}
+
+pub(crate) fn watch_number_value(typed: &str, whole: bool) -> Result<Json, String> {
+    serde_json::from_str::<Json>(typed.trim())
+        .ok()
+        .filter(|value| {
+            if whole {
+                value.as_u64().is_some()
+            } else {
+                value.is_number()
+            }
+        })
+        .ok_or_else(|| {
+            tf(
+                if whole {
+                    "not-whole-number"
+                } else {
+                    "not-a-number"
+                },
+                &[("typed", typed.into())],
+            )
+        })
+}
+
+pub(crate) fn watch_field_entries(node: &NodeView) -> impl Iterator<Item = (&String, &Json)> {
+    let properties = node
+        .schema
+        .as_ref()
+        .and_then(|schema| schema["properties"].as_object());
+    let fields: &[&str] = if node.definition == "core/on-watch" {
+        watch_fields(node.settings["mode"].as_str())
+    } else {
+        &[]
+    };
+    fields
+        .iter()
+        .filter_map(move |name| properties?.get_key_value(*name))
+}
+
+pub(crate) fn watch_label(name: &str) -> &'static str {
+    match name {
+        "changed" => t("when-changed"),
+        "rising" => t("when-rising"),
+        "above" => t("when-above"),
+        "below" => t("when-below"),
+        "inside" => t("when-inside"),
+        "outside" => t("when-outside"),
+        "threshold" => t("when-threshold"),
+        "release" => t("when-release"),
+        "low" => t("when-low"),
+        "high" => t("when-high"),
+        "hold" => t("when-hold"),
+        "cooldown" => t("when-cooldown"),
+        _ => t("when-mode"),
+    }
+}
+
 impl Editor {
     /// Changes one setting of a node, keeping the others: `value` at the JSON
     /// `pointer`, or the setting taken off with `None`.
@@ -132,13 +208,32 @@ impl Editor {
         pointer: &str,
         value: Option<Json>,
     ) -> bool {
-        let mut settings = self
+        let found = self
             .graph()
-            .and_then(|graph| graph.nodes.iter().find(|found| found.id == node))
+            .and_then(|graph| graph.nodes.iter().find(|found| found.id == node));
+        let watch = found.is_some_and(|found| found.definition == "core/on-watch");
+        let mut settings = found
             .map(|found| found.settings.clone())
             .filter(Json::is_object)
             .unwrap_or_else(|| json!({}));
+        let value = if watch {
+            value.filter(|value| !value.is_null())
+        } else {
+            value
+        };
         set_at(&mut settings, pointer, value);
+        if watch
+            && pointer == "/mode"
+            && let Some(settings) = settings.as_object_mut()
+        {
+            let fields = watch_fields(settings.get("mode").and_then(Json::as_str));
+            settings.retain(|field, _| fields.contains(&field.as_str()));
+            for (field, default) in [("threshold", 0), ("low", 0), ("high", 1)] {
+                if fields.contains(&field) {
+                    settings.entry(field).or_insert_with(|| json!(default));
+                }
+            }
+        }
         let Some(draft) = self.editing() else {
             return false;
         };
@@ -263,7 +358,8 @@ impl Editor {
         {
             for (name, schema) in properties {
                 let pointer = format!("/{name}");
-                let typed = Field::of(schema).typed(&node.settings[name.as_str()]);
+                let typed =
+                    Field::for_node(node, name, schema).typed(&node.settings[name.as_str()]);
                 let _ = self.typed.insert(setting_key(&pointer), typed);
             }
         }
@@ -343,8 +439,12 @@ impl Editor {
                 // One label width keeps the fields in line; a narrow panel gives the
                 // room to the fields.
                 let labels = (ui.available_width() * 0.4).clamp(48.0, LABEL_WIDTH);
-                let setup =
-                    !node.references.is_empty() || node.schema.is_some() || !node.types.is_empty();
+                let has_settings = node
+                    .schema
+                    .as_ref()
+                    .and_then(|schema| schema["properties"].as_object())
+                    .is_some_and(|fields| !fields.is_empty());
+                let setup = !node.references.is_empty() || has_settings || !node.types.is_empty();
                 if setup {
                     section(ui, t("set-up"));
                     for (pointer, kind) in &node.references {
@@ -632,15 +732,20 @@ impl Editor {
             .filter_map(Json::as_str)
             .collect();
         let mut changed = None;
-        for (name, schema) in properties {
+        let watch = node.definition == "core/on-watch";
+        let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
+        for (name, schema) in fields {
             let pointer = format!("/{name}");
             if node.references.iter().any(|(at, _)| *at == pointer) {
                 continue;
             }
-            let field = Field::of(schema);
+            let field = Field::for_node(node, name, schema);
             let current = &node.settings[name.as_str()];
-            let needed = required.contains(&name.as_str());
-            let label = if matches!(field, Field::Time) {
+            let needed = required.contains(&name.as_str())
+                || (watch && matches!(name.as_str(), "threshold" | "low" | "high"));
+            let label = if watch {
+                watch_label(name).to_owned()
+            } else if matches!(field, Field::Time) {
                 tf("in-milliseconds", &[("name", words(name).into())])
             } else {
                 words(name)
@@ -649,7 +754,9 @@ impl Editor {
             let mut said = None;
             row(ui, labels, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
-                    let shown = current.as_str().unwrap_or(t("not-set")).to_owned();
+                    let shown = current.as_str().map_or(t("not-set"), |mode| {
+                        if watch { watch_label(mode) } else { mode }
+                    });
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
@@ -664,7 +771,8 @@ impl Editor {
                             }
                             for option in options {
                                 let on = current.as_str() == Some(*option);
-                                if ui.selectable_label(on, *option).clicked() && !on {
+                                let label = if watch { watch_label(option) } else { *option };
+                                if ui.selectable_label(on, label).clicked() && !on {
                                     changed =
                                         Some(Change::Setting(pointer.clone(), Some(json!(option))));
                                 }
@@ -677,7 +785,11 @@ impl Editor {
                         changed = Some(Change::Setting(pointer.clone(), Some(json!(on))));
                     }
                 }
-                Field::Whole | Field::Number | Field::Time | Field::Text => {
+                Field::Whole
+                | Field::Number
+                | Field::WatchNumber { .. }
+                | Field::Time
+                | Field::Text => {
                     let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
                     let hint = if needed { "required" } else { "optional" };
@@ -1075,6 +1187,33 @@ mod tests {
         let whole = json!({"type": "integer"});
         assert_eq!(Field::of(&whole).value("12").unwrap(), json!(12));
         assert!(Field::of(&whole).value("1.5").is_err());
+    }
+
+    #[test]
+    fn when_fields_keep_their_order_and_exact_integer_values() {
+        let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let watch = host
+            .add_node(&mut draft, "core/on-watch", [0.0, 0.0])
+            .unwrap();
+        let threshold = watch_number_value("18446744073709551615", false).unwrap();
+        assert_eq!(threshold.as_u64(), Some(u64::MAX));
+        assert!(watch_number_value("-1", true).is_err());
+        assert!(watch_number_value("1.5", true).is_err());
+        host.set_config(
+            &mut draft,
+            watch,
+            &json!({"mode": "above", "threshold": threshold}),
+        )
+        .unwrap();
+        let view = host.draft_view(&draft).unwrap();
+        let card = view.nodes.iter().find(|card| card.id == watch).unwrap();
+        assert_eq!(
+            watch_field_entries(card)
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["mode", "threshold", "release", "hold", "cooldown"]
+        );
     }
 }
 

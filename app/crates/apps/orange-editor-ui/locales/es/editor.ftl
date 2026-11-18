@@ -349,6 +349,23 @@ choice-name = Opción { $number }
 field-name = Campo { $number }
 
 # La pestaña Tipos
+band-trigger = Disparador por banda
+band-trigger-purpose = Conecta una fuente de audio al nivel de banda para disparar al superar un umbral.
+
+when-mode = Condición
+when-changed = Cambia
+when-rising = Se vuelve verdadero
+when-above = Supera el umbral
+when-below = Baja del umbral
+when-inside = Entra en el rango
+when-outside = Sale del rango
+when-threshold = Umbral
+when-release = Rearme
+when-low = Mínimo
+when-high = Máximo
+when-hold = Duración (ms)
+when-cooldown = Intervalo (ms)
+when-optional-release = Igual al umbral
 add-choice = Añadir opción
 add-field = Añadir campo
 payload-hint = Un valor que lleva esta opción, como un número. La mayoría no lleva ninguno.

@@ -1,6 +1,6 @@
 //! Focused-window logical key presses enter through run-owned SDK subscriptions.
 use eframe::egui::{Event, Key, Modifiers};
-use orange_sdk::{Definition, Emitter, ServicePackage, ServiceSource, Session};
+use orange_sdk::{Arguments, Definition, Emitter, ServicePackage, ServiceSource, Session, Value};
 use serde_json::{Map, Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -65,11 +65,27 @@ fn modifiers(name: &str) -> Option<Modifiers> {
 impl ServiceSource for Source {
     fn start_with(
         &self,
-        _session: Option<Arc<dyn Session>>,
+        session: Option<Arc<dyn Session>>,
         settings: &Map<String, Json>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let key = settings.get("key").and_then(Json::as_str).unwrap_or("F8");
+        self.start_with_arguments(session, settings, &Arguments::new(Vec::new()), emitter)
+    }
+
+    fn start_with_arguments(
+        &self,
+        _session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let selected = match arguments.get("key") {
+            Some(Value::Str(key)) if !key.is_empty() => Some(key.as_str()),
+            _ => None,
+        };
+        let key = selected
+            .or_else(|| settings.get("key").and_then(Json::as_str))
+            .unwrap_or("F8");
         let key = Key::from_name(key).ok_or("Choose a supported logical key")?;
         let modifier_name = settings
             .get("modifiers")
@@ -106,10 +122,19 @@ impl Keyboard {
             .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
             .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
             .setting("modifiers", json!({"title":"Modifiers", "type":"string", "enum":["None","Primary","Alt","Shift","Primary+Shift","Primary+Alt","Alt+Shift","Primary+Alt+Shift"], "default":"None"}))
-            .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}))
+            .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}));
+        let previous = definition.clone().hidden().build();
+        let definition = definition
+            .version(2)
+            .input_default(
+                "key",
+                "core/string@1",
+                json!({"type": "core/string@1", "value": ""}),
+            )
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
             .with_catalogs(crate::CATALOGS)
+            .source(&previous, Source(Arc::clone(&self.state)))?
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 
@@ -175,8 +200,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn event(pressed: bool, repeat: bool) -> Event {
+        event_for(Key::F8, pressed, repeat)
+    }
+
+    fn event_for(key: Key, pressed: bool, repeat: bool) -> Event {
         Event::Key {
-            key: Key::F8,
+            key,
             physical_key: None,
             pressed,
             repeat,
@@ -237,6 +266,8 @@ mod tests {
         );
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let entry = host.add_node(&mut draft, ON_KEY, [0.0, 0.0]).unwrap();
+        host.set_input(&mut draft, (entry, "key"), Some("F9"))
+            .unwrap();
         let variable = host
             .declare_variable(
                 &mut draft,
@@ -262,10 +293,22 @@ mod tests {
         assert!(host.problems(&mut draft).unwrap().is_empty());
         assert!(keyboard.state.lock().unwrap().entries.is_empty());
         let flow = host.open(&draft.text().unwrap()).unwrap();
-        assert_eq!(keyboard.state.lock().unwrap().entries.len(), 1);
-        keyboard.handle(&[event(true, false)], true, |_, _| true);
         let variable_id = variable.parse::<orange_host::VariableId>().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while keyboard.state.lock().unwrap().entries.is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "key source was not armed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        keyboard.handle(&[event(true, false)], true, |_, _| true);
+        assert_eq!(
+            host.inspect(flow, move |run| run.variable(variable_id).cloned())
+                .unwrap(),
+            None
+        );
+        keyboard.handle(&[event_for(Key::F9, true, false)], true, |_, _| true);
         loop {
             if host
                 .inspect(flow, move |run| run.variable(variable_id).cloned())

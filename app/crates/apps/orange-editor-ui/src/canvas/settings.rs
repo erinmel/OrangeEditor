@@ -1,6 +1,7 @@
 //! Common card settings, with numeric policies disclosed in the header menu, and the
 //! variable a node names, chosen at the top of the card.
 use super::*;
+use crate::properties::{watch_field_entries, watch_label, watch_number_value};
 
 /// Height of a row that chooses a declaration, such as a node's variable.
 const REFERENCE_ROW: f32 = 52.0;
@@ -54,7 +55,9 @@ fn advanced(name: &str) -> bool {
 }
 
 pub(super) fn fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Value)> {
-    all_fields(node).filter(|(name, _)| !advanced(name))
+    watch_field_entries(node).chain(
+        all_fields(node).filter(|(name, _)| node.definition != "core/on-watch" && !advanced(name)),
+    )
 }
 
 pub(super) fn has_advanced(node: &NodeView) -> bool {
@@ -149,6 +152,51 @@ fn label(name: &str, schema: &serde_json::Value) -> String {
         })
 }
 
+fn watch_number(
+    ui: &mut egui::Ui,
+    name: &str,
+    current: &serde_json::Value,
+    width: f32,
+) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    let id = ui.make_persistent_id("watch-number");
+    let (text, ended) = {
+        let mut text = ui
+            .data_mut(|data| data.get_temp::<String>(id))
+            .unwrap_or_else(|| {
+                current
+                    .as_number()
+                    .map_or_else(String::new, ToString::to_string)
+            });
+        let hint = if name == "release" {
+            t("when-optional-release")
+        } else {
+            "0"
+        };
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(width)
+                .hint_text(hint),
+        );
+        if response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, text.clone()));
+        } else {
+            ui.data_mut(|data| data.remove::<String>(id));
+        }
+        (text, response.lost_focus())
+    };
+    if !ended {
+        return None;
+    }
+    if text.trim().is_empty() && matches!(name, "release" | "hold" | "cooldown") {
+        return (!current.is_null()).then_some(Value::Null);
+    }
+    watch_number_value(&text, matches!(name, "hold" | "cooldown"))
+        .ok()
+        .filter(|value| value != current)
+}
+
 fn field(
     ui: &mut egui::Ui,
     node: &NodeView,
@@ -162,20 +210,31 @@ fn field(
         .cloned()
         .unwrap_or_else(|| schema["default"].clone());
     let mut value = current.clone();
-    let caption = label(name, schema);
+    let is_watch = node.definition == "core/on-watch";
+    let caption = if is_watch {
+        watch_label(name).to_owned()
+    } else {
+        label(name, schema)
+    };
     let stacked = row_height(schema) > 32.0;
     let edit = |ui: &mut egui::Ui, value: &mut serde_json::Value| {
         if let Some(options) = schema["enum"].as_array() {
             egui::ComboBox::from_id_salt("choice")
                 .width(width)
                 .wrap_mode(egui::TextWrapMode::Wrap)
-                .selected_text(value.as_str().unwrap_or(t("choose")))
+                .selected_text(value.as_str().map_or_else(
+                    || t("choose"),
+                    |item| if is_watch { watch_label(item) } else { item },
+                ))
                 .show_ui(ui, |ui| {
                     for option in options {
                         ui.selectable_value(
                             value,
                             option.clone(),
-                            option.as_str().unwrap_or(t("choice")),
+                            option.as_str().map_or_else(
+                                || t("choice"),
+                                |item| if is_watch { watch_label(item) } else { item },
+                            ),
                         );
                     }
                 })
@@ -185,6 +244,10 @@ fn field(
             let mut on = value.as_bool().unwrap_or(false);
             if ui.checkbox(&mut on, "").changed() {
                 *value = on.into();
+            }
+        } else if is_watch && matches!(schema["type"].as_str(), Some("number" | "integer")) {
+            if let Some(new) = watch_number(ui, name, &current, width * 0.4) {
+                *value = new;
             }
         } else if schema["type"] == "number" || schema["type"] == "integer" {
             let mut number = value.as_f64().unwrap_or(0.0);

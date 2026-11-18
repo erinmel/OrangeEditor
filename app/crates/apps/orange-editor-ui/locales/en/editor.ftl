@@ -349,6 +349,25 @@ inputs-at-least = At least { $min }.
 choice-name = Choice { $number }
 field-name = Field { $number }
 
+band-trigger = Band trigger
+band-trigger-purpose = Wire an audio source into Band level to trigger at a threshold.
+
+# When
+when-mode = Condition
+when-changed = Changes
+when-rising = Becomes true
+when-above = Goes above
+when-below = Goes below
+when-inside = Enters range
+when-outside = Leaves range
+when-threshold = Threshold
+when-release = Release
+when-low = Low
+when-high = High
+when-hold = Hold (ms)
+when-cooldown = Cooldown (ms)
+when-optional-release = Same as threshold
+
 # The Types tab
 add-choice = Add choice
 add-field = Add field

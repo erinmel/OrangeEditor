@@ -542,7 +542,12 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
-        match host.add_node(draft, definition, at) {
+        let result = if definition == palette::BAND_TRIGGER {
+            host.add_band_trigger(draft, at)
+        } else {
+            host.add_node(draft, definition, at)
+        };
+        match result {
             Ok(node) => {
                 let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(node));
@@ -1078,6 +1083,11 @@ impl Editor {
                         );
                         let _ = document.values.insert(variable.to_string(), shown);
                     }
+                }
+                // A trigger or live value whose provider would not start, or failed
+                // while running, stays marked on its node like a failed step.
+                FlowEvent::SourceRefused { node, .. } | FlowEvent::SourceFault { node, .. } => {
+                    self.canvas.fail(*node, said.join("; "));
                 }
                 // Values from before an edit or the end of the run are kept, dimmed.
                 FlowEvent::Updated { .. } => self.canvas.mark_stale(),
@@ -1651,7 +1661,7 @@ impl Editor {
                     &[("count", variables.len().into())],
                 ))
                 .id_salt("orange-variables")
-                .default_open(true)
+                .default_open(variables.len() <= 4)
                 .show(ui, |ui| {
                     for (id, name, ty) in &variables {
                         ui.horizontal(|ui| {

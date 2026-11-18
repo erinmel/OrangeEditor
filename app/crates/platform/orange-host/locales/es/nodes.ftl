@@ -47,7 +47,7 @@ name-core-on-stop = Al detener
 name-core-on-timeout = Tras una espera
 name-core-on-timer = Con temporizador
 name-core-on-variable-changed = Al cambiar una variable
-name-core-on-watch = Al cambiar un valor vigilado
+name-core-on-watch = Cuando
 name-core-or = O
 name-core-register = Registro
 name-core-repeat-begin = Inicio de repetición
@@ -100,6 +100,7 @@ name-org-orange-json-at = En la posición
 name-org-orange-json-get = Obtener
 name-org-orange-json-is-null = Es nulo
 name-org-orange-json-kind = Clase de valor
+name-org-orange-json-parse = Leer JSON
 name-org-orange-json-length = Longitud
 
 name-org-orange-math-absolute = Valor absoluto

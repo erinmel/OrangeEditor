@@ -4,6 +4,8 @@ use crate::i18n::t;
 use orange_host::{Draft, Host, NodeView};
 use std::collections::HashMap;
 
+pub(crate) const BAND_TRIGGER: &str = "template/band-trigger";
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum PaletteMode {
     Names,
@@ -317,6 +319,44 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
         {
             Some((_, items)) => items.push(item),
             None => groups.push((found.category, vec![item])),
+        }
+    }
+    let band = host
+        .search_nodes("org.orange.audio/live-band-level", language)
+        .into_iter()
+        .find(|item| item.definition == "org.orange.audio/live-band-level");
+    if let Some(band) = band {
+        let catalogs = crate::i18n::catalogs();
+        let text = |key, fallback: &str| {
+            catalogs
+                .message(language, key)
+                .map_or_else(|| fallback.to_owned(), std::borrow::Cow::into_owned)
+        };
+        let label = text("band-trigger", "Band trigger");
+        let purpose = text(
+            "band-trigger-purpose",
+            "Wire an audio source into Band level to trigger at a threshold.",
+        );
+        let terms = format!("{label} {purpose} Band trigger").to_lowercase();
+        if search
+            .to_lowercase()
+            .split_whitespace()
+            .all(|word| terms.contains(word))
+        {
+            let template = PaletteItem {
+                id: BAND_TRIGGER.to_owned(),
+                label,
+                package: band.package,
+                purpose,
+            };
+            if let Some((_, items)) = groups
+                .iter_mut()
+                .find(|(category, _)| *category == band.category)
+            {
+                items.push(template);
+            } else {
+                groups.push((band.category, vec![template]));
+            }
         }
     }
     if search.trim().is_empty() {
