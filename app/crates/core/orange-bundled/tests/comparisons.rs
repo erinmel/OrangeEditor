@@ -377,9 +377,8 @@ fn derived_enum_equality_compares_tags_then_payloads() {
 #[test]
 fn shapes_without_host_semantics_are_refused_at_binding() {
     for (comparison, ty) in [
-        // Floats have no Core eq/ord; IEEE `==` and total-order nodes are separate.
+        // Floats have no Core eq; IEEE `==` and total-order nodes are separate.
         (Comparison::Equal, "core/f64@1"),
-        (Comparison::Less, "core/f32@1"),
         (Comparison::Equal, "core/option@1<core/f64@1>"),
         // Core eq is declared for these, but no executable equality is defined yet.
         (Comparison::Equal, "core/json@1"),
@@ -800,7 +799,6 @@ fn float_comparisons_including_nan_are_rejected_by_validation() {
     let (package, snapshot) = catalog();
     for (comparison, ty, value) in [
         (Comparison::Equal, "core/f64@1", Value::F64(f64::NAN)),
-        (Comparison::Less, "core/f64@1", Value::F64(f64::NAN)),
         (Comparison::Equal, "core/f32@1", Value::F32(f32::NAN)),
         (
             Comparison::Equal,
@@ -975,4 +973,38 @@ fn nesting_at_the_limit_compares_and_one_past_is_refused() {
             "{comparison:?}"
         );
     }
+}
+
+/// One Greater than serves decimals too: floats order by IEEE 754, so a NaN is
+/// neither less, equal nor greater, and -0 equals +0 for ordering.
+#[test]
+fn ordering_comparisons_take_floats_and_a_nan_is_unordered() {
+    for (ty, a, b) in [
+        ("core/f64@1", Value::F64(1.5), Value::F64(0.5)),
+        ("core/f32@1", Value::F32(1.5), Value::F32(0.5)),
+    ] {
+        assert!(eval(Comparison::Greater, ty, &a, &b).unwrap());
+        assert!(eval(Comparison::GreaterOrEqual, ty, &a, &b).unwrap());
+        assert!(!eval(Comparison::Less, ty, &a, &b).unwrap());
+        assert!(!eval(Comparison::LessOrEqual, ty, &a, &b).unwrap());
+    }
+    let nan = Value::F64(f64::NAN);
+    let one = Value::F64(1.0);
+    for comparison in [
+        Comparison::Less,
+        Comparison::LessOrEqual,
+        Comparison::Greater,
+        Comparison::GreaterOrEqual,
+    ] {
+        assert!(!eval(comparison, "core/f64@1", &nan, &one).unwrap());
+        assert!(!eval(comparison, "core/f64@1", &one, &nan).unwrap());
+    }
+    let (minus, plus) = (Value::F64(-0.0), Value::F64(0.0));
+    assert!(eval(Comparison::LessOrEqual, "core/f64@1", &minus, &plus).unwrap());
+    assert!(eval(Comparison::GreaterOrEqual, "core/f64@1", &minus, &plus).unwrap());
+    // A value of another shape is a contract error, never coerced.
+    assert_eq!(
+        eval(Comparison::Less, "core/f64@1", &Value::I64(1), &one).unwrap_err(),
+        KernelError::InputContract
+    );
 }

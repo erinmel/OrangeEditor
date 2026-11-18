@@ -59,11 +59,12 @@ impl Comparison {
         Self::ALL.into_iter().find(|op| op.definition_id() == id)
     }
 
-    /// The language constraint `$T` declares: `eq` for (in)equality, otherwise `ord`.
+    /// The language constraint `$T` declares: `eq` for (in)equality, otherwise
+    /// `compare`, so one Greater than serves whole numbers, decimals, text and times.
     pub const fn constraint(self) -> Constraint {
         match self {
             Self::Equal | Self::NotEqual => Constraint::Eq,
-            _ => Constraint::Ord,
+            _ => Constraint::Compare,
         }
     }
 
@@ -122,7 +123,7 @@ pub fn comparison_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                     constraints: vec![
                         match comparison.constraint() {
                             Constraint::Eq => "eq",
-                            _ => "ord",
+                            _ => "compare",
                         }
                         .into(),
                     ],
@@ -179,6 +180,11 @@ impl ResolvedComparison {
                     Ordering::Less
                 }
             }
+            _ if float(&self.shape) => match ieee_order(&self.shape, a, b)? {
+                Some(order) => order,
+                // A NaN is unordered: every ordering comparison with it is false.
+                None => return Ok(false),
+            },
             _ => total_order(&self.shape, a, b).ok_or(KernelError::InputContract)?,
         };
         Ok(self.comparison.decide(order))
@@ -214,7 +220,7 @@ impl MathPackage {
             .ok_or(BindingError::UnsupportedType)?;
         let supported = match comparison.constraint() {
             Constraint::Eq => shape.host_eq(),
-            _ => host_ord(&shape),
+            _ => host_ord(&shape) || float(&shape),
         };
         if !supported {
             return Err(BindingError::UnsupportedType);
@@ -243,6 +249,20 @@ fn host_ord(shape: &ValueShape) -> bool {
             | ValueShape::Duration
             | ValueShape::Timestamp
     )
+}
+
+fn float(shape: &ValueShape) -> bool {
+    matches!(shape, ValueShape::F32 | ValueShape::F64)
+}
+
+/// The IEEE 754 order of two floats of `shape`: `None` when either is a NaN. Values
+/// of another shape are a contract error.
+fn ieee_order(shape: &ValueShape, a: &Value, b: &Value) -> Result<Option<Ordering>, KernelError> {
+    match (shape, a, b) {
+        (ValueShape::F32, Value::F32(a), Value::F32(b)) => Ok(a.partial_cmp(b)),
+        (ValueShape::F64, Value::F64(a), Value::F64(b)) => Ok(a.partial_cmp(b)),
+        _ => Err(KernelError::InputContract),
+    }
 }
 
 fn total_order(shape: &ValueShape, a: &Value, b: &Value) -> Option<Ordering> {

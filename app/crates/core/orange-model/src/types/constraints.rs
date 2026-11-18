@@ -28,10 +28,13 @@ pub enum Constraint {
     Display,
     Serialize,
     Default,
+    /// Ordered for comparison: every `ord` type, and the floats, which compare by
+    /// IEEE 754 so a NaN is neither less, equal nor greater (11 §5.4).
+    Compare,
 }
 
 impl Constraint {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Eq,
         Self::Ord,
         Self::Hash,
@@ -41,6 +44,7 @@ impl Constraint {
         Self::Display,
         Self::Serialize,
         Self::Default,
+        Self::Compare,
     ];
 
     /// Parses a constraint name as written in a definition type parameter (11 §5.4).
@@ -61,6 +65,7 @@ impl Constraint {
             Self::Display => "display",
             Self::Serialize => "serialize",
             Self::Default => "default",
+            Self::Compare => "compare",
         }
     }
 }
@@ -449,6 +454,19 @@ fn core_constraint(
         Constraint::Num => is_numeric(name),
         Constraint::Int => matches!(name, "i32" | "i64" | "u32" | "u64"),
         Constraint::Float => matches!(name, "f32" | "f64"),
+        Constraint::Compare => matches!(
+            name,
+            "i32"
+                | "i64"
+                | "u32"
+                | "u64"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "string"
+                | "duration"
+                | "timestamp"
+        ),
         Constraint::Display => core_display(registry, named, proof, depth)?,
         Constraint::Serialize => core_serialize(registry, named, proof, depth)?,
         Constraint::Default => matches!(

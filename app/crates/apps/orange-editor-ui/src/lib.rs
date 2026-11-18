@@ -2381,8 +2381,12 @@ mod tests {
         let count = |groups: &[(String, Vec<PaletteItem>)]| {
             groups.iter().map(|(_, items)| items.len()).sum::<usize>()
         };
-        // Every node kind, and every conversion in a category of its own.
-        assert_eq!(count(&all), host.nodes().count() + host.conversions().len());
+        // Every node kind search offers, and every conversion in a category of its own.
+        let offered = host
+            .nodes()
+            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .count();
+        assert_eq!(count(&all), offered + host.conversions().len());
         let to_text = palette(&host, "whole number text");
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
             item.id.starts_with(palette::CONVERSION) && item.label.contains('→')
@@ -3433,11 +3437,18 @@ mod preview_tests {
     use orange_host::HostOptions;
 
     #[test]
-    fn greater_and_greater_float_enforce_different_type_families() {
+    fn greater_compares_every_number_kind_and_the_old_float_greater_still_runs() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        // Greater takes whole numbers and decimals alike; the decimal-only node kept
+        // for saved graphs still refuses whole numbers.
         for (definition, valid, invalid) in [
-            ("org.orange.math/greater", "core/i64@1", "core/f64@1"),
-            ("org.orange.math/float-greater", "core/f64@1", "core/i64@1"),
+            ("org.orange.math/greater", "core/i64@1", None),
+            ("org.orange.math/greater", "core/f64@1", None),
+            (
+                "org.orange.math/float-greater",
+                "core/f64@1",
+                Some("core/i64@1"),
+            ),
         ] {
             let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
             let node = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
@@ -3448,6 +3459,9 @@ mod preview_tests {
             let wanted = [(node, "result".parse().unwrap())];
             let values = host.preview(&draft.text().unwrap(), &wanted).unwrap();
             assert_eq!(values[0].value, Ok(orange_host::Value::Bool(true)));
+            let Some(invalid) = invalid else {
+                continue;
+            };
             let mut invalid_draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
             let node = host
                 .add_node(&mut invalid_draft, definition, [0.0, 0.0])

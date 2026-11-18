@@ -572,4 +572,37 @@ mod tests {
             words.message("es", "concept-text")
         );
     }
+
+    /// One Greater than for every kind of number: search offers it and not the old
+    /// decimal-only one, and two decimals wired into it make a valid graph.
+    #[test]
+    fn one_greater_than_compares_decimals_too() {
+        let (host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        let found: Vec<_> = host
+            .search_nodes("greater", "en")
+            .into_iter()
+            .map(|found| found.definition)
+            .collect();
+        assert!(found.iter().any(|id| id == "org.orange.math/greater"));
+        assert!(
+            !found
+                .iter()
+                .any(|id| id.starts_with("org.orange.math/float-greater")),
+            "{found:?}"
+        );
+        let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+        let greater = host
+            .add_node(&mut draft, "org.orange.math/greater", [300.0, 0.0])
+            .unwrap();
+        for (port, value) in [("a", "1.5"), ("b", "0.5")] {
+            let number = host
+                .add_node(&mut draft, "core/number", [0.0, 0.0])
+                .unwrap();
+            host.set_input(&mut draft, (number, "value"), Some(value))
+                .unwrap();
+            host.connect(&mut draft, (number, "result"), (greater, port))
+                .unwrap();
+        }
+        assert_eq!(host.problems(&mut draft).unwrap(), []);
+    }
 }
