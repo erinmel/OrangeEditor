@@ -280,10 +280,120 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
             }
         }
     }
+    // Conversions are search results too, in a category of their own.
+    let wanted = search.to_lowercase();
+    let converts: Vec<PaletteItem> = host
+        .conversions()
+        .iter()
+        .map(|conversion| conversion_item(conversion, language))
+        .filter(|item| {
+            let terms = format!(
+                "{} {} convert conversion{}",
+                item.label,
+                item.purpose,
+                conversion_words(&item.id)
+            )
+            .to_lowercase();
+            wanted.split_whitespace().all(|word| terms.contains(word))
+        })
+        .collect();
+    if !converts.is_empty() {
+        groups.push((text_in(language, "conversions", "Conversions"), converts));
+    }
     if search.trim().is_empty() {
         groups.sort_by(|a, b| a.0.cmp(&b.0));
     }
     groups
+}
+
+/// Other words for the two types a conversion ID names, so "whole number text" finds
+/// Int → Text.
+fn conversion_words(id: &str) -> String {
+    let converter = id
+        .trim_start_matches(CONVERSION)
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let mut words = String::new();
+    for (types, said) in [
+        (&["i32", "i64", "u32", "u64"][..], "whole number integer"),
+        (&["f32", "f64"][..], "decimal float number"),
+        (&["string"][..], "text string"),
+        (&["bool"][..], "true false boolean"),
+        (&["bytes"][..], "bytes binary"),
+    ] {
+        if types.iter().any(|ty| converter.contains(ty)) {
+            words.push(' ');
+            words.push_str(said);
+        }
+    }
+    words
+}
+
+/// The start of a palette item's ID that names a conversion rather than a node kind.
+pub(crate) const CONVERSION: &str = "convert:";
+
+/// The palette ID of a conversion: its converter and its policy choices.
+pub(crate) fn conversion_id(conversion: &orange_host::Conversion) -> String {
+    let options: Vec<String> = conversion
+        .options
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    format!("{CONVERSION}{}?{}", conversion.id(), options.join("&"))
+}
+
+/// The conversion a palette ID names, among the host's.
+pub(crate) fn conversion_named(host: &Host, id: &str) -> Option<orange_host::Conversion> {
+    host.conversions()
+        .into_iter()
+        .find(|conversion| conversion_id(conversion) == id)
+}
+
+/// A conversion as search shows it: "Decimal → Whole number (floor)", and whether it
+/// can lose or fail.
+pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
+    let mut label = format!(
+        "{} → {}",
+        crate::type_name(&conversion.from),
+        crate::type_name(&conversion.to)
+    );
+    if !conversion.options.is_empty() {
+        let choices: Vec<&str> = conversion.options.values().map(String::as_str).collect();
+        label.push_str(&format!(" ({})", choices.join(", ")));
+    }
+    label
+}
+
+fn conversion_item(conversion: &orange_host::Conversion, language: &str) -> PaletteItem {
+    let purpose = if conversion.lossy {
+        text_in(
+            language,
+            "conversion-lossy",
+            "May lose detail, and says what it lost.",
+        )
+    } else if conversion.checked {
+        text_in(
+            language,
+            "conversion-checked",
+            "Fails when the value does not fit.",
+        )
+    } else {
+        text_in(language, "conversion-exact", "Exact: loses nothing.")
+    };
+    PaletteItem {
+        id: conversion_id(conversion),
+        label: conversion_label(conversion),
+        package: String::new(),
+        purpose,
+    }
+}
+
+/// A message of this editor in `language`, or `fallback`.
+fn text_in(language: &str, key: &str, fallback: &str) -> String {
+    crate::i18n::catalogs()
+        .message(language, key)
+        .map_or_else(|| fallback.to_owned(), std::borrow::Cow::into_owned)
 }
 
 #[cfg(test)]

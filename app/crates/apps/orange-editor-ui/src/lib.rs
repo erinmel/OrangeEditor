@@ -246,6 +246,16 @@ pub fn exact_type(ty: &str) -> String {
     ty.replace("core/", "").replace("@1", "")
 }
 
+/// A wire that needs a conversion chosen: its two ends, the conversions that join
+/// them, and where the list is shown.
+#[derive(Debug, Clone)]
+struct ConversionChoice {
+    from: (NodeId, String),
+    to: (NodeId, String),
+    choices: Vec<orange_host::Conversion>,
+    at: Option<egui::Pos2>,
+}
+
 /// The left panel's tabs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -383,6 +393,8 @@ pub struct Editor {
     packages_tab: bool,
     /// What the Packages tab is filtered by.
     package_search: String,
+    /// A wire let go between two kinds of value, waiting for its conversion.
+    conversion_choice: Option<ConversionChoice>,
     palette: palette::PaletteCache,
     previews: palette::PreviewCache,
     settings_open: bool,
@@ -661,6 +673,13 @@ impl Editor {
         let draft = self.editing()?;
         let result = if definition == palette::BAND_TRIGGER {
             host.add_band_trigger(draft, at)
+        } else if definition.starts_with(palette::CONVERSION) {
+            match palette::conversion_named(host, definition) {
+                Some(conversion) => host.add_conversion(draft, &conversion, at),
+                None => Err(orange_host::HostError::Document(format!(
+                    "no conversion `{definition}`"
+                ))),
+            }
         } else {
             host.add_node(draft, definition, at)
         };
@@ -729,14 +748,95 @@ impl Editor {
         }
     }
 
-    /// Wires an output to an input. A wire the language does not allow is refused
-    /// with the reason in the log.
+    /// Wires an output to an input. Two kinds of value are joined through a
+    /// conversion: the one that loses nothing goes in by itself, otherwise the choices
+    /// are offered where the wire was let go. A wire the language does not allow is
+    /// refused with the reason in the log.
     pub fn connect(&mut self, host: &mut Host, from: (NodeId, &str), to: (NodeId, &str)) -> bool {
         let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.connect(draft, from, to);
-        self.edited(host, result)
+        let result = host.connect_through(draft, from, to, None);
+        match result {
+            Ok(orange_host::Connected::Choose(choices)) => {
+                self.conversion_choice = Some(ConversionChoice {
+                    from: (from.0, from.1.to_owned()),
+                    to: (to.0, to.1.to_owned()),
+                    choices,
+                    at: None,
+                });
+                false
+            }
+            other => self.edited(host, other.map(|_| true)),
+        }
+    }
+
+    /// Connects the wire waiting for a conversion through the one chosen.
+    fn connect_chosen(&mut self, host: &mut Host, choice: &orange_host::Conversion) -> bool {
+        let Some(waiting) = self.conversion_choice.take() else {
+            return false;
+        };
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.connect_through(
+            draft,
+            (waiting.from.0, &waiting.from.1),
+            (waiting.to.0, &waiting.to.1),
+            Some(choice),
+        );
+        self.edited(host, result.map(|_| true))
+    }
+
+    /// The list of conversions for a wire that needs one, beside where it was let go.
+    fn conversion_menu(&mut self, ctx: &egui::Context, host: &mut Host) {
+        let Some(waiting) = self.conversion_choice.as_mut() else {
+            return;
+        };
+        let at = *waiting
+            .at
+            .get_or_insert_with(|| ctx.pointer_latest_pos().unwrap_or_default());
+        let choices = waiting.choices.clone();
+        let mut chosen = None;
+        let mut close = false;
+        let shown = egui::Area::new(egui::Id::unique("orange-conversion-choice"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    ui.strong(t("choose-conversion"));
+                    ui.weak(t("choose-conversion-hint"));
+                    ui.separator();
+                    for choice in &choices {
+                        let detail = if choice.lossy {
+                            t("conversion-lossy")
+                        } else if choice.checked {
+                            t("conversion-checked")
+                        } else {
+                            t("conversion-exact")
+                        };
+                        if ui
+                            .button(palette::conversion_label(choice))
+                            .on_hover_text(detail)
+                            .clicked()
+                        {
+                            chosen = Some(choice.clone());
+                        }
+                    }
+                    ui.separator();
+                    close = ui.button(t("cancel")).clicked();
+                });
+            })
+            .response;
+        if shown.clicked_elsewhere() || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        if let Some(choice) = chosen {
+            let _ = self.connect_chosen(host, &choice);
+        } else if close {
+            self.conversion_choice = None;
+        }
     }
 
     /// Takes one wire off, by its two ends.
@@ -2105,6 +2205,7 @@ impl Editor {
         if let Some((from, to)) = done.connect {
             let _ = self.connect(host, (from.0, &from.1), (to.0, &to.1));
         }
+        self.conversion_menu(ui.ctx(), host);
         if let Some((node, port, input)) = done.disconnect {
             let _ = self.disconnect(host, (node, &port), input);
         }
@@ -2280,7 +2381,12 @@ mod tests {
         let count = |groups: &[(String, Vec<PaletteItem>)]| {
             groups.iter().map(|(_, items)| items.len()).sum::<usize>()
         };
-        assert_eq!(count(&all), host.nodes().count());
+        // Every node kind, and every conversion in a category of its own.
+        assert_eq!(count(&all), host.nodes().count() + host.conversions().len());
+        let to_text = palette(&host, "whole number text");
+        assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
+            item.id.starts_with(palette::CONVERSION) && item.label.contains('→')
+        }));
         assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
         // Every word must match, in any letter case, in the label, definition or category.
         let found = palette(&host, "MATH add");

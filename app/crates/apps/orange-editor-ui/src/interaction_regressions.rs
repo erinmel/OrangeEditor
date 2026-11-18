@@ -178,3 +178,29 @@ fn changing_one_audio_card_to_loopback_leaves_the_other_source_unchanged() {
         .unwrap();
     assert_ne!(source.settings["device"], "loopback:");
 }
+
+/// A wire let go between a whole number and a decimal input waits for its conversion;
+/// picking one puts the conversion node between them with its two wires.
+#[test]
+fn a_wire_between_two_number_kinds_offers_conversions_and_takes_the_chosen_one() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let whole = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .unwrap();
+    let negate = host
+        .add_node(&mut draft, "org.orange.math/float-negate", [300.0, 0.0])
+        .unwrap();
+    host.choose_type(&mut draft, negate, "T", Some("core/f64@1"))
+        .unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, draft.text().unwrap());
+    assert!(!editor.connect(&mut host, (whole, "result"), (negate, "value")));
+    let choices = editor.conversion_choice.as_ref().unwrap().choices.clone();
+    assert!(!choices.is_empty());
+    assert!(editor.connect_chosen(&mut host, &choices[0]));
+    assert!(editor.conversion_choice.is_none());
+    let graph = editor.graph().unwrap();
+    assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.wires.len(), 2);
+}
