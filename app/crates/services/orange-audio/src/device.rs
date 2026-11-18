@@ -493,7 +493,7 @@ impl Levels {
         f64::from_bits(self.latest.load(Ordering::Acquire))
     }
 
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", windows, test))]
     fn mark_broken(&self) {
         self.broken.store(true, Ordering::Release);
     }
@@ -542,6 +542,9 @@ enum InputDriver {
     },
     #[cfg(any(target_os = "linux", test))]
     App(apps::Recording),
+    /// One application on Windows, through process loopback.
+    #[cfg(windows)]
+    WindowsApp(apps::Capture),
 }
 
 /// An input device being captured: measured, and its samples kept in [`Ring`] for
@@ -566,6 +569,8 @@ impl Drop for Capturing {
             }
             #[cfg(any(target_os = "linux", test))]
             InputDriver::App(recording) => recording.stop(),
+            #[cfg(windows)]
+            InputDriver::WindowsApp(capture) => capture.stop(),
             InputDriver::Stream(_) => {}
         }
         self.ring.close();

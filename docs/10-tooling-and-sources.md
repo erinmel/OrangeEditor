@@ -6521,3 +6521,27 @@ locked dependency set as above. No dependencies changed.
   Separately, live dispatch now uses compiled dependency lists, and JSON Get
   scans for the last matching member directly. No before/after timing was taken
   for those paths.
+
+### Per-application capture on Windows (2026-11-18)
+
+`orange-audio` depends on `windows =0.62.2` and `windows-core =0.62.2`, the versions
+cpal 0.18.2 already pulls in, so the lockfile gains no new crate. Features:
+`Win32_Foundation`, `Win32_Media_Audio`, `Win32_Media_Multimedia`, `Win32_Security`,
+`Win32_System_Com`, `Win32_System_Com_StructuredStorage`, `Win32_System_Threading`,
+`Win32_System_Variant`. API evidence: installed `windows-0.62.2/src/Windows/Win32/Media/Audio/mod.rs`
+(`ActivateAudioInterfaceAsync`, `AUDIOCLIENT_ACTIVATION_PARAMS`,
+`PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`, `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK`,
+`IAudioSessionControl2::GetProcessId`) and `windows-core-0.62.2/src/lib.rs` (`implement`).
+The crate denies rather than forbids unsafe code; `src/device/apps/wasapi.rs` is its only
+unsafe module. Windows frees the activation blob with `CoTaskMemFree`: a blob on the stack
+corrupted the heap (STATUS_HEAP_CORRUPTION), so it is allocated with `CoTaskMemAlloc`.
+Objects made with `implement` are agile already; also listing `IAgileObject` is not needed.
+
+| Command (Windows 11 Home 10.0.26300, Rust 1.99.1) | Result |
+|---|---|
+| `cargo test -p orange-audio --lib -- --ignored lists_the_applications --nocapture` | Pass: listed `msedge` and `steam`, the two apps with audio sessions |
+| `cargo test -p orange-audio --lib -- --ignored captures_what_one_process --nocapture` | Pass: a 440 Hz tone the test process played on the default output was captured from that process at -16.3 dBFS |
+
+Not verified: that another application's sound is excluded (it needs two apps playing at
+once), and Windows builds before 2004, where activation is expected to fail with the
+capture message.

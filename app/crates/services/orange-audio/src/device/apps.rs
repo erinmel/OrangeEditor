@@ -6,6 +6,10 @@ use std::sync::Arc;
 mod pipewire;
 #[cfg(any(target_os = "linux", test))]
 pub(super) use pipewire::Recording;
+#[cfg(windows)]
+mod wasapi;
+#[cfg(windows)]
+pub(super) use wasapi::Capture;
 
 pub(crate) const PREFIX: &str = "app:";
 
@@ -33,11 +37,18 @@ pub(crate) fn device_label(name: &str) -> String {
 }
 
 pub(crate) fn choices() -> Result<Vec<(String, String)>, &'static str> {
-    #[cfg(any(target_os = "linux", test))]
-    if cfg!(target_os = "linux") {
-        return pipewire::choices();
+    #[cfg(windows)]
+    {
+        wasapi::choices()
     }
-    Err(unavailable())
+    #[cfg(not(windows))]
+    {
+        #[cfg(any(target_os = "linux", test))]
+        if cfg!(target_os = "linux") {
+            return pipewire::choices();
+        }
+        Err(unavailable())
+    }
 }
 
 pub(super) fn open(
@@ -45,19 +56,25 @@ pub(super) fn open(
     meter: impl Fn(u32, u16) -> Meter,
     levels: Arc<Levels>,
 ) -> Result<Capturing, String> {
-    #[cfg(any(target_os = "linux", test))]
-    if cfg!(target_os = "linux") {
-        return pipewire::open(app, meter, levels).map_err(str::to_owned);
+    #[cfg(windows)]
+    {
+        wasapi::open(app, meter, levels)
     }
-    let _ = (app, meter, levels);
-    Err(unavailable().to_owned())
+    #[cfg(not(windows))]
+    {
+        #[cfg(any(target_os = "linux", test))]
+        if cfg!(target_os = "linux") {
+            return pipewire::open(app, meter, levels).map_err(str::to_owned);
+        }
+        let _ = (app, meter, levels);
+        Err(unavailable().to_owned())
+    }
 }
 
+#[cfg(not(windows))]
 fn unavailable() -> &'static str {
     if cfg!(target_os = "macos") {
         "Per-app capture is unavailable on macOS. Route the app through a virtual audio device such as BlackHole, then select that device here."
-    } else if cfg!(windows) {
-        "Per-app capture is unavailable in this Windows build. Select a virtual audio cable to capture the apps routed to it."
     } else {
         "Per-app capture is unavailable on this system."
     }

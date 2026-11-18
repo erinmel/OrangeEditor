@@ -13,6 +13,19 @@ publish = false
 [workspace.dependencies]
 claxon = "=0.4.3"
 cpal = "=0.18.2"
+# Windows audio sessions and per-application capture (process loopback). The same
+# version cpal uses, so no second copy is built.
+windows = { version = "=0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+windows-core = "=0.62.2"
 hound = "=3.5.1"
 # Dynamic library loading for native plugins (orange-native only).
 libloading = "=0.9.0"

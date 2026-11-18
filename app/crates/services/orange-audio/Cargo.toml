@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 build = "../../../build/locales.rs"
 
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-core.workspace = true
+
 [dependencies]
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
 serde_json.workspace = true
@@ -24,5 +28,12 @@ orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0" }
 orange-host = { path = "../../platform/orange-host", version = "=0.0.0" }
 orange-model = { path = "../../core/orange-model", version = "=0.0.0" }
 
-[lints]
-workspace = true
+# The workspace forbids unsafe code. Capturing one application on Windows needs COM
+# calls, so this crate alone denies it and allows the reviewed uses in
+# `src/device/apps/wasapi.rs`.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
