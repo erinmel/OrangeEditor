@@ -6,40 +6,32 @@ use std::collections::HashMap;
 
 pub(crate) const BAND_TRIGGER: &str = "template/band-trigger";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum PaletteMode {
-    Names,
-    #[default]
-    Previews,
-}
-
 #[derive(Clone)]
 pub(crate) struct PaletteDrag {
     pub item: PaletteItem,
     pub card: Option<orange_host::NodeView>,
 }
 
-/// Full-width target shared by the docked palette and the canvas picker.
+/// One result of a node search, shared by the docked palette and the canvas picker:
+/// the node's name on one line. Hovering shows its name, purpose and ID together.
 pub(crate) fn result_row(
     ui: &mut egui::Ui,
     name: &str,
     detail: &str,
-    preview_height: Option<f32>,
+    id: &str,
     highlighted: bool,
-    paint_preview: impl FnOnce(&mut egui::Ui, egui::Rect, f32),
 ) -> egui::Response {
     let width = ui.available_width();
-    let zoom = ((width - 32.0) / crate::canvas::NODE_WIDTH).clamp(0.1, 0.95);
-    let card_size =
-        preview_height.map(|height| egui::vec2(crate::canvas::NODE_WIDTH, height) * zoom);
-    let height = card_size.map_or(28.0, |size| size.y + 16.0);
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
-    let response = if detail.is_empty() {
-        response
-    } else {
-        response.on_hover_text(detail)
-    };
+        ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click_and_drag());
+    let response = response.on_hover_ui(|ui| {
+        ui.set_max_width(280.0);
+        ui.strong(name);
+        if !detail.is_empty() {
+            ui.label(detail);
+        }
+        ui.label(egui::RichText::new(id).small().weak());
+    });
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::accesskit::Role::Button,
@@ -54,7 +46,7 @@ pub(crate) fn result_row(
     let visuals = ui.style().interact_selectable(&response, highlighted);
     if highlighted || response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 5.0, visuals.weak_bg_fill);
-    } else if card_size.is_none() {
+    } else {
         ui.painter()
             .rect_filled(rect.shrink(1.0), 5.0, ui.visuals().faint_bg_color);
         ui.painter().rect_stroke(
@@ -68,53 +60,18 @@ pub(crate) fn result_row(
         ui.painter()
             .rect_stroke(rect, 5.0, visuals.fg_stroke, egui::StrokeKind::Inside);
     }
-    let width = (rect.width() - 16.0).max(0.0);
-    let draw = |text: egui::WidgetText, y| {
-        let galley = text.into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            width,
-            egui::TextStyle::Body,
-        );
-        ui.painter().galley(
-            egui::pos2(rect.min.x + 8.0, y),
-            galley,
-            visuals.text_color(),
-        );
-    };
-    if card_size.is_none() {
-        draw(egui::RichText::new(name).strong().into(), rect.min.y + 5.0);
-    }
-    if let Some(size) = card_size {
-        let card = egui::Rect::from_min_size(
-            egui::pos2(rect.center().x - size.x / 2.0, rect.min.y + 8.0),
-            size,
-        );
-        paint_preview(ui, card, zoom);
-    }
-    response
-}
-
-/// A kind can be searchable even when no declaration can configure it yet.
-pub(crate) fn missing_preview(ui: &egui::Ui, rect: egui::Rect, name: &str) {
-    let visuals = ui.visuals();
-    ui.painter().rect_filled(rect, 6.0, visuals.window_fill);
-    let label = egui::pos2(rect.left() + 10.0, rect.center().y - 9.0);
-    let painter = ui.painter().with_clip_rect(rect.shrink(4.0));
-    let _ = painter.text(
-        label,
-        egui::Align2::LEFT_CENTER,
-        name,
-        egui::FontId::proportional(14.0),
+    let galley = egui::WidgetText::from(egui::RichText::new(name).strong()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (rect.width() - 16.0).max(0.0),
+        egui::TextStyle::Body,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0),
+        galley,
         visuals.text_color(),
     );
-    let _ = painter.text(
-        label + egui::vec2(0.0, 20.0),
-        egui::Align2::LEFT_CENTER,
-        t("configuration-required"),
-        egui::FontId::proportional(12.0),
-        visuals.weak_text_color(),
-    );
+    response
 }
 
 /// Illustrative ports for definition kinds whose actual contracts need a declaration.
@@ -207,13 +164,6 @@ pub(crate) struct PreviewCache {
 }
 
 impl PreviewCache {
-    pub fn height(&mut self, host: &Host, definition: &str) -> f32 {
-        if let Some(Some(card)) = self.cards.get(definition) {
-            let size = crate::canvas::node_size(card);
-            return size.y * crate::canvas::NODE_WIDTH / size.x;
-        }
-        crate::canvas::card_height(definition, self.rows(host, definition))
-    }
     pub fn invalidate(&mut self) {
         self.cards.clear();
         self.generation = None;
@@ -387,11 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn previews_draw_the_canvas_card_and_skip_offscreen_and_names_rows() {
-        let (host, _events) = Host::new(HostOptions::default()).unwrap();
-        let mut cache = PreviewCache::default();
+    fn a_result_is_one_compact_line_without_a_card() {
         let ctx = egui::Context::default();
-        let mut preview_height = 0.0;
+        let mut height = 0.0;
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -401,32 +349,13 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let height = cache.height(&host, "core/and");
-                preview_height = result_row(
-                    ui,
-                    "AND",
-                    "Both inputs",
-                    Some(height),
-                    false,
-                    |ui, rect, _zoom| {
-                        let card = cache.card(&host, None, "core/and").unwrap();
-                        crate::canvas::draw_preview(ui, card, "And", rect);
-                    },
-                )
-                .rect
-                .height();
-                let compact = result_row(ui, "AND", "", None, false, |_, _, _| {
-                    panic!("Names does not build a card")
-                });
-                assert!(compact.rect.height() < preview_height / 2.0);
-                ui.add_space(500.0);
-                let _ = result_row(ui, "Offscreen", "", Some(100.0), false, |_, _, _| {
-                    panic!("Offscreen rows do not build cards")
-                });
+                height = result_row(ui, "And", "Both inputs", "core/and", false)
+                    .rect
+                    .height();
             },
         );
         output.textures_delta.clear();
-        let labels: Vec<_> = output
+        let texts: Vec<_> = output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
@@ -434,29 +363,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for label in ["And", "a", "b", "result"] {
-            assert!(
-                output.shapes.iter().any(|shape| matches!(
-                    &shape.shape, egui::Shape::Text(text) if text.galley.text() == label
-                )),
-                "missing card label {label}: {labels:?}"
-            );
-        }
-        assert!(
-            output
-                .shapes
-                .iter()
-                .filter(|shape| matches!(shape.shape, egui::Shape::Circle(_)))
-                .count()
-                >= 3,
-            "both input ports and the output port are drawn"
-        );
-        assert_eq!(cache.cards.len(), 1);
-        let id = cache.card(&host, None, "core/and").unwrap().id;
-        assert_eq!(cache.card(&host, None, "core/and").unwrap().id, id);
-        cache.invalidate();
-        assert!(cache.cards.is_empty());
-        assert_ne!(cache.card(&host, None, "core/and").unwrap().id, id);
+        assert_eq!(texts, ["And"]);
+        assert!(height <= 28.0);
         output.drop_without_applying_deltas();
     }
 
@@ -475,14 +383,7 @@ mod tests {
                 ..Default::default()
             };
             ctx.run_ui(input, |ui| {
-                let row = result_row(
-                    ui,
-                    "AND",
-                    "Both values must be true",
-                    Some(112.0),
-                    false,
-                    |_, _, _| {},
-                );
+                let row = result_row(ui, "AND", "Both values must be true", "core/and", false);
                 rect = row.rect;
                 dragged |= row.drag_started();
             })

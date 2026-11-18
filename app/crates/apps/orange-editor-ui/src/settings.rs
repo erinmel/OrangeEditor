@@ -13,17 +13,6 @@ pub(crate) enum Section {
 }
 
 impl Editor {
-    pub(crate) fn result_style(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for (mode, label) in [
-                (palette::PaletteMode::Names, "result-names"),
-                (palette::PaletteMode::Previews, "result-previews"),
-            ] {
-                ui.selectable_value(&mut self.palette_mode, mode, t(label));
-            }
-        });
-    }
-
     pub(crate) fn settings_window(&mut self, ctx: &egui::Context) -> Option<egui::Rect> {
         let mut open = self.settings_open;
         if !open {
@@ -129,9 +118,6 @@ impl Editor {
                                     ui.add_space(16.0);
                                     match self.settings_tab {
                                         Section::Search => {
-                                            ui.label(t("result-layout"));
-                                            self.result_style(ui);
-                                            ui.add_space(16.0);
                                             ui.label(t("language"));
                                             self.language_choice(ui);
                                         }

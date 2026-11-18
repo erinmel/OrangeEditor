@@ -90,7 +90,11 @@ fn decimal(number: f64) -> String {
     }
     let text = format!("{number:.2}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
-    if text == "-0" { "0".to_owned() } else { text.to_owned() }
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Most lines the log keeps; older ones are dropped.
@@ -276,7 +280,6 @@ impl std::fmt::Debug for Probing {
 pub struct Editor {
     search: String,
     palette_highlighted: usize,
-    palette_mode: palette::PaletteMode,
     log_events: bool,
     packages_tab: bool,
     palette: palette::PaletteCache,
@@ -1663,9 +1666,6 @@ impl Editor {
         if field.changed() {
             self.palette_highlighted = 0;
         }
-        if !self.search.trim().is_empty() {
-            self.result_style(ui);
-        }
         let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
@@ -1739,20 +1739,8 @@ impl Editor {
                                 ui,
                                 &item.label,
                                 &item.purpose,
-                                (self.palette_mode == palette::PaletteMode::Previews)
-                                    .then(|| self.previews.height(host, &item.id)),
+                                &item.id,
                                 active,
-                                |ui, rect, _zoom| {
-                                    if let Some(card) = self.previews.card(
-                                        host,
-                                        self.document.as_ref().map(|document| &document.draft),
-                                        &item.id,
-                                    ) {
-                                        canvas::draw_preview(ui, card, &item.label, rect);
-                                    } else {
-                                        palette::missing_preview(ui, rect, &item.label);
-                                    }
-                                },
                             );
                             if row.drag_started() {
                                 let card = self
@@ -1771,7 +1759,7 @@ impl Editor {
                             if active && (up || down) {
                                 row.scroll_to_me(None);
                             }
-                            if row.on_hover_text(&item.id).clicked() || (active && enter) {
+                            if row.clicked() || (active && enter) {
                                 add = Some(item.id.clone());
                             }
                         }

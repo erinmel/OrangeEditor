@@ -190,7 +190,6 @@ impl Editor {
                     if field.changed() {
                         highlighted = 0;
                     }
-                    self.result_style(ui);
                     let key = (
                         search.clone(),
                         self.language().to_owned(),
@@ -257,25 +256,8 @@ impl Editor {
                                 } else {
                                     format!("{} · {}", choice.category, choice.purpose)
                                 };
-                                let row = palette::result_row(
-                                    ui,
-                                    &name,
-                                    &detail,
-                                    (self.palette_mode == palette::PaletteMode::Previews)
-                                        .then(|| self.previews.height(host, &choice.definition)),
-                                    on,
-                                    |ui, rect, _zoom| {
-                                        if let Some(card) = self.previews.card(
-                                            host,
-                                            self.document.as_ref().map(|document| &document.draft),
-                                            &choice.definition,
-                                        ) {
-                                            canvas::draw_preview(ui, card, &choice.label, rect);
-                                        } else {
-                                            palette::missing_preview(ui, rect, &choice.label);
-                                        }
-                                    },
-                                );
+                                let row =
+                                    palette::result_row(ui, &name, &detail, &choice.definition, on);
                                 if row.drag_started() {
                                     let card = self
                                         .previews
@@ -299,7 +281,7 @@ impl Editor {
                                 if on && (up || down) {
                                     row.scroll_to_me(None);
                                 }
-                                if row.on_hover_text(&choice.definition).clicked() {
+                                if row.clicked() {
                                     picked = Some(choice.clone());
                                 }
                             }
@@ -339,8 +321,7 @@ mod presentation_tests {
         );
         editor.search = "and".into();
         let before = editor.document.as_ref().unwrap().draft.text().unwrap();
-        for mode in [palette::PaletteMode::Previews, palette::PaletteMode::Names] {
-            editor.palette_mode = mode;
+        {
             for picker in [false, true] {
                 let context = egui::Context::default();
                 if picker {
@@ -370,11 +351,7 @@ mod presentation_tests {
                         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "And")), "search result is visible, picker={picker}");
                         for label in ["a", "b", "result"] {
                             let drawn = output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label));
-                            assert_eq!(
-                                drawn,
-                                mode == palette::PaletteMode::Previews,
-                                "{label}, picker={picker}"
-                            );
+                            assert!(!drawn, "{label}, picker={picker}");
                         }
                     }
                     output.drop_without_applying_deltas();

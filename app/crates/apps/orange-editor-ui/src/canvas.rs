@@ -126,13 +126,6 @@ pub fn node_size(node: &NodeView) -> Vec2 {
     card_layout::CardLayout::new(node).size
 }
 
-pub(crate) fn card_height(_definition: &str, rows: usize) -> f32 {
-    #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-    {
-        BODY_TOP + rows.max(1) as f32 * ROW_HEIGHT + FOOTER_HEIGHT
-    }
-}
-
 fn comparison_formula(definition: &str) -> Option<&'static str> {
     orange_host::formula(definition).filter(|formula| formula.contains(['<', '>', '=']))
 }
@@ -2433,28 +2426,6 @@ fn draw_node<'a>(
         }
     }
     (pressed, slots)
-}
-
-/// A catalogue card uses the canvas painter, without editable fields or trigger buttons.
-/// It is titled `name`, the kind's name in the editor's language.
-pub(crate) fn draw_preview(ui: &egui::Ui, node: &NodeView, name: &str, rect: Rect) {
-    let zoom = rect.width() / node_size(node).x;
-    let painter = ui
-        .painter()
-        .with_clip_rect(rect.expand(6.0).intersect(ui.clip_rect()));
-    let _ = draw_node(
-        ui,
-        &painter,
-        node,
-        (name, name),
-        rect,
-        zoom,
-        &Palette::of(ui),
-        (false, None, None),
-        ui.scope_id().with("catalogue-card"),
-        comparison_formula(&node.definition),
-        None,
-    );
 }
 
 /// How one port of a card is drawn.

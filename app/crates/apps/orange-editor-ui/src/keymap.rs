@@ -216,7 +216,6 @@ impl crate::Editor {
     pub fn preferences(&self) -> serde_json::Value {
         serde_json::json!({"version":1,"keybindings":self.canvas.keys.json(),"snap":self.canvas.snap,
               "scroll_pans":self.canvas.scroll_pans,"language":self.language,
-              "previews":self.palette_mode == crate::palette::PaletteMode::Previews,
               "scale":self.preferred_scale.unwrap_or(1.0),"tab":self.tab.key()})
     }
     /// Restores supported preferences while preserving defaults for absent settings.
@@ -227,11 +226,6 @@ impl crate::Editor {
         self.canvas.keys.restore(&value["keybindings"]);
         self.canvas.snap = value["snap"].as_bool().unwrap_or(true);
         self.canvas.scroll_pans = value["scroll_pans"].as_bool().unwrap_or(false);
-        self.palette_mode = if value["previews"].as_bool().unwrap_or(false) {
-            crate::palette::PaletteMode::Previews
-        } else {
-            crate::palette::PaletteMode::Names
-        };
         self.preferred_scale = value["scale"]
             .as_f64()
             .filter(|scale| scale.is_finite() && (0.75..=2.0).contains(scale))
