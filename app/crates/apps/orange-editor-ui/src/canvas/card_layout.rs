@@ -1,8 +1,50 @@
 //! Card dimensions and port rows shared by painting, wires and hit testing.
 use super::*;
 
-pub(super) const PATH_ROW: f32 = 52.0;
-pub(super) const SOURCE_ROW: f32 = 80.0;
+pub(super) const PATH_ROW: f32 = 30.0;
+pub(super) const SOURCE_ROW: f32 = 32.0;
+
+/// Narrowest and widest a card is, in graph units (22 §3.1).
+const MIN_WIDTH: f32 = 160.0;
+const MAX_WIDTH: f32 = 320.0;
+
+/// About how wide text of a card's 12.5-unit font is: a layout estimate made without a
+/// painter, generous enough that measured text fits.
+fn text_width(text: &str) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "short labels")]
+    let count = text.chars().count() as f32;
+    count * 7.0
+}
+
+/// Whether an input of this port shows a typed field on the card.
+fn has_field(port: &PortView) -> bool {
+    !port.exec
+        && !port.connected
+        && port.ty.as_deref().is_some_and(|ty| {
+            matches!(
+                ty.split('@').next().unwrap_or_default(),
+                "core/string"
+                    | "core/i64"
+                    | "core/u64"
+                    | "core/i32"
+                    | "core/u32"
+                    | "core/f64"
+                    | "core/f32"
+                    | "core/bool"
+                    | "core/duration"
+            ) || !ty.starts_with("core/")
+        })
+}
+
+/// The width of a card's input names, where its fields start.
+pub(super) fn input_column(node: &NodeView) -> f32 {
+    node.ports
+        .iter()
+        .filter(|port| port.input && !port.exec && !path_port(node, port))
+        .map(|port| text_width(&super::port_title(port)))
+        .fold(0.0, f32::max)
+        .min(110.0)
+}
 
 pub(super) fn literal(node: &NodeView) -> bool {
     matches!(
@@ -15,21 +57,48 @@ pub(super) fn path_port(node: &NodeView, port: &PortView) -> bool {
     port.input && node.paths.iter().any(|path| path.port == port.id)
 }
 
+/// As wide as the card's title and its widest row need (22 §3.1).
 pub(super) fn width(node: &NodeView) -> f32 {
-    if !node.paths.is_empty()
-        || node
-            .references
-            .iter()
-            .any(|(_, kind)| *kind == orange_host::ReferenceKind::Connection)
-    {
-        360.0
-    } else if literal(node) {
-        200.0
-    } else if node.definition == "core/on-manual" {
-        220.0
-    } else {
-        NODE_WIDTH
+    if literal(node) {
+        return MIN_WIDTH;
     }
+    let pad = 2.0 * CARD_PADDING;
+    // The title, the trigger arrow and the settings menu.
+    let title = text_width(&node.name) * 1.16 + pad + 44.0;
+    let column = input_column(node);
+    let side = |input: bool| -> Vec<&PortView> {
+        node.ports
+            .iter()
+            .filter(|port| port.input == input && !path_port(node, port))
+            .collect()
+    };
+    let (inputs, outputs) = (side(true), side(false));
+    let mut widest = title;
+    for row in 0..inputs.len().max(outputs.len()) {
+        let left = inputs.get(row).map_or(0.0, |port| {
+            if port.exec {
+                text_width(&super::port_title(port)) + 36.0
+            } else {
+                let value = port.value.as_deref().unwrap_or("—");
+                let field = if has_field(port) {
+                    (text_width(value) + 14.0).clamp(44.0, 140.0)
+                } else {
+                    0.0
+                };
+                column + 8.0 + field
+            }
+        });
+        let right = outputs.get(row).map_or(0.0, |port| {
+            // An output's name, and room for the value a run shows beside it.
+            text_width(&super::port_title(port)) + if port.exec { 22.0 } else { 64.0 }
+        });
+        widest = widest.max(pad + left + 16.0 + right);
+    }
+    // Pickers, paths and settings need room for a list or a field beside their name.
+    if !node.paths.is_empty() || !node.references.is_empty() || settings::height(node) > 0.0 {
+        widest = widest.max(240.0);
+    }
+    widest.clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
 #[derive(Debug)]
@@ -123,7 +192,7 @@ mod tests {
         let graph = host.draft_view(&draft).unwrap();
         let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
         let layout = CardLayout::new(node);
-        assert_eq!(layout.size.x, 360.0);
+        assert!((MIN_WIDTH..=MAX_WIDTH).contains(&layout.size.x));
         let geometry = Geometry::new(&graph);
         let output_bottom = node
             .ports
@@ -161,7 +230,7 @@ mod tests {
                 let at = port_offset(node, &port.id, true).unwrap();
                 assert!((slot.center().y - (rect.top() + at.y)).abs() < 0.1);
                 if path_port(node, port) {
-                    assert!(slot.width() > 320.0);
+                    assert!(slot.width() >= layout.size.x - 2.0 * CARD_PADDING - 1.0);
                 }
             }
         })

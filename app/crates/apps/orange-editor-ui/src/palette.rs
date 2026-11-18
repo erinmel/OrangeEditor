@@ -110,6 +110,7 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
                 ty: Some(ty.to_owned()),
                 value: None,
                 connected: false,
+                default: None,
                 label: Some(label.to_owned()),
             })
             .collect(),

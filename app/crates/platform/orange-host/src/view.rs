@@ -16,6 +16,9 @@ pub struct PortView {
     pub ty: Option<String>,
     /// The value written on an input, as a person reads it.
     pub value: Option<String>,
+    /// The value an input takes when nothing is written or wired to it, from its
+    /// definition, as a person reads it; a card shows it dimmed in the empty field.
+    pub default: Option<String>,
     /// Whether a wire ends or starts here.
     pub connected: bool,
     /// What the node's definition calls this port, when it names it: "Queued" for
@@ -427,6 +430,12 @@ impl Host {
                     exec: port.kind != PortKind::Data,
                     ty,
                     value: value.filter(|_| input),
+                    default: port
+                        .default
+                        .as_ref()
+                        .filter(|_| input)
+                        .and_then(|literal| self.value_in(document, literal).ok())
+                        .map(|value| plain(&value)),
                     id,
                     label: None,
                 });
@@ -472,6 +481,7 @@ impl Host {
                     ty: (name == "error").then(|| "core/error@1".to_owned()),
                     value: None,
                     connected: wired(node.id, name, input),
+                    default: None,
                     label: (name == "then")
                         .then(|| shown?.then_label.as_ref())
                         .flatten()

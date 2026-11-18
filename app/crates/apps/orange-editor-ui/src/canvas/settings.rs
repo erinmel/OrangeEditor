@@ -4,7 +4,7 @@ use super::*;
 use crate::properties::{watch_field_entries, watch_label, watch_number_value};
 
 /// Height of a row that chooses a declaration, such as a node's variable.
-const REFERENCE_ROW: f32 = 52.0;
+const REFERENCE_ROW: f32 = 30.0;
 
 /// A change made with a card's settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,8 +50,9 @@ fn all_fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Va
         })
 }
 
+/// Tuning settings: in the card's ⋯ menu and Properties, not on the card (22 §3.1).
 fn advanced(name: &str) -> bool {
-    matches!(name, "int_overflow" | "float_policy")
+    matches!(name, "int_overflow" | "float_policy" | "window_ms")
 }
 
 pub(super) fn fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Value)> {
@@ -64,12 +65,9 @@ pub(super) fn has_advanced(node: &NodeView) -> bool {
     all_fields(node).any(|(name, _)| advanced(name))
 }
 
-fn row_height(schema: &serde_json::Value) -> f32 {
-    if schema["enum"].is_array() || schema["type"] == "string" {
-        52.0
-    } else {
-        32.0
-    }
+/// Every setting is one line: its name and its field (22 §3.1).
+fn row_height(_schema: &serde_json::Value) -> f32 {
+    30.0
 }
 
 /// The height of the settings rows under a card's ports.
@@ -109,29 +107,48 @@ fn variable_field(
         );
     let mut edit = None;
     let strong = ui.visuals().strong_text_color();
-    ui.label(egui::RichText::new(t("variable")).color(strong));
-    let _ = egui::ComboBox::from_id_salt("variable")
-        .width(width)
-        .wrap_mode(egui::TextWrapMode::Truncate)
-        .selected_text(shown)
-        .show_ui(ui, |ui| {
-            for (id, name) in variables {
-                let current = named == Some(id.as_str());
-                if ui.selectable_label(current, name.as_str()).clicked() && !current {
-                    edit = Some(CardEdit::Set(pointer.to_owned(), id.as_str().into()));
+    ui.horizontal(|ui| {
+        let _ = name_cell(
+            ui,
+            width * 0.32,
+            egui::RichText::new(t("variable")).color(strong),
+        );
+        let _ = egui::ComboBox::from_id_salt("variable")
+            .width(ui.available_width())
+            .wrap_mode(egui::TextWrapMode::Truncate)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (id, name) in variables {
+                    let current = named == Some(id.as_str());
+                    if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                        edit = Some(CardEdit::Set(pointer.to_owned(), id.as_str().into()));
+                    }
                 }
-            }
-            if !variables.is_empty() {
-                ui.separator();
-            }
-            if ui
-                .selectable_label(false, tf("new-reference", &[("kind", "variable".into())]))
-                .clicked()
-            {
-                edit = Some(CardEdit::NewVariable(pointer.to_owned()));
-            }
-        });
+                if !variables.is_empty() {
+                    ui.separator();
+                }
+                if ui
+                    .selectable_label(false, tf("new-reference", &[("kind", "variable".into())]))
+                    .clicked()
+                {
+                    edit = Some(CardEdit::NewVariable(pointer.to_owned()));
+                }
+            });
+    });
     edit
+}
+
+/// A row's name, left-aligned in a column `width` wide, cut short when longer.
+fn name_cell(ui: &mut egui::Ui, width: f32, text: egui::RichText) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.add(egui::Label::new(text).truncate())
+        },
+    )
+    .inner
 }
 
 fn label(name: &str, schema: &serde_json::Value) -> String {
@@ -216,7 +233,9 @@ fn field(
     } else {
         label(name, schema)
     };
-    let stacked = row_height(schema) > 32.0;
+    // One line: the name, then the field (22 §3.1).
+    let label_width = width * 0.42;
+    let width = width * 0.55;
     let edit = |ui: &mut egui::Ui, value: &mut serde_json::Value| {
         if let Some(options) = schema["enum"].as_array() {
             egui::ComboBox::from_id_salt("choice")
@@ -289,20 +308,11 @@ fn field(
             }
         }
     };
-    if stacked {
-        ui.label(egui::RichText::new(caption).small())
+    ui.horizontal(|ui| {
+        name_cell(ui, label_width, egui::RichText::new(caption))
             .on_hover_text(schema["description"].as_str().unwrap_or(name));
         edit(ui, &mut value);
-    } else {
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [width * 0.55, ui.spacing().interact_size.y],
-                egui::Label::new(caption),
-            )
-            .on_hover_text(schema["description"].as_str().unwrap_or(name));
-            edit(ui, &mut value);
-        });
-    }
+    });
     (value != current).then(|| {
         (
             format!("/{}", name.replace('~', "~0").replace('/', "~1")),
@@ -338,6 +348,15 @@ pub(super) fn draw(
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0) * zoom;
         ui.spacing_mut().interact_size.y = FIELD_HEIGHT * zoom;
         ui.style_mut().override_font_id = Some(FontId::proportional(12.0 * zoom));
+        // Every field on a card has the same framed look (22 §3.1).
+        let colors = Palette::of(ui);
+        let widgets = &mut ui.visuals_mut().widgets;
+        for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+            state.bg_fill = colors.background;
+            state.weak_bg_fill = colors.background;
+        }
+        widgets.inactive.bg_stroke = Stroke::new(1.0, colors.outline);
+        widgets.inactive.corner_radius = egui::CornerRadius::same(4);
     };
     for pointer in variable_pointers(node) {
         let slot = Rect::from_min_size(

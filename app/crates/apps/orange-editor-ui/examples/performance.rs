@@ -25,6 +25,7 @@ fn graph(count: u32) -> GraphView {
                     ty: None,
                     value: None,
                     connected: true,
+                    default: None,
                     label: None,
                 })
                 .collect(),

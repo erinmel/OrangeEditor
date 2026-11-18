@@ -15,11 +15,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
 pub const NODE_WIDTH: f32 = 260.0;
 /// Height of a card's title.
-pub const HEADER_HEIGHT: f32 = 34.0;
+pub const HEADER_HEIGHT: f32 = 30.0;
 /// Where the first row of ports starts: under the title, with a little room.
-pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
+pub const BODY_TOP: f32 = HEADER_HEIGHT + 4.0;
 /// Height of one row of ports.
-pub const ROW_HEIGHT: f32 = 44.0;
+pub const ROW_HEIGHT: f32 = 28.0;
 /// How round a card's corners are, in graph units.
 const CARD_RADIUS: f32 = 8.0;
 
@@ -27,7 +27,7 @@ const CARD_RADIUS: f32 = 8.0;
 const PULSE_SECONDS: f32 = 0.65;
 
 /// Space under the last row.
-pub const FOOTER_HEIGHT: f32 = 8.0;
+pub const FOOTER_HEIGHT: f32 = 6.0;
 /// Distance between the columns and rows of an automatic layout.
 pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 /// The zoom range.
@@ -41,7 +41,7 @@ const PORT_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.75;
 /// Space between a card's edge and what is inside it.
-const CARD_PADDING: f32 = 12.0;
+const CARD_PADDING: f32 = 10.0;
 /// Height of a field or control in a row of a card.
 const FIELD_HEIGHT: f32 = 20.0;
 
@@ -1563,16 +1563,21 @@ impl Canvas {
                     .get(&node.definition)
                     .map_or(t("configure"), String::as_str);
                 let y = card_layout::CardLayout::new(node).source_top;
-                let slot = Rect::from_min_size(
-                    rect.min + Vec2::new(CARD_PADDING, y + 19.0) * zoom,
-                    Vec2::new(rect.width() - 2.0 * CARD_PADDING * zoom, 44.0 * zoom),
-                );
-                painter.text(
-                    slot.left_top() - Vec2::new(0.0, 9.0 * zoom),
+                let middle = rect.top() + (y + card_layout::SOURCE_ROW / 2.0) * zoom;
+                let name = painter.text(
+                    Pos2::new(rect.left() + CARD_PADDING * zoom, middle),
                     Align2::LEFT_CENTER,
                     label,
                     FontId::proportional(11.5 * zoom),
                     colors.weak,
+                );
+                let left = name.right() + 8.0 * zoom;
+                let slot = Rect::from_min_max(
+                    Pos2::new(left, middle - FIELD_HEIGHT * zoom / 2.0),
+                    Pos2::new(
+                        rect.right() - CARD_PADDING * zoom,
+                        middle + FIELD_HEIGHT * zoom / 2.0,
+                    ),
                 );
                 let covered = front != Some(node.id)
                     && front_rect.is_some_and(|rect| rect.contains(slot.center()));
@@ -1672,10 +1677,22 @@ impl Canvas {
                 }
                 let font = FontId::monospace(11.5 * zoom);
                 let inset = CARD_PADDING * zoom;
+                // On the port's own line (22 §3.1): an input's value in the input
+                // column, an output's just before its name.
                 let (x, align) = if port.input {
-                    (inset, Align2::LEFT_CENTER)
+                    let column = if card_layout::literal(node) {
+                        0.0
+                    } else {
+                        card_layout::input_column(node) + 8.0
+                    };
+                    (inset + column * zoom, Align2::LEFT_CENTER)
                 } else {
-                    (-inset, Align2::RIGHT_CENTER)
+                    let name = painter.layout_no_wrap(
+                        port_title(port),
+                        FontId::proportional(12.5 * zoom),
+                        colors.text,
+                    );
+                    (-(inset + name.size().x + 8.0 * zoom), Align2::RIGHT_CENTER)
                 };
                 let room = if card_layout::path_port(node, port) {
                     rect.width() - 2.0 * inset
@@ -1969,7 +1986,7 @@ impl Canvas {
                     Some(pixels) => Some(stepped(port.value.as_deref(), pixels, whole, ty)),
                     None => port.value.clone(),
                 };
-                let touched = number_field(ui, slot, id, shown.as_deref());
+                let touched = number_field(ui, slot, id, shown.as_deref(), port.default.as_deref());
                 if touched.clicked() {
                     self.number_drag = None;
                     let typed = port.value.clone().unwrap_or_default();
@@ -2067,13 +2084,18 @@ fn number_field(
     slot: Rect,
     id: egui::Id,
     value: Option<&str>,
+    default: Option<&str>,
 ) -> egui::Response {
     let colors = Palette::of(ui);
     let zoom = slot.height() / FIELD_HEIGHT;
     let pad = 6.0 * zoom;
     let font = FontId::monospace(12.0 * zoom);
-    // An input with no value says so, rather than showing a 0 it does not have.
-    let (text, ink) = value.map_or(("—", colors.weak), |value| (value, colors.text));
+    // An input with no value shows its default dimmed, or a dash when it has none.
+    let (text, ink) = match (value, default) {
+        (Some(value), _) => (value, colors.text),
+        (None, Some(default)) => (default, colors.weak),
+        (None, None) => ("—", colors.weak),
+    };
     let painter = ui.painter().clone();
     let (text, _) = elide(&painter, text, &font, slot.width() - 2.0 * pad);
     let galley = painter.layout_no_wrap(text, font, ink);
@@ -2374,12 +2396,15 @@ fn draw_node<'a>(
         }
     }
 
-    // Where an input's value may reach: the middle of the card when an output shares
-    // its row, else the card's inner right edge.
+    // One line per port (22 §3.1): an input's field starts in the input column and ends
+    // before the name of the output on its row.
     let layout = card_layout::CardLayout::new(node);
-    let shared_rows = node.ports.iter().filter(|port| !port.input).count();
-    #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-    let shared_end = BODY_TOP + settings::reference_height(node) + shared_rows as f32 * ROW_HEIGHT;
+    let label_font = FontId::proportional(12.5 * zoom);
+    let field_column = if card_layout::literal(node) {
+        rect.left() + CARD_PADDING * zoom
+    } else {
+        rect.left() + (CARD_PADDING + card_layout::input_column(node) + 8.0) * zoom
+    };
     let mut slots = Vec::new();
     for (port, offset) in node.ports.iter().zip(&layout.offsets) {
         let y = rect.top() + offset.y * zoom;
@@ -2389,10 +2414,24 @@ fn draw_node<'a>(
             rect.right()
         };
         let path = card_layout::path_port(node, port);
-        let value_end = if !path && offset.y < shared_end && !card_layout::literal(node) {
-            rect.center().x - 8.0 * zoom
+        let beside = node
+            .ports
+            .iter()
+            .zip(&layout.offsets)
+            .find(|(other, at)| !other.input && (at.y - offset.y).abs() < 0.5)
+            .map(|(other, _)| other);
+        let value_end = match beside.filter(|_| !path && !card_layout::literal(node)) {
+            Some(output) => {
+                let name =
+                    painter.layout_no_wrap(port_title(output), label_font.clone(), colors.text);
+                rect.right() - CARD_PADDING * zoom - name.size().x - 10.0 * zoom
+            }
+            None => rect.right() - CARD_PADDING * zoom,
+        };
+        let field_left = if path {
+            rect.left() + CARD_PADDING * zoom
         } else {
-            rect.right() - CARD_PADDING * zoom
+            field_column
         };
         // Toggles and numbers are drawn by their control instead of a field.
         let control = Control::of(port, enums).filter(|_| controls && readable);
@@ -2405,6 +2444,7 @@ fn draw_node<'a>(
             hinted: control.is_none(),
             definition: &node.definition,
             value_end,
+            field_left,
             compact: card_layout::literal(node),
             label_room: rect.width() / 2.0 - 2.0 * CARD_PADDING * zoom,
         };
@@ -2412,7 +2452,7 @@ fn draw_node<'a>(
             && let Some(control) = control
         {
             let height = FIELD_HEIGHT * zoom;
-            let left = rect.left() + CARD_PADDING * zoom;
+            let left = field_left;
             let width = match control {
                 Control::Toggle => 48.0 * zoom,
                 Control::Whole | Control::Number => {
@@ -2440,6 +2480,8 @@ struct PortStyle<'a> {
     definition: &'a str,
     /// The farthest right an input's value reaches.
     value_end: f32,
+    /// Where an input's field or value starts: the card's input column.
+    field_left: f32,
     compact: bool,
     label_room: f32,
 }
@@ -2525,10 +2567,9 @@ fn draw_port(
         );
         return None;
     }
-    // What a value port takes or gives, when nothing on the card says it already.
-    // Keep data labels clear of the second line used by live values. Long names
-    // stay on their side of the card; the port hover exposes the complete label.
-    let label_at = at - Vec2::new(0.0, 15.0 * zoom);
+    // A value port's name, on its own line with its field or value (22 §3.1). Long
+    // names stay on their side of the card; the port hover shows the whole name.
+    let label_at = at;
     let name = if style.compact {
         String::new()
     } else {
@@ -2586,13 +2627,15 @@ fn draw_port(
     // The value written on an input that no wire feeds, in a field that ends where
     // the row's value may reach, shortened with an ellipsis when it is longer.
     // An input that can be typed into and has no value shows an empty field.
-    let shown = match port.value.as_deref() {
-        Some(value) => Some((field_text(value), colors.text)),
-        None if !style.hinted => Some(("—".to_owned(), colors.weak)),
-        None => None,
+    // An empty field shows the input's default, dimmed, or a dash when it has none.
+    let shown = match (port.value.as_deref(), port.default.as_deref()) {
+        (Some(value), _) => Some((field_text(value), colors.text)),
+        (None, Some(default)) => Some((field_text(default), colors.weak)),
+        (None, None) if !style.hinted => Some(("—".to_owned(), colors.weak)),
+        (None, None) => None,
     };
     if let Some((value, ink)) = shown.filter(|_| !port.connected && style.field) {
-        let left = at.x + gap;
+        let left = style.field_left;
         let room = style.value_end - left;
         let pad = 6.0 * zoom;
         if room > 3.0 * pad {
@@ -2747,6 +2790,7 @@ mod tests {
             ty: (!exec).then(|| "core/i64@1".to_owned()),
             value: None,
             connected: false,
+            default: None,
             label: None,
         }
     }
@@ -3234,6 +3278,7 @@ mod tests {
             ty: Some(ty.into()),
             value: None,
             connected,
+            default: None,
             label: None,
         };
         assert_eq!(
