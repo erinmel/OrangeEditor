@@ -58,6 +58,105 @@ const VARIABLE_NODES: [(&str, &str, &str); 2] = [
     ("variable-set", "variable-set-hint", "core/set-variable"),
 ];
 
+/// Lets a window without the system's frame be resized from its edges and corners,
+/// as a framed one is: the cursor shows the direction and a press hands the resize to
+/// the operating system. Nothing while maximized or full screen. The bands sit above
+/// every other layer, so the toolbar's drag region does not take the press.
+fn resize_borders(ctx: &egui::Context) {
+    use egui::{CursorIcon, ResizeDirection as To};
+    let fixed = ctx.input(|input| {
+        let viewport = input.viewport();
+        viewport.maximized.unwrap_or(false) || viewport.fullscreen.unwrap_or(false)
+    });
+    if fixed {
+        return;
+    }
+    const BAND: f32 = 5.0;
+    const CORNER: f32 = 14.0;
+    let screen = ctx.viewport_rect();
+    let (l, r, t, b) = (screen.left(), screen.right(), screen.top(), screen.bottom());
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    };
+    let borders = [
+        (
+            To::North,
+            CursorIcon::ResizeVertical,
+            rect(l + CORNER, t, r - CORNER, t + BAND),
+        ),
+        (
+            To::South,
+            CursorIcon::ResizeVertical,
+            rect(l + CORNER, b - BAND, r - CORNER, b),
+        ),
+        (
+            To::West,
+            CursorIcon::ResizeHorizontal,
+            rect(l, t + CORNER, l + BAND, b - CORNER),
+        ),
+        (
+            To::East,
+            CursorIcon::ResizeHorizontal,
+            rect(r - BAND, t + CORNER, r, b - CORNER),
+        ),
+        (
+            To::NorthWest,
+            CursorIcon::ResizeNwSe,
+            rect(l, t, l + CORNER, t + BAND),
+        ),
+        (
+            To::NorthWest,
+            CursorIcon::ResizeNwSe,
+            rect(l, t, l + BAND, t + CORNER),
+        ),
+        (
+            To::NorthEast,
+            CursorIcon::ResizeNeSw,
+            rect(r - CORNER, t, r, t + BAND),
+        ),
+        (
+            To::NorthEast,
+            CursorIcon::ResizeNeSw,
+            rect(r - BAND, t, r, t + CORNER),
+        ),
+        (
+            To::SouthWest,
+            CursorIcon::ResizeNeSw,
+            rect(l, b - BAND, l + CORNER, b),
+        ),
+        (
+            To::SouthWest,
+            CursorIcon::ResizeNeSw,
+            rect(l, b - CORNER, l + BAND, b),
+        ),
+        (
+            To::SouthEast,
+            CursorIcon::ResizeNwSe,
+            rect(r - CORNER, b - BAND, r, b),
+        ),
+        (
+            To::SouthEast,
+            CursorIcon::ResizeNwSe,
+            rect(r - BAND, b - CORNER, r, b),
+        ),
+    ];
+    for (index, (direction, cursor, band)) in borders.into_iter().enumerate() {
+        let _ = egui::Area::new(egui::Id::unique("orange-resize").with(index))
+            .order(egui::Order::Foreground)
+            .fixed_pos(band.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (_, response) = ui.allocate_exact_size(band.size(), egui::Sense::drag());
+                if response.hovered() || response.dragged() {
+                    ctx.set_cursor_icon(cursor);
+                }
+                if response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            });
+    }
+}
+
 /// What a card shows of a value on a port, short and whole; nothing for a stream, which
 /// is a connection rather than a value (22 §3.1).
 fn presented_value(
@@ -1156,6 +1255,9 @@ impl Editor {
         self.canvas.shortcuts_enabled = !self.settings_open;
         self.keyboard(ui, host);
         layout(self, ui, host);
+        if self.window_toolbar {
+            resize_borders(ui.ctx());
+        }
         let _ = self.settings_window(ui.ctx());
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
