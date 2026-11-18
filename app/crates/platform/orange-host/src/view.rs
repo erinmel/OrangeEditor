@@ -424,18 +424,20 @@ impl Host {
                     .get(&key)
                     .and_then(|literal| self.value_in(document, literal).ok())
                     .map(|value| value_text(document, registry, ty.as_deref(), &value));
+                // Read as a value is: an enum's default by its choice's name.
+                let default = port
+                    .default
+                    .as_ref()
+                    .filter(|_| input)
+                    .and_then(|literal| self.value_in(document, literal).ok())
+                    .map(|value| value_text(document, registry, ty.as_deref(), &value));
                 declared.push(PortView {
                     connected: wired(node.id, &id, input),
                     input,
                     exec: port.kind != PortKind::Data,
                     ty,
                     value: value.filter(|_| input),
-                    default: port
-                        .default
-                        .as_ref()
-                        .filter(|_| input)
-                        .and_then(|literal| self.value_in(document, literal).ok())
-                        .map(|value| plain(&value)),
+                    default,
                     id,
                     label: None,
                 });

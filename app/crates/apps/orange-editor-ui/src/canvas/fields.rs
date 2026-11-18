@@ -149,7 +149,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         FieldOf::Connection => node
             .detail
             .clone()
-            .map_or_else(|| (t("configure").to_owned(), true), |name| (name, false)),
+            .map_or_else(|| (t("choose").to_owned(), true), |name| (name, false)),
     }
 }
 
@@ -165,7 +165,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
             }
         }
         FieldOf::Variable(_) => t("variable").to_owned(),
-        FieldOf::Connection => connection.unwrap_or(t("configure")).to_owned(),
+        FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
     }
 }
 
@@ -484,13 +484,12 @@ impl Canvas {
         id: egui::Id,
     ) -> Option<FieldEdit> {
         let Some(picker) = self.device_pickers.get(&node.id) else {
-            let label = self
-                .connection_labels
-                .get(&node.definition)
-                .map_or(t("configure"), String::as_str);
+            // The connection's name, or a dimmed "Choose…" until there is one; a
+            // click sets it up.
+            let (text, dim) = shown(node, FieldOf::Connection);
             let touched = ui
                 .interact(slot, id, Sense::click())
-                .on_hover_text(node.detail.as_deref().unwrap_or(label));
+                .on_hover_text(t("configure"));
             let colors = Palette::of(ui);
             let zoom = slot.height() / card::CONTROL;
             frame(ui.painter(), slot, zoom, &colors, touched.hovered());
@@ -498,8 +497,8 @@ impl Canvas {
                 ui.painter(),
                 slot,
                 zoom,
-                node.detail.as_deref().unwrap_or(label),
-                colors.text,
+                &text,
+                if dim { colors.weak } else { colors.text },
                 Some(("…", colors.weak, FontId::proportional(12.5 * zoom))),
             );
             return touched

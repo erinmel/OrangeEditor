@@ -1468,6 +1468,8 @@ impl Canvas {
                 .connection_labels
                 .get(&node.definition)
                 .map(String::as_str);
+            let marked =
+                self.failures.contains_key(&node.id) || self.marks.nodes.contains_key(&node.id);
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
@@ -1476,7 +1478,7 @@ impl Canvas {
                 rect,
                 zoom,
                 &colors,
-                (selected, fire, controls),
+                (selected, fire, controls, marked),
                 response.id,
                 formula.as_deref(),
                 self.descriptions.get(&node.definition).map(String::as_str),
@@ -1581,8 +1583,8 @@ impl Canvas {
             for &(offset, error) in port_marks.get(&node).into_iter().flatten() {
                 painter.circle_stroke(
                     rect.min + offset * zoom,
-                    (PORT_RADIUS + 3.5) * zoom.max(0.6),
-                    Stroke::new(2.0 * zoom.max(0.6), colors.problem(error)),
+                    (PORT_RADIUS + 2.5) * zoom,
+                    Stroke::new(1.5 * zoom.max(0.6), colors.problem(error)),
                 );
             }
             if front != Some(node)
@@ -1680,7 +1682,7 @@ impl Canvas {
                     rect,
                     zoom,
                     &colors,
-                    (true, None, false),
+                    (true, None, false, false),
                     response.id,
                     None,
                     None,
@@ -1848,27 +1850,31 @@ fn draw_mark(
 ) -> bool {
     let center = mark_position(rect, zoom);
     let color = colors.problem(mark.error);
-    painter.circle_filled(center, 9.0 * zoom.max(0.75), color.gamma_multiply(0.18));
     painter.rect_stroke(
         rect,
         CARD_RADIUS * zoom,
-        Stroke::new(1.2, color),
-        StrokeKind::Outside,
+        Stroke::new(1.5 * zoom.max(0.6), color),
+        StrokeKind::Inside,
     );
-    painter.text(
-        center,
-        Align2::CENTER_CENTER,
-        if mark.error {
-            crate::icons::ERROR
-        } else {
-            crate::icons::WARNING
-        },
-        FontId::new(14.0 * zoom.max(0.75), crate::icons::family()),
-        colors.problem(mark.error),
-    );
-    let area = Rect::from_center_size(center, Vec2::splat(20.0 * zoom.max(0.75)));
+    if zoom >= 0.45 {
+        let _ = painter.text(
+            center,
+            Align2::CENTER_CENTER,
+            if mark.error {
+                crate::icons::ERROR
+            } else {
+                crate::icons::WARNING
+            },
+            FontId::new(MARK_SIZE * zoom, crate::icons::family()),
+            color,
+        );
+    }
+    let area = Rect::from_center_size(center, Vec2::splat((MARK_SIZE + 4.0) * zoom.max(0.75)));
     let response = ui.interact(area, id, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &mark.text));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     response
         .on_hover_ui(|ui| {
             ui.set_max_width(360.0);
@@ -1883,8 +1889,16 @@ fn draw_mark(
         .clicked()
 }
 
+/// How big a card's problem marker is, in graph units.
+const MARK_SIZE: f32 = 15.0;
+
+/// Where a card's problem marker sits: the right end of its header, inside the padding.
 fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
-    rect.right_top() + Vec2::new(-CARD_PADDING * zoom, HEADER_HEIGHT * zoom / 2.0)
+    rect.right_top()
+        + Vec2::new(
+            -(CARD_PADDING + MARK_SIZE / 2.0) * zoom,
+            HEADER_HEIGHT * zoom / 2.0,
+        )
 }
 
 fn node_order(
@@ -1915,7 +1929,7 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, controls): (bool, Option<bool>, bool),
+    (selected, fire, controls, marked): (bool, Option<bool>, bool, bool),
     canvas: egui::Id,
     formula: Option<&str>,
     description: Option<&str>,
@@ -1972,7 +1986,8 @@ fn draw_node<'a>(
             draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
             left.x += 19.0 * zoom;
         }
-        let (shown, cut) = elide(painter, name, &title, clip.right() - left.x - 18.0 * zoom);
+        let marker = if marked { MARK_SIZE + 6.0 } else { 0.0 };
+        let (shown, cut) = elide(painter, name, &title, clip.right() - left.x - marker * zoom);
         let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
         let detail = node
             .detail
