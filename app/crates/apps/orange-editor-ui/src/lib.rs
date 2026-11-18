@@ -2373,7 +2373,6 @@ impl Editor {
                 canvas::BandEdit::Change(band, settings) => {
                     host.change_audio_band(draft, node, band, settings)
                 }
-                canvas::BandEdit::Move(band, at) => host.move_audio_band(draft, node, band, at),
             };
             let _ = self.edited(host, result);
         }

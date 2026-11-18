@@ -1,8 +1,5 @@
 use super::*;
 
-/// The height of a control in a chart body, in graph units.
-const FIELD_HEIGHT: f32 = 20.0;
-
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 24_000.0;
 const SPECTRUM_PLOT_TOP: f32 = 29.0;
@@ -16,7 +13,6 @@ const NOISE_CHART: f32 = 214.0;
 pub(crate) enum BandEdit {
     Add([u32; 2]),
     Change(u16, Option<serde_json::Value>),
-    Move(u16, usize),
 }
 
 pub(super) fn combined(node: &NodeView) -> bool {
@@ -24,6 +20,37 @@ pub(super) fn combined(node: &NodeView) -> bool {
         node.definition.as_str(),
         "org.orange.audio/spectrum" | "org.orange.audio/multiband-spectrum"
     )
+}
+
+/// The band a splitter output belongs to: `band_stream#3` and `band_level#3` are band 3.
+pub(super) fn band_of(port: &str) -> Option<u16> {
+    port.strip_prefix("band_stream#")
+        .or_else(|| port.strip_prefix("band_level#"))?
+        .parse()
+        .ok()
+}
+
+/// Where band `band` of a splitter starts, in Hz.
+pub(super) fn band_low(node: &NodeView, band: u16) -> Option<f64> {
+    node.settings["bands"][band.to_string()]["low_hz"].as_f64()
+}
+
+/// Where a splitter card at `rect` draws its plot.
+pub(super) fn plot_rect(rect: Rect, zoom: f32) -> Rect {
+    Rect::from_min_max(
+        rect.min + Vec2::new(CARD_PADDING + 24.0, BODY_TOP + SPECTRUM_PLOT_TOP) * zoom,
+        Pos2::new(
+            rect.right() - CARD_PADDING * zoom,
+            rect.top() + (BODY_TOP + SPECTRUM_PLOT_BOTTOM) * zoom,
+        ),
+    )
+}
+
+/// Where `hz` is across a plot, from 0 at its left to 1 at its right.
+pub(super) fn plot_fraction(hz: f64) -> f32 {
+    #[expect(clippy::cast_possible_truncation, reason = "screen positions")]
+    let hz = hz as f32;
+    ((hz / MIN_HZ).ln() / (MAX_HZ / MIN_HZ).ln()).clamp(0.0, 1.0)
 }
 
 pub(super) fn is_noise(node: &NodeView) -> bool {
@@ -171,7 +198,8 @@ struct BandDraft {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "bounded frequency plot"
+    clippy::too_many_arguments,
+    reason = "bounded frequency plot and one chart's drawing state"
 )]
 pub(super) fn draw_combined(
     ui: &mut egui::Ui,
@@ -181,14 +209,9 @@ pub(super) fn draw_combined(
     zoom: f32,
     samples: Option<&[f64]>,
     controls: bool,
+    pointed: Option<u16>,
 ) -> Option<BandEdit> {
-    let plot = Rect::from_min_max(
-        rect.min + Vec2::new(CARD_PADDING + 24.0, BODY_TOP + SPECTRUM_PLOT_TOP) * zoom,
-        Pos2::new(
-            rect.right() - CARD_PADDING * zoom,
-            rect.top() + (BODY_TOP + SPECTRUM_PLOT_BOTTOM) * zoom,
-        ),
-    );
+    let plot = plot_rect(rect, zoom);
     let id = ui.scope_id().with(("spectrum", node.id));
     let colors = Palette::of(ui);
     let trace_id = id.with("trace-visible");
@@ -271,7 +294,9 @@ pub(super) fn draw_combined(
             && let (Some(low), Some(high)) =
                 (settings["low_hz"].as_f64(), settings["high_hz"].as_f64())
         {
-            let color = if selected == Some(band) {
+            let color = if pointed == Some(band) {
+                colors.exec
+            } else if selected == Some(band) {
                 colors.selected
             } else {
                 colors.weak
@@ -287,6 +312,20 @@ pub(super) fn draw_combined(
     if let Some(range) = selection.range {
         highlight(painter, plot, range, colors.exec);
     }
+    let resized = if controls {
+        resize_edges(
+            ui,
+            painter,
+            plot,
+            zoom,
+            id.with("edges"),
+            &ids,
+            &settings,
+            &colors,
+        )
+    } else {
+        None
+    };
     for (hz, label) in [
         (20.0, "20"),
         (100.0, "100"),
@@ -347,6 +386,7 @@ pub(super) fn draw_combined(
         );
     }
     let range = selection.range.map(|range| range.map(hertz)).filter(valid);
+    let added = resized.or(added);
     if zoom < CONTROLS_ZOOM {
         return added;
     }
@@ -498,23 +538,8 @@ pub(super) fn draw_combined(
             });
         }
         let valid = draft.pending["low_hz"].as_f64() < draft.pending["high_hz"].as_f64();
-        let position = ids.iter().position(|&id| id == band)?;
         let edit = ui
             .horizontal(|ui| {
-                let up = band_move_button(
-                    ui,
-                    zoom,
-                    position > 0,
-                    crate::icons::MOVE_UP,
-                    t("spectrum-move-band-up"),
-                );
-                let down = band_move_button(
-                    ui,
-                    zoom,
-                    position + 1 < ids.len(),
-                    crate::icons::MOVE_DOWN,
-                    t("spectrum-move-band-down"),
-                );
                 let apply = ui
                     .add_enabled(
                         valid && draft.pending != draft.saved,
@@ -526,10 +551,6 @@ pub(super) fn draw_combined(
                     Some(BandEdit::Change(band, Some(draft.pending.clone())))
                 } else if remove {
                     Some(BandEdit::Change(band, None))
-                } else if up {
-                    Some(BandEdit::Move(band, position - 1))
-                } else if down {
-                    Some(BandEdit::Move(band, position + 1))
                 } else {
                     None
                 }
@@ -542,16 +563,74 @@ pub(super) fn draw_combined(
     .or(added)
 }
 
-fn band_move_button(ui: &mut egui::Ui, zoom: f32, enabled: bool, icon: char, label: &str) -> bool {
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new(crate::icons::text(icon).size(14.0 * zoom))
-            .min_size(Vec2::new(26.0, FIELD_HEIGHT) * zoom),
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled() && enabled, label)
-    });
-    response.on_hover_text(label).clicked()
+/// The edges of each band on the chart: dragged sideways, an edge moves and the band
+/// keeps its new size when let go. Returns the change once the drag ends.
+#[expect(clippy::too_many_arguments, reason = "one chart's drawing state")]
+fn resize_edges<'a>(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    plot: Rect,
+    zoom: f32,
+    id: egui::Id,
+    bands: &[u16],
+    settings: &dyn Fn(u16) -> Option<&'a serde_json::Value>,
+    colors: &Palette,
+) -> Option<BandEdit> {
+    let fraction = plot_fraction;
+    let hertz = |x: f32| {
+        let ratio = ((x - plot.left()) / plot.width()).clamp(0.0, 1.0);
+        f64::from((MIN_HZ * (MAX_HZ / MIN_HZ).powf(ratio)).round())
+    };
+    let mut done = None;
+    for &band in bands {
+        let Some(saved) = settings(band) else {
+            continue;
+        };
+        let (Some(low), Some(high)) = (saved["low_hz"].as_f64(), saved["high_hz"].as_f64()) else {
+            continue;
+        };
+        for (edge, hz) in [("low_hz", low), ("high_hz", high)] {
+            let x = plot.left() + plot.width() * fraction(hz);
+            let grip = Rect::from_center_size(
+                Pos2::new(x, plot.center().y),
+                Vec2::new(8.0 * zoom, plot.height()),
+            );
+            let handle = ui
+                .interact(grip, id.with((band, edge)), Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+            let dragged_to = handle
+                .interact_pointer_pos()
+                .filter(|_| handle.dragged() || handle.drag_stopped())
+                .map(|at| hertz(at.x));
+            if handle.hovered() || handle.dragged() {
+                let shown = dragged_to.unwrap_or(hz);
+                let at = plot.left() + plot.width() * fraction(shown);
+                painter.vline(at, plot.y_range(), Stroke::new(2.0 * zoom, colors.exec));
+                let _ = painter.text(
+                    Pos2::new(at, plot.top() - 5.0 * zoom),
+                    Align2::CENTER_BOTTOM,
+                    format!("{shown:.0} Hz"),
+                    FontId::proportional(11.5 * zoom),
+                    colors.text,
+                );
+            }
+            if handle.drag_stopped()
+                && let Some(to) = dragged_to
+            {
+                let (new_low, new_high) = if edge == "low_hz" {
+                    (to, high)
+                } else {
+                    (low, to)
+                };
+                if new_low < new_high && (to - hz).abs() >= 1.0 {
+                    let mut changed = saved.clone();
+                    changed[edge] = serde_json::Value::from(to);
+                    done = Some(BandEdit::Change(band, Some(changed)));
+                }
+            }
+        }
+    }
+    done
 }
 
 fn number_field(

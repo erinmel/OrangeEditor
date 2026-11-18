@@ -240,3 +240,114 @@ fn a_card_adds_one_more_of_a_growing_port() {
         })
     )));
 }
+
+/// A splitter's band outputs read from low to high frequency, whatever order the bands
+/// were drawn in.
+#[test]
+fn band_outputs_are_ordered_by_frequency() {
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let splitter = host
+        .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
+        .unwrap();
+    for range in [[2_000, 3_000], [60, 120], [400, 800]] {
+        host.add_filtered_audio_band(&mut draft, splitter, range)
+            .unwrap();
+    }
+    let graph = host.draft_view(&draft).unwrap();
+    let node = graph.nodes.iter().find(|node| node.id == splitter).unwrap();
+    let layout = card::Card::new(node);
+    let lows: Vec<f64> = layout
+        .rows
+        .iter()
+        .filter_map(|row| row.right)
+        .filter_map(|port| super::spectrum::band_of(&port.id))
+        .filter_map(|band| super::spectrum::band_low(node, band))
+        .collect();
+    assert_eq!(lows, [60.0, 400.0, 2_000.0]);
+}
+
+/// Dragging a band's edge on the splitter's chart changes that edge and keeps the other.
+#[test]
+fn dragging_a_band_edge_resizes_the_band() {
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let splitter = host
+        .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
+        .unwrap();
+    host.add_filtered_audio_band(&mut draft, splitter, [100, 1_000])
+        .unwrap();
+    let mut session = Session::new();
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.places.clear();
+    session
+        .canvas
+        .places
+        .insert(splitter, Pos2::new(40.0, 40.0));
+    let _ = session.frame(vec![]);
+    let node = session.graph.nodes[0].clone();
+    let band = node.settings["bands"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    // The card on the screen, through the canvas's own transform.
+    let place = session.canvas.places[&splitter];
+    let corner = session.corner + (place - session.canvas.origin) * session.canvas.zoom;
+    let rect = Rect::from_min_size(corner, node_size(&node) * session.canvas.zoom);
+    let plot = super::spectrum::plot_rect(rect, session.canvas.zoom);
+    let x = |hz: f64| plot.left() + plot.width() * super::spectrum::plot_fraction(hz);
+    let from = Pos2::new(x(1_000.0), plot.center().y);
+    let to = Pos2::new(x(2_000.0), plot.center().y);
+    let button = |at, pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = session.frame(vec![egui::Event::PointerMoved(from)]);
+    let _ = session.frame(vec![button(from, true)]);
+    for step in 1..=4 {
+        let at = from + (to - from) * (step as f32 / 4.0);
+        let _ = session.frame(vec![egui::Event::PointerMoved(at)]);
+    }
+    let done = session.frame(vec![button(to, false)]);
+    let Some((_, super::spectrum::BandEdit::Change(changed, Some(settings)))) = done.spectrum_edit
+    else {
+        panic!("no band change: {:?}", done.spectrum_edit);
+    };
+    assert_eq!(changed, band);
+    assert_eq!(settings["low_hz"].as_f64(), Some(100.0));
+    let high = settings["high_hz"].as_f64().unwrap();
+    assert!((1_900.0..=2_100.0).contains(&high), "{high}");
+}
+
+/// A way out glows as a step leaves through it, wired or not, and only that one.
+#[test]
+fn the_way_out_a_step_takes_glows_and_fades() {
+    let mut session = Session::new();
+    session.canvas.record_entry_route(id(1), "yes".into());
+    let geometry = Geometry::new(&session.graph);
+    assert!(session.canvas.exit_glow(&geometry, id(1), "yes") > 0.9);
+    assert_eq!(session.canvas.exit_glow(&geometry, id(1), "no"), 0.0);
+    // A step that ends by its only way out lights it too.
+    let mut single = node();
+    single.ports.retain(|port| port.id != "no");
+    session.graph.nodes = vec![single];
+    session
+        .canvas
+        .record_step(id(1), false, orange_host::ControlOutcome::Then);
+    let geometry = Geometry::new(&session.graph);
+    assert!(session.canvas.exit_glow(&geometry, id(1), "yes") > 0.9);
+}

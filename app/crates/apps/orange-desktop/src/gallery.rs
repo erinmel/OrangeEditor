@@ -46,6 +46,16 @@ fn write_package_galleries() {
         draft.text().unwrap(),
     )
     .unwrap();
+    // A frequency splitter with bands drawn out of order.
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let splitter = host
+        .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
+        .unwrap();
+    for range in [[2_000, 3_000], [60, 120], [400, 800], [8_000, 12_000]] {
+        host.add_filtered_audio_band(&mut draft, splitter, range)
+            .unwrap();
+    }
+    std::fs::write(format!("{folder}/splitter-0.json"), draft.text().unwrap()).unwrap();
     for (package, ids) in groups {
         for (page, chunk) in ids.chunks(12).enumerate() {
             let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();

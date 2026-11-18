@@ -226,10 +226,12 @@ impl<'a> Card<'a> {
             editor: FieldOf::Setting(name, schema),
             named: true,
         }));
-        // A port the node may have more of ends the card with a button that adds one.
+        // A port the node may have more of ends the card with a button that adds one;
+        // a chart card adds its band ports from its chart instead.
         let growing: Vec<Left<'a>> = node
             .variadic
             .iter()
+            .filter(|_| !spectrum::combined(node))
             .filter(|variadic| variadic.max.is_none_or(|max| variadic.count < max))
             .map(|variadic| Left::Field {
                 editor: FieldOf::AddPort(variadic),
@@ -244,11 +246,22 @@ impl<'a> Card<'a> {
         }
 
         // Each output takes the first line of the next row that has one free.
-        let mut outputs = node
+        let mut outputs: Vec<&PortView> = node
             .ports
             .iter()
             .filter(|port| !port.exec && !port.input)
-            .peekable();
+            .collect();
+        // A splitter's band outputs read from low to high frequency, whatever order the
+        // bands were drawn in.
+        outputs.sort_by(|a, b| {
+            let low = |port: &PortView| {
+                spectrum::band_of(&port.id).and_then(|band| spectrum::band_low(node, band))
+            };
+            low(a)
+                .partial_cmp(&low(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut outputs = outputs.into_iter().peekable();
         for left in lefts {
             let hosts = !matches!(left, Left::Field { named: false, .. }) || literal;
             let right = if hosts { outputs.next() } else { None };

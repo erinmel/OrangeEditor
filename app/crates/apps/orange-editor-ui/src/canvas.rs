@@ -810,6 +810,29 @@ impl Canvas {
         );
     }
 
+    /// How brightly the way out `port` of `node` glows: 1 just as a step leaves through
+    /// it, fading to nothing, wired or not.
+    fn exit_glow(&self, geometry: &Geometry<'_>, node: NodeId, port: &str) -> f32 {
+        let fading = |time: std::time::Instant| {
+            (1.0 - time.elapsed().as_secs_f32() / (2.0 * PULSE_SECONDS)).max(0.0)
+        };
+        let entry = self
+            .entry_activity
+            .get(&node)
+            .and_then(|ports| ports.get(port))
+            .map_or(0.0, |time| fading(*time));
+        let step = self
+            .activity
+            .get(&node)
+            .filter(|step| match step.route {
+                Some(PulseRoute::Sole) => geometry.sole_exec_output(node) == Some(port),
+                Some(PulseRoute::Port(route)) => route == port,
+                None => false,
+            })
+            .map_or(0.0, |step| fading(step.time));
+        entry.max(step)
+    }
+
     pub(crate) fn record_entry_route(&mut self, node: NodeId, port: String) {
         self.entry_activity
             .entry(node)
@@ -1645,9 +1668,103 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            // A way out a step just left through glows, whether a wire takes it or not.
+            for port in node.ports.iter().filter(|port| port.exec && !port.input) {
+                let glow = self.exit_glow(&geometry, node.id, &port.id);
+                if glow <= 0.0 {
+                    continue;
+                }
+                if let Some(found) = geometry.port(node.id, &port.id, false) {
+                    let at = to_screen(place + found.offset);
+                    for (radius, alpha) in [(3.2, 0.18), (2.2, 0.35)] {
+                        painter.circle_filled(
+                            at,
+                            PORT_RADIUS * radius * zoom,
+                            colors.exec.gamma_multiply(alpha * glow),
+                        );
+                    }
+                    pulsing = true;
+                }
+            }
             // Audio analysis cards draw their chart in the body the card model leaves
             // free under the header (spectrum::chart_height).
             if spectrum::combined(node) && zoom >= 0.45 {
+                // Each band's output row: pointing at it lights its band on the chart,
+                // and a × beside its name removes the band.
+                let layout = card::Card::new(node);
+                let pointer = ui.input(|input| input.pointer.hover_pos());
+                let mut pointed = None;
+                for row in &layout.rows {
+                    let Some((port, band)) = row
+                        .right
+                        .and_then(|port| Some((port, spectrum::band_of(&port.id)?)))
+                    else {
+                        continue;
+                    };
+                    let line = Rect::from_min_max(
+                        Pos2::new(rect.left(), rect.top() + row.top * zoom),
+                        Pos2::new(
+                            rect.right() + 8.0 * zoom,
+                            rect.top() + (row.top + ROW_HEIGHT) * zoom,
+                        ),
+                    );
+                    if pointer.is_some_and(|at| line.contains(at)) {
+                        pointed = Some(band);
+                    }
+                    if !controls {
+                        continue;
+                    }
+                    let name = painter.layout_no_wrap(
+                        port_title(port),
+                        FontId::proportional(12.5 * zoom),
+                        colors.text,
+                    );
+                    let y = rect.top() + row.anchor() * zoom;
+                    let size = 18.0 * zoom;
+                    let remove = Rect::from_center_size(
+                        Pos2::new(
+                            rect.right()
+                                - CARD_PADDING * zoom
+                                - name.size().x
+                                - 6.0 * zoom
+                                - size / 2.0,
+                            y,
+                        ),
+                        Vec2::splat(size),
+                    );
+                    let touched = ui
+                        .interact(
+                            remove,
+                            response.id.with(("remove-band", node.id, band)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(t("spectrum-remove-band"));
+                    let shown = touched.hovered() || pointed == Some(band);
+                    if shown {
+                        let _ = painter.text(
+                            remove.center(),
+                            Align2::CENTER_CENTER,
+                            crate::icons::CLOSE,
+                            FontId::new(14.0 * zoom, crate::icons::family()),
+                            if touched.hovered() {
+                                colors.error
+                            } else {
+                                colors.weak
+                            },
+                        );
+                    }
+                    touched.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            t("spectrum-remove-band"),
+                        )
+                    });
+                    if touched.clicked() {
+                        done.spectrum_edit =
+                            Some((node.id, spectrum::BandEdit::Change(band, None)));
+                    }
+                }
                 if let Some(edit) = spectrum::draw_combined(
                     ui,
                     &painter,
@@ -1656,6 +1773,7 @@ impl Canvas {
                     zoom,
                     self.spectra.get(&node.id).map(Vec::as_slice),
                     controls,
+                    pointed,
                 ) {
                     done.spectrum_edit = Some((node.id, edit));
                 }
@@ -1690,7 +1808,11 @@ impl Canvas {
                     else {
                         continue;
                     };
-                    if zoom < 0.6 {
+                    // A stream carries no value to show, and an empty one draws no box.
+                    if zoom < 0.6
+                        || card::stream_type(port.ty.as_deref())
+                        || value.shown.short.trim().is_empty()
+                    {
                         continue;
                     }
                     let name =
@@ -1885,7 +2007,7 @@ impl Canvas {
                                 spectrum::draw_noise(ui, &painter, card, rect, zoom, None, false);
                         } else if spectrum::combined(card) {
                             let _ = spectrum::draw_combined(
-                                ui, &painter, card, rect, zoom, None, false,
+                                ui, &painter, card, rect, zoom, None, false, None,
                             );
                         }
                     });
@@ -3092,7 +3214,6 @@ mod tests {
             output.drop_without_applying_deltas();
             result
         };
-        let arrow = crate::icons::MOVE_DOWN.to_string();
         let anchor = position + Vec2::splat(20.0);
         let (initial, _, _, _) = frame(vec![egui::Event::PointerMoved(anchor)]);
         let trace_drawn = |shapes: &[egui::epaint::ClippedShape]| {
@@ -3141,20 +3262,21 @@ mod tests {
             };
             let chart = text("10k");
             let numbers = text(t("spectrum-high-hz"));
-            let down = text(arrow.as_str());
             let remove = text(t("spectrum-remove-band"));
             assert!(card.contains_rect(chart) && card.contains_rect(remove));
-            assert!(chart.bottom() < numbers.top() && numbers.bottom() < down.top());
-            assert!(down.right() < remove.left());
+            assert!(chart.bottom() < numbers.top() && numbers.bottom() < remove.top());
             assert!(
-                down.bottom()
+                remove.bottom()
                     < card.top() + (BODY_TOP + spectrum::chart_height(&graph.nodes[0])) * zoom
             );
-            let center = down.center();
+            let center = remove.center();
             frame(vec![egui::Event::PointerMoved(center)]);
             frame(vec![click(center, true)]);
             let (_, release, _, _) = frame(vec![click(center, false)]);
-            assert_eq!(release.spectrum_edit, Some((node, BandEdit::Move(0, 1))));
+            assert_eq!(
+                release.spectrum_edit,
+                Some((node, BandEdit::Change(0, None)))
+            );
             frame(vec![egui::Event::PointerMoved(anchor)]);
         }
     }
