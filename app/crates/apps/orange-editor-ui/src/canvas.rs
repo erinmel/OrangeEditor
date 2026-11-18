@@ -286,11 +286,10 @@ pub struct Canvas {
     /// Where the pointer is, in graph units, while it is over the canvas.
     pointer: Option<Pos2>,
     /// A number being dragged on a card, shown before it is let go and written.
-    dragging: Option<(NodeId, String, f64)>,
+    number_drag: Option<(NodeId, String, f32)>,
     /// Text being typed on a card, and whether its field has had the keys yet.
     typing: Option<(NodeId, String, String, bool)>,
     /// A whole number being dragged: its node, port, value before and pixels moved.
-    whole_drag: Option<(NodeId, String, i128, f32)>,
     /// A node was dragged and not yet let go.
     moving: bool,
     /// Show the whole graph at the next frame.
@@ -337,9 +336,8 @@ impl Default for Canvas {
             front: None,
             boxing: None,
             pointer: None,
-            dragging: None,
+            number_drag: None,
             typing: None,
-            whole_drag: None,
             moving: false,
             fit: true,
             wiring: None,
@@ -1855,21 +1853,20 @@ impl Canvas {
                     .then(|| written((!on).to_string()))
                     .flatten()
             }
-            Control::Whole => {
-                let ty = port.ty.as_deref().unwrap_or("core/i64@1");
-                // Exact: whole numbers never pass through a float, which would round any
-                // past 2^53.
-                let stepping = self
-                    .whole_drag
-                    .as_ref()
-                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id)
-                    .map(|(_, _, base, pixels)| step_whole(*base, *pixels, ty));
+            Control::Whole | Control::Number => {
+                let whole = control == Control::Whole;
+                let ty =
+                    port.ty
+                        .as_deref()
+                        .unwrap_or(if whole { "core/i64@1" } else { "core/f64@1" });
                 let typing = self
                     .typing
                     .as_mut()
                     .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
                 if let Some((_, _, typed, focused)) = typing {
-                    let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
+                    let field = place(ui, &mut |ui| {
+                        ui.add(egui::TextEdit::singleline(typed).font(egui::TextStyle::Monospace))
+                    });
                     if !*focused {
                         if ui.input(|input| input.focused) {
                             field.request_focus();
@@ -1879,88 +1876,40 @@ impl Canvas {
                     if field.lost_focus() {
                         let text = typed.trim().to_owned();
                         self.typing = None;
-                        return parse_whole(&text, ty)
-                            .map(|value| (node.id, port.id.clone(), value.to_string()));
+                        return number_text(&text, whole, ty).and_then(written);
                     }
                     return None;
                 }
-                let shown = match (&stepping, port.value.as_deref()) {
-                    (Some(value), _) => value.to_string(),
-                    (None, Some(text)) => text.to_owned(),
-                    // An input with no value says so, rather than showing a 0 it does not have.
-                    (None, None) => "—".to_owned(),
+                let pixels = self
+                    .number_drag
+                    .as_ref()
+                    .filter(|(at, name, _)| *at == node.id && *name == port.id)
+                    .map(|(_, _, pixels)| *pixels);
+                let shown = match pixels {
+                    Some(pixels) => Some(stepped(port.value.as_deref(), pixels, whole, ty)),
+                    None => port.value.clone(),
                 };
-                let touched = place(ui, &mut |ui| {
-                    ui.add(
-                        egui::Button::new(egui::RichText::new(shown.as_str()).monospace())
-                            .sense(Sense::click_and_drag()),
-                    )
-                })
-                .on_hover_text(t("number-drag-hint"));
+                let touched = number_field(ui, slot, id, shown.as_deref());
                 if touched.clicked() {
-                    self.whole_drag = None;
+                    self.number_drag = None;
                     let typed = port.value.clone().unwrap_or_default();
                     self.typing = Some((node.id, port.id.clone(), typed, false));
                     return None;
                 }
                 if touched.drag_started() {
-                    let base = port
-                        .value
-                        .as_deref()
-                        .and_then(|text| parse_whole(text, ty))
-                        .unwrap_or(0);
-                    self.whole_drag = Some((node.id, port.id.clone(), base, 0.0));
+                    self.number_drag = Some((node.id, port.id.clone(), 0.0));
                 }
                 if touched.dragged()
-                    && let Some((_, _, _, pixels)) = self.whole_drag.as_mut()
+                    && let Some((_, _, pixels)) = self.number_drag.as_mut()
                 {
                     *pixels += touched.drag_delta().x;
                     return None;
                 }
                 if touched.drag_stopped() {
-                    self.whole_drag = None;
-                    return stepping.map(|value| (node.id, port.id.clone(), value.to_string()));
-                }
-                None
-            }
-            Control::Number => {
-                let whole = false;
-                let held = self
-                    .dragging
-                    .as_ref()
-                    .filter(|(at, name, _)| *at == node.id && *name == port.id)
-                    .map(|(_, _, value)| *value);
-                let mut value = held.unwrap_or_else(|| {
-                    port.value
-                        .as_deref()
-                        .and_then(|text| text.parse().ok())
-                        .unwrap_or(0.0)
-                });
-                // An input with no value says so, rather than showing a 0 it does not have.
-                let unset = held.is_none() && port.value.is_none();
-                let touched = place(ui, &mut |ui| {
-                    let drag =
-                        egui::DragValue::new(&mut value).speed(if whole { 0.2 } else { 0.01 });
-                    let drag = if whole { drag.fixed_decimals(0) } else { drag };
-                    let drag = if unset {
-                        drag.custom_formatter(|_, _| "—".to_owned())
-                    } else {
-                        drag
-                    };
-                    ui.add(drag)
-                });
-                if touched.dragged() {
-                    self.dragging = Some((node.id, port.id.clone(), value));
-                    return None;
-                }
-                if touched.drag_stopped() || touched.changed() {
-                    self.dragging = None;
-                    let text = if whole {
-                        format!("{value:.0}")
-                    } else {
-                        value.to_string()
-                    };
-                    return written(text);
+                    self.number_drag = None;
+                    return pixels
+                        .map(|pixels| stepped(port.value.as_deref(), pixels, whole, ty))
+                        .and_then(written);
                 }
                 None
             }
@@ -2007,6 +1956,73 @@ fn whole_range(ty: &str) -> (i128, i128) {
         "core/u32@1" => (0, i128::from(u32::MAX)),
         _ => (i128::from(i64::MIN), i128::from(i64::MAX)),
     }
+}
+
+/// A number typed on a card as the input keeps it: a whole number that `ty` holds, or
+/// a finite decimal.
+fn number_text(text: &str, whole: bool, ty: &str) -> Option<String> {
+    if whole {
+        return parse_whole(text, ty).map(|value| value.to_string());
+    }
+    let value: f64 = text.trim().parse().ok()?;
+    value.is_finite().then(|| value.to_string())
+}
+
+/// A number field's value after a drag of `pixels` from `value`: one step for each
+/// five pixels for a whole number, a hundredth for each pixel for a decimal.
+fn stepped(value: Option<&str>, pixels: f32, whole: bool, ty: &str) -> String {
+    if whole {
+        let base = value.and_then(|text| parse_whole(text, ty)).unwrap_or(0);
+        return step_whole(base, pixels, ty).to_string();
+    }
+    let base: f64 = value.and_then(|text| text.parse().ok()).unwrap_or(0.0);
+    let moved = base + f64::from(pixels) * 0.01;
+    ((moved * 100.0).round() / 100.0).to_string()
+}
+
+/// A number's field on a card: the value framed like a text field, left-aligned,
+/// outlined when the pointer is on it. A click types; a sideways drag steps it.
+fn number_field(
+    ui: &mut egui::Ui,
+    slot: Rect,
+    id: egui::Id,
+    value: Option<&str>,
+) -> egui::Response {
+    let colors = Palette::of(ui);
+    let zoom = slot.height() / FIELD_HEIGHT;
+    let pad = 6.0 * zoom;
+    let font = FontId::monospace(12.0 * zoom);
+    // An input with no value says so, rather than showing a 0 it does not have.
+    let (text, ink) = value.map_or(("—", colors.weak), |value| (value, colors.text));
+    let painter = ui.painter().clone();
+    let (text, _) = elide(&painter, text, &font, slot.width() - 2.0 * pad);
+    let galley = painter.layout_no_wrap(text, font, ink);
+    let width = (galley.size().x + 2.0 * pad).clamp((40.0 * zoom).min(slot.width()), slot.width());
+    let field = Rect::from_min_size(slot.min, Vec2::new(width, slot.height()));
+    let touched = ui
+        .interact(field, id, Sense::click_and_drag())
+        .on_hover_text(t("number-drag-hint"));
+    let active = touched.hovered() || touched.dragged();
+    if active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    painter.rect_filled(field, 4.0 * zoom, colors.background);
+    painter.rect_stroke(
+        field,
+        4.0 * zoom,
+        Stroke::new(
+            1.0,
+            if active {
+                colors.selected
+            } else {
+                colors.outline
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    let place = Pos2::new(field.min.x + pad, field.center().y - galley.size().y / 2.0);
+    painter.galley(place, galley, ink);
+    touched
 }
 
 /// A whole number typed as text, if it is one that `ty` holds.
