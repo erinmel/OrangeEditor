@@ -17,6 +17,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod tree;
+pub use tree::TreeEntry;
+
 /// Longest path that can be named, in bytes.
 pub const MAX_PATH_BYTES: usize = 1024;
 
@@ -33,6 +36,10 @@ pub enum FsError {
     TooLarge,
     /// The folder does not allow changes.
     ReadOnly,
+    /// The owner cancelled the operation before it completed.
+    Cancelled,
+    /// A directory changed while its contents were being enumerated.
+    Changed,
     /// Any other refusal by the operating system.
     Failed,
 }

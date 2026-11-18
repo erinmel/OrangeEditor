@@ -22,16 +22,17 @@
 
 use orange_sandbox::FsError;
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
-    ServiceNode, ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, FaultText, KernelFault, ServiceNode, ServicePackage,
+    Session, Value,
 };
-use serde_json::{Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 use std::any::Any;
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, SystemTime};
+
+mod glob;
+mod watch;
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
@@ -68,16 +69,30 @@ pub const COPY: &str = "org.orange.files/copy";
 pub const MAKE_DIRECTORY: &str = "org.orange.files/make-directory";
 /// Removes an empty directory. Input `path`.
 pub const REMOVE_DIRECTORY: &str = "org.orange.files/remove-directory";
+/// Copies a bounded directory tree to a new path. Inputs `path` and `to`.
+pub const COPY_DIRECTORY: &str = "org.orange.files/copy-directory";
+/// Moves a bounded directory tree to a new path. Inputs `path` and `to`.
+pub const MOVE_DIRECTORY: &str = "org.orange.files/move-directory";
+/// Deletes a bounded directory tree. Input `path`.
+pub const DELETE_DIRECTORY: &str = "org.orange.files/delete-directory";
+/// Lists paths filtered by a glob. Inputs `path`, `pattern` and `recursive`.
+pub const LIST_FILTERED: &str = "org.orange.files/list-filtered";
+/// Reports metadata for a file or directory. Input `path`.
+pub const FILE_INFO: &str = "org.orange.files/file-info";
 /// Entry fired when a file in the folder is created, changed or deleted, with its
 /// path as `payload`. Changes are found by comparing sizes and modification times
 /// every `poll_ms`, so several changes to one file within that time fire once.
 pub const ON_CHANGE: &str = "org.orange.files/on-change";
+/// Entry taking a `folder` input. Reports path changes including rename pairs as JSON.
+pub const ON_PATH_CHANGE: &str = "org.orange.files/on-path-change";
 
 /// Largest file a node reads or writes.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub use orange_sandbox::MAX_PATH_BYTES;
 /// Most entries one listing returns and one watched folder may hold.
 pub const MAX_ENTRIES: usize = 10_000;
+/// Largest aggregate file size copied by one Copy folder operation.
+pub const MAX_COPY_TREE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_POLL_MS: u64 = 500;
 
 const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
@@ -127,6 +142,21 @@ const FAILED: KernelFault = fault(
     "org.orange.files/io-failed",
     "The operating system refused the file operation.",
 );
+const INVALID_GLOB: KernelFault = fault(
+    "org.orange.files/Glob",
+    "org.orange.files/glob-invalid",
+    "The glob must contain plain path components and be at most 128 bytes.",
+);
+const CANCELLED: KernelFault = fault(
+    "org.orange.files/Cancelled",
+    "org.orange.files/operation-cancelled",
+    "The folder operation was cancelled.",
+);
+const TREE_CHANGED: KernelFault = fault(
+    "org.orange.files/TreeChanged",
+    "org.orange.files/tree-changed",
+    "The folder changed while it was being read.",
+);
 
 fn refused(error: FsError) -> KernelFault {
     match error {
@@ -134,6 +164,8 @@ fn refused(error: FsError) -> KernelFault {
         FsError::InvalidPath => BAD_PATH,
         FsError::TooLarge => TOO_LARGE,
         FsError::ReadOnly => READ_ONLY,
+        FsError::Cancelled => CANCELLED,
+        FsError::Changed => TREE_CHANGED,
         _ => FAILED,
     }
 }
@@ -203,42 +235,40 @@ impl Folder {
         self.files.remove_directory(path).map_err(refused)
     }
 
-    /// Every file under the folder with its size and modification time, by relative
-    /// path. Links are not followed. `None` when the folder holds too many entries.
-    fn snapshot(&self) -> Option<BTreeMap<String, (u64, Option<SystemTime>)>> {
-        let mut files = BTreeMap::new();
-        let mut pending = vec![(self.files.root().to_path_buf(), String::new())];
-        let mut seen = 0usize;
-        while let Some((directory, prefix)) = pending.pop() {
-            let Ok(entries) = std::fs::read_dir(&directory) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                seen += 1;
-                if seen > MAX_ENTRIES {
-                    return None;
+    fn list_filtered(
+        &self,
+        path: &str,
+        pattern: &str,
+        recursive: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<Arc<String>>, KernelFault> {
+        let pattern = glob::Glob::parse(pattern).ok_or(INVALID_GLOB)?;
+        let entries = self
+            .files
+            .tree(path, recursive, MAX_ENTRIES, cancelled)
+            .map_err(refused)?;
+        let mut names: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| pattern.matches(&entry.path))
+            .map(|entry| {
+                let mut path = entry.path;
+                if entry.metadata.is_dir() {
+                    path.push('/');
                 }
-                let Ok(name) = entry.file_name().into_string() else {
-                    continue;
-                };
-                // The temporary files of this package's own writes are not changes.
-                if orange_sandbox::Folder::is_temporary(&name) {
-                    continue;
-                }
-                let Ok(kind) = entry.file_type() else {
-                    continue;
-                };
-                let path = format!("{prefix}{name}");
-                if kind.is_dir() {
-                    pending.push((entry.path(), format!("{path}/")));
-                } else if kind.is_file()
-                    && let Ok(metadata) = entry.metadata()
-                {
-                    let _ = files.insert(path, (metadata.len(), metadata.modified().ok()));
-                }
-            }
-        }
-        Some(files)
+                Arc::new(path)
+            })
+            .collect();
+        names.sort_unstable();
+        Ok(names)
+    }
+}
+
+fn unix_millis(time: SystemTime) -> Option<i64> {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_millis()).ok(),
+        Err(before) => i64::try_from(before.duration().as_millis())
+            .ok()
+            .map(|ms| -ms),
     }
 }
 
@@ -334,10 +364,16 @@ enum Operation {
     Size,
     ReadRange,
     AppendBytes,
+    CopyDirectory,
+    MoveDirectory,
+    DeleteDirectory,
+    ListFiltered,
+    FileInfo,
 }
 impl ServiceNode for Operation {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let folder = folder(call.session).ok_or(NO_SESSION)?;
+        let cancelled = || call.lease.is_cancelled();
         match (self, call.inputs) {
             (Self::ReadText, [Value::Str(path)]) => {
                 let text = String::from_utf8(folder.read(path)?).map_err(|_| NOT_TEXT)?;
@@ -383,61 +419,51 @@ impl ServiceNode for Operation {
             (Self::AppendBytes, [Value::Str(path), Value::Bytes(data)]) => {
                 folder.append_piece(path, data).map(|()| Vec::new())
             }
+            (Self::CopyDirectory, [Value::Str(path), Value::Str(to)]) => folder
+                .files
+                .copy_tree(path, to, MAX_ENTRIES, MAX_COPY_TREE_BYTES, &cancelled)
+                .map(|()| Vec::new())
+                .map_err(refused),
+            (Self::MoveDirectory, [Value::Str(path), Value::Str(to)]) => folder
+                .files
+                .move_tree(path, to, MAX_ENTRIES, &cancelled)
+                .map(|()| Vec::new())
+                .map_err(refused),
+            (Self::DeleteDirectory, [Value::Str(path)]) => folder
+                .files
+                .remove_tree(path, MAX_ENTRIES, &cancelled)
+                .map(|()| Vec::new())
+                .map_err(refused),
+            (
+                Self::ListFiltered,
+                [
+                    Value::Str(path),
+                    Value::Str(pattern),
+                    Value::Bool(recursive),
+                ],
+            ) => {
+                let names = folder.list_filtered(path, pattern, *recursive, &cancelled)?;
+                Ok(vec![Value::List(Arc::new(orange_sdk::ListRepr::Str(
+                    names.into_boxed_slice(),
+                )))])
+            }
+            (Self::FileInfo, [Value::Str(path)]) => {
+                let metadata = folder.files.metadata(path).map_err(refused)?;
+                let directory = metadata.is_dir();
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(unix_millis)
+                    .map_or(Value::None, |ms| Value::Some(Arc::new(Value::I64(ms))));
+                Ok(vec![
+                    Value::Bool(directory),
+                    Value::U64(if directory { 0 } else { metadata.len() }),
+                    modified,
+                    Value::Bool(metadata.permissions().readonly()),
+                ])
+            }
             _ => Err(BAD_INPUT),
         }
-    }
-}
-
-/// Stops its watcher when the flow that owns the entry closes.
-struct Watching(Arc<Lifecycle>);
-impl Drop for Watching {
-    fn drop(&mut self) {
-        self.0.stop();
-    }
-}
-
-#[derive(Debug)]
-struct OnChange;
-impl ServiceSource for OnChange {
-    fn start(
-        &self,
-        session: Option<Arc<dyn Session>>,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String> {
-        let session = session.ok_or("the entry needs a folder connection")?;
-        if folder(Some(session.as_ref())).is_none() {
-            return Err("the entry needs a folder connection".into());
-        }
-        let stop = Arc::new(Lifecycle::new());
-        let life = Arc::clone(&stop);
-        let _ = thread::Builder::new()
-            .name("orange-files-watch".into())
-            .spawn(move || {
-                let Some(folder) = folder(Some(session.as_ref())) else {
-                    return;
-                };
-                let mut before = folder.snapshot().unwrap_or_default();
-                'watch: while life.rest(folder.poll) {
-                    // A folder over the limit is not watched until it is small again.
-                    let Some(now) = folder.snapshot() else {
-                        continue;
-                    };
-                    let changed = now
-                        .iter()
-                        .filter(|(path, state)| before.get(*path) != Some(state))
-                        .map(|(path, _)| path)
-                        .chain(before.keys().filter(|path| !now.contains_key(*path)));
-                    for path in changed {
-                        let payload = Value::Str(Arc::new(path.clone()));
-                        if emitter.emit(Some(payload)) == Err(EmitError::Closed) {
-                            break 'watch;
-                        }
-                    }
-                    before = now;
-                }
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(Box::new(Watching(stop)))
     }
 }
 
@@ -463,7 +489,41 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 15] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 19] = [
+        (
+            "copy-directory",
+            "Copy folder",
+            "Copies a folder and its contents to a new path.",
+            Operation::CopyDirectory,
+            vec![path(), input("to", STRING)],
+        ),
+        (
+            "move-directory",
+            "Move folder",
+            "Moves a folder and its contents to a new path.",
+            Operation::MoveDirectory,
+            vec![path(), input("to", STRING)],
+        ),
+        (
+            "delete-directory",
+            "Delete folder",
+            "Deletes a folder and all its contents.",
+            Operation::DeleteDirectory,
+            vec![path()],
+        ),
+        (
+            "file-info",
+            "File info",
+            "Gives a file or folder's size, modification time and read-only status.",
+            Operation::FileInfo,
+            vec![
+                path(),
+                output("is_directory", "core/bool@1"),
+                output("bytes", "core/u64@1"),
+                output("modified_unix_ms", "core/option@1<core/i64@1>"),
+                output("read_only", "core/bool@1"),
+            ],
+        ),
         (
             "size",
             "File size",
@@ -597,11 +657,35 @@ pub fn package() -> ServicePackage {
     }
     let on_change = described(
         Definition::entry(PACKAGE, "on-change", "On file change"),
-        "Fires when a file in a folder is created, changed or deleted.",
+        "Fires when a file or folder is created, changed, deleted or renamed.",
     )
     .payload(STRING)
     .build();
-    match package.and_then(|package| package.source(&on_change, OnChange)) {
+    let on_path_change = described(
+        Definition::entry(PACKAGE, "on-path-change", "On path change"),
+        "Watches a folder and reports each change, including both paths on a rename.",
+    )
+    .input_default("folder", STRING, json!({"type": STRING, "value": ""}))
+    .payload("core/json@1")
+    .build();
+    let list_filtered = described(
+        Definition::node(PACKAGE, "list-filtered", "List matching paths"),
+        "Lists paths in a folder optionally filtered by a glob, including subfolders when enabled.",
+    )
+    .input_default("path", STRING, json!({"type": STRING, "value": ""}))
+    .input_default("pattern", STRING, json!({"type": STRING, "value": ""}))
+    .input_default(
+        "recursive",
+        "core/bool@1",
+        json!({"type": "core/bool@1", "value": false}),
+    )
+    .output("names", "core/list@1<core/string@1>")
+    .build();
+    match package
+        .and_then(|package| package.source(&on_change, watch::Watch::Legacy))
+        .and_then(|package| package.source(&on_path_change, watch::Watch::Detailed))
+        .and_then(|package| package.node(&list_filtered, Operation::ListFiltered))
+    {
         Ok(package) => package,
         // The definitions are built from constants of this crate, checked by its tests.
         Err(error) => unreachable!("built-in definition is valid: {error}"),
@@ -632,8 +716,8 @@ mod tests {
     fn the_package_builds_with_its_nodes() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 15);
-        assert_eq!(package.sources().len(), 1);
+        assert_eq!(package.nodes().len(), 20);
+        assert_eq!(package.sources().len(), 2);
         assert_eq!(package.adapters().len(), 1);
     }
 
@@ -739,5 +823,156 @@ mod tests {
         assert!(open(&root, serde_json::json!({"poll_ms": 1})).is_err());
         assert!(FolderAdapter.open(&Map::new()).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recursive_actions_are_bounded_and_filter_the_requested_tree() {
+        let root = scratch("tree");
+        let session = open(&root, json!({})).unwrap();
+        let folder = folder(Some(session.as_ref())).unwrap();
+        folder.write("from/a.txt", b"ab").unwrap();
+        folder.write("from/sub/b.txt", b"cd").unwrap();
+        folder.write("from/sub/c.md", b"ef").unwrap();
+        let names = folder
+            .list_filtered("from", "*.txt", true, &|| false)
+            .unwrap();
+        assert_eq!(
+            names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+            ["a.txt", "sub/b.txt"]
+        );
+        let names = folder.list_filtered("from", "", false, &|| false).unwrap();
+        assert_eq!(
+            names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+            ["a.txt", "sub/"]
+        );
+        assert_eq!(
+            folder.files.copy_tree("from", "copy", 2, 10, &|| false),
+            Err(FsError::TooLarge)
+        );
+        assert_eq!(
+            folder.files.copy_tree("from", "copy", 4, 5, &|| false),
+            Err(FsError::TooLarge)
+        );
+        assert_eq!(
+            folder
+                .files
+                .copy_tree("from", "from/sub/copy", 4, 6, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        assert_eq!(
+            folder.files.copy_tree("from", "copy", 4, 6, &|| true),
+            Err(FsError::Cancelled)
+        );
+        assert!(!root.join("copy").exists());
+        folder
+            .files
+            .copy_tree("from", "copy", 4, 6, &|| false)
+            .unwrap();
+        assert_eq!(folder.read("copy/sub/b.txt").unwrap(), b"cd");
+        assert_eq!(folder.files.metadata("copy/sub/b.txt").unwrap().len(), 2);
+        assert!(folder.files.metadata("copy/sub").unwrap().is_dir());
+        assert_eq!(
+            folder.files.move_tree("copy", "from", 4, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        folder
+            .files
+            .move_tree("copy", "moved", 4, &|| false)
+            .unwrap();
+        assert!(!root.join("copy").exists());
+        assert_eq!(
+            folder.files.remove_tree("moved", 3, &|| false),
+            Err(FsError::TooLarge)
+        );
+        assert_eq!(folder.read("moved/a.txt").unwrap(), b"ab");
+        folder.files.remove_tree("moved", 4, &|| false).unwrap();
+        assert!(!root.join("moved").exists());
+        assert_eq!(
+            folder.files.remove_tree("", 10, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        let locked = orange_sandbox::Folder::new(root.canonicalize().unwrap(), true);
+        assert_eq!(
+            locked.copy_tree("from", "copy", 4, 6, &|| false),
+            Err(FsError::ReadOnly)
+        );
+        assert_eq!(
+            locked.move_tree("from", "copy", 4, &|| false),
+            Err(FsError::ReadOnly)
+        );
+        assert_eq!(
+            locked.remove_tree("from", 4, &|| false),
+            Err(FsError::ReadOnly)
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[cfg_attr(
+        windows,
+        ignore = "requires a Windows directory that permits creating junctions"
+    )]
+    #[test]
+    fn recursive_actions_and_enumeration_do_not_follow_a_real_escape_link() {
+        use std::fs;
+        let root = scratch("link");
+        let outside = root.parent().unwrap().join("outside");
+        fs::create_dir_all(root.join("from")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("kept.txt"), "kept").unwrap();
+        fs::write(root.join("from/kept.txt"), "kept").unwrap();
+        let link = root.join("from").join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            // A directory junction exercises Windows reparse checks without requiring
+            // the privilege needed to create a symbolic link.
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {output:?}"
+            );
+        }
+        let session = open(&root, json!({})).unwrap();
+        let folder = folder(Some(session.as_ref())).unwrap();
+        let names = folder.list_filtered("from", "", true, &|| false).unwrap();
+        assert_eq!(
+            names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+            ["kept.txt"]
+        );
+        assert_eq!(
+            folder.list_filtered("from/link", "", true, &|| false),
+            Err(BAD_PATH)
+        );
+        assert_eq!(
+            folder.files.metadata("from/link/kept.txt").err(),
+            Some(FsError::InvalidPath)
+        );
+        assert_eq!(
+            folder.files.copy_tree("from", "copy", 10, 100, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        assert_eq!(
+            folder.files.move_tree("from", "moved", 10, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        assert_eq!(
+            folder.files.remove_tree("from", 10, &|| false),
+            Err(FsError::InvalidPath)
+        );
+        assert!(!root.join("copy").exists() && !root.join("moved").exists());
+        assert_eq!(fs::read(outside.join("kept.txt")).unwrap(), b"kept");
+        assert_eq!(fs::read(root.join("from/kept.txt")).unwrap(), b"kept");
+        #[cfg(unix)]
+        fs::remove_file(link).unwrap();
+        #[cfg(windows)]
+        fs::remove_dir(link).unwrap();
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 }
