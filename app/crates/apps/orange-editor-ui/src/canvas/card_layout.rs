@@ -48,8 +48,13 @@ impl CardLayout {
             .filter(|port| port.input && !path_port(node, port))
             .count();
         let output_count = node.ports.iter().filter(|port| !port.input).count();
+        // A node that is only waiting for its variable shows the picker alone.
+        let rows = match input_count.max(output_count) {
+            0 if settings::has_references(node) => 0,
+            rows => rows.max(1),
+        };
         #[expect(clippy::cast_precision_loss, reason = "finite visible node rows")]
-        let body_end = BODY_TOP + input_count.max(output_count).max(1) as f32 * ROW_HEIGHT;
+        let body_end = BODY_TOP + rows as f32 * ROW_HEIGHT;
         let mut sides = [0usize; 2];
         let mut path_index = 0usize;
         let offsets = node
@@ -191,5 +196,28 @@ mod tests {
         let center = fire.pos.y + fire.galley.rect.center().y;
         assert!((center - port_offset(manual, "then", false).unwrap().y).abs() < 0.1);
         output.drop_without_applying_deltas();
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    /// A variable node chooses its variable on the card: before it names one, the
+    /// picker is its whole body, and once it does, the picker sits under its ports.
+    #[test]
+    fn variable_nodes_carry_their_picker_on_the_card() {
+        let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let id = host
+            .add_node(&mut draft, "core/get-variable", [0.0, 0.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+        assert!(node.ports.is_empty());
+        assert!(settings::has_references(node));
+        let layout = CardLayout::new(node);
+        assert_eq!(layout.source_top, BODY_TOP);
+        assert!(layout.size.y >= BODY_TOP + settings::height(node) + FOOTER_HEIGHT);
     }
 }

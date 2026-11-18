@@ -144,6 +144,9 @@ pub struct CanvasResponse {
     pub configure: Option<(NodeId, Pos2)>,
     /// A schema-backed configuration field edited directly on the card.
     pub set_config: Option<(NodeId, String, serde_json::Value)>,
+    /// "New variable…" was chosen in a card's variable picker: the node and the
+    /// setting the new variable goes into.
+    pub new_variable: Option<(NodeId, String)>,
     /// A device selected from an adapter-provided choice list.
     pub device: Option<(NodeId, Option<String>)>,
     /// The selected nodes are to be copied, or cut, to the clipboard.
@@ -269,6 +272,8 @@ pub struct Canvas {
     pub(crate) keys: crate::keymap::Keymap,
     pub(crate) shortcuts_enabled: bool,
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
+    /// The document's variables, as (ID, name), for the pickers on cards.
+    pub(crate) variables: Vec<(String, String)>,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
     pub scroll_pans: bool,
     /// Nodes let go after a move land on the grid; Alt while dragging moves freely.
@@ -328,6 +333,7 @@ impl Default for Canvas {
             keys: crate::keymap::Keymap::default(),
             shortcuts_enabled: true,
             device_pickers: BTreeMap::new(),
+            variables: Vec::new(),
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
             places: BTreeMap::new(),
@@ -1493,9 +1499,16 @@ impl Canvas {
             if controls
                 && front_rect
                     .is_none_or(|front_rect| front == Some(node.id) || !front_rect.intersects(rect))
-                && let Some((pointer, value)) = settings::draw(ui, node, rect, zoom)
+                && let Some(edit) = settings::draw(ui, node, rect, zoom, &self.variables)
             {
-                done.set_config = Some((node.id, pointer, value));
+                match edit {
+                    settings::CardEdit::Set(pointer, value) => {
+                        done.set_config = Some((node.id, pointer, value));
+                    }
+                    settings::CardEdit::NewVariable(pointer) => {
+                        done.new_variable = Some((node.id, pointer));
+                    }
+                }
             }
             if controls && connection_row(node).is_some() {
                 let label = self
@@ -2237,7 +2250,7 @@ fn draw_node<'a>(
                     }
                 });
         }
-        if node.ports.is_empty() {
+        if node.ports.is_empty() && !settings::has_references(node) {
             let _ = painter.text(
                 Pos2::new(
                     rect.center().x,

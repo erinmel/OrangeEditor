@@ -512,10 +512,6 @@ impl Editor {
             Ok(node) => {
                 let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(node));
-                if definition == "core/get-variable" {
-                    self.panels.properties = true;
-                    self.panels.packages = false;
-                }
                 Some(node)
             }
             Err(error) => {
@@ -1935,6 +1931,13 @@ impl Editor {
         self.quick_add_popup(ui.ctx(), host);
         if let Some((node, pointer, value)) = done.set_config {
             self.set_setting(host, node, &pointer, Some(value));
+        }
+        if let Some((node, pointer)) = done.new_variable {
+            // Naming the new variable needs a form, which the properties panel has.
+            self.canvas.select(Some(node));
+            self.panels.properties = true;
+            self.panels.packages = false;
+            self.quick_variable = Some(properties::QuickVariable::new(node, &pointer));
         }
         if let Some((node, device)) = done.device {
             self.choose_device(host, node, device);

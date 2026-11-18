@@ -51,6 +51,7 @@ impl Editor {
                 ))
             })
             .collect();
+        self.canvas.variables = self.choices(ReferenceKind::Variable, None);
         self.canvas.device_pickers.clear();
         for (id, definition, pointer, reference) in nodes {
             let Some(adapter) = adapters.get(&definition) else {

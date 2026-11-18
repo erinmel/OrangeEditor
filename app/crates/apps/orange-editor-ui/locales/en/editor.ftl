@@ -49,6 +49,7 @@ scope-workspace = workspace
 open-graph-variables = Open a graph to see its variables.
 open-graph-connections = Open a graph to see its connections.
 variables = Variables
+variable = Variable
 add-variable = Add a variable
 variable-drag-hint = Drag onto the graph to read it (Get); hold Alt to write it (Set).
 lasts = Lasts

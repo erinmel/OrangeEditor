@@ -48,6 +48,7 @@ scope-workspace = espacio de trabajo
 open-graph-variables = Abre un grafo para ver sus variables.
 open-graph-connections = Abre un grafo para ver sus conexiones.
 variables = Variables
+variable = Variable
 add-variable = Añadir una variable
 variable-drag-hint = Arrástrala al grafo para leerla (Obtener); mantén Alt para escribirla (Fijar).
 lasts = Dura

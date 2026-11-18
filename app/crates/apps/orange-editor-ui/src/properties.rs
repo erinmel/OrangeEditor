@@ -163,7 +163,11 @@ impl Editor {
 
     /// The declarations of one kind a node can name, as (ID, name).
     /// Connections are those of kind `adapter` when the node says which it uses.
-    fn choices(&self, kind: ReferenceKind, adapter: Option<&str>) -> Vec<(String, String)> {
+    pub(crate) fn choices(
+        &self,
+        kind: ReferenceKind,
+        adapter: Option<&str>,
+    ) -> Vec<(String, String)> {
         let Some(declared) = self.declarations() else {
             return Vec::new();
         };
@@ -863,6 +867,16 @@ pub(crate) struct QuickVariable {
 }
 
 impl QuickVariable {
+    /// An empty form for the variable `node` names at `pointer`.
+    pub(crate) fn new(node: NodeId, pointer: &str) -> Self {
+        Self {
+            node,
+            pointer: pointer.to_owned(),
+            name: String::new(),
+            ty: COMMON_TYPES[1].to_owned(),
+        }
+    }
+
     /// A form for `node`'s `/variable`, with a name typed.
     #[cfg(test)]
     pub(crate) fn for_test(node: NodeId) -> Self {

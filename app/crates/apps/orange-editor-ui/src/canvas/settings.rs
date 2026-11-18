@@ -1,5 +1,31 @@
-//! Common card settings, with numeric policies disclosed in the header menu.
+//! Common card settings, with numeric policies disclosed in the header menu, and the
+//! variable a node names, chosen on the card.
 use super::*;
+
+/// Height of a row that chooses a declaration, such as a node's variable.
+const REFERENCE_ROW: f32 = 52.0;
+
+/// A change made with a card's settings.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum CardEdit {
+    /// The setting at a JSON pointer takes a value.
+    Set(String, serde_json::Value),
+    /// A new variable is to be declared for the setting at a JSON pointer.
+    NewVariable(String),
+}
+
+/// The settings of `node` that name one of the document's variables, as JSON pointers.
+fn variable_pointers(node: &NodeView) -> impl Iterator<Item = &str> {
+    node.references
+        .iter()
+        .filter(|(_, kind)| *kind == orange_host::ReferenceKind::Variable)
+        .map(|(pointer, _)| pointer.as_str())
+}
+
+/// Whether `node` chooses a declaration on its card.
+pub(super) fn has_references(node: &NodeView) -> bool {
+    variable_pointers(node).next().is_some()
+}
 
 fn all_fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Value)> {
     node.schema
@@ -44,7 +70,60 @@ fn row_height(schema: &serde_json::Value) -> f32 {
 }
 
 pub(super) fn height(node: &NodeView) -> f32 {
-    fields(node).map(|(_, schema)| row_height(schema)).sum()
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a node names a few declarations"
+    )]
+    let references = variable_pointers(node).count() as f32 * REFERENCE_ROW;
+    references
+        + fields(node)
+            .map(|(_, schema)| row_height(schema))
+            .sum::<f32>()
+}
+
+/// The chooser of the variable at `pointer` among `variables` (ID, name), with a way
+/// to declare a new one.
+fn variable_field(
+    ui: &mut egui::Ui,
+    node: &NodeView,
+    pointer: &str,
+    variables: &[(String, String)],
+    width: f32,
+) -> Option<CardEdit> {
+    let named = node
+        .settings
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_str);
+    let shown = named
+        .and_then(|id| variables.iter().find(|(known, _)| known == id))
+        .map_or_else(
+            || tf("choose-reference", &[("kind", "variable".into())]),
+            |(_, name)| name.clone(),
+        );
+    let mut edit = None;
+    ui.label(egui::RichText::new(t("variable")).small());
+    let _ = egui::ComboBox::from_id_salt("variable")
+        .width(width)
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for (id, name) in variables {
+                let current = named == Some(id.as_str());
+                if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                    edit = Some(CardEdit::Set(pointer.to_owned(), id.as_str().into()));
+                }
+            }
+            if !variables.is_empty() {
+                ui.separator();
+            }
+            if ui
+                .selectable_label(false, tf("new-reference", &[("kind", "variable".into())]))
+                .clicked()
+            {
+                edit = Some(CardEdit::NewVariable(pointer.to_owned()));
+            }
+        });
+    edit
 }
 
 fn label(name: &str, schema: &serde_json::Value) -> String {
@@ -183,9 +262,39 @@ pub(super) fn draw(
     node: &NodeView,
     rect: Rect,
     zoom: f32,
-) -> Option<(String, serde_json::Value)> {
+    variables: &[(String, String)],
+) -> Option<CardEdit> {
     let mut y = rect.bottom() - (FOOTER_HEIGHT + height(node)) * zoom;
     let mut changed = None;
+    let scoped = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0) * zoom;
+        ui.spacing_mut().interact_size.y = FIELD_HEIGHT * zoom;
+        ui.style_mut().override_font_id = Some(FontId::proportional(12.0 * zoom));
+    };
+    for pointer in variable_pointers(node) {
+        let slot = Rect::from_min_size(
+            egui::pos2(rect.left() + CARD_PADDING * zoom, y),
+            egui::vec2(
+                rect.width() - 2.0 * CARD_PADDING * zoom,
+                REFERENCE_ROW * zoom,
+            ),
+        );
+        y += REFERENCE_ROW * zoom;
+        if !ui.is_rect_visible(slot) {
+            continue;
+        }
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(slot)
+                .id_salt(("node-reference", node.id, pointer)),
+            |ui| {
+                scoped(ui);
+                if let Some(edit) = variable_field(ui, node, pointer, variables, slot.width()) {
+                    changed = Some(edit);
+                }
+            },
+        );
+    }
     for (name, schema) in fields(node) {
         let slot = Rect::from_min_size(
             egui::pos2(rect.left() + CARD_PADDING * zoom, y),
@@ -203,11 +312,9 @@ pub(super) fn draw(
                 .max_rect(slot)
                 .id_salt(("node-setting", node.id, name)),
             |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0) * zoom;
-                ui.spacing_mut().interact_size.y = FIELD_HEIGHT * zoom;
-                ui.style_mut().override_font_id = Some(FontId::proportional(12.0 * zoom));
-                if let Some(edit) = field(ui, node, name, schema, slot.width()) {
-                    changed = Some(edit);
+                scoped(ui);
+                if let Some((pointer, value)) = field(ui, node, name, schema, slot.width()) {
+                    changed = Some(CardEdit::Set(pointer, value));
                 }
             },
         );
