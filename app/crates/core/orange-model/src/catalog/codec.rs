@@ -323,6 +323,7 @@ enum VolatilityWire {
     StateRead,
     Clock,
     Entropy,
+    Live,
 }
 
 #[derive(Deserialize)]
@@ -347,6 +348,7 @@ impl From<DefinitionWire> for NodeDefinition {
                 VolatilityWire::StateRead => Volatility::StateRead,
                 VolatilityWire::Clock => Volatility::Clock,
                 VolatilityWire::Entropy => Volatility::Entropy,
+                VolatilityWire::Live => Volatility::Live,
             }),
             determinism: match wire.determinism {
                 DeterminismWire::Deterministic => Determinism::Deterministic,

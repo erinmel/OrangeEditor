@@ -114,6 +114,10 @@ pub enum Volatility {
     StateRead,
     Clock,
     Entropy,
+    /// A package's live value: its provider publishes it to the run, which reads the
+    /// latest one like a variable. The node's data inputs are the arguments the
+    /// provider is armed with, evaluated at the root (11 §10.5).
+    Live,
 }
 
 /// A provider declaration, checked for kind compatibility; not authentication of code.

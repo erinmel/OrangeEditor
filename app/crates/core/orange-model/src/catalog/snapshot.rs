@@ -38,8 +38,12 @@ pub enum RegistryError {
     NominalKind { definition: DefinitionId },
     #[error("definition `{definition}` has incompatible volatility metadata")]
     VolatilityKind { definition: DefinitionId },
-    #[error("package definition `{definition}` may declare only entropy volatility")]
+    #[error("package definition `{definition}` may declare only entropy or live volatility")]
     VolatilityAuthority { definition: DefinitionId },
+    #[error(
+        "live definition `{definition}` must be external and have exactly one computed data output"
+    )]
+    LiveShape { definition: DefinitionId },
     #[error("definition `{definition}` has incompatible determinism metadata")]
     DeterminismKind { definition: DefinitionId },
     #[error("state/clock definition `{definition}` cannot declare data input `{port}`")]
@@ -496,6 +500,25 @@ fn check_execution(definition: &NodeDefinition, intrinsic: bool) -> Result<(), R
             definition: id.clone(),
         });
     }
+    if definition.volatility == Some(Volatility::Live) {
+        // One published value per node; its inputs are the provider's arguments.
+        let outputs = match &definition.ports {
+            Ports::Declared(ports) => ports
+                .iter()
+                .filter(|port| port.direction == PortDirection::Output)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let single = matches!(
+            outputs.as_slice(),
+            [port] if port.kind == PortKind::Data && port.source == Some(OutputSource::Computed)
+        );
+        if intrinsic || definition.determinism != Determinism::External || !single {
+            return Err(RegistryError::LiveShape {
+                definition: id.clone(),
+            });
+        }
+    }
     if (definition.kind == NodeKind::Pure && definition.determinism != Determinism::Deterministic)
         || (definition.volatility == Some(Volatility::Entropy)
             && definition.determinism != Determinism::Seeded)
@@ -582,6 +605,49 @@ mod execution_tests {
                 ));
             }
         }
+    }
+    /// A live read takes inputs (its arguments) and publishes exactly one computed
+    /// value; only packages declare it, and it is external by nature.
+    #[test]
+    fn live_readers_are_external_package_nodes_with_one_computed_output() {
+        let ty = |text: &str| text.parse().unwrap();
+        let live = |ports: Vec<PortDescriptor>, determinism| NodeDefinition {
+            determinism,
+            ..reader(Volatility::Live, Ports::Declared(ports))
+        };
+        let level = || PortDescriptor::data_out("level", ty("core/f64@1"), OutputSource::Computed);
+        let stream = || PortDescriptor::data_in("stream", ty("core/i64@1"));
+        let valid = live(vec![stream(), level()], Determinism::External);
+        assert!(check_execution(&valid, false).is_ok());
+        let refused = |definition: &NodeDefinition, intrinsic| {
+            matches!(
+                check_execution(definition, intrinsic),
+                Err(RegistryError::LiveShape { .. })
+            )
+        };
+        assert!(refused(&valid, true), "intrinsics are not live");
+        assert!(refused(
+            &live(vec![stream(), level()], Determinism::Deterministic),
+            false
+        ));
+        assert!(refused(&live(vec![stream()], Determinism::External), false));
+        let two = live(
+            vec![
+                level(),
+                PortDescriptor::data_out("peak", ty("core/f64@1"), OutputSource::Computed),
+            ],
+            Determinism::External,
+        );
+        assert!(refused(&two, false));
+        let state = live(
+            vec![PortDescriptor::data_out(
+                "level",
+                ty("core/f64@1"),
+                OutputSource::State,
+            )],
+            Determinism::External,
+        );
+        assert!(refused(&state, false));
     }
 }
 
