@@ -1,7 +1,7 @@
 //! Borrowed, frame-local geometry: one port walk instead of node scans per wire.
 //! Rebuilding from the supplied view keeps standalone Canvas callers free of cache
 //! invalidation obligations. Positions are read separately so dragging is immediate.
-use super::card_layout::CardLayout;
+use super::card::Card;
 use egui::{Pos2, Rect, Vec2};
 use orange_host::{GraphView, NodeId};
 use std::collections::HashMap;
@@ -24,8 +24,11 @@ impl<'a> Geometry<'a> {
         let mut ports = HashMap::with_capacity(graph.nodes.iter().map(|n| n.ports.len()).sum());
         let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
-            let layout = CardLayout::new(node);
-            for (port, offset) in node.ports.iter().zip(layout.offsets) {
+            let layout = Card::new(node);
+            for port in &node.ports {
+                let Some(offset) = layout.offset(port) else {
+                    continue;
+                };
                 let _ = ports
                     .entry((node.id, port.input, port.id.as_str()))
                     .or_insert(PortGeometry {

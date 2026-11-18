@@ -13,13 +13,13 @@ use orange_host::{GraphView, NodeId, NodeView, PortView};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
-pub const NODE_WIDTH: f32 = 260.0;
+pub const NODE_WIDTH: f32 = card::WIDTH;
 /// Height of a card's title.
 pub const HEADER_HEIGHT: f32 = 30.0;
 /// Where the first row of ports starts: under the title, with a little room.
-pub const BODY_TOP: f32 = HEADER_HEIGHT + 4.0;
+pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
-pub const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = card::LINE;
 /// How round a card's corners are, in graph units.
 const CARD_RADIUS: f32 = 8.0;
 
@@ -27,7 +27,7 @@ const CARD_RADIUS: f32 = 8.0;
 const PULSE_SECONDS: f32 = 0.65;
 
 /// Space under the last row.
-pub const FOOTER_HEIGHT: f32 = 6.0;
+pub const FOOTER_HEIGHT: f32 = card::END;
 /// Distance between the columns and rows of an automatic layout.
 pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 /// The zoom range.
@@ -42,20 +42,6 @@ const PORT_RADIUS: f32 = 5.0;
 const CONTROLS_ZOOM: f32 = 0.75;
 /// Space between a card's edge and what is inside it.
 const CARD_PADDING: f32 = 10.0;
-/// Height of a field or control in a row of a card.
-const FIELD_HEIGHT: f32 = 20.0;
-
-/// How a value on an input is changed on its card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Control {
-    Toggle,
-    Whole,
-    Number,
-    Text,
-    /// One of an enum's choices.
-    Choice,
-}
-
 /// The choices of the enum types a document's inputs use, by type.
 pub(crate) type Enums = std::collections::HashMap<String, Vec<orange_host::EnumChoice>>;
 
@@ -102,62 +88,29 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
     orange_host::plain(value)
 }
 
-impl Control {
-    fn of(port: &PortView, enums: &Enums) -> Option<Self> {
-        if !port.input || port.exec || port.connected {
-            return None;
-        }
-        if enums.contains_key(port.ty.as_deref()?) {
-            return Some(Self::Choice);
-        }
-        match port.ty.as_deref()? {
-            "core/bool@1" => Some(Self::Toggle),
-            "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => Some(Self::Whole),
-            "core/f64@1" | "core/f32@1" => Some(Self::Number),
-            "core/string@1" => Some(Self::Text),
-            _ => None,
-        }
-    }
-}
-
 /// The size of a node's card in graph units: a title and one row for each input beside
 /// an output. A node with no ports yet keeps one row, which says to set it up.
 pub fn node_size(node: &NodeView) -> Vec2 {
-    card_layout::CardLayout::new(node).size
+    card::Card::new(node).size
 }
 
 fn comparison_formula(definition: &str) -> Option<&'static str> {
     orange_host::formula(definition).filter(|formula| formula.contains(['<', '>', '=']))
 }
 
-fn connection_row(node: &NodeView) -> Option<usize> {
-    node.references
-        .iter()
-        .any(|(_, kind)| *kind == orange_host::ReferenceKind::Connection)
-        .then(|| node.ports.iter().filter(|port| port.input).count())
-}
-
-pub(super) fn connection_footer(node: &NodeView) -> f32 {
-    if connection_row(node).is_some() {
-        card_layout::SOURCE_ROW
-    } else {
-        0.0
-    }
-}
-
 /// A port position from the same template used to paint the card.
 pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
-    let index = node
+    let port = node
         .ports
         .iter()
-        .position(|candidate| candidate.input == input && candidate.id == port)?;
-    card_layout::CardLayout::new(node)
-        .offsets
-        .get(index)
-        .copied()
+        .find(|candidate| candidate.input == input && candidate.id == port)?;
+    card::Card::new(node).offset(port)
 }
 
-mod card_layout;
+mod card;
+#[cfg(test)]
+mod field_tests;
+mod fields;
 mod layout;
 pub use layout::auto_layout;
 mod geometry;
@@ -687,13 +640,14 @@ impl Canvas {
                 .iter()
                 .filter(|port| port.input && port.exec == exec)
             {
-                let Some(offset) = port_offset(node, &port.id, true) else {
+                let layout = card::Card::new(node);
+                let Some(found) = layout.row_of(port) else {
                     continue;
                 };
-                // From a little left of the dot to past the middle of the card.
+                // From a little left of the dot across the input's whole row.
                 let row = Rect::from_min_max(
-                    place + Vec2::new(-14.0, offset.y - ROW_HEIGHT / 2.0),
-                    place + Vec2::new(card_layout::width(node) * 0.6, offset.y + ROW_HEIGHT / 2.0),
+                    place + Vec2::new(-14.0, found.top),
+                    place + Vec2::new(layout.size.x, found.top + found.height),
                 );
                 if row.contains(at) {
                     return Some((node.id, port.id.clone()));
@@ -1504,6 +1458,10 @@ impl Canvas {
                         })
                 })
             });
+            let connection = self
+                .connection_labels
+                .get(&node.definition)
+                .map(String::as_str);
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
@@ -1512,256 +1470,105 @@ impl Canvas {
                 rect,
                 zoom,
                 &colors,
-                (selected, fire, controls.then_some(&self.enums)),
+                (selected, fire, controls),
                 response.id,
                 formula.as_deref(),
                 self.descriptions.get(&node.definition).map(String::as_str),
+                connection,
             );
             if pressed {
                 done.trigger = Some(node.id);
             }
-            if controls && settings::has_advanced(node) {
-                let slot = Rect::from_center_size(
-                    rect.right_top() + Vec2::new(-40.0 * zoom, HEADER_HEIGHT * zoom / 2.0),
-                    Vec2::splat(24.0 * zoom),
-                );
-                ui.scope_builder(
-                    UiBuilder::new()
-                        .max_rect(slot)
-                        .id_salt(("node-options", node.id)),
-                    |ui| {
-                        ui.menu_button(
-                            crate::icons::text(crate::icons::MORE).size(16.0 * zoom),
-                            |ui| {
-                                if let Some((pointer, value)) = settings::menu(ui, node) {
-                                    done.set_config = Some((node.id, pointer, value));
-                                }
-                            },
-                        )
-                        .response
-                        .on_hover_text(t("numeric-policies"));
-                    },
-                );
-            }
-            if controls
-                && front_rect
-                    .is_none_or(|front_rect| front == Some(node.id) || !front_rect.intersects(rect))
-                && let Some(edit) = settings::draw(ui, node, rect, zoom, &self.variables)
-            {
-                match edit {
-                    settings::CardEdit::Set(pointer, value) => {
-                        done.set_config = Some((node.id, pointer, value));
-                    }
-                    settings::CardEdit::NewVariable(pointer) => {
-                        done.new_variable = Some((node.id, pointer));
-                    }
-                }
-            }
-            if controls && connection_row(node).is_some() {
-                let label = self
-                    .connection_labels
-                    .get(&node.definition)
-                    .map_or(t("configure"), String::as_str);
-                let y = card_layout::CardLayout::new(node).source_top;
-                let middle = rect.top() + (y + card_layout::SOURCE_ROW / 2.0) * zoom;
-                let name = painter.text(
-                    Pos2::new(rect.left() + CARD_PADDING * zoom, middle),
-                    Align2::LEFT_CENTER,
-                    label,
-                    FontId::proportional(11.5 * zoom),
-                    colors.weak,
-                );
-                let left = name.right() + 8.0 * zoom;
-                let slot = Rect::from_min_max(
-                    Pos2::new(left, middle - FIELD_HEIGHT * zoom / 2.0),
-                    Pos2::new(
-                        rect.right() - CARD_PADDING * zoom,
-                        middle + FIELD_HEIGHT * zoom / 2.0,
-                    ),
-                );
-                let covered = front != Some(node.id)
-                    && front_rect.is_some_and(|rect| rect.contains(slot.center()));
-                if !covered && area.contains_rect(slot) {
-                    if let Some(picker) = self.device_pickers.get(&node.id) {
-                        let mut chosen = picker.selected.clone();
-                        let mut picked = false;
-                        let shown = chosen
-                            .as_ref()
-                            .and_then(|id| picker.options.iter().find(|(value, _)| value == id))
-                            .map_or(picker.default_label.as_str(), |(_, label)| label.as_str());
-                        let file = picker
-                            .connection
-                            .as_ref()
-                            .and_then(|connection| connection.settings["file"].as_str())
-                            .and_then(|path| std::path::Path::new(path).file_name())
-                            .map(|name| name.to_string_lossy());
-                        let shown = file.as_deref().unwrap_or(shown);
-                        ui.scope_builder(
-                            UiBuilder::new().max_rect(slot).id_salt(("device", node.id)),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("endpoint")
-                                    .width(slot.width())
-                                    .wrap_mode(egui::TextWrapMode::Wrap)
-                                    .selected_text(egui::RichText::new(shown).size(11.5 * zoom))
-                                    .show_ui(ui, |ui| {
-                                        picked |= ui
-                                            .selectable_value(
-                                                &mut chosen,
-                                                None,
-                                                &picker.default_label,
-                                            )
-                                            .clicked();
-                                        ui.separator();
-                                        // Devices, what an output plays, then applications.
-                                        let group = |id: &str| {
-                                            if id.starts_with("loopback:") {
-                                                1
-                                            } else if id.starts_with("app:") {
-                                                2
-                                            } else {
-                                                0
-                                            }
-                                        };
-                                        for kind in 0..3 {
-                                            let options: Vec<_> = picker
-                                                .options
-                                                .iter()
-                                                .filter(|(id, _)| group(id) == kind)
-                                                .collect();
-                                            if options.is_empty() {
-                                                continue;
-                                            }
-                                            ui.small(match kind {
-                                                1 => t("playback-capture"),
-                                                2 => t("applications"),
-                                                _ => &picker.group_label,
-                                            });
-                                            for (value, label) in options {
-                                                picked |= ui
-                                                    .selectable_value(
-                                                        &mut chosen,
-                                                        Some(value.clone()),
-                                                        label,
-                                                    )
-                                                    .clicked();
-                                            }
-                                            ui.separator();
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text(shown);
-                            },
-                        );
-                        if picked && (chosen != picker.selected || picker.connection.is_none()) {
-                            done.device = Some((node.id, chosen));
-                        }
-                    } else {
-                        let button = ui
-                            .put(slot, egui::Button::new(label).truncate())
-                            .on_hover_text(node.detail.as_deref().unwrap_or(label));
-                        if button.clicked() {
-                            done.configure = Some((node.id, slot.left_bottom()));
-                        }
-                    }
-                }
-            }
-            // Values a run put on ports: beside each output, and beside each wired
-            // input the value it receives. Cut short here; the inspector has them whole.
-            for port in node
-                .ports
-                .iter()
-                .filter(|port| !port.exec && !(card_layout::literal(node) && !port.input))
-            {
-                let (Some(value), Some(at)) = (
-                    self.frame_port_value(&geometry, node.id, &port.id, port.input),
-                    geometry
-                        .port(node.id, &port.id, port.input)
-                        .map(|found| to_screen(place + found.offset)),
-                ) else {
-                    continue;
+            // Values a run put on ports: before each output's name, and after the name
+            // of each wired input. Cut short here; the inspector has them whole.
+            let layout = card::Card::new(node);
+            let label_font = FontId::proportional(12.5 * zoom);
+            let inset = CARD_PADDING * zoom;
+            for row in &layout.rows {
+                let wired = match row.left {
+                    Some(card::Left::Port(port)) if !port.exec => Some(port),
+                    _ => None,
                 };
-                if zoom < 0.6 {
-                    continue;
-                }
-                let font = FontId::monospace(11.5 * zoom);
-                let inset = CARD_PADDING * zoom;
-                // On the port's own line (22 §3.1): an input's value in the input
-                // column, an output's just before its name.
-                let (x, align) = if port.input {
-                    let column = if card_layout::literal(node) {
-                        0.0
-                    } else {
-                        card_layout::input_column(node) + 8.0
+                let output = row.right.filter(|port| !port.exec && !card::literal(node));
+                for (port, input) in [(wired, true), (output, false)] {
+                    let Some(port) = port else { continue };
+                    let Some(value) = self.frame_port_value(&geometry, node.id, &port.id, input)
+                    else {
+                        continue;
                     };
-                    (inset + column * zoom, Align2::LEFT_CENTER)
-                } else {
-                    let name = painter.layout_no_wrap(
-                        port_title(port),
-                        FontId::proportional(12.5 * zoom),
-                        colors.text,
+                    if zoom < 0.6 {
+                        continue;
+                    }
+                    let name =
+                        painter.layout_no_wrap(port_title(port), label_font.clone(), colors.text);
+                    let name_width = name.size().x.min(rect.width() / 2.0 - 1.5 * inset);
+                    let y = rect.top() + row.anchor() * zoom;
+                    let (at, align, room) = if input {
+                        let room = if output.is_some() {
+                            rect.width() / 2.0
+                        } else {
+                            rect.width()
+                        } - name_width
+                            - 3.0 * inset;
+                        (
+                            Pos2::new(rect.left() + inset + name_width + 8.0 * zoom, y),
+                            Align2::LEFT_CENTER,
+                            room,
+                        )
+                    } else {
+                        (
+                            Pos2::new(rect.right() - inset - name_width - 8.0 * zoom, y),
+                            Align2::RIGHT_CENTER,
+                            rect.width() / 2.0 - 2.0 * inset,
+                        )
+                    };
+                    if room < 24.0 * zoom {
+                        continue;
+                    }
+                    let font = FontId::monospace(11.5 * zoom);
+                    let tint = if value.preview || value.epoch == self.value_epoch {
+                        colors.text
+                    } else {
+                        colors.weak
+                    };
+                    let (shown, _) = elide(&painter, &value.shown.short, &font, room);
+                    let galley = painter.layout_no_wrap(shown, font, tint);
+                    let bounds = align.anchor_rect(Rect::from_min_size(at, galley.size()));
+                    painter.rect_filled(
+                        bounds.expand2(Vec2::new(5.0, 2.0) * zoom),
+                        3.0 * zoom,
+                        colors.background,
                     );
-                    (-(inset + name.size().x + 8.0 * zoom), Align2::RIGHT_CENTER)
-                };
-                let room = if card_layout::path_port(node, port) {
-                    rect.width() - 2.0 * inset
-                } else {
-                    rect.width() / 2.0 - 2.0 * inset
-                };
-                let tint = if value.preview || value.epoch == self.value_epoch {
-                    colors.text
-                } else {
-                    colors.weak
-                };
-                let (shown, _) = elide(&painter, &value.shown.short, &font, room);
-                let text_at = at + Vec2::new(x, 0.0);
-                let galley = painter.layout_no_wrap(shown, font, tint);
-                let bounds = align.anchor_rect(Rect::from_min_size(text_at, galley.size()));
-                painter.rect_filled(
-                    bounds.expand2(Vec2::new(5.0, 2.0) * zoom),
-                    3.0 * zoom,
-                    colors.background,
-                );
-                painter.galley(bounds.min, galley, tint);
+                    painter.galley(bounds.min, galley, tint);
+                }
             }
-            for (port, slot) in slots {
+            for (field, slot) in slots {
                 if !area.contains_rect(slot)
                     || (front != Some(node.id)
                         && front_rect.is_some_and(|rect| rect.contains(slot.center())))
                 {
                     continue;
                 }
-                if let Some(path) = node
-                    .paths
-                    .iter()
-                    .find(|path| file_dialogs && path.port == port.id)
-                {
-                    let current = port.value.as_deref().map(field_text).unwrap_or_default();
-                    let label = std::path::Path::new(&current)
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or_else(|| {
-                            if path.folder {
-                                t("choose-folder")
-                            } else {
-                                t("choose-file")
-                            }
-                            .into()
-                        });
-                    let response = ui
-                        .put(
-                            slot,
-                            egui::Button::new((crate::icons::text(crate::icons::OPEN), label))
-                                .truncate(),
-                        )
-                        .on_hover_text(port.value.as_deref().unwrap_or(t("choose-path")));
-                    if response.clicked() {
-                        self.front = Some(node.id);
-                        done.browse_path = Some((node.id, port.id.clone()));
+                let id = response.id.with(("field", node.id, slot.min.y as i32 / 4));
+                let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs) else {
+                    continue;
+                };
+                self.front = Some(node.id);
+                match edit {
+                    fields::FieldEdit::Input(port, text) => {
+                        done.set_input = Some((node.id, port, text));
                     }
-                } else if let Some(written) = self.control(ui, node, port, slot, response.id) {
-                    self.front = Some(node.id);
-                    done.set_input = Some(written);
+                    fields::FieldEdit::Setting(pointer, value) => {
+                        done.set_config = Some((node.id, pointer, value));
+                    }
+                    fields::FieldEdit::NewVariable(pointer) => {
+                        done.new_variable = Some((node.id, pointer));
+                    }
+                    fields::FieldEdit::Device(device) => done.device = Some((node.id, device)),
+                    fields::FieldEdit::Configure(at) => done.configure = Some((node.id, at)),
+                    fields::FieldEdit::Browse(port) => {
+                        done.browse_path = Some((node.id, port));
+                    }
                 }
             }
             let node = node.id;
@@ -1867,8 +1674,9 @@ impl Canvas {
                     rect,
                     zoom,
                     &colors,
-                    (true, None, None),
+                    (true, None, false),
                     response.id,
+                    None,
                     None,
                     None,
                 );
@@ -1901,155 +1709,6 @@ impl Canvas {
             }
         }
         done
-    }
-
-    /// The control for one input's value on a card, in `slot`. Returns the value
-    /// written, as typed.
-    fn control(
-        &mut self,
-        ui: &mut egui::Ui,
-        node: &NodeView,
-        port: &PortView,
-        slot: Rect,
-        canvas: egui::Id,
-    ) -> Option<(NodeId, String, String)> {
-        let control = Control::of(port, &self.enums)?;
-        let id = canvas.with(("control", node.id, port.id.as_str()));
-        let place = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| {
-            ui.scope_builder(
-                UiBuilder::new().max_rect(slot).id_salt(id).layout(
-                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                ),
-                |ui| add(ui),
-            )
-            .inner
-        };
-        let written = |text: String| Some((node.id, port.id.clone(), text));
-        match control {
-            Control::Choice => {
-                let choices = self.enums.get(port.ty.as_deref()?)?;
-                let mut chosen = None;
-                place(ui, &mut |ui| {
-                    egui::ComboBox::from_id_salt("choice")
-                        .width(slot.width())
-                        .selected_text(port.value.as_deref().unwrap_or(t("choose")))
-                        .show_ui(ui, |ui| {
-                            for choice in choices.iter().filter(|choice| !choice.payload) {
-                                let current = port.value.as_deref() == Some(choice.name.as_str());
-                                if ui.selectable_label(current, &choice.name).clicked() && !current
-                                {
-                                    chosen = Some(choice.literal.clone());
-                                }
-                            }
-                        })
-                        .response
-                });
-                chosen.and_then(written)
-            }
-            Control::Toggle => {
-                let on = port.value.as_deref() == Some("true");
-                let label = match port.value.as_deref() {
-                    Some("true") => t("value-true"),
-                    Some("false") => t("value-false"),
-                    _ => t("set"),
-                };
-                place(ui, &mut |ui| ui.add(egui::Button::new(label).selected(on)))
-                    .clicked()
-                    .then(|| written((!on).to_string()))
-                    .flatten()
-            }
-            Control::Whole | Control::Number => {
-                let whole = control == Control::Whole;
-                let ty =
-                    port.ty
-                        .as_deref()
-                        .unwrap_or(if whole { "core/i64@1" } else { "core/f64@1" });
-                let typing = self
-                    .typing
-                    .as_mut()
-                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
-                if let Some((_, _, typed, focused)) = typing {
-                    let field = place(ui, &mut |ui| {
-                        ui.add(egui::TextEdit::singleline(typed).font(egui::TextStyle::Monospace))
-                    });
-                    if !*focused {
-                        if ui.input(|input| input.focused) {
-                            field.request_focus();
-                        }
-                        *focused = true;
-                    }
-                    if field.lost_focus() {
-                        let text = typed.trim().to_owned();
-                        self.typing = None;
-                        return number_text(&text, whole, ty).and_then(written);
-                    }
-                    return None;
-                }
-                let pixels = self
-                    .number_drag
-                    .as_ref()
-                    .filter(|(at, name, _)| *at == node.id && *name == port.id)
-                    .map(|(_, _, pixels)| *pixels);
-                let shown = match pixels {
-                    Some(pixels) => Some(stepped(port.value.as_deref(), pixels, whole, ty)),
-                    None => port.value.clone(),
-                };
-                let touched = number_field(ui, slot, id, shown.as_deref(), port.default.as_deref());
-                if touched.clicked() {
-                    self.number_drag = None;
-                    let typed = port.value.clone().unwrap_or_default();
-                    self.typing = Some((node.id, port.id.clone(), typed, false));
-                    return None;
-                }
-                if touched.drag_started() {
-                    self.number_drag = Some((node.id, port.id.clone(), 0.0));
-                }
-                if touched.dragged()
-                    && let Some((_, _, pixels)) = self.number_drag.as_mut()
-                {
-                    *pixels += touched.drag_delta().x;
-                    return None;
-                }
-                if touched.drag_stopped() {
-                    self.number_drag = None;
-                    return pixels
-                        .map(|pixels| stepped(port.value.as_deref(), pixels, whole, ty))
-                        .and_then(written);
-                }
-                None
-            }
-            Control::Text => {
-                let typing = self
-                    .typing
-                    .as_mut()
-                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
-                let Some((_, _, typed, focused)) = typing else {
-                    // The value shows as a pill; a click types a new one.
-                    let touched = ui.interact(slot, id, Sense::click());
-                    if touched.clicked() {
-                        let shown = port.value.clone().unwrap_or_default();
-                        let typed = serde_json::from_str::<String>(&shown).unwrap_or(shown);
-                        self.typing = Some((node.id, port.id.clone(), typed, false));
-                    }
-                    return None;
-                };
-                let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
-                if !*focused {
-                    if ui.input(|input| input.focused) {
-                        field.request_focus();
-                    }
-                    *focused = true;
-                }
-                let entered =
-                    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if field.lost_focus() {
-                    let text = typed.clone();
-                    self.typing = None;
-                    return entered.then(|| written(text)).flatten();
-                }
-                None
-            }
-        }
     }
 }
 
@@ -2085,53 +1744,35 @@ fn stepped(value: Option<&str>, pixels: f32, whole: bool, ty: &str) -> String {
     ((moved * 100.0).round() / 100.0).to_string()
 }
 
-/// A number's field on a card: the value framed like a text field, left-aligned,
-/// outlined when the pointer is on it. A click types; a sideways drag steps it.
+/// A number's field on a card: the value framed like every field, across the whole
+/// field, with its unit dimmed at the right end. A click types; a sideways drag steps.
 fn number_field(
     ui: &mut egui::Ui,
     slot: Rect,
     id: egui::Id,
     value: Option<&str>,
     default: Option<&str>,
+    unit: &str,
 ) -> egui::Response {
     let colors = Palette::of(ui);
-    let zoom = slot.height() / FIELD_HEIGHT;
-    let pad = 6.0 * zoom;
-    let font = FontId::monospace(12.0 * zoom);
+    let zoom = slot.height() / card::CONTROL;
     // An input with no value shows its default dimmed, or a dash when it has none.
     let (text, ink) = match (value, default) {
         (Some(value), _) => (value, colors.text),
         (None, Some(default)) => (default, colors.weak),
         (None, None) => ("—", colors.weak),
     };
-    let painter = ui.painter().clone();
-    let (text, _) = elide(&painter, text, &font, slot.width() - 2.0 * pad);
-    let galley = painter.layout_no_wrap(text, font, ink);
-    let width = (galley.size().x + 2.0 * pad).clamp((40.0 * zoom).min(slot.width()), slot.width());
-    let field = Rect::from_min_size(slot.min, Vec2::new(width, slot.height()));
     let touched = ui
-        .interact(field, id, Sense::click_and_drag())
+        .interact(slot, id, Sense::click_and_drag())
         .on_hover_text(t("number-drag-hint"));
     let active = touched.hovered() || touched.dragged();
     if active {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
-    painter.rect_filled(field, 4.0 * zoom, colors.background);
-    painter.rect_stroke(
-        field,
-        4.0 * zoom,
-        Stroke::new(
-            1.0,
-            if active {
-                colors.selected
-            } else {
-                colors.outline
-            },
-        ),
-        StrokeKind::Inside,
-    );
-    let place = Pos2::new(field.min.x + pad, field.center().y - galley.size().y / 2.0);
-    painter.galley(place, galley, ink);
+    let painter = ui.painter();
+    fields::frame(painter, slot, zoom, &colors, active);
+    let suffix = (!unit.is_empty()).then(|| (unit, colors.weak, FontId::proportional(11.5 * zoom)));
+    let _ = fields::field_text_in(painter, slot, zoom, text, ink, suffix);
     touched
 }
 
@@ -2268,14 +1909,12 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, enums): (bool, Option<bool>, Option<&Enums>),
+    (selected, fire, controls): (bool, Option<bool>, bool),
     canvas: egui::Id,
     formula: Option<&str>,
     description: Option<&str>,
-) -> (bool, Vec<(&'a PortView, Rect)>) {
-    let controls = enums.is_some();
-    let no_enums = Enums::new();
-    let enums = enums.unwrap_or(&no_enums);
+    connection: Option<&str>,
+) -> (bool, Vec<(card::FieldOf<'a>, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
@@ -2311,206 +1950,206 @@ fn draw_node<'a>(
     };
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
-    // Text smaller than this is a smudge: far out, a card is only its shape.
+    let layout = card::Card::new(node);
+    // Text smaller than this is a smudge: far out, a card is only its shape and dots.
     let readable = zoom >= 0.45;
+    let pad = CARD_PADDING * zoom;
+    let font = FontId::proportional(12.5 * zoom);
     let mut pressed = false;
+    let mut slots = Vec::new();
     if readable {
-        let title = FontId::proportional(14.5 * zoom);
-        let small = FontId::proportional(11.5 * zoom);
-        let clip = header.shrink2(Vec2::new(CARD_PADDING * zoom, 0.0));
+        let title = FontId::proportional(14.0 * zoom);
+        let clip = header.shrink2(Vec2::new(pad, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
         let mut left = clip.left_center();
         if node.entry {
             draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
             left.x += 19.0 * zoom;
         }
-        let room = clip.right()
-            - left.x
-            - if settings::has_advanced(node) {
-                52.0 * zoom
-            } else {
-                20.0 * zoom
-            };
-        let (shown, cut) = elide(painter, name, &title, room);
+        let (shown, cut) = elide(painter, name, &title, clip.right() - left.x - 18.0 * zoom);
         let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
         let detail = node
             .detail
             .as_deref()
             .or_else(|| (node.name != node.kind).then_some(kind));
-        if cut || detail.is_some() || description.is_some() {
+        if cut || detail.is_some() || description.is_some() || formula.is_some() {
             let _ = ui
                 .interact(clip, canvas.with(("title", node.id)), Sense::hover())
                 .on_hover_ui(|ui| {
+                    ui.set_max_width(280.0);
                     ui.strong(name);
                     if let Some(detail) = detail {
                         ui.label(detail);
+                    }
+                    if let Some(formula) = formula {
+                        ui.monospace(formula);
                     }
                     if let Some(description) = description {
                         ui.label(description);
                     }
                 });
         }
-        if node.ports.is_empty() && !settings::has_references(node) {
+        if layout.empty {
             let _ = painter.text(
-                Pos2::new(
-                    rect.center().x,
-                    rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom,
-                ),
+                Pos2::new(rect.center().x, rect.top() + layout.rows[0].anchor() * zoom),
                 Align2::CENTER_CENTER,
                 t("set-up-in-properties"),
-                small.clone(),
+                FontId::proportional(11.5 * zoom),
                 colors.weak,
             );
         }
-        if let Some(live) = fire {
-            let size = Vec2::new(64.0, 22.0) * zoom;
-            let y = rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom;
-            let button = Rect::from_center_size(
-                Pos2::new(rect.left() + CARD_PADDING * zoom + size.x / 2.0, y),
-                size,
-            );
-            let sense = if live { Sense::click() } else { Sense::hover() };
-            let touched = ui
-                .interact(button, canvas.with(("trigger", node.id)), sense)
-                .on_hover_text(if live {
-                    t("fire-now-hint")
-                } else {
-                    t("fire-run-first-hint")
-                });
-            let fill = match (live, touched.hovered()) {
-                (false, _) => colors.weak.gamma_multiply(0.35),
-                (true, true) => colors.selected,
-                (true, false) => colors.exec,
-            };
-            painter.rect_filled(button, 5.0 * zoom, fill);
-            let _ = painter.text(
-                button.center(),
-                Align2::CENTER_CENTER,
-                t("fire"),
-                small.clone(),
-                if live { colors.card } else { colors.weak },
-            );
-            touched.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::Button, live, t("fire-manual-trigger"))
-            });
-            pressed = live && touched.clicked();
-        } else if let Some(formula) = formula {
-            ui.interact(
-                header,
-                canvas.with(("formula-help", node.id)),
-                Sense::hover(),
-            )
-            .on_hover_text(formula);
-        }
     }
-
-    // One line per port (22 §3.1): an input's field starts in the input column and ends
-    // before the name of the output on its row.
-    let layout = card_layout::CardLayout::new(node);
-    let label_font = FontId::proportional(12.5 * zoom);
-    let field_column = if card_layout::literal(node) {
-        rect.left() + CARD_PADDING * zoom
-    } else {
-        rect.left() + (CARD_PADDING + card_layout::input_column(node) + 8.0) * zoom
-    };
-    let mut slots = Vec::new();
-    for (port, offset) in node.ports.iter().zip(&layout.offsets) {
-        let y = rect.top() + offset.y * zoom;
-        let x = if port.input {
-            rect.left()
-        } else {
-            rect.right()
-        };
-        let path = card_layout::path_port(node, port);
-        let beside = node
-            .ports
-            .iter()
-            .zip(&layout.offsets)
-            .find(|(other, at)| !other.input && (at.y - offset.y).abs() < 0.5)
-            .map(|(other, _)| other);
-        let value_end = match beside.filter(|_| !path && !card_layout::literal(node)) {
-            Some(output) => {
-                let name =
-                    painter.layout_no_wrap(port_title(output), label_font.clone(), colors.text);
-                rect.right() - CARD_PADDING * zoom - name.size().x - 10.0 * zoom
-            }
-            None => rect.right() - CARD_PADDING * zoom,
-        };
-        let field_left = if path {
-            rect.left() + CARD_PADDING * zoom
-        } else {
-            field_column
-        };
-        // Toggles and numbers are drawn by their control instead of a field.
-        let control = Control::of(port, enums).filter(|_| controls && readable);
-        let style = PortStyle {
-            readable,
-            field: !matches!(
-                control,
-                Some(Control::Toggle | Control::Whole | Control::Number | Control::Choice)
-            ),
-            hinted: control.is_none(),
-            definition: &node.definition,
-            value_end,
-            field_left,
-            compact: card_layout::literal(node),
-            label_room: rect.width() / 2.0 - 2.0 * CARD_PADDING * zoom,
-        };
-        if draw_port(painter, port, Pos2::new(x, y), zoom, colors, style).is_some()
-            && let Some(control) = control
-        {
-            let height = FIELD_HEIGHT * zoom;
-            let left = field_left;
-            let width = match control {
-                Control::Toggle => 48.0 * zoom,
-                Control::Whole | Control::Number => {
-                    (value_end - left).clamp(36.0 * zoom, 140.0 * zoom)
+    let half = rect.width() / 2.0 - 1.5 * pad;
+    for row in &layout.rows {
+        let y = rect.top() + row.anchor() * zoom;
+        // The output first: an input's name on the same line leaves it room.
+        let mut left_room = rect.width() - 2.0 * pad;
+        if let Some(port) = row.right {
+            draw_dot(painter, port, Pos2::new(rect.right(), y), zoom, colors);
+            let literal_output = matches!(row.left, Some(card::Left::Field { named: false, .. }));
+            if readable && !literal_output {
+                let (label, _) = elide(painter, &port_title(port), &font, half);
+                let end = Pos2::new(rect.right() - pad, y);
+                if port.exec {
+                    let arrow = 11.0 * zoom;
+                    draw_arrow(
+                        painter,
+                        end - Vec2::new(arrow, 0.0),
+                        arrow,
+                        colors.exec,
+                        zoom,
+                    );
+                    let _ = painter.text(
+                        end - Vec2::new(arrow + 6.0 * zoom, 0.0),
+                        Align2::RIGHT_CENTER,
+                        label,
+                        font.clone(),
+                        colors.exec,
+                    );
+                } else {
+                    let _ =
+                        painter.text(end, Align2::RIGHT_CENTER, label, font.clone(), colors.text);
                 }
-                Control::Text | Control::Choice => (value_end - left).max(36.0 * zoom),
-            };
-            let slot =
-                Rect::from_min_size(Pos2::new(left, y - height / 2.0), Vec2::new(width, height));
-            slots.push((port, slot));
+                left_room = half;
+            }
+        }
+        match row.left {
+            Some(card::Left::Fire) => {
+                let Some(live) = fire else { continue };
+                let size = Vec2::new(64.0, 22.0) * zoom;
+                let button =
+                    Rect::from_center_size(Pos2::new(rect.left() + pad + size.x / 2.0, y), size);
+                let sense = if live { Sense::click() } else { Sense::hover() };
+                let touched = ui
+                    .interact(button, canvas.with(("trigger", node.id)), sense)
+                    .on_hover_text(if live {
+                        t("fire-now-hint")
+                    } else {
+                        t("fire-run-first-hint")
+                    });
+                let fill = match (live, touched.hovered()) {
+                    (false, _) => colors.weak.gamma_multiply(0.35),
+                    (true, true) => colors.selected,
+                    (true, false) => colors.exec,
+                };
+                painter.rect_filled(button, 5.0 * zoom, fill);
+                if readable {
+                    let _ = painter.text(
+                        button.center(),
+                        Align2::CENTER_CENTER,
+                        t("fire"),
+                        FontId::proportional(11.5 * zoom),
+                        if live { colors.card } else { colors.weak },
+                    );
+                }
+                touched.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, live, t("fire-manual-trigger"))
+                });
+                pressed = live && touched.clicked();
+            }
+            Some(card::Left::Port(port)) => {
+                let at = Pos2::new(rect.left(), y);
+                draw_dot(painter, port, at, zoom, colors);
+                if !readable {
+                    continue;
+                }
+                let label = port_title(port);
+                if port.exec {
+                    // The way in is a tinted chip inside the card.
+                    let arrow = 11.0 * zoom;
+                    let (label, _) = elide(painter, &label, &font, left_room - arrow - 20.0 * zoom);
+                    let text = painter.layout_no_wrap(label, font.clone(), colors.text);
+                    let height = 22.0 * zoom;
+                    let chip = Rect::from_min_size(
+                        Pos2::new(rect.left() + pad - 4.0 * zoom, y - height / 2.0),
+                        Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
+                    );
+                    painter.rect_filled(chip, 5.0 * zoom, colors.exec.gamma_multiply(0.16));
+                    draw_arrow(
+                        painter,
+                        Pos2::new(chip.min.x + 7.0 * zoom, y),
+                        arrow,
+                        colors.exec,
+                        zoom,
+                    );
+                    let place =
+                        Pos2::new(chip.min.x + 13.0 * zoom + arrow, y - text.size().y / 2.0);
+                    painter.galley(place, text, colors.text);
+                } else {
+                    let (label, _) = elide(painter, &label, &font, left_room);
+                    let _ = painter.text(
+                        at + Vec2::new(pad, 0.0),
+                        Align2::LEFT_CENTER,
+                        label,
+                        font.clone(),
+                        colors.text,
+                    );
+                }
+            }
+            Some(card::Left::Field { editor, named }) => {
+                if let Some(port) = editor.port() {
+                    draw_dot(painter, port, Pos2::new(rect.left(), y), zoom, colors);
+                }
+                if !readable {
+                    continue;
+                }
+                if named {
+                    let label = fields::name(node, editor, connection);
+                    let (label, _) = elide(painter, &label, &font, left_room);
+                    let _ = painter.text(
+                        Pos2::new(rect.left() + pad, y),
+                        Align2::LEFT_CENTER,
+                        label,
+                        FontId::proportional(12.0 * zoom),
+                        colors.weak,
+                    );
+                }
+                if let Some(control) = row.control(layout.size.x) {
+                    let slot = Rect::from_min_max(
+                        rect.min + control.min.to_vec2() * zoom,
+                        rect.min + control.max.to_vec2() * zoom,
+                    );
+                    if controls {
+                        slots.push((editor, slot));
+                    } else {
+                        fields::paint_still(painter, node, editor, slot, zoom, colors);
+                    }
+                }
+            }
+            None => {}
         }
     }
     (pressed, slots)
 }
 
-/// How one port of a card is drawn.
-#[derive(Debug, Clone, Copy)]
-struct PortStyle<'a> {
-    /// Big enough to read: names and values are drawn.
-    readable: bool,
-    /// An input's value is drawn as a field (no control draws it).
-    field: bool,
-    /// A short type is shown beside a value port nothing feeds.
-    hinted: bool,
-    definition: &'a str,
-    /// The farthest right an input's value reaches.
-    value_end: f32,
-    /// Where an input's field or value starts: the card's input column.
-    field_left: f32,
-    compact: bool,
-    label_room: f32,
-}
-
-/// Draws a port's dot and name, an input's value as a field, and a short type
-/// beside a value port nothing feeds. Returns where an input's name is.
-fn draw_port(
-    painter: &egui::Painter,
-    port: &PortView,
-    at: Pos2,
-    zoom: f32,
-    colors: &Palette,
-    style: PortStyle<'_>,
-) -> Option<Rect> {
+/// Draws a port's dot: a diamond for a step, a circle for a value, filled when wired.
+fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, colors: &Palette) {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
         colors.exec
     } else {
         type_color(port.ty.as_deref())
     };
-    // A diamond marks an execution port even when zoom hides every label.
     let fill = if port.connected { color } else { colors.card };
     let outline = if port.connected {
         Stroke::NONE
@@ -2532,146 +2171,6 @@ fn draw_port(
     } else {
         painter.circle(at, radius, fill, outline);
     }
-    if !style.readable {
-        return None;
-    }
-    let font = FontId::proportional(12.5 * zoom);
-    let hint = FontId::proportional(10.5 * zoom);
-    let gap = CARD_PADDING * zoom;
-    let name = port_title(port);
-    let label_room = style.label_room;
-    if port.exec {
-        // Steps read as on a flow chart: the way in is a tinted row inside the card,
-        // the ways on are named with an arrow toward their dot.
-        let arrow = 11.0 * zoom;
-        let (name, _) = elide(painter, &name, &font, label_room - arrow - 12.0 * zoom);
-        if port.input {
-            let text = painter.layout_no_wrap(name, font, colors.text);
-            let height = FIELD_HEIGHT * zoom;
-            let row = Rect::from_min_size(
-                Pos2::new(at.x + gap - 4.0 * zoom, at.y - height / 2.0),
-                Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
-            );
-            painter.rect_filled(row, 5.0 * zoom, color.gamma_multiply(0.16));
-            draw_arrow(
-                painter,
-                Pos2::new(row.min.x + 7.0 * zoom, at.y),
-                arrow,
-                color,
-                zoom,
-            );
-            let place = Pos2::new(row.min.x + 13.0 * zoom + arrow, at.y - text.size().y / 2.0);
-            painter.galley(place, text, colors.text);
-            return Some(row);
-        }
-        let start = at.x - gap - arrow;
-        draw_arrow(painter, Pos2::new(start, at.y), arrow, color, zoom);
-        let _ = painter.text(
-            Pos2::new(start - 6.0 * zoom, at.y),
-            Align2::RIGHT_CENTER,
-            &name,
-            font,
-            colors.text,
-        );
-        return None;
-    }
-    // A value port's name, on its own line with its field or value (22 §3.1). Long
-    // names stay on their side of the card; the port hover shows the whole name.
-    let label_at = at;
-    let name = if style.compact {
-        String::new()
-    } else {
-        elide(painter, &name, &font, label_room).0
-    };
-    let type_hint = (style.hinted
-        && !port.connected
-        && port.ty.as_deref().is_some_and(|ty| ty.contains('$'))
-        && !(port.input && port.value.is_some()))
-    .then(|| {
-        port.ty
-            .as_deref()
-            .map(|ty| port_type_label(style.definition, ty))
-    })
-    .flatten();
-    if !port.input {
-        let label = painter.text(
-            label_at - Vec2::new(gap, 0.0),
-            Align2::RIGHT_CENTER,
-            &name,
-            font,
-            colors.text,
-        );
-        let room = label_room - label.width() - 6.0 * zoom;
-        if let Some(ty) = type_hint.filter(|_| room >= 20.0 * zoom) {
-            let (ty, _) = elide(painter, &ty, &hint, room);
-            let _ = painter.text(
-                Pos2::new(label.min.x - 6.0 * zoom, label_at.y),
-                Align2::RIGHT_CENTER,
-                ty,
-                hint,
-                colors.weak,
-            );
-        }
-        return None;
-    }
-    let label = painter.text(
-        label_at + Vec2::new(gap, 0.0),
-        Align2::LEFT_CENTER,
-        &name,
-        font.clone(),
-        colors.text,
-    );
-    let room = label_room - label.width() - 6.0 * zoom;
-    if let Some(ty) = type_hint.filter(|_| style.field && room >= 20.0 * zoom) {
-        let (ty, _) = elide(painter, &ty, &hint, room);
-        let _ = painter.text(
-            Pos2::new(label.max.x + 6.0 * zoom, at.y),
-            Align2::LEFT_CENTER,
-            ty,
-            hint,
-            colors.weak,
-        );
-    }
-    // The value written on an input that no wire feeds, in a field that ends where
-    // the row's value may reach, shortened with an ellipsis when it is longer.
-    // An input that can be typed into and has no value shows an empty field.
-    // An empty field shows the input's default, dimmed, or a dash when it has none.
-    let shown = match (port.value.as_deref(), port.default.as_deref()) {
-        (Some(value), _) => Some((field_text(value), colors.text)),
-        (None, Some(default)) => Some((field_text(default), colors.weak)),
-        (None, None) if !style.hinted => Some(("—".to_owned(), colors.weak)),
-        (None, None) => None,
-    };
-    if let Some((value, ink)) = shown.filter(|_| !port.connected && style.field) {
-        let left = style.field_left;
-        let room = style.value_end - left;
-        let pad = 6.0 * zoom;
-        if room > 3.0 * pad {
-            let mut job = egui::text::LayoutJob::simple_singleline(value, font, ink);
-            job.wrap = egui::text::TextWrapping {
-                max_width: room - 2.0 * pad,
-                max_rows: 1,
-                break_anywhere: true,
-                overflow_character: Some('…'),
-            };
-            let text = painter.layout_job(job);
-            let height = FIELD_HEIGHT * zoom;
-            let field = Rect::from_min_size(
-                Pos2::new(left, at.y - height / 2.0),
-                Vec2::new(text.size().x + 2.0 * pad, height),
-            );
-            painter.rect_filled(field, 4.0 * zoom, colors.background);
-            painter.rect_stroke(
-                field,
-                4.0 * zoom,
-                Stroke::new(1.0, colors.outline),
-                StrokeKind::Inside,
-            );
-            let place = Pos2::new(field.min.x + pad, field.center().y - text.size().y / 2.0);
-            painter.galley(place, text, ink);
-        }
-    }
-    Some(label)
 }
 
 /// A value as its field on a card shows it: text without its quotes, others as
@@ -2848,51 +2347,59 @@ mod tests {
     }
 
     #[test]
-    fn package_reference_controls_have_a_dedicated_full_width_row() {
+    fn a_connection_picker_comes_before_the_inputs_and_outputs_share_its_name_line() {
         let mut source = node(
             1,
-            vec![port("out", false, true), port("level", false, false)],
+            vec![
+                port("in", true, true),
+                port("out", false, true),
+                port("gain", true, false),
+                port("level", false, false),
+            ],
         );
         source.definition = "org.example.analysis/detect".into();
         source
             .references
             .push(("/source".into(), orange_host::ReferenceKind::Connection));
-        assert_eq!(connection_row(&source), Some(0));
+        let layout = card::Card::new(&source);
+        assert!(matches!(
+            layout.rows[1].left,
+            Some(card::Left::Field {
+                editor: card::FieldOf::Connection,
+                named: true
+            })
+        ));
         assert_eq!(
-            node_size(&source).y,
-            BODY_TOP + 2.0 * ROW_HEIGHT + card_layout::SOURCE_ROW + FOOTER_HEIGHT
+            layout.rows[1].right.map(|port| port.id.as_str()),
+            Some("level")
         );
-        source
-            .ports
-            .extend([port("in", true, true), port("gain", true, false)]);
-        assert_eq!(connection_row(&source), Some(2));
         let graph = GraphView {
             nodes: vec![source],
             wires: vec![],
         };
         let geometry = Geometry::new(&graph);
         assert_eq!(geometry.size(id(1)), node_size(&graph.nodes[0]));
-        assert_eq!(
-            node_size(&graph.nodes[0]).y,
-            BODY_TOP + 2.0 * ROW_HEIGHT + card_layout::SOURCE_ROW + FOOTER_HEIGHT
-        );
     }
 
     #[test]
-    fn a_card_is_as_tall_as_its_longer_side_and_ports_sit_on_its_edges() {
+    fn a_card_is_as_tall_as_its_rows_and_ports_sit_on_its_edges() {
         let graph = graph();
         assert_eq!(
             node_size(&graph.nodes[0]).y,
             BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT
         );
-        assert_eq!(
-            node_size(&graph.nodes[2]).y,
-            BODY_TOP + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
-        );
+        // The way in, then a field block for each of a and b.
         let third = &graph.nodes[2];
+        let layout = card::Card::new(third);
+        assert_eq!(layout.rows.len(), 3);
+        assert!(layout.rows[1].height > ROW_HEIGHT);
+        assert_eq!(
+            node_size(third).y,
+            layout.rows[2].top + layout.rows[2].height + FOOTER_HEIGHT
+        );
         assert_eq!(
             port_offset(third, "b", true),
-            Some(Vec2::new(0.0, BODY_TOP + 2.5 * ROW_HEIGHT))
+            Some(Vec2::new(0.0, layout.rows[2].anchor()))
         );
         assert_eq!(
             port_offset(&graph.nodes[1], "then", false),
@@ -3083,22 +2590,27 @@ mod tests {
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         let third = canvas.places[&id(3)];
-        let row = |n: f32| third + Vec2::new(20.0, BODY_TOP + (n + 0.5) * ROW_HEIGHT);
-        // Row 0 is the step way in; rows 1 and 2 are the values a and b.
+        let layout = card::Card::new(&graph.nodes[2]);
+        let row = |n: usize| {
+            let row = &layout.rows[n];
+            third + Vec2::new(20.0, row.top + row.height - 2.0)
+        };
+        // Row 0 is the step way in; rows 1 and 2 are the values a and b, each across
+        // its whole block, field included.
         assert_eq!(
-            canvas.input_at(&graph, row(0.0), true, id(1)),
+            canvas.input_at(&graph, row(0), true, id(1)),
             Some((id(3), "in".into()))
         );
-        assert_eq!(canvas.input_at(&graph, row(0.0), false, id(1)), None);
+        assert_eq!(canvas.input_at(&graph, row(0), false, id(1)), None);
         assert_eq!(
-            canvas.input_at(&graph, row(2.0), false, id(1)),
+            canvas.input_at(&graph, row(2), false, id(1)),
             Some((id(3), "b".into()))
         );
-        // Not on the node the wire started from, not on the right of the card, not on
-        // empty canvas.
-        assert_eq!(canvas.input_at(&graph, row(0.0), true, id(3)), None);
-        let right = third + Vec2::new(NODE_WIDTH - 10.0, BODY_TOP + 0.5 * ROW_HEIGHT);
-        assert_eq!(canvas.input_at(&graph, right, true, id(1)), None);
+        // Not on the node the wire started from, not past the card, not on empty
+        // canvas.
+        assert_eq!(canvas.input_at(&graph, row(0), true, id(3)), None);
+        let past = third + Vec2::new(NODE_WIDTH + 20.0, BODY_TOP + 0.5 * ROW_HEIGHT);
+        assert_eq!(canvas.input_at(&graph, past, true, id(1)), None);
         assert_eq!(
             canvas.input_at(&graph, Pos2::new(-500.0, -500.0), true, id(1)),
             None
@@ -3279,38 +2791,23 @@ mod tests {
 
     #[test]
     fn inputs_with_values_get_controls_by_type() {
-        let port = |ty: &str, connected: bool| PortView {
+        let port = |ty: &str| PortView {
             id: "v".into(),
             input: true,
             exec: false,
             ty: Some(ty.into()),
             value: None,
-            connected,
+            connected: false,
             default: None,
             label: None,
         };
-        assert_eq!(
-            Control::of(&port("core/bool@1", false), &Enums::new()),
-            Some(Control::Toggle)
-        );
-        assert_eq!(
-            Control::of(&port("core/i64@1", false), &Enums::new()),
-            Some(Control::Whole)
-        );
-        assert_eq!(
-            Control::of(&port("core/f64@1", false), &Enums::new()),
-            Some(Control::Number)
-        );
-        assert_eq!(
-            Control::of(&port("core/string@1", false), &Enums::new()),
-            Some(Control::Text)
-        );
-        // A wired input and a type without a control get none.
-        assert_eq!(Control::of(&port("core/i64@1", true), &Enums::new()), None);
-        assert_eq!(
-            Control::of(&port("core/list@1<core/i64@1>", false), &Enums::new()),
-            None
-        );
+        let kind = |ty: &str| fields::Kind::of_port(&port(ty), &Enums::new());
+        assert_eq!(kind("core/bool@1"), fields::Kind::Switch);
+        assert_eq!(kind("core/i64@1"), fields::Kind::Whole);
+        assert_eq!(kind("core/f64@1"), fields::Kind::Number);
+        assert_eq!(kind("core/string@1"), fields::Kind::Text);
+        // A type nobody types gets no field at all.
+        assert!(!card::typed(&port("core/list@1<core/i64@1>")));
     }
 
     #[test]

@@ -155,12 +155,11 @@ impl PaletteCache {
     }
 }
 
-/// Builds only cards whose rows are visible. Registry changes and document edits
+/// Builds only the cards of results being shown. Registry changes and document edits
 /// invalidate configured cards; search text and language do not retain old result lists.
 #[derive(Debug, Default)]
 pub(crate) struct PreviewCache {
     generation: Option<u64>,
-    rows: HashMap<String, usize>,
     cards: HashMap<String, Option<NodeView>>,
 }
 
@@ -170,33 +169,12 @@ impl PreviewCache {
         self.generation = None;
     }
 
-    pub fn rows(&mut self, host: &Host, definition: &str) -> usize {
+    /// Forgets every card once the registry has changed.
+    fn follow(&mut self, host: &Host) {
         if self.generation != Some(host.registry().generation()) {
-            self.rows.clear();
             self.cards.clear();
-            for item in host.nodes() {
-                let (mut inputs, mut outputs) = (0, 0);
-                for (_, input) in item.declared_port_names() {
-                    if input {
-                        inputs += 1;
-                    } else {
-                        outputs += 1;
-                    }
-                }
-                self.rows.insert(
-                    item.definition.definition.id.to_string(),
-                    inputs.max(outputs).max(1)
-                        + usize::from(
-                            inputs >= outputs
-                                && item.presentation.is_some_and(|presentation| {
-                                    presentation.connection_adapter.is_some()
-                                }),
-                        ),
-                );
-            }
             self.generation = Some(host.registry().generation());
         }
-        self.rows.get(definition).copied().unwrap_or(1)
     }
 
     pub fn card(
@@ -205,7 +183,7 @@ impl PreviewCache {
         draft: Option<&Draft>,
         definition: &str,
     ) -> Option<&NodeView> {
-        let _ = self.rows(host, definition);
+        self.follow(host);
         if !self.cards.contains_key(definition) {
             let configured = (|| {
                 if let Some(draft) = draft {
@@ -220,14 +198,6 @@ impl PreviewCache {
                 Some(card) if !card.ports.is_empty() => Some(card),
                 other => reference_card(host, definition).or(other),
             };
-            if let Some(card) = &card {
-                let inputs = card.ports.iter().filter(|port| port.input).count();
-                self.rows.insert(
-                    definition.to_owned(),
-                    inputs.max(card.ports.len() - inputs).max(1)
-                        + usize::from(crate::canvas::connection_footer(card) > 0.0),
-                );
-            }
             self.cards.insert(definition.to_owned(), card);
         }
         self.cards.get(definition).and_then(Option::as_ref)

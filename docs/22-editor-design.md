@@ -61,41 +61,44 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   place or omit the toolbar, status bar, catalogue, inspector, diagnostics and
   editable canvas in their own containers.
 
-### 3.1 Card anatomy (rules, 2026-11-18)
+### 3.1 Card anatomy (rules, 2026-11-18, revised)
 
-Every card follows these rules; a card that needs to break one is a design change here
-first.
+Every card follows these rules. A card that needs to break one is a design change
+here first. One row model (`canvas/card.rs`) builds a card's rows once from its view;
+size, port positions, wires, hit tests, painting and the controls all read it, so no
+other code places anything on a card.
 
-* **One line per port.** A data row is 28 graph units tall and holds, on one line, the
-  input's dot, its name and its value or field, and on the same line the output's live
-  value, its name and its dot. Names never sit on a line of their own above their value.
-  The way in and out (Enter / Exit) is the first row.
-* **Width follows content.** A card is as wide as its title, its widest input (name plus
-  field) and its widest output (value plus name) need, between 160 and 320 units. No
-  kind of node gets a fixed wide width; long values and device names are cut with an
-  ellipsis and shown whole on hover.
-* **Values line up.** Input fields start in one column, just after the longest input
-  name, so a card reads as a small table.
-* **Every literal input has a field.** An input that is not wired and whose type can be
-  typed (numbers, text, true or false, a choice of an enum, a length of time) shows a
-  field, always the same framed shape. An empty field shows the input's default dimmed
-  (gain shows 1), and "—" only when there is none. Inputs that cannot be typed (a stream,
-  a list, a record) show no field and no placeholder.
-* **No redundant type labels.** A port's type is not printed under or beside it. It is
-  shown only while a generic port's type is still unknown, and always on hover.
-* **Outputs show what they last produced.** While a run reports values, each data
-  output shows its latest value in a pill beside its name: numbers with their unit
-  (`-18.2 dBFS`), text quoted when short, enums by choice name. A live value (a level, a
-  stream format) updates as it changes, at most every frame. A stream output shows no
-  value; it is a connection, not a number.
-* **What a node names comes first.** The variable, connection or device a node uses is
-  one row after Enter / Exit: a short name on the left and a list filling the rest.
-* **Settings are few and plain.** A card shows only the settings a person sets for the
-  node to do its job, named in plain words with units (Threshold dBFS). Tuning settings
-  (analysis window, numeric policies) are in the card's ⋯ menu and in Properties. A
-  setting changed on one node never changes the palette's preview of that kind.
-* **No empty space.** Header 30, row 28, padding 8; a card ends 6 units after its last
-  row.
+* **A card is a stack of rows, full width.** All cards are one width (232 units; a
+  literal is 180). A field always spans the card's inner width, so values line up
+  from card to card and nothing is squeezed beside a name.
+* **Flow first.** The first row holds the way in on the left (the tinted Enter chip, or
+  Fire on On manual) and the first way out on the right (Exit →). Further ways out
+  take one row each, right-aligned. An input and an output may share a row; that is
+  the only side-by-side placement.
+* **Outputs are one row each**, the name right-aligned beside its dot, and while a run
+  reports values, the latest value in a pill before the name. A stream output shows
+  no value. An input that has no field (wired, or a type nobody types, such as a
+  stream) shares the first free output row on its left.
+* **Every editable value is a field block**: its name on one line, the control on the
+  next, full width. The input's dot sits on the name line. This holds for inputs and
+  for settings alike, so a person never needs to know which is which.
+* **One control per kind, always the same look:** true or false is a No | Yes switch;
+  a choice (enum, device, variable, key) is a dropdown; a number is a field dragged to
+  step and clicked to type, with its unit; text is a field clicked to type, elided with
+  "…" and shown whole on hover; a file or folder is a field with the name and a browse
+  button inside its right end. An empty field shows the default dimmed, or "—" when
+  there is none.
+* **A wired input keeps its name line only**, with the value it received in a pill
+  at the right while a run reports it. Unwiring brings its field back.
+* **No menus on cards.** Everything a card shows is edited on the card; there is no
+  ⋯ menu or popover. Tuning settings (numeric policies, analysis window) are not on
+  the card at all: they live in Properties under Advanced.
+* **No redundant words.** No type labels (hover shows the type); a field's name is
+  left out when it only repeats the card's title (Audio source's device list, Get
+  variable's variable).
+* **Measurements:** header 30, flow and output rows 26, a field block 46 (name 18,
+  control 24, gap 4), padding 10, the card ends 8 units after its last row. Text never
+  overflows its row: names are elided and shown whole on hover.
 
 ## 4. Search and commands
 
