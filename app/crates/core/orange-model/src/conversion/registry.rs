@@ -517,6 +517,11 @@ impl ConverterRegistry {
         &self.types
     }
 
+    /// Every entry, in key order: what an editor offers as conversions to add.
+    pub fn entries(&self) -> impl Iterator<Item = &ConverterDefinition> {
+        self.entries.values().map(|state| &state.definition)
+    }
+
     pub fn entry(&self, key: &ConverterKey) -> Option<&ConverterDefinition> {
         self.entries.get(key).map(|state| &state.definition)
     }

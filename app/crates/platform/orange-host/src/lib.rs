@@ -15,6 +15,7 @@
 mod armed;
 mod authoring;
 mod clip;
+mod convert;
 mod declare;
 mod documents;
 mod draft;
@@ -72,6 +73,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub use convert::{Connected, Conversion};
 pub use declare::{AdapterInfo, Connection, Declarations, Variable, secret_name};
 pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,

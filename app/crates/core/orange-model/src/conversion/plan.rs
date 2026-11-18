@@ -287,6 +287,49 @@ pub fn plan_connection_indexed(
     })))
 }
 
+/// A `core/convert` node for `choice` on its own at the document's top level, as the
+/// commands that add it: its provider's package lock, its signature and the node. This
+/// is a conversion a person adds before wiring it; [`plan_connection`] inserts one
+/// between two ports. The choice is resolved exactly as a picked candidate is.
+pub fn converter_node_commands(
+    registry: &RegistrySnapshot,
+    choice: ExplicitConverterChoice,
+    node: NodeId,
+) -> Result<Vec<DocCommand>, SelectionRejection> {
+    let converters = registry.converters();
+    let definition = converters
+        .entry(&choice.entry)
+        .ok_or(SelectionRejection::StaleChoice)?;
+    let resolved = converters.resolve_explicit_choice(
+        &definition.from.clone(),
+        &definition.to.clone(),
+        choice,
+    )?;
+    let (instance, snapshot) = convert_node(node, &resolved, definition);
+    let key = semantic_key(&snapshot);
+    let mut commands = Vec::new();
+    if let ConverterProvider::Package(package) = &resolved.provider {
+        commands.push(DocCommand::PutPackageLock(PackageLockEntry {
+            id: package.package.clone(),
+            version: package.version.clone(),
+            content_digest: package.content_digest.clone(),
+            extensions: Extensions::new(),
+        }));
+    }
+    commands.push(DocCommand::PutSignature {
+        key: key.clone(),
+        snapshot,
+    });
+    commands.push(DocCommand::AddNode {
+        body: crate::document::BodyRef::Root,
+        node: NodeInstance {
+            signature: Some(key),
+            ..instance
+        },
+    });
+    Ok(commands)
+}
+
 /// How the endpoints are joined.
 enum Wire {
     Direct,

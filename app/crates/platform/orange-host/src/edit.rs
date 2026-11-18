@@ -35,7 +35,7 @@ pub fn new_document() -> Result<String, HostError> {
     to_json(&GraphDocument::new(graph)).map_err(|error| refused(&error))
 }
 
-fn port_ref(end: PortEnd<'_>) -> Result<PortRef, HostError> {
+pub(crate) fn port_ref(end: PortEnd<'_>) -> Result<PortRef, HostError> {
     Ok(PortRef {
         node: end.0,
         port: end
