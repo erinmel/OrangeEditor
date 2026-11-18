@@ -3,9 +3,11 @@
 //! places anything on a card.
 use super::*;
 
-/// Every card's width, in graph units; a literal's is narrower.
+/// Every card's width, in graph units; a literal's is narrower, and a card whose body
+/// is a spectrum chart is wider.
 pub(super) const WIDTH: f32 = 232.0;
 const LITERAL_WIDTH: f32 = 180.0;
+const CHART_WIDTH: f32 = 400.0;
 /// A row of one line: a flow row, an output, an input without a field.
 pub(super) const LINE: f32 = 26.0;
 /// The name line of a field block.
@@ -103,6 +105,17 @@ pub(super) struct Card<'a> {
     pub empty: bool,
 }
 
+/// Whether `ty` is a stream: a connection between nodes, never a value to type or show.
+pub(super) fn stream_type(ty: Option<&str>) -> bool {
+    ty.is_some_and(|ty| {
+        ty.starts_with("core/stream@1<")
+            || ty
+                .split('@')
+                .next()
+                .is_some_and(|name| name.ends_with("/stream"))
+    })
+}
+
 /// Whether a value of this input's type is typed on the card.
 pub(super) fn typed(port: &PortView) -> bool {
     !port.exec
@@ -118,10 +131,7 @@ pub(super) fn typed(port: &PortView) -> bool {
                     | "core/f32"
                     | "core/bool"
                     | "core/duration"
-            ) || (!ty.starts_with("core/")
-                && !ty.starts_with('$')
-                // A stream is a connection between nodes, never typed.
-                && !ty.split('@').next().is_some_and(|name| name.ends_with("/stream")))
+            ) || (!ty.starts_with("core/") && !ty.starts_with('$') && !stream_type(Some(ty)))
         })
 }
 
@@ -135,9 +145,16 @@ pub(super) fn literal(node: &NodeView) -> bool {
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
         let literal = literal(node);
-        let width = if literal { LITERAL_WIDTH } else { WIDTH };
+        let width = if literal {
+            LITERAL_WIDTH
+        } else if spectrum::combined(node) {
+            CHART_WIDTH
+        } else {
+            WIDTH
+        };
         let mut rows = Vec::new();
-        let mut y = BODY_TOP;
+        // An audio analysis card's chart comes first, under the header; its rows follow.
+        let mut y = BODY_TOP + spectrum::chart_height(node);
         let mut push = |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right| {
             let height = match left {
                 Some(Left::Field { named: true, .. }) => NAME + CONTROL + GAP,

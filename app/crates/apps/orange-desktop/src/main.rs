@@ -113,7 +113,7 @@ impl eframe::App for Desktop {
             None => self.editor.ui(ui, &mut self.host),
         }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
-        let editing = ui.ctx().egui_wants_keyboard_input();
+        let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
         self.keyboard.handle(&events, focused, |key, modifiers| {
             !editing && self.editor.accepts_graph_key(key, modifiers)
         });
@@ -162,14 +162,31 @@ impl Desktop {
         extensions: &[String],
         current: &str,
     ) {
-        let current = Path::new(current);
+        let root = match self.editor.file_picker_root(node) {
+            Some(root) => match root
+                .filter(|root| !root.trim().is_empty())
+                .and_then(|root| std::fs::canonicalize(root).ok())
+                .filter(|root| root.is_dir())
+            {
+                Some(root) => Some(root),
+                None => {
+                    trouble(t("desktop-choose-file"), t("desktop-configure-folder"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        let current = root.as_ref().map_or_else(
+            || Path::new(current).to_path_buf(),
+            |root| root.join(current),
+        );
         let start = if folder {
-            Some(current)
+            Some(current.as_path())
         } else {
             current.parent()
         };
         let mut dialog = rfd::FileDialog::new();
-        if let Some(start) = start.filter(|start| start.is_dir()) {
+        if let Some(start) = start.filter(|start| start.is_dir()).or(root.as_deref()) {
             dialog = dialog.set_directory(start);
         }
         let chosen = if folder {
@@ -188,11 +205,37 @@ impl Desktop {
             }
         };
         if let Some(path) = chosen {
-            let _ =
-                self.editor
-                    .choose_path(&mut self.host, node, port, &path.display().to_string());
+            let path = if let Some(root) = &root {
+                let Some(relative) = relative_selection(root, &path, save) else {
+                    trouble(t("desktop-choose-file"), t("desktop-outside-folder"));
+                    return;
+                };
+                relative
+            } else {
+                path.display().to_string()
+            };
+            let _ = self.editor.choose_path(&mut self.host, node, port, &path);
         }
     }
+}
+
+fn relative_selection(root: &Path, selected: &Path, save: bool) -> Option<String> {
+    let resolved = match std::fs::canonicalize(selected) {
+        Ok(path) => path,
+        Err(error) if save && error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::canonicalize(selected.parent()?)
+                .ok()?
+                .join(selected.file_name()?)
+        }
+        Err(_) => return None,
+    };
+    resolved
+        .strip_prefix(root)
+        .ok()?
+        .iter()
+        .map(std::ffi::OsStr::to_str)
+        .collect::<Option<Vec<_>>>()
+        .map(|parts| parts.join("/"))
 }
 
 /// Tells the person something went wrong, in a dialog of the system.
@@ -316,7 +359,6 @@ fn start(
         editor.restore_preferences(&saved);
     }
     editor.file_dialogs = true;
-    editor.window_toolbar = cfg!(windows);
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
@@ -396,7 +438,8 @@ fn main() -> ExitCode {
             .with_title(desktop.title.clone())
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([820.0, 560.0])
-            .with_decorations(!cfg!(windows)),
+            .with_resizable(true)
+            .with_decorations(true),
         ..eframe::NativeOptions::default()
     };
     let shown = eframe::run_native(

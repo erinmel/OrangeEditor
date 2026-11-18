@@ -422,8 +422,8 @@ pub struct Editor {
     settings_tab: settings::Section,
     preferred_scale: Option<f32>,
     scale_applied: bool,
-    key_capture: Option<&'static str>,
-    key_conflict: Option<String>,
+    shortcut_search: String,
+    shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
     document: Option<Document>,
     canvas: Canvas,
@@ -691,9 +691,7 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
-        let result = if definition == palette::BAND_TRIGGER {
-            host.add_band_trigger(draft, at)
-        } else if definition.starts_with(palette::CONVERSION) {
+        let result = if definition.starts_with(palette::CONVERSION) {
             match palette::conversion_named(host, definition) {
                 Some(conversion) => host.add_conversion(draft, &conversion, at),
                 None => Err(orange_host::HostError::Document(format!(
@@ -1282,6 +1280,9 @@ impl Editor {
                                 | orange_host::ControlOutcome::TimedOut
                         );
                     self.canvas.record_step(step.node, failed, step.outcome);
+                    if let Some(port) = &step.route {
+                        self.canvas.record_entry_route(step.node, port.to_string());
+                    }
                     // A failure stays on its node, with what the log says about it,
                     // until the node takes a step that does not fail.
                     if failed {
@@ -1294,18 +1295,75 @@ impl Editor {
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
                         let id = port.to_string();
-                        let ty = document
-                            .graph
-                            .nodes
-                            .iter()
-                            .find(|view| view.id == *node)
+                        let view = document.graph.nodes.iter().find(|view| view.id == *node);
+                        if id == "spectrum"
+                            && view.is_some_and(|view| {
+                                matches!(
+                                    view.definition.as_str(),
+                                    "org.orange.audio/spectrum"
+                                        | "org.orange.audio/multiband-spectrum"
+                                )
+                            })
+                            && let orange_host::Value::List(values) = value
+                        {
+                            let bins = (0..values.len().min(96))
+                                .filter_map(|index| match values.get(index) {
+                                    Some(orange_host::Value::F64(db)) => Some(db),
+                                    _ => None,
+                                })
+                                .collect();
+                            let _ = self.canvas.spectra.insert(*node, bins);
+                        }
+                        if id == "level"
+                            && view.is_some_and(|view| {
+                                view.definition == "org.orange.audio/noise-level"
+                            })
+                            && let orange_host::Value::F64(level) = value
+                        {
+                            self.canvas.noise_readings.insert(*node, *level);
+                        }
+                        let ty = view
                             .and_then(|view| view.ports.iter().find(|shown| shown.id == id))
                             .and_then(|shown| shown.ty.as_deref());
+                        if ty.is_some_and(|ty| {
+                            ty == "org.orange.audio/stream@1" || ty.starts_with("core/stream@1<")
+                        }) {
+                            self.canvas.show_value(
+                                *node,
+                                port.to_string(),
+                                String::new(),
+                                String::new(),
+                            );
+                            continue;
+                        }
                         let Some((short, full)) = presented_value(&self.canvas.enums, ty, value)
                         else {
                             continue;
                         };
-                        self.canvas.show_value(*node, port.to_string(), short, full);
+                        let decibels = view.is_some_and(|view| {
+                            view.definition.starts_with("org.orange.audio/")
+                                && (id == "level"
+                                    || id.starts_with("band_level#")
+                                    || id == "payload"
+                                        && matches!(
+                                            view.definition.as_str(),
+                                            "org.orange.audio/band-trigger"
+                                                | "org.orange.audio/transient"
+                                                | "org.orange.audio/on-band-level"
+                                                | "org.orange.audio/on-transient"
+                                        ))
+                        });
+                        let short = if decibels {
+                            format!("{short} dBFS")
+                        } else {
+                            short
+                        };
+                        self.canvas.show_value(*node, id, short, full);
+                    }
+                }
+                FlowEvent::PortsCleared(ports) => {
+                    for (node, port) in ports {
+                        self.canvas.clear_value(*node, &port.to_string());
                     }
                 }
                 FlowEvent::Variables(changed) => {
@@ -1829,7 +1887,10 @@ impl Editor {
 
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().button_padding.x = 6.0;
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().interact_size.x = 0.0;
             let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, t("nodes"));
             let _ = ui
                 .selectable_value(&mut self.tab, Tab::Variables, t("variables"))
@@ -2303,6 +2364,22 @@ impl Editor {
         }
         if let Some((node, device)) = done.device {
             self.choose_device(host, node, device);
+        }
+        if let Some((node, edit)) = done.spectrum_edit
+            && let Some(draft) = self.editing()
+        {
+            let result = match edit {
+                canvas::BandEdit::Add(range) => host.add_filtered_audio_band(draft, node, range),
+                canvas::BandEdit::Change(band, settings) => {
+                    host.change_audio_band(draft, node, band, settings)
+                }
+                canvas::BandEdit::Move(band, at) => host.move_audio_band(draft, node, band, at),
+            };
+            let _ = self.edited(host, result);
+        }
+        if let Some(adapter) = done.refresh_devices {
+            let _ = self.adapter_choices.remove(&adapter);
+            ui.ctx().request_repaint();
         }
         self.node_config_window(ui.ctx(), host);
         self.function_window(ui.ctx(), host);
@@ -2925,9 +3002,11 @@ mod tests {
         editor.open(&mut host, "all.json", blank());
         for kind in &kinds {
             let before = editor.log().count();
+            let node_count = editor.graph().unwrap().nodes.len();
             match editor.add_node(&mut host, kind) {
                 Some(node) => {
                     let graph = editor.graph().unwrap();
+                    assert_eq!(graph.nodes.len(), node_count + 1, "{kind}");
                     let view = graph.nodes.iter().find(|found| found.id == node).unwrap();
                     // A node shows each port once.
                     let mut seen = std::collections::BTreeSet::new();

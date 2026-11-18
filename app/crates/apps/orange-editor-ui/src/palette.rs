@@ -4,8 +4,6 @@ use crate::i18n::t;
 use orange_host::{Draft, Host, NodeView};
 use std::collections::HashMap;
 
-pub(crate) const BAND_TRIGGER: &str = "template/band-trigger";
-
 #[derive(Clone)]
 pub(crate) struct PaletteDrag {
     pub item: PaletteItem,
@@ -13,12 +11,12 @@ pub(crate) struct PaletteDrag {
 }
 
 /// One result of a node search, shared by the docked palette and the canvas picker:
-/// the node's name on one line. Hovering shows its name, purpose and ID together.
+/// The node's name stays on one line. Its purpose is available on hover.
 pub(crate) fn result_row(
     ui: &mut egui::Ui,
     name: &str,
     detail: &str,
-    id: &str,
+    _id: &str,
     highlighted: bool,
 ) -> egui::Response {
     let width = ui.available_width();
@@ -26,11 +24,7 @@ pub(crate) fn result_row(
         ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click_and_drag());
     let response = response.on_hover_ui(|ui| {
         ui.set_max_width(280.0);
-        ui.strong(name);
-        if !detail.is_empty() {
-            ui.label(detail);
-        }
-        ui.label(egui::RichText::new(id).small().weak());
+        ui.label(if detail.is_empty() { name } else { detail });
     });
     response.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -46,15 +40,6 @@ pub(crate) fn result_row(
     let visuals = ui.style().interact_selectable(&response, highlighted);
     if highlighted || response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect, 5.0, visuals.weak_bg_fill);
-    } else {
-        ui.painter()
-            .rect_filled(rect.shrink(1.0), 5.0, ui.visuals().faint_bg_color);
-        ui.painter().rect_stroke(
-            rect.shrink(1.0),
-            5.0,
-            ui.visuals().widgets.noninteractive.bg_stroke,
-            egui::StrokeKind::Inside,
-        );
     }
     if response.has_focus() || highlighted {
         ui.painter()
@@ -242,44 +227,6 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
             None => groups.push((found.category, vec![item])),
         }
     }
-    let band = host
-        .search_nodes("org.orange.audio/live-band-level", language)
-        .into_iter()
-        .find(|item| item.definition == "org.orange.audio/live-band-level");
-    if let Some(band) = band {
-        let catalogs = crate::i18n::catalogs();
-        let text = |key, fallback: &str| {
-            catalogs
-                .message(language, key)
-                .map_or_else(|| fallback.to_owned(), std::borrow::Cow::into_owned)
-        };
-        let label = text("band-trigger", "Band trigger");
-        let purpose = text(
-            "band-trigger-purpose",
-            "Wire an audio source into Band level to trigger at a threshold.",
-        );
-        let terms = format!("{label} {purpose} Band trigger").to_lowercase();
-        if search
-            .to_lowercase()
-            .split_whitespace()
-            .all(|word| terms.contains(word))
-        {
-            let template = PaletteItem {
-                id: BAND_TRIGGER.to_owned(),
-                label,
-                package: band.package,
-                purpose,
-            };
-            if let Some((_, items)) = groups
-                .iter_mut()
-                .find(|(category, _)| *category == band.category)
-            {
-                items.push(template);
-            } else {
-                groups.push((band.category, vec![template]));
-            }
-        }
-    }
     // Conversions are search results too, in a category of their own.
     let wanted = search.to_lowercase();
     let converts: Vec<PaletteItem> = host
@@ -302,6 +249,22 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
     }
     if search.trim().is_empty() {
         groups.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    if search.trim().is_empty() || search.trim().eq_ignore_ascii_case("audio") {
+        let preferred = [
+            "org.orange.audio/audio-source",
+            "org.orange.audio/multiband-spectrum",
+            "org.orange.audio/noise-level",
+            "org.orange.audio/audio-out",
+        ];
+        for (_, items) in &mut groups {
+            items.sort_by_key(|item| {
+                preferred
+                    .iter()
+                    .position(|&id| id == item.id)
+                    .unwrap_or(preferred.len())
+            });
+        }
     }
     groups
 }

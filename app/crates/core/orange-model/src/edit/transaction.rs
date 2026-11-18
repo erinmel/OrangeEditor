@@ -79,6 +79,12 @@ pub enum DocCommand {
         node: NodeId,
         port: PortKey,
     },
+    /// Reorders an existing instance without changing its identity or wires.
+    MoveVariadic {
+        node: NodeId,
+        port: PortKey,
+        at: usize,
+    },
     UpsertVariable(VariableDecl),
     RemoveVariable(VariableId),
     UpsertEvent(EventDecl),
@@ -446,6 +452,38 @@ impl Journal {
             }
             DocCommand::RemoveVariadic { node: id, port } => {
                 self.remove_variadic(document, id, port)
+            }
+            DocCommand::MoveVariadic { node: id, port, at } => {
+                self.modify_node(document, id, |node| {
+                    let missing = || TxError::VariadicPortNotFound {
+                        node: id,
+                        port: port.clone(),
+                    };
+                    let instance = port.instance().ok_or_else(missing)?;
+                    let state = node.variadic.get_mut(port.port()).ok_or_else(missing)?;
+                    if !state.is_valid() {
+                        return Err(TxError::InvalidVariadicState {
+                            node: id,
+                            port: port.port().clone(),
+                        });
+                    }
+                    let from = state
+                        .order
+                        .iter()
+                        .position(|&key| key == instance)
+                        .ok_or_else(missing)?;
+                    if at >= state.order.len() {
+                        return Err(TxError::VariadicPositionOutOfRange {
+                            node: id,
+                            port: port.port().clone(),
+                            at,
+                            len: state.order.len(),
+                        });
+                    }
+                    state.order.remove(from);
+                    state.order.insert(at, instance);
+                    Ok(())
+                })
             }
             DocCommand::UpsertVariable(decl) => {
                 let index = placement(&document.variables, &decl.id);

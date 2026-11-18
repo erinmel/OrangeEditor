@@ -75,6 +75,16 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         port: &PortDescriptor,
         value: Option<FoldedValue>,
     ) -> Result<SlotIx, CompileError> {
+        self.push_at(node, port, key(port), value)
+    }
+
+    fn push_at(
+        &mut self,
+        node: NodeId,
+        port: &PortDescriptor,
+        address: PortKey,
+        value: Option<FoldedValue>,
+    ) -> Result<SlotIx, CompileError> {
         if self.plan.initial.len() >= self.options.limits.max_slots {
             return Err(CompileError::ResourceLimit);
         }
@@ -95,7 +105,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         self.plan.types.push(ty);
         self.plan.sources.push(SlotSource {
             node,
-            port: key(port),
+            port: address,
         });
         self.plan.slot_calls.push(self.scope.checked_sub(1));
         self.plan.initial.push(value);
@@ -309,21 +319,33 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 ));
             }
             for port in &ports {
-                let index = self.next_index()?;
-                let slot = self.produce(node, port, index, None)?;
-                self.plan.host_inputs.push(index);
-                self.plan.nodes.push(DataNode {
-                    zone: None,
-                    call: scope.checked_sub(1),
-                    index,
-                    node,
-                    stability: DataStability::Epoch,
-                    inputs: Box::new([]),
-                    outputs: Box::new([slot]),
-                    operation: DataOperation::Input,
-                });
-                self.completed.insert((scope, node));
+                for address in crate::control::output_keys(
+                    &calls.body(self.document, scope).nodes[&node],
+                    port,
+                ) {
+                    let index = self.next_index()?;
+                    let slot = self.push_at(node, port, address.clone(), None)?;
+                    self.outputs.insert(
+                        (scope, node, address),
+                        ProducedOutput {
+                            slot,
+                            producer: Some(index),
+                        },
+                    );
+                    self.plan.host_inputs.push(index);
+                    self.plan.nodes.push(DataNode {
+                        zone: None,
+                        call: scope.checked_sub(1),
+                        index,
+                        node,
+                        stability: DataStability::Epoch,
+                        inputs: Box::new([]),
+                        outputs: Box::new([slot]),
+                        operation: DataOperation::Input,
+                    });
+                }
             }
+            self.completed.insert((scope, node));
             return Ok(());
         }
         if crate::zones::marker(analysis, node) == Some(false) {

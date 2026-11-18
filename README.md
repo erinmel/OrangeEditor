@@ -54,6 +54,13 @@ A host workspace value actor now serializes typed Set/Update/CAS and publishes i
 
 ## Development
 
+The workspace defaults to its own `target/` directory. If you build another
+worktree nested inside this checkout, pass `--target-dir target` from that
+worktree's root to keep the two builds separate. Incremental compilation is
+disabled by default to limit disk use and avoid hard-link failures in synced
+folders. On a local filesystem that supports hard links, set `CARGO_INCREMENTAL=1`
+to opt in to faster rebuilds.
+
 The [orange-host](app/crates/platform/orange-host) crate is the session a front end attaches to: it installs packages, runs any number of documents at once as independent flows (one run per thread, on real time), executes package effects on worker threads and reports what happens on one bounded event channel. It also lists every usable node with its display text and can report a flow's variable values and the values on its wires as they change. Native plugins are written against [orange-sdk](app/crates/platform/orange-sdk), as the base network package [orange-net](app/crates/services/orange-net) is. The `orange` command ([orange-cli](app/crates/apps/orange-cli)) is its terminal front end:
 
 ```console

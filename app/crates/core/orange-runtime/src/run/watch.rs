@@ -392,6 +392,15 @@ impl Run {
         let index = self.plan.as_ref()?.live_index(node)?;
         self.lives.get(index)?.as_ref()
     }
+    /// The latest value published on a specific output.
+    pub fn live_port_value(
+        &self,
+        node: NodeId,
+        port: &orange_model::id::PortKey,
+    ) -> Option<&Value> {
+        let index = self.plan.as_ref()?.live_port_index(node, port)?;
+        self.lives.get(index)?.as_ref()
+    }
     /// Last graph fault of a Watch, cleared by its next successful evaluation.
     /// Faults suppress delivery and preserve the previous successful baseline.
     pub fn watch_fault(&self, node: NodeId) -> Option<&ConstantFault> {
@@ -704,10 +713,15 @@ impl Run {
         let _ = self.watches.outbox.insert(index);
         // A live value was published for the previous arguments: until the provider
         // armed with these publishes, it has no value, rather than a stale one.
-        if let orange_compiler::SourceKind::Live(live) = source.kind() {
+        for &live in source.outputs() {
             let ty = plan.lives()[live].ty();
             let release = |value: &Value| ty.checked_charge(value, usize::MAX).unwrap_or(0);
-            let mut freed = self.pending_lives.remove(&live).as_ref().map_or(0, release);
+            let mut freed = self
+                .pending_lives
+                .remove(&live)
+                .flatten()
+                .as_ref()
+                .map_or(0, release);
             if let Some(old) = self.lives[live].take() {
                 freed += release(&old);
                 self.watches.schedule_live(plan, live);
@@ -722,24 +736,53 @@ impl Run {
     /// Stages a provider's publication for the next graph boundary. Each live node
     /// holds at most one pending publication. Returns whether the staged value changed.
     pub fn publish_live(&mut self, node: NodeId, value: Value) -> Result<bool, IngressError> {
+        let plan = self.live_plan()?;
+        let index = plan.live_index(node).ok_or(IngressError::UnknownLive)?;
+        self.stage_live(&plan, index, Some(value))
+    }
+
+    /// Stage a continuous output of a source. None revokes an unavailable reading.
+    pub fn publish_live_port(
+        &mut self,
+        node: NodeId,
+        port: &orange_model::id::PortKey,
+        value: Option<Value>,
+    ) -> Result<bool, IngressError> {
+        let plan = self.live_plan()?;
+        let index = plan
+            .live_port_index(node, port)
+            .ok_or(IngressError::UnknownLive)?;
+        self.stage_live(&plan, index, value)
+    }
+
+    fn live_plan(&self) -> Result<std::sync::Arc<ControlPlan>, IngressError> {
         if !matches!(self.state, RunState::Running | RunState::Paused) {
             return Err(IngressError::NotRunning);
         }
-        let plan = self.plan.clone().ok_or(IngressError::NotRunning)?;
-        let index = plan.live_index(node).ok_or(IngressError::UnknownLive)?;
+        self.plan.clone().ok_or(IngressError::NotRunning)
+    }
+
+    fn stage_live(
+        &mut self,
+        plan: &ControlPlan,
+        index: usize,
+        value: Option<Value>,
+    ) -> Result<bool, IngressError> {
         let ty = plan.lives()[index].ty();
-        if !ty.accepts(&value) {
+        if value.as_ref().is_some_and(|value| !ty.accepts(value)) {
             return Err(IngressError::InvalidPayload);
         }
         let pending = self.pending_lives.get(&index);
-        if pending.or(self.lives[index].as_ref()) == Some(&value) {
+        if pending.unwrap_or(&self.lives[index]) == &value {
             return Ok(false);
         }
         let limit = self.options.limits.max_state_bytes;
-        let charge = ty
-            .checked_charge(&value, limit)
+        let charge = value
+            .as_ref()
+            .map_or(Ok(0), |value| ty.checked_charge(value, limit))
             .map_err(|_| IngressError::DeliveryLimit)?;
         let old = pending
+            .and_then(Option::as_ref)
             .and_then(|held| ty.checked_charge(held, usize::MAX).ok())
             .unwrap_or(0);
         let total = self
@@ -765,8 +808,8 @@ impl Run {
             .pending_lives
             .pop_first()
             .ok_or(RunError::InvalidState)?;
-        let changed = self.lives[index].as_ref() != Some(&value);
-        if let Some(old) = self.lives[index].replace(value) {
+        let changed = self.lives[index] != value;
+        if let Some(old) = std::mem::replace(&mut self.lives[index], value) {
             let charge = plan.lives()[index]
                 .ty()
                 .checked_charge(&old, usize::MAX)

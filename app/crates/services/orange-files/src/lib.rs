@@ -649,7 +649,37 @@ pub fn package() -> ServicePackage {
                 definition = if is_output {
                     definition.output(port, ty)
                 } else {
-                    definition.input(port, ty)
+                    let definition = definition.input(port, ty);
+                    match (operation, port) {
+                        (
+                            Operation::MakeDirectory
+                            | Operation::CopyDirectory
+                            | Operation::MoveDirectory,
+                            "to",
+                        ) => definition,
+                        (
+                            Operation::CopyDirectory
+                            | Operation::MoveDirectory
+                            | Operation::RemoveDirectory
+                            | Operation::DeleteDirectory
+                            | Operation::List
+                            | Operation::ListFiltered,
+                            "path",
+                        ) => definition.path_input(port, true, &[]),
+                        (
+                            Operation::WriteText
+                            | Operation::AppendText
+                            | Operation::WriteBytes
+                            | Operation::AppendBytes,
+                            "path",
+                        )
+                        | (Operation::Move | Operation::Copy, "to") => {
+                            definition.save_path_input(port, &[])
+                        }
+                        (Operation::MakeDirectory, "path") => definition,
+                        (_, "path") => definition.path_input(port, false, &[]),
+                        _ => definition,
+                    }
                 };
             }
             package.node(&definition.build(), operation)

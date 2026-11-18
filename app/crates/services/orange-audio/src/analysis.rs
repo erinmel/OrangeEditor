@@ -52,6 +52,25 @@ impl Biquad {
         self.z2 = self.b2 * x - self.a2 * y;
         y
     }
+
+    /// Constant-peak band-pass section centred between the two edges. Widen each
+    /// section so two cascaded sections reach -3 dB at the prewarped edges.
+    fn band_pass(rate: f64, low: f64, high: f64) -> Self {
+        let low = (PI * low / rate).tan();
+        let high = (PI * high / rate).tan();
+        let centre_squared = low * high;
+        let bandwidth = (high - low) / (2.0_f64.sqrt() - 1.0).sqrt();
+        let a0 = 1.0 + bandwidth + centre_squared;
+        Self {
+            b0: bandwidth / a0,
+            b1: 0.0,
+            b2: -bandwidth / a0,
+            a1: 2.0 * (centre_squared - 1.0) / a0,
+            a2: (1.0 - bandwidth + centre_squared) / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
 }
 
 /// The part of the spectrum an analyzer hears: everything above `low` and below `high`
@@ -63,6 +82,16 @@ pub(crate) struct Band {
 }
 
 impl Band {
+    pub(crate) fn isolated(rate: u32, low: f64, high: f64) -> Self {
+        if high >= f64::from(rate) / 2.0 {
+            return Self::new(rate, low, high);
+        }
+        let section = Biquad::band_pass(f64::from(rate), low, high);
+        Self {
+            high_pass: Some(section),
+            low_pass: Some(section),
+        }
+    }
     pub(crate) fn new(rate: u32, low_hz: f64, high_hz: f64) -> Self {
         let rate = f64::from(rate.max(1));
         let nyquist = rate / 2.0;
@@ -144,36 +173,46 @@ impl Listening {
     }
 }
 
-/// Turns blocks of interleaved samples into band levels, one per window: channels are
-/// averaged, filtered to the band, then measured.
+/// Turns interleaved samples into band levels. Filtering and power measurement
+/// precede the channel average so opposite-phase signals remain audible to the meter.
 #[derive(Debug, Clone)]
 pub(crate) struct BandMeter {
-    channels: usize,
-    band: Band,
+    bands: Vec<Band>,
     meter: Meter,
 }
 
 impl BandMeter {
     pub(crate) fn new(ring: &Ring, listening: &Listening) -> Self {
         Self {
-            channels: usize::from(ring.channels.max(1)),
-            band: Band::new(ring.rate, listening.low_hz, listening.high_hz),
+            bands: channel_bands(ring, listening),
             meter: Meter::new(listening.frames(ring.rate)),
         }
     }
 
     /// Measures `samples`, calling `window` with the level of each completed window.
     pub(crate) fn push(&mut self, samples: &[f32], mut window: impl FnMut(f64)) {
-        let channels = self.channels;
-        #[expect(clippy::cast_precision_loss, reason = "a frame has few channels")]
-        let scale = 1.0 / channels as f64;
-        for frame in samples.chunks_exact(channels) {
-            let mono = frame.iter().map(|s| f64::from(*s)).sum::<f64>() * scale;
-            #[expect(clippy::cast_possible_truncation, reason = "audio samples are f32")]
-            let filtered = self.band.process(mono) as f32;
-            self.meter.push(std::iter::once(filtered), &mut window);
+        for frame in samples.chunks_exact(self.bands.len()) {
+            self.meter
+                .push_power(frame_power(frame, &mut self.bands), &mut window);
         }
     }
+}
+
+fn channel_bands(ring: &Ring, listening: &Listening) -> Vec<Band> {
+    vec![
+        Band::new(ring.rate, listening.low_hz, listening.high_hz);
+        usize::from(ring.channels.max(1))
+    ]
+}
+
+#[expect(clippy::cast_precision_loss, reason = "a frame has few channels")]
+fn frame_power(frame: &[f32], bands: &mut [Band]) -> f64 {
+    frame
+        .iter()
+        .zip(bands)
+        .map(|(&sample, band)| band.process(f64::from(sample)).powi(2))
+        .sum::<f64>()
+        / frame.len() as f64
 }
 
 /// The level of the last `frames` frames of `ring` in the band of `listening`: what
@@ -187,15 +226,12 @@ pub(crate) fn recent_level(ring: &Ring, listening: &Listening) -> f64 {
     let Some(samples) = samples.get(..read) else {
         return SILENCE_DB;
     };
-    let mut band = Band::new(ring.rate, listening.low_hz, listening.high_hz);
-    #[expect(clippy::cast_precision_loss, reason = "a frame has few channels")]
-    let scale = 1.0 / channels as f64;
+    let mut bands = channel_bands(ring, listening);
     let (mut sum, mut count) = (0.0, 0usize);
     for (index, frame) in samples.chunks_exact(channels).enumerate() {
-        let mono = frame.iter().map(|s| f64::from(*s)).sum::<f64>() * scale;
-        let filtered = band.process(mono);
+        let power = frame_power(frame, &mut bands);
         if index >= settle.min(read / channels / 2) {
-            sum += filtered * filtered;
+            sum += power;
             count += 1;
         }
     }

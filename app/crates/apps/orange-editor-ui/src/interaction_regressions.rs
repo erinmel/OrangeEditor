@@ -204,3 +204,98 @@ fn a_wire_between_two_number_kinds_offers_conversions_and_takes_the_chosen_one()
     assert_eq!(graph.nodes.len(), 3);
     assert_eq!(graph.wires.len(), 2);
 }
+
+#[test]
+fn audio_search_finds_bilingual_intents_and_band_trigger_adds_one_card() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    for (query, locale, definition) in [
+        ("volume", "en", orange_audio::LIVE_LEVEL),
+        ("audio in", "en", orange_audio::AUDIO_SOURCE),
+        ("entrada de audio", "es", orange_audio::AUDIO_SOURCE),
+        ("bombo", "es", orange_audio::TRANSIENT),
+        ("fft", "en", orange_audio::MULTIBAND_SPECTRUM),
+        ("frequency splitter", "en", orange_audio::MULTIBAND_SPECTRUM),
+        ("audio spectrum", "en", orange_audio::MULTIBAND_SPECTRUM),
+        ("multibanda", "es", orange_audio::MULTIBAND_SPECTRUM),
+        (
+            "divisor de frecuencias",
+            "es",
+            orange_audio::MULTIBAND_SPECTRUM,
+        ),
+        ("audio level trigger", "en", orange_audio::NOISE_LEVEL),
+        ("noise level", "en", orange_audio::NOISE_LEVEL),
+        ("ruido", "es", orange_audio::NOISE_LEVEL),
+    ] {
+        assert!(
+            host.search_nodes(query, locale)
+                .iter()
+                .any(|item| item.definition == definition && !item.purpose.is_empty()),
+            "search for {query:?} must find {definition} with a purpose"
+        );
+    }
+    let trigger = host.search_nodes("band trigger", "en").remove(0);
+    assert_eq!(trigger.definition, orange_audio::MULTIBAND_SPECTRUM);
+    let mut editor = Editor::new();
+    editor.open(
+        &mut host,
+        "audio.json",
+        orange_host::new_document().unwrap(),
+    );
+    let node = editor
+        .add_node_at(&mut host, &trigger.definition, [0.0, 0.0])
+        .unwrap();
+    let graph = editor.graph().unwrap();
+    assert_eq!(graph.nodes.len(), 1);
+    assert_eq!(graph.nodes[0].id, node);
+    assert!(graph.wires.is_empty());
+}
+
+#[test]
+fn an_original_spectrum_adds_a_filtered_output_without_disconnecting_its_input() {
+    let (host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let input = host
+        .add_node(&mut draft, orange_audio::AUDIO_SOURCE, [0.0, 0.0])
+        .unwrap();
+    let spectrum = host
+        .add_node(&mut draft, orange_audio::AUDIO_SPECTRUM, [250.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (input, "stream"), (spectrum, "stream"))
+        .unwrap();
+    host.add_filtered_audio_band(&mut draft, spectrum, [80, 120])
+        .unwrap();
+    let graph = host.draft_view(&draft).unwrap();
+    assert_eq!(graph.nodes.len(), 2);
+    let card = graph.nodes.iter().find(|node| node.id == spectrum).unwrap();
+    assert_eq!(card.definition, orange_audio::MULTIBAND_SPECTRUM);
+    assert!(card.ports.iter().any(
+        |port| port.id == "band_stream#0" && port.label.as_deref() == Some("80\u{2013}120 Hz")
+    ),);
+    assert!(
+        graph
+            .wires
+            .iter()
+            .any(|wire| wire.from.0 == input && wire.to.0 == spectrum)
+    );
+    assert!(host.check(&draft.text().unwrap()).unwrap().is_empty());
+    assert!(draft.undo());
+    let original = host.draft_view(&draft).unwrap();
+    assert_eq!(
+        original
+            .nodes
+            .iter()
+            .find(|node| node.id == spectrum)
+            .unwrap()
+            .definition,
+        orange_audio::AUDIO_SPECTRUM
+    );
+    assert_eq!(original.wires, graph.wires);
+}

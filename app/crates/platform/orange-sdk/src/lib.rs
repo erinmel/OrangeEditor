@@ -24,6 +24,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
 pub use orange_model::document::DefinitionRef;
+pub use orange_model::id::PortKey;
 pub use orange_model::replace::Replacement;
 pub use orange_model::value::{JsonText, ListRepr, RecordRepr};
 pub use orange_runtime::EffectLease;
@@ -319,7 +320,16 @@ pub enum EmitError {
 pub struct Emitter {
     fire: Arc<Fire>,
     fault: Option<Arc<ReportFault>>,
+    outputs: Option<Arc<EntryOutputs>>,
 }
+struct EntryOutputs {
+    fire: Box<FireOutput>,
+    publish: Box<PublishOutput>,
+}
+/// Fires the entry through one of its named outputs.
+type FireOutput = dyn Fn(&PortKey) -> Result<(), EmitError> + Send + Sync;
+/// Sets or clears the value one of the entry's outputs carries.
+type PublishOutput = dyn Fn(&PortKey, Option<Value>) -> Result<(), EmitError> + Send + Sync;
 type Fire = dyn Fn(Option<Value>) -> Result<(), EmitError> + Send + Sync;
 type ReportFault = dyn Fn(KernelFault) -> Result<(), EmitError> + Send + Sync;
 impl std::fmt::Debug for Emitter {
@@ -336,6 +346,7 @@ impl Emitter {
         Self {
             fire: Arc::new(fire),
             fault: None,
+            outputs: None,
         }
     }
     /// Wraps the host's firing and diagnostic callbacks for this entry.
@@ -346,7 +357,29 @@ impl Emitter {
         Self {
             fire: Arc::new(fire),
             fault: Some(Arc::new(fault)),
+            outputs: None,
         }
+    }
+    /// Bind the checked execution and continuous outputs of this source.
+    #[must_use]
+    pub fn with_outputs(
+        mut self,
+        fire: impl Fn(&PortKey) -> Result<(), EmitError> + Send + Sync + 'static,
+        publish: impl Fn(&PortKey, Option<Value>) -> Result<(), EmitError> + Send + Sync + 'static,
+    ) -> Self {
+        self.outputs = Some(Arc::new(EntryOutputs {
+            fire: Box::new(fire),
+            publish: Box::new(publish),
+        }));
+        self
+    }
+    /// Fire one named execution output.
+    pub fn emit_on(&self, port: &PortKey) -> Result<(), EmitError> {
+        (self.outputs.as_ref().ok_or(EmitError::Closed)?.fire)(port)
+    }
+    /// Publish or revoke a continuous entry output.
+    pub fn publish(&self, port: &PortKey, value: Option<Value>) -> Result<(), EmitError> {
+        (self.outputs.as_ref().ok_or(EmitError::Closed)?.publish)(port, value)
     }
     /// Fires the entry with its payload, or `None` for an entry that declares none.
     pub fn emit(&self, payload: Option<Value>) -> Result<(), EmitError> {
@@ -649,6 +682,20 @@ impl Definition {
         self.ports
             .push(serde_json::json!({"port_id": name, "direction": "output",
             "kind": "data", "type": ty, "source": "computed"}));
+        self
+    }
+    /// A finite set of instance outputs on a native source. With a type these are
+    /// continuous data values. Otherwise each instance is a named execution route.
+    #[must_use]
+    pub fn source_outputs(mut self, name: &str, ty: Option<&str>, max: u16) -> Self {
+        let mut port = match ty {
+            Some(ty) => serde_json::json!({"kind": "data", "type": ty, "source": "computed"}),
+            None => serde_json::json!({"kind": "exec"}),
+        };
+        port["port_id"] = name.into();
+        port["direction"] = "output".into();
+        port["variadic"] = serde_json::json!({"min": 0, "max": max});
+        self.ports.push(port);
         self
     }
     /// One sentence on what the node does.
@@ -1093,7 +1140,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 8",
+        "orange-plugin 9",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

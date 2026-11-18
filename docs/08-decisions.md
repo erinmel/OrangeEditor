@@ -928,6 +928,12 @@ infrastructure errors and never become an ordinary error arm or partial publicat
 
 **Contracts:** 05 "Sources and analyzers", FR-119. Verification is the focused tests named in FR-119.
 
+**Wired analyzer presentation:** Audio Spectrum samples the shared ring on a
+provider worker and publishes bounded frequency buckets through the existing live
+read contract. The editor uses a selected range to create a Band Level or Band
+Trigger on that source. Each trigger owns its threshold and hysteresis. Analyzer
+selection is an authoring operation and needs no audio-specific core port type.
+
 ## ADR-31 - Live reads and root arguments for sources
 
 **Decision:** The graph can wire inputs to an always-armed package entry or live
@@ -943,3 +949,33 @@ ports remain separate future work. The native Rust SDK ABI identifier is
 `orange-plugin 8` for the source and emitter interface changes.
 
 **Contracts:** 05, 11 §10.5, 12 §4, FR-121–FR-123.
+
+## ADR-32 - Audio analysis on two stream-wired cards
+
+**Decision.** Audio Spectrum owns its bands, each continuous reading, and the
+selected outcome ports on one persisted graph node. Noise Level owns the
+full-stream meter and one configurable threshold rule. Both use package
+entries with typed computed publications. Named execution outcomes use the
+existing variadic identity model and each gets its own bounded delivery channel.
+Spectrum shares one capture reader across the chart and all of its bands.
+The editor hides the earlier separate band nodes from palette discovery and
+the registry retains their definitions for saved graphs.
+
+**Version 2.** New Spectrum cards provide one filtered audio stream per band.
+Users can connect a band to Noise Level for thresholds or to Audio Out for
+playback. The provider reuses the shared input cursor and exposes each
+bounded derived ring as an ordinary audio stream. Version 1 cards retain
+their existing data and event outputs.
+
+**Version 3.** Frequency Splitter adds each filtered stream output as soon as
+the range is drawn. Older cards upgrade in the same undoable edit. An upgraded
+version 1 band retains its original level and event outputs and also exposes its
+filtered stream. Audio Level Trigger remains a separate RMS threshold node.
+
+**Playback.** Audio Out version 2 is armed by its stream and Boolean enable
+input. It uses the shared mixer on a provider worker, stops its own voice when
+the guard is dropped, and publishes playback status. Version 1 stays available
+for graphs that start playback using an execution wire.
+
+**Contracts.** 04 native sources, 05 capture and level analysis, 11 package
+entries and §10.5, 12 §4, 22 §6, FR-123.

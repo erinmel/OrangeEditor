@@ -5,6 +5,8 @@ fn changing_settings_sections_preserves_window_width() {
     editor.settings_open = true;
     let context = egui::Context::default();
     let mut widths = Vec::new();
+    let chord = editor.canvas.keys.label("save-as");
+    let mut shortcut_is_readable = false;
     for section in [
         Section::Search,
         Section::Shortcuts,
@@ -13,24 +15,29 @@ fn changing_settings_sections_preserves_window_width() {
     ] {
         editor.settings_tab = section;
         for _ in 0..3 {
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1200.0, 800.0),
-                        )),
-                        ..Default::default()
-                    },
-                    |ui| {
-                        let rect = editor.settings_window(ui.ctx()).unwrap();
-                        widths.push(rect.width());
-                    },
-                )
-                .drop_without_applying_deltas();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let rect = editor.settings_window(ui.ctx()).unwrap();
+                    widths.push(rect.width());
+                },
+            );
+            if section == Section::Shortcuts {
+                shortcut_is_readable |= output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == chord && text.galley.rows.len() == 1
+                ));
+            }
+            output.drop_without_applying_deltas();
         }
     }
     for width in &widths[3..] {
         assert!((width - widths[3]).abs() < 2.0, "{widths:?}");
     }
+    assert!(shortcut_is_readable);
 }

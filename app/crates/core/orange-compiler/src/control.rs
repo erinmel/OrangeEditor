@@ -332,6 +332,7 @@ pub struct ControlNode {
     pub(crate) cancelled: Option<ExecTarget>,
     pub(crate) fault_policy: FaultPolicy,
     pub(crate) loop_owner: Option<ControlIx>,
+    entry_port: Option<orange_model::id::PortKey>,
 }
 
 /// Checked run/workspace event metadata used by the runtime dispatcher.
@@ -401,12 +402,16 @@ impl EventHandler {
 #[derive(Debug, Clone)]
 pub struct ControlManual {
     node: NodeId,
+    port: orange_model::id::PortKey,
     payload_type: Option<ValueShape>,
     handler: EventHandler,
 }
 impl ControlManual {
     pub fn node(&self) -> NodeId {
         self.node
+    }
+    pub fn port(&self) -> &orange_model::id::PortKey {
+        &self.port
     }
     pub fn payload_type(&self) -> Option<&ValueShape> {
         self.payload_type.as_ref()
@@ -460,6 +465,10 @@ impl ControlChange {
     }
 }
 impl ControlNode {
+    /// Named execution output of a route owned by a package entry.
+    pub fn entry_port(&self) -> Option<&orange_model::id::PortKey> {
+        self.entry_port.as_ref()
+    }
     /// Static compilation scope; zero is the root, not a runtime invocation ID.
     pub fn scope(&self) -> usize {
         self.scope
@@ -634,6 +643,7 @@ pub struct ControlSource {
     inputs: Arc<[usize]>,
     variables: Box<[usize]>,
     lives: Box<[usize]>,
+    outputs: Box<[usize]>,
 }
 impl ControlSource {
     pub fn node(&self) -> NodeId {
@@ -662,6 +672,9 @@ impl ControlSource {
     pub fn lives(&self) -> &[usize] {
         &self.lives
     }
+    pub fn outputs(&self) -> &[usize] {
+        &self.outputs
+    }
 }
 
 /// Private checked construction, no serde/default bypass. Debug omits payloads.
@@ -673,6 +686,7 @@ pub struct ControlPlan {
     watches: Box<[ControlWatch]>,
     lives: Box<[ControlLive]>,
     live_nodes: BTreeMap<NodeId, usize>,
+    live_ports: BTreeMap<NodeId, BTreeMap<orange_model::id::PortKey, usize>>,
     sources: Box<[ControlSource]>,
     functions: Box<[Option<FunctionLayout>]>,
     pub(crate) data: Arc<DataPlan>,
@@ -716,6 +730,15 @@ impl ControlPlan {
     /// Slot of the live value published by this node.
     pub fn live_index(&self, node: NodeId) -> Option<usize> {
         self.live_nodes.get(&node).copied()
+    }
+    pub fn live_port_index(&self, node: NodeId, port: &orange_model::id::PortKey) -> Option<usize> {
+        self.live_ports.get(&node)?.get(port).copied()
+    }
+    pub fn live_outputs(&self, node: NodeId) -> impl Iterator<Item = &orange_model::id::PortKey> {
+        self.live_ports
+            .get(&node)
+            .into_iter()
+            .flat_map(|ports| ports.keys())
     }
     /// Package entries and live nodes armed with arguments, in node order.
     pub fn sources(&self) -> &[ControlSource] {
@@ -910,7 +933,6 @@ fn compile_control_inner(
         .map(|(i, id)| (*id, ControlIx(i)))
         .collect();
     let (events, event_ids) = prepare_events(&cx, &controls, &control_ix, &mut graph_items)?;
-    let manuals = prepare_manuals(&cx, &controls, &control_ix, &mut graph_items)?;
     let timers = prepare_timers(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
     let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
@@ -954,6 +976,7 @@ fn compile_control_inner(
         mut stops,
         ..
     } = lowering;
+    let manuals = prepare_manuals(&cx, &control_ix, &edges, &mut nodes, &mut graph_items)?;
     let activation_order = |i: &ControlIx| {
         (
             document.root().nodes[&nodes[i.0].node]
@@ -968,26 +991,41 @@ fn compile_control_inner(
     // Root live nodes: the host publishes each one's value; its inputs are arguments.
     let mut lives = Vec::new();
     let mut live_nodes = BTreeMap::new();
+    let mut live_ports = BTreeMap::<_, BTreeMap<_, _>>::new();
     for node in document.root().nodes.values() {
         options.checkpoint()?;
         let signature = calls.signature(analysis, 0, node.id);
-        if signature.kind != NodeKind::Volatile || !crate::compile::is_live(&snapshot, node) {
+        let live = signature.kind == NodeKind::Volatile && crate::compile::is_live(&snapshot, node);
+        if !live && !package_entry(&cx, (0, node.id)) {
             continue;
         }
-        let output = signature
-            .ports
-            .iter()
-            .find(|p| p.direction == PortDirection::Output)
-            .ok_or(CompileError::UnsupportedNode { node: node.id })?;
-        charge(&mut graph_items, 1, options.limits.max_graph_items)?;
-        live_nodes.insert(node.id, lives.len());
-        lives.push(ControlLive {
-            node: node.id,
-            port: port_key(output),
-            ty: port_type(&snapshot, node.id, output)?,
-            watch_dependents: Vec::new(),
-            source_dependents: Vec::new(),
-        });
+        for output in signature.ports.iter().filter(|p| {
+            p.direction == PortDirection::Output
+                && p.kind == PortKind::Data
+                && (live || p.source == Some(orange_model::document::OutputSource::Computed))
+        }) {
+            let ty = port_type(&snapshot, node.id, output)?;
+            for port in output_keys(node, output) {
+                charge(&mut graph_items, 1, options.limits.max_graph_items)?;
+                if live {
+                    live_nodes.insert(node.id, lives.len());
+                }
+                live_ports
+                    .entry(node.id)
+                    .or_default()
+                    .insert(port.clone(), lives.len());
+                lives.push(ControlLive {
+                    node: node.id,
+                    port,
+                    ty: ty.clone(),
+                    watch_dependents: Vec::new(),
+                    source_dependents: Vec::new(),
+                });
+            }
+        }
+        if !live {
+            continue;
+        }
         let arguments: Vec<_> = signature
             .ports
             .iter()
@@ -1060,7 +1098,7 @@ fn compile_control_inner(
         variables: &variables,
         variable_nodes: &variable_nodes,
         state_nodes: &state_nodes,
-        lives: &live_nodes,
+        lives: &live_ports,
     };
     let host_sources = data
         .host_inputs()
@@ -1236,6 +1274,11 @@ fn compile_control_inner(
             inputs,
             variables: variables_used.into_iter().collect(),
             lives: lives_used.into_iter().collect(),
+            outputs: live_ports
+                .get(&key.1)
+                .into_iter()
+                .flat_map(|ports| ports.values().copied())
+                .collect(),
         });
     }
     for (index, (_, watch)) in watches.iter().enumerate() {
@@ -1303,6 +1346,7 @@ fn compile_control_inner(
         watches: watches.into_iter().map(|(_, w)| w).collect(),
         lives: lives.into(),
         live_nodes,
+        live_ports,
         sources: sources.into(),
         functions: functions.into(),
         data: Arc::new(data),
@@ -1362,8 +1406,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             }
             if cx.effects.is_some() && !node.definition.id.is_core() && sig.kind == NodeKind::Entry
             {
-                // A package entry is fired by the host, like a manual entry. It is a
-                // root node with one `then` outcome and at most one value, `payload`.
+                // A package entry is root-owned. Named outcomes are independent
+                // channels. Computed data outputs are continuous publications.
                 if scope != 0 || node.provider.is_none() {
                     return Err(CompileError::UnsupportedNode { node: node.id });
                 }
@@ -1371,13 +1415,18 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     let allowed = match port.kind {
                         PortKind::Exec => {
                             port.direction == PortDirection::Output
-                                && port.port_id.as_str() == "then"
+                                && port.variadic.is_none_or(|bounds| bounds.max.is_some())
                         }
                         PortKind::Data => {
-                            // Its data inputs are the arguments its source is armed with.
-                            (port.direction == PortDirection::Input
-                                || port.port_id.as_str() == "payload")
-                                && port.variadic.is_none()
+                            let supported = if port.direction == PortDirection::Input
+                                || port.port_id.as_str() == "payload"
+                            {
+                                port.variadic.is_none()
+                            } else {
+                                port.source == Some(orange_model::document::OutputSource::Computed)
+                                    && port.variadic.is_none_or(|bounds| bounds.max.is_some())
+                            };
+                            supported
                                 && !matches!(
                                     port_type(cx.snapshot, node.id, port)?,
                                     ValueShape::Handle(_) | ValueShape::Stream(_)
@@ -1626,16 +1675,32 @@ fn package_entry(cx: &Cx<'_>, (scope, node): ControlKey) -> bool {
         && cx.calls.signature(cx.analysis, scope, node).kind == NodeKind::Entry
 }
 
+pub(crate) fn output_keys(
+    node: &orange_model::document::NodeInstance,
+    port: &orange_model::document::PortDescriptor,
+) -> Vec<orange_model::id::PortKey> {
+    if port.variadic.is_none() {
+        return vec![port_key(port)];
+    }
+    node.variadic
+        .get(&port.port_id)
+        .into_iter()
+        .flat_map(|state| &state.order)
+        .map(|&id| orange_model::id::PortKey::new(port.port_id.clone(), Some(id)))
+        .collect()
+}
+
 /// Root `core/on-manual` and package entries with their checked payload shape and
 /// handler policy.
 fn prepare_manuals(
     cx: &Cx<'_>,
-    controls: &BTreeSet<ControlKey>,
     control_ix: &BTreeMap<ControlKey, ControlIx>,
+    edges: &BTreeMap<PortSite, ExecTarget>,
+    nodes: &mut Vec<ControlNode>,
     graph_items: &mut usize,
 ) -> Result<Vec<ControlManual>, CompileError> {
     let mut manuals = Vec::new();
-    for &key in controls {
+    for &key in control_ix.keys() {
         cx.options.checkpoint()?;
         if cx.node(key).definition.id.as_str() != ids::ON_MANUAL && !package_entry(cx, key) {
             continue;
@@ -1644,15 +1709,45 @@ fn prepare_manuals(
             Ok(port) => Some(port_type(cx.snapshot, key.1, port)?),
             Err(_) => None,
         };
-        charge(graph_items, 1, cx.options.limits.max_graph_items)?;
         let (order, handler) = entry_handler(cx, control_ix, key, graph_items)?;
-        manuals.push((order, key.1, payload_type, handler));
+        let outcomes: Vec<_> = cx
+            .ports(key)
+            .iter()
+            .filter(|p| p.kind == PortKind::Exec && p.direction == PortDirection::Output)
+            .collect();
+        if outcomes.is_empty() || !package_entry(cx, key) {
+            charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+            manuals.push((
+                order,
+                key.1,
+                orange_model::id::fixed_id("then"),
+                payload_type,
+                handler,
+            ));
+        } else {
+            if payload_type.is_some() {
+                return Err(CompileError::UnsupportedNode { node: key.1 });
+            }
+            for port in outcomes
+                .into_iter()
+                .flat_map(|p| output_keys(cx.node(key), p))
+            {
+                charge(graph_items, 2, cx.options.limits.max_graph_items)?;
+                let mut route = nodes[handler.entry.index()].clone();
+                route.then = edges.get(&(key.0, key.1, port.clone())).copied();
+                route.entry_port = Some(port.clone());
+                let entry = ControlIx(nodes.len());
+                nodes.push(route);
+                manuals.push((order, key.1, port, None, EventHandler { entry, ..handler }));
+            }
+        }
     }
-    manuals.sort_by_key(|(order, node, _, _)| (*order, *node));
+    manuals.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
     Ok(manuals
         .into_iter()
-        .map(|(_, node, payload_type, handler)| ControlManual {
+        .map(|(_, node, port, payload_type, handler)| ControlManual {
             node,
+            port,
             payload_type,
             handler,
         })
@@ -2054,6 +2149,7 @@ impl NodeLowering<'_, '_> {
             scope,
             node: id,
             operation,
+            entry_port: None,
             then: self.target(key, "then"),
             failed: self.target(key, "failed"),
             cancelled: self.target(key, "cancelled"),
@@ -2542,7 +2638,7 @@ struct HostTables<'a> {
     variables: &'a [ControlVariable],
     variable_nodes: &'a BTreeMap<NodeId, usize>,
     state_nodes: &'a BTreeMap<ControlKey, usize>,
-    lives: &'a BTreeMap<NodeId, usize>,
+    lives: &'a BTreeMap<NodeId, BTreeMap<orange_model::id::PortKey, usize>>,
 }
 
 /// Where the runtime supplies one host input of the data plan.
@@ -2566,12 +2662,15 @@ fn host_source(
             _ => HostSource::Variable(variable),
         });
     }
+    let source = &data.slot_sources()[node.outputs()[0].index()];
     if scope == 0
-        && let Some(&live) = tables.lives.get(&node.node())
+        && let Some(&live) = tables
+            .lives
+            .get(&source.node)
+            .and_then(|ports| ports.get(&source.port))
     {
         return Ok(HostSource::Live(live));
     }
-    let source = &data.slot_sources()[node.outputs()[0].index()];
     if cx.node((scope, source.node)).definition.id.as_str() == ids::NOW {
         return Ok(HostSource::Clock);
     }

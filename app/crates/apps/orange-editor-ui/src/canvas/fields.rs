@@ -24,6 +24,8 @@ pub(super) enum FieldEdit {
     Browse(String),
     /// One more instance of this variadic port.
     AddPort(String),
+    /// The devices of this adapter are to be listed again.
+    RefreshDevices(String),
 }
 
 /// The kind of control a value gets.
@@ -68,6 +70,8 @@ impl Kind {
 fn unit(name: &str) -> &'static str {
     if name.ends_with("_hz") {
         "Hz"
+    } else if name == "reset_db" {
+        "dB"
     } else if name.ends_with("_db") {
         "dBFS"
     } else if name.ends_with("_ms") || matches!(name, "hold" | "cooldown") {
@@ -90,9 +94,11 @@ fn pointer_of(name: &str) -> String {
 }
 
 /// A choice as a person reads it: When's modes in words, others as declared.
-fn choice_label<'a>(node: &NodeView, choice: &'a str) -> &'a str {
+fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
     if node.definition == "core/on-watch" {
         watch_label(choice)
+    } else if name == "direction" && super::spectrum::is_noise(node) {
+        super::spectrum::direction(choice)
     } else {
         choice
     }
@@ -132,7 +138,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             let set = node.settings.get(name).is_some();
             let text = match &value {
                 serde_json::Value::Null => "—".to_owned(),
-                serde_json::Value::String(text) => choice_label(node, text).to_owned(),
+                serde_json::Value::String(text) => choice_label(node, name, text).to_owned(),
                 other => {
                     let unit = unit(name);
                     if unit.is_empty() {
@@ -413,7 +419,7 @@ impl Canvas {
                             for option in &options {
                                 let label = option.as_str().map_or_else(
                                     || option.to_string(),
-                                    |o| choice_label(node, o).to_owned(),
+                                    |o| choice_label(node, name, o).to_owned(),
                                 );
                                 if ui.selectable_label(*option == value, label).clicked()
                                     && *option != value
@@ -546,10 +552,14 @@ impl Canvas {
         };
         let mut chosen = picker.selected.clone();
         let mut picked = false;
-        let shown = chosen
-            .as_ref()
-            .and_then(|id| picker.options.iter().find(|(value, _)| value == id))
-            .map_or(picker.default_label.as_str(), |(_, label)| label.as_str());
+        // A device that is gone says so instead of showing its ID.
+        let shown = chosen.as_ref().map_or(picker.default_label.as_str(), |id| {
+            picker
+                .options
+                .iter()
+                .find(|(value, _)| value == id)
+                .map_or(t("device-unavailable"), |(_, label)| label.as_str())
+        });
         let file = picker
             .connection
             .as_ref()
@@ -557,7 +567,12 @@ impl Canvas {
             .and_then(|path| std::path::Path::new(path).file_name())
             .map(|name| name.to_string_lossy());
         let shown = file.as_deref().unwrap_or(shown).to_owned();
+        let mut refresh = false;
         dropdown(ui, slot, id, &shown, false, |ui| {
+            refresh = ui.small_button(t("refresh-devices")).clicked();
+            if let Some(problem) = &picker.problem {
+                ui.weak(problem);
+            }
             picked |= ui
                 .selectable_value(&mut chosen, None, &picker.default_label)
                 .clicked();
@@ -579,6 +594,12 @@ impl Canvas {
                     .filter(|(id, _)| group(id) == kind)
                     .collect();
                 if options.is_empty() {
+                    if kind == 2
+                        && picker.group_label == t("recording-devices")
+                        && picker.problem.is_none()
+                    {
+                        ui.weak(t("no-audio-applications"));
+                    }
                     continue;
                 }
                 ui.small(match kind {
@@ -594,6 +615,9 @@ impl Canvas {
                 ui.separator();
             }
         });
+        if refresh {
+            return Some(FieldEdit::RefreshDevices(picker.adapter.clone()));
+        }
         (picked && (chosen != picker.selected || picker.connection.is_none()))
             .then_some(FieldEdit::Device(chosen))
     }
@@ -835,6 +859,21 @@ fn dropdown(
             .response;
         response.on_hover_text(text);
     });
+}
+
+/// The spacing and type size of egui widgets drawn in a card's chart body at `zoom`.
+pub(super) fn style_controls(ui: &mut egui::Ui, zoom: f32) {
+    /// The height of a control in a chart body, in graph units.
+    const CHART_CONTROL: f32 = 20.0;
+    let style = ui.style_mut();
+    style.override_font_id = Some(FontId::proportional(12.0 * zoom));
+    style.wrap_mode = Some(egui::TextWrapMode::Truncate);
+    style.spacing.item_spacing = Vec2::new(6.0, 4.0) * zoom;
+    style.spacing.button_padding = Vec2::new(6.0, 2.0) * zoom;
+    style.spacing.interact_size = Vec2::new(24.0, CHART_CONTROL) * zoom;
+    style.spacing.icon_width = 12.0 * zoom;
+    style.spacing.icon_width_inner = 8.0 * zoom;
+    style.spacing.icon_spacing = 4.0 * zoom;
 }
 
 /// Card widgets drawn by egui take the card's look and scale (22 §3.1).

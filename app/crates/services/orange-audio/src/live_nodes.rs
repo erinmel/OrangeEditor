@@ -2,10 +2,11 @@
 //! measured values cross the run boundary. Sample blocks remain in the shared ring.
 use crate::{
     Analyzing, BAD_INPUT, Call, Control, DEVICE_CHECK, Definition, EmitError, Emitter,
-    INPUT_ADAPTER, InputShared, KernelFault, Lifecycle, Listening, Map, OUTPUT_ADAPTER, PACKAGE,
-    RecordRepr, SILENCE_DB, STREAM_TYPE, ServiceNode, ServicePackage, ServiceSource, Session,
-    SourceControl, Stop, Value, input_of, number_setting, source, stream_input, stream_value,
-    transient, transient_settings, unit_gain, watch_windows, when_finished,
+    INPUT_ADAPTER, InputShared, KernelFault, Lifecycle, Listening, Map, OUTPUT_ADAPTER,
+    OutputSession, PACKAGE, RecordRepr, SILENCE_DB, STREAM_TYPE, ServiceNode, ServicePackage,
+    ServiceSource, Session, SourceControl, Stop, Value, band_trigger, input_of, number_setting,
+    play_stream, source, stream_gain, stream_input, stream_value, threshold_settings, transient,
+    transient_settings, unit_gain, watch_windows, when_finished,
 };
 use orange_sdk::{Arguments, DefinitionError, LiveSource, Publisher};
 use serde_json::{Value as Json, json};
@@ -16,12 +17,20 @@ use std::thread;
 pub const AUDIO_SOURCE: &str = "org.orange.audio/audio-source";
 /// Reports the stream's negotiated rate and number of channels.
 pub const AUDIO_FORMAT: &str = "org.orange.audio/audio-format";
+/// Shows the live frequency spectrum of a wired stream.
+pub const AUDIO_SPECTRUM: &str = "org.orange.audio/spectrum";
+/// Continuous frequency plot and stable, user-defined band outputs.
+pub const MULTIBAND_SPECTRUM: &str = "org.orange.audio/multiband-spectrum";
+/// Full-stream RMS, threshold state and a configurable trigger.
+pub const NOISE_LEVEL: &str = "org.orange.audio/noise-level";
 /// The record output of Audio format, with U64 fields `rate` and `channels`.
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
 /// Measures a stream's level in dBFS continuously.
 pub const LIVE_LEVEL: &str = "org.orange.audio/live-level";
 /// Measures a selected band of a stream in dBFS continuously.
 pub const LIVE_BAND_LEVEL: &str = "org.orange.audio/live-band-level";
+/// Fires when a wired stream's selected band crosses its threshold.
+pub const BAND_TRIGGER: &str = "org.orange.audio/band-trigger";
 /// Fires when a stream has a hit in a selected band.
 pub const TRANSIENT: &str = "org.orange.audio/transient";
 /// Fires when the wired file source plays to its end.
@@ -73,11 +82,71 @@ impl LiveSource for AudioSource {
     ) -> Result<Box<dyn Send>, String> {
         let session = input_of(session.as_ref())?;
         let value = stream_value(session.id).map_err(|fault| fault.message.to_string())?;
-        publisher
-            .publish(value)
-            .map_err(|_| "the audio stream could not be published".to_owned())?;
-        // The connection, not this reference, owns the capture.
-        Ok(Box::new(()))
+        let life = Arc::new(Lifecycle::new());
+        let running = Arc::clone(&life);
+        thread::Builder::new()
+            .name("orange-audio-source".into())
+            .spawn(move || {
+                if session.wait_ring(None, &|| running.stopped()).is_ok() && !running.stopped() {
+                    let _ = publisher.publish(value);
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(Analyzing(life)))
+    }
+}
+
+struct LiveAudioOut;
+impl ServiceSource for LiveAudioOut {
+    fn start_with_arguments(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        _settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let playing = "playing"
+            .parse()
+            .map_err(|_| "invalid playback status port")?;
+        let Some(Value::Bool(enabled)) = arguments.get("enabled") else {
+            return Err("audio output needs an enabled value".to_owned());
+        };
+        let _ = emitter.publish(&playing, Some(Value::Bool(false)));
+        if !*enabled {
+            return Ok(Box::new(()));
+        }
+        let input = input_stream(arguments)?;
+        let Some(Value::F64(gain)) = arguments.get("gain") else {
+            return Err("audio output needs a gain value".to_owned());
+        };
+        let gain = stream_gain(*gain).map_err(|fault| fault.message.to_string())?;
+        let session = session.ok_or("choose an audio output device")?;
+        if !session.as_any().is::<OutputSession>() {
+            return Err("choose an audio output device".to_owned());
+        }
+        let life = Arc::new(Lifecycle::new());
+        let running = Arc::clone(&life);
+        thread::Builder::new()
+            .name("orange-live-audio-out".into())
+            .spawn(move || {
+                let Some(output) = session.as_any().downcast_ref::<OutputSession>() else {
+                    return;
+                };
+                let result = play_stream(
+                    output,
+                    &input,
+                    gain,
+                    || running.stopped(),
+                    |active| {
+                        let _ = emitter.publish(&playing, Some(Value::Bool(active)));
+                    },
+                );
+                if let Err(fault) = result {
+                    let _ = emitter.fault(fault);
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(Analyzing(life)))
     }
 }
 
@@ -131,6 +200,26 @@ impl LiveSource for AudioFormat {
 struct Meter {
     band: bool,
 }
+
+fn band_listening(
+    settings: &Map<String, Json>,
+    arguments: &Arguments,
+    window: f64,
+) -> Result<Listening, String> {
+    let hertz = |name| match arguments.get(name) {
+        Some(Value::F64(value)) if (0.0..=24_000.0).contains(value) => Ok(*value),
+        _ => Err(format!("{name} must be between 0 and 24000 Hz")),
+    };
+    let (low_hz, high_hz) = (hertz("low_hz")?, hertz("high_hz")?);
+    if high_hz > 0.0 && low_hz >= high_hz {
+        return Err("the band needs low_hz < high_hz, or 0 to leave a side open".into());
+    }
+    let mut listening = Listening::of(settings, (0.0, 0.0, window))?;
+    listening.low_hz = low_hz;
+    listening.high_hz = high_hz;
+    Ok(listening)
+}
+
 impl LiveSource for Meter {
     fn start(
         &self,
@@ -140,28 +229,66 @@ impl LiveSource for Meter {
         publisher: Publisher,
     ) -> Result<Box<dyn Send>, String> {
         let stream = input_stream(arguments)?;
-        let hertz = |name| match arguments.get(name) {
-            Some(Value::F64(value)) if (0.0..=24_000.0).contains(value) => Ok(*value),
-            _ => Err(format!("{name} must be between 0 and 24000 Hz")),
-        };
-        let (low, high) = if self.band {
-            (hertz("low_hz")?, hertz("high_hz")?)
+        let listening = if self.band {
+            band_listening(settings, arguments, LEVEL_WINDOW_MS)?
         } else {
-            (0.0, 0.0)
+            Listening::of(settings, (0.0, 0.0, LEVEL_WINDOW_MS))?
         };
-        let mut listening = Listening::of(settings, (low, high, LEVEL_WINDOW_MS))?;
-        // These borders are live arguments. Only the analyzer window is a setting.
-        if high > 0.0 && low >= high {
-            return Err("the band needs low_hz < high_hz, or 0 to leave a side open".into());
-        }
-        listening.low_hz = low;
-        listening.high_hz = high;
-        publisher
-            .publish(Value::F64(SILENCE_DB))
-            .map_err(|_| "the audio level could not be published".to_owned())?;
         watch_windows(stream, listening, move |level| {
             publisher.publish(Value::F64(level.unwrap_or(SILENCE_DB))) != Err(EmitError::Closed)
         })
+    }
+}
+
+struct BandTrigger;
+impl ServiceSource for BandTrigger {
+    fn start_with_arguments(
+        &self,
+        _session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        band_trigger(
+            input_stream(arguments)?,
+            band_listening(settings, arguments, 50.0)?,
+            settings,
+            emitter,
+        )
+    }
+}
+
+struct Spectrum;
+impl LiveSource for Spectrum {
+    fn start(
+        &self,
+        _session: Option<Arc<dyn Session>>,
+        _settings: &Map<String, Json>,
+        arguments: &Arguments,
+        publisher: Publisher,
+    ) -> Result<Box<dyn Send>, String> {
+        crate::spectrum::watch(input_stream(arguments)?, publisher)
+    }
+}
+
+struct ReactiveAudio {
+    spectrum: bool,
+    streams: bool,
+}
+impl ServiceSource for ReactiveAudio {
+    fn start_with_arguments(
+        &self,
+        _session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let stream = input_stream(arguments)?;
+        if self.spectrum {
+            crate::reactive::spectrum(stream, settings, emitter, self.streams)
+        } else {
+            crate::reactive::noise(stream, settings, emitter)
+        }
     }
 }
 
@@ -240,6 +367,12 @@ fn choice(ty: &str, variant: &str) -> Json {
     json!({"type": ty, "value": {"variant": variant}})
 }
 
+fn band_inputs(definition: Definition) -> Definition {
+    definition
+        .input_default("low_hz", F64, zero())
+        .input_default("high_hz", F64, zero())
+}
+
 fn live(name: &str, label: &str, description: &str) -> Definition {
     Definition::read(PACKAGE, name, label)
         .description(description)
@@ -268,29 +401,110 @@ fn meter(name: &str, label: &str, description: &str) -> Definition {
 
 pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionError> {
     let audio_source = live("audio-source", "Audio source", "Gives the audio stream of a device or a sound file. Wire it to an analyzer, an output or a recorder.")
-        .keywords("microphone, application, system audio, virtual cable, file")
+        .keywords("audio in, audio input, microphone, application, system audio, virtual cable, file")
         .uses(INPUT_ADAPTER)
         .live("stream", STREAM_TYPE);
+    let audio_out = entry(
+        "audio-out",
+        "Audio out",
+        "Plays the wired audio stream on the selected device while Enabled is on.",
+    )
+    .version(2)
+    .uses(OUTPUT_ADAPTER)
+    .keywords("speaker, monitor, output, listen, mute, toggle")
+    .input_default(
+        "enabled",
+        "core/bool@1",
+        json!({"type": "core/bool@1", "value": true}),
+    )
+    .input_default("gain", F64, unit_gain())
+    .live("playing", "core/bool@1")
+    .source_outputs("finished", None, 0);
     let audio_format = stream_input(live(
         "audio-format",
         "Audio format",
         "Reports the rate and channel count of a stream.",
     ))
     .live("format", FORMAT_TYPE);
+    let spectrum = stream_input(live("spectrum", "Audio spectrum", "Shows the stream’s frequency spectrum. Drag across it to select a band and add a meter or threshold trigger."))
+        .keywords("fft, frequency, bands, spectrum, bass, multiband, audio reactive")
+        .live("spectrum", "core/list@1<core/f64@1>").hidden();
+    let spectrum_bands = entry(
+        "multiband-spectrum",
+        "Audio Spectrum",
+        "Draw frequency bands on the live spectrum and wire their levels and threshold events.",
+    )
+    .keywords("fft, band level, band trigger, bass, multiband, frequency, spectrum, audio reactive")
+    .setting("bands", json!({"type": "object"}))
+    .live("spectrum", "core/list@1<core/f64@1>")
+    .source_outputs("band_level", Some(F64), crate::reactive::MAX_BANDS)
+    .source_outputs("band_above", None, crate::reactive::MAX_BANDS)
+    .source_outputs("band_below", None, crate::reactive::MAX_BANDS)
+    .hidden();
+    let spectrum_streams = entry(
+        "multiband-spectrum",
+        "Frequency Splitter",
+        "Draw frequency bands on the live spectrum. Each band outputs its filtered audio stream.",
+    )
+    .version(2)
+    .keywords("fft, bandpass, bass, multiband, frequency, audio spectrum, band trigger, audio filter, split audio")
+    .setting("bands", json!({"type": "object"}))
+    .live("spectrum", "core/list@1<core/f64@1>")
+    .source_outputs("band_stream", Some(STREAM_TYPE), crate::reactive::MAX_BANDS)
+    // A passive source has no execution outcome, even with no bands configured.
+    .source_outputs("band_above", None, 0)
+    .hidden();
+    let frequency_splitter = entry(
+        "multiband-spectrum",
+        "Frequency Splitter",
+        "Drag across the spectrum to create a filtered audio output for that frequency range.",
+    )
+    .version(3)
+    .keywords("fft, bandpass, bass, multiband, frequency, audio spectrum, band trigger, audio filter, split audio")
+    .setting("bands", json!({"type": "object"}))
+    .live("spectrum", "core/list@1<core/f64@1>")
+    .source_outputs("band_stream", Some(STREAM_TYPE), crate::reactive::MAX_BANDS)
+    .source_outputs("band_level", Some(F64), crate::reactive::MAX_BANDS)
+    .source_outputs("band_above", None, crate::reactive::MAX_BANDS)
+    .source_outputs("band_below", None, crate::reactive::MAX_BANDS);
+    let noise = entry(
+        "noise-level",
+        "Audio Level Trigger",
+        "Measure overall volume and trigger after staying above or below a threshold.",
+    )
+    .keywords("microphone, noise level, noise gate, loudness, volume, rms, dbfs, threshold")
+    .then_label("Triggered")
+    .live("level", F64)
+    .live("condition_met", "core/bool@1")
+    .setting(
+        "direction",
+        json!({"type": "string", "enum": ["above", "below"], "default": "above"}),
+    )
+    .setting("threshold_db", number_setting(-120.0, 0.0, -35.0))
+    .setting("hold_ms", number_setting(0.0, 10_000.0, 150.0))
+    .setting("reset_db", number_setting(0.0, 24.0, 4.0));
     let level = meter(
         "live-level",
         "Level",
         "Measures a stream's level in dBFS as it changes.",
     )
     .keywords("volume, loudness, meter");
-    let band = meter(
-        "live-band-level",
-        "Band level",
-        "Measures a band of a stream in dBFS as it changes. Leave a side at 0 to keep it open.",
-    )
-    .keywords("bass, frequency, loudness, meter")
-    .input_default("low_hz", F64, zero())
-    .input_default("high_hz", F64, zero());
+    let band = band_inputs(
+        meter(
+            "live-band-level",
+            "Band level",
+            "Measures a band of a stream in dBFS as it changes. Leave a side at 0 to keep it open.",
+        )
+        .keywords("bass, frequency, loudness, meter")
+        .hidden(),
+    );
+    let trigger = threshold_settings(band_inputs(entry(
+        "band-trigger",
+        "Band trigger",
+        "Fires when a frequency band reaches its threshold. The level output carries the measured dBFS at the trigger.",
+    )).keywords("when, loud, bass, frequency, threshold, multi-band, audio reactive")
+        .then_label("Triggered").payload(F64)
+        .setting("window_ms", number_setting(5.0, 1_000.0, 50.0)), 50.0).hidden();
     let transient = transient_settings(
         entry(
             "transient",
@@ -330,9 +544,40 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .enumeration("source-command", SOURCE_COMMANDS)
         .enumeration("sound-command", SOUND_COMMANDS)
         .live(&audio_source.build(), AudioSource)?
+        .source(&audio_out.build(), LiveAudioOut)?
         .live(&audio_format.build(), AudioFormat)?
+        .live(&spectrum.build(), Spectrum)?
         .live(&level.build(), Meter { band: false })?
         .live(&band.build(), Meter { band: true })?
+        .source(&trigger.build(), BandTrigger)?
+        .source(
+            &spectrum_bands.build(),
+            ReactiveAudio {
+                spectrum: true,
+                streams: false,
+            },
+        )?
+        .source(
+            &spectrum_streams.build(),
+            ReactiveAudio {
+                spectrum: true,
+                streams: true,
+            },
+        )?
+        .source(
+            &frequency_splitter.build(),
+            ReactiveAudio {
+                spectrum: true,
+                streams: true,
+            },
+        )?
+        .source(
+            &noise.build(),
+            ReactiveAudio {
+                spectrum: false,
+                streams: false,
+            },
+        )?
         .source(&transient.build(), Transient)?
         .source(&finished.build(), SourceFinished)?
         .node(&transport.build(), SourceTransport)?

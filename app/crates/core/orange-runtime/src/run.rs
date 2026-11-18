@@ -139,6 +139,8 @@ pub struct RunEvent {
     pub node: NodeId,
     pub outcome: ControlOutcome,
     pub fault: Option<ConstantFault>,
+    /// Explicit execution port fired by a package entry, if any.
+    pub route: Option<orange_model::id::PortKey>,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct RunLimits {
@@ -792,7 +794,7 @@ pub struct Run {
     watches: watch::Watches,
     /// Published values and the coalesced ingress waiting for an epoch boundary.
     lives: Vec<Option<Value>>,
-    pending_lives: BTreeMap<usize, Value>,
+    pending_lives: BTreeMap<usize, Option<Value>>,
     live_bytes: Tally,
     /// The last value seen on each output port, while the host asks for them.
     port_values: Option<PortValues>,
@@ -1577,6 +1579,7 @@ impl Run {
                             return self.fail(RunError::InvalidState);
                         }
                         self.record(RunEvent {
+                            route: None,
                             activation: timer.activation.sequence,
                             node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
                                 [timer.owner.index()]
@@ -2201,6 +2204,7 @@ impl Run {
                     FunctionStep::Failed(step) => step,
                     FunctionStep::Returned => {
                         self.record(RunEvent {
+                            route: None,
                             activation: activation.sequence,
                             node: node.node(),
                             outcome: ControlOutcome::Then,
@@ -2269,6 +2273,7 @@ impl Run {
             activation.pull.reset();
             shared.pull_owner = None;
             self.record(RunEvent {
+                route: None,
                 activation: activation.sequence,
                 node: node.node(),
                 outcome: ControlOutcome::Cancelled,
@@ -2293,6 +2298,7 @@ impl Run {
             self.options.limits.max_state_bytes,
         )?;
         self.record(RunEvent {
+            route: None,
             activation: activation.sequence,
             node: node.node(),
             outcome: ControlOutcome::Failed,
@@ -2340,6 +2346,7 @@ impl Run {
             }
         }
         self.record(RunEvent {
+            route: node.entry_port().cloned(),
             activation: activation.sequence,
             node: node.node(),
             outcome,
@@ -2392,6 +2399,7 @@ impl Run {
             };
             self.published_await_delivery(&completion);
             self.record(RunEvent {
+                route: None,
                 activation: waiter.strand.sequence,
                 node: node.node(),
                 outcome: if timed_out {

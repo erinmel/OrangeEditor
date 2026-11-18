@@ -254,6 +254,7 @@ impl Loops<'_> {
             activation.pc = *body;
             activation.yielded = true;
             self.record(RunEvent {
+                route: None,
                 activation: activation.sequence,
                 node: node.node(),
                 outcome: ControlOutcome::Body,
@@ -262,6 +263,7 @@ impl Loops<'_> {
         } else {
             activation.pc = *completed;
             self.record(RunEvent {
+                route: None,
                 activation: activation.sequence,
                 node: node.node(),
                 outcome: ControlOutcome::Completed,

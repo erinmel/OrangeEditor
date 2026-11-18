@@ -256,6 +256,12 @@ dropping it (2026-11-15). `Definition::then_label` names a node's way on and
 library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
 application is a Wasm component or a graph package.
 
+Native sources can publish or revoke a computed output using `Emitter::publish`
+and fire a named outcome using `Emitter::emit_on`. The resolved port includes
+the stable counter for a variadic instance. The host binds these callbacks to
+the running provider guard and its checked ports. The native ABI identifier
+is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
+
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`
 (≤ 16), `homepage` and `repository` (`https://` URLs) and `keywords` (≤ 16 distinct
