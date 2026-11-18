@@ -348,3 +348,16 @@ inputs-range = From { $min } to { $max }.
 inputs-at-least = At least { $min }.
 choice-name = Choice { $number }
 field-name = Field { $number }
+
+# The Types tab
+add-choice = Add choice
+add-field = Add field
+payload-hint = A value this choice carries, such as a number. Most choices carry none.
+choice-hint = Drag to reorder. Values keep the ID “{ $id }”, so renaming is safe.
+field-hint = Drag to reorder. Values keep the ID “{ $id }”, so renaming is safe.
+type-uses =
+    { $count ->
+        [0] Not used
+        [one] One use
+       *[other] { $count } uses
+    }

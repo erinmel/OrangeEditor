@@ -99,9 +99,15 @@ pub(crate) struct Forms {
     /// What is being typed in place in the Variables list, by variable ID and field,
     /// while the field has the focus.
     inline: BTreeMap<(String, &'static str), String>,
+    /// The field to put the keyboard in when it is next drawn, such as a new choice.
+    focus: Option<(String, &'static str)>,
 }
 
 impl Forms {
+    /// Puts the keyboard in the in-place field `key` when it is next drawn.
+    pub(crate) fn focus_inline(&mut self, key: (String, &'static str)) {
+        self.focus = Some(key);
+    }
     pub(crate) fn reveal_variable(&mut self) {
         self.open_variable = true;
     }
@@ -550,13 +556,33 @@ impl Editor {
         key: (String, &'static str),
         shown: &str,
     ) -> Option<String> {
+        self.inline_field_sized(ui, key, shown, 110.0)
+    }
+
+    /// [`Self::inline_field`] `width` wide.
+    pub(crate) fn inline_field_sized(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: (String, &'static str),
+        shown: &str,
+        width: f32,
+    ) -> Option<String> {
         let mut text = self
             .forms
             .inline
             .get(&key)
             .cloned()
             .unwrap_or_else(|| shown.to_owned());
-        let response = ui.add(edit_like(&mut text, "unset"));
+        let tall = egui::vec2(0.0, ui.spacing().interact_size.y);
+        let response = ui.add(
+            edit_like(&mut text, "unset")
+                .desired_width(width)
+                .min_size(tall),
+        );
+        if self.forms.focus.as_ref() == Some(&key) {
+            self.forms.focus = None;
+            response.request_focus();
+        }
         if response.has_focus() {
             let _ = self.forms.inline.insert(key, text);
             None
@@ -1075,6 +1101,8 @@ fn edit_like<'a>(text: &'a mut String, hint: &str) -> egui::TextEdit<'a> {
         .hint_text(hint)
         .frame(egui::Frame::NONE)
         .desired_width(110.0)
+        // As tall as the buttons and lists beside it, with its text centred among them.
+        .align(egui::Align2::LEFT_CENTER)
 }
 
 /// A list of an enum's choices for a starting value: empty until written, or one

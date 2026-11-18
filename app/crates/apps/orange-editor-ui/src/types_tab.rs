@@ -73,6 +73,31 @@ enum Change {
 }
 
 impl Editor {
+    /// How many variables and nodes of the open graph use type `expr`, alone or
+    /// inside another type such as a list.
+    fn uses_of(&self, expr: &str) -> usize {
+        let Some(document) = &self.document else {
+            return 0;
+        };
+        let variables = document
+            .declared
+            .variables
+            .iter()
+            .filter(|variable| variable.ty.contains(expr))
+            .count();
+        let nodes = document
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.ports
+                    .iter()
+                    .any(|port| port.ty.as_deref().is_some_and(|ty| ty.contains(expr)))
+            })
+            .count();
+        variables + nodes
+    }
+
     pub(crate) fn types_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
             ui.weak(t("open-graph-types"));
@@ -99,12 +124,13 @@ impl Editor {
                     }
                 });
             });
+            ui.add_space(4.0);
             if declared.types.is_empty() {
                 ui.weak(t("no-types"));
             }
             for decl in &declared.types {
-                ui.separator();
-                if let Some(asked) = self.type_card(ui, decl) {
+                let uses = self.uses_of(&decl.ty().to_string());
+                if let Some(asked) = self.type_card(ui, decl, uses) {
                     change = Some(asked);
                 }
             }
@@ -148,153 +174,287 @@ impl Editor {
         let _ = self.edited(host, result);
     }
 
-    /// One type: its name, its members with their types, and add and remove buttons.
-    fn type_card(&mut self, ui: &mut egui::Ui, decl: &LocalTypeDecl) -> Option<Change> {
+    /// One type as a card: a header with its kind, its name, how much uses it and a
+    /// delete button, then its choices or fields.
+    fn type_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        decl: &LocalTypeDecl,
+        uses: usize,
+    ) -> Option<Change> {
         let key = decl.id.to_string();
         let mut changed = decl.clone();
         let mut asked = None;
-        ui.horizontal(|ui| {
-            let kind = match decl.shape {
-                TypeShape::Enum { .. } => t("enum"),
-                TypeShape::Record { .. } => t("record"),
-            };
-            if let Some(name) = self.inline_field(ui, (key.clone(), "type-name"), &decl.name)
-                && !name.trim().is_empty()
-            {
-                changed.name = name;
-            }
-            ui.weak(kind);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .small_button("x")
-                    .on_hover_text(t("remove-type-hint"))
-                    .clicked()
-                {
-                    asked = Some(Change::Remove(decl.id));
-                }
+        let visuals = ui.visuals().clone();
+        let accent = crate::canvas::type_color(Some(&decl.ty().to_string()));
+        let kind = match decl.shape {
+            TypeShape::Enum { .. } => t("enum"),
+            TypeShape::Record { .. } => t("record"),
+        };
+        let _ = egui::Frame::new()
+            .fill(visuals.faint_bg_color)
+            .stroke(visuals.widgets.noninteractive.bg_stroke)
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let id = ui.make_persistent_id(("orange-type", key.as_str()));
+                let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    true,
+                );
+                let header = state.show_header(ui, |ui| {
+                    badge(ui, kind, accent);
+                    let width = (ui.available_width() - 96.0).max(60.0);
+                    if let Some(name) =
+                        self.inline_field_sized(ui, (key.clone(), "type-name"), &decl.name, width)
+                        && !name.trim().is_empty()
+                    {
+                        changed.name = name;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if quiet_icon(ui, icons::DELETE, t("remove-type-hint"), true) {
+                            asked = Some(Change::Remove(decl.id));
+                        }
+                        ui.weak(tf("type-uses", &[("count", uses.into())]));
+                    });
+                });
+                let _ = header.body(|ui| match &mut changed.shape {
+                    TypeShape::Enum { variants } => self.variant_rows(ui, &key, variants, accent),
+                    TypeShape::Record { fields } => self.field_rows(ui, &key, fields, accent),
+                });
             });
-        });
+        ui.add_space(6.0);
         if asked.is_some() {
             return asked;
-        }
-        match &mut changed.shape {
-            TypeShape::Enum { variants } => self.variant_rows(ui, &key, variants),
-            TypeShape::Record { fields } => self.field_rows(ui, &key, fields),
         }
         (changed != *decl).then_some(Change::Declare(changed))
     }
 
-    fn variant_rows(&mut self, ui: &mut egui::Ui, key: &str, variants: &mut Vec<VariantDecl>) {
+    fn variant_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &str,
+        variants: &mut Vec<VariantDecl>,
+        accent: egui::Color32,
+    ) {
         let mut remove = None;
+        let mut moved = None;
+        let only = variants.len() == 1;
         for (index, variant) in variants.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
+            let row = ui.horizontal(|ui| {
+                let hint = tf("choice-hint", &[("id", variant.id.as_str().into())]);
+                drag_handle(ui, key, index, &variant.id, &hint);
+                let width = (ui.available_width() - 120.0).max(60.0);
                 let field = (format!("{key}/{}", variant.id), "variant-name");
-                if let Some(name) = self.inline_field(ui, field, &variant.name)
+                if let Some(name) = self.inline_field_sized(ui, field, &variant.name, width)
                     && !name.trim().is_empty()
                 {
                     variant.name = name;
                 }
-                let salt = (key, variant.id.as_str(), "payload");
-                variant.payload = payload_choice(ui, salt, variant.payload.take());
-                if ui
-                    .small_button("x")
-                    .on_hover_text(t("remove-choice"))
-                    .clicked()
-                {
-                    remove = Some(index);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if quiet_icon(ui, icons::CLOSE, t("remove-choice"), !only) {
+                        remove = Some(index);
+                    }
+                    let salt = (key, variant.id.as_str(), "payload");
+                    variant.payload = payload_choice(ui, salt, variant.payload.take(), true);
+                });
             });
+            if let Some(from) = dropped(&row.response, key, ui, accent) {
+                moved = Some((from, index));
+            }
         }
         if let Some(index) = remove.filter(|_| variants.len() > 1) {
             let _ = variants.remove(index);
         }
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            if ui
-                .small_button((icons::text(icons::ADD), t("choice")))
-                .clicked()
-            {
-                let taken: Vec<&str> = variants.iter().map(|v| v.id.as_str()).collect();
-                let name = tf("choice-name", &[("number", (variants.len() + 1).into())]);
-                let id = member_id(&name, &taken);
-                variants.push(VariantDecl {
-                    id,
-                    name,
-                    payload: None,
-                });
-            }
-        });
+        if let Some((from, to)) = moved.filter(|(from, to)| from != to) {
+            let item = variants.remove(from);
+            variants.insert(to.min(variants.len()), item);
+        }
+        if add_button(ui, t("add-choice")) {
+            let taken: Vec<&str> = variants.iter().map(|v| v.id.as_str()).collect();
+            let name = tf("choice-name", &[("number", (variants.len() + 1).into())]);
+            let id = member_id(&name, &taken);
+            self.forms
+                .focus_inline((format!("{key}/{id}"), "variant-name"));
+            variants.push(VariantDecl {
+                id,
+                name,
+                payload: None,
+            });
+        }
     }
 
-    fn field_rows(&mut self, ui: &mut egui::Ui, key: &str, fields: &mut Vec<FieldDecl>) {
+    fn field_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &str,
+        fields: &mut Vec<FieldDecl>,
+        accent: egui::Color32,
+    ) {
         let mut remove = None;
+        let mut moved = None;
         for (index, field) in fields.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
+            let row = ui.horizontal(|ui| {
+                let hint = tf("field-hint", &[("id", field.id.as_str().into())]);
+                drag_handle(ui, key, index, &field.id, &hint);
+                let width = (ui.available_width() - 140.0).max(60.0);
                 let edit = (format!("{key}/{}", field.id), "field-name");
-                if let Some(name) = self.inline_field(ui, edit, &field.name)
+                if let Some(name) = self.inline_field_sized(ui, edit, &field.name, width)
                     && !name.trim().is_empty()
                 {
                     field.name = name;
                 }
-                let salt = (key, field.id.as_str(), "type");
-                if let Some(ty) = payload_choice(ui, salt, Some(field.ty.clone())) {
-                    field.ty = ty;
-                }
-                let _ = ui
-                    .checkbox(&mut field.optional, "optional")
-                    .on_hover_text(t("optional-field-hint"));
-                if ui
-                    .small_button("x")
-                    .on_hover_text(t("remove-field"))
-                    .clicked()
-                {
-                    remove = Some(index);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if quiet_icon(ui, icons::CLOSE, t("remove-field"), true) {
+                        remove = Some(index);
+                    }
+                    let _ = ui
+                        .selectable_label(field.optional, "?")
+                        .on_hover_text(t("optional-field-hint"))
+                        .clicked()
+                        .then(|| field.optional = !field.optional);
+                    let salt = (key, field.id.as_str(), "type");
+                    if let Some(ty) = payload_choice(ui, salt, Some(field.ty.clone()), false) {
+                        field.ty = ty;
+                    }
+                });
             });
+            if let Some(from) = dropped(&row.response, key, ui, accent) {
+                moved = Some((from, index));
+            }
         }
         if let Some(index) = remove {
             let _ = fields.remove(index);
         }
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            if ui
-                .small_button((icons::text(icons::ADD), t("field")))
-                .clicked()
-            {
-                let taken: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
-                let name = tf("field-name", &[("number", (fields.len() + 1).into())]);
-                let id = member_id(&name, &taken);
-                if let Ok(ty) = "core/string@1".parse() {
-                    fields.push(FieldDecl {
-                        id,
-                        name,
-                        ty,
-                        optional: false,
-                    });
-                }
+        if let Some((from, to)) = moved.filter(|(from, to)| from != to) {
+            let item = fields.remove(from);
+            fields.insert(to.min(fields.len()), item);
+        }
+        if add_button(ui, t("add-field")) {
+            let taken: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
+            let name = tf("field-name", &[("number", (fields.len() + 1).into())]);
+            let id = member_id(&name, &taken);
+            if let Ok(ty) = "core/string@1".parse() {
+                self.forms
+                    .focus_inline((format!("{key}/{id}"), "field-name"));
+                fields.push(FieldDecl {
+                    id,
+                    name,
+                    ty,
+                    optional: false,
+                });
             }
-        });
+        }
     }
 }
 
-/// A type chooser for a payload or field: nothing (payloads only), the common types and
-/// the graph's own types.
+/// A member being dragged to a new place: the type it belongs to and where it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemberDrag {
+    key: String,
+    index: usize,
+}
+
+/// The handle a member is dragged by, which also says what values store.
+fn drag_handle(ui: &mut egui::Ui, key: &str, index: usize, member: &str, hint: &str) {
+    let weak = ui.visuals().weak_text_color();
+    let id = ui.make_persistent_id(("orange-member-drag", key, member));
+    let payload = MemberDrag {
+        key: key.to_owned(),
+        index,
+    };
+    let _ = ui
+        .dnd_drag_source(id, payload, |ui| {
+            ui.label(icons::text(icons::DRAG).color(weak))
+        })
+        .response
+        .on_hover_text(hint);
+}
+
+/// Where a member of type `key` was let go on `row`, marking the place while it is
+/// held over it.
+fn dropped(row: &egui::Response, key: &str, ui: &egui::Ui, accent: egui::Color32) -> Option<usize> {
+    if row
+        .dnd_hover_payload::<MemberDrag>()
+        .is_some_and(|drag| drag.key == key)
+    {
+        ui.painter().hline(
+            row.rect.x_range(),
+            row.rect.top(),
+            egui::Stroke::new(2.0, accent),
+        );
+    }
+    row.dnd_release_payload::<MemberDrag>()
+        .filter(|drag| drag.key == key)
+        .map(|drag| drag.index)
+}
+
+/// The kind of a type as a small coloured tag.
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    let _ = egui::Frame::new()
+        .fill(color.gamma_multiply(0.18))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text.to_uppercase())
+                    .size(10.0)
+                    .strong()
+                    .color(color),
+            )
+        });
+}
+
+/// An icon button without a frame, dimmed until the pointer is on it. Returns whether
+/// it was pressed.
+fn quiet_icon(ui: &mut egui::Ui, icon: char, hint: &str, enabled: bool) -> bool {
+    let weak = ui.visuals().weak_text_color();
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(icons::text(icon).color(weak)).frame(false),
+    )
+    .on_hover_text(hint)
+    .clicked()
+}
+
+/// A wide, quiet button that adds a member. Returns whether it was pressed.
+fn add_button(ui: &mut egui::Ui, label: &str) -> bool {
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    ui.add_space(2.0);
+    ui.add_sized(
+        [ui.available_width(), 22.0],
+        egui::Button::new((icons::text(icons::ADD), label))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(stroke),
+    )
+    .clicked()
+}
+
+/// A type chooser for a payload or field, as a coloured chip: nothing (payloads
+/// only), the common types and the graph's own types.
 fn payload_choice(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
     current: Option<orange_host::TypeExpr>,
+    payload: bool,
 ) -> Option<orange_host::TypeExpr> {
-    let shown = current
-        .as_ref()
-        .map_or_else(|| t("no-value").to_owned(), |ty| type_name(ty.as_str()));
+    let shown = current.as_ref().map_or_else(
+        || egui::RichText::new("—").weak(),
+        |ty| {
+            egui::RichText::new(type_name(ty.as_str()))
+                .color(crate::canvas::type_color(Some(ty.as_str())))
+        },
+    );
     let mut chosen = current.as_ref().map(ToString::to_string);
     let _ = egui::ComboBox::from_id_salt(salt)
-        .width(90.0)
+        .width(78.0)
         .selected_text(shown)
         .show_ui(ui, |ui| {
-            let _ = ui.selectable_value(&mut chosen, None, t("no-value"));
+            if payload {
+                let _ = ui.selectable_value(&mut chosen, None, t("no-value"));
+            }
             for common in COMMON_TYPES {
                 let _ =
                     ui.selectable_value(&mut chosen, Some(common.to_owned()), type_name(common));
@@ -302,6 +462,12 @@ fn payload_choice(
             for (expr, name) in choices() {
                 let _ = ui.selectable_value(&mut chosen, Some(expr), name);
             }
+        })
+        .response
+        .on_hover_text(if payload {
+            t("payload-hint")
+        } else {
+            t("type")
         });
     chosen.and_then(|text| text.parse().ok())
 }

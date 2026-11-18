@@ -347,3 +347,16 @@ inputs-range = De { $min } a { $max }.
 inputs-at-least = Al menos { $min }.
 choice-name = Opción { $number }
 field-name = Campo { $number }
+
+# La pestaña Tipos
+add-choice = Añadir opción
+add-field = Añadir campo
+payload-hint = Un valor que lleva esta opción, como un número. La mayoría no lleva ninguno.
+choice-hint = Arrastra para reordenar. Los valores guardan el ID «{ $id }», así que renombrar es seguro.
+field-hint = Arrastra para reordenar. Los valores guardan el ID «{ $id }», así que renombrar es seguro.
+type-uses =
+    { $count ->
+        [0] Sin usar
+        [one] Un uso
+       *[other] { $count } usos
+    }
