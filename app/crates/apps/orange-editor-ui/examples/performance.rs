@@ -9,33 +9,36 @@ use std::{hint::black_box, time::Instant};
 fn graph(count: u32) -> GraphView {
     let id = |n: u32| format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap();
     let nodes = (0..count)
-        .map(|n| NodeView {
-            id: id(n),
-            name: format!("Node {n}"),
-            kind: "Step".into(),
-            definition: "core/sequence".into(),
-            detail: None,
-            entry: false,
-            ports: [true, false]
-                .into_iter()
-                .map(|input| PortView {
-                    id: if input { "in" } else { "then" }.into(),
-                    input,
-                    exec: true,
-                    ty: None,
-                    value: None,
-                    connected: true,
-                    default: None,
-                    label: None,
-                })
-                .collect(),
-            position: None,
-            settings: serde_json::json!({}),
-            schema: None,
-            references: Vec::new(),
-            types: Vec::new(),
-            variadic: Vec::new(),
-            paths: Vec::new(),
+        .map(|n| {
+            NodeView {
+                id: id(n),
+                name: format!("Node {n}"),
+                kind: "Step".into(),
+                definition: "core/sequence".into(),
+                detail: None,
+                entry: false,
+                ports: [true, false]
+                    .into_iter()
+                    .map(|input| PortView {
+                        id: if input { "in" } else { "then" }.into(),
+                        input,
+                        exec: true,
+                        ty: None,
+                        value: None,
+                        connected: true,
+                        default: None,
+                        label: None,
+                    })
+                    .collect(),
+                position: None,
+                settings: serde_json::json!({}),
+                schema: None,
+                references: Vec::new(),
+                types: Vec::new(),
+                variadic: Vec::new(),
+                paths: Vec::new(),
+            }
+            .into()
         })
         .collect();
     // Reverse edge order is a valid document order and stresses repeated relaxation.
@@ -69,7 +72,8 @@ fn main() {
             black_box(auto_layout(&graph));
         });
         for (n, node) in graph.nodes.iter_mut().enumerate() {
-            node.position = Some([(n % 100) as f32 * 330.0, (n / 100) as f32 * 120.0]);
+            std::sync::Arc::make_mut(node).position =
+                Some([(n % 100) as f32 * 330.0, (n / 100) as f32 * 120.0]);
         }
         measure(&format!("saved-layout/{count}"), 3, || {
             black_box(auto_layout(&graph));

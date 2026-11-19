@@ -1081,3 +1081,41 @@ fn every_name_in_an_operators_formula_is_one_of_its_inputs() {
     }
     assert!(checked >= 10, "{checked}");
 }
+
+/// A draft's view reuses the cards of nodes an edit left alone, and is always what
+/// drawing the whole document again gives.
+#[test]
+fn a_draft_view_after_each_edit_is_the_view_of_its_text() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let same = |draft: &Draft| {
+        assert_eq!(
+            host.draft_view(draft).unwrap(),
+            host.view(&draft.text().unwrap()).unwrap()
+        );
+    };
+    same(&draft);
+    assert!(
+        host.set_input(&mut draft, (set, "value"), Some("9"))
+            .unwrap()
+    );
+    same(&draft);
+    assert!(draft.place(&[(trigger, [40.0, 80.0])]).unwrap());
+    same(&draft);
+    let renamed = orange_host::Variable {
+        id: Some(id(100)),
+        name: "total".to_owned(),
+        ty: "core/i64@1".to_owned(),
+        scope: orange_host::VarScope::Run,
+        persistent: false,
+        initial: None,
+    };
+    let _ = host.declare_variable(&mut draft, &renamed).unwrap();
+    same(&draft);
+    assert!(host.disconnect(&mut draft, (set, "in"), true).unwrap());
+    same(&draft);
+    assert!(draft.undo());
+    same(&draft);
+    assert!(host.remove_nodes(&mut draft, &[trigger]).unwrap());
+    same(&draft);
+}

@@ -3995,14 +3995,16 @@ fn touched_by_edit(
     if before.nodes.is_empty() {
         return None;
     }
-    let old: HashMap<NodeId, &orange_host::NodeView> =
+    let old: HashMap<NodeId, &std::sync::Arc<orange_host::NodeView>> =
         before.nodes.iter().map(|node| (node.id, node)).collect();
     let (old_in, new_in) = (incoming(before), incoming(after));
     let mut touched: BTreeSet<NodeId> = after
         .nodes
         .iter()
         .filter(|node| {
-            old.get(&node.id).is_none_or(|old| *old != *node)
+            // A card the view kept is the same one; only one built again is compared.
+            old.get(&node.id)
+                .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
                 || old_in.get(&node.id) != new_in.get(&node.id)
         })
         .map(|node| node.id)

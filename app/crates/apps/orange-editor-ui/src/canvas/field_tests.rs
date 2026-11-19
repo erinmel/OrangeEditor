@@ -67,7 +67,7 @@ impl Session {
             context: egui::Context::default(),
             canvas,
             graph: GraphView {
-                nodes: vec![node()],
+                nodes: vec![node().into()],
                 wires: vec![],
             },
             corner: Pos2::ZERO,
@@ -127,7 +127,7 @@ fn request_body_is_edited_on_the_card_from_the_complete_stored_text() {
     let mut session = Session::new();
     let body = format!("{{\n  \"data\": \"{}\"\n}}\n", "x".repeat(160));
     session.request_inputs = Some(BTreeMap::from([("content".to_owned(), body.clone())]));
-    let node = &mut session.graph.nodes[0];
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
     node.definition = "org.orange.net/http-request".into();
     node.schema = None;
     let mut input = port("content", true, false, "core/string@1");
@@ -193,7 +193,7 @@ fn request_body_is_edited_on_the_card_from_the_complete_stored_text() {
 fn binary_request_headers_commit_the_line_list_when_the_field_loses_focus() {
     let mut session = Session::new();
     session.request_inputs = Some(BTreeMap::new());
-    let node = &mut session.graph.nodes[0];
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
     node.definition = "org.orange.net/http-request-bytes".into();
     node.schema = None;
     node.ports = vec![port("headers", true, false, "core/list@1<core/string@1>")];
@@ -231,7 +231,7 @@ fn messaging_and_package_text_ports_expand_on_the_card_and_collapse_after_applyi
     ] {
         let mut session = Session::new();
         session.request_inputs = Some(BTreeMap::new());
-        let node = &mut session.graph.nodes[0];
+        let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
         node.definition = definition.into();
         node.schema = None;
         node.ports = vec![
@@ -316,7 +316,7 @@ fn a_switch_writes_the_half_that_is_clicked() {
         done.set_input,
         Some((id(1), "condition".into(), "true".into()))
     );
-    session.graph.nodes[0].ports[3].value = Some("true".into());
+    std::sync::Arc::make_mut(&mut session.graph.nodes[0]).ports[3].value = Some("true".into());
     let no = Pos2::new(switch.left() + 10.0, switch.center().y);
     let done = session.click(no);
     assert_eq!(
@@ -324,7 +324,7 @@ fn a_switch_writes_the_half_that_is_clicked() {
         Some((id(1), "condition".into(), "false".into()))
     );
     // Clicking the half already chosen writes nothing.
-    session.graph.nodes[0].ports[3].value = Some("false".into());
+    std::sync::Arc::make_mut(&mut session.graph.nodes[0]).ports[3].value = Some("false".into());
     assert_eq!(session.click(no).set_input, None);
 }
 
@@ -383,7 +383,7 @@ fn a_dropdown_writes_the_chosen_setting() {
 #[test]
 fn a_card_adds_one_more_of_a_growing_port() {
     let mut session = Session::new();
-    session.graph.nodes[0]
+    std::sync::Arc::make_mut(&mut session.graph.nodes[0])
         .variadic
         .push(orange_host::VariadicView {
             port: "branch".into(),
@@ -398,7 +398,7 @@ fn a_card_adds_one_more_of_a_growing_port() {
     let done = session.click(button.center());
     assert_eq!(done.add_port, Some((id(1), "branch".into())));
     // At its most, the button is gone.
-    session.graph.nodes[0].variadic[0].max = Some(2);
+    std::sync::Arc::make_mut(&mut session.graph.nodes[0]).variadic[0].max = Some(2);
     let layout = card::Card::new(&session.graph.nodes[0]);
     assert!(!layout.rows.iter().any(|row| matches!(
         row.left,
@@ -511,7 +511,7 @@ fn the_way_out_a_step_takes_glows_and_fades() {
     // A step that ends by its only way out lights it too.
     let mut single = node();
     single.ports.retain(|port| port.id != "no");
-    session.graph.nodes = vec![single];
+    session.graph.nodes = vec![single.into()];
     session
         .canvas
         .record_step(id(1), false, orange_host::ControlOutcome::Then);

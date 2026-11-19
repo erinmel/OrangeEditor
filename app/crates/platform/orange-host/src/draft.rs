@@ -66,6 +66,8 @@ pub struct Draft {
     index: Option<orange_model::DocIndex>,
     /// What opening the document changed before the first edit.
     opened: OpenReport,
+    /// The cards [`Host::draft_view`] drew last, reused for nodes the edits left alone.
+    pub(crate) view: std::sync::Mutex<crate::view::ViewCache>,
 }
 
 /// What [`Host::draft`] changed while opening a document, so a front end can tell the
@@ -98,6 +100,7 @@ impl Draft {
             analysis: None,
             index: None,
             opened: OpenReport::default(),
+            view: std::sync::Mutex::default(),
         }
     }
 
@@ -242,6 +245,10 @@ impl Draft {
     }
 
     fn follow(&mut self, change: &ChangeSet) {
+        self.view
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .follow(change);
         if let Some(analysis) = &mut self.analysis {
             analysis.follow(&self.document, change);
         }

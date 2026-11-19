@@ -81,7 +81,7 @@ impl Canvas {
     /// placed.
     pub fn group_frame(&self, graph: &GraphView, group: &Group) -> Option<Rect> {
         let nodes: HashMap<NodeId, &NodeView> =
-            graph.nodes.iter().map(|node| (node.id, node)).collect();
+            graph.nodes.iter().map(|node| (node.id, &**node)).collect();
         let around = group
             .nodes
             .iter()
@@ -357,9 +357,11 @@ impl Canvas {
                 .nodes
                 .iter()
                 .filter(|node| chosen.contains(&node.id))
-                .map(|node| NodeView {
-                    position: None,
-                    ..node.clone()
+                .map(|node| {
+                    std::sync::Arc::new(NodeView {
+                        position: None,
+                        ..NodeView::clone(node)
+                    })
                 })
                 .collect(),
             wires: graph

@@ -479,14 +479,25 @@ Measured with `cargo test --release -p orange-editor-ui edit_timing -- --ignored
 one input edit in a 5,000-node graph (2,500 literal → Absolute chains), Windows 11,
 Rust 1.99.1, release build, four rounds after opening.
 
-| Step | Before | After |
-|---|---:|---:|
-| Whole edit | 180–209 ms | 36–48 ms |
-| Value previews | 137–162 ms | 0.6–7 ms |
-| Graph view rebuild | 20–26 ms | 15–19 ms (unchanged code; machine noise) |
+| Step | Before | Scoped previews | Kept cards |
+|---|---:|---:|---:|
+| Whole edit | 180–209 ms | 36–48 ms | 22–26 ms |
+| Value previews | 137–162 ms | 0.6–7 ms | 0.6–9 ms |
+| Graph view rebuild | 20–26 ms | 15–19 ms | 9–11 ms |
+| Finding what the edit touched | — | 5–8 ms | 1.3–1.9 ms |
 
-An edit now previews only the nodes whose card or incoming wires changed and every
-node downstream of them; other previews are kept. The preview document holds only those
-nodes and what they read (`GraphDocument::with_root_nodes`), so the rest of the graph is
-neither written out nor compiled. The graph view rebuild (about 15 ms) is now the largest
-step and the next candidate.
+An edit previews only the nodes whose card or incoming wires changed and every node
+downstream of them; other previews are kept. The preview document holds only those nodes
+and what they read (`GraphDocument::with_root_nodes`), so the rest of the graph is
+neither written out nor compiled.
+
+A draft keeps the cards of its last view. Each edit's change set names the nodes it
+added or changed, and the next view compares wire ends with the last one; only those
+cards, and the ends of wires added or taken away, are built again. A change to anything
+every card may show (registry, labels, variables, events, connections, functions,
+signatures) builds them all. Cards are shared (`GraphView::nodes` holds
+`Arc<NodeView>`), so a kept card is not copied, and the editor tells a kept card from a
+rebuilt one by pointer before comparing contents. Comparing whole node snapshots instead
+was measured first and was slower than building the cards again (about 35 ms): cloning
+5,000 nodes and views costs about as much as building them. What remains of the rebuild is
+the view context (labels, names, wire index) and one pass over the nodes.

@@ -286,8 +286,151 @@ pub struct WireView {
 /// The top level of a document, for drawing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GraphView {
-    pub nodes: Vec<NodeView>,
+    /// Shared, so a view built again after an edit keeps the cards the edit left alone
+    /// without copying them.
+    pub nodes: Vec<Arc<NodeView>>,
     pub wires: Vec<WireView>,
+}
+
+/// The cards of a draft's last view and the nodes edited since, so the next view
+/// builds only those again (docs/19 "Edit to view").
+#[derive(Default)]
+pub(crate) struct ViewCache {
+    /// What every card was drawn with; a change to any of it draws every card again.
+    shared: Option<SharedKey>,
+    nodes: std::collections::HashMap<NodeId, Arc<NodeView>>,
+    /// Each top-level wire's ends, to find the cards a wire added or removed changes.
+    edges: std::collections::HashMap<orange_model::id::EdgeId, (NodeId, NodeId)>,
+    /// Nodes edited since the last view.
+    edited: std::collections::HashSet<NodeId>,
+}
+
+impl std::fmt::Debug for ViewCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ViewCache")
+            .field("cards", &self.nodes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ViewCache {
+    /// Notes the nodes one edit of the draft changed.
+    pub(crate) fn follow(&mut self, change: &orange_model::ChangeSet) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        if change.global_dirty() {
+            self.nodes.clear();
+            return;
+        }
+        let nodes = change.nodes();
+        self.edited
+            .extend(nodes.added.iter().chain(&nodes.changed).copied());
+        for removed in &nodes.removed {
+            let _ = self.nodes.remove(removed);
+        }
+    }
+
+    /// Forgets every card when what all of them were drawn with changed, and the cards
+    /// of nodes edited, or whose wires changed, since the last view.
+    fn forget_changed(&mut self, context: &ViewContext<'_>) {
+        if !self
+            .shared
+            .as_ref()
+            .is_some_and(|shared| shared.is(context))
+        {
+            self.nodes.clear();
+            self.shared = Some(SharedKey::of(context));
+        }
+        for node in self.edited.drain() {
+            let _ = self.nodes.remove(&node);
+        }
+        let mut edges = std::collections::HashMap::with_capacity(self.edges.len());
+        for (id, edge) in &context.document.root().edges {
+            let ends = (edge.from.node, edge.to.node);
+            if self.edges.remove(id) != Some(ends) {
+                let _ = self.nodes.remove(&ends.0);
+                let _ = self.nodes.remove(&ends.1);
+            }
+            let _ = edges.insert(*id, ends);
+        }
+        // What is left was taken away.
+        for (from, to) in std::mem::replace(&mut self.edges, edges).into_values() {
+            let _ = self.nodes.remove(&from);
+            let _ = self.nodes.remove(&to);
+        }
+    }
+}
+
+/// The parts of a document and host that any card may show.
+struct SharedKey {
+    registry: Arc<RegistrySnapshot>,
+    labels: BTreeMap<String, String>,
+    variables: Vec<(VariableId, orange_model::document::VariableDecl)>,
+    events: Vec<(
+        orange_model::id::EventDeclId,
+        orange_model::document::EventDecl,
+    )>,
+    connections: Vec<(
+        orange_model::id::ConnectionId,
+        orange_model::document::ConnectionDecl,
+    )>,
+    functions: Vec<(
+        orange_model::id::FunctionId,
+        orange_model::document::FunctionDecl,
+    )>,
+    signatures: Vec<(
+        orange_model::id::SignatureKey,
+        orange_model::document::SignatureSnapshot,
+    )>,
+}
+
+/// A copy of a map's entries, to compare with it later.
+fn entries<'a, K: Clone + 'a, V: Clone + 'a>(
+    map: impl IntoIterator<Item = (&'a K, &'a V)>,
+) -> Vec<(K, V)> {
+    map.into_iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// Whether `kept` holds the same entries as `map`, in the same order.
+fn same<'a, K: PartialEq + 'a, V: PartialEq + 'a>(
+    kept: &[(K, V)],
+    map: impl ExactSizeIterator<Item = (&'a K, &'a V)>,
+) -> bool {
+    kept.len() == map.len()
+        && kept
+            .iter()
+            .zip(map)
+            .all(|((key, value), (other, its))| key == other && value == its)
+}
+
+impl SharedKey {
+    fn of(context: &ViewContext<'_>) -> Self {
+        let document = context.document;
+        Self {
+            registry: Arc::clone(&context.registry),
+            labels: context.labels.clone(),
+            variables: entries(document.variables()),
+            events: entries(document.events()),
+            connections: entries(document.connections()),
+            functions: entries(document.functions()),
+            signatures: entries(document.signatures()),
+        }
+    }
+
+    fn is(&self, context: &ViewContext<'_>) -> bool {
+        let document = context.document;
+        Arc::ptr_eq(&self.registry, &context.registry)
+            && self.labels == context.labels
+            && same(&self.variables, document.variables().iter())
+            && same(&self.events, document.events().iter())
+            && same(&self.connections, document.connections().iter())
+            && same(&self.functions, document.functions().iter())
+            && same(&self.signatures, document.signatures().iter())
+    }
 }
 
 /// What every node view of one document is drawn with.
@@ -310,10 +453,13 @@ impl Host {
         Ok(self.view_of(&self.linked(json)?))
     }
 
-    /// [`Host::view`] of a draft.
+    /// [`Host::view`] of a draft. The cards of nodes the last edits left alone, with
+    /// the same wired ports, place and name in an unchanged document context, are
+    /// reused from the draft's previous view instead of being built again.
     pub fn draft_view(&self, draft: &Draft) -> Result<GraphView, HostError> {
         let document = self.linked_document(draft.document())?;
-        Ok(self.view_of(&document))
+        let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(self.view_with(&document, Some(&mut cache)))
     }
 
     fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {
@@ -359,13 +505,48 @@ impl Host {
     }
 
     fn view_of(&self, document: &GraphDocument) -> GraphView {
+        self.view_with(document, None)
+    }
+
+    fn view_with(&self, document: &GraphDocument, cache: Option<&mut ViewCache>) -> GraphView {
         let context = self.view_context(document);
         let body = document.root();
-        let nodes: Vec<NodeView> = body
-            .nodes
-            .values()
-            .map(|node| self.node_view_in(&context, node))
-            .collect();
+        let nodes: Vec<Arc<NodeView>> = match cache {
+            None => body
+                .nodes
+                .values()
+                .map(|node| Arc::new(self.node_view_in(&context, node)))
+                .collect(),
+            Some(cache) => {
+                cache.forget_changed(&context);
+                body.nodes
+                    .values()
+                    .map(|node| {
+                        let kept = cache
+                            .nodes
+                            .get(&node.id)
+                            .filter(|kept| kept.name == context.names.called(&node.id));
+                        let view = match kept {
+                            // Moving a node is a layout edit, which names no node.
+                            Some(kept) => {
+                                let position = position_in(context.places, node.id);
+                                if kept.position == position {
+                                    Arc::clone(kept)
+                                } else {
+                                    Arc::new(NodeView {
+                                        position,
+                                        ..NodeView::clone(kept)
+                                    })
+                                }
+                            }
+                            None => Arc::new(self.node_view_in(&context, node)),
+                        };
+                        let _ = cache.nodes.insert(node.id, Arc::clone(&view));
+                        view
+                    })
+                    .collect()
+            }
+        };
         let outputs: std::collections::HashMap<_, _> = nodes
             .iter()
             .flat_map(|node| {
@@ -551,13 +732,7 @@ impl Host {
                 found: node.type_args.get(&param.name).map(ToString::to_string),
             })
             .collect();
-        let position = places
-            .and_then(|places| places.get(node.id.to_string()))
-            .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
-            .map(|[x, y]| {
-                #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
-                [x as f32, y as f32]
-            });
+        let position = position_in(*places, node.id);
         // What the node is set to, in a word: the variable it names, or the record or
         // enum type it makes or reads.
         let config = |key: &str| node.config.get(key).and_then(Json::as_str);
@@ -644,6 +819,17 @@ impl Host {
             (edge.to.node, edge.to.port.to_string()),
         ))
     }
+}
+
+/// Where the document's layout (`editor.nodes`) places `node`.
+fn position_in(places: Option<&Json>, node: NodeId) -> Option<[f32; 2]> {
+    places
+        .and_then(|places| places.get(node.to_string()))
+        .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
+        .map(|[x, y]| {
+            #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
+            [x as f32, y as f32]
+        })
 }
 
 /// The contract of a call of one of the document's functions: the function's declared

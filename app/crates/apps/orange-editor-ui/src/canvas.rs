@@ -2463,6 +2463,7 @@ fn node_order(
                 .iter()
                 .filter(move |node| Some(node.id) == front),
         )
+        .map(|node| &**node)
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.
@@ -2848,6 +2849,7 @@ fn family_color(definition: &str) -> Color32 {
 mod tests {
     use super::*;
     use orange_host::WireView;
+    use std::sync::Arc;
 
     fn id(n: u32) -> NodeId {
         format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
@@ -2894,8 +2896,8 @@ mod tests {
         let step = || vec![port("in", true, true), port("then", false, true)];
         GraphView {
             nodes: vec![
-                node(1, vec![port("then", false, true)]),
-                node(2, step()),
+                node(1, vec![port("then", false, true)]).into(),
+                node(2, step()).into(),
                 node(
                     3,
                     vec![
@@ -2903,7 +2905,8 @@ mod tests {
                         port("a", true, false),
                         port("b", true, false),
                     ],
-                ),
+                )
+                .into(),
             ],
             wires: vec![wire(1, 2), wire(2, 3), wire(1, 3)],
         }
@@ -2937,7 +2940,7 @@ mod tests {
             Some("level")
         );
         let graph = GraphView {
-            nodes: vec![source],
+            nodes: vec![source.into()],
             wires: vec![],
         };
         let geometry = Geometry::new(&graph);
@@ -2978,8 +2981,8 @@ mod tests {
     #[test]
     fn the_last_selected_card_stays_in_front_for_wire_drops() {
         let mut graph = graph();
-        graph.nodes[1].position = Some([0.0, 0.0]);
-        graph.nodes[2].position = Some([0.0, 0.0]);
+        Arc::make_mut(&mut graph.nodes[1]).position = Some([0.0, 0.0]);
+        Arc::make_mut(&mut graph.nodes[2]).position = Some([0.0, 0.0]);
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         let at = Pos2::new(0.0, BODY_TOP + ROW_HEIGHT / 2.0);
@@ -3003,7 +3006,9 @@ mod tests {
     #[test]
     fn indexed_geometry_preserves_port_sides_and_refreshes_with_the_view() {
         let mut graph = graph();
-        graph.nodes[1].ports.push(port("in", false, false));
+        Arc::make_mut(&mut graph.nodes[1])
+            .ports
+            .push(port("in", false, false));
         let geometry = Geometry::new(&graph);
         for node in &graph.nodes {
             assert_eq!(geometry.size(node.id), node_size(node));
@@ -3015,8 +3020,8 @@ mod tests {
         }
         assert!(geometry.port(id(99), "in", true).is_none());
         drop(geometry);
-        graph.nodes[1].ports.reverse();
-        graph.nodes[1].ports[0].ty = Some("core/string@1".into());
+        Arc::make_mut(&mut graph.nodes[1]).ports.reverse();
+        Arc::make_mut(&mut graph.nodes[1]).ports[0].ty = Some("core/string@1".into());
         let geometry = Geometry::new(&graph);
         assert_eq!(
             geometry.port(id(2), "in", false).unwrap().ty,
@@ -3043,7 +3048,7 @@ mod tests {
         assert_eq!(cyclic.len(), graph.nodes.len());
         assert!(cyclic.values().all(|point| point.is_finite()));
         for (n, node) in graph.nodes.iter_mut().enumerate() {
-            node.position = Some([n as f32 * -100.0, 50.0]);
+            Arc::make_mut(node).position = Some([n as f32 * -100.0, 50.0]);
         }
         let saved = auto_layout(&graph);
         for node in &graph.nodes {
@@ -3060,18 +3065,18 @@ mod tests {
         canvas.move_node(id(2), Vec2::new(-500.0, 70.0));
         canvas.select(Some(id(2)));
         let places = canvas.places();
-        graph.nodes[1].ports[0].value = Some("changed".into());
+        Arc::make_mut(&mut graph.nodes[1]).ports[0].value = Some("changed".into());
         canvas.update(&graph);
         assert_eq!(canvas.places(), places);
         graph.nodes.remove(1);
         let mut added = node(4, vec![]);
         added.position = Some([-100.0, -200.0]);
-        graph.nodes.push(added);
+        graph.nodes.push(added.into());
         canvas.update(&graph);
         assert_eq!(canvas.selected(), None);
         assert!(!canvas.places.contains_key(&id(2)));
         assert_eq!(canvas.places[&id(4)], Pos2::new(-100.0, -200.0));
-        graph.nodes.push(node(5, vec![]));
+        graph.nodes.push(node(5, vec![]).into());
         canvas.update(&graph);
         assert!(canvas.places.contains_key(&id(5)));
     }
@@ -3086,14 +3091,18 @@ mod tests {
         // Fed by 1 and by 2: one past the furthest.
         assert_eq!(places[&id(3)], Pos2::new(2.0 * column, 0.0));
 
-        graph.nodes[1].position = Some([500.0, -20.0]);
+        Arc::make_mut(&mut graph.nodes[1]).position = Some([500.0, -20.0]);
         assert_eq!(auto_layout(&graph)[&id(2)], Pos2::new(500.0, -20.0));
 
         // A cycle still gets places, and two nodes of one column do not overlap.
         graph.wires.push(wire(3, 1));
         assert_eq!(auto_layout(&graph).len(), 3);
         let fan = GraphView {
-            nodes: vec![node(1, vec![]), node(2, vec![]), node(3, vec![])],
+            nodes: vec![
+                node(1, vec![]).into(),
+                node(2, vec![]).into(),
+                node(3, vec![]).into(),
+            ],
             wires: vec![wire(1, 2), wire(1, 3)],
         };
         let places = auto_layout(&fan);
@@ -3189,7 +3198,7 @@ mod tests {
         edited.wires.retain(|wire| wire.from.0 != id(1));
         let mut added = node(4, vec![]);
         added.position = Some([900.0, 900.0]);
-        edited.nodes.push(added);
+        edited.nodes.push(added.into());
         canvas.update(&edited);
         assert_eq!(canvas.places[&id(2)], moved);
         assert_eq!(canvas.places[&id(4)], Pos2::new(900.0, 900.0));
@@ -3523,8 +3532,8 @@ mod tests {
         let context = egui::Context::default();
         let graph = GraphView {
             nodes: vec![
-                node(1, vec![port("then", false, true)]),
-                node(2, vec![port("in", true, true)]),
+                node(1, vec![port("then", false, true)]).into(),
+                node(2, vec![port("in", true, true)]).into(),
             ],
             wires: vec![wire(1, 2)],
         };
@@ -3737,7 +3746,7 @@ mod tests {
     fn drawing_culls_offscreen_wires_but_keeps_crossings_and_tracks_moved_endpoints() {
         let mut graph = GraphView {
             nodes: (1..=4)
-                .map(|n| node(n, vec![port("in", true, true), port("then", false, true)]))
+                .map(|n| node(n, vec![port("in", true, true), port("then", false, true)]).into())
                 .collect(),
             wires: vec![wire(1, 2), wire(3, 4)],
         };
@@ -3747,7 +3756,7 @@ mod tests {
             [10000.0, 10000.0],
             [11000.0, 10000.0],
         ]) {
-            node.position = Some(position);
+            Arc::make_mut(node).position = Some(position);
         }
         let mut canvas = Canvas::new();
         canvas.load(&graph);
