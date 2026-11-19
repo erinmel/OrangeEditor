@@ -7,6 +7,7 @@
 //! [`Host::problems`] keeps an [`AnalysisSession`] beside the draft and gives it every
 //! committed change, so a small edit of a large graph re-checks what the edit touched.
 use super::*;
+use crate::view::ViewCache;
 use orange_model::validation::{AnalysisOptions, AnalysisSession};
 use orange_model::{ChangeSet, Committed, DocCommand, Inverse, TxError};
 
@@ -67,7 +68,7 @@ pub struct Draft {
     /// What opening the document changed before the first edit.
     opened: OpenReport,
     /// The cards [`Host::draft_view`] drew last, reused for nodes the edits left alone.
-    pub(crate) view: std::sync::Mutex<crate::view::ViewCache>,
+    pub(crate) view: Mutex<ViewCache>,
 }
 
 /// What [`Host::draft`] changed while opening a document, so a front end can tell the
@@ -100,7 +101,7 @@ impl Draft {
             analysis: None,
             index: None,
             opened: OpenReport::default(),
-            view: std::sync::Mutex::default(),
+            view: Mutex::default(),
         }
     }
 

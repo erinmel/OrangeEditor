@@ -113,25 +113,27 @@ fn an_enum_input_offers_its_choices_by_name_and_shows_the_one_written() {
     let names: Vec<_> = choices.iter().map(|choice| choice.name.as_str()).collect();
     assert_eq!(names, ["Calm", "Happy"]);
     assert!(host.enum_choices(&draft, "core/i64@1").is_none());
-    let value = |draft: &orange_host::Draft| {
-        let graph = host.draft_view(draft).unwrap();
-        let set = graph
-            .nodes
-            .iter()
-            .find(|shown| shown.id == node(2))
-            .unwrap();
-        set.ports
-            .iter()
-            .find(|port| port.id == "value")
-            .unwrap()
-            .value
-            .clone()
-    };
-    assert_eq!(value(&draft).as_deref(), Some("Happy"));
+    assert_eq!(shown_value(&host, &draft).as_deref(), Some("Happy"));
     host.set_input(&mut draft, (node(2), "value"), Some(&choices[0].literal))
         .unwrap();
-    assert_eq!(value(&draft).as_deref(), Some("Calm"));
+    assert_eq!(shown_value(&host, &draft).as_deref(), Some("Calm"));
     assert_eq!(host.problems(&mut draft).unwrap(), []);
+}
+
+/// What node 2's `value` input shows on its card.
+fn shown_value(host: &Host, draft: &orange_host::Draft) -> Option<String> {
+    let graph = host.draft_view(draft).unwrap();
+    let set = graph
+        .nodes
+        .iter()
+        .find(|shown| shown.id == node(2))
+        .unwrap();
+    set.ports
+        .iter()
+        .find(|port| port.id == "value")
+        .unwrap()
+        .value
+        .clone()
 }
 
 /// A variable's starting value reads by its choice's name, and declaring the variable

@@ -216,9 +216,9 @@ fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
     assert!(!editor.canvas.snap);
     click(&mut editor, &mut host, &icons::GRID.to_string());
     click(&mut editor, &mut host, t("grid-lines"));
-    assert_eq!(editor.canvas.grid_style, crate::canvas::GridStyle::Lines);
+    assert_eq!(editor.canvas.grid_style, canvas::GridStyle::Lines);
     click(&mut editor, &mut host, t("grid-hidden"));
-    assert_eq!(editor.canvas.grid_style, crate::canvas::GridStyle::Hidden);
+    assert_eq!(editor.canvas.grid_style, canvas::GridStyle::Hidden);
     click(&mut editor, &mut host, t("grid-dots"));
     at(&frame(&mut editor, &mut host, vec![]), "24");
     click(&mut editor, &mut host, &icons::GRID.to_string());

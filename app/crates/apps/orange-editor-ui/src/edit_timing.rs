@@ -23,11 +23,14 @@ fn large(host: &mut Host, pairs: usize) -> String {
     draft.text().unwrap()
 }
 
-fn time<T>(label: &str, runs: &mut Vec<(String, Duration)>, work: impl FnOnce() -> T) -> T {
-    let started = Instant::now();
-    let value = work();
-    runs.push((label.to_owned(), started.elapsed()));
-    value
+/// Runs `work` and records how long it took under `label`.
+macro_rules! time {
+    ($label:expr, $runs:expr, $work:expr) => {{
+        let started = Instant::now();
+        let value = $work;
+        $runs.push(($label.to_owned(), started.elapsed()));
+        value
+    }};
 }
 
 #[test]
@@ -39,40 +42,38 @@ fn edit_timing() {
     editor.open_untitled(&mut host, text);
     let target = editor.graph().unwrap().nodes[0].id;
     for round in 0..4 {
-        let mut runs = Vec::new();
+        let mut runs: Vec<(String, Duration)> = Vec::new();
         let value = (round + 2).to_string();
         let total = Instant::now();
-        time("keep layout", &mut runs, || editor.keep_layout());
+        time!("keep layout", runs, editor.keep_layout());
         {
             let document = editor.document.as_mut().unwrap();
-            let result = time("host edit", &mut runs, || {
+            let result = time!("host edit", runs, {
                 host.set_input(&mut document.draft, (target, "value"), Some(&value))
             });
             assert!(result.unwrap());
         }
         let document = editor.document.as_mut().unwrap();
-        document.names = time("names", &mut runs, || {
+        document.names = time!("names", runs, {
             Names::of_document(&host, document.draft.document()).without_ids()
         });
         let before = std::mem::take(&mut document.graph);
-        document.graph = time("draft view", &mut runs, || {
+        document.graph = time!("draft view", runs, {
             host.draft_view(&document.draft).unwrap_or_default()
         });
-        let touched = time("touched", &mut runs, || {
+        let touched = time!("touched", runs, {
             touched_by_edit(&before, &document.graph)
         });
-        document.declared = time("declarations", &mut runs, || {
-            host.declarations(&document.draft)
-        });
+        document.declared = time!("declarations", runs, { host.declarations(&document.draft) });
         let graph = document.graph.clone();
-        time("canvas update", &mut runs, || editor.canvas.update(&graph));
+        time!("canvas update", runs, editor.canvas.update(&graph));
         let document = editor.document.as_ref().unwrap();
-        let enums = time("enums", &mut runs, || {
+        let enums = time!("enums", runs, {
             canvas::enums_of(&host, &document.draft, &document.graph, &document.declared)
         });
         editor.canvas.enums = enums;
-        time("check", &mut runs, || editor.check(&host));
-        time("previews", &mut runs, || {
+        time!("check", runs, editor.check(&host));
+        time!("previews", runs, {
             editor.preview_scope(&mut host, touched.as_ref())
         });
         let total = total.elapsed();

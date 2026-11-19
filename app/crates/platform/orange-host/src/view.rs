@@ -2,7 +2,11 @@
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
 use orange_model::catalog::{NominalAccess, Ports};
-use orange_model::document::{ConfigValue, NodeInstance, NodeKind, PortDirection, PortKind};
+use orange_model::document::{
+    ConfigValue, ConnectionDecl, EventDecl, FunctionDecl, NodeInstance, NodeKind, PortDirection,
+    PortKind, SignatureSnapshot, VariableDecl,
+};
+use orange_model::id::{ConnectionId, EdgeId, EventDeclId, FunctionId, SignatureKey};
 use serde_json::{Value as Json, json};
 
 fn spectrum_band_label(node: &NodeInstance, key: &PortKey) -> Option<String> {
@@ -300,7 +304,7 @@ pub(crate) struct ViewCache {
     shared: Option<SharedKey>,
     nodes: std::collections::HashMap<NodeId, Arc<NodeView>>,
     /// Each top-level wire's ends, to find the cards a wire added or removed changes.
-    edges: std::collections::HashMap<orange_model::id::EdgeId, (NodeId, NodeId)>,
+    edges: std::collections::HashMap<EdgeId, (NodeId, NodeId)>,
     /// Nodes edited since the last view.
     edited: std::collections::HashSet<NodeId>,
 }
@@ -367,23 +371,11 @@ impl ViewCache {
 struct SharedKey {
     registry: Arc<RegistrySnapshot>,
     labels: BTreeMap<String, String>,
-    variables: Vec<(VariableId, orange_model::document::VariableDecl)>,
-    events: Vec<(
-        orange_model::id::EventDeclId,
-        orange_model::document::EventDecl,
-    )>,
-    connections: Vec<(
-        orange_model::id::ConnectionId,
-        orange_model::document::ConnectionDecl,
-    )>,
-    functions: Vec<(
-        orange_model::id::FunctionId,
-        orange_model::document::FunctionDecl,
-    )>,
-    signatures: Vec<(
-        orange_model::id::SignatureKey,
-        orange_model::document::SignatureSnapshot,
-    )>,
+    variables: Vec<(VariableId, VariableDecl)>,
+    events: Vec<(EventDeclId, EventDecl)>,
+    connections: Vec<(ConnectionId, ConnectionDecl)>,
+    functions: Vec<(FunctionId, FunctionDecl)>,
+    signatures: Vec<(SignatureKey, SignatureSnapshot)>,
 }
 
 /// A copy of a map's entries, to compare with it later.
