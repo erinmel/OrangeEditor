@@ -45,11 +45,10 @@ pub use quick_add::QuickChoice;
 use canvas::Canvas;
 use i18n::{t, tf};
 use orange_host::{
-    Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId,
-    PackageKind, StopMode, describe, lines,
+    Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
+    StopMode, describe, lines,
 };
 use std::collections::VecDeque;
-use std::sync::mpsc::Receiver;
 
 /// The nodes the Variables list adds for a variable: the button's message, its hint's
 /// message and the kind.
@@ -1353,7 +1352,7 @@ impl Editor {
     /// Takes up to [`MAX_EVENTS_PER_POLL`] host events into the log. Returns whether
     /// anything arrived, so a window knows to draw and poll again. The finite batch
     /// leaves time for input and painting even when producers continuously refill it.
-    pub fn take_events(&mut self, events: &Receiver<HostEvent>) -> bool {
+    pub fn take_events(&mut self, events: &orange_host::Events) -> bool {
         let mut any = false;
         for _ in 0..MAX_EVENTS_PER_POLL {
             let Ok(event) = events.try_recv() else {
@@ -2575,16 +2574,17 @@ mod tests {
         let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
         editor.log.clear();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let receiver = orange_host::Events::from(receiver);
         for n in 0..MAX_EVENTS_PER_POLL {
             sender
-                .send(HostEvent {
+                .send(orange_host::HostEvent {
                     flow,
                     kind: FlowEvent::TraceLost(n as u64),
                 })
                 .unwrap();
         }
         sender
-            .send(HostEvent {
+            .send(orange_host::HostEvent {
                 flow,
                 kind: FlowEvent::Finished,
             })
@@ -2603,7 +2603,7 @@ mod tests {
         let mut empty = Editor::new();
         for _ in 0..=MAX_EVENTS_PER_POLL {
             sender
-                .send(HostEvent {
+                .send(orange_host::HostEvent {
                     flow,
                     kind: FlowEvent::Finished,
                 })

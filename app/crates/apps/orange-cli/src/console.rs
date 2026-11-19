@@ -105,7 +105,7 @@ pub(crate) fn command(host: &mut Host, flows: &mut [Opened], line: &str) -> bool
 
 pub(crate) fn run(
     host: &mut Host,
-    events: &Receiver<HostEvent>,
+    events: &orange_host::Events,
     flows: &mut [Opened],
     duration: Option<Duration>,
 ) {

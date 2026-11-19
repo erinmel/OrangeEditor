@@ -22,6 +22,7 @@ mod draft;
 mod edit;
 mod effects;
 mod flow;
+pub use flow::Events;
 mod flows;
 mod graphs;
 pub mod i18n;
@@ -68,7 +69,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -187,8 +188,12 @@ pub struct HostOptions {
     pub max_effect_workers: usize,
     /// Inputs one flow may have waiting; senders are refused beyond it.
     pub inbox_capacity: usize,
-    /// Observations waiting to be read; further ones are counted as dropped.
+    /// Observations waiting to be read; further ones are counted as dropped, except
+    /// lifecycle events, which wait beside the queue (see [`Events`]).
     pub event_capacity: usize,
+    /// Work items waiting for a host worker across every flow. Past it, new work fails
+    /// at once with `host/Busy` instead of queueing without bound.
+    pub max_queued_effects: usize,
     /// Inputs and graph work items one flow handles before observing again.
     pub turn_inputs: usize,
     pub turn_budget: usize,
@@ -234,6 +239,7 @@ impl Default for HostOptions {
             max_effect_workers: 64,
             inbox_capacity: 1024,
             event_capacity: 4096,
+            max_queued_effects: 4096,
             turn_inputs: 64,
             turn_budget: 1024,
             run: RunOptions::default(),
@@ -831,7 +837,7 @@ impl Host {
     /// Starts a host with the core language and the bundled base nodes registered and no
     /// flows. The receiver carries every flow's events; dropping it only stops
     /// observation.
-    pub fn new(options: HostOptions) -> Result<(Self, Receiver<HostEvent>), HostError> {
+    pub fn new(options: HostOptions) -> Result<(Self, Events), HostError> {
         Self::with_services(options, Vec::new())
     }
 
@@ -843,7 +849,7 @@ impl Host {
     pub fn with_services(
         options: HostOptions,
         packages: Vec<ServicePackage>,
-    ) -> Result<(Self, Receiver<HostEvent>), HostError> {
+    ) -> Result<(Self, Events), HostError> {
         let start = |error: &dyn std::fmt::Display| HostError::Start(error.to_string());
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
@@ -961,9 +967,18 @@ impl Host {
         }
         let base = defaults.build().map_err(|e| start(&e))?;
         let engine = GuestEngine::new(options.guest).map_err(|e| start(&e))?;
-        let pool =
-            Pool::new(options.effect_workers, options.max_effect_workers).map_err(|e| start(&e))?;
+        let pool = Pool::new(
+            options.effect_workers,
+            options.max_effect_workers,
+            options.max_queued_effects,
+        )
+        .map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));
+        let overflow = Arc::new(Mutex::new(VecDeque::new()));
+        let observer = Events {
+            queue: observer,
+            overflow: Arc::clone(&overflow),
+        };
         // A made-up language for checking layouts, from every English catalogue.
         if cfg!(debug_assertions) {
             catalogs.add_pseudo();
@@ -990,6 +1005,7 @@ impl Host {
             sink: Sink {
                 events,
                 dropped: Arc::new(AtomicU64::new(0)),
+                overflow: Arc::clone(&overflow),
             },
             clock: Instant::now(),
             flows: BTreeMap::new(),

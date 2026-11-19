@@ -24,7 +24,7 @@ use orange_sdk::{Call, Session};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -252,17 +252,117 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
     })
 }
 
-/// Bounded, never-blocking delivery of observations. A slow observer loses events and
-/// can see how many; it never slows a run.
+/// Bounded, never-blocking delivery of observations. A slow observer loses telemetry
+/// (steps, values) and can see how many; it never slows a run. Lifecycle events (state,
+/// faults, refusals, a replaced graph, the end of a flow) are never lost to a full
+/// queue: they wait in a small overflow list the observer reads once the queue is empty.
 #[derive(Debug, Clone)]
 pub(crate) struct Sink {
     pub events: SyncSender<HostEvent>,
     pub dropped: Arc<AtomicU64>,
+    pub overflow: Arc<Mutex<VecDeque<HostEvent>>>,
 }
+
+/// Most lifecycle events waiting beside a full queue; past it even they are counted
+/// as dropped. Each flow sends only a few.
+pub(crate) const MAX_OVERFLOW: usize = 1024;
+
+/// Whether an observer must see this event even when it reads slowly.
+fn lifecycle(kind: &FlowEvent) -> bool {
+    matches!(
+        kind,
+        FlowEvent::State(_)
+            | FlowEvent::Fault(_)
+            | FlowEvent::Refused(_)
+            | FlowEvent::Updated { .. }
+            | FlowEvent::SourceRefused { .. }
+            | FlowEvent::SourceFault { .. }
+            | FlowEvent::Finished
+    )
+}
+
 impl Sink {
     pub(crate) fn send(&self, flow: FlowId, kind: FlowEvent) {
-        if self.events.try_send(HostEvent { flow, kind }).is_err() {
-            let _ = self.dropped.fetch_add(1, Ordering::Relaxed);
+        let event = HostEvent { flow, kind };
+        let Err(full) = self.events.try_send(event) else {
+            return;
+        };
+        let event = match full {
+            std::sync::mpsc::TrySendError::Full(event) => event,
+            // No one observes any more.
+            std::sync::mpsc::TrySendError::Disconnected(_) => return,
+        };
+        if lifecycle(&event.kind) {
+            let mut overflow = self.overflow.lock().unwrap_or_else(PoisonError::into_inner);
+            if overflow.len() < MAX_OVERFLOW {
+                overflow.push_back(event);
+                return;
+            }
+        }
+        let _ = self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// What a host observes of its flows, in order. Telemetry comes through a bounded queue;
+/// lifecycle events that did not fit wait beside it and are read once it is empty, so
+/// the end of a flow is always seen.
+#[derive(Debug)]
+pub struct Events {
+    pub(crate) queue: Receiver<HostEvent>,
+    pub(crate) overflow: Arc<Mutex<VecDeque<HostEvent>>>,
+}
+
+impl From<Receiver<HostEvent>> for Events {
+    /// Events read from a plain channel, with nothing waiting beside it: for an
+    /// application or test that feeds an observer itself.
+    fn from(queue: Receiver<HostEvent>) -> Self {
+        Self {
+            queue,
+            overflow: Arc::default(),
+        }
+    }
+}
+
+impl Events {
+    fn waiting(&self) -> Option<HostEvent> {
+        self.overflow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+    }
+
+    /// The next event if there is one now.
+    pub fn try_recv(&self) -> Result<HostEvent, TryRecvError> {
+        match self.queue.try_recv() {
+            Ok(event) => Ok(event),
+            Err(error) => self.waiting().ok_or(error),
+        }
+    }
+
+    /// The next event, waiting at most `timeout` for one.
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<HostEvent, RecvTimeoutError> {
+        match self.try_recv() {
+            Ok(event) => return Ok(event),
+            Err(TryRecvError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
+            Err(TryRecvError::Empty) => {}
+        }
+        match self.queue.recv_timeout(timeout) {
+            Ok(event) => Ok(event),
+            Err(error) => self.waiting().ok_or(error),
+        }
+    }
+
+    /// Every event there is now, without waiting.
+    pub fn try_iter(&self) -> impl Iterator<Item = HostEvent> + '_ {
+        std::iter::from_fn(|| self.try_recv().ok())
+    }
+
+    /// The next event, waiting for one.
+    pub fn recv(&self) -> Result<HostEvent, RecvError> {
+        match self.try_recv() {
+            Ok(event) => Ok(event),
+            Err(TryRecvError::Disconnected) => Err(RecvError),
+            Err(TryRecvError::Empty) => self.queue.recv(),
         }
     }
 }
@@ -305,6 +405,13 @@ const UNAVAILABLE: KernelFault = KernelFault {
     code: FaultText::Static("host/EffectUnavailable"),
     message_key: FaultText::Static("host/effect-unavailable"),
     message: "No host service runs this effect.",
+};
+
+/// The host already has as much work waiting as it holds.
+pub(crate) const BUSY: KernelFault = KernelFault {
+    code: FaultText::Static("host/Busy"),
+    message_key: FaultText::Static("host/busy"),
+    message: "The host has too much work waiting; try again.",
 };
 
 const NO_CONNECTION: KernelFault = KernelFault {
@@ -466,12 +573,18 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 ..
             } = request;
             if let Some(effect) = guest_effect(&context) {
-                guest_work.push((lease, effect.cancellation()));
+                let cancellation = effect.cancellation();
                 let (inbox, flow) = (cx.inbox.clone(), me.clone());
-                cx.pool.submit(move || {
+                let submitted = cx.pool.submit(move || {
                     let outcome = effect.run(&inputs);
                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                 });
+                // Work the host cannot hold now fails at once instead of queueing.
+                if submitted.is_ok() {
+                    guest_work.push((lease, cancellation));
+                } else {
+                    let _ = driver.run_mut().complete_effect(id, Err(BUSY));
+                }
             } else if let Ok(service) = context.downcast::<ServiceEffect>() {
                 // A node that names a connection this flow did not open cannot run.
                 let session = match service.connection {
@@ -485,7 +598,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                     Ok(session) => {
                         let (inbox, flow) = (cx.inbox.clone(), me.clone());
                         let (shared, pool) = (Arc::clone(&cx.shared), cx.pool.clone());
-                        cx.pool.submit(move || {
+                        let submitted = cx.pool.submit(move || {
                             let call = Call {
                                 inputs: &inputs,
                                 session: session.as_deref(),
@@ -527,6 +640,9 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                                 }
                             }
                         });
+                        if submitted.is_err() {
+                            let _ = driver.run_mut().complete_effect(id, Err(BUSY));
+                        }
                     }
                 }
             } else {
@@ -708,4 +824,33 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = run.state();
     cx.sink.send(cx.id, FlowEvent::Finished);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full queue loses telemetry but never the end of a flow: it waits beside the
+    /// queue and is read once the queue is empty.
+    #[test]
+    fn a_full_queue_drops_telemetry_but_keeps_the_end_of_a_flow() {
+        let (events, queue) = std::sync::mpsc::sync_channel(1);
+        let overflow = Arc::new(Mutex::new(VecDeque::new()));
+        let sink = Sink {
+            events,
+            dropped: Arc::new(AtomicU64::new(0)),
+            overflow: Arc::clone(&overflow),
+        };
+        let observer = Events { queue, overflow };
+        let flow = FlowId(7);
+        sink.send(flow, FlowEvent::TraceLost(1));
+        sink.send(flow, FlowEvent::TraceLost(2));
+        sink.send(flow, FlowEvent::Finished);
+        assert_eq!(sink.dropped.load(Ordering::Relaxed), 1);
+        let kinds: Vec<_> = observer.try_iter().map(|event| event.kind).collect();
+        assert!(matches!(
+            kinds.as_slice(),
+            [FlowEvent::TraceLost(1), FlowEvent::Finished]
+        ));
+    }
 }

@@ -19,7 +19,7 @@ use orange_host::{
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 use updates::*;
 

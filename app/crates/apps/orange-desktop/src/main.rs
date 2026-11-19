@@ -15,12 +15,11 @@ include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 use orange_editor_ui::canvas::Canvas;
 use orange_editor_ui::i18n::{self, t};
 use orange_editor_ui::{Editor, FileRequest};
-use orange_host::{GraphView, Host, HostEvent, HostOptions};
+use orange_host::{GraphView, Host, HostOptions};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 /// Where the application keeps its credentials in the operating system's store.
@@ -49,7 +48,7 @@ struct Desktop {
     /// Messages Log message nodes wrote, waiting for the editor's Log.
     logbook: logbook::LogBook,
     host: Host,
-    events: Receiver<HostEvent>,
+    events: orange_host::Events,
     editor: Editor,
     /// With `--canvas-only`: the graph and its canvas, shown without the editor.
     bare: Option<(GraphView, Canvas)>,

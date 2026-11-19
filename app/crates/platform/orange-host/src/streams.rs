@@ -51,7 +51,7 @@ impl PullStream for Pulled {
             Arc::clone(&self.shared),
             self.flow.clone(),
         );
-        self.pool.submit(move || {
+        let submitted = self.pool.submit(move || {
             if demand.is_closed() {
                 return;
             }
@@ -73,6 +73,8 @@ impl PullStream for Pulled {
                 };
             });
         });
+        // Work the host cannot hold now fails at once instead of queueing.
+        submitted.map_err(|_| crate::flow::BUSY)?;
         Ok(StreamStep::Pending)
     }
 
@@ -80,8 +82,13 @@ impl PullStream for Pulled {
         // The items are dropped on a worker: a producer waiting for its next item
         // would otherwise hold up the flow's thread.
         let items = Arc::clone(&self.items);
-        self.pool.submit(move || {
+        let drop_items = move || {
             let _ = items.lock().unwrap_or_else(PoisonError::into_inner).take();
-        });
+        };
+        // With every worker's queue full, they are dropped here instead.
+        let kept = Arc::clone(&self.items);
+        if self.pool.submit(drop_items).is_err() {
+            let _ = kept.lock().unwrap_or_else(PoisonError::into_inner).take();
+        }
     }
 }

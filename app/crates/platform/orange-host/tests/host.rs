@@ -1,7 +1,6 @@
 //! The host runs several graphs at once on real time, controls each independently, and
 //! runs an installed package's asynchronous node on a worker thread.
 use orange_testkit::{WAIT, core, edge, id, node, until};
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use orange_host::{BASE_PACKAGE, PackageKind};
@@ -54,7 +53,7 @@ fn read_total(host: &Host, flow: FlowId) -> Option<Value> {
     host.inspect(flow, |run| run.variable(total()).cloned())
         .unwrap()
 }
-fn finished(events: &Receiver<HostEvent>, flows: &[FlowId]) -> Vec<HostEvent> {
+fn finished(events: &orange_host::Events, flows: &[FlowId]) -> Vec<HostEvent> {
     let (mut seen, mut left) = (Vec::new(), flows.to_vec());
     while !left.is_empty() {
         let event = events.recv_timeout(WAIT).expect("flows finish");

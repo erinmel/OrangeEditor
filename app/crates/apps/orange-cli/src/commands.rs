@@ -38,7 +38,7 @@ fn write(path: &str, bytes: impl AsRef<[u8]>) -> Result<(), String> {
 /// options ask for.
 pub(crate) struct Started {
     pub host: Host,
-    pub events: Receiver<HostEvent>,
+    pub events: orange_host::Events,
     /// Each loaded plugin library's package ID with the file it came from.
     pub plugin_files: Vec<(String, PathBuf)>,
 }

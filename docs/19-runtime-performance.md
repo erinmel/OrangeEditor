@@ -457,3 +457,18 @@ These checks were repeated against `69d6c92`.
   passed with 877 tests, zero failures and six ignored.
 - `cargo clippy --target-dir target -p orange-runtime -p orange-bundled --all-targets --locked --offline -- -D warnings`
   passed. `cargo fmt --all --check` and `git diff --check` passed.
+
+## Host bounds (2026-11-18)
+
+- **Effect queue.** Work items waiting for a host worker are bounded across every flow
+  by `HostOptions::max_queued_effects` (4096). Past it, new work fails at once with
+  `host/Busy` on its node instead of queueing without bound. Deciding to add a worker
+  and counting it happen under one lock, so concurrent submissions never start more
+  than `max_effect_workers` threads.
+- **Observer queue.** Telemetry (steps, port values, variables, lost-trace counts) is
+  still dropped and counted when the observer reads slowly. Lifecycle events (state,
+  faults, refusals, a replaced graph, `Finished`) are never lost to a full queue: they
+  wait beside it (at most 1024) and `Events` reads them once the queue is empty, so an
+  editor always sees a flow end.
+- **Log.** The editor formats steps and values as Log text only while Live trace is on.
+  The cost difference has not been measured yet.
