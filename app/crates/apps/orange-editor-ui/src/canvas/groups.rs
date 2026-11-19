@@ -1,8 +1,8 @@
 //! Groups on the canvas: a named, coloured frame around nodes, moved as one by its title
 //! and collapsed to a small card that hides them; and arranging selected nodes along
-//! their wires. The groups themselves belong to the document ([`orange_host::Group`]);
+//! their wires. The groups themselves belong to the document ([`Group`]);
 //! the canvas draws them and says what a person asked of them.
-use super::{CanvasResponse, NODE_WIDTH, Palette, auto_layout, node_size};
+use super::{CanvasResponse, NODE_WIDTH, Palette, auto_layout, node_size, snapped};
 use crate::canvas::Canvas;
 use crate::i18n::{t, tf};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -45,11 +45,30 @@ impl Canvas {
             self.selected = None;
         }
         self.groups = groups;
+        if let Some(id) = &self.selected_group_frame {
+            match self.groups.iter().find(|group| &group.id == id) {
+                Some(group) if !group.collapsed => {
+                    let nodes = group.nodes.clone();
+                    self.select_many(&nodes);
+                }
+                Some(_) => {}
+                None => self.selected_group_frame = None,
+            }
+        }
     }
 
     /// The groups the canvas draws.
     pub fn groups(&self) -> &[Group] {
         &self.groups
+    }
+
+    pub(crate) fn selected_group(&self) -> Option<&Group> {
+        self.groups.iter().find(|group| {
+            self.selected_group_frame.as_ref() == Some(&group.id)
+                || !group.nodes.is_empty()
+                    && group.nodes.len() == self.selection.len()
+                    && group.nodes.iter().all(|node| self.selection.contains(node))
+        })
     }
 
     /// Whether a node is hidden in a collapsed group.
@@ -73,7 +92,11 @@ impl Canvas {
                 ))
             })
             .reduce(|all, rect| all.union(rect))?;
-        let top = around.min - Vec2::new(GROUP_PAD, GROUP_PAD + GROUP_TITLE);
+        // Offsets from the first member to the frame are whole grid intervals.
+        // The frame and members that were aligned can then snap together.
+        let step = f32::from(self.grid_step);
+        let pad = |space: f32| (space / step).ceil() * step;
+        let top = around.min - Vec2::new(pad(GROUP_PAD), pad(GROUP_PAD + GROUP_TITLE));
         Some(if group.collapsed {
             Rect::from_min_size(top, Vec2::new(NODE_WIDTH, COLLAPSED_HEIGHT))
         } else {
@@ -119,7 +142,7 @@ impl Canvas {
     }
 
     /// Handles the title bars of groups: dragging one moves its nodes, clicking selects
-    /// them, a double click collapses or opens the group, and the second button offers
+    /// the group, a double click collapses or opens it, and the second button offers
     /// renaming, colours and ungrouping.
     pub(super) fn group_input(
         &mut self,
@@ -154,6 +177,14 @@ impl Canvas {
                 self.moving = true;
             }
             if touched.drag_stopped() && self.moving {
+                if self.snap && !ui.input(|input| input.modifiers.alt) {
+                    let by = snapped(frame.min, self.grid_step) - frame.min;
+                    for node in &group.nodes {
+                        if let Some(place) = self.places.get_mut(node) {
+                            *place += by;
+                        }
+                    }
+                }
                 self.moving = false;
                 done.moved = true;
             }
@@ -161,8 +192,13 @@ impl Canvas {
                 let mut changed = group.clone();
                 changed.collapsed = !changed.collapsed;
                 done.group = Some(GroupEdit::Change(changed));
-            } else if touched.clicked() && !group.collapsed {
-                self.select_many(&group.nodes);
+            } else if touched.clicked() {
+                if group.collapsed {
+                    self.select(None);
+                    self.selected_group_frame = Some(group.id.clone());
+                } else {
+                    self.select_many(&group.nodes);
+                }
             }
             let _ = touched.context_menu(|ui| {
                 let renaming = self
@@ -228,6 +264,7 @@ impl Canvas {
             // A canvas shown without the editor still has its carets.
             crate::icons::install(painter.ctx());
         }
+        let selected_group = self.selected_group().map(|group| group.id.as_str());
         for group in &self.groups {
             let Some(frame) = self.group_frame(graph, group) else {
                 continue;
@@ -252,10 +289,14 @@ impl Canvas {
                 },
                 tint.gamma_multiply(0.55),
             );
+            let selected = selected_group == Some(group.id.as_str());
             painter.rect_stroke(
                 shown,
                 radius,
-                Stroke::new(1.5 * zoom.max(0.6), tint),
+                Stroke::new(
+                    if selected { 2.0 } else { 1.5 } * zoom.max(0.6),
+                    if selected { colors.selected } else { tint },
+                ),
                 StrokeKind::Inside,
             );
             let font = FontId::proportional(13.0 * zoom.max(0.5));
@@ -339,5 +380,92 @@ impl Canvas {
             }
         }
         moved
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_host::{Host, HostOptions};
+
+    #[test]
+    fn dragging_the_group_title_snaps_the_frame_and_moves_members_together() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let first = host
+            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .unwrap();
+        let second = host
+            .add_node(&mut draft, "core/whole-number", [432.0, 144.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        for (collapsed, alt, expected) in [
+            (false, false, Vec2::new(36.0, 36.0)),
+            (true, false, Vec2::new(36.0, 36.0)),
+            (false, true, Vec2::new(25.0, 51.0)),
+        ] {
+            let mut canvas = Canvas::new();
+            canvas.load(&graph);
+            canvas.grid_step = 36;
+            let group = Group {
+                id: "group".into(),
+                name: "Examples".into(),
+                color: [100, 100, 100],
+                nodes: vec![first, second],
+                collapsed,
+            };
+            canvas.set_groups(vec![group.clone()]);
+            let start = canvas.group_frame(&graph, &group).unwrap().min;
+            let from = start + Vec2::splat(10.0);
+            let to = from + Vec2::new(25.0, 51.0);
+            let modifiers = egui::Modifiers {
+                alt,
+                ..Default::default()
+            };
+            let click = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                pressed,
+                modifiers,
+                button: egui::PointerButton::Primary,
+            };
+            let ctx = egui::Context::default();
+            let mut frame = |mut events: Vec<egui::Event>| {
+                events.insert(0, egui::Event::ModifiersChanged(modifiers));
+                let mut done = CanvasResponse::default();
+                ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        canvas.group_input(
+                            ui,
+                            &graph,
+                            |rect| rect,
+                            egui::Id::unique("group-test"),
+                            &mut done,
+                        );
+                    },
+                )
+                .drop_without_applying_deltas();
+                (done.moved, canvas.selected_group().is_some())
+            };
+            frame(vec![]);
+            frame(vec![egui::Event::PointerMoved(from), click(from, true)]);
+            frame(vec![egui::Event::PointerMoved(to)]);
+            assert!(frame(vec![click(to, false)]).0);
+            if collapsed {
+                let at = from + expected;
+                frame(vec![egui::Event::PointerMoved(at), click(at, true)]);
+                assert!(frame(vec![click(at, false)]).1);
+                assert!(canvas.selection().is_empty());
+            }
+            assert_eq!(
+                canvas.group_frame(&graph, &group).unwrap().min,
+                start + expected
+            );
+            assert_eq!(canvas.places[&first], Pos2::new(72.0, 108.0) + expected);
+            assert_eq!(canvas.places[&second], Pos2::new(432.0, 144.0) + expected);
+        }
     }
 }

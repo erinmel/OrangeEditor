@@ -5,19 +5,19 @@ use super::*;
 
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
-pub(super) const WIDTH: f32 = 232.0;
+pub(super) const WIDTH: f32 = 272.0;
 const METER_WIDTH: f32 = 332.0;
 pub(super) const METER_FIELDS_X: f32 = 110.0;
 const LITERAL_WIDTH: f32 = 180.0;
 const CHART_WIDTH: f32 = 400.0;
 /// A row of one line: a flow row, an output, an input without a field.
-pub(super) const LINE: f32 = 26.0;
+pub(super) const LINE: f32 = 28.0;
 /// The name line of a field block.
 const NAME: f32 = 18.0;
 /// A field's control.
-pub(super) const CONTROL: f32 = 24.0;
+pub(super) const CONTROL: f32 = 26.0;
 /// The space under a field block's control.
-const GAP: f32 = 6.0;
+const GAP: f32 = 8.0;
 /// The space under a card's last row.
 pub(super) const END: f32 = 8.0;
 
@@ -26,6 +26,8 @@ pub(super) const END: f32 = 8.0;
 pub(super) enum FieldOf<'a> {
     /// A value typed on an input that no wire feeds.
     Input(&'a PortView),
+    /// An inline text field, expanded while editing.
+    TextArea(&'a PortView, crate::properties::TextInput, bool),
     /// A file or folder on an input, chosen with the system's chooser.
     Path(&'a PortView, &'a orange_host::PathInput),
     /// A setting of the node, by name and schema.
@@ -43,8 +45,15 @@ impl FieldOf<'_> {
     /// The input this field edits, whose dot sits on the field's name line.
     pub(super) const fn port(&self) -> Option<&PortView> {
         match self {
-            Self::Input(port) | Self::Path(port, _) => Some(port),
+            Self::Input(port) | Self::TextArea(port, ..) | Self::Path(port, _) => Some(port),
             _ => None,
+        }
+    }
+
+    pub(super) const fn control_height(self) -> f32 {
+        match self {
+            Self::TextArea(_, _, true) => 78.0,
+            _ => CONTROL,
         }
     }
 }
@@ -83,7 +92,7 @@ impl Row<'_> {
 
     /// Where the row's control is, from the card's top-left, when it has one.
     pub(super) fn control(&self, width: f32) -> Option<Rect> {
-        let Some(Left::Field { named, .. }) = self.left else {
+        let Some(Left::Field { editor, named }) = self.left else {
             return None;
         };
         let top = self.top + if named { NAME } else { 0.0 };
@@ -95,7 +104,7 @@ impl Row<'_> {
         };
         Some(Rect::from_min_max(
             Pos2::new(self.field_inset, top),
-            Pos2::new(right, top + CONTROL),
+            Pos2::new(right, top + editor.control_height()),
         ))
     }
 }
@@ -147,10 +156,10 @@ pub(super) fn literal(node: &NodeView) -> bool {
 
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
-        Self::with_chart(node, true)
+        Self::with_controls(node, true, None)
     }
 
-    pub fn with_chart(node: &'a NodeView, chart_open: bool) -> Self {
+    pub fn with_controls(node: &'a NodeView, chart_open: bool, expanded: Option<&str>) -> Self {
         if spectrum::is_noise(node) {
             return Self::meter(node);
         }
@@ -168,8 +177,9 @@ impl<'a> Card<'a> {
         let mut push =
             |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right: Option<&'a PortView>| {
                 let height = match left {
-                    Some(Left::Field { named: true, .. }) => NAME + CONTROL + GAP,
-                    Some(Left::Field { named: false, .. }) => CONTROL + GAP,
+                    Some(Left::Field { editor, named }) => {
+                        (if named { NAME } else { 0.0 }) + editor.control_height() + GAP
+                    }
                     _ => LINE,
                 };
                 let height = height
@@ -224,6 +234,15 @@ impl<'a> Card<'a> {
             });
         }
         for port in node.ports.iter().filter(|port| port.input && !port.exec) {
+            if !port.connected
+                && let Some(kind) = crate::properties::TextInput::for_port(node, port)
+            {
+                lefts.push(Left::Field {
+                    editor: FieldOf::TextArea(port, kind, expanded == Some(port.id.as_str())),
+                    named: !literal,
+                });
+                continue;
+            }
             let path = node.paths.iter().find(|path| path.port == port.id);
             lefts.push(match path {
                 _ if port.connected => Left::Port(port),

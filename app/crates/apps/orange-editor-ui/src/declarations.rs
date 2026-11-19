@@ -10,6 +10,9 @@ use orange_host::{
 };
 use std::collections::BTreeMap;
 
+mod network;
+pub(crate) use network::HTTP;
+
 /// What a variable dragged from the Variables list carries, before its ID. Let go on
 /// the canvas, it becomes a Get node, or a Set node with Alt held.
 pub(crate) const VARIABLE_DRAG: &str = "orange-variable:";
@@ -67,6 +70,8 @@ pub(crate) struct ConnectionForm {
     settings: String,
     /// Secrets typed for settings, stored when the form is saved.
     secrets: Typed,
+    auth: Option<network::Auth>,
+    saved: bool,
     /// What testing the connection found.
     tested: Option<Result<(), String>>,
 }
@@ -80,8 +85,35 @@ impl Default for ConnectionForm {
             scope: ConnectionScope::Graph,
             settings: "{}".to_owned(),
             secrets: Typed::default(),
+            auth: None,
+            saved: false,
             tested: None,
         }
+    }
+}
+
+impl ConnectionForm {
+    fn settings_for_save(&self) -> Result<Json, String> {
+        let settings: Json = serde_json::from_str(&self.settings)
+            .map_err(|_| t("settings-not-json-object").to_owned())?;
+        if !settings.is_object() {
+            return Err(t("settings-not-json-object").to_owned());
+        }
+        network::validate(&self.adapter, &settings, &self.secrets, self.auth)
+            .map_err(|message| t(message).to_owned())?;
+        Ok(settings)
+    }
+
+    fn check(&self, host: &Host, mut settings: Json) -> Result<(), String> {
+        for (setting, secret) in &self.secrets.0 {
+            if !secret.is_empty() {
+                set_text(&mut settings, setting, Some(Json::from(secret.as_str())));
+            }
+        }
+        let object = settings
+            .as_object()
+            .ok_or_else(|| t("settings-not-json-object").to_owned())?;
+        host.test_connection(&self.adapter, object)
     }
 }
 
@@ -90,9 +122,9 @@ impl Default for ConnectionForm {
 pub(crate) struct Forms {
     variable: VariableForm,
     connection: ConnectionForm,
-    /// Open the new-variable or new-connection form at the next frame, as asked from
-    /// the toolbar or the properties panel.
+    /// Open the new-variable form at the next frame.
     open_variable: bool,
+    /// Whether the Connections panel is showing a form.
     open_connection: bool,
     /// The variable form is shown.
     variable_open: bool,
@@ -113,6 +145,17 @@ impl Forms {
     }
     pub(crate) fn reveal_connection(&mut self) {
         self.open_connection = true;
+    }
+    pub(crate) fn edit_connection(&mut self, connection: &Connection) {
+        self.connection = ConnectionForm {
+            changing: connection.id.clone(),
+            name: connection.name.clone(),
+            adapter: connection.adapter.clone(),
+            scope: connection.scope,
+            settings: serde_json::to_string_pretty(&connection.settings).unwrap_or_default(),
+            ..ConnectionForm::default()
+        };
+        self.reveal_connection();
     }
 }
 
@@ -151,7 +194,7 @@ pub(crate) fn choice_fields(
         // Its name over the list, which fills the row beside a Refresh button.
         let _ = ui.add(
             egui::Label::new(
-                egui::RichText::new(crate::properties::words(&choice.setting))
+                egui::RichText::new(properties::words(&choice.setting))
                     .small()
                     .weak(),
             )
@@ -268,7 +311,7 @@ pub(crate) fn live_level(
     settings: &Json,
     choices: &[SettingChoices],
     fields: &[SettingField],
-    probing: &mut Option<crate::Probing>,
+    probing: &mut Option<Probing>,
 ) {
     let mut on = probing.is_some();
     if ui
@@ -296,7 +339,7 @@ pub(crate) fn live_level(
         .as_ref()
         .is_none_or(|probing| probing.adapter != adapter || probing.settings != key);
     if stale {
-        *probing = host.probe(adapter, settings).map(|probe| crate::Probing {
+        *probing = host.probe(adapter, settings).map(|probe| Probing {
             adapter: adapter.to_owned(),
             settings: key,
             probe,
@@ -707,7 +750,7 @@ impl Editor {
                 });
                 // Its type and where it starts, on one line.
                 ui.horizontal(|ui| {
-                    let color = crate::canvas::type_color(Some(&variable.ty));
+                    let color = canvas::type_color(Some(&variable.ty));
                     let mut ty = variable.ty.clone();
                     let _ = egui::ComboBox::from_id_salt(("orange-variable-type", id.as_str()))
                         .width(84.0)
@@ -721,7 +764,7 @@ impl Editor {
                                     type_name(common),
                                 );
                             }
-                            for (local, name) in crate::types_tab::choices() {
+                            for (local, name) in types_tab::choices() {
                                 let _ = ui.selectable_value(&mut ty, local, name);
                             }
                         })
@@ -800,7 +843,7 @@ impl Editor {
                                         type_name(ty),
                                     );
                                 }
-                                for (local, name) in crate::types_tab::choices() {
+                                for (local, name) in types_tab::choices() {
                                     let _ = ui.selectable_value(&mut form.ty, local, name);
                                 }
                             });
@@ -884,7 +927,8 @@ impl Editor {
         secrets: &[(String, String)],
     ) -> Option<String> {
         let draft = self.editing()?;
-        match host.declare_connection_with_secrets(draft, connection, secrets) {
+        let result = host.declare_connection_with_secrets(draft, connection, secrets);
+        match result {
             Ok(id) => {
                 let _ = self.edited(host, Ok(true));
                 Some(id)
@@ -905,6 +949,58 @@ impl Editor {
             .iter()
             .map(|node| document.names.called(node))
             .collect()
+    }
+
+    /// Saves the form and returns whether a newly added profile can close it.
+    fn commit_connection_form(&mut self, host: &mut Host) -> bool {
+        let form = self.forms.connection.clone();
+        let settings = form.settings_for_save().and_then(|settings| {
+            // HTTP only constructs a client here. Other adapters may start I/O.
+            if form.adapter == HTTP {
+                form.check(host, settings.clone())?;
+            }
+            Ok(settings)
+        });
+        let settings = match settings {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.forms.connection.tested = Some(Err(error));
+                return false;
+            }
+        };
+        let connection = Connection {
+            id: form.changing,
+            name: form.name.trim().to_owned(),
+            adapter: form.adapter,
+            scope: form.scope,
+            settings,
+        };
+        let secrets: Vec<_> = form
+            .secrets
+            .0
+            .into_iter()
+            .filter(|(_, secret)| !secret.is_empty())
+            .collect();
+        let Some(id) = self.declare_connection_with_secrets(host, &connection, &secrets) else {
+            return false;
+        };
+        if connection.id.is_none() {
+            return true;
+        }
+        let saved = self
+            .declarations()
+            .and_then(|declarations| {
+                declarations
+                    .connections
+                    .iter()
+                    .find(|saved| saved.id.as_deref() == Some(&id))
+            })
+            .cloned();
+        if let Some(saved) = saved {
+            self.forms.edit_connection(&saved);
+            self.forms.connection.saved = true;
+        }
+        false
     }
 
     fn connections_section(&mut self, ui: &mut egui::Ui, host: &mut Host, declared: &Declarations) {
@@ -949,15 +1045,7 @@ impl Editor {
                 })
                 .inner;
             if edit {
-                self.forms.connection = ConnectionForm {
-                    changing: connection.id.clone(),
-                    name: connection.name.clone(),
-                    adapter: connection.adapter.clone(),
-                    scope: connection.scope,
-                    settings: serde_json::to_string_pretty(&connection.settings)
-                        .unwrap_or_default(),
-                    ..ConnectionForm::default()
-                };
+                self.forms.edit_connection(connection);
                 self.probing = None;
             }
             if delete {
@@ -968,7 +1056,10 @@ impl Editor {
             ui.weak(t("no-connections"));
         }
         if self.forms.connection.adapter.is_empty()
-            && let Some(first) = adapters.first()
+            && let Some(first) = adapters
+                .iter()
+                .find(|info| info.id == HTTP)
+                .or_else(|| adapters.first())
         {
             self.forms.connection.adapter.clone_from(&first.id);
         }
@@ -982,7 +1073,7 @@ impl Editor {
         let mut declare = false;
         let mut cancel = false;
         let mut test = false;
-        let reveal = std::mem::take(&mut self.forms.open_connection);
+        let open = self.forms.open_connection;
         let probing = &mut self.probing;
         let form = &mut self.forms.connection;
         let title = if form.changing.is_some() {
@@ -990,28 +1081,39 @@ impl Editor {
         } else {
             t("new-connection")
         };
-        let shown = egui::CollapsingHeader::new(title)
-            .id_salt("orange-connection-form")
-            .default_open(false)
-            .open((form.changing.is_some() || reveal).then_some(true))
-            .show(ui, |ui| {
-                let _ = ui.add(
+        if open {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.strong(title);
+                ui.small(t("name"));
+                let name = ui.add(
                     egui::TextEdit::singleline(&mut form.name)
                         .hint_text(t("connection-name-hint"))
                         .desired_width(f32::INFINITY),
                 );
+                if name.changed() {
+                    form.saved = false;
+                }
+                ui.small(t("connection-protocol"));
                 adapter_picker(ui, &adapters, form);
-                ui.horizontal(|ui| {
-                    let _ =
-                        ui.radio_value(&mut form.scope, ConnectionScope::Graph, t("this-graph"));
-                    let _ = ui
-                        .radio_value(&mut form.scope, ConnectionScope::Shared, "shared")
-                        .on_hover_text(t("connection-host-hint"));
-                });
                 ui.separator();
+                if form.scope == ConnectionScope::Shared {
+                    ui.weak(t("connection-host-hint"));
+                    cancel = ui.button(t("cancel")).clicked();
+                    return;
+                }
+                if adapter != form.adapter {
+                    return;
+                }
                 if let Ok(mut current) = serde_json::from_str::<Json>(&form.settings) {
                     let before = current.clone();
-                    text_fields(ui, &texts, &mut current, &mut form.secrets);
+                    let fields_changed = network::fields(
+                        ui,
+                        &adapter,
+                        &texts,
+                        &mut current,
+                        &mut form.secrets,
+                        &mut form.auth,
+                    );
                     toggle_fields(ui, &toggles, &mut current);
                     if let Some((setting, value)) =
                         choice_fields(ui, "form", &choices, &current, &mut refresh)
@@ -1023,7 +1125,10 @@ impl Editor {
                     }
                     if current != before {
                         form.settings = serde_json::to_string_pretty(&current).unwrap_or_default();
+                    }
+                    if current != before || fields_changed {
                         form.tested = None;
+                        form.saved = false;
                     }
                     if probes {
                         live_level(
@@ -1059,12 +1164,19 @@ impl Editor {
                     .id_salt("orange-connection-json")
                     .default_open(texts.is_empty() && choices.is_empty() && fields.is_empty())
                     .show(ui, |ui| {
-                        let _ = ui.add(
-                            egui::TextEdit::multiline(&mut form.settings)
-                                .code_editor()
-                                .desired_rows(4)
-                                .desired_width(f32::INFINITY),
-                        );
+                        let changed = ui
+                            .add(
+                                egui::TextEdit::multiline(&mut form.settings)
+                                    .code_editor()
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .changed();
+                        if changed {
+                            form.auth = None;
+                            form.tested = None;
+                            form.saved = false;
+                        }
                         ui.weak(t("secret-hint"));
                     });
                 ui.horizontal(|ui| {
@@ -1075,64 +1187,35 @@ impl Editor {
                         t("add")
                     };
                     declare = ui.add_enabled(ready, egui::Button::new(label)).clicked();
-                    cancel = form.changing.is_some() && ui.button(t("cancel")).clicked();
+                    let close = if form.saved {
+                        t("connection-done")
+                    } else {
+                        t("cancel")
+                    };
+                    cancel = ui.button(close).clicked();
+                    if form.saved {
+                        ui.label(t("connection-saved"));
+                    }
                 });
             });
+        }
         // A closed form shows no level, and the device it listened to is let go.
-        if shown.body_returned.is_none() || declare || cancel {
+        if !open || declare || cancel {
             self.probing = None;
         }
         if test {
             let form = &mut self.forms.connection;
-            form.tested = Some(match serde_json::from_str::<Json>(&form.settings) {
-                Ok(Json::Object(mut settings)) => {
-                    // Typed secrets are tried as they are, before they are stored.
-                    let mut with = Json::Object(std::mem::take(&mut settings));
-                    for (setting, secret) in &form.secrets.0 {
-                        if !secret.is_empty() {
-                            set_text(&mut with, setting, Some(Json::from(secret.as_str())));
-                        }
-                    }
-                    match with {
-                        Json::Object(settings) => host.test_connection(&form.adapter, &settings),
-                        _ => Err(t("settings-not-object").to_owned()),
-                    }
-                }
-                _ => Err(t("settings-not-json-object").to_owned()),
-            });
+            form.tested = Some(
+                form.settings_for_save()
+                    .and_then(|settings| form.check(host, settings)),
+            );
         }
         if declare {
-            let form = self.forms.connection.clone();
-            match serde_json::from_str(&form.settings) {
-                Ok(settings) => {
-                    let connection = Connection {
-                        id: form.changing,
-                        name: form.name.trim().to_owned(),
-                        adapter: form.adapter,
-                        scope: form.scope,
-                        settings,
-                    };
-                    let secrets: Vec<(String, String)> = form
-                        .secrets
-                        .0
-                        .into_iter()
-                        .filter(|(_, secret)| !secret.is_empty())
-                        .collect();
-                    if self
-                        .declare_connection_with_secrets(host, &connection, &secrets)
-                        .is_some()
-                    {
-                        self.forms.connection = ConnectionForm::default();
-                    }
-                }
-                Err(error) => self.say(tf(
-                    "settings-not-json-error",
-                    &[("error", error.to_string().into())],
-                )),
-            }
+            cancel = self.commit_connection_form(host);
         }
         if cancel {
             self.forms.connection = ConnectionForm::default();
+            self.forms.open_connection = false;
         }
         if refresh {
             let _ = self.adapter_choices(host, &adapter, true);
@@ -1180,6 +1263,10 @@ fn choice_list(
 fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut ConnectionForm) {
     let current = adapters.iter().find(|known| known.id == form.adapter);
     let shown = current.map_or(form.adapter.as_str(), |known| known.label.as_str());
+    if form.changing.is_some() {
+        ui.label(shown);
+        return;
+    }
     let before = form.adapter.clone();
     let _ = egui::ComboBox::from_id_salt("orange-connection-adapter")
         .selected_text(shown)
@@ -1204,6 +1291,7 @@ fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut Connec
         // Another kind has other settings: start from none.
         form.settings = "{}".to_owned();
         form.secrets = Typed::default();
+        form.auth = None;
         form.tested = None;
     }
     if let Some(known) = current
@@ -1267,7 +1355,8 @@ pub(super) fn text_fields(
     texts: &[SettingText],
     settings: &mut Json,
     secrets: &mut Typed,
-) {
+) -> bool {
+    let mut secret_changed = false;
     {
         {
             for text in texts {
@@ -1311,6 +1400,7 @@ pub(super) fn text_fields(
                                     .desired_width(f32::INFINITY),
                             );
                             if response.changed() {
+                                secret_changed = true;
                                 let _ = secrets.0.insert(text.setting.clone(), secret);
                             }
                         }
@@ -1363,6 +1453,7 @@ pub(super) fn text_fields(
             }
         }
     }
+    secret_changed
 }
 
 /// Switches for an adapter's true-or-false settings. One switched back to its default
@@ -1592,6 +1683,45 @@ mod tests {
         )));
         assert_eq!(store.0.lock().unwrap().len(), 1);
         draw(&mut editor, &mut host);
+    }
+
+    #[test]
+    fn saving_changes_keeps_the_profile_open_and_replaces_a_draft_secret_with_its_reference() {
+        let store = Arc::new(Store::default());
+        let options = HostOptions {
+            secrets: Some(Arc::clone(&store) as Arc<dyn SecretStore>),
+            ..HostOptions::default()
+        };
+        let (mut host, _) = Host::with_services(options, vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "test.json", blank());
+        let connection = Connection {
+            id: None,
+            name: "API".to_owned(),
+            adapter: HTTP.to_owned(),
+            scope: ConnectionScope::Graph,
+            settings: json!({"base_url": "https://example.test"}),
+        };
+        let id = editor.declare_connection(&mut host, &connection).unwrap();
+        let saved = editor.declarations().unwrap().connections[0].clone();
+        editor.forms.edit_connection(&saved);
+        let form = &mut editor.forms.connection;
+        form.name = "Edited API".to_owned();
+        form.auth = Some(network::Auth::Bearer);
+        form.secrets
+            .0
+            .insert("bearer".to_owned(), "new-test-secret".to_owned());
+
+        assert!(!editor.commit_connection_form(&mut host));
+        assert!(editor.forms.open_connection);
+        let form = &editor.forms.connection;
+        assert_eq!(form.changing.as_deref(), Some(id.as_str()));
+        assert_eq!(form.name, "Edited API");
+        assert!(form.saved);
+        assert!(form.secrets.0.is_empty());
+        assert!(form.settings.contains("credential://"));
+        assert!(!form.settings.contains("new-test-secret"));
+        assert_eq!(editor.declarations().unwrap().connections.len(), 1);
     }
 
     #[test]

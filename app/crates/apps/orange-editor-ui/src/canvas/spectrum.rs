@@ -314,7 +314,7 @@ pub(super) fn band_row(
     );
     ui.scope_builder(UiBuilder::new().max_rect(slot).id_salt(id), |ui| {
         ui.set_clip_rect(ui.clip_rect().intersect(slot));
-        super::fields::style_controls(ui, zoom);
+        fields::style_controls(ui, zoom);
         ui.spacing_mut().item_spacing.x = 4.0 * zoom;
         ui.horizontal(|ui| {
             let mut name = draft.pending["name"]
@@ -359,7 +359,7 @@ pub(super) fn band_row(
             UiBuilder::new().max_rect(rules).id_salt(id.with("rules")),
             |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(rules));
-                super::fields::style_controls(ui, zoom);
+                fields::style_controls(ui, zoom);
                 ui.spacing_mut().item_spacing.x = 3.0 * zoom;
                 ui.horizontal(|ui| {
                     let old = draft.pending["mode"].as_str().unwrap_or("above");

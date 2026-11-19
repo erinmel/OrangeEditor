@@ -24,6 +24,73 @@ fn typed_shortcuts_round_trip_and_report_collisions() {
 }
 
 #[test]
+fn older_shortcuts_keep_their_binding_when_it_conflicts_with_a_new_default() {
+    let mut keys = Keymap::default();
+    keys.restore(&serde_json::json!({
+        "duplicate": {"key": "1", "command": true},
+        "arrange": {"key": "3", "command": true}
+    }));
+    assert_eq!(keys.0["duplicate"], original("left-panel"));
+    assert_eq!(keys.0["left-panel"], None);
+    assert_eq!(keys.0["arrange"], parse_shortcut("Command+3"));
+    assert_eq!(keys.0["right-panel"], original("right-panel"));
+}
+
+#[test]
+fn panel_and_group_shortcuts_work_from_the_editor() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let first = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let second = editor.add_node(&mut host, "core/whole-number").unwrap();
+    editor.canvas.select_many(&[first, second]);
+    editor.panels.properties = false;
+    editor.panels.packages = true;
+    let ctx = egui::Context::default();
+    let mut press = |editor: &mut Editor, action| {
+        let binding = original(action).unwrap();
+        for pressed in [true, false] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::ModifiersChanged(binding.modifiers),
+                        egui::Event::Key {
+                            key: binding.logical_key,
+                            modifiers: binding.modifiers,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| editor.ui(ui, &mut host),
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+
+    assert!(editor.panels.nodes);
+    press(&mut editor, "left-panel");
+    assert!(!editor.panels.nodes);
+    press(&mut editor, "left-panel");
+    assert!(editor.panels.nodes);
+    press(&mut editor, "right-panel");
+    assert!(!editor.panels.properties && !editor.panels.packages);
+    press(&mut editor, "right-panel");
+    assert!(!editor.panels.properties && editor.panels.packages);
+    press(&mut editor, "snap");
+    assert!(!editor.canvas.snap);
+    press(&mut editor, "ungroup");
+    assert!(editor.groups().is_empty());
+    press(&mut editor, "group");
+    assert_eq!(editor.groups().len(), 1);
+    press(&mut editor, "ungroup");
+    assert!(editor.groups().is_empty());
+    assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+}
+
+#[test]
 fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
     let mut editor = Editor::new();
     editor.settings_open = true;
@@ -76,6 +143,24 @@ fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
     assert_eq!(editor.canvas.keys.0["save"], None);
     assert_eq!(editor.canvas.keys.label("duplicate"), save);
 }
+#[test]
+fn grid_preferences_round_trip_and_keep_defaults_for_old_settings() {
+    use crate::canvas::{DEFAULT_GRID_STEP, GridStyle};
+    let mut editor = Editor::new();
+    editor.canvas.grid_step = 36;
+    editor.canvas.grid_style = GridStyle::Lines;
+    editor.canvas.snap = false;
+    let encoded = editor.preferences();
+    editor.restore_preferences(&serde_json::json!({"version": 1}));
+    assert_eq!(editor.canvas.grid_step, DEFAULT_GRID_STEP);
+    assert_eq!(editor.canvas.grid_style, GridStyle::Dots);
+    assert!(editor.canvas.snap);
+    editor.restore_preferences(&encoded);
+    assert_eq!(editor.canvas.grid_step, 36);
+    assert_eq!(editor.canvas.grid_style, GridStyle::Lines);
+    assert!(!editor.canvas.snap);
+}
+
 #[test]
 fn saved_rebinding_is_used_by_the_editor_keyboard_entrypoint() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();

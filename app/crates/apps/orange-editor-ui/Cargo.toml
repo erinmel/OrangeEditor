@@ -9,6 +9,8 @@ build = "../../../build/locales.rs"
 
 [dependencies]
 egui.workspace = true
+egui-lucide.workspace = true
+egui_extras.workspace = true
 egui_material_icons.workspace = true
 orange-host = { path = "../../platform/orange-host", version = "=0.0.0" }
 serde_json.workspace = true
@@ -18,3 +20,4 @@ workspace = true
 
 [dev-dependencies]
 orange-audio = { path = "../../services/orange-audio", version = "=0.0.0" }
+orange-net = { path = "../../services/orange-net", version = "=0.0.0" }

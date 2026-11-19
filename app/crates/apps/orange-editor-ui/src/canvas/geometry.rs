@@ -12,7 +12,7 @@ pub(super) struct PortGeometry<'a> {
 }
 
 pub(super) struct Geometry<'a> {
-    sizes: HashMap<NodeId, Vec2>,
+    cards: HashMap<NodeId, Card<'a>>,
     ports: HashMap<(NodeId, bool, &'a str), PortGeometry<'a>>,
     incoming: HashMap<(NodeId, &'a str), (NodeId, &'a str)>,
     sole_exec_outputs: HashMap<NodeId, &'a str>,
@@ -21,15 +21,18 @@ pub(super) struct Geometry<'a> {
 impl<'a> Geometry<'a> {
     #[cfg(test)]
     pub fn new(graph: &'a GraphView) -> Self {
-        Self::with_chart(graph, |_| true)
+        Self::with_cards(graph, Card::new)
     }
 
-    pub fn with_chart(graph: &'a GraphView, chart_open: impl Fn(NodeId) -> bool) -> Self {
-        let mut sizes = HashMap::with_capacity(graph.nodes.len());
+    pub fn with_cards(
+        graph: &'a GraphView,
+        card: impl Fn(&'a orange_host::NodeView) -> Card<'a>,
+    ) -> Self {
+        let mut cards = HashMap::with_capacity(graph.nodes.len());
         let mut ports = HashMap::with_capacity(graph.nodes.iter().map(|n| n.ports.len()).sum());
         let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
-            let layout = Card::with_chart(node, chart_open(node.id));
+            let layout = card(node);
             for port in &node.ports {
                 let Some(offset) = layout.offset(port) else {
                     continue;
@@ -41,7 +44,7 @@ impl<'a> Geometry<'a> {
                         ty: port.ty.as_deref(),
                     });
             }
-            let _ = sizes.insert(node.id, layout.size);
+            let _ = cards.insert(node.id, layout);
             let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
             if let (Some(port), None) = (exec.next(), exec.next()) {
                 let _ = sole_exec_outputs.insert(node.id, port.id.as_str());
@@ -54,7 +57,7 @@ impl<'a> Geometry<'a> {
                 .or_insert((wire.from.0, wire.from.1.as_str()));
         }
         Self {
-            sizes,
+            cards,
             ports,
             incoming,
             sole_exec_outputs,
@@ -62,7 +65,11 @@ impl<'a> Geometry<'a> {
     }
 
     pub fn size(&self, node: NodeId) -> Vec2 {
-        self.sizes[&node]
+        self.card(node).size
+    }
+
+    pub fn card(&self, node: NodeId) -> &Card<'a> {
+        &self.cards[&node]
     }
 
     pub fn source(&self, node: NodeId, port: &str) -> Option<(NodeId, &'a str)> {

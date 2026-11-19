@@ -20,10 +20,27 @@ fn text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::epaint::Text
     out
 }
 
+fn toolbar_button_centers(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Pos2> {
+    let mut centers: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.rect.size() == egui::vec2(32.0, 28.0) => {
+                Some(rect.rect.center())
+            }
+            _ => None,
+        })
+        .collect();
+    centers.sort_by(|a, b| a.x.total_cmp(&b.x));
+    centers
+}
+
 #[test]
 fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
-    for width in [820.0, 1280.0, 1600.0] {
+    for width in [640.0, 820.0, 1280.0, 1600.0] {
         for native in [false, true] {
+            if native && width < 820.0 {
+                continue;
+            }
             let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
             let mut editor = Editor::new();
             editor.file_dialogs = true;
@@ -53,6 +70,11 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                 for icon in [
                     icons::OPEN,
                     icons::SAVE,
+                    icons::UNDO,
+                    icons::REDO,
+                    icons::DISCONNECT,
+                    icons::FIT,
+                    icons::GRID,
                     icons::CHECK,
                     icons::RUN,
                     icons::SETTINGS,
@@ -62,6 +84,11 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                         "{width}, native={native}, {icon}"
                     );
                 }
+                let controls = toolbar_button_centers(&output.shapes);
+                assert_eq!(controls.len(), if native { 19 } else { 16 });
+                assert!(controls.iter().all(|at| (at.y - left.y).abs() < 1.0));
+                assert!(at(icons::REDO).x < controls[6].x);
+                assert!(at(icons::GRID).x < at(icons::CHECK).x);
                 assert!(
                     texts
                         .iter()
@@ -74,6 +101,131 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
             }
         }
     }
+}
+
+#[test]
+fn settings_stays_visible_when_edit_commands_overflow_at_high_interface_scale() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.file_dialogs = true;
+    let ctx = egui::Context::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 410.0));
+    let mut frame = |events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            },
+            |ui| editor.toolbar(ui, &mut host),
+        );
+        let shapes = std::mem::take(&mut output.shapes);
+        output.drop_without_applying_deltas();
+        shapes
+    };
+    for _ in 0..3 {
+        frame(vec![]);
+    }
+    let shapes = frame(vec![]);
+    let icon = text_shapes(&shapes)
+        .into_iter()
+        .find(|line| line.galley.text() == icons::SETTINGS.to_string())
+        .unwrap();
+    let at = icon.pos + icon.galley.mesh_bounds.center().to_vec2();
+    assert!(at.x > viewport.right() - 50.0);
+    assert!(viewport.contains(at));
+    frame(vec![egui::Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        frame(vec![egui::Event::PointerButton {
+            button: egui::PointerButton::Primary,
+            pos: at,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+    }
+    assert!(editor.settings_open);
+}
+
+#[test]
+fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let first = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let second = editor.add_node(&mut host, "core/whole-number").unwrap();
+    editor.canvas.select_many(&[first, second]);
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(490.0, 600.0));
+    let frame = |editor: &mut Editor, host: &mut Host, events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            },
+            |ui| editor.toolbar(ui, host),
+        );
+        let shapes = std::mem::take(&mut output.shapes);
+        output.drop_without_applying_deltas();
+        shapes
+    };
+    let at = |shapes: &[egui::epaint::ClippedShape], label: &str| {
+        let text = text_shapes(shapes)
+            .into_iter()
+            .find(|shape| shape.galley.text() == label)
+            .unwrap_or_else(|| panic!("missing toolbar control {label}"));
+        let bounds = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+        assert!(viewport.contains_rect(bounds), "{label}: {bounds:?}");
+        bounds.center()
+    };
+    for _ in 0..3 {
+        frame(&mut editor, &mut host, vec![]);
+    }
+    let shapes = frame(&mut editor, &mut host, vec![]);
+    for icon in [icons::DISCONNECT, icons::FIT, icons::GRID, icons::SETTINGS] {
+        at(&shapes, &icon.to_string());
+    }
+    assert!(
+        text_shapes(&shapes)
+            .iter()
+            .all(|text| text.galley.text() != t("grid-spacing"))
+    );
+    let click_at = |editor: &mut Editor, host: &mut Host, pos| {
+        frame(editor, host, vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            frame(
+                editor,
+                host,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+    };
+    let click = |editor: &mut Editor, host: &mut Host, label: &str| {
+        let position = at(&frame(editor, host, vec![]), label);
+        click_at(editor, host, position);
+    };
+    let controls = toolbar_button_centers(&shapes);
+    assert_eq!(controls.len(), 13);
+    click_at(&mut editor, &mut host, controls[8]);
+    assert!(!editor.canvas.snap);
+    click(&mut editor, &mut host, &icons::GRID.to_string());
+    click(&mut editor, &mut host, t("grid-lines"));
+    assert_eq!(editor.canvas.grid_style, crate::canvas::GridStyle::Lines);
+    click(&mut editor, &mut host, t("grid-hidden"));
+    assert_eq!(editor.canvas.grid_style, crate::canvas::GridStyle::Hidden);
+    click(&mut editor, &mut host, t("grid-dots"));
+    at(&frame(&mut editor, &mut host, vec![]), "24");
+    click(&mut editor, &mut host, &icons::GRID.to_string());
+    click_at(&mut editor, &mut host, controls[3]);
+    assert_eq!(editor.groups().len(), 1);
+    click_at(&mut editor, &mut host, controls[4]);
+    assert!(editor.groups().is_empty());
 }
 
 #[test]
@@ -271,6 +423,100 @@ fn editing_a_running_128_absolute_chain_repaints_the_new_values() {
         output.drop_without_applying_deltas();
     }
     editor.stop(&mut host);
+}
+
+#[test]
+fn a_request_card_switches_saved_profiles_from_its_dropdown() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_net::package()],
+    )
+    .unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let mut connection = |name: &str, adapter: &str, settings: serde_json::Value| {
+        editor
+            .declare_connection(
+                &mut host,
+                &orange_host::Connection {
+                    id: None,
+                    name: name.into(),
+                    adapter: adapter.into(),
+                    scope: orange_host::ConnectionScope::Graph,
+                    settings,
+                },
+            )
+            .unwrap()
+    };
+    let first = connection(
+        "Primary API",
+        orange_net::HTTP_ADAPTER,
+        serde_json::json!({"base_url": "http://127.0.0.1:12345"}),
+    );
+    let second = connection(
+        "Backup API",
+        orange_net::HTTP_ADAPTER,
+        serde_json::json!({"base_url": "http://127.0.0.1:12346"}),
+    );
+    connection(
+        "WebSocket profile",
+        orange_net::WS_ADAPTER,
+        serde_json::json!({"url": "ws://127.0.0.1:12347"}),
+    );
+    let request = editor
+        .add_node(&mut host, orange_net::HTTP_REQUEST)
+        .unwrap();
+    let _ = editor.set_setting(&mut host, request, "/connection", Some(first.into()));
+    let graph = editor.graph().unwrap().clone();
+    editor.canvas.focus(&graph, request);
+    let ctx = egui::Context::default();
+    icons::install(&ctx);
+    let mut frame = |events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| editor.canvas_panel(ui, &mut host),
+        );
+        output.textures_delta.clear();
+        output
+    };
+    let position = |output: &egui::FullOutput, label| {
+        text_shapes(&output.shapes)
+            .into_iter()
+            .find(|text| text.galley.job.text == label)
+            .map(|text| text.pos + text.galley.rect.center().to_vec2())
+    };
+    let click = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let control = position(&frame(vec![]), "Primary API").unwrap();
+    frame(vec![
+        egui::Event::PointerMoved(control),
+        click(control, true),
+    ]);
+    frame(vec![click(control, false)]);
+    let list = frame(vec![]);
+    assert!(position(&list, "WebSocket profile").is_none());
+    let option = position(&list, "Backup API").unwrap();
+    frame(vec![egui::Event::PointerMoved(option), click(option, true)]);
+    frame(vec![click(option, false)]);
+    let result = frame(vec![]);
+    assert!(position(&result, "Backup API").is_some());
+    assert!(position(&result, "Primary API").is_none());
+    assert_eq!(
+        editor.graph().unwrap().nodes[0].settings["connection"],
+        second
+    );
+    assert!(editor.node_config_menu.is_none());
 }
 
 #[test]

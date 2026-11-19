@@ -5,7 +5,9 @@
 use super::card::FieldOf;
 use super::settings;
 use super::*;
-use crate::properties::{watch_label, watch_number_value};
+use crate::properties::{
+    choose_http_method, http_request_label, http_request_variant, watch_label, watch_number_value,
+};
 
 /// What a field changed.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,8 +99,8 @@ fn pointer_of(name: &str) -> String {
 fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
     if node.definition == "core/on-watch" {
         watch_label(choice)
-    } else if name == "direction" && super::spectrum::is_noise(node) {
-        super::spectrum::direction(choice)
+    } else if name == "direction" && spectrum::is_noise(node) {
+        spectrum::direction(choice)
     } else {
         choice
     }
@@ -107,6 +109,26 @@ fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
 /// The text a field shows while nothing edits it, and whether it is a default.
 pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
     match field {
+        FieldOf::TextArea(port, kind, _) => {
+            let text = port
+                .value
+                .as_deref()
+                .or(port.default.as_deref())
+                .filter(|_| kind != crate::properties::TextInput::HeaderList)
+                .map(field_text);
+            let first = text
+                .as_deref()
+                .and_then(|text| text.lines().next())
+                .filter(|line| !line.is_empty());
+            let shown = first.unwrap_or_else(|| {
+                if port.value.is_some() && kind == crate::properties::TextInput::HeaderList {
+                    t("http-edit-headers")
+                } else {
+                    kind.hint()
+                }
+            });
+            (shown.to_owned(), port.value.is_none())
+        }
         FieldOf::Input(port) => match (&port.value, &port.default) {
             (Some(value), _) => (field_text(value), false),
             (None, Some(default)) => (field_text(default), true),
@@ -154,10 +176,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             || (tf("choose-reference", &[("kind", "variable".into())]), true),
             |name| (name, false),
         ),
-        FieldOf::Connection => node
-            .detail
-            .clone()
-            .map_or_else(|| (t("choose").to_owned(), true), |name| (name, false)),
+        FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(variadic), true),
     }
 }
@@ -172,7 +191,12 @@ fn add_port_text(variadic: &orange_host::VariadicView) -> String {
 /// The name line's text of a field.
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
-        FieldOf::Input(port) | FieldOf::Path(port, _) => port_title(port),
+        FieldOf::Input(port) | FieldOf::TextArea(port, ..) if http_request_variant(node) => {
+            http_request_label(&port.id).map_or_else(|| port_title(port), str::to_owned)
+        }
+        FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
+            port_title(port)
+        }
         FieldOf::Setting(name, schema) => {
             if node.definition == "core/on-watch" {
                 watch_label(name).to_owned()
@@ -281,6 +305,7 @@ pub(super) fn paint_still(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
+    profile: Option<&str>,
 ) {
     let switch_value = match field {
         FieldOf::Input(port) if port.ty.as_deref() == Some("core/bool@1") => Some((
@@ -301,7 +326,10 @@ pub(super) fn paint_still(
         return;
     }
     frame(painter, rect, zoom, colors, false);
-    let (text, dim) = shown(node, field);
+    let (text, dim) = match (field, profile) {
+        (FieldOf::Connection, Some(name)) => (name.to_owned(), false),
+        _ => shown(node, field),
+    };
     let _ = field_text_in(
         painter,
         rect,
@@ -314,6 +342,10 @@ pub(super) fn paint_still(
 
 impl Canvas {
     /// The control of one field of a card, in `slot`. Returns what it changed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "field geometry and host input access"
+    )]
     pub(super) fn field(
         &mut self,
         ui: &mut egui::Ui,
@@ -322,12 +354,105 @@ impl Canvas {
         slot: Rect,
         id: egui::Id,
         file_dialogs: bool,
+        stored_text: Option<&StoredText<'_>>,
     ) -> Option<FieldEdit> {
-        let zoom = slot.height() / card::CONTROL;
+        let zoom = slot.height() / field.control_height();
         let colors = Palette::of(ui);
         match field {
+            FieldOf::TextArea(port, kind, expanded) => {
+                let (preview, dim) = shown(node, field);
+                if stored_text.is_none() && port.ty.as_deref() == Some("core/string@1") {
+                    return self
+                        .text_control(
+                            ui,
+                            (node.id, &port.id),
+                            slot,
+                            id,
+                            &preview,
+                            dim,
+                            port.value.as_deref().map(field_text),
+                        )
+                        .map(|text| FieldEdit::Input(port.id.clone(), text));
+                }
+                let read = || stored_text.and_then(|read| read(node.id, &port.id));
+                if expanded
+                    && let Some(edit) = self
+                        .expanded_text
+                        .as_mut()
+                        .filter(|edit| edit.node == node.id && edit.port == port.id)
+                {
+                    let editor_id = id.with("request-input");
+                    // egui drops focus on Escape before the widget is drawn.
+                    let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    let save = ui.memory(|memory| memory.has_focus(editor_id))
+                        && ui.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                        });
+                    let edited = multiline_field(
+                        ui,
+                        slot,
+                        editor_id,
+                        &mut edit.value,
+                        kind.hint(),
+                        zoom,
+                        &colors,
+                    );
+                    if !edit.focused {
+                        edited.request_focus();
+                        edit.focused = true;
+                    }
+                    if save || cancel || edited.lost_focus() {
+                        edited.surrender_focus();
+                        let text = self.expanded_text.take()?.value;
+                        ui.ctx().request_repaint();
+                        if !cancel && text != read().unwrap_or_default() {
+                            return Some(FieldEdit::Input(port.id.clone(), kind.literal(&text)));
+                        }
+                    }
+                } else {
+                    let response = ui
+                        .interact(slot, id, Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::Text)
+                        .on_hover_text(t("expand-text-hint"));
+                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    let _ = field_text_in(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &preview,
+                        if dim { colors.weak } else { colors.text },
+                        Some((
+                            crate::icons::EXPAND.encode_utf8(&mut [0; 4]),
+                            colors.weak,
+                            FontId::new(15.0 * zoom, crate::icons::family()),
+                        )),
+                    );
+                    if response.clicked() {
+                        if stored_text.is_none() {
+                            return Some(FieldEdit::Configure(slot.left_bottom()));
+                        }
+                        self.front = Some(node.id);
+                        self.expanded_text = Some(ExpandedText {
+                            node: node.id,
+                            port: port.id.clone(),
+                            value: read().unwrap_or_default(),
+                            focused: false,
+                        });
+                        ui.ctx().request_repaint();
+                    }
+                }
+                None
+            }
             FieldOf::Input(port) => {
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
+                if http_request_variant(node) && port.id == "method" {
+                    let (text, dim) = shown(node, field);
+                    let mut chosen = None;
+                    dropdown(ui, slot, id, &text, dim, |ui| {
+                        chosen = choose_http_method(ui, &text);
+                    });
+                    return chosen.and_then(|method| input(method.to_owned()));
+                }
                 match Kind::of_port(port, &self.enums) {
                     Kind::Switch => {
                         let value = port.value.as_deref().or(port.default.as_deref());
@@ -521,8 +646,7 @@ impl Canvas {
         }
     }
 
-    /// The device list of a node that uses a device, or a button that sets up its
-    /// connection.
+    /// A device selector for a device node, or a selector of saved profiles.
     fn connection_control(
         &self,
         ui: &mut egui::Ui,
@@ -531,46 +655,42 @@ impl Canvas {
         id: egui::Id,
     ) -> Option<FieldEdit> {
         let Some(picker) = self.device_pickers.get(&node.id) else {
-            // The connection's name, or a dimmed "Choose…" until there is one; a
-            // click sets it up.
-            let (text, dim) = shown(node, FieldOf::Connection);
-            let touched = ui
-                .interact(slot, id, Sense::click())
-                .on_hover_text(t("configure"));
-            let colors = Palette::of(ui);
-            let zoom = slot.height() / card::CONTROL;
-            frame(ui.painter(), slot, zoom, &colors, touched.hovered());
-            let _ = field_text_in(
-                ui.painter(),
+            let pointer = &node
+                .references
+                .iter()
+                .find(|(_, kind)| *kind == orange_host::ReferenceKind::Connection)?
+                .0;
+            let profiles = self.profile_choices(node);
+            let selected = node
+                .settings
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_str);
+            let label = self.connection_selection(node);
+            let mut edit = None;
+            dropdown(
+                ui,
                 slot,
-                zoom,
-                &text,
-                if dim { colors.weak } else { colors.text },
-                Some(("…", colors.weak, FontId::proportional(12.5 * zoom))),
+                id,
+                label.unwrap_or_else(|| t("choose-connection")),
+                label.is_none(),
+                |ui| {
+                    if profiles.is_empty() {
+                        ui.weak(t("no-compatible-connections"));
+                    }
+                    for (id, name) in profiles {
+                        let current = Some(id.as_str()) == selected;
+                        if ui.selectable_label(current, name).clicked() && !current {
+                            edit = Some(FieldEdit::Setting(pointer.clone(), serde_json::json!(id)));
+                        }
+                    }
+                },
             );
-            return touched
-                .clicked()
-                .then(|| FieldEdit::Configure(slot.left_bottom()));
+            return edit;
         };
         let mut chosen = picker.selected.clone();
         let mut picked = false;
-        // A device that is gone says so instead of showing its ID.
-        let shown = chosen.as_ref().map_or(picker.default_label.as_str(), |id| {
-            picker
-                .options
-                .iter()
-                .find(|(value, _)| value == id)
-                .map_or(t("device-unavailable"), |(_, label)| label.as_str())
-        });
-        let file = picker
-            .connection
-            .as_ref()
-            .and_then(|connection| connection.settings["file"].as_str())
-            .and_then(|path| std::path::Path::new(path).file_name())
-            .map(|name| name.to_string_lossy());
-        let shown = file.as_deref().unwrap_or(shown).to_owned();
         let mut refresh = false;
-        dropdown(ui, slot, id, &shown, false, |ui| {
+        dropdown(ui, slot, id, picker.label(), false, |ui| {
             refresh = ui.small_button(t("refresh-devices")).clicked();
             if let Some(problem) = &picker.problem {
                 ui.weak(problem);
@@ -834,6 +954,38 @@ fn typing_field(
     .inner
 }
 
+fn multiline_field(
+    ui: &mut egui::Ui,
+    slot: Rect,
+    id: egui::Id,
+    value: &mut String,
+    hint: &str,
+    zoom: f32,
+    colors: &Palette,
+) -> egui::Response {
+    frame(ui.painter(), slot, zoom, colors, true);
+    let inner = slot.shrink2(Vec2::new(4.0, 3.0) * zoom);
+    ui.scope_builder(UiBuilder::new().max_rect(inner).id_salt(id), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(inner));
+        egui::ScrollArea::vertical()
+            .max_height(inner.height())
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(value)
+                        .id(id)
+                        .font(FontId::monospace(12.5 * zoom))
+                        .frame(egui::Frame::NONE)
+                        .desired_width(ui.available_width())
+                        .min_size(Vec2::new(0.0, inner.height()))
+                        .hint_text(hint),
+                )
+            })
+            .inner
+    })
+    .inner
+}
+
 /// A dropdown filling `slot`: the chosen item's text, and its list on a click.
 fn dropdown(
     ui: &mut egui::Ui,
@@ -847,12 +999,18 @@ fn dropdown(
     let colors = Palette::of(ui);
     let _ = ui.scope_builder(UiBuilder::new().max_rect(slot).id_salt(id), |ui| {
         styled(ui, zoom);
-        let ink = if dim { colors.weak } else { colors.text };
+        ui.spacing_mut().icon_width = 12.0 * zoom;
+        ui.spacing_mut().icon_spacing = 4.0 * zoom;
+        let selection = if dim {
+            egui::RichText::new(text).color(colors.weak)
+        } else {
+            egui::RichText::new(text).color(colors.text).strong()
+        };
         let response = egui::ComboBox::from_id_salt("dropdown")
             .width(slot.width())
             .height(320.0)
             .wrap_mode(egui::TextWrapMode::Truncate)
-            .selected_text(egui::RichText::new(text).color(ink))
+            .selected_text(selection)
             .show_ui(ui, |ui| {
                 ui.style_mut().override_font_id = None;
                 ui.set_min_width(slot.width() / zoom.max(0.5));

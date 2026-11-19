@@ -2,7 +2,7 @@
 //!
 //! It is made of parts an application takes as it needs:
 //!
-//! - [`canvas::Canvas`] draws one graph and nothing else. An application with its own
+//! - [`Canvas`] draws one graph and nothing else. An application with its own
 //!   lists and panels shows only this.
 //! - [`palette()`] is the data of a node list, for an application that draws its own.
 //! - [`Editor`] is the whole editor: a toolbar, the canvas, and panels for the node
@@ -453,9 +453,9 @@ pub struct Editor {
     settings_tab: settings::Section,
     preferred_scale: Option<f32>,
     scale_applied: bool,
-    shortcut_search: String,
     shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
+    inspected_port: Option<(NodeId, String, bool)>,
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<String>,
@@ -539,6 +539,7 @@ impl Editor {
     /// A text that is not a document opens nothing, and the log says why.
     pub fn open(&mut self, host: &mut Host, path: impl Into<String>, text: String) {
         self.node_config_menu = None;
+        self.inspected_port = None;
         self.previews.invalidate();
         self.stop(host);
         let path = path.into();
@@ -732,9 +733,7 @@ impl Editor {
         let result = if definition.starts_with(palette::CONVERSION) {
             match palette::conversion_named(host, definition) {
                 Some(conversion) => host.add_conversion(draft, &conversion, at),
-                None => Err(orange_host::HostError::Document(format!(
-                    "no conversion `{definition}`"
-                ))),
+                None => Err(HostError::Document(format!("no conversion `{definition}`"))),
             }
         } else {
             host.add_node(draft, definition, at)
@@ -1494,7 +1493,13 @@ impl Editor {
                         } else {
                             short
                         };
-                        self.canvas.show_value(*node, id, short, full);
+                        self.canvas.show_observed_value(
+                            *node,
+                            id,
+                            canvas::Shown { short, full },
+                            value,
+                            false,
+                        );
                     }
                 }
                 FlowEvent::PortsCleared(ports) => {
@@ -1623,122 +1628,36 @@ impl Editor {
 
     /// Draws the editor's top command bar in a top panel.
     pub fn toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        icons::install(ui.ctx());
         egui::Panel::top("orange-toolbar").show(ui, |ui| {
             ui.spacing_mut().interact_size.y = 28.0;
+            if ui.available_width() < if self.window_toolbar { 820.0 } else { 720.0 } {
+                ui.spacing_mut().item_spacing.x = 2.0;
+            }
             ui.horizontal(|ui| {
-                // File
                 let open = self.document.is_some();
-                if self.file_dialogs {
-                    if icons::button(
-                        ui,
-                        true,
-                        icons::NEW,
-                        t("new-graph"),
-                        &self.canvas.keys.label("new"),
-                    )
-                    .clicked()
-                    {
-                        self.ask(FileRequest::New);
-                    }
-                    if icons::button(
-                        ui,
-                        true,
-                        icons::OPEN,
-                        t("open-graph"),
-                        &self.canvas.keys.label("open"),
-                    )
-                    .clicked()
-                    {
-                        self.ask(FileRequest::Open);
-                    }
-                }
-                if icons::button(
-                    ui,
-                    open,
-                    icons::SAVE,
-                    t("save"),
-                    &self.canvas.keys.label("save"),
-                )
-                .clicked()
-                    && let Err(message) = self.save()
+                let gap = ui.spacing().item_spacing.x;
+                let button = icons::BUTTON_WIDTH + gap;
+                let separator = 6.0 + gap;
+                let leading_buttons = if self.file_dialogs { 13.0 } else { 10.0 };
+                let trailing_width = if self.window_toolbar {
+                    6.0 * button + 2.0 * separator
+                } else {
+                    3.0 * button + separator
+                };
+                if ui.available_width()
+                    < leading_buttons * button + 4.0 * separator + trailing_width
                 {
-                    self.say(message);
+                    egui::ScrollArea::horizontal()
+                        .id_salt("toolbar-edit-commands")
+                        .max_width((ui.available_width() - trailing_width).max(1.0))
+                        .min_scrolled_width(1.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| self.toolbar_edit_commands(ui, host, open))
+                        });
+                } else {
+                    self.toolbar_edit_commands(ui, host, open);
                 }
-                if self.file_dialogs
-                    && icons::button(
-                        ui,
-                        open,
-                        icons::SAVE_AS,
-                        t("save-as"),
-                        &self.canvas.keys.label("save-as"),
-                    )
-                    .clicked()
-                {
-                    self.ask(FileRequest::SaveAs);
-                }
-                ui.separator();
-                // Edit
-                let (undo, redo) = self.can_undo();
-                if icons::button(
-                    ui,
-                    undo,
-                    icons::UNDO,
-                    t("undo"),
-                    &self.canvas.keys.label("undo"),
-                )
-                .clicked()
-                {
-                    self.undo(host);
-                }
-                if icons::button(
-                    ui,
-                    redo,
-                    icons::REDO,
-                    t("redo"),
-                    &self.canvas.keys.label("redo"),
-                )
-                .clicked()
-                {
-                    self.redo(host);
-                }
-                ui.separator();
-                let chosen = self.canvas.selection().len();
-                ui.menu_button(t("graph"), |ui| {
-                    for (enabled, icon, label, shortcut) in [
-                        (chosen > 0, icons::GROUP, t("group-selection"), "group"),
-                        (chosen > 0, icons::FUNCTION, t("make-function"), "function"),
-                        (
-                            chosen > 1,
-                            icons::ARRANGE,
-                            t("arrange-selection"),
-                            "arrange",
-                        ),
-                        (open, icons::VARIABLE, t("new-variable"), ""),
-                    ] {
-                        let button = egui::Button::new((icons::text(icon), label)).shortcut_text(
-                            if shortcut.is_empty() {
-                                String::new()
-                            } else {
-                                self.canvas.keys.label(shortcut)
-                            },
-                        );
-                        if ui.add_enabled(enabled, button).clicked() {
-                            match icon {
-                                icons::GROUP => {
-                                    let _ = self.group_selection(host, t("group"));
-                                }
-                                icons::FUNCTION => self.preview_function(host),
-                                icons::ARRANGE => {
-                                    let _ = self.arrange_selection();
-                                }
-                                icons::VARIABLE => self.new_variable_form(),
-                                _ => {}
-                            }
-                            ui.close();
-                        }
-                    }
-                });
-                ui.separator();
                 let rest = ui.available_rect_before_wrap();
                 if self.window_toolbar {
                     let drag = egui::Rect::from_min_max(
@@ -1856,6 +1775,171 @@ impl Editor {
         });
     }
 
+    fn toolbar_edit_commands(&mut self, ui: &mut egui::Ui, host: &mut Host, open: bool) {
+        // File
+        if self.file_dialogs {
+            if icons::button(
+                ui,
+                true,
+                icons::NEW,
+                t("new-graph"),
+                &self.canvas.keys.label("new"),
+            )
+            .clicked()
+            {
+                self.ask(FileRequest::New);
+            }
+            if icons::button(
+                ui,
+                true,
+                icons::OPEN,
+                t("open-graph"),
+                &self.canvas.keys.label("open"),
+            )
+            .clicked()
+            {
+                self.ask(FileRequest::Open);
+            }
+        }
+        if icons::button(
+            ui,
+            open,
+            icons::SAVE,
+            t("save"),
+            &self.canvas.keys.label("save"),
+        )
+        .clicked()
+            && let Err(message) = self.save()
+        {
+            self.say(message);
+        }
+        if self.file_dialogs
+            && icons::button(
+                ui,
+                open,
+                icons::SAVE_AS,
+                t("save-as"),
+                &self.canvas.keys.label("save-as"),
+            )
+            .clicked()
+        {
+            self.ask(FileRequest::SaveAs);
+        }
+        ui.separator();
+        // Edit
+        let (undo, redo) = self.can_undo();
+        if icons::button(
+            ui,
+            undo,
+            icons::UNDO,
+            t("undo"),
+            &self.canvas.keys.label("undo"),
+        )
+        .clicked()
+        {
+            self.undo(host);
+        }
+        if icons::button(
+            ui,
+            redo,
+            icons::REDO,
+            t("redo"),
+            &self.canvas.keys.label("redo"),
+        )
+        .clicked()
+        {
+            self.redo(host);
+        }
+        ui.separator();
+        self.canvas_toolbar(ui, host);
+        ui.separator();
+    }
+
+    fn canvas_toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let open = self.document.is_some();
+        let chosen = self.canvas.selection().len();
+        let group = self.canvas.selected_group().map(|group| group.id.clone());
+        let wire = if chosen == 0 && group.is_none() {
+            self.canvas.selected_wire().cloned()
+        } else {
+            None
+        };
+        if icons::button(
+            ui,
+            open && chosen > 0 && group.is_none(),
+            icons::GROUP,
+            t("group-selection"),
+            &self.canvas.keys.label("group"),
+        )
+        .clicked()
+        {
+            let _ = self.group_selection(host, t("group"));
+        }
+        if icons::button(
+            ui,
+            group.is_some(),
+            icons::UNGROUP,
+            t("ungroup"),
+            &self.canvas.keys.label("ungroup"),
+        )
+        .clicked()
+            && let Some(id) = group
+        {
+            let _ = self.ungroup(host, &id);
+        }
+        if icons::button(
+            ui,
+            open && chosen > 1,
+            icons::ARRANGE,
+            t("arrange-selection"),
+            &self.canvas.keys.label("arrange"),
+        )
+        .clicked()
+        {
+            let _ = self.arrange_selection();
+        }
+        if icons::button(
+            ui,
+            wire.is_some(),
+            icons::DISCONNECT,
+            t("unlink-wire"),
+            &self.canvas.keys.label("delete"),
+        )
+        .clicked()
+            && let Some(wire) = wire
+        {
+            let _ = self.remove_wire(host, &wire);
+        }
+        if icons::button(
+            ui,
+            open,
+            icons::FIT,
+            t("fit-to-view"),
+            &self.canvas.keys.label("fit"),
+        )
+        .clicked()
+        {
+            self.canvas.fit();
+        }
+        ui.separator();
+        if icons::toggle_button(
+            ui,
+            icons::SNAP,
+            self.canvas.snap,
+            t("snap-grid"),
+            &self.canvas.keys.label("snap"),
+        )
+        .on_hover_text(t("snap-grid-hint"))
+        .clicked()
+        {
+            self.canvas.snap = !self.canvas.snap;
+        }
+        let grid = icons::button(ui, true, icons::GRID, t("grid-settings"), "");
+        let _ = egui::Popup::menu(&grid)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.grid_menu(ui));
+    }
+
     /// Draws the workspace status and panel controls in a bottom panel.
     pub fn workspace_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("orange-workspace-bar").show(ui, |ui| {
@@ -1890,32 +1974,26 @@ impl Editor {
             self.panels.nodes,
             egui::Align::Min,
             t("left-panel-hint"),
+            &self.canvas.keys.label("left-panel"),
         )
         .clicked()
         {
-            self.panels.nodes = !self.panels.nodes;
+            self.toggle_left_panel();
         }
-        let open = self.document.is_some();
-        if icons::button(
-            ui,
-            open,
-            icons::FIT,
-            t("fit-graph-hint"),
-            &self.canvas.keys.label("fit"),
-        )
-        .clicked()
-        {
-            self.canvas.fit();
-        }
-        if ui
-            .add_enabled(
-                open,
-                egui::Button::new(format!("{:.0}%", self.canvas.zoom() * 100.0)),
-            )
-            .on_hover_text(t("actual-size"))
-            .clicked()
-        {
-            self.canvas.reset_zoom();
+    }
+
+    fn toggle_left_panel(&mut self) {
+        self.panels.nodes = !self.panels.nodes;
+    }
+
+    fn toggle_right_panel(&mut self) {
+        if self.panels.properties || self.panels.packages {
+            self.packages_tab = self.panels.packages && !self.panels.properties;
+            self.panels.properties = false;
+            self.panels.packages = false;
+        } else {
+            self.panels.properties = !self.packages_tab;
+            self.panels.packages = self.packages_tab;
         }
     }
 
@@ -1958,15 +2036,30 @@ impl Editor {
 
     fn workspace_right(&mut self, ui: &mut egui::Ui) {
         let open = self.panels.properties || self.panels.packages;
-        if icons::dock_toggle(ui, open, egui::Align::Max, t("right-panel-hint")).clicked() {
-            if open {
-                self.packages_tab = self.panels.packages && !self.panels.properties;
-                self.panels.properties = false;
-                self.panels.packages = false;
-            } else {
-                self.panels.properties = !self.packages_tab;
-                self.panels.packages = self.packages_tab;
-            }
+        if icons::dock_toggle(
+            ui,
+            open,
+            egui::Align::Max,
+            t("right-panel-hint"),
+            &self.canvas.keys.label("right-panel"),
+        )
+        .clicked()
+        {
+            self.toggle_right_panel();
+        }
+        if self.document.is_some() {
+            ui.menu_button(format!("{:.0}%", self.canvas.zoom() * 100.0), |ui| {
+                if ui.button(t("fit-to-view")).clicked() {
+                    self.canvas.fit();
+                    ui.close();
+                }
+                if ui.button(t("actual-size")).clicked() {
+                    self.canvas.reset_zoom();
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(t("zoom-controls"));
         }
         let state = if self.is_running() {
             t("running")
@@ -2383,9 +2476,15 @@ impl Editor {
             .flow
             .as_ref()
             .map_or(&[][..], |(_, entries)| entries.as_slice());
-        let done =
-            self.canvas
-                .show_with_path_controls(ui, &document.graph, triggers, self.file_dialogs);
+        let stored_text =
+            |node, port: &str| properties::stored_input_text(host, &document.draft, node, port);
+        let done = self.canvas.show_with_path_controls(
+            ui,
+            &document.graph,
+            triggers,
+            self.file_dialogs,
+            Some(&stored_text),
+        );
         if let Some((node, port)) = done.browse_path
             && let Some(view) = document.graph.nodes.iter().find(|view| view.id == node)
             && let Some(path) = view.paths.iter().find(|path| path.port == port)
@@ -2407,6 +2506,9 @@ impl Editor {
         if let Some((node, at)) = done.configure {
             self.canvas.select(Some(node));
             self.node_config_menu = Some((node, at));
+        }
+        if let Some(port) = done.inspect_value {
+            self.inspected_port = Some(port);
         }
         if let Some(selected) = done.selected
             && document
@@ -2526,6 +2628,7 @@ impl Editor {
             ui.ctx().request_repaint();
         }
         self.node_config_window(ui.ctx(), host);
+        self.port_inspector_window(ui.ctx());
         self.function_window(ui.ctx(), host);
     }
 }
@@ -2662,7 +2765,7 @@ mod tests {
     fn a_run_without_live_trace_updates_values_but_logs_no_value_lines() {
         let (mut host, events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
-        let bound = host.bind(&self::graph()).unwrap();
+        let bound = host.bind(&graph()).unwrap();
         editor.open(&mut host, "graph.json", bound);
         editor.run(&mut host);
         let go = editor.graph().unwrap().nodes[0].id;
@@ -2785,7 +2888,7 @@ mod tests {
     #[test]
     fn a_moved_node_is_kept_in_the_documents_layout_and_comes_back_when_opened() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
-        let bound = host.bind(&self::graph()).unwrap();
+        let bound = host.bind(&graph()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "graph.json", bound.clone());
         assert!(!editor.is_unsaved());
@@ -3207,13 +3310,18 @@ mod tests {
             .collect();
         let mut editor = Editor::new();
         editor.open(&mut host, "all.json", blank());
-        for kind in &kinds {
+        for kind in kinds.iter().map(String::as_str) {
             let before = editor.log().count();
             let node_count = editor.graph().unwrap().nodes.len();
             match editor.add_node(&mut host, kind) {
                 Some(node) => {
                     let graph = editor.graph().unwrap();
-                    assert_eq!(graph.nodes.len(), node_count + 1, "{kind}");
+                    assert_eq!(
+                        graph.nodes.len(),
+                        node_count + 1,
+                        "adding {} must create exactly one node",
+                        kind
+                    );
                     let view = graph.nodes.iter().find(|found| found.id == node).unwrap();
                     // A node shows each port once.
                     let mut seen = std::collections::BTreeSet::new();
@@ -3531,6 +3639,135 @@ mod run_tests {
         typed_then_run(false);
     }
 
+    #[test]
+    fn clicking_a_request_output_opens_the_inspector_and_preserves_the_complete_body() {
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        editor.panels.nodes = false;
+        editor.panels.properties = false;
+        editor.panels.log = false;
+        let request = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let body = format!("{}\nlast line", "a".repeat(orange_host::MAX_INSPECT_CHARS));
+        let value = orange_host::Value::Str(std::sync::Arc::new(body.clone()));
+        editor.canvas.show_observed_value(
+            request,
+            "response".into(),
+            canvas::Shown {
+                short: "Response preview".into(),
+                full: orange_host::inspect(&value),
+            },
+            &value,
+            false,
+        );
+        let context = egui::Context::default();
+        let frame = |editor: &mut Editor, host: &mut Host, events| {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 760.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| editor.ui(ui, host),
+            );
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let shapes = frame(&mut editor, &mut host, vec![]);
+        let at = drawn_at(&shapes, "response").expect("response label");
+        let _ = frame(&mut editor, &mut host, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            let _ = frame(
+                &mut editor,
+                &mut host,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert_eq!(
+            editor.inspected_port,
+            Some((request, "response".into(), false))
+        );
+        let graph = editor.graph().unwrap();
+        let preview = editor
+            .canvas
+            .port_value(graph, request, "response", false)
+            .unwrap();
+        assert!(!preview.full.contains("last line"));
+        assert_eq!(
+            editor
+                .canvas
+                .copyable_port_text(graph, request, "response", false),
+            Some(body.as_str()),
+        );
+    }
+
+    #[test]
+    fn the_method_picker_writes_a_method_on_every_http_request_variant() {
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        for definition in [
+            orange_net::HTTP_REQUEST,
+            orange_net::HTTP_REQUEST_BYTES,
+            orange_net::HTTP_STREAM,
+        ] {
+            let mut editor = Editor::new();
+            editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+            let node = editor.add_node(&mut host, definition).unwrap();
+            let context = egui::Context::default();
+            let mut frame = |events| {
+                let output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(420.0, 850.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| editor.properties_panel(ui, &mut host),
+                );
+                let shapes = output.shapes.clone();
+                output.drop_without_applying_deltas();
+                shapes
+            };
+            let click = |at| {
+                [true, false].map(|pressed| {
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                })
+            };
+            let get = drawn_at(&frame(vec![]), "GET").expect("method control");
+            for events in click(get) {
+                let _ = frame(events);
+            }
+            let post = drawn_at(&frame(vec![]), "POST").expect("method menu choice");
+            for events in click(post) {
+                let _ = frame(events);
+            }
+            let method = editor.port_view(node, "method", true).unwrap();
+            assert_eq!(Editor::shown_input(method), "POST");
+        }
+    }
+
     /// Types 9 after the 7 of the set-variable node, in the properties panel or on its
     /// card, then clicks Run once.
     fn typed_then_run(panel: bool) {
@@ -3603,7 +3840,7 @@ mod run_tests {
         // Typed, not yet written.
         assert!(!editor.document.as_ref().unwrap().unsaved);
         // A quick click: the system hands over the press and the release in one frame.
-        let run = drawn_at(&shapes, &crate::icons::RUN.to_string()).expect("the toolbar shows Run");
+        let run = drawn_at(&shapes, &icons::RUN.to_string()).expect("the toolbar shows Run");
         let _ = frame(&mut editor, &mut host, click(run).concat());
         let document = editor.document.as_ref().unwrap();
         assert!(document.flow.is_some(), "one click started the run");
@@ -3722,11 +3959,15 @@ impl Editor {
         };
         for previewed in found {
             if let Ok(value) = &previewed.value {
-                self.canvas.show_preview(
+                self.canvas.show_observed_value(
                     previewed.node,
                     previewed.port.to_string(),
-                    orange_host::plain(value),
-                    orange_host::inspect(value),
+                    canvas::Shown {
+                        short: orange_host::plain(value),
+                        full: orange_host::inspect(value),
+                    },
+                    value,
+                    true,
                 );
             }
         }

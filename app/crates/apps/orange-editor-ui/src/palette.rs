@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub(crate) struct PaletteDrag {
     pub item: PaletteItem,
-    pub card: Option<orange_host::NodeView>,
+    pub card: Option<NodeView>,
 }
 
 /// One result of a node search, shared by the docked palette and the canvas picker:
@@ -278,6 +278,9 @@ fn conversion_words(id: &str) -> String {
         .next()
         .unwrap_or_default();
     let mut words = String::new();
+    if utf8_label(converter).is_some() {
+        words.push_str(" utf8 utf-8 decode decodificar bytes to text ");
+    }
     for (types, said) in [
         (
             &["i32", "i64", "u32", "u64"][..],
@@ -318,12 +321,23 @@ pub(crate) fn conversion_named(host: &Host, id: &str) -> Option<orange_host::Con
 
 /// A conversion as search shows it: "Float to Int (floor)".
 pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
+    if let Some(label) = utf8_label(conversion.id()) {
+        return label.to_owned();
+    }
     let mut label = crate::conversion_name(&conversion.from, &conversion.to);
     if !conversion.options.is_empty() {
         let choices: Vec<&str> = conversion.options.values().map(String::as_str).collect();
         label.push_str(&format!(" ({})", choices.join(", ")));
     }
     label
+}
+
+pub(crate) fn utf8_label(converter: &str) -> Option<&'static str> {
+    match converter {
+        "core/bytes-to-string" => Some(t("decode-utf8")),
+        "core/bytes-to-string-lossy" => Some(t("decode-utf8-lossy")),
+        _ => None,
+    }
 }
 
 fn conversion_item(conversion: &orange_host::Conversion, language: &str) -> PaletteItem {

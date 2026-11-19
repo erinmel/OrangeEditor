@@ -4,6 +4,139 @@ use super::*;
 use orange_host::{Connection, NodeView, ReferenceKind, VarScope, Variable};
 use serde_json::{Value as Json, json};
 
+const HTTP_METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+pub(crate) fn choose_http_method(ui: &mut egui::Ui, shown: &str) -> Option<&'static str> {
+    let mut chosen = None;
+    for method in HTTP_METHODS {
+        if ui.selectable_label(shown == method, method).clicked() && shown != method {
+            chosen = Some(method);
+        }
+    }
+    chosen
+}
+
+pub(crate) fn http_request(node: &NodeView) -> bool {
+    node.definition == "org.orange.net/http-request"
+}
+
+pub(crate) fn http_request_variant(node: &NodeView) -> bool {
+    matches!(
+        node.definition.as_str(),
+        "org.orange.net/http-request"
+            | "org.orange.net/http-request-bytes"
+            | "org.orange.net/http-stream"
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TextInput {
+    Text,
+    Message,
+    Body,
+    Headers,
+    HeaderList,
+    JsonPath,
+}
+
+impl TextInput {
+    pub(crate) fn for_port(node: &NodeView, port: &orange_host::PortView) -> Option<Self> {
+        if node.paths.iter().any(|path| path.port == port.id)
+            || (http_request_variant(node) && port.id == "method")
+        {
+            return None;
+        }
+        match port.id.as_str() {
+            "content" if http_request(node) => Some(Self::Body),
+            "headers" if http_request(node) => Some(Self::Headers),
+            "headers" if http_request_variant(node) => Some(Self::HeaderList),
+            "path" if node.definition == "org.orange.json/get-path" => Some(Self::JsonPath),
+            "text"
+                if matches!(
+                    node.definition.as_str(),
+                    "org.orange.net/mqtt-publish"
+                        | "org.orange.net/amqp-publish"
+                        | "org.orange.net/ws-send"
+                ) =>
+            {
+                Some(Self::Message)
+            }
+            _ if port.ty.as_deref() == Some("core/string@1") => Some(Self::Text),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn hint(self) -> &'static str {
+        t(match self {
+            Self::Text => "text-input-hint",
+            Self::Message => "message-input-hint",
+            Self::Body => "http-body-hint",
+            Self::Headers | Self::HeaderList => "http-headers-hint",
+            Self::JsonPath => "json-path-input-hint",
+        })
+    }
+
+    pub(crate) fn literal(self, text: &str) -> String {
+        if self == Self::HeaderList {
+            let lines: Vec<_> = text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect();
+            json!({"type": "core/list@1<core/string@1>", "value": lines})
+        } else {
+            json!({"type": "core/string@1", "value": text})
+        }
+        .to_string()
+    }
+}
+
+/// Reads a literal or its definition default without the display preview's truncation.
+pub(crate) fn stored_input_text(
+    host: &Host,
+    draft: &Draft,
+    node: NodeId,
+    name: &str,
+) -> Option<String> {
+    let document = draft.document();
+    let node = document.node(node)?;
+    let key: orange_host::PortKey = name.parse().ok()?;
+    let encoded = if let Some(input) = node.inputs.get(&key) {
+        serde_json::to_value(input).ok()?
+    } else {
+        let registry = host.registry_for(document);
+        let contract = registry.contract(document, node).ok().flatten()?;
+        let default = contract
+            .ports
+            .iter()
+            .filter(|port| &port.port_id == key.port())
+            .find_map(|port| port.default.as_ref())?;
+        serde_json::to_value(default).ok()?
+    };
+    let value = encoded.as_object()?.get("value")?;
+    match value {
+        Json::String(text) => Some(text.clone()),
+        Json::Array(lines) => Some(
+            lines
+                .iter()
+                .filter_map(Json::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {
+    Some(t(match port {
+        "method" => "http-method",
+        "content" => "http-body",
+        "path" => "http-path",
+        "content_type" => "http-content-type",
+        "headers" => "http-headers",
+        _ => return None,
+    }))
+}
+
 /// Types offered for a value, besides those the document already uses.
 pub const COMMON_TYPES: [&str; 6] = [
     "core/string@1",
@@ -283,31 +416,13 @@ impl Editor {
         self.edited(host, result)
     }
 
-    /// The declarations of one kind a node can name, as (ID, name).
-    /// Connections are those of kind `adapter` when the node says which it uses.
-    pub(crate) fn choices(
-        &self,
-        kind: ReferenceKind,
-        adapter: Option<&str>,
-    ) -> Vec<(String, String)> {
-        let Some(declared) = self.declarations() else {
-            return Vec::new();
-        };
-        let pairs = |id: &Option<String>, name: &str| Some((id.clone()?, name.to_owned()));
-        match kind {
-            ReferenceKind::Variable => declared
-                .variables
-                .iter()
-                .filter_map(|variable| pairs(&variable.id, &variable.name))
-                .collect(),
-            ReferenceKind::Connection => declared
-                .connections
-                .iter()
-                .filter(|connection| adapter.is_none_or(|kind| connection.adapter == kind))
-                .filter_map(|connection| pairs(&connection.id, &connection.name))
-                .collect(),
-            _ => Vec::new(),
-        }
+    /// The declared variables as (ID, name).
+    pub(crate) fn variable_choices(&self) -> Vec<(String, String)> {
+        self.declarations()
+            .into_iter()
+            .flat_map(|declared| &declared.variables)
+            .filter_map(|variable| Some((variable.id.clone()?, variable.name.clone())))
+            .collect()
     }
 
     /// The declared connection `node` names, if it names one.
@@ -362,7 +477,7 @@ impl Editor {
     }
 
     /// Reads the fields of `node` again when another node is selected.
-    fn inspect(&mut self, node: &NodeView) {
+    fn inspect(&mut self, node: &NodeView, host: &Host) {
         if self.inspected == Some(node.id) {
             return;
         }
@@ -378,6 +493,16 @@ impl Editor {
                 (port.id.clone(), typed)
             })
             .collect();
+        if let Some(document) = &self.document {
+            for port in node.ports.iter().filter(|port| {
+                port.input
+                    && TextInput::for_port(node, port).is_some_and(|kind| kind != TextInput::Text)
+            }) {
+                let full =
+                    stored_input_text(host, &document.draft, node.id, &port.id).unwrap_or_default();
+                self.typed.insert(port.id.clone(), full);
+            }
+        }
         if let Some(properties) = node
             .schema
             .as_ref()
@@ -428,7 +553,7 @@ impl Editor {
             }
             return;
         };
-        self.inspect(&node);
+        self.inspect(&node, host);
         if self
             .quick_variable
             .as_ref()
@@ -458,76 +583,30 @@ impl Editor {
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
-        // The kind of connection the node uses, and the one it names with its choices.
-        let connection = self.named_connection(&node);
-        let choices = connection
-            .as_ref()
-            .map(|connection| self.adapter_choices(host, &connection.adapter, false))
-            .unwrap_or_default();
-        let mut refresh = false;
-        let mut redeclare: Option<Connection> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let http = http_request_variant(&node);
+                if http {
+                    self.values_section(ui, &node);
+                }
                 let has_settings = node
                     .schema
                     .as_ref()
                     .and_then(|schema| schema["properties"].as_object())
                     .is_some_and(|fields| !fields.is_empty());
-                let setup = !node.references.is_empty() || has_settings || !node.types.is_empty();
+                let references = node
+                    .references
+                    .iter()
+                    .filter(|(_, kind)| *kind != ReferenceKind::Connection);
+                let setup =
+                    references.clone().next().is_some() || has_settings || !node.types.is_empty();
                 if setup {
                     section(ui, t("set-up"));
-                    for (pointer, kind) in &node.references {
-                        if let Some(asked) = self.reference_field(ui, &node, host, pointer, *kind) {
+                    for (pointer, kind) in references {
+                        if let Some(asked) = self.reference_field(ui, &node, pointer, *kind) {
                             change = Some(asked);
                         }
-                    }
-                    if let Some(connection) = &connection {
-                        let mut current = connection.settings.clone();
-                        if let Some((name, value)) = declarations::choice_fields(
-                            ui,
-                            "node",
-                            &choices,
-                            &current,
-                            &mut refresh,
-                        ) {
-                            current = declarations::with_setting(&current, &name, value);
-                        }
-                        let fields = host.adapter_fields(&connection.adapter);
-                        let texts: Vec<_> = host
-                            .adapter_texts(&connection.adapter)
-                            .into_iter()
-                            .filter(|field| !field.secret)
-                            .collect();
-                        let toggles = host.adapter_toggles(&connection.adapter);
-                        if !fields.is_empty() || !texts.is_empty() || !toggles.is_empty() {
-                            egui::CollapsingHeader::new(t("source-settings"))
-                                .id_salt(("source-settings", node.id))
-                                .show(ui, |ui| {
-                                    if let Some((name, value)) =
-                                        declarations::number_fields(ui, &fields, &current)
-                                    {
-                                        current = declarations::with_number(&current, &name, value);
-                                    }
-                                    declarations::text_fields(
-                                        ui,
-                                        &texts,
-                                        &mut current,
-                                        &mut declarations::Typed::default(),
-                                    );
-                                    declarations::toggle_fields(ui, &toggles, &mut current);
-                                });
-                        }
-                        if current != connection.settings {
-                            redeclare = Some(Connection {
-                                settings: current,
-                                ..connection.clone()
-                            });
-                        }
-                        ui.small(tf(
-                            "shared-settings",
-                            &[("name", connection.name.as_str().into())],
-                        ));
                     }
                     if let Some(asked) = self.settings_fields(ui, &node, false) {
                         change = Some(asked);
@@ -543,7 +622,7 @@ impl Editor {
                 }
                 if node.ports.iter().any(|port| port.input && !port.exec) {
                     section(ui, t("inputs"));
-                    if let Some(asked) = self.input_fields(ui, &node) {
+                    if let Some(asked) = self.input_fields(ui, &node, host) {
                         change = Some(asked);
                     }
                 }
@@ -561,18 +640,14 @@ impl Editor {
                             }
                         });
                 }
-                self.values_section(ui, &node);
+                if !http {
+                    self.values_section(ui, &node);
+                }
                 ui.add_space(10.0);
                 if ui.button(t("delete-node")).clicked() {
                     change = Some(Change::Delete);
                 }
             });
-        if let Some(connection) = redeclare {
-            let _ = self.declare_connection(host, &connection);
-        }
-        if refresh && let Some(connection) = &connection {
-            let _ = self.adapter_choices(host, &connection.adapter, true);
-        }
         let Some(change) = change else {
             return;
         };
@@ -601,11 +676,6 @@ impl Editor {
                 }
             }
             Change::CancelDeclare => self.quick_variable = None,
-            Change::NewConnection => {
-                self.panels.nodes = true;
-                self.tab = crate::Tab::Connections;
-                self.forms.reveal_connection();
-            }
             Change::Delete => {
                 let _ = self.remove_node(host, node.id);
             }
@@ -617,7 +687,6 @@ impl Editor {
         &mut self,
         ui: &mut egui::Ui,
         node: &NodeView,
-        host: &Host,
         pointer: &str,
         kind: ReferenceKind,
     ) -> Option<Change> {
@@ -626,14 +695,11 @@ impl Editor {
             .pointer(pointer)
             .and_then(Json::as_str)
             .map(str::to_owned);
-        let adapter = host
-            .nodes()
-            .find(|info| info.definition.definition.id.as_str() == node.definition)
-            .and_then(|info| info.presentation?.connection_adapter.as_deref());
-        let declared = self.choices(kind, adapter);
-        let connection_label = (kind == ReferenceKind::Connection)
-            .then(|| host.connection_label(&node.definition))
-            .flatten();
+        let declared = if kind == ReferenceKind::Variable {
+            self.variable_choices()
+        } else {
+            Vec::new()
+        };
         let what = match kind {
             ReferenceKind::Variable => "variable",
             ReferenceKind::Connection => "connection",
@@ -644,56 +710,37 @@ impl Editor {
             .as_ref()
             .and_then(|id| declared.iter().find(|(known, _)| known == id))
             .map_or_else(
-                || {
-                    connection_label.as_ref().map_or_else(
-                        || tf("choose-reference", &[("kind", what.into())]),
-                        |label| tf("choose-named", &[("name", label.as_str().into())]),
-                    )
-                },
+                || tf("choose-reference", &[("kind", what.into())]),
                 |(_, name)| name.clone(),
             );
         let label = words(pointer.trim_start_matches('/'));
         let mut chosen = None;
         let mut quick = false;
-        row(
-            ui,
-            connection_label.as_deref().unwrap_or(&label),
-            None,
-            |ui| {
-                let _ = egui::ComboBox::from_id_salt(("orange-reference", pointer))
-                    .selected_text(shown)
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for (id, name) in &declared {
-                            let current = named.as_deref() == Some(id.as_str());
-                            if ui.selectable_label(current, name.as_str()).clicked() && !current {
-                                chosen = Some(Change::Setting(pointer.to_owned(), Some(json!(id))));
-                            }
+        row(ui, &label, None, |ui| {
+            let _ = egui::ComboBox::from_id_salt(("orange-reference", pointer))
+                .selected_text(shown)
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for (id, name) in &declared {
+                        let current = named.as_deref() == Some(id.as_str());
+                        if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                            chosen = Some(Change::Setting(pointer.to_owned(), Some(json!(id))));
                         }
-                        match kind {
-                            ReferenceKind::Variable | ReferenceKind::Connection => {
-                                if !declared.is_empty() {
-                                    ui.separator();
-                                }
-                                quick = ui
-                                    .selectable_label(
-                                        false,
-                                        tf("new-reference", &[("kind", what.into())]),
-                                    )
-                                    .clicked();
-                            }
-                            _ if declared.is_empty() => {
-                                ui.weak(tf("no-references", &[("kind", what.into())]));
-                            }
-                            _ => {}
+                    }
+                    if kind == ReferenceKind::Variable {
+                        if !declared.is_empty() {
+                            ui.separator();
                         }
-                    });
-            },
-        );
+                        quick = ui
+                            .selectable_label(false, tf("new-reference", &[("kind", what.into())]))
+                            .clicked();
+                    } else if declared.is_empty() {
+                        ui.weak(tf("no-references", &[("kind", what.into())]));
+                    }
+                });
+        });
         if quick {
-            if kind != ReferenceKind::Variable {
-                return Some(Change::NewConnection);
-            }
             self.quick_variable = Some(QuickVariable {
                 node: node.id,
                 pointer: pointer.to_owned(),
@@ -775,7 +822,7 @@ impl Editor {
             }
             let pointer = format!("/{name}");
             if node.references.iter().any(|(at, _)| *at == pointer)
-                || crate::canvas::advanced_setting(name) != tuning
+                || canvas::advanced_setting(name) != tuning
             {
                 continue;
             }
@@ -884,11 +931,7 @@ impl Editor {
         node.schema
             .as_ref()
             .and_then(|schema| schema["properties"].as_object())
-            .is_some_and(|fields| {
-                fields
-                    .keys()
-                    .any(|name| crate::canvas::advanced_setting(name))
-            })
+            .is_some_and(|fields| fields.keys().any(|name| canvas::advanced_setting(name)))
     }
 
     /// Choosers of the types of a generic node's parameters.
@@ -977,13 +1020,69 @@ impl Editor {
     }
 
     /// Fields for the values on the node's inputs.
-    fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView) -> Option<Change> {
+    fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
         let mut write = None;
         for port in node.ports.iter().filter(|port| port.input && !port.exec) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
-            row(ui, &port_label(&port.id), Some(ty.clone()), |ui| {
+            let multiline = TextInput::for_port(node, port).filter(|kind| *kind != TextInput::Text);
+            let label = http_request_variant(node)
+                .then(|| http_request_label(&port.id))
+                .flatten()
+                .map_or_else(|| port_label(&port.id), str::to_owned);
+            row(ui, &label, Some(ty.clone()), |ui| {
                 if port.connected {
                     ui.weak(t("from-a-wire"));
+                    return;
+                }
+                if http_request_variant(node) && port.id == "method" {
+                    let shown = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .unwrap_or_default();
+                    let shown =
+                        serde_json::from_str::<String>(shown).unwrap_or_else(|_| shown.to_owned());
+                    egui::ComboBox::from_id_salt(("http-method", node.id))
+                        .width(ui.available_width())
+                        .selected_text(&shown)
+                        .show_ui(ui, |ui| {
+                            if let Some(method) = choose_http_method(ui, &shown) {
+                                write =
+                                    Some(Change::Input(port.id.clone(), Some(method.to_owned())));
+                            }
+                        });
+                    return;
+                }
+                if let Some(multiline) = multiline {
+                    let typed = self.typed.entry(port.id.clone()).or_default();
+                    let response = egui::ScrollArea::vertical()
+                        .id_salt(("property-text", node.id, &port.id))
+                        .max_height(126.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(typed)
+                                    .font(egui::TextStyle::Monospace)
+                                    .layouter(&mut wrap_property_text)
+                                    .hint_text(multiline.hint())
+                                    .desired_rows(3)
+                                    .desired_width(ui.available_width()),
+                            )
+                        })
+                        .inner;
+                    if response.lost_focus() {
+                        let typed = typed.clone();
+                        let original = self
+                            .document
+                            .as_ref()
+                            .and_then(|document| {
+                                stored_input_text(host, &document.draft, node.id, &port.id)
+                            })
+                            .unwrap_or_default();
+                        if typed != original {
+                            let literal = (!typed.is_empty()).then(|| multiline.literal(&typed));
+                            write = Some(Change::Input(port.id.clone(), literal));
+                        }
+                    }
                     return;
                 }
                 if let Some(choices) = port.ty.as_deref().and_then(|ty| self.canvas.enums.get(ty)) {
@@ -1025,7 +1124,13 @@ impl Editor {
                     .filter(|_| self.file_dialogs);
                 let browse = path.map(|path| if path.folder { "folder" } else { "file" });
                 let typed = self.typed.entry(port.id.clone()).or_default();
-                let hint = port.default.as_deref().unwrap_or(&ty);
+                let hint = if http_request_variant(node) && port.id == "path" {
+                    "/anything"
+                } else if http_request_variant(node) && port.id == "content_type" {
+                    "application/json"
+                } else {
+                    port.default.as_deref().unwrap_or(&ty)
+                };
                 match text_field(ui, typed, hint, port.value.is_some(), browse) {
                     Edit::Done if *typed != before => {
                         let value = (!typed.is_empty()).then(|| typed.clone());
@@ -1034,7 +1139,7 @@ impl Editor {
                     Edit::Clear => write = Some(Change::Input(port.id.clone(), None)),
                     Edit::Browse => {
                         if let Some(path) = path {
-                            self.request = Some(crate::FileRequest::ChoosePath {
+                            self.request = Some(FileRequest::ChoosePath {
                                 node: node.id,
                                 port: port.id.clone(),
                                 folder: path.folder,
@@ -1106,7 +1211,7 @@ enum Change {
     /// Declare a variable and name it at the setting.
     Declare(String, Variable),
     CancelDeclare,
-    NewConnection,
+
     Delete,
 }
 
@@ -1220,7 +1325,7 @@ pub(crate) fn words(name: &str) -> String {
 /// (`branch#0`) is counted from one ("branch 1"), and words are spaced.
 /// A port the host's catalogues name in the current language shows that name.
 pub fn port_label(id: &str) -> String {
-    let name = |id: &str| crate::i18n::port_name(id).unwrap_or_else(|| id.replace(['_', '-'], " "));
+    let name = |id: &str| i18n::port_name(id).unwrap_or_else(|| id.replace(['_', '-'], " "));
     match id.split_once('#') {
         Some((base, instance)) => match instance.parse::<u32>() {
             Ok(number) => format!("{} {}", name(base), number + 1),
@@ -1342,9 +1447,16 @@ mod width_tests {
         editor.open_untitled(&mut host, draft.text().unwrap());
         editor.canvas().select(Some(play));
         // And a run showed the same long value on the input.
-        editor
-            .canvas()
-            .show_preview(play, "path".into(), long.clone(), long.clone());
+        editor.canvas().show_observed_value(
+            play,
+            "path".into(),
+            canvas::Shown {
+                short: long.clone(),
+                full: long.clone(),
+            },
+            &orange_host::Value::Str(std::sync::Arc::new(long)),
+            true,
+        );
         let context = egui::Context::default();
         let mut widths = Vec::new();
         for _ in 0..6 {
@@ -1359,21 +1471,137 @@ mod width_tests {
         }
         assert!(widths.iter().all(|width| *width <= 262.0), "{widths:?}");
     }
+
+    #[test]
+    fn long_http_inputs_and_outputs_wrap_inside_the_open_properties_panel() {
+        let (mut host, _) = Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_net::package()],
+        )
+        .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let request = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        editor.canvas().select(Some(request));
+        let body = json!({"payload": "x".repeat(8192)}).to_string();
+        let input = TextInput::Body.literal(&body);
+        assert!(editor.set_input(&mut host, (request, "content"), Some(&input)));
+        editor.canvas().show_observed_value(
+            request,
+            "response".into(),
+            canvas::Shown {
+                short: body.clone(),
+                full: body.clone(),
+            },
+            &orange_host::Value::Str(std::sync::Arc::new(body)),
+            false,
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let dock = egui::Panel::right("long-response-test")
+                    .resizable(true)
+                    .default_size(260.0)
+                    .show(ui, |ui| editor.properties_panel(ui, &mut host));
+                assert!(
+                    dock.response.rect.width() <= 262.0,
+                    "{:?}",
+                    dock.response.rect
+                );
+            });
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn editing_a_request_reads_the_full_literal_instead_of_the_canvas_preview() {
+        let (mut host, _) = Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_net::package()],
+        )
+        .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let request = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let body = format!("{{\n  \"message\": \"{}\"\n}}\n", "a".repeat(200));
+        let headers = "Accept: application/json\nX-Client: Orange";
+        for (port, value) in [("content", body.as_str()), ("headers", headers)] {
+            let literal = json!({"type": "core/string@1", "value": value}).to_string();
+            assert!(editor.set_input(&mut host, (request, port), Some(&literal)));
+        }
+        let drawn = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == request)
+            .unwrap()
+            .clone();
+        assert_ne!(
+            Editor::shown_input(
+                drawn
+                    .ports
+                    .iter()
+                    .find(|port| port.id == "content")
+                    .unwrap()
+            ),
+            body
+        );
+        editor.inspect(&drawn, &host);
+        assert_eq!(editor.typed["content"], body);
+        assert_eq!(editor.typed["headers"], headers);
+    }
 }
 
 impl Editor {
-    /// What the last run did at the node: why its last step failed, and the value on
-    /// each input it received and each output it gave, in full and copyable. Values from
-    /// a run that has ended, or from before an edit, are said to be so.
+    pub(crate) fn port_inspector_window(&mut self, ctx: &egui::Context) {
+        let Some((node, port, input)) = &self.inspected_port else {
+            return;
+        };
+        let Some(graph) = self.graph() else { return };
+        let Some(view) = graph.nodes.iter().find(|view| view.id == *node) else {
+            self.inspected_port = None;
+            return;
+        };
+        let sample = self.canvas.port_sample(graph, *node, port, *input);
+        let copyable = self.canvas.copyable_port_text(graph, *node, port, *input);
+        let title = format!("{} · {}", self.canvas.display_name(view), port_label(port));
+        let mut open = true;
+        egui::Window::new(title)
+            .id(egui::Id::unique("orange-port-inspector"))
+            .default_width(480.0)
+            .collapsible(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if let (Some((shown, stale)), Some(copyable)) = (sample, copyable) {
+                    if stale {
+                        ui.weak(t("previous-port-value"));
+                    }
+                    display_port_text(ui, &shown.full, copyable, 300.0);
+                } else {
+                    ui.weak(t("no-port-value"));
+                }
+            });
+        if !open {
+            self.inspected_port = None;
+        }
+    }
+
+    /// The last observed values and any failure, with copyable result text.
     fn values_section(&self, ui: &mut egui::Ui, node: &NodeView) {
         let Some(graph) = self.graph() else {
             return;
         };
+        let http = http_request_variant(node);
         let failure = self.canvas.failure(node.id);
         let ports: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| !port.exec)
+            .filter(|port| !port.exec && (!http || !port.input))
             .filter_map(|port| {
                 let (shown, stale) = self
                     .canvas
@@ -1384,7 +1612,7 @@ impl Editor {
         if failure.is_none() && ports.is_empty() {
             return;
         }
-        section(ui, t("values"));
+        section(ui, if http { t("http-results") } else { t("values") });
         if let Some(why) = failure {
             ui.colored_label(
                 ui.visuals().error_fg_color,
@@ -1394,26 +1622,67 @@ impl Editor {
         for (port, shown, stale) in ports {
             let side = if port.input { "in" } else { "out" };
             let freshness = if stale { t("previous-suffix") } else { "" };
-            let title = format!(
-                "{} ({side}) = {}{freshness}",
-                port_label(&port.id),
-                shown.short
-            );
+            let response = http && !port.input && port.id == "response";
+            let title = if response {
+                format!("{}{freshness}", port_label(&port.id))
+            } else if shown.short == shown.full
+                && shown.short.chars().take(17).count() <= 16
+                && !shown.short.contains(['\n', '\r'])
+            {
+                format!(
+                    "{} ({side}) = {}{freshness}",
+                    port_label(&port.id),
+                    shown.short
+                )
+            } else {
+                format!("{} ({side}){freshness}", port_label(&port.id))
+            };
             egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
                 .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
+                .default_open(response)
                 .show(ui, |ui| {
-                    let mut full = shown.full.clone();
-                    let _ = ui.add(
-                        egui::TextEdit::multiline(&mut full)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY)
-                            .interactive(true),
-                    );
-                    if ui.small_button(t("copy")).clicked() {
-                        ui.ctx().copy_text(shown.full.clone());
-                    }
+                    let copyable = self
+                        .canvas
+                        .copyable_port_text(graph, node.id, &port.id, port.input)
+                        .unwrap_or(&shown.full);
+                    display_port_text(ui, &shown.full, copyable, 126.0);
                 });
         }
     }
+}
+
+fn wrap_property_text(
+    ui: &egui::Ui,
+    text: &dyn egui::TextBuffer,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::simple(
+        text.as_str().to_owned(),
+        font,
+        ui.visuals().text_color(),
+        width,
+    );
+    job.wrap.break_anywhere = true;
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
+}
+
+fn display_port_text(ui: &mut egui::Ui, mut preview: &str, copyable: &str, height: f32) {
+    if ui.small_button(t("copy")).clicked() {
+        ui.ctx().copy_text(copyable.to_owned());
+    }
+    if preview != copyable {
+        ui.weak(t("port-preview-limited"));
+    }
+    egui::ScrollArea::vertical()
+        .max_height(height)
+        .show(ui, |ui| {
+            let _ = ui.add(
+                egui::TextEdit::multiline(&mut preview)
+                    .font(egui::TextStyle::Monospace)
+                    .layouter(&mut wrap_property_text)
+                    .desired_rows(1)
+                    .desired_width(ui.available_width()),
+            );
+        });
 }

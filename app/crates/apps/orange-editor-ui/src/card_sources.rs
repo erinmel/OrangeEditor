@@ -12,8 +12,30 @@ pub(crate) struct DevicePicker {
     pub group_label: String,
     pub problem: Option<String>,
 }
+
+impl DevicePicker {
+    pub(crate) fn label(&self) -> &str {
+        self.connection
+            .as_ref()
+            .and_then(|connection| connection.settings["file"].as_str())
+            .and_then(|path| std::path::Path::new(path).file_name()?.to_str())
+            .unwrap_or_else(|| {
+                self.selected
+                    .as_deref()
+                    .map_or(self.default_label.as_str(), |id| {
+                        self.options
+                            .iter()
+                            .find(|(value, _)| value == id)
+                            .map_or(t("device-unavailable"), |(_, label)| label.as_str())
+                    })
+            })
+    }
+}
+
 impl Editor {
     pub(crate) fn prepare_devices(&mut self, host: &Host) {
+        self.canvas.device_pickers.clear();
+        self.canvas.connection_profiles.clear();
         let Some(document) = &self.document else {
             return;
         };
@@ -43,6 +65,15 @@ impl Editor {
             .declarations()
             .map(|d| d.connections.clone())
             .unwrap_or_default();
+        for connection in &declared {
+            if let Some(id) = &connection.id {
+                self.canvas
+                    .connection_profiles
+                    .entry(connection.adapter.clone())
+                    .or_default()
+                    .push((id.clone(), connection.name.clone()));
+            }
+        }
         let adapters: std::collections::HashMap<_, _> = host
             .nodes()
             .filter_map(|node| {
@@ -52,8 +83,7 @@ impl Editor {
                 ))
             })
             .collect();
-        self.canvas.variables = self.choices(ReferenceKind::Variable, None);
-        self.canvas.device_pickers.clear();
+        self.canvas.variables = self.variable_choices();
         for (id, definition, pointer, reference) in nodes {
             let Some(adapter) = adapters.get(&definition) else {
                 continue;
@@ -105,6 +135,7 @@ impl Editor {
                 },
             );
         }
+        self.canvas.connection_adapters = adapters;
     }
     pub(crate) fn choose_device(&mut self, host: &mut Host, node: NodeId, device: Option<String>) {
         let Some(picker) = self.canvas.device_pickers.get(&node).cloned() else {

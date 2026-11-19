@@ -247,7 +247,7 @@ impl Editor {
                                 let on = index == highlighted;
                                 let name = match &choice.input {
                                     Some(input) => {
-                                        format!("{} → {}", choice.label, crate::port_label(input))
+                                        format!("{} → {}", choice.label, port_label(input))
                                     }
                                     None => choice.label.clone(),
                                 };

@@ -32,7 +32,34 @@ pub const FOOTER_HEIGHT: f32 = card::END;
 pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 /// The zoom range.
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.2..=2.5;
-const GRID: f32 = 24.0;
+pub(crate) const GRID_STEPS: [u16; 4] = [12, 24, 36, 48];
+pub(crate) const DEFAULT_GRID_STEP: u16 = 24;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GridStyle {
+    #[default]
+    Dots,
+    Lines,
+    Hidden,
+}
+
+impl GridStyle {
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Dots => "dots",
+            Self::Lines => "lines",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    pub(crate) fn from_key(key: Option<&str>) -> Self {
+        match key {
+            Some("lines") => Self::Lines,
+            Some("hidden") => Self::Hidden,
+            _ => Self::Dots,
+        }
+    }
+}
 /// How near a wire the pointer has to be to take it, in points at zoom 1.
 const WIRE_GRAB: f32 = 7.0;
 /// How much one point of wheel movement zooms.
@@ -104,6 +131,12 @@ fn titles(graph: &GraphView) -> std::collections::HashMap<NodeId, String> {
         .iter()
         .filter(|node| node.definition == "core/convert")
         .filter_map(|node| {
+            if let Some(label) = node.settings["converter"]
+                .as_str()
+                .and_then(crate::palette::utf8_label)
+            {
+                return Some((node.id, label.to_owned()));
+            }
             let ty = |input: bool| {
                 node.ports
                     .iter()
@@ -149,6 +182,16 @@ use geometry::{Geometry, near_wire, wire_points, wire_visible};
 pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 pub(crate) use spectrum::BandEdit;
 
+type StoredText<'a> = dyn Fn(NodeId, &str) -> Option<String> + 'a;
+
+#[derive(Clone, Debug)]
+struct ExpandedText {
+    node: NodeId,
+    port: String,
+    value: String,
+    focused: bool,
+}
+
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CanvasResponse {
@@ -169,6 +212,7 @@ pub struct CanvasResponse {
     pub browse_path: Option<(NodeId, String)>,
     /// A device chooser was requested at a node card.
     pub configure: Option<(NodeId, Pos2)>,
+    pub(crate) inspect_value: Option<(NodeId, String, bool)>,
     /// A schema-backed configuration field edited directly on the card.
     pub set_config: Option<(NodeId, String, serde_json::Value)>,
     /// "New variable…" was chosen in a card's variable picker: the node and the
@@ -226,8 +270,17 @@ pub struct Shown {
 #[derive(Debug, Clone)]
 struct PortSample {
     shown: Shown,
+    raw_text: Option<orange_host::Value>,
     epoch: u64,
     preview: bool,
+}
+
+fn text_value(value: &orange_host::Value) -> Option<&str> {
+    match value {
+        orange_host::Value::Str(text) => Some(text.as_str()),
+        orange_host::Value::Json(text) => Some(text.as_str()),
+        _ => None,
+    }
 }
 
 /// A problem shown on the canvas, on the node or wire it is about.
@@ -313,8 +366,10 @@ pub struct Canvas {
     pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
     pub scroll_pans: bool,
-    /// Nodes let go after a move land on the grid; Alt while dragging moves freely.
+    /// Nodes and groups land on the grid. Alt while dragging moves freely.
     pub snap: bool,
+    pub(crate) grid_step: u16,
+    pub(crate) grid_style: GridStyle,
     /// The graph point at the top left corner of the canvas.
     origin: Pos2,
     zoom: f32,
@@ -331,6 +386,7 @@ pub struct Canvas {
     number_drag: Option<(NodeId, String, f32)>,
     /// Text being typed on a card, and whether its field has had the keys yet.
     typing: Option<(NodeId, String, String, bool)>,
+    expanded_text: Option<ExpandedText>,
     /// A whole number being dragged: its node, port, value before and pixels moved.
     /// A node was dragged and not yet let go.
     moving: bool,
@@ -349,6 +405,8 @@ pub struct Canvas {
     /// "Int to Text".
     titles: std::collections::HashMap<NodeId, String>,
     connection_labels: std::collections::HashMap<String, String>,
+    pub(super) connection_adapters: std::collections::HashMap<String, String>,
+    pub(super) connection_profiles: std::collections::HashMap<String, Vec<(String, String)>>,
     /// When each node of a running flow last took a step, and whether it failed.
     activity: std::collections::HashMap<NodeId, StepActivity>,
     entry_activity: BTreeMap<NodeId, BTreeMap<String, std::time::Instant>>,
@@ -365,6 +423,7 @@ pub struct Canvas {
     /// The document's groups, the nodes hidden in collapsed ones and a group being
     /// renamed with what is typed.
     groups: Vec<orange_host::Group>,
+    selected_group_frame: Option<String>,
     hidden: std::collections::HashSet<NodeId>,
     renaming: Option<(String, String)>,
 }
@@ -389,6 +448,7 @@ impl Default for Canvas {
             pointer: None,
             number_drag: None,
             typing: None,
+            expanded_text: None,
             moving: false,
             fit: true,
             wiring: None,
@@ -402,6 +462,8 @@ impl Default for Canvas {
             labels: std::collections::HashMap::new(),
             titles: std::collections::HashMap::new(),
             connection_labels: std::collections::HashMap::new(),
+            connection_adapters: std::collections::HashMap::new(),
+            connection_profiles: std::collections::HashMap::new(),
             values: std::collections::HashMap::new(),
             failures: std::collections::HashMap::new(),
             stale: false,
@@ -409,7 +471,10 @@ impl Default for Canvas {
             size: Vec2::new(800.0, 600.0),
             scroll_pans: false,
             snap: true,
+            grid_step: DEFAULT_GRID_STEP,
+            grid_style: GridStyle::default(),
             groups: Vec::new(),
+            selected_group_frame: None,
             hidden: std::collections::HashSet::new(),
             renaming: None,
         }
@@ -531,6 +596,30 @@ impl Canvas {
         self.descriptions.get(definition).map(String::as_str)
     }
 
+    fn profile_choices(&self, node: &NodeView) -> &[(String, String)] {
+        self.connection_adapters
+            .get(&node.definition)
+            .and_then(|adapter| self.connection_profiles.get(adapter))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    fn connection_selection(&self, node: &NodeView) -> Option<&str> {
+        if let Some(picker) = self.device_pickers.get(&node.id) {
+            return Some(picker.label());
+        }
+        let pointer = node
+            .references
+            .iter()
+            .find(|(_, kind)| *kind == orange_host::ReferenceKind::Connection)?
+            .0
+            .as_str();
+        let id = node.settings.pointer(pointer)?.as_str()?;
+        self.profile_choices(node)
+            .iter()
+            .find(|(candidate, _)| candidate == id)
+            .map(|(_, name)| name.as_str())
+    }
+
     pub(crate) fn display_name<'a>(&'a self, node: &'a NodeView) -> &'a str {
         if let Some(title) = self.titles.get(&node.id) {
             return title;
@@ -553,6 +642,8 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.expanded_text = None;
+        self.selected_group_frame = None;
         self.collapsed_spectra.clear();
         self.titles = titles(graph);
         self.places = auto_layout(graph);
@@ -564,6 +655,17 @@ impl Canvas {
     /// gives them or an automatic one, nodes that are gone are forgotten, and every
     /// other node stays where it is. The view is not moved.
     pub fn update(&mut self, graph: &GraphView) {
+        if let Some(edit) = &self.expanded_text
+            && !graph.nodes.iter().any(|node| {
+                node.id == edit.node
+                    && node
+                        .ports
+                        .iter()
+                        .any(|port| port.input && !port.connected && port.id == edit.port)
+            })
+        {
+            self.expanded_text = None;
+        }
         self.titles = titles(graph);
         // Most edits only change values or wires. Layout is needed only for a new
         // node without a saved position; existing nodes keep their dragged places.
@@ -627,6 +729,7 @@ impl Canvas {
 
     /// Selects these nodes. With exactly one, it is also the one whose properties show.
     pub fn select_many(&mut self, nodes: &[NodeId]) {
+        self.selected_group_frame = None;
         self.selection = nodes
             .iter()
             .copied()
@@ -732,6 +835,46 @@ impl Canvas {
         self.zoom
     }
 
+    fn draw_grid(&self, painter: &egui::Painter, area: Rect, colors: &Palette) {
+        let step = f32::from(self.grid_step) * self.zoom;
+        let style = self.grid_style;
+        if step < 12.0 || style == GridStyle::Hidden {
+            return;
+        }
+        let first = area.min
+            - Vec2::new(
+                (self.origin.x * self.zoom).rem_euclid(step),
+                (self.origin.y * self.zoom).rem_euclid(step),
+            );
+        let mut marks = egui::Mesh::default();
+        let mut y = first.y;
+        while y < area.bottom() {
+            if style == GridStyle::Lines {
+                let line =
+                    Rect::from_min_size(Pos2::new(area.left(), y), Vec2::new(area.width(), 1.0));
+                marks.add_colored_rect(line, colors.grid.gamma_multiply(0.5));
+            } else {
+                let mut x = first.x;
+                while x < area.right() {
+                    let dot = Rect::from_center_size(Pos2::new(x, y), Vec2::splat(1.35));
+                    marks.add_colored_rect(dot, colors.grid);
+                    x += step;
+                }
+            }
+            y += step;
+        }
+        if style == GridStyle::Lines {
+            let mut x = first.x;
+            while x < area.right() {
+                let line =
+                    Rect::from_min_size(Pos2::new(x, area.top()), Vec2::new(1.0, area.height()));
+                marks.add_colored_rect(line, colors.grid.gamma_multiply(0.5));
+                x += step;
+            }
+        }
+        painter.add(egui::Shape::mesh(marks));
+    }
+
     /// Shows the whole graph at the next frame.
     pub fn fit(&mut self) {
         self.fit = true;
@@ -764,20 +907,35 @@ impl Canvas {
     }
 
     fn card<'a>(&self, node: &'a NodeView) -> card::Card<'a> {
-        card::Card::with_chart(node, !self.collapsed_spectra.contains(&node.id))
+        let expanded = self
+            .expanded_text
+            .as_ref()
+            .filter(|edit| edit.node == node.id)
+            .map(|edit| edit.port.as_str());
+        card::Card::with_controls(node, !self.collapsed_spectra.contains(&node.id), expanded)
     }
 
     fn bounds(&self, graph: &GraphView) -> Option<Rect> {
         graph
             .nodes
             .iter()
+            .filter(|node| !self.is_hidden(node.id))
             .filter_map(|node| {
                 Some(Rect::from_min_size(
                     *self.places.get(&node.id)?,
                     self.card(node).size,
                 ))
             })
+            .chain(
+                self.groups
+                    .iter()
+                    .filter_map(|group| self.group_frame(graph, group)),
+            )
             .reduce(|all, rect| all.union(rect))
+    }
+
+    pub(crate) fn selected_wire(&self) -> Option<&WireEnds> {
+        self.selected_wire.as_ref()
     }
 
     /// The problems drawn on nodes and wires.
@@ -851,13 +1009,39 @@ impl Canvas {
     /// A running flow put a value on an output: `short` shows beside the port, `full`
     /// in the inspector. It stays until another comes; when the run ends it is dimmed.
     pub fn show_value(&mut self, node: NodeId, port: String, short: String, full: String) {
+        self.store_sample(node, port, Shown { short, full }, None, false);
+    }
+
+    pub(crate) fn show_observed_value(
+        &mut self,
+        node: NodeId,
+        port: String,
+        shown: Shown,
+        value: &orange_host::Value,
+        preview: bool,
+    ) {
+        let raw_text = text_value(value)
+            .filter(|text| *text != shown.full)
+            .map(|_| value.clone());
+        self.store_sample(node, port, shown, raw_text, preview);
+    }
+
+    fn store_sample(
+        &mut self,
+        node: NodeId,
+        port: String,
+        shown: Shown,
+        raw_text: Option<orange_host::Value>,
+        preview: bool,
+    ) {
         self.stale = false;
         let _ = self.values.entry(node).or_default().insert(
             port,
             PortSample {
-                shown: Shown { short, full },
+                shown,
+                raw_text,
                 epoch: self.value_epoch,
-                preview: false,
+                preview,
             },
         );
     }
@@ -874,20 +1058,8 @@ impl Canvas {
         }
     }
 
-    /// Authoring samples stay current independently of a running flow.
-    pub(crate) fn show_preview(&mut self, node: NodeId, port: String, short: String, full: String) {
-        self.show_value(node, port.clone(), short, full);
-        if let Some(sample) = self
-            .values
-            .get_mut(&node)
-            .and_then(|ports| ports.get_mut(&port))
-        {
-            sample.preview = true;
-        }
-    }
-
     /// Forgets the previews of `nodes` only, keeping every other one.
-    pub(crate) fn clear_previews_of(&mut self, nodes: &std::collections::BTreeSet<NodeId>) {
+    pub(crate) fn clear_previews_of(&mut self, nodes: &BTreeSet<NodeId>) {
         for node in nodes {
             if let Some(ports) = self.values.get_mut(node) {
                 ports.retain(|_, sample| !sample.preview);
@@ -956,6 +1128,37 @@ impl Canvas {
         port: &str,
         input: bool,
     ) -> Option<(&Shown, bool)> {
+        let sample = self.sample_at(graph, node, port, input)?;
+        Some((
+            &sample.shown,
+            !sample.preview && sample.epoch != self.value_epoch,
+        ))
+    }
+
+    pub(crate) fn copyable_port_text(
+        &self,
+        graph: &GraphView,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<&str> {
+        let sample = self.sample_at(graph, node, port, input)?;
+        Some(
+            sample
+                .raw_text
+                .as_ref()
+                .and_then(text_value)
+                .unwrap_or(&sample.shown.full),
+        )
+    }
+
+    fn sample_at(
+        &self,
+        graph: &GraphView,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<&PortSample> {
         let (node, port) = if input {
             let wire = graph
                 .wires
@@ -965,11 +1168,7 @@ impl Canvas {
         } else {
             (node, port)
         };
-        let sample = self.output_sample(node, port)?;
-        Some((
-            &sample.shown,
-            !sample.preview && sample.epoch != self.value_epoch,
-        ))
+        self.output_sample(node, port)
     }
 
     fn output_sample(&self, node: NodeId, port: &str) -> Option<&PortSample> {
@@ -1048,7 +1247,7 @@ impl Canvas {
         graph: &GraphView,
         triggers: &[NodeId],
     ) -> CanvasResponse {
-        self.show_with_path_controls(ui, graph, triggers, false)
+        self.show_with_path_controls(ui, graph, triggers, false, None)
     }
 
     pub(crate) fn show_with_path_controls(
@@ -1057,6 +1256,7 @@ impl Canvas {
         graph: &GraphView,
         triggers: &[NodeId],
         file_dialogs: bool,
+        stored_text: Option<&StoredText<'_>>,
     ) -> CanvasResponse {
         crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
@@ -1129,7 +1329,7 @@ impl Canvas {
         if let (Some(kind), Some(at)) = (dropped, ui.input(|input| input.pointer.interact_pos())) {
             let mut at = graph_point(at, self.origin, self.zoom);
             if palette_item.is_some() && self.snap && !ui.input(|input| input.modifiers.alt) {
-                at = snapped(at);
+                at = snapped(at, self.grid_step);
             }
             done.dropped = Some((kind, [at.x, at.y]));
         }
@@ -1163,26 +1363,10 @@ impl Canvas {
         let zoom = self.zoom;
         let origin = self.origin;
         let to_screen = |point: Pos2| area.min + (point - origin) * zoom;
-        let geometry = Geometry::with_chart(graph, |node| !self.collapsed_spectra.contains(&node));
+        let geometry = Geometry::with_cards(graph, |node| self.card(node));
 
         painter.rect_filled(area, 0.0, colors.background);
-        let step = GRID * zoom;
-        if step >= 14.0 {
-            // Batch the dots into one mesh. Their positions match the snap grid.
-            let mut dots = egui::Mesh::default();
-            let first_x = area.min.x - (origin.x * zoom).rem_euclid(step);
-            let mut y = area.min.y - (origin.y * zoom).rem_euclid(step);
-            while y < area.max.y {
-                let mut x = first_x;
-                while x < area.max.x {
-                    let dot = Rect::from_center_size(Pos2::new(x, y), Vec2::splat(1.35));
-                    dots.add_colored_rect(dot, colors.grid);
-                    x += step;
-                }
-                y += step;
-            }
-            painter.add(egui::Shape::mesh(dots));
-        }
+        self.draw_grid(&painter, area, &colors);
 
         // Groups: their title bars are handled under the cards, and their frames drawn
         // behind them.
@@ -1231,10 +1415,14 @@ impl Canvas {
                     done.insert = Some((node.id, wire));
                 }
                 let free = ui.input(|input| input.modifiers.alt);
-                if self.snap && !free {
+                if self.snap
+                    && !free
+                    && let Some(anchor) = self.places.get(&node.id).copied()
+                {
+                    let by = snapped(anchor, self.grid_step) - anchor;
                     for id in &self.selection {
                         if let Some(place) = self.places.get_mut(id) {
-                            *place = snapped(*place);
+                            *place += by;
                         }
                     }
                 }
@@ -1376,8 +1564,14 @@ impl Canvas {
             && !ui.ctx().egui_wants_keyboard_input()
         {
             let (delete, all, add, events) = ui.input(|input| {
-                done.group_selection =
-                    self.keys.pressed(input, "group") && !self.selection.is_empty();
+                if let Some(group) = self.selected_group() {
+                    if self.keys.pressed(input, "ungroup") {
+                        done.group = Some(GroupEdit::Ungroup(group.id.clone()));
+                    }
+                } else {
+                    done.group_selection =
+                        self.keys.pressed(input, "group") && !self.selection.is_empty();
+                }
                 (
                     self.keys.pressed(input, "delete"),
                     self.keys.pressed(input, "select-all"),
@@ -1670,12 +1864,12 @@ impl Canvas {
             let marked =
                 self.failures.contains_key(&node.id) || self.marks.nodes.contains_key(&node.id);
             let chart_open = !self.collapsed_spectra.contains(&node.id);
-            let layout = self.card(node);
+            let layout = geometry.card(node.id);
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
                 node,
-                &layout,
+                layout,
                 (self.display_name(node), self.kind_name(node)),
                 rect,
                 zoom,
@@ -1684,7 +1878,12 @@ impl Canvas {
                 response.id,
                 formula.as_deref(),
                 self.descriptions.get(&node.definition).map(String::as_str),
-                connection,
+                (
+                    connection,
+                    (!controls)
+                        .then(|| self.connection_selection(node))
+                        .flatten(),
+                ),
             );
             if pressed {
                 done.trigger = Some(node.id);
@@ -1769,9 +1968,7 @@ impl Canvas {
             {
                 done.set_config = Some((node.id, "/threshold_db".to_owned(), threshold.into()));
             }
-            // Values a run put on ports: before each output's name, and after the name
-            // of each wired input. Cut short here; the inspector has them whole.
-
+            // Keep each value in its side of the row. Click a value to inspect it.
             let label_font = FontId::proportional(12.5 * zoom);
             let inset = CARD_PADDING * zoom;
             for row in &layout.rows {
@@ -1795,45 +1992,74 @@ impl Canvas {
                     }
                     let name =
                         painter.layout_no_wrap(port_title(port), label_font.clone(), colors.text);
-                    let name_width = name.size().x.min(rect.width() / 2.0 - 1.5 * inset);
+                    let half = rect.width() / 2.0 - 1.5 * inset;
+                    let gap = 8.0 * zoom;
+                    let name_width = name.size().x.min(half);
                     let y = rect.top() + row.anchor() * zoom;
                     let (at, align, room) = if input {
                         let room = if output.is_some() {
-                            rect.width() / 2.0
+                            rect.width() / 2.0 - inset
                         } else {
                             rect.width()
                         } - name_width
-                            - 3.0 * inset;
+                            - 2.0 * inset
+                            - gap;
                         (
-                            Pos2::new(rect.left() + inset + name_width + 8.0 * zoom, y),
+                            Pos2::new(rect.left() + inset + name_width + gap, y),
                             Align2::LEFT_CENTER,
                             room,
                         )
                     } else {
                         (
-                            Pos2::new(rect.right() - inset - name_width - 8.0 * zoom, y),
+                            Pos2::new(rect.right() - inset - name_width - gap, y),
                             Align2::RIGHT_CENTER,
-                            rect.width() / 2.0 - 2.0 * inset,
+                            if row.left.is_some() {
+                                half - name_width - gap
+                            } else {
+                                rect.width() - 2.0 * inset - name_width - gap
+                            },
                         )
                     };
-                    if room < 24.0 * zoom {
-                        continue;
-                    }
                     let font = FontId::monospace(11.5 * zoom);
                     let tint = if value.preview || value.epoch == self.value_epoch {
                         colors.text
                     } else {
                         colors.weak
                     };
-                    let (shown, _) = elide(&painter, &value.shown.short, &font, room);
-                    let galley = painter.layout_no_wrap(shown, font, tint);
-                    let bounds = align.anchor_rect(Rect::from_min_size(at, galley.size()));
-                    painter.rect_filled(
-                        bounds.expand2(Vec2::new(5.0, 2.0) * zoom),
-                        3.0 * zoom,
-                        colors.background,
-                    );
-                    painter.galley(bounds.min, galley, tint);
+                    let label_x = if input {
+                        rect.left() + inset
+                    } else {
+                        rect.right() - inset
+                    };
+                    let label_bounds = align.anchor_rect(Rect::from_min_size(
+                        Pos2::new(label_x, y),
+                        Vec2::new(name_width, name.size().y),
+                    ));
+                    let target = if room >= 12.0 * zoom {
+                        let (shown, _) = elide(&painter, &value.shown.short, &font, room);
+                        let galley = painter.layout_no_wrap(shown, font, tint);
+                        let bounds = align.anchor_rect(Rect::from_min_size(at, galley.size()));
+                        let chip = bounds.expand2(Vec2::new(5.0, 2.0) * zoom);
+                        painter.rect_filled(chip, 3.0 * zoom, colors.background);
+                        painter.galley(bounds.min, galley, tint);
+                        label_bounds.union(chip)
+                    } else {
+                        label_bounds
+                    };
+                    let touched = ui
+                        .interact(
+                            target,
+                            response.id.with(("value", node.id, &port.id, input)),
+                            Sense::click(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(t("inspect-port-value"));
+                    touched.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, t("inspect-port-value"))
+                    });
+                    if touched.clicked() {
+                        done.inspect_value = Some((node.id, port.id.clone(), input));
+                    }
                 }
             }
             for (field, slot) in slots {
@@ -1842,8 +2068,14 @@ impl Canvas {
                 if !area.intersects(slot) {
                     continue;
                 }
-                let id = response.id.with(("field", node.id, slot.min.y as i32 / 4));
-                let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs) else {
+                let id = match field {
+                    card::FieldOf::TextArea(port, ..) => {
+                        response.id.with(("text-field", node.id, &port.id))
+                    }
+                    _ => response.id.with(("field", node.id, slot.min.y as i32 / 4)),
+                };
+                let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
+                else {
                     continue;
                 };
                 self.front = Some(node.id);
@@ -1953,7 +2185,7 @@ impl Canvas {
         if let (None, Some(drag), Some(pointer)) = (&done.dropped, palette_item, pointer) {
             let mut place = graph_point(pointer, origin, zoom);
             if self.snap && !ui.input(|input| input.modifiers.alt) {
-                place = snapped(place);
+                place = snapped(place, self.grid_step);
             }
             let at = to_screen(place);
             if let Some(card) = &drag.card {
@@ -1976,7 +2208,12 @@ impl Canvas {
                     response.id,
                     None,
                     None,
-                    None,
+                    (
+                        self.connection_labels
+                            .get(&card.definition)
+                            .map(String::as_str),
+                        None,
+                    ),
                 );
                 if zoom >= 0.45 {
                     ui.scope_builder(UiBuilder::new().id_salt("placement-preview"), |ui| {
@@ -2245,7 +2482,7 @@ fn draw_node<'a>(
     canvas: egui::Id,
     formula: Option<&str>,
     description: Option<&str>,
-    connection: Option<&str>,
+    (connection, profile): (Option<&str>, Option<&str>),
 ) -> (bool, Vec<(card::FieldOf<'a>, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
@@ -2465,7 +2702,7 @@ fn draw_node<'a>(
                     if controls {
                         slots.push((editor, slot));
                     } else {
-                        fields::paint_still(painter, node, editor, slot, zoom, colors);
+                        fields::paint_still(painter, node, editor, slot, zoom, colors, profile);
                     }
                 }
             }
@@ -3674,10 +3911,11 @@ mod elide_tests {
 }
 
 /// A point moved to the nearest grid crossing.
-pub(crate) fn snapped(point: Pos2) -> Pos2 {
+fn snapped(point: Pos2, step: u16) -> Pos2 {
+    let step = f32::from(step);
     Pos2::new(
-        (point.x / GRID).round() * GRID,
-        (point.y / GRID).round() * GRID,
+        (point.x / step).round() * step,
+        (point.y / step).round() * step,
     )
 }
 
@@ -3687,8 +3925,8 @@ mod snap_tests {
 
     #[test]
     fn a_point_snaps_to_the_nearest_grid_crossing() {
-        assert_eq!(snapped(Pos2::new(13.0, 35.0)), Pos2::new(24.0, 24.0));
-        assert_eq!(snapped(Pos2::new(-13.0, 11.0)), Pos2::new(-24.0, 0.0));
+        assert_eq!(snapped(Pos2::new(13.0, 35.0), 24), Pos2::new(24.0, 24.0));
+        assert_eq!(snapped(Pos2::new(-13.0, 11.0), 24), Pos2::new(-24.0, 0.0));
         assert!(Canvas::new().snap && !Canvas::new().scroll_pans);
     }
 }

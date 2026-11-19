@@ -28,14 +28,14 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Area | Decision |
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
-| Grid | Faint dots mark the 24-unit snap grid and disappear at distant zoom. Snap is on by default and configurable in Settings. Alt while dragging moves freely. |
+| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented control for Dots, Lines and Hidden, and a slider for 12, 24, 36 or 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Fine grids disappear at distant zoom. Alt while dragging moves freely. The zoom percentage opens Fit and Actual size. |
 | Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Ports are round. Execution uses amber ports and thicker amber wires. Data uses typed colors. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
-| Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
+| Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect outputs even without outgoing wires. |
 | Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent scroll positions. |
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
-| Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
+| Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
 ## 3. Cards
 
@@ -53,8 +53,9 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   Comparison cards may retain a comparison expression. Ordinary arithmetic has
   no redundant expression footer.
 * **Configuration templates.** Scalar controls are drawn from each definition's
-  schema. Connection references use a dedicated source control. Fields preserve
-  their JSON types, and complex configuration remains available in the inspector.
+  schema. Network connection references are dropdowns of compatible saved
+  profiles and display the selected name. Profile editing lives in Connections.
+  Device nodes have an inline device selector. Fields preserve their JSON types.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.
 * **Composition.** Embedding applications may call `Editor::ui_with_layout` and
@@ -68,8 +69,9 @@ here first. One row model (`canvas/card.rs`) builds a card's rows once from its 
 size, port positions, wires, hit tests, painting and the controls all read it, so no
 other code places anything on a card.
 
-* **A card is a stack of rows, full width.** All cards are one width (232 units; a
-  literal is 180). A field always spans the card's inner width, so values line up
+* **A card is a stack of rows, full width.** Standard cards are 272 units wide.
+  Literals are 180 units wide and audio chart cards have dedicated widths.
+  A field spans the card's inner width, so values line up
   from card to card and nothing is squeezed beside a name.
 * **Flow first.** The first row holds the way in on the left (the tinted Enter chip, or
   Fire on On manual) and the first way out on the right (Exit →). Further ways out
@@ -105,9 +107,11 @@ other code places anything on a card.
   dot. Hovering the icon says what is wrong; clicking it opens Problems.
 * **Defaults read like values.** An empty field shows its default the way a value is
   shown (an enum by its choice's name), dimmed.
-* **Measurements:** header 30, flow and output rows 26, a field block 48 (name 18,
-  control 24, gap 6), padding 10, the card ends 8 units after its last row. Text never
+* **Measurements:** header 30, flow and output rows 28, a field block 52 (name 18,
+  control 26, gap 8), padding 10, the card ends 8 units after its last row. Text never
   overflows its row: names are elided and shown whole on hover.
+  The Properties panel wraps result text at its current width, including long
+  unbroken strings, and scrolls within the result. Copy keeps the full value.
 
 #### Where the rules live in code
 
@@ -152,19 +156,31 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   Paste, Group, Arrange, Snap), on a card (Properties, Rename, Duplicate, Disable,
   Group, Make function, Delete, Help), on a wire (Insert node…, Delete), on a port
   (Disconnect, Promote to variable, Watch value). Entries show their assigned shortcuts.
-* The toolbar uses icons with tooltips grouped as File | Edit | Run, from the pinned Material Symbols Rounded library (with its licence recorded in 10), so no symbol depends on system
-  fonts.
+* The toolbar uses icons with tooltips grouped as File | Edit | Run. Most
+  icons use the pinned Material Symbols font. Group, Ungroup and Arrange use
+  outlines adapted from Lucide, and Snap uses the Tabler magnet. Source versions
+  and licenses are recorded in 10.
+  Group, Ungroup, Arrange, Unlink and Fit to view use the same icon buttons as
+  Undo and Redo and sit next to them in the same row. Selection actions are enabled
+  when the selection supports them. Snap to grid shows its active state on the toolbar.
 * The workspace starts with both side docks visible. The bottom bar puts the node dock toggle
   and zoom at the left, the inspector dock toggle at the right, and Problems, Log and
   running status in the center. Properties and Packages share the inspector's top tabs.
   Problems and Log share the same resizable panel. The controls wrap in narrow windows.
+  Ctrl/Cmd+1 and Ctrl/Cmd+2 toggle the left and right docks. The right dock
+  reopens to its last tab. Ctrl/Cmd+G groups the selection and Ctrl/Cmd+Shift+G
+  ungroups the selected frame. Alt+G switches snapping.
 * The desktop title follows the current file name. Running, Stopped or No graph
   and the unsaved indicator remain in the status bar.
-* Settings uses a centered, resizable dialog with persistent category navigation,
-  a scrolling content pane and a fixed Done button. The Keymap page groups actions
-  and has its own search for action names or shortcuts, following the workflow in
-  [IntelliJ IDEA Keymap](https://www.jetbrains.com/help/idea/settings-keymap.html).
-  Actions and shortcuts use separate single-line columns. Select a binding to type
+* Settings uses a centered, resizable dialog with a shared search field, an
+  independently scrolling content pane and a fixed Done button. The section list
+  becomes a selector in compact windows. Search finds settings sections, shortcut
+  actions and key combinations. Display and canvas groups controls by interface,
+  panels and canvas. Interface scale applies when a percentage is chosen in
+  its dropdown. At large scales or narrow widths, the editing commands can scroll
+  horizontally so Settings and the run controls stay visible.
+  The Keyboard shortcuts page displays grouped, left-aligned action labels and
+  single-line bindings. Select a binding to type
   or record a replacement. Shortcuts can be removed or reset, and conflicts require
   explicit reassignment. The desktop saves bindings, node language and canvas preferences
   under the user's configuration directory on exit. Graph documents carry none of
@@ -204,7 +220,18 @@ symbols until the bundled icon font (§4) lands.
   is entered in a masked field and stored in the operating system's credential store,
   and the document keeps only the `credential://` reference (12, ADR-21). A connection
   shows whether it is in use, by which nodes, and can be tested (open, ping, list
-  devices).
+  devices). Saving edits to an existing connection keeps its form open and
+  reloads the persisted values and credential references. Done closes the form.
+* Text, binary and streamed HTTP requests use the same Method dropdown on the
+  canvas and in Properties. A wired method is read from its source. HTTP
+  Properties places the observed status and response under Results, before
+  request setup.
+* Unwired text inputs start compact and expand into scrollable editors inside
+  the card when clicked. This applies to HTTP bodies and headers, MQTT, AMQP,
+  and WebSocket text messages, and text inputs in other definitions. Enter
+  adds a line. Clicking away applies the edit and Escape discards it. Each
+  card collapses to its compact layout when editing ends. Wired inputs show
+  their source, and dropdowns and file choosers keep their respective controls.
 
 ## 6. Audio
 

@@ -186,7 +186,7 @@ impl Editor {
         let mut changed = decl.clone();
         let mut asked = None;
         let visuals = ui.visuals().clone();
-        let accent = crate::canvas::type_color(Some(&decl.ty().to_string()));
+        let accent = canvas::type_color(Some(&decl.ty().to_string()));
         let kind = match decl.shape {
             TypeShape::Enum { .. } => t("enum"),
             TypeShape::Record { .. } => t("record"),
@@ -443,8 +443,7 @@ fn payload_choice(
     let shown = current.as_ref().map_or_else(
         || egui::RichText::new("—").weak(),
         |ty| {
-            egui::RichText::new(type_name(ty.as_str()))
-                .color(crate::canvas::type_color(Some(ty.as_str())))
+            egui::RichText::new(type_name(ty.as_str())).color(canvas::type_color(Some(ty.as_str())))
         },
     );
     let mut chosen = current.as_ref().map(ToString::to_string);
