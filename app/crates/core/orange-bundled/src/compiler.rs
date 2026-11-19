@@ -48,7 +48,20 @@ impl PureKernelResolver for MathPackage {
             });
         }
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
-        if let Some(operation) = IntegerOperation::from_definition_id(definition.id.as_str()) {
+        // A shared operation (Negate, Absolute, Minimum, Maximum, Clamp) binds decimals
+        // to its float kernel below and whole numbers here.
+        let decimal = |port: &str| {
+            request
+                .signature()
+                .ports
+                .iter()
+                .find(|found| found.port_id.as_str() == port)
+                .and_then(|found| found.ty.as_ref())
+                .is_some_and(|ty| matches!(ty.as_str(), "core/f32@1" | "core/f64@1"))
+        };
+        if let Some(operation) = IntegerOperation::from_definition_id(definition.id.as_str())
+            && !(operation.shared() && decimal(operation.input_ports()[0]))
+        {
             let ty = request
                 .signature()
                 .ports

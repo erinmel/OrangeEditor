@@ -627,4 +627,33 @@ mod tests {
             assert_eq!(purposes.len(), found.len(), "{locale}: {purposes:?}");
         }
     }
+
+    /// One Absolute serves whole numbers and decimals, each by its own rules, and
+    /// search offers no decimal-only twin.
+    #[test]
+    fn one_absolute_for_every_number_kind() {
+        let (mut host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        let found: Vec<_> = host
+            .search_nodes("absolute", "en")
+            .into_iter()
+            .map(|found| found.definition)
+            .collect();
+        assert!(found.iter().any(|id| id == "org.orange.math/absolute"));
+        assert!(!found.iter().any(|id| id.contains("float-")), "{found:?}");
+        for (ty, typed, expected) in [
+            ("core/i64@1", "-7", crate::Value::I64(7)),
+            ("core/f64@1", "-2.5", crate::Value::F64(2.5)),
+        ] {
+            let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+            let node = host
+                .add_node(&mut draft, "org.orange.math/absolute", [0.0, 0.0])
+                .unwrap();
+            host.choose_type(&mut draft, node, "T", Some(ty)).unwrap();
+            host.set_input(&mut draft, (node, "value"), Some(typed))
+                .unwrap();
+            let wanted = [(node, "result".parse().unwrap())];
+            let values = host.preview(&draft.text().unwrap(), &wanted).unwrap();
+            assert_eq!(values[0].value, Ok(expected), "{ty}");
+        }
+    }
 }

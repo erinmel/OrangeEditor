@@ -316,10 +316,13 @@ have empty config. Kernel errors carry safe static text and no operand values.
 L02b float vocabulary (2026-11-08): [12 §4.3](12-graph-data-structures.md)
 lists sixteen ordinary pure math definitions with `T: float` and exact native
 f32/f64 specializations. Every input and `result` is `$T`; inputs are strict.
-Operations that L02a already names for integers use a `float-` prefix
-(`float-negate`, `float-absolute`, `float-minimum`, `float-maximum`,
-`float-clamp`, `float-remainder`): their NaN and signed-zero rules differ, so
-they are separate contracts instead of a widening of the `T: int` definitions.
+Shared numeric operations (2026-11-18): `negate`, `absolute`, `minimum`, `maximum`
+and `clamp` are one definition each for every number kind, with `T: num` and
+exact specializations for the four integers and f32/f64. A whole number binds the
+integer kernel (its `int_overflow` setting applies) and a decimal binds the float
+kernel (its `float_policy` applies, with the NaN and signed-zero rules below); the
+other family's setting is accepted and has no effect. `float-remainder` stays separate
+because its rule (truncated, dividend's sign) differs from integer `remainder`.
 
 Every node accepts only `float_policy`: `finite` (default) or `ieee`. Under
 `finite`, checks run in IEEE exception order: a non-finite input is
@@ -334,9 +337,9 @@ is returned, including NaN and infinities.
 value of the same type and keep the sign of zero. Negate and absolute act on the
 sign bit only, so NaN payloads are unchanged. `float-remainder` is the exact
 truncated remainder: it has the dividend's sign and a magnitude below the divisor.
-`float-minimum`/`float-maximum` follow IEEE 754-2019 minimum/maximum: NaN
+For decimals, `minimum`/`maximum` follow IEEE 754-2019 minimum/maximum: NaN
 propagates (the first NaN operand) and -0 orders below +0.
-`float-clamp(value,min,max)` is maximum(minimum(value,max),min); a NaN bound or
+`clamp(value,min,max)` is maximum(minimum(value,max),min); a NaN bound or
 min > max is `core/Domain` under both policies, so the native panicking clamp
 is never reached. A NaN value propagates under `ieee`.
 

@@ -91,6 +91,15 @@ impl IntegerOperation {
         )
     }
 
+    /// Whether one definition serves every number kind: whole numbers bind here and
+    /// decimals to the float kernel of the same operation.
+    pub const fn shared(self) -> bool {
+        matches!(
+            self,
+            Self::Negate | Self::Absolute | Self::Minimum | Self::Maximum | Self::Clamp
+        )
+    }
+
     fn is_shift(self) -> bool {
         matches!(self, Self::ShiftLeft | Self::ShiftRight)
     }
@@ -122,16 +131,25 @@ pub fn integer_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 generic.clone(),
                 OutputSource::Computed,
             ));
-            let properties = if operation.has_overflow() {
+            let mut properties = serde_json::Map::new();
+            if operation.has_overflow() {
                 let choices = if operation.is_shift() {
                     json!(["checked", "wrapping"])
                 } else {
                     json!(["checked", "wrapping", "saturating"])
                 };
-                json!({"int_overflow":{"enum":choices,"default":"checked"}})
-            } else {
-                json!({})
-            };
+                let _ = properties.insert(
+                    "int_overflow".into(),
+                    json!({"enum":choices,"default":"checked"}),
+                );
+            }
+            // A shared operation also takes the policy decimals follow.
+            if operation.shared() {
+                let _ = properties.insert(
+                    "float_policy".into(),
+                    json!({"enum":["finite","ieee"],"default":"finite"}),
+                );
+            }
             Ok(NodeDefinition {
                 definition: DefinitionRef {
                     id: operation.definition_id().parse()?,
@@ -144,7 +162,7 @@ pub fn integer_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 suspends: None,
                 type_params: vec![TypeParam {
                     name: "T".into(),
-                    constraints: vec!["int".into()],
+                    constraints: vec![if operation.shared() { "num" } else { "int" }.into()],
                     extensions: Default::default(),
                 }],
                 ports: Ports::Declared(ports),
@@ -315,9 +333,12 @@ impl MathPackage {
             "core/u64@1" => Scalar::U64,
             _ => return Err(BindingError::UnsupportedType),
         };
-        if config.keys().any(|key| key != "int_overflow")
-            || !operation.has_overflow() && !config.is_empty()
-        {
+        // A shared operation's decimal policy does not apply to whole numbers.
+        let own = |key: &str| {
+            key == "int_overflow" && operation.has_overflow()
+                || key == "float_policy" && operation.shared()
+        };
+        if config.keys().any(|key| !own(key)) {
             return Err(BindingError::InvalidConfig);
         }
         let overflow = match config.get("int_overflow").map(|v| v.as_str()) {

@@ -325,12 +325,12 @@ fn input_contracts_bindings_and_provider_pins_are_exact() {
                 BindingError::UnsupportedType
             );
         }
-        let mut invalid = vec![
-            json!({"unknown":true}),
-            json!({"int_overflow":"checked"}),
-            json!({"float_policy":"strict"}),
-            json!({"float_policy":7}),
-        ];
+        let mut invalid = vec![json!({"unknown":true})];
+        // Negate and Absolute serve whole numbers too, whose overflow policy they take.
+        if !matches!(op, Op::Negate | Op::Absolute) {
+            invalid.push(json!({"int_overflow":"checked"}));
+        }
+        invalid.extend([json!({"float_policy":"strict"}), json!({"float_policy":7})]);
         if op.is_predicate() {
             invalid.push(json!({"float_policy":"ieee"}));
         }
@@ -602,7 +602,9 @@ fn graph(
     variables: Json,
 ) -> GraphDocument {
     let mut signatures = serde_json::Map::new();
-    let definitions = float_definitions().unwrap();
+    // The shared operations (Absolute, Clamp, …) are defined with the integer ones.
+    let mut definitions = float_definitions().unwrap();
+    definitions.extend(orange_bundled::integer_definitions().unwrap());
     for node in &mut nodes {
         let Some(definition) = definitions
             .iter()
@@ -634,7 +636,10 @@ fn graph(
 #[test]
 fn actual_definitions_fold_constants_and_keep_original_fault_sources() {
     let (package, snapshot) = catalog();
-    assert_eq!(float_definitions().unwrap().len(), Op::ALL.len());
+    assert_eq!(
+        float_definitions().unwrap().len(),
+        Op::ALL.iter().filter(|op| !op.shared()).count()
+    );
     let mut nodes = vec![];
     let mut exports = vec![];
     let mut expected = vec![];

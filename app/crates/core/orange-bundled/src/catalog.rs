@@ -184,9 +184,18 @@ impl MathPackage {
             provider
                 .implements
                 .insert((definition.definition.clone(), definition.config_version));
-            provider
-                .specializations
-                .insert(definition.definition.clone(), numeric[..4].to_vec());
+            // A shared operation takes decimals too.
+            let shared =
+                crate::IntegerOperation::from_definition_id(definition.definition.id.as_str())
+                    .is_some_and(crate::IntegerOperation::shared);
+            provider.specializations.insert(
+                definition.definition.clone(),
+                if shared {
+                    numeric.clone()
+                } else {
+                    numeric[..4].to_vec()
+                },
+            );
             builder = builder.definition(definition);
         }
         for definition in crate::float_definitions()? {

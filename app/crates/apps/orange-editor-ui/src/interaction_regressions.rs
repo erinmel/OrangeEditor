@@ -189,7 +189,7 @@ fn a_wire_between_two_number_kinds_offers_conversions_and_takes_the_chosen_one()
         .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
         .unwrap();
     let negate = host
-        .add_node(&mut draft, "org.orange.math/float-negate", [300.0, 0.0])
+        .add_node(&mut draft, "org.orange.math/negate", [300.0, 0.0])
         .unwrap();
     host.choose_type(&mut draft, negate, "T", Some("core/f64@1"))
         .unwrap();

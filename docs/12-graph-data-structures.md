@@ -776,9 +776,9 @@ Semantics: [11 §5.6](11-graph-language.md).
 | `square-root`, `exponential`, `natural-log`, `log2`, `log10` | `value` |
 | `power` | `base`, `exponent` |
 | `floor`, `ceiling`, `truncate`, `round-ties-even` | `value` |
-| `float-negate`, `float-absolute` | `value` |
-| `float-minimum`, `float-maximum`, `float-remainder` | `a`, `b` |
-| `float-clamp` | `value`, `min`, `max` |
+| `negate`, `absolute` (shared with integers) | `value` |
+| `minimum`, `maximum` (shared with integers), `float-remainder` | `a`, `b` |
+| `clamp` (shared with integers) | `value`, `min`, `max` |
 | `sine`, `cosine`, `tangent`, `arcsine`, `arccosine`, `arctangent` | `value` |
 | `arctangent2` | `y`, `x` |
 | `float-equal`, `float-not-equal`, `total-order-less` (predicates) | `a`, `b` |
