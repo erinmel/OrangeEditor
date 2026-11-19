@@ -6,6 +6,8 @@ use super::*;
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
 pub(super) const WIDTH: f32 = 232.0;
+const METER_WIDTH: f32 = 332.0;
+pub(super) const METER_FIELDS_X: f32 = 110.0;
 const LITERAL_WIDTH: f32 = 180.0;
 const CHART_WIDTH: f32 = 400.0;
 /// A row of one line: a flow row, an output, an input without a field.
@@ -66,6 +68,7 @@ pub(super) struct Row<'a> {
     pub left: Option<Left<'a>>,
     /// An output on the row's first line.
     pub right: Option<&'a PortView>,
+    pub field_inset: f32,
 }
 
 impl Row<'_> {
@@ -91,7 +94,7 @@ impl Row<'_> {
             width - CARD_PADDING
         };
         Some(Rect::from_min_max(
-            Pos2::new(CARD_PADDING, top),
+            Pos2::new(self.field_inset, top),
             Pos2::new(right, top + CONTROL),
         ))
     }
@@ -144,6 +147,13 @@ pub(super) fn literal(node: &NodeView) -> bool {
 
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
+        Self::with_chart(node, true)
+    }
+
+    pub fn with_chart(node: &'a NodeView, chart_open: bool) -> Self {
+        if spectrum::is_noise(node) {
+            return Self::meter(node);
+        }
         let literal = literal(node);
         let width = if literal {
             LITERAL_WIDTH
@@ -154,21 +164,27 @@ impl<'a> Card<'a> {
         };
         let mut rows = Vec::new();
         // An audio analysis card's chart comes first, under the header; its rows follow.
-        let mut y = BODY_TOP + spectrum::chart_height(node);
-        let mut push = |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right| {
-            let height = match left {
-                Some(Left::Field { named: true, .. }) => NAME + CONTROL + GAP,
-                Some(Left::Field { named: false, .. }) => CONTROL + GAP,
-                _ => LINE,
+        let mut y = BODY_TOP + spectrum::chart_height(node, chart_open);
+        let mut push =
+            |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right: Option<&'a PortView>| {
+                let height = match left {
+                    Some(Left::Field { named: true, .. }) => NAME + CONTROL + GAP,
+                    Some(Left::Field { named: false, .. }) => CONTROL + GAP,
+                    _ => LINE,
+                };
+                let height = height
+                    + right
+                        .filter(|port| spectrum::legacy_band(node, port))
+                        .map_or(0.0, |_| LINE);
+                rows.push(Row {
+                    top: y,
+                    height,
+                    left,
+                    right,
+                    field_inset: CARD_PADDING,
+                });
+                y += height;
             };
-            rows.push(Row {
-                top: y,
-                height,
-                left,
-                right,
-            });
-            y += height;
-        };
 
         // Flow: the way in and the first way out share the first row.
         let mut ins: Vec<Left<'a>> = Vec::new();
@@ -281,6 +297,51 @@ impl<'a> Card<'a> {
             size: Vec2::new(width, y + END),
             rows,
             empty,
+        }
+    }
+
+    fn meter(node: &'a NodeView) -> Self {
+        let mut rows = Vec::new();
+        let mut y = BODY_TOP;
+        for port in node.ports.iter().filter(|port| !port.input) {
+            rows.push(Row {
+                top: y,
+                height: LINE,
+                left: None,
+                right: Some(port),
+                field_inset: METER_FIELDS_X,
+            });
+            y += LINE;
+        }
+        for (name, schema) in settings::fields(node) {
+            let height = NAME + CONTROL + GAP;
+            rows.push(Row {
+                top: y,
+                height,
+                left: Some(Left::Field {
+                    editor: FieldOf::Setting(name, schema),
+                    named: true,
+                }),
+                right: None,
+                field_inset: METER_FIELDS_X,
+            });
+            y += height;
+        }
+        let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
+        for port in node.ports.iter().filter(|port| port.input) {
+            rows.push(Row {
+                top: stream_y,
+                height: LINE,
+                left: Some(Left::Port(port)),
+                right: None,
+                field_inset: CARD_PADDING,
+            });
+            stream_y += LINE;
+        }
+        Self {
+            size: Vec2::new(METER_WIDTH, y.max(stream_y) + END),
+            rows,
+            empty: false,
         }
     }
 

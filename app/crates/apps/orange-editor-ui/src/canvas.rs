@@ -24,7 +24,7 @@ pub const ROW_HEIGHT: f32 = card::LINE;
 const CARD_RADIUS: f32 = 8.0;
 
 /// Time for the full execution wire to fade after a step.
-const PULSE_SECONDS: f32 = 0.32;
+const PULSE_SECONDS: f32 = 0.16;
 
 /// Space under the last row.
 pub const FOOTER_HEIGHT: f32 = card::END;
@@ -302,6 +302,7 @@ struct StepActivity {
 #[derive(Debug, Clone)]
 pub struct Canvas {
     pub(crate) spectra: BTreeMap<NodeId, Vec<f64>>,
+    pub(crate) collapsed_spectra: BTreeSet<NodeId>,
     pub(crate) noise_readings: BTreeMap<NodeId, f64>,
     pub(crate) keys: crate::keymap::Keymap,
     pub(crate) shortcuts_enabled: bool,
@@ -371,6 +372,7 @@ impl Default for Canvas {
     fn default() -> Self {
         Self {
             spectra: BTreeMap::new(),
+            collapsed_spectra: BTreeSet::new(),
             noise_readings: BTreeMap::new(),
             keys: crate::keymap::Keymap::default(),
             shortcuts_enabled: true,
@@ -551,6 +553,7 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.collapsed_spectra.clear();
         self.titles = titles(graph);
         self.places = auto_layout(graph);
         self.forget_missing();
@@ -599,6 +602,7 @@ impl Canvas {
     /// Drops from the selection the nodes that are gone.
     fn forget_missing(&mut self) {
         let places = &self.places;
+        self.collapsed_spectra.retain(|id| places.contains_key(id));
         self.selection.retain(|id| places.contains_key(id));
         if !self.selected.is_some_and(|id| self.selection.contains(&id)) {
             self.selected = None;
@@ -666,7 +670,7 @@ impl Canvas {
             .filter(|node| !self.hidden.contains(&node.id))
             .filter(|node| {
                 self.places.get(&node.id).is_some_and(|place| {
-                    Rect::from_min_size(*place, node_size(node)).intersects(area)
+                    Rect::from_min_size(*place, self.card(node).size).intersects(area)
                 })
             })
             .map(|node| node.id)
@@ -695,7 +699,7 @@ impl Canvas {
                 .iter()
                 .filter(|port| port.input && port.exec == exec)
             {
-                let layout = card::Card::new(node);
+                let layout = self.card(node);
                 let Some(found) = layout.row_of(port) else {
                     continue;
                 };
@@ -759,6 +763,10 @@ impl Canvas {
         (zoom, bounds.min - spare / 2.0)
     }
 
+    fn card<'a>(&self, node: &'a NodeView) -> card::Card<'a> {
+        card::Card::with_chart(node, !self.collapsed_spectra.contains(&node.id))
+    }
+
     fn bounds(&self, graph: &GraphView) -> Option<Rect> {
         graph
             .nodes
@@ -766,7 +774,7 @@ impl Canvas {
             .filter_map(|node| {
                 Some(Rect::from_min_size(
                     *self.places.get(&node.id)?,
-                    node_size(node),
+                    self.card(node).size,
                 ))
             })
             .reduce(|all, rect| all.union(rect))
@@ -814,7 +822,7 @@ impl Canvas {
     /// it, fading to nothing, wired or not.
     fn exit_glow(&self, geometry: &Geometry<'_>, node: NodeId, port: &str) -> f32 {
         let fading = |time: std::time::Instant| {
-            (1.0 - time.elapsed().as_secs_f32() / (2.0 * PULSE_SECONDS)).max(0.0)
+            (1.0 - time.elapsed().as_secs_f32() / PULSE_SECONDS).max(0.0)
         };
         let entry = self
             .entry_activity
@@ -1017,7 +1025,7 @@ impl Canvas {
         ) else {
             return;
         };
-        let middle = place + node_size(shown) / 2.0;
+        let middle = place + self.card(shown).size / 2.0;
         self.origin = middle - self.size / (2.0 * self.zoom);
         self.select(Some(node));
     }
@@ -1145,7 +1153,7 @@ impl Canvas {
         let zoom = self.zoom;
         let origin = self.origin;
         let to_screen = |point: Pos2| area.min + (point - origin) * zoom;
-        let geometry = Geometry::new(graph);
+        let geometry = Geometry::with_chart(graph, |node| !self.collapsed_spectra.contains(&node));
 
         painter.rect_filled(area, 0.0, colors.background);
         let step = GRID * zoom;
@@ -1651,10 +1659,13 @@ impl Canvas {
                 .map(String::as_str);
             let marked =
                 self.failures.contains_key(&node.id) || self.marks.nodes.contains_key(&node.id);
+            let chart_open = !self.collapsed_spectra.contains(&node.id);
+            let layout = self.card(node);
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
                 node,
+                &layout,
                 (self.display_name(node), self.kind_name(node)),
                 rect,
                 zoom,
@@ -1686,95 +1697,52 @@ impl Canvas {
                     pulsing = true;
                 }
             }
-            // Audio analysis cards draw their chart in the body the card model leaves
-            // free under the header (spectrum::chart_height).
             if spectrum::combined(node) && zoom >= 0.45 {
-                // Each band's output row: pointing at it lights its band on the chart,
-                // and a × beside its name removes the band.
-                let layout = card::Card::new(node);
                 let pointer = ui.input(|input| input.pointer.hover_pos());
                 let mut pointed = None;
                 for row in &layout.rows {
-                    let Some((port, band)) = row
+                    let Some(band) = row
                         .right
-                        .and_then(|port| Some((port, spectrum::band_of(&port.id)?)))
+                        .and_then(|port| spectrum::primary_band(node, port))
                     else {
                         continue;
                     };
-                    let line = Rect::from_min_max(
-                        Pos2::new(rect.left(), rect.top() + row.top * zoom),
-                        Pos2::new(
-                            rect.right() + 8.0 * zoom,
-                            rect.top() + (row.top + ROW_HEIGHT) * zoom,
-                        ),
-                    );
-                    if pointer.is_some_and(|at| line.contains(at)) {
+                    let top = rect.top() + row.top * zoom;
+                    if pointer.is_some_and(|at| {
+                        Rect::from_min_max(
+                            Pos2::new(rect.left(), top),
+                            Pos2::new(rect.right() + 8.0 * zoom, top + row.height * zoom),
+                        )
+                        .contains(at)
+                    }) {
                         pointed = Some(band);
                     }
-                    if !controls {
-                        continue;
-                    }
-                    let name = painter.layout_no_wrap(
-                        port_title(port),
-                        FontId::proportional(12.5 * zoom),
-                        colors.text,
-                    );
-                    let y = rect.top() + row.anchor() * zoom;
-                    let size = 18.0 * zoom;
-                    let remove = Rect::from_center_size(
-                        Pos2::new(
-                            rect.right()
-                                - CARD_PADDING * zoom
-                                - name.size().x
-                                - 6.0 * zoom
-                                - size / 2.0,
-                            y,
-                        ),
-                        Vec2::splat(size),
-                    );
-                    let touched = ui
-                        .interact(
-                            remove,
-                            response.id.with(("remove-band", node.id, band)),
-                            Sense::click(),
-                        )
-                        .on_hover_text(t("spectrum-remove-band"));
-                    let shown = touched.hovered() || pointed == Some(band);
-                    if shown {
-                        let _ = painter.text(
-                            remove.center(),
-                            Align2::CENTER_CENTER,
-                            crate::icons::CLOSE,
-                            FontId::new(14.0 * zoom, crate::icons::family()),
-                            if touched.hovered() {
-                                colors.error
-                            } else {
-                                colors.weak
-                            },
-                        );
-                    }
-                    touched.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::Button,
-                            true,
-                            t("spectrum-remove-band"),
-                        )
-                    });
-                    if touched.clicked() {
-                        done.spectrum_edit =
-                            Some((node.id, spectrum::BandEdit::Change(band, None)));
+                    if let Some(edit) =
+                        spectrum::band_row(ui, &painter, node, row, rect, zoom, controls, band)
+                    {
+                        done.spectrum_edit = Some((node.id, edit));
                     }
                 }
-                if let Some(edit) = spectrum::draw_combined(
-                    ui,
-                    &painter,
-                    node,
-                    rect,
-                    zoom,
-                    self.spectra.get(&node.id).map(Vec::as_slice),
-                    controls,
-                    pointed,
-                ) {
+                let toggle = response.id.with(("spectrum-chart", node.id));
+                if spectrum::chart_toggle(ui, &painter, rect, zoom, toggle, chart_open) {
+                    if chart_open {
+                        self.collapsed_spectra.insert(node.id);
+                    } else {
+                        self.collapsed_spectra.remove(&node.id);
+                    }
+                    ui.ctx().request_repaint();
+                } else if chart_open
+                    && let Some(edit) = spectrum::draw_combined(
+                        ui,
+                        &painter,
+                        node,
+                        rect,
+                        zoom,
+                        self.spectra.get(&node.id).map(Vec::as_slice),
+                        controls,
+                        pointed,
+                    )
+                {
                     done.spectrum_edit = Some((node.id, edit));
                 }
             } else if spectrum::is_noise(node)
@@ -1793,7 +1761,7 @@ impl Canvas {
             }
             // Values a run put on ports: before each output's name, and after the name
             // of each wired input. Cut short here; the inspector has them whole.
-            let layout = card::Card::new(node);
+
             let label_font = FontId::proportional(12.5 * zoom);
             let inset = CARD_PADDING * zoom;
             for row in &layout.rows {
@@ -1984,6 +1952,7 @@ impl Canvas {
                     ui,
                     &painter,
                     card,
+                    &card::Card::new(card),
                     (self.display_name(card), self.kind_name(card)),
                     rect,
                     zoom,
@@ -2006,6 +1975,14 @@ impl Canvas {
                             let _ =
                                 spectrum::draw_noise(ui, &painter, card, rect, zoom, None, false);
                         } else if spectrum::combined(card) {
+                            let _ = spectrum::chart_toggle(
+                                ui,
+                                &painter,
+                                rect,
+                                zoom,
+                                response.id.with("preview-chart"),
+                                true,
+                            );
                             let _ = spectrum::draw_combined(
                                 ui, &painter, card, rect, zoom, None, false, None,
                             );
@@ -2249,6 +2226,7 @@ fn draw_node<'a>(
     ui: &egui::Ui,
     painter: &egui::Painter,
     node: &'a NodeView,
+    layout: &card::Card<'a>,
     (name, kind): (&str, &str),
     rect: Rect,
     zoom: f32,
@@ -2294,7 +2272,6 @@ fn draw_node<'a>(
     };
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
-    let layout = card::Card::new(node);
     // Text smaller than this is a smudge: far out, a card is only its shape and dots.
     let readable = zoom >= 0.45;
     let pad = CARD_PADDING * zoom;
@@ -2347,9 +2324,10 @@ fn draw_node<'a>(
         if let Some(port) = row.right {
             draw_dot(painter, port, Pos2::new(rect.right(), y), zoom, colors);
             let literal_output = matches!(row.left, Some(card::Left::Field { named: false, .. }));
-            if readable && !literal_output {
+            let band = spectrum::primary_band(node, port).is_some();
+            if readable && !literal_output && !(band && controls) {
                 let (label, _) = elide(painter, &port_title(port), &font, half);
-                let end = Pos2::new(rect.right() - pad, y);
+                let end = Pos2::new(rect.right() - pad - if band { 23.0 * zoom } else { 0.0 }, y);
                 if port.exec {
                     let arrow = 11.0 * zoom;
                     draw_arrow(
@@ -2455,9 +2433,14 @@ fn draw_node<'a>(
                 }
                 if named {
                     let label = fields::name(node, editor, connection);
-                    let (label, _) = elide(painter, &label, &font, left_room);
+                    let (label, _) = elide(
+                        painter,
+                        &label,
+                        &font,
+                        left_room - (row.field_inset * zoom - pad),
+                    );
                     let _ = painter.text(
-                        Pos2::new(rect.left() + pad, y),
+                        Pos2::new(rect.left() + row.field_inset * zoom, y),
                         Align2::LEFT_CENTER,
                         label,
                         FontId::proportional(12.0 * zoom),
@@ -2482,7 +2465,7 @@ fn draw_node<'a>(
     (pressed, slots)
 }
 
-/// Draws a port's dot: a diamond for a step, a circle for a value, filled when wired.
+/// Draws a round port, filled when wired. Amber marks an execution port.
 fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, colors: &Palette) {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
@@ -2496,21 +2479,7 @@ fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, color
     } else {
         Stroke::new(1.5 * zoom.max(0.6), color)
     };
-    if port.exec {
-        let outer = radius * 1.2;
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                at - Vec2::new(outer, 0.0),
-                at - Vec2::new(0.0, outer),
-                at + Vec2::new(outer, 0.0),
-                at + Vec2::new(0.0, outer),
-            ],
-            fill,
-            outline,
-        ));
-    } else {
-        painter.circle(at, radius, fill, outline);
-    }
+    painter.circle(at, radius, fill, outline);
 }
 
 /// A value as its field on a card shows it: text without its quotes, others as
@@ -3168,7 +3137,7 @@ mod tests {
     }
 
     #[test]
-    fn spectrum_controls_fit_and_reorder_after_canvas_zoom() {
+    fn spectrum_collapse_keeps_inline_band_controls_at_each_zoom() {
         let (host, _) = orange_host::Host::with_services(
             orange_host::HostOptions::default(),
             vec![orange_audio::package()],
@@ -3209,13 +3178,13 @@ mod tests {
                 |ui| response = canvas.show(ui, &graph, &[]),
             );
             let top = Pos2::ZERO + (position - canvas.origin) * canvas.zoom;
-            let card = Rect::from_min_size(top, node_size(&graph.nodes[0]) * canvas.zoom);
+            let card = Rect::from_min_size(top, canvas.card(&graph.nodes[0]).size * canvas.zoom);
             let result = (output.shapes.clone(), response, card, canvas.zoom);
             output.drop_without_applying_deltas();
             result
         };
-        let anchor = position + Vec2::splat(20.0);
-        let (initial, _, _, _) = frame(vec![egui::Event::PointerMoved(anchor)]);
+        let anchor = Pos2::new(40.0, 50.0);
+        let (initial, _, expanded, _) = frame(vec![egui::Event::PointerMoved(anchor)]);
         let trace_drawn = |shapes: &[egui::epaint::ClippedShape]| {
             shapes.iter().any(
                 |shape| matches!(&shape.shape, egui::Shape::Path(path) if path.points.len() == 17),
@@ -3241,10 +3210,14 @@ mod tests {
         frame(vec![click(toggle, true)]);
         let (paused, _, _, _) = frame(vec![click(toggle, false)]);
         assert!(!trace_drawn(&paused));
-        frame(vec![egui::Event::PointerMoved(anchor)]);
-        for factor in [0.62, 2.5] {
+        let (collapsed, _, folded, _) = frame(vec![egui::Event::PointerMoved(anchor)]);
+        assert!(folded.height() < expanded.height());
+        assert!(!collapsed.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "10k")
+        ));
+        for (index, factor) in [0.62, 2.5].into_iter().enumerate() {
             let (shapes, _, card, zoom) = frame(vec![egui::Event::Zoom(factor)]);
-            let text = |label| {
+            let text = |label: &str| {
                 shapes
                     .iter()
                     .find_map(|shape| match &shape.shape {
@@ -3258,17 +3231,38 @@ mod tests {
                         }
                         _ => None,
                     })
-                    .unwrap_or_else(|| panic!("missing {label} at zoom {zoom}"))
+                    .unwrap_or_else(|| {
+                        let rendered: Vec<_> = shapes
+                            .iter()
+                            .filter_map(|shape| match &shape.shape {
+                                egui::Shape::Text(text) => Some(text.galley.text()),
+                                _ => None,
+                            })
+                            .collect();
+                        panic!("missing {label} at zoom {zoom}. Rendered {rendered:?}");
+                    })
             };
-            let chart = text("10k");
-            let numbers = text(t("spectrum-high-hz"));
-            let remove = text(t("spectrum-remove-band"));
-            assert!(card.contains_rect(chart) && card.contains_rect(remove));
-            assert!(chart.bottom() < numbers.top() && numbers.bottom() < remove.top());
-            assert!(
-                remove.bottom()
-                    < card.top() + (BODY_TOP + spectrum::chart_height(&graph.nodes[0])) * zoom
-            );
+            let low = text("400");
+            let high = text("600");
+            let remove = text(&crate::icons::CLOSE.to_string());
+            assert!(card.contains_rect(low) && card.contains_rect(remove));
+            assert!(low.right() < high.left() && high.right() < remove.left());
+            assert!((high.center().y - remove.center().y).abs() < 4.0 * zoom);
+            if index == 0 {
+                let from = low.center();
+                let to = from + Vec2::new(12.0, 0.0);
+                frame(vec![egui::Event::PointerMoved(from)]);
+                frame(vec![click(from, true)]);
+                frame(vec![egui::Event::PointerMoved(to)]);
+                let (_, changed, _, _) = frame(vec![click(to, false)]);
+                let Some((owner, BandEdit::Change(0, Some(settings)))) = changed.spectrum_edit
+                else {
+                    panic!("the inline low-frequency field did not update");
+                };
+                assert_eq!(owner, node);
+                assert!(settings["low_hz"].as_f64().unwrap() > 400.0);
+                assert_eq!(settings["high_hz"].as_f64(), Some(600.0));
+            }
             let center = remove.center();
             frame(vec![egui::Event::PointerMoved(center)]);
             frame(vec![click(center, true)]);

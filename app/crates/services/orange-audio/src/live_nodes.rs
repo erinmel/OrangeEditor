@@ -23,6 +23,8 @@ pub const AUDIO_SPECTRUM: &str = "org.orange.audio/spectrum";
 pub const MULTIBAND_SPECTRUM: &str = "org.orange.audio/multiband-spectrum";
 /// Full-stream RMS, threshold state and a configurable trigger.
 pub const NOISE_LEVEL: &str = "org.orange.audio/noise-level";
+/// Attenuates quiet samples on a derived audio stream.
+pub const NOISE_GATE: &str = "org.orange.audio/noise-gate";
 /// The record output of Audio format, with U64 fields `rate` and `channels`.
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
 /// Measures a stream's level in dBFS continuously.
@@ -93,6 +95,19 @@ impl LiveSource for AudioSource {
             })
             .map_err(|error| error.to_string())?;
         Ok(Box::new(Analyzing(life)))
+    }
+}
+
+struct NoiseGate;
+impl LiveSource for NoiseGate {
+    fn start(
+        &self,
+        _session: Option<Arc<dyn Session>>,
+        settings: &Map<String, Json>,
+        arguments: &Arguments,
+        publisher: Publisher,
+    ) -> Result<Box<dyn Send>, String> {
+        crate::noise_gate::start(input_stream(arguments)?, settings, publisher)
     }
 }
 
@@ -472,7 +487,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Audio Level Trigger",
         "Measure overall volume and trigger after staying above or below a threshold.",
     )
-    .keywords("microphone, noise level, noise gate, loudness, volume, rms, dbfs, threshold")
+    .keywords("microphone, noise level, loudness, volume, rms, dbfs, threshold")
     .then_label("Triggered")
     .live("level", F64)
     .live("condition_met", "core/bool@1")
@@ -483,6 +498,13 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .setting("threshold_db", number_setting(-120.0, 0.0, -35.0))
     .setting("hold_ms", number_setting(0.0, 10_000.0, 150.0))
     .setting("reset_db", number_setting(0.0, 24.0, 4.0));
+    let gate = crate::noise_gate::settings(stream_input(live(
+        "noise-gate",
+        "Noise Gate",
+        "Mutes quiet audio and outputs a gated stream for playback or recording.",
+    )))
+    .keywords("microphone, noise gate, mute, silence, threshold, audio filter, background noise")
+    .live("gated_stream", STREAM_TYPE);
     let level = meter(
         "live-level",
         "Level",
@@ -544,6 +566,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .enumeration("source-command", SOURCE_COMMANDS)
         .enumeration("sound-command", SOUND_COMMANDS)
         .live(&audio_source.build(), AudioSource)?
+        .live(&gate.build(), NoiseGate)?
         .source(&audio_out.build(), LiveAudioOut)?
         .live(&audio_format.build(), AudioFormat)?
         .live(&spectrum.build(), Spectrum)?

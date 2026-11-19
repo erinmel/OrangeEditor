@@ -176,6 +176,8 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Setting(name, schema) => {
             if node.definition == "core/on-watch" {
                 watch_label(name).to_owned()
+            } else if let Some(label) = crate::properties::noise_gate_label(node, name) {
+                label.to_owned()
             } else {
                 settings::label(name, schema)
             }

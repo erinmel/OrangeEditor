@@ -491,6 +491,18 @@ Missing audio clears the reading and qualification. Real silence can qualify
 for a below rule. Both nodes analyze off the audio callback, and their graph
 events have their own bounded ingress independent of chart updates.
 
+Noise Gate (`org.orange.audio/noise-gate@1`) takes a live audio `stream` and
+publishes a `gated_stream` of the same audio stream type, rate and channel count.
+It measures smoothed power across the input channels and applies the same gain
+to every channel. The gate opens above Threshold and stays open until the level
+falls to Threshold minus Reset margin for the Hold time. Attack and Release set
+the duration of the linear gain changes between muted and unity. The settings
+default to -40 dBFS, 4 dB, 100 ms, 5 ms and 80 ms, respectively. Latency includes
+the detector's 10 ms smoothing and attack. Closed gates keep publishing PCM
+silence, so downstream playback and recorders retain their stream. The worker
+owns a bounded one-second output ring and resets the envelope on lost samples
+or a replaced source ring. It runs outside the audio callback.
+
 ### Application playback and virtual cables
 
 On Linux, the source selector uses `pw-dump` to list active playback streams

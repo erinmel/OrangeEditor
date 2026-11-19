@@ -43,11 +43,11 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                 );
                 let texts = text_shapes(&output.shapes);
                 let at = |icon: char| {
-                    texts
+                    let text = texts
                         .iter()
                         .find(|text| text.galley.job.text == icon.to_string())
-                        .unwrap()
-                        .pos
+                        .unwrap();
+                    text.pos + text.galley.mesh_bounds.center().to_vec2()
                 };
                 let left = at(icons::NEW);
                 for icon in [
@@ -55,7 +55,6 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                     icons::SAVE,
                     icons::CHECK,
                     icons::RUN,
-                    icons::STOP,
                     icons::SETTINGS,
                 ] {
                     assert!(
@@ -63,6 +62,11 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                         "{width}, native={native}, {icon}"
                     );
                 }
+                assert!(
+                    texts
+                        .iter()
+                        .all(|text| text.galley.job.text != icons::STOP.to_string())
+                );
                 if native {
                     assert!(at(icons::CLOSE).x > width - 50.0);
                 }
@@ -70,6 +74,142 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
             }
         }
     }
+}
+
+#[test]
+fn toolbar_hover_fills_the_button_around_its_centered_icon() {
+    let ctx = egui::Context::default();
+    icons::install(&ctx);
+    theme::apply(&ctx);
+    let mut rects = [egui::Rect::NOTHING; 4];
+    for hovered in [None, Some(0), Some(1), Some(2), Some(3)] {
+        let events = hovered
+            .map(|index: usize| egui::Event::PointerMoved(rects[index].center()))
+            .into_iter()
+            .collect();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.horizontal(|ui| {
+                    rects = [
+                        icons::button(ui, true, icons::SETTINGS, "Settings", "").rect,
+                        icons::run_button(ui, true, false).rect,
+                        icons::run_button(ui, true, true).rect,
+                        icons::button(ui, false, icons::SAVE, "Save", "").rect,
+                    ];
+                });
+            },
+        );
+        for (index, icon) in [icons::SETTINGS, icons::RUN, icons::STOP, icons::SAVE]
+            .into_iter()
+            .enumerate()
+        {
+            let rect = rects[index];
+            let text = text_shapes(&output.shapes)
+                .into_iter()
+                .find(|text| text.galley.job.text == icon.to_string())
+                .unwrap();
+            let center = text.pos + text.galley.mesh_bounds.center().to_vec2();
+            assert!(
+                center.distance(rect.center()) < 0.01,
+                "{icon} {center:?} vs {rect:?}"
+            );
+            let fill = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                _ => None,
+            });
+            let stop_red = egui::Color32::from_rgb(180, 40, 57);
+            let expected = match (index, hovered == Some(index)) {
+                (2, true) => stop_red.gamma_multiply(1.18),
+                (2, false) => stop_red,
+                (0 | 1, true) => ctx.style_of(ctx.theme()).visuals.widgets.hovered.bg_fill,
+                _ => egui::Color32::TRANSPARENT,
+            };
+            assert_eq!(
+                fill.unwrap_or(egui::Color32::TRANSPARENT),
+                expected,
+                "{icon}"
+            );
+        }
+        output.drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn an_isolated_audio_error_can_be_repaired_in_the_live_graph() {
+    let (mut host, _events) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut editor = Editor::new();
+    editor.open(
+        &mut host,
+        "repair-audio.json",
+        orange_host::new_document().unwrap(),
+    );
+    let meter = editor
+        .add_node(&mut host, orange_audio::NOISE_LEVEL)
+        .unwrap();
+    assert!(editor.document.as_ref().unwrap().run_blocked);
+    let manual = editor.add_node(&mut host, "core/on-manual").unwrap();
+    assert_eq!(editor.document.as_ref().unwrap().run_omitted, [meter]);
+    let source = editor
+        .add_node(&mut host, orange_audio::AUDIO_SOURCE)
+        .unwrap();
+    let mut input = editor
+        .document
+        .as_ref()
+        .unwrap()
+        .declared
+        .connections
+        .iter()
+        .find(|connection| connection.adapter == orange_audio::INPUT_ADAPTER)
+        .unwrap()
+        .clone();
+    input.settings = serde_json::json!({"device": orange_audio::NULL_DEVICE});
+    editor.declare_connection(&mut host, &input).unwrap();
+    editor.run(&mut host);
+    let (flow, entries) = editor.document.as_ref().unwrap().flow.as_ref().unwrap();
+    let flow = *flow;
+    assert!(entries.contains(&manual));
+    assert!(!editor.problems().is_empty());
+    assert!(
+        editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|node| node.id == meter)
+    );
+
+    assert!(editor.connect(&mut host, (source, "stream"), (meter, "stream")));
+    assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+    assert_eq!(
+        editor.document.as_ref().unwrap().flow.as_ref().unwrap().0,
+        flow
+    );
+    let start = std::time::Instant::now();
+    loop {
+        let reading = host
+            .inspect(flow, move |run| {
+                run.live_port_value(meter, &"level".parse().unwrap())
+                    .cloned()
+            })
+            .unwrap();
+        if reading == Some(orange_host::Value::F64(orange_audio::SILENCE_DB)) {
+            break;
+        }
+        assert!(
+            start.elapsed().as_secs_f32() < 3.0,
+            "the repaired meter never received audio"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    editor.stop(&mut host);
 }
 
 #[test]

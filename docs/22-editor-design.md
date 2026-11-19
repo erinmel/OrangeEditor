@@ -31,10 +31,10 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Grid | Faint dots mark the 24-unit snap grid and disappear at distant zoom. Snap is on by default and configurable in Settings. Alt while dragging moves freely. |
 | Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
-| Wires | Execution uses diamond ports and thicker amber wires. Data uses round ports and thinner typed wires. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
+| Wires | Ports are round. Execution uses amber ports and thicker amber wires. Data uses typed colors. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show shortened values inside the card, below their labels. The value inspector shows the full value. A pure node shows its computed result while its inputs are known, even when its output is unwired or an unrelated node is unfinished. |
 | Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent scroll positions. |
-| Run feedback | The reported execution route glows briefly along the whole wire. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
+| Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards; their title bar carries the collapse arrow and the group's colour. |
 
 ## 3. Cards
@@ -129,10 +129,8 @@ other code places anything on a card.
 searchable node (`ORANGE_GALLERY_DIR=<folder> cargo test -p orange-desktop
 package_galleries -- --ignored`); open each with `--canvas-only --screenshot` and
 check every card against these rules after a rendering change.
-* **A chart body comes first.** An audio analysis card (Noise level, the spectrum
-  and frequency splitter) draws its chart in a body of fixed height right under the
-  header; its rows follow. The spectrum card is 400 units wide for its plot and band
-  controls.
+* **Audio charts.** Frequency Splitter reserves a collapsible plot above its port
+  rows. Audio Level Trigger places its meter beside its outputs and settings.
 
 ## 4. Search and commands
 
@@ -173,9 +171,16 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   these preferences.
   The desktop applies the draft's blue-gray surface hierarchy. Command icons use
   a consistent 16-point outlined font. File and edit controls stay at the left,
-  execution and settings at the right. Run and Stop are separate icon controls
-  with state colors on their outlines. Menu and toolbar shortcut labels follow
-  the current binding.
+  execution and settings at the right. One execution control shows a green Run
+  arrow when available, gray when blocked, and a white Stop icon on red while
+  running. Icons are centered within their buttons. Hovering an enabled button
+  highlights its background, including the red Stop control. Menu and toolbar
+  shortcut labels follow the current binding.
+* A graph with healthy nodes may start with isolated erroneous nodes omitted
+  from its execution snapshot. The editor keeps them on the canvas and in Problems.
+  Repairing them makes them eligible for the next validated live update. Connected
+  or document-wide errors block a new run. Rejected live updates keep the last
+  validated snapshot.
 
 ## 5. Variables and connections
 
@@ -196,17 +201,16 @@ symbols until the bundled icon font (§4) lands.
 
 Connect Audio Source to Frequency Splitter to view its live frequency line. Drag
 across the plot and release to add one filtered audio stream output to the card.
-Draw across another range to add another output. Use the selected band's inline
-editor to change its name and frequency limits. The arrow buttons move the band
-up or down in the port list. Rename, range and display-order edits keep the same
-port keys and wires. Removing a band removes its wire connections in one
+Draw across another range to add another output. Each output row has editable
+name and frequency fields and a visible delete button. The rows sort by their
+lower frequency. Editing a band preserves its port keys and wires. Removing a band removes its wire connections in one
 undoable edit. Drawing on an older spectrum card upgrades it in the same edit
 and preserves existing level and execution outputs and their wires.
 
-The plot, bands and ports use the card's zoom scale. The band controls use their
-own bounded area above the ports and are hidden at distant zoom. The pointer
-shows the frequency under it. Turn off Live trace to hide the moving spectrum
-while keeping the chart axes, selected ranges and filtered outputs available.
+The plot, bands and ports use the card's zoom scale. The pointer shows the
+frequency under it. Collapse Frequency chart to stop painting the plot and
+preparing new display samples. The band controls and filtered outputs stay available.
+The spectrum, Audio Level Trigger and connection meters show -120 to 0 dBFS.
 
 The Audio group starts with Audio Source, Frequency Splitter, Audio Level Trigger
 and Audio Out when browsing or searching for audio. Audio Source uses the full
@@ -215,10 +219,17 @@ Transient remains searchable for graphs that react to sudden hits, such as kicks
 
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
 The vertical green, yellow and red meter rises immediately, decays smoothly and
-briefly holds the recent peak. It shows the current reading once. Drag its
-threshold line and choose a trigger direction and hold duration on the card.
+briefly holds the recent peak. The Level output shows the current reading beside
+the meter. Drag the threshold line or type a threshold in the settings column.
+The direction and hold duration sit in the same column.
 Level and Condition met are live data outputs. Triggered continues execution
 after qualification.
+
+Place Noise Gate between a source and Audio Out, Record to File or another
+stream consumer to mute quiet samples. Threshold sets the level to open, Reset
+margin sets how far the level must fall to close, and Hold keeps the stream open
+through short gaps. Attack fades in and Release fades out. Audio Level Trigger
+remains available for flows that need to execute an action at a threshold.
 
 New Audio Out cards play the wired stream while Enabled is on. The inline switch
 is available on an unwired input, and a Boolean wire can control the same input.

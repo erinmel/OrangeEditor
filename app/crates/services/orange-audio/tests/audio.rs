@@ -552,6 +552,66 @@ fn live_file_document(host: &Host, path: &Path) -> String {
 }
 
 #[test]
+fn a_noise_gate_filters_the_pcm_stream_before_a_downstream_meter() {
+    let mut host = host();
+    let path = wav_signal("gate-quiet-loud-quiet.wav", 2_200, |frame| {
+        let amplitude = if (700..1_200).contains(&(frame / 8)) {
+            8_000
+        } else {
+            64
+        };
+        if frame % 16 < 8 {
+            amplitude
+        } else {
+            -amplitude
+        }
+    });
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let add =
+        |draft: &mut orange_host::Draft, kind| host.add_node(draft, kind, [0.0, 0.0]).unwrap();
+    let source = add(&mut draft, orange_audio::AUDIO_SOURCE);
+    let gate = add(&mut draft, orange_audio::NOISE_GATE);
+    let before = add(&mut draft, orange_audio::LIVE_LEVEL);
+    let after = add(&mut draft, orange_audio::LIVE_LEVEL);
+    for (from, to) in [
+        ((source, "stream"), (gate, "stream")),
+        ((source, "stream"), (before, "stream")),
+        ((gate, "gated_stream"), (after, "stream")),
+    ] {
+        host.connect(&mut draft, from, to).unwrap();
+    }
+    let mut input = host.declarations(&draft).connections.remove(0);
+    input.settings = json!({"file": path, "autoplay": true});
+    host.declare_connection(&mut draft, &input).unwrap();
+    let flow = host.open(&to_json(draft.document()).unwrap()).unwrap();
+
+    let levels = || {
+        host.inspect(flow, move |run| {
+            let port = "level".parse().unwrap();
+            let (Some(Value::F64(before)), Some(Value::F64(after))) = (
+                run.live_port_value(before, &port),
+                run.live_port_value(after, &port),
+            ) else {
+                return None;
+            };
+            Some((*before, *after))
+        })
+        .unwrap()
+    };
+    let closed = || {
+        levels().is_some_and(|(before, after)| {
+            (-60.0..-50.0).contains(&before) && after == orange_audio::SILENCE_DB
+        })
+    };
+    until("gate mutes quiet PCM", closed);
+    until("gate passes loud PCM", || {
+        levels().is_some_and(|(before, after)| before > -15.0 && (before - after).abs() < 1.0)
+    });
+    until("gate closes after loud PCM", closed);
+    host.close(flow).unwrap();
+}
+
+#[test]
 fn one_spectrum_routes_two_bands_and_noise_level_observes_the_full_stream() {
     use orange_host::{VarScope, Variable};
     let mut host = host();

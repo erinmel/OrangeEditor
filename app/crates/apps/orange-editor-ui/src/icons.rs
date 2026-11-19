@@ -130,6 +130,54 @@ pub fn text(icon: char) -> egui::RichText {
     egui::RichText::new(icon.to_string()).family(family())
 }
 
+fn button_face(
+    ui: &mut egui::Ui,
+    icon: char,
+    icon_color: Option<egui::Color32>,
+    idle_fill: Option<egui::Color32>,
+) -> egui::Response {
+    let size = egui::vec2(32.0, ui.spacing().interact_size.y);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let highlighted = response.hovered() || response.is_pointer_button_down_on();
+        let fill = match idle_fill {
+            Some(fill) if highlighted => fill.gamma_multiply(1.18),
+            Some(fill) => fill,
+            None if highlighted => visuals.bg_fill,
+            None => egui::Color32::TRANSPARENT,
+        };
+        let stroke = if response.has_focus() {
+            ui.visuals().selection.stroke
+        } else {
+            egui::Stroke::NONE
+        };
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            visuals.corner_radius,
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let color = icon_color.unwrap_or(visuals.fg_stroke.color);
+        let glyph =
+            painter.layout_no_wrap(icon.to_string(), egui::FontId::new(16.0, family()), color);
+        // Material symbols have different bearings. Center the visible glyph.
+        if glyph.num_vertices > 0 {
+            let origin = rect.center() - glyph.mesh_bounds.center().to_vec2();
+            painter.galley(origin, glyph, color);
+        }
+    }
+    if let Some(cursor) = ui.visuals().interact_cursor
+        && response.hovered()
+    {
+        ui.ctx().set_cursor_icon(cursor);
+    }
+    response
+}
+
 pub(crate) fn dock_toggle(
     ui: &mut egui::Ui,
     open: bool,
@@ -142,10 +190,8 @@ pub(crate) fn dock_toggle(
         (_, false) => RIGHT_OPEN,
         (_, true) => RIGHT_CLOSE,
     };
-    let response = ui.add(
-        egui::Button::selectable(open, text(icon).size(16.0))
-            .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
-    );
+    let fill = open.then_some(ui.visuals().selection.bg_fill);
+    let response = button_face(ui, icon, None, fill);
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, open, label));
     response.on_hover_text(label)
 }
@@ -163,41 +209,35 @@ pub(crate) fn button(
     } else {
         format!("{what} ({shortcut})")
     };
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new(text(icon).size(16.0))
-            .frame(false)
-            .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
-    );
+    let response = ui.add_enabled(enabled, |ui: &mut egui::Ui| {
+        button_face(ui, icon, None, None)
+    });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, what));
     response
         .on_hover_text(tip.clone())
         .on_disabled_hover_text(tip)
 }
 
-/// The primary action retains a readable label alongside its icon.
+/// The execution control keeps its state colors while sharing the toolbar layout.
 pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egui::Response {
     let (icon, label) = if running {
         (STOP, t("stop"))
     } else {
         (RUN, t("run"))
     };
-    let color = if running {
-        egui::Color32::from_rgb(225, 117, 125)
+    let color = if !enabled {
+        ui.visuals().weak_text_color()
+    } else if running {
+        egui::Color32::from_gray(246)
+    } else if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(108, 216, 150)
     } else {
-        egui::Color32::from_rgb(118, 192, 150)
+        egui::Color32::from_rgb(20, 116, 62)
     };
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::new(text(icon).size(16.0).color(color))
-            .fill(egui::Color32::TRANSPARENT)
-            .frame(false)
-            .min_size(egui::vec2(32.0, ui.spacing().interact_size.y)),
-    );
+    let fill = running.then_some(egui::Color32::from_rgb(180, 40, 57));
+    let response = ui.add_enabled(enabled, |ui: &mut egui::Ui| {
+        button_face(ui, icon, Some(color), fill)
+    });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
-    response.on_hover_text(if running {
-        t("stop-hint")
-    } else {
-        t("run-hint")
-    })
+    response
 }

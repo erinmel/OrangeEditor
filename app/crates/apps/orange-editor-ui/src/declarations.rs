@@ -325,8 +325,16 @@ pub(crate) fn live_level(
         .request_repaint_after(std::time::Duration::from_millis(50));
 }
 
-/// The loudest and quietest levels a level meter shows, in dBFS.
-const METER_DB: std::ops::RangeInclusive<f64> = -90.0..=0.0;
+/// Display floor in dBFS, matching the audio package's silence reading.
+pub(crate) const AUDIO_SILENCE_DB: f64 = -120.0;
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "fraction of a screen position"
+)]
+pub(crate) fn audio_level_fraction(db: f64) -> f32 {
+    ((db.clamp(AUDIO_SILENCE_DB, 0.0) - AUDIO_SILENCE_DB) / -AUDIO_SILENCE_DB) as f32
+}
 
 /// A bar showing `level` in dBFS, with a line at each of `marks` (a level and what it
 /// is), or why there is no level.
@@ -341,13 +349,7 @@ pub(crate) fn level_meter(ui: &mut egui::Ui, level: Result<f64, String>, marks: 
     let width = ui.available_width().max(60.0);
     let height = ui.spacing().interact_size.y * 0.7;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let span = METER_DB.end() - METER_DB.start();
-    #[expect(clippy::cast_possible_truncation, reason = "a fraction of a width")]
-    let at = |db: f64| {
-        let fraction =
-            ((db.clamp(*METER_DB.start(), *METER_DB.end()) - METER_DB.start()) / span) as f32;
-        rect.left() + fraction * rect.width()
-    };
+    let at = |db| rect.left() + audio_level_fraction(db) * rect.width();
     let visuals = ui.visuals();
     let painter = ui.painter();
     painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);

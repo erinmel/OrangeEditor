@@ -34,6 +34,7 @@ mod file_source;
 mod level;
 mod live_nodes;
 mod mixer;
+mod noise_gate;
 mod reactive;
 mod spectrum;
 mod stream;
@@ -43,8 +44,8 @@ pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE
 pub use level::SILENCE_DB;
 pub use live_nodes::{
     AUDIO_FORMAT, AUDIO_SOURCE, AUDIO_SPECTRUM, BAND_TRIGGER, FORMAT_TYPE, LIVE_BAND_LEVEL,
-    LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL, SOURCE_FINISHED,
-    TRANSIENT,
+    LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_GATE, NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL,
+    SOURCE_FINISHED, TRANSIENT,
 };
 pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
@@ -1674,7 +1675,7 @@ mod tests {
         assert_eq!(package.id(), PACKAGE);
         assert_eq!(package.nodes().len(), 21);
         assert_eq!(package.sources().len(), 11);
-        assert_eq!(package.lives().len(), 5);
+        assert_eq!(package.lives().len(), 6);
         // Documents with the first On level open with On band level.
         let replaced: Vec<_> = package
             .replacements()

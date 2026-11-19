@@ -329,10 +329,25 @@ struct Document {
     problems: Vec<String>,
     /// The top-level node each problem is about, in the same order.
     problem_nodes: Vec<Option<NodeId>>,
+    run_blocked: bool,
+    run_omitted: Vec<NodeId>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
     /// The latest value of each variable a run wrote, by variable ID, as text.
     values: std::collections::BTreeMap<String, String>,
+}
+
+impl Document {
+    /// The draft retains every node. Only the runnable copy omits isolated errors.
+    fn runtime_text(&self, host: &Host) -> Result<String, HostError> {
+        let text = self.draft.text()?;
+        if self.run_omitted.is_empty() {
+            return Ok(text);
+        }
+        let mut runnable = host.draft(&text)?;
+        host.remove_nodes(&mut runnable, &self.run_omitted)?;
+        runnable.text()
+    }
 }
 
 pub use orange_host::MAX_UNDO;
@@ -543,6 +558,8 @@ impl Editor {
             unsaved: false,
             problems: Vec::new(),
             problem_nodes: Vec::new(),
+            run_blocked: false,
+            run_omitted: Vec::new(),
             flow: None,
             values: std::collections::BTreeMap::new(),
         });
@@ -607,16 +624,18 @@ impl Editor {
         self.canvas.set_groups(document.draft.groups());
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
+        self.check(host);
         let mut said = None;
-        if let Some((flow, entries)) = &mut document.flow {
+        if let Some(document) = &mut self.document
+            && let Some(flow) = document.flow.as_ref().map(|(flow, _)| *flow)
+        {
             match document
-                .draft
-                .text()
-                .and_then(|text| host.update(*flow, &text))
+                .runtime_text(host)
+                .and_then(|text| host.update(flow, &text))
             {
                 Ok(_) => {
-                    *entries = host
-                        .info(*flow)
+                    let entries = host
+                        .info(flow)
                         .map(|info| {
                             info.manual_entries
                                 .iter()
@@ -625,6 +644,7 @@ impl Editor {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    document.flow = Some((flow, entries));
                 }
                 // The flow keeps running the graph it had.
                 Err(error) => {
@@ -641,7 +661,6 @@ impl Editor {
         if let Some(line) = said {
             self.say(line);
         }
-        self.check(host);
         self.preview_values(host);
     }
 
@@ -1144,6 +1163,14 @@ impl Editor {
         };
         let mut marks = canvas::Marks::default();
         document.problem_nodes.clear();
+        document.run_blocked = false;
+        document.run_omitted.clear();
+        let wired: std::collections::BTreeSet<_> = document
+            .graph
+            .wires
+            .iter()
+            .flat_map(|wire| [wire.from.0, wire.to.0])
+            .collect();
         document.problems = match host.problems(&mut document.draft) {
             Ok(diagnostics) => diagnostics
                 .iter()
@@ -1155,7 +1182,19 @@ impl Editor {
                         .subject
                         .node
                         .filter(|_| diagnostic.subject.function.is_none());
-                    if let Some(wire) = host.wire_of(&document.draft, diagnostic) {
+                    let wire = host.wire_of(&document.draft, diagnostic);
+                    if error {
+                        if let Some(node) = node.filter(|id| {
+                            wire.is_none()
+                                && !wired.contains(id)
+                                && document.graph.nodes.iter().any(|view| view.id == *id)
+                        }) {
+                            document.run_omitted.push(node);
+                        } else {
+                            document.run_blocked = true;
+                        }
+                    }
+                    if let Some(wire) = wire {
                         canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
                     } else if let Some(node) = node {
                         canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
@@ -1173,8 +1212,18 @@ impl Editor {
                     text
                 })
                 .collect(),
-            Err(error) => Self::problems_of(&error, &document.names),
+            Err(error) => {
+                document.run_blocked = true;
+                Self::problems_of(&error, &document.names)
+            }
         };
+        document.run_omitted.sort_unstable();
+        document.run_omitted.dedup();
+        document.run_blocked |= !document.run_omitted.is_empty()
+            && document.run_omitted.len() == document.graph.nodes.len();
+        if document.run_blocked {
+            document.run_omitted.clear();
+        }
         self.canvas.set_marks(marks);
     }
 
@@ -1185,10 +1234,13 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        if document.flow.is_some() {
+        if document.flow.is_some() || document.run_blocked {
             return;
         }
-        match document.draft.text().and_then(|text| host.open(&text)) {
+        match document
+            .runtime_text(host)
+            .and_then(|text| host.open(&text))
+        {
             Ok(flow) => {
                 self.canvas.begin_run();
                 let _ = host.observe(flow, true);
@@ -1204,7 +1256,6 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 document.flow = Some((flow, entries));
-                document.problems.clear();
                 let line = tf(
                     "flow-opened",
                     &[
@@ -1212,7 +1263,11 @@ impl Editor {
                         ("path", document.path.to_string().into()),
                     ],
                 );
+                let skipped = !document.run_omitted.is_empty();
                 self.say(line);
+                if skipped {
+                    self.say(t("run-isolated-problems").to_owned());
+                }
             }
             Err(error) => document.problems = Self::problems_of(&error, &document.names),
         }
@@ -1306,13 +1361,24 @@ impl Editor {
                             })
                             && let orange_host::Value::List(values) = value
                         {
-                            let bins = (0..values.len().min(96))
-                                .filter_map(|index| match values.get(index) {
-                                    Some(orange_host::Value::F64(db)) => Some(db),
-                                    _ => None,
-                                })
-                                .collect();
-                            let _ = self.canvas.spectra.insert(*node, bins);
+                            if !self.canvas.collapsed_spectra.contains(node) {
+                                let bins = (0..values.len().min(96))
+                                    .filter_map(|index| match values.get(index) {
+                                        Some(orange_host::Value::F64(db)) => Some(db),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let _ = self.canvas.spectra.insert(*node, bins);
+                            }
+                            // Display bins have their own canvas presentation. An
+                            // explicitly wired spectrum still needs its live sample.
+                            if !view.is_some_and(|view| {
+                                view.ports
+                                    .iter()
+                                    .any(|port| !port.input && port.id == id && port.connected)
+                            }) {
+                                continue;
+                            }
                         }
                         if id == "level"
                             && view.is_some_and(|view| {
@@ -1687,24 +1753,30 @@ impl Editor {
                     }
                     ui.separator();
                     let running = self.is_running();
-                    if icons::run_button(ui, running, true)
-                        .on_hover_text(tf(
-                            "stop-with-key",
-                            &[("key", self.canvas.keys.label("stop").into())],
-                        ))
+                    let blocked = self
+                        .document
+                        .as_ref()
+                        .is_some_and(|document| document.run_blocked);
+                    let (hint, key) = if running {
+                        ("stop-with-key", "stop")
+                    } else {
+                        ("run-with-key", "run")
+                    };
+                    if icons::run_button(ui, running || open && !blocked, running)
+                        .on_hover_text(tf(hint, &[("key", self.canvas.keys.label(key).into())]))
+                        .on_disabled_hover_text(t(if blocked {
+                            "run-blocked-hint"
+                        } else {
+                            "run-hint"
+                        }))
                         .clicked()
                     {
-                        self.stop(host);
-                    }
-                    if icons::run_button(ui, open && !running, false)
-                        .on_hover_text(tf(
-                            "run-with-key",
-                            &[("key", self.canvas.keys.label("run").into())],
-                        ))
-                        .clicked()
-                    {
-                        ui.memory_mut(egui::Memory::stop_text_input);
-                        self.run_asked = true;
+                        if running {
+                            self.stop(host);
+                        } else {
+                            ui.memory_mut(egui::Memory::stop_text_input);
+                            self.run_asked = true;
+                        }
                     }
                     if icons::button(ui, open, icons::CHECK, t("check-graph-hint"), "").clicked() {
                         self.check(host);

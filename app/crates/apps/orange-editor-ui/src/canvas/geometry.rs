@@ -19,12 +19,17 @@ pub(super) struct Geometry<'a> {
 }
 
 impl<'a> Geometry<'a> {
+    #[cfg(test)]
     pub fn new(graph: &'a GraphView) -> Self {
+        Self::with_chart(graph, |_| true)
+    }
+
+    pub fn with_chart(graph: &'a GraphView, chart_open: impl Fn(NodeId) -> bool) -> Self {
         let mut sizes = HashMap::with_capacity(graph.nodes.len());
         let mut ports = HashMap::with_capacity(graph.nodes.iter().map(|n| n.ports.len()).sum());
         let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
-            let layout = Card::new(node);
+            let layout = Card::with_chart(node, chart_open(node.id));
             for port in &node.ports {
                 let Some(offset) = layout.offset(port) else {
                     continue;

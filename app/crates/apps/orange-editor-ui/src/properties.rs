@@ -17,6 +17,21 @@ pub const COMMON_TYPES: [&str; 6] = [
 /// Nanoseconds in a millisecond: lengths of time are typed in milliseconds.
 const NANOS_PER_MILLI: f64 = 1_000_000.0;
 
+pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'static str> {
+    if node.definition != "org.orange.audio/noise-gate" {
+        return None;
+    }
+    let key = match setting {
+        "threshold_db" => "audio-setting-threshold-db",
+        "reset_db" => "noise-gate-reset",
+        "attack_ms" => "noise-gate-attack",
+        "hold_ms" => "audio-setting-hold-ms",
+        "release_ms" => "noise-gate-release",
+        _ => return None,
+    };
+    Some(t(key))
+}
+
 /// Sets the value at a JSON `pointer` (such as `/variable`) in `settings`, making
 /// objects on the way; `None` removes it.
 pub fn set_at(settings: &mut Json, pointer: &str, value: Option<Json>) {
@@ -772,6 +787,12 @@ impl Editor {
                 name == "window_ms" && node.definition.starts_with("org.orange.audio/");
             let label = if watch {
                 watch_label(name).to_owned()
+            } else if let Some(label) = noise_gate_label(node, name) {
+                if matches!(field, Field::Time) {
+                    tf("in-milliseconds", &[("name", label.into())])
+                } else {
+                    label.to_owned()
+                }
             } else if measurement_time {
                 t("audio-setting-window-ms").to_owned()
             } else if matches!(field, Field::Time) {

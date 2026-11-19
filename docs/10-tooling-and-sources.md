@@ -6638,3 +6638,48 @@ Canvas regressions checked exposed settings on overlapping cards and the live
 trace toggle. Settings regressions checked single-line shortcuts, direct typed
 replacement, and explicit handling of conflicts. Physical audio hardware and
 desktop visual inspection were outside this run.
+
+### Inline band output rows and live repair (2026-11-18)
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features, workspace Cargo
+configuration and the same lockfile as above. The RustRover desktop build
+reported zero warnings. `cargo test --locked --offline -p orange-editor-ui -p
+orange-host -p orange-audio --quiet` passed 268 tests with 8 ignored. The canvas
+tests checked chart collapse, editing a band limit and permanent delete controls
+at two zoom levels. The live editor test opened a graph with an isolated invalid
+meter and repaired it using a silent audio source on the same flow. The desktop
+rendered the four-band splitter and the compact meter with `--canvas-only
+--screenshot`; both were inspected. Physical audio hardware was outside this run.
+
+### Toolbar hover and icon alignment (2026-11-18)
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and the same
+lockfile as above. `cargo test --locked --offline -p orange-editor-ui --quiet`
+passed 106 tests. The toolbar checks measured the visible glyph centers across
+three window widths and moved the pointer over a regular button, Run, Stop and
+a disabled button. RustRover rebuilt the desktop with zero warnings after the
+old generated executable was moved aside. The rebuilt desktop's full-window
+`--screenshot` was inspected for alignment.
+
+### Audio silence floor, noise gate and network checks (2026-11-18)
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and Cargo.lock
+SHA-256 `BB1FF13707AEF0ABB53C15ACA1EF1ECB593AAAF117AF5EE68C42C2065C8FAC51`.
+`cargo test --locked --offline -p orange-editor-ui -p orange-audio --no-fail-fast --quiet`
+passed 175 tests with eight ignored. The gate test ran a WAV through the new
+node and compared upstream and downstream meters as the gate closed, opened
+and closed again. The editor test checked plot positions down to -120 dBFS.
+`cargo check --locked --offline -p orange-desktop --quiet` and
+`cargo clippy --locked --offline -p orange-audio --lib -- -D warnings` passed.
+Verification used a file source and did not exercise physical devices.
+
+In the RustRover terminal, `cargo test --locked --offline -p orange-net
+--no-fail-fast --quiet` passed 44 tests with four ignored. This included loopback
+AMQP 0-9-1 publish confirms and consumer acknowledgements, MQTT publish and
+reconnect, HTTP requests and WebSocket round trips. The command `cargo test
+--locked --offline -p orange-net --test http --test connection_smoke -- --ignored`
+passed both opt-in tests. It exercised the combined HTTP and WebSocket graph,
+an HTTPS 200 response and rejection of a certificate for the wrong hostname.
+The restricted shell denied a direct TCP loopback connection and its network
+suite reported failures. The successful rerun used the IDE terminal. WSS and
+real-broker interoperability for MQTT and AMQP remain outside this run.

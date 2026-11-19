@@ -1,13 +1,11 @@
 use super::*;
+use crate::declarations::{AUDIO_SILENCE_DB as SILENCE_DB, audio_level_fraction};
 
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 24_000.0;
 const SPECTRUM_PLOT_TOP: f32 = 29.0;
 const SPECTRUM_PLOT_BOTTOM: f32 = 185.0;
-const SPECTRUM_CONTROLS_TOP: f32 = SPECTRUM_PLOT_BOTTOM + 22.0;
-const BAND_CONTROLS_HEIGHT: f32 = 124.0;
-const BAND_THRESHOLD_ROW: f32 = 44.0;
-const NOISE_CHART: f32 = 214.0;
+pub(super) const NOISE_CHART: f32 = 204.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BandEdit {
@@ -57,30 +55,39 @@ pub(super) fn is_noise(node: &NodeView) -> bool {
     node.definition == "org.orange.audio/noise-level"
 }
 
-pub(super) fn chart_height(node: &NodeView) -> f32 {
+pub(super) fn chart_height(node: &NodeView, open: bool) -> f32 {
     if combined(node) {
-        let editing = node.settings["bands"]
-            .as_object()
-            .is_some_and(|bands| !bands.is_empty());
-        SPECTRUM_CONTROLS_TOP
-            + if !editing {
-                28.0
-            } else if stream_bands(node)
-                && !node.settings["bands"].as_object().is_some_and(|bands| {
-                    bands
-                        .values()
-                        .any(|band| band["legacy_level"].as_bool() == Some(true))
-                })
-            {
-                BAND_CONTROLS_HEIGHT
-            } else {
-                BAND_CONTROLS_HEIGHT + BAND_THRESHOLD_ROW
-            }
-    } else if is_noise(node) {
-        NOISE_CHART
+        if open {
+            SPECTRUM_PLOT_BOTTOM + 22.0
+        } else {
+            SPECTRUM_PLOT_TOP
+        }
     } else {
         0.0
     }
+}
+
+pub(super) fn primary_band(node: &NodeView, port: &PortView) -> Option<u16> {
+    if !combined(node) || port.input {
+        return None;
+    }
+    let prefix = if stream_bands(node) {
+        "band_stream#"
+    } else {
+        "band_level#"
+    };
+    port.id
+        .strip_prefix(prefix)?
+        .parse::<u16>()
+        .ok()
+        .filter(|band| node.settings["bands"][band.to_string()].is_object())
+}
+
+pub(super) fn legacy_band(node: &NodeView, port: &PortView) -> bool {
+    primary_band(node, port).is_some_and(|band| {
+        !stream_bands(node)
+            || node.settings["bands"][band.to_string()]["legacy_level"].as_bool() == Some(true)
+    })
 }
 
 fn stream_bands(node: &NodeView) -> bool {
@@ -93,24 +100,23 @@ struct Selection {
     range: Option<[f32; 2]>,
 }
 
+fn db_y(plot: Rect, db: f64) -> f32 {
+    plot.bottom() - plot.height() * audio_level_fraction(db)
+}
+
 fn trace(painter: &egui::Painter, plot: Rect, samples: &[f64], zoom: f32, color: Color32) {
     #[expect(
         clippy::cast_precision_loss,
         reason = "the spectrum has a bounded bucket count"
     )]
     let bucket_width = plot.width() / samples.len() as f32;
-    #[expect(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        reason = "screen positions"
-    )]
+    #[expect(clippy::cast_precision_loss, reason = "bounded spectrum bucket count")]
     let points = samples
         .iter()
         .enumerate()
         .map(|(index, db)| {
             let x = plot.left() + (index as f32 + 0.5) * bucket_width;
-            let level = ((*db as f32 + 90.0) / 90.0).clamp(0.0, 1.0);
-            Pos2::new(x, plot.bottom() - plot.height() * level)
+            Pos2::new(x, db_y(plot, *db))
         })
         .collect();
     painter
@@ -126,9 +132,8 @@ fn select_range(
     plot: Rect,
     id: egui::Id,
     controls: bool,
-) -> (Selection, Option<f32>, Option<[f32; 2]>) {
+) -> (Selection, Option<[f32; 2]>) {
     let mut selection: Selection = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
-    let mut clicked = None;
     let mut completed = None;
     if controls {
         let drag = ui
@@ -153,11 +158,6 @@ fn select_range(
         }
         if drag.drag_stopped() {
             completed = selection.range;
-            if completed.is_none() {
-                clicked = ui
-                    .input(|input| input.pointer.interact_pos())
-                    .map(|pos| fraction(pos.x));
-            }
             selection = Selection::default();
         }
         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -166,7 +166,7 @@ fn select_range(
         }
         ui.data_mut(|data| data.insert_temp(id, selection));
     }
-    (selection, clicked, completed)
+    (selection, completed)
 }
 
 fn highlight(painter: &egui::Painter, plot: Rect, [low, high]: [f32; 2], color: Color32) {
@@ -190,9 +190,233 @@ fn highlight(painter: &egui::Painter, plot: Rect, [low, high]: [f32; 2], color: 
 
 #[derive(Clone)]
 struct BandDraft {
-    band: u16,
     saved: serde_json::Value,
     pending: serde_json::Value,
+}
+
+pub(super) fn chart_toggle(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    zoom: f32,
+    id: egui::Id,
+    open: bool,
+) -> bool {
+    let at = rect.min + Vec2::new(CARD_PADDING, BODY_TOP + 13.0) * zoom;
+    let button = Rect::from_min_size(
+        at - Vec2::new(0.0, 11.0) * zoom,
+        Vec2::new(164.0, 22.0) * zoom,
+    );
+    let response = ui
+        .interact(button, id, Sense::click())
+        .on_hover_text(t("spectrum-live-trace-help"));
+    let colors = Palette::of(ui);
+    let tint = if response.hovered() {
+        colors.selected
+    } else {
+        colors.text
+    };
+    painter.text(
+        at,
+        Align2::LEFT_CENTER,
+        if open {
+            crate::icons::COLLAPSE
+        } else {
+            crate::icons::EXPAND
+        },
+        FontId::new(15.0 * zoom, crate::icons::family()),
+        tint,
+    );
+    painter.text(
+        at + Vec2::new(19.0 * zoom, 0.0),
+        Align2::LEFT_CENTER,
+        t("spectrum-live-trace"),
+        FontId::proportional(12.0 * zoom),
+        tint,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            ui.is_enabled(),
+            open,
+            t("spectrum-live-trace"),
+        )
+    });
+    response.clicked()
+}
+
+#[expect(clippy::too_many_arguments, reason = "one output row's drawing state")]
+pub(super) fn band_row(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    node: &NodeView,
+    row: &card::Row<'_>,
+    rect: Rect,
+    zoom: f32,
+    controls: bool,
+    band: u16,
+) -> Option<BandEdit> {
+    let port = row.right?;
+    let colors = Palette::of(ui);
+    let at = Pos2::new(
+        rect.right() - (CARD_PADDING + 9.0) * zoom,
+        rect.top() + row.anchor() * zoom,
+    );
+    let id = ui.scope_id().with(("band", node.id, band));
+    let remove = ui
+        .interact(
+            Rect::from_center_size(at, Vec2::splat(18.0 * zoom)),
+            id.with("remove"),
+            if controls {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        )
+        .on_hover_text(t("spectrum-remove-band"));
+    painter.text(
+        at,
+        Align2::CENTER_CENTER,
+        crate::icons::CLOSE,
+        FontId::new(14.0 * zoom, crate::icons::family()),
+        if remove.hovered() && controls {
+            colors.error
+        } else {
+            mix(colors.weak, colors.text, 0.55)
+        },
+    );
+    remove.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            ui.is_enabled() && controls,
+            t("spectrum-remove-band"),
+        )
+    });
+    if remove.clicked() && controls {
+        return Some(BandEdit::Change(band, None));
+    }
+    if !controls {
+        return None;
+    }
+
+    let saved = &node.settings["bands"][band.to_string()];
+    let mut draft = ui
+        .data(|data| data.get_temp::<BandDraft>(id))
+        .filter(|edit| edit.saved == *saved)
+        .unwrap_or_else(|| BandDraft {
+            saved: saved.clone(),
+            pending: saved.clone(),
+        });
+    let mut commit = false;
+    let slot = Rect::from_min_max(
+        Pos2::new(rect.right() - 294.0 * zoom, at.y - 11.0 * zoom),
+        Pos2::new(at.x - 14.0 * zoom, at.y + 11.0 * zoom),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(slot).id_salt(id), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(slot));
+        super::fields::style_controls(ui, zoom);
+        ui.spacing_mut().item_spacing.x = 4.0 * zoom;
+        ui.horizontal(|ui| {
+            let mut name = draft.pending["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let response = ui
+                .add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(88.0 * zoom)
+                        .char_limit(60)
+                        .hint_text(t("name")),
+                )
+                .on_hover_text(t("name"));
+            draft.pending["name"] = name.into();
+            commit |= response.lost_focus();
+            ui.spacing_mut().interact_size.x = 73.0 * zoom;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = colors.background;
+            commit |= number_field(
+                ui,
+                &mut draft.pending,
+                "low_hz",
+                20.0,
+                20.0..=24_000.0,
+                " Hz",
+                t("spectrum-low-hz"),
+            );
+            commit |= number_field(
+                ui,
+                &mut draft.pending,
+                "high_hz",
+                120.0,
+                20.0..=24_000.0,
+                " Hz",
+                t("spectrum-high-hz"),
+            );
+        });
+    });
+    if legacy_band(node, port) {
+        let rules = slot.translate(Vec2::new(0.0, card::LINE * zoom));
+        ui.scope_builder(
+            UiBuilder::new().max_rect(rules).id_salt(id.with("rules")),
+            |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(rules));
+                super::fields::style_controls(ui, zoom);
+                ui.spacing_mut().item_spacing.x = 3.0 * zoom;
+                ui.horizontal(|ui| {
+                    let old = draft.pending["mode"].as_str().unwrap_or("above");
+                    let mut mode = old;
+                    egui::ComboBox::from_id_salt("direction")
+                        .width(62.0 * zoom)
+                        .truncate()
+                        .selected_text(direction(old))
+                        .show_ui(ui, |ui| {
+                            for candidate in ["above", "below", "both"] {
+                                ui.selectable_value(&mut mode, candidate, direction(candidate));
+                            }
+                        });
+                    if old != mode {
+                        draft.pending["mode"] = mode.into();
+                        commit = true;
+                    }
+                    commit |= number_field(
+                        ui,
+                        &mut draft.pending,
+                        "threshold_db",
+                        -35.0,
+                        -120.0..=0.0,
+                        " dBFS",
+                        t("audio-setting-threshold-db"),
+                    );
+                    commit |= number_field(
+                        ui,
+                        &mut draft.pending,
+                        "hold_ms",
+                        150.0,
+                        0.0..=10_000.0,
+                        " ms",
+                        t("audio-setting-hold-ms"),
+                    );
+                    commit |= number_field(
+                        ui,
+                        &mut draft.pending,
+                        "reset_db",
+                        4.0,
+                        0.0..=24.0,
+                        " dB",
+                        t("audio-reset-margin"),
+                    );
+                });
+            },
+        );
+    }
+    if commit
+        && draft.pending["low_hz"].as_f64() < draft.pending["high_hz"].as_f64()
+        && draft.pending != draft.saved
+    {
+        ui.data_mut(|data| data.remove::<BandDraft>(id));
+        return Some(BandEdit::Change(band, Some(draft.pending)));
+    }
+    ui.data_mut(|data| data.insert_temp(id, draft));
+    None
 }
 
 #[expect(
@@ -214,29 +438,6 @@ pub(super) fn draw_combined(
     let plot = plot_rect(rect, zoom);
     let id = ui.scope_id().with(("spectrum", node.id));
     let colors = Palette::of(ui);
-    let trace_id = id.with("trace-visible");
-    let mut trace_visible = ui
-        .data(|data| data.get_temp::<bool>(trace_id))
-        .unwrap_or(true);
-    if zoom >= CONTROLS_ZOOM {
-        let toggle = Rect::from_min_size(
-            rect.min + Vec2::new(CARD_PADDING, BODY_TOP + 2.0) * zoom,
-            Vec2::new(140.0, 22.0) * zoom,
-        );
-        ui.scope_builder(UiBuilder::new().max_rect(toggle).id_salt(trace_id), |ui| {
-            super::fields::style_controls(ui, zoom);
-            if ui
-                .add_enabled(
-                    controls,
-                    egui::Checkbox::new(&mut trace_visible, t("spectrum-live-trace")),
-                )
-                .on_hover_text(t("spectrum-live-trace-help"))
-                .changed()
-            {
-                ui.data_mut(|data| data.insert_temp(trace_id, trace_visible));
-            }
-        });
-    }
     let bands = node.settings["bands"].as_object();
     let ids: Vec<u16> = node
         .ports
@@ -254,11 +455,12 @@ pub(super) fn draw_combined(
         .filter(|band: &u16| bands.is_some_and(|bands| bands.contains_key(&band.to_string())))
         .collect();
     let settings = |band: u16| bands.and_then(|bands| bands.get(&band.to_string()));
-    let mut selected = ui
-        .data(|data| data.get_temp::<u16>(id.with("selected")))
-        .filter(|id| ids.contains(id))
-        .or_else(|| ids.first().copied());
-    let (selection, clicked, completed) = select_range(ui, plot, id.with("range"), controls);
+    let full = ids.len() >= 12;
+    if full {
+        ui.interact(plot, id.with("full"), Sense::hover())
+            .on_hover_text(t("spectrum-band-limit"));
+    }
+    let (selection, completed) = select_range(ui, plot, id.with("range"), controls && !full);
     let fraction = |hz: f32| ((hz / MIN_HZ).ln() / (MAX_HZ / MIN_HZ).ln()).clamp(0.0, 1.0);
     let hertz = |ratio: f32| (MIN_HZ * (MAX_HZ / MIN_HZ).powf(ratio)).round() as u32;
     let valid = |[low, high]: &[u32; 2]| low < high && *high <= MAX_HZ as u32;
@@ -266,20 +468,10 @@ pub(super) fn draw_combined(
         .map(|range| range.map(hertz))
         .filter(|range| ids.len() < 12 && valid(range))
         .map(BandEdit::Add);
-    if let Some(hz) = clicked.map(|ratio| f64::from(hertz(ratio)))
-        && let Some(band) = ids.iter().copied().find(|&band| {
-            settings(band).is_some_and(|s| {
-                matches!((s["low_hz"].as_f64(), s["high_hz"].as_f64()),
-                (Some(low), Some(high)) if (low..=high).contains(&hz))
-            })
-        })
-    {
-        selected = Some(band);
-    }
     painter.rect_filled(plot, 4.0 * zoom, colors.background);
     let font = FontId::proportional(10.5 * zoom);
-    for db in [0, -30, -60, -90] {
-        let y = plot.top() - (f64::from(db) / 90.0) as f32 * plot.height();
+    for db in [0, -30, -60, -90, -120] {
+        let y = db_y(plot, f64::from(db));
         painter.hline(plot.x_range(), y, Stroke::new(1.0, colors.grid));
         painter.text(
             Pos2::new(plot.left() - 4.0 * zoom, y),
@@ -296,8 +488,6 @@ pub(super) fn draw_combined(
         {
             let color = if pointed == Some(band) {
                 colors.exec
-            } else if selected == Some(band) {
-                colors.selected
             } else {
                 colors.weak
             };
@@ -351,9 +541,9 @@ pub(super) fn draw_combined(
         font.clone(),
         colors.weak,
     );
-    if trace_visible && let Some(samples) = samples.filter(|samples| samples.len() > 1) {
+    if let Some(samples) = samples.filter(|samples| samples.len() > 1) {
         trace(painter, plot, samples, zoom, colors.selected);
-    } else if trace_visible {
+    } else {
         painter.text(
             plot.center(),
             Align2::CENTER_CENTER,
@@ -385,182 +575,7 @@ pub(super) fn draw_combined(
             colors.text,
         );
     }
-    let range = selection.range.map(|range| range.map(hertz)).filter(valid);
-    let added = resized.or(added);
-    if zoom < CONTROLS_ZOOM {
-        return added;
-    }
-    let area = Rect::from_min_max(
-        Pos2::new(
-            rect.left() + CARD_PADDING * zoom,
-            rect.top() + (BODY_TOP + SPECTRUM_CONTROLS_TOP) * zoom,
-        ),
-        Pos2::new(
-            plot.right(),
-            rect.top() + (BODY_TOP + chart_height(node)) * zoom,
-        ),
-    );
-    ui.scope_builder(UiBuilder::new().max_rect(area).id_salt(id), |ui| {
-        ui.set_clip_rect(ui.clip_rect().intersect(area));
-        super::fields::style_controls(ui, zoom);
-        if !controls {
-            ui.disable();
-        }
-        ui.horizontal(|ui| {
-            if !ids.is_empty() {
-                egui::ComboBox::from_id_salt("band")
-                    .selected_text(
-                        selected
-                            .and_then(settings)
-                            .and_then(|s| s["name"].as_str())
-                            .unwrap_or_default(),
-                    )
-                    .width(112.0 * zoom)
-                    .wrap_mode(egui::TextWrapMode::Truncate)
-                    .show_ui(ui, |ui| {
-                        for band in ids.iter().copied() {
-                            let name = settings(band)
-                                .and_then(|s| s["name"].as_str())
-                                .unwrap_or_default();
-                            ui.selectable_value(&mut selected, Some(band), name);
-                        }
-                    });
-            }
-            let hint = if let Some([low, high]) = range {
-                format!("{low}-{high} Hz")
-            } else if ids.len() >= 12 {
-                t("spectrum-band-limit").to_owned()
-            } else {
-                t("spectrum-drag-hint").to_owned()
-            };
-            ui.add(egui::Label::new(egui::RichText::new(hint).weak()).truncate());
-        });
-        let band = selected?;
-        let saved = settings(band)?;
-        let has_rules = !stream_bands(node) || saved["legacy_level"].as_bool() == Some(true);
-        ui.data_mut(|data| data.insert_temp(id.with("selected"), band));
-        let mut draft = ui
-            .data(|data| data.get_temp::<BandDraft>(id.with("draft")))
-            .filter(|draft| draft.band == band && draft.saved == *saved)
-            .unwrap_or_else(|| BandDraft {
-                band,
-                saved: saved.clone(),
-                pending: saved.clone(),
-            });
-        let mut name = draft.pending["name"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        let mut mode = draft.pending["mode"].as_str().unwrap_or("above").to_owned();
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut name)
-                    .char_limit(60)
-                    .desired_width(145.0 * zoom)
-                    .hint_text(t("name")),
-            );
-            if has_rules {
-                egui::ComboBox::from_id_salt("direction")
-                    .width(95.0 * zoom)
-                    .truncate()
-                    .selected_text(direction(&mode))
-                    .show_ui(ui, |ui| {
-                        for candidate in ["above", "below", "both"] {
-                            ui.selectable_value(
-                                &mut mode,
-                                candidate.to_owned(),
-                                direction(candidate),
-                            );
-                        }
-                    });
-            }
-        });
-        draft.pending["name"] = name.into();
-        if mode != saved["mode"].as_str().unwrap_or("above") {
-            draft.pending["mode"] = mode.into();
-        } else if saved["mode"].is_null() {
-            let _ = draft
-                .pending
-                .as_object_mut()
-                .map(|fields| fields.remove("mode"));
-        } else {
-            draft.pending["mode"] = saved["mode"].clone();
-        }
-        ui.columns(2, |columns| {
-            number_field(
-                &mut columns[0],
-                &mut draft.pending,
-                "low_hz",
-                20.0,
-                20.0..=24_000.0,
-                " Hz",
-                t("spectrum-low-hz"),
-            );
-            number_field(
-                &mut columns[1],
-                &mut draft.pending,
-                "high_hz",
-                120.0,
-                20.0..=24_000.0,
-                " Hz",
-                t("spectrum-high-hz"),
-            );
-        });
-        if has_rules {
-            ui.columns(3, |columns| {
-                number_field(
-                    &mut columns[0],
-                    &mut draft.pending,
-                    "threshold_db",
-                    -35.0,
-                    -120.0..=0.0,
-                    " dBFS",
-                    t("audio-setting-threshold-db"),
-                );
-                number_field(
-                    &mut columns[1],
-                    &mut draft.pending,
-                    "hold_ms",
-                    150.0,
-                    0.0..=10_000.0,
-                    " ms",
-                    t("audio-setting-hold-ms"),
-                );
-                number_field(
-                    &mut columns[2],
-                    &mut draft.pending,
-                    "reset_db",
-                    4.0,
-                    0.0..=24.0,
-                    " dB",
-                    t("audio-reset-margin"),
-                );
-            });
-        }
-        let valid = draft.pending["low_hz"].as_f64() < draft.pending["high_hz"].as_f64();
-        let edit = ui
-            .horizontal(|ui| {
-                let apply = ui
-                    .add_enabled(
-                        valid && draft.pending != draft.saved,
-                        egui::Button::new(t("spectrum-apply")),
-                    )
-                    .clicked();
-                let remove = ui.button(t("spectrum-remove-band")).clicked();
-                if apply {
-                    Some(BandEdit::Change(band, Some(draft.pending.clone())))
-                } else if remove {
-                    Some(BandEdit::Change(band, None))
-                } else {
-                    None
-                }
-            })
-            .inner;
-        ui.data_mut(|data| data.insert_temp(id.with("draft"), draft));
-        edit
-    })
-    .inner
-    .or(added)
+    resized.or(added)
 }
 
 /// The edges of each band on the chart: dragged sideways, an edge moves and the band
@@ -641,19 +656,15 @@ fn number_field(
     range: std::ops::RangeInclusive<f64>,
     suffix: &str,
     hint: &str,
-) {
+) -> bool {
     let mut value = settings[key].as_f64().unwrap_or(default);
-    let edited = ui
-        .vertical(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new(hint).weak()).truncate())
-                .on_hover_text(hint);
-            ui.add(egui::DragValue::new(&mut value).range(range).suffix(suffix))
-                .changed()
-        })
-        .inner;
-    if edited {
+    let response = ui
+        .add(egui::DragValue::new(&mut value).range(range).suffix(suffix))
+        .on_hover_text(hint);
+    if response.changed() {
         settings[key] = value.into();
     }
+    response.lost_focus() || response.drag_stopped() || (response.changed() && !response.dragged())
 }
 
 pub(super) fn direction(mode: &str) -> &'static str {
@@ -664,7 +675,6 @@ pub(super) fn direction(mode: &str) -> &'static str {
     }
 }
 
-const METER_FLOOR: f64 = -120.0;
 const METER_RELEASE_DB_PER_SECOND: f64 = 55.0;
 const METER_PEAK_HOLD_SECONDS: f64 = 0.55;
 
@@ -679,15 +689,15 @@ struct MeterMotion {
 impl MeterMotion {
     fn new(now: f64) -> Self {
         Self {
-            fill: METER_FLOOR,
-            peak: METER_FLOOR,
+            fill: SILENCE_DB,
+            peak: SILENCE_DB,
             peak_until: now,
             last: now,
         }
     }
 
     fn advance(&mut self, reading: Option<f64>, now: f64) -> bool {
-        let target = reading.unwrap_or(METER_FLOOR).clamp(METER_FLOOR, 0.0);
+        let target = reading.unwrap_or(SILENCE_DB).clamp(SILENCE_DB, 0.0);
         let elapsed = (now - self.last).max(0.0);
         self.fill = target.max(self.fill - elapsed * METER_RELEASE_DB_PER_SECOND);
         if target >= self.peak {
@@ -707,7 +717,7 @@ impl MeterMotion {
 fn meter_gradient(bar: Rect, y: impl Fn(f64) -> f32, brightness: f32) -> egui::Mesh {
     let mut mesh = egui::Mesh::default();
     for (index, (db, red, green, blue)) in (0_u32..).zip([
-        (-120.0, 22, 154, 82),
+        (SILENCE_DB, 22, 154, 82),
         (-24.0, 53, 217, 100),
         (-18.0, 242, 211, 65),
         (-12.0, 255, 190, 50),
@@ -727,10 +737,6 @@ fn meter_gradient(bar: Rect, y: impl Fn(f64) -> f32, brightness: f32) -> egui::M
     mesh
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "meter scale is bounded to screen points"
-)]
 pub(super) fn draw_noise(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
@@ -772,9 +778,8 @@ pub(super) fn draw_noise(
         if (drag.dragged() || drag.clicked() || drag.drag_stopped())
             && let Some(pointer) = drag.interact_pointer_pos()
         {
-            current = ((f64::from((bar.bottom() - pointer.y) / bar.height()) * 120.0) - 120.0)
-                .clamp(-120.0, 0.0)
-                .round();
+            let fraction = f64::from((bar.bottom() - pointer.y) / bar.height()).clamp(0.0, 1.0);
+            current = (SILENCE_DB * (1.0 - fraction)).round();
             ui.data_mut(|data| data.insert_temp(id, current));
         }
         if drag.drag_stopped() || drag.clicked() {
@@ -786,8 +791,7 @@ pub(super) fn draw_noise(
             }
         }
     }
-    let y =
-        |db: f64| bar.bottom() - ((db.clamp(-120.0, 0.0) + 120.0) / 120.0) as f32 * bar.height();
+    let y = |db| db_y(bar, db);
     let channel = |low, high| {
         Rect::from_min_max(
             Pos2::new(bar.left(), y(high)),
@@ -796,10 +800,10 @@ pub(super) fn draw_noise(
     };
     painter.rect_filled(bar, 0.0, colors.background);
     painter.add(egui::Shape::mesh(meter_gradient(bar, y, 0.23)));
-    if motion.fill > METER_FLOOR {
+    if motion.fill > SILENCE_DB {
         let clip = painter
             .clip_rect()
-            .intersect(channel(METER_FLOOR, motion.fill));
+            .intersect(channel(SILENCE_DB, motion.fill));
         painter
             .with_clip_rect(clip)
             .add(egui::Shape::mesh(meter_gradient(bar, y, 1.0)));
@@ -832,23 +836,21 @@ pub(super) fn draw_noise(
         y(current),
         Stroke::new(2.0, colors.exec),
     );
-    let left = bar.right() + 53.0 * zoom;
-    painter.text(
-        Pos2::new(left, bar.top() + 22.0 * zoom),
-        Align2::LEFT_CENTER,
-        reading.map_or_else(
-            || t("noise-await-audio").to_owned(),
-            |db| format!("{db:.1} dBFS"),
-        ),
-        FontId::proportional(13.0 * zoom),
-        colors.text,
-    );
     changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spectrum_and_meter_keep_quiet_levels_above_the_silence_floor() {
+        let plot = Rect::from_min_size(Pos2::ZERO, Vec2::splat(120.0));
+        assert_eq!(db_y(plot, 0.0), 0.0);
+        assert_eq!(db_y(plot, -60.0), 60.0);
+        assert_eq!(db_y(plot, -105.0), 105.0);
+        assert_eq!(db_y(plot, orange_audio::SILENCE_DB), plot.bottom());
+    }
 
     #[test]
     fn meter_rises_immediately_and_decays_with_a_held_peak() {
@@ -861,7 +863,7 @@ mod tests {
         assert!(meter.advance(Some(-80.0), 0.8));
         assert!(meter.fill < meter.peak && meter.peak < -3.0);
         assert!(!meter.advance(None, 3.0));
-        assert_eq!(meter.fill, METER_FLOOR);
-        assert_eq!(meter.peak, METER_FLOOR);
+        assert_eq!(meter.fill, SILENCE_DB);
+        assert_eq!(meter.peak, SILENCE_DB);
     }
 }
