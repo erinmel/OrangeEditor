@@ -899,6 +899,7 @@ Semantics: [11 §5.10](11-graph-language.md).
 | `kind` | `value: json` | `core/string@1` |
 | `is-null` | `value` | `core/bool@1` |
 | `get` | `value`, `key: core/string@1` | `core/option@1<core/json@1>` |
+| `get-path` | `value`, `path: core/string@1` | `core/option@1<core/json@1>` |
 | `at` | `value`, `index: core/u64@1` | `core/option@1<core/json@1>` |
 | `length` | `value` | `core/u64@1` |
 | `as-bool`, `as-string`, `as-i64`, `as-u64`, `as-f64` | `value` | `core/option@1<T>` of that type |

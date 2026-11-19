@@ -143,6 +143,47 @@ fn navigation_keeps_exact_text_and_resolves_duplicate_keys_last() {
 }
 
 #[test]
+fn paths_read_nested_items_and_quoted_fields_without_losing_exact_text() {
+    let doc = j(r#"{"items":[{"levels":{"peak.db":-0.000,"label":null,"say\"hi":false}}]}"#);
+    for (path, expected) in [
+        (r#"items[0].levels["peak.db"]"#, "-0.000"),
+        ("items[0].levels.label", "null"),
+        (r#"items[0].levels["say\"hi"]"#, "false"),
+    ] {
+        assert_eq!(
+            text_of(eval(Op::GetPath, &[doc.clone(), s(path)])),
+            expected
+        );
+    }
+    for path in ["items[1].levels", "items.levels", "items[0].levels.absent"] {
+        assert_eq!(eval(Op::GetPath, &[doc.clone(), s(path)]), Ok(Value::None));
+    }
+    assert_eq!(text_of(eval(Op::GetPath, &[j("[true]"), s("[0]")])), "true");
+}
+
+#[test]
+fn paths_validate_the_whole_selector_even_when_a_segment_is_missing() {
+    for path in [
+        "",
+        "missing..name",
+        "missing[*]",
+        "missing[",
+        "missing[-1]",
+        "missing[\"\\",
+    ] {
+        assert_eq!(
+            eval(Op::GetPath, &[j("{}"), s(path)]),
+            Err(KernelError::Domain),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        eval(Op::GetPath, &[j("{}"), s(&"a.".repeat(2049))]),
+        Err(KernelError::OutOfRange)
+    );
+}
+
+#[test]
 fn string_json_converters_validate_and_keep_text() {
     let (_, snapshot) = catalog();
     let bind = |entry: &str| {

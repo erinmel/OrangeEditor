@@ -462,7 +462,7 @@ Recursive schemas have no executable shape and are refused at binding.
 
 ### 5.10 JSON reads (L04c, 2026-11-08)
 
-[12 §4.7](12-graph-data-structures.md) lists ten ordinary pure `org.orange.json`
+[12 §4.7](12-graph-data-structures.md) lists the ordinary pure `org.orange.json`
 definitions over `core/json@1`. A JSON value is validated text; nodes navigate that
 text, so a value they return keeps its exact source text, including number spelling
 such as `12345678901234567890.000` or `-0`. JSON null, a missing member and an
@@ -475,6 +475,14 @@ index is None, and reading the wrong kind is an error.
   array element. `length` counts array elements or distinct object keys. These fault
   with `core/Domain` on the wrong kind. Duplicate object keys resolve to the last
   member, as `JSON.parse` does.
+- `get-path(value, path)` returns `option<json>`. Use a field name, dot-separated
+  field names, zero-based array indexes in brackets, and JSON-quoted field names
+  in brackets. Examples are `items[0].name`, `headers["Content-Type"]` and `[0].id`.
+  Bare names start with an ASCII letter or underscore and can also contain digits.
+  An absent key, out-of-bounds index or intermediate value of the wrong kind
+  returns None. A present null is returned as JSON null. Invalid syntax faults
+  with `core/Domain` even if an earlier segment was missing. Paths are limited
+  to 4,096 bytes and 128 segments (`core/OutOfRange`).
 - `as-bool`, `as-string` (unescaped), `as-i64`, `as-u64` and `as-f64` return None for
   another kind. Integer reads need integer form (an optional `-` and digits; `1.0`
   and `1e2` are `core/Domain`) and must fit (`core/OutOfRange`). `as-f64` rounds

@@ -93,6 +93,7 @@ purpose-org-orange-json-parse = Reads JSON text into a JSON value; fails on text
 purpose-org-orange-json-kind = Says what a JSON value is: object, array, string, number, boolean or null.
 purpose-org-orange-json-is-null = Tells whether a JSON value is null.
 purpose-org-orange-json-get = Gives the field of a JSON object by name, or nothing when it has none; fails on a value that is not an object.
+purpose-org-orange-json-get-path = Reads nested JSON fields and array items using a path like items[0].name or headers["Content-Type"].
 purpose-org-orange-json-at = Gives the item of a JSON array at an index, or nothing past its end; fails on a value that is not an array.
 purpose-org-orange-json-length = Counts the items of a JSON array or the fields of an object; fails on any other kind.
 purpose-org-orange-json-as-bool = Gives a JSON boolean as true or false, or nothing for any other kind.

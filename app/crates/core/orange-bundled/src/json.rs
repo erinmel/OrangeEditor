@@ -19,6 +19,7 @@ pub enum JsonOperation {
     Kind,
     IsNull,
     Get,
+    GetPath,
     At,
     Length,
     AsBool,
@@ -31,11 +32,12 @@ pub enum JsonOperation {
 const JSON: &str = "core/json@1";
 
 impl JsonOperation {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Parse,
         Self::Kind,
         Self::IsNull,
         Self::Get,
+        Self::GetPath,
         Self::At,
         Self::Length,
         Self::AsBool,
@@ -51,6 +53,7 @@ impl JsonOperation {
             Self::Kind => "org.orange.json/kind",
             Self::IsNull => "org.orange.json/is-null",
             Self::Get => "org.orange.json/get",
+            Self::GetPath => "org.orange.json/get-path",
             Self::At => "org.orange.json/at",
             Self::Length => "org.orange.json/length",
             Self::AsBool => "org.orange.json/as-bool",
@@ -69,6 +72,7 @@ impl JsonOperation {
         match self {
             Self::Parse => &[("text", "core/string@1")],
             Self::Get => &[("value", JSON), ("key", "core/string@1")],
+            Self::GetPath => &[("value", JSON), ("path", "core/string@1")],
             Self::At => &[("value", JSON), ("index", "core/u64@1")],
             _ => &[("value", JSON)],
         }
@@ -79,7 +83,7 @@ impl JsonOperation {
             Self::Parse => JSON,
             Self::Kind => "core/string@1",
             Self::IsNull => "core/bool@1",
-            Self::Get | Self::At => "core/option@1<core/json@1>",
+            Self::Get | Self::GetPath | Self::At => "core/option@1<core/json@1>",
             Self::Length => "core/u64@1",
             Self::AsBool => "core/option@1<core/bool@1>",
             Self::AsString => "core/option@1<core/string@1>",
@@ -234,6 +238,110 @@ impl<'a> Scan<'a> {
         // Spans start and end on ASCII delimiters of valid UTF-8 text.
         std::str::from_utf8(&self.text[start..end]).unwrap_or_default()
     }
+
+    fn member(&mut self, key: &str) -> Result<Option<&'a str>, KernelError> {
+        let mut found = None;
+        if !self.open() {
+            loop {
+                let name = self.key()?;
+                let span = self.value();
+                if name == key {
+                    found = Some(self.slice(span));
+                }
+                if !self.next() {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    fn element(&mut self, index: u64) -> Option<&'a str> {
+        if !self.open() {
+            for position in 0..=index {
+                let span = self.value();
+                if position == index {
+                    return Some(self.slice(span));
+                }
+                if !self.next() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+}
+
+enum Segment<'a> {
+    Key(Cow<'a, str>),
+    Index(u64),
+}
+
+/// A field name or an array/object bracket, followed by the unconsumed path.
+fn path_segment(path: &str, first: bool) -> Result<(Segment<'_>, &str), KernelError> {
+    if let Some(bracket) = path.strip_prefix('[') {
+        let bracket = bracket.trim_start();
+        let (step, rest) = if bracket.starts_with('"') {
+            let mut scan = Scan::new(bracket);
+            scan.string();
+            let (quoted, rest) = bracket
+                .split_at_checked(scan.at)
+                .ok_or(KernelError::Domain)?;
+            let key = serde_json::from_str(quoted).map_err(|_| KernelError::Domain)?;
+            (Segment::Key(Cow::Owned(key)), rest)
+        } else {
+            let end = bracket.bytes().take_while(u8::is_ascii_digit).count();
+            let (digits, rest) = bracket.split_at(end);
+            let index = digits.parse().map_err(|_| KernelError::Domain)?;
+            (Segment::Index(index), rest)
+        };
+        let rest = rest
+            .trim_start()
+            .strip_prefix(']')
+            .ok_or(KernelError::Domain)?;
+        return Ok((step, rest));
+    }
+    let field = if first {
+        path
+    } else {
+        path.strip_prefix('.').ok_or(KernelError::Domain)?
+    };
+    if !matches!(
+        field.as_bytes().first(),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+    ) {
+        return Err(KernelError::Domain);
+    }
+    let end = field
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    let (name, rest) = field.split_at(end);
+    Ok((Segment::Key(Cow::Borrowed(name)), rest))
+}
+
+fn get_path(text: &str, path: &str) -> Result<Value, KernelError> {
+    if path.len() > 4096 {
+        return Err(KernelError::OutOfRange);
+    }
+    let mut path = path.trim();
+    let mut current = Some(text);
+    for index in 0..128 {
+        let (step, rest) = path_segment(path, index == 0)?;
+        if let Some(value) = current {
+            let mut scan = Scan::new(value);
+            current = match (step, scan.peek()) {
+                (Segment::Key(key), Some(b'{')) => scan.member(&key)?,
+                (Segment::Index(index), Some(b'[')) => scan.element(index),
+                _ => None,
+            };
+        }
+        if rest.is_empty() {
+            return current.map_or(Ok(Value::None), json_value);
+        }
+        path = rest;
+    }
+    Err(KernelError::OutOfRange)
 }
 
 fn json_value(text: &str) -> Result<Value, KernelError> {
@@ -283,11 +391,11 @@ impl ResolvedJson {
     /// read as an integer must have integer form (`core/Domain` otherwise) and fit the
     /// type (`core/OutOfRange`). Duplicate object keys resolve to the last member.
     pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
-        use JsonOperation::*;
+        use JsonOperation as Op;
         if inputs.len() != self.operation.inputs().len() {
             return Err(KernelError::InputContract);
         }
-        if self.operation == Parse {
+        if self.operation == Op::Parse {
             let Value::Str(text) = &inputs[0] else {
                 return Err(KernelError::InputContract);
             };
@@ -300,8 +408,8 @@ impl ResolvedJson {
         let mut scan = Scan::new(text.as_str());
         let first = scan.peek().ok_or(KernelError::InputContract)?;
         Ok(match self.operation {
-            Parse => return Err(KernelError::InputContract),
-            Kind => Value::Str(Arc::new(
+            Op::Parse => return Err(KernelError::InputContract),
+            Op::Kind => Value::Str(Arc::new(
                 match first {
                     b'n' => "null",
                     b't' | b'f' => "boolean",
@@ -312,13 +420,13 @@ impl ResolvedJson {
                 }
                 .to_owned(),
             )),
-            IsNull => Value::Bool(first == b'n'),
-            AsBool => match first {
+            Op::IsNull => Value::Bool(first == b'n'),
+            Op::AsBool => match first {
                 b't' => Value::Bool(true),
                 b'f' => Value::Bool(false),
                 _ => Value::None,
             },
-            AsString => match first {
+            Op::AsString => match first {
                 b'"' => {
                     let span = scan.value();
                     Value::Str(Arc::new(
@@ -328,8 +436,10 @@ impl ResolvedJson {
                 }
                 _ => Value::None,
             },
-            AsI64 | AsU64 | AsF64 if !matches!(first, b'-' | b'0'..=b'9') => Value::None,
-            AsI64 | AsU64 => {
+            Op::AsI64 | Op::AsU64 | Op::AsF64 if !matches!(first, b'-' | b'0'..=b'9') => {
+                Value::None
+            }
+            Op::AsI64 | Op::AsU64 => {
                 let span = scan.value();
                 let number = scan.slice(span);
                 // Integer form only: an optional minus and digits, no fraction/exponent.
@@ -338,13 +448,13 @@ impl ResolvedJson {
                     return Err(KernelError::Domain);
                 }
                 let value: i128 = number.parse().map_err(|_| KernelError::OutOfRange)?;
-                if self.operation == AsI64 {
+                if self.operation == Op::AsI64 {
                     Value::I64(i64::try_from(value).map_err(|_| KernelError::OutOfRange)?)
                 } else {
                     Value::U64(u64::try_from(value).map_err(|_| KernelError::OutOfRange)?)
                 }
             }
-            AsF64 => {
+            Op::AsF64 => {
                 let span = scan.value();
                 let value: f64 = scan
                     .slice(span)
@@ -355,54 +465,31 @@ impl ResolvedJson {
                 }
                 Value::F64(value)
             }
-            Get => {
+            Op::Get => {
                 let Value::Str(key) = &inputs[1] else {
                     return Err(KernelError::InputContract);
                 };
                 if first != b'{' {
                     return Err(KernelError::Domain);
                 }
-                let mut found = None;
-                if !scan.open() {
-                    loop {
-                        let name = scan.key()?;
-                        let span = scan.value();
-                        if name == key.as_str() {
-                            found = Some(span);
-                        }
-                        if !scan.next() {
-                            break;
-                        }
-                    }
-                }
-                match found {
-                    Some(span) => json_value(scan.slice(span))?,
-                    None => Value::None,
-                }
+                scan.member(key)?.map_or(Ok(Value::None), json_value)?
             }
-            At => {
+            Op::GetPath => {
+                let Value::Str(path) = &inputs[1] else {
+                    return Err(KernelError::InputContract);
+                };
+                return get_path(text.as_str(), path);
+            }
+            Op::At => {
                 let Value::U64(index) = inputs[1] else {
                     return Err(KernelError::InputContract);
                 };
                 if first != b'[' {
                     return Err(KernelError::Domain);
                 }
-                if scan.open() {
-                    return Ok(Value::None);
-                }
-                let mut position = 0u64;
-                loop {
-                    let span = scan.value();
-                    if position == index {
-                        break json_value(scan.slice(span))?;
-                    }
-                    position += 1;
-                    if !scan.next() {
-                        break Value::None;
-                    }
-                }
+                scan.element(index).map_or(Ok(Value::None), json_value)?
             }
-            Length => match first {
+            Op::Length => match first {
                 b'[' => {
                     let mut count = 0u64;
                     if !scan.open() {

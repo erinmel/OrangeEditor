@@ -103,6 +103,7 @@ purpose-org-orange-json-parse = Lee texto JSON como un valor JSON; falla si el t
 purpose-org-orange-json-kind = Dice qué es un valor JSON: objeto, arreglo, texto, número, booleano o nulo.
 purpose-org-orange-json-is-null = Indica si un valor JSON es nulo.
 purpose-org-orange-json-get = Da el campo de un objeto JSON por su nombre, o nada si no lo tiene; falla si el valor no es un objeto.
+purpose-org-orange-json-get-path = Lee campos anidados y elementos de arreglos JSON con una ruta como items[0].name o headers["Content-Type"].
 purpose-org-orange-json-at = Da el elemento de un arreglo JSON en una posición, o nada después del final; falla si el valor no es un arreglo.
 purpose-org-orange-json-length = Cuenta los elementos de un arreglo JSON o los campos de un objeto; falla con otro tipo.
 purpose-org-orange-json-as-bool = Da un booleano JSON como verdadero o falso, o nada para otro tipo.
