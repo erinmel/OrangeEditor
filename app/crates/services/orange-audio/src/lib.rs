@@ -281,19 +281,24 @@ fn choice(device: Device) -> (String, String) {
 /// The `device` choices of an input: its capture devices, then what each output device
 /// plays where the system offers that.
 fn input_choices(found: Devices) -> Vec<(String, String)> {
-    let mut choices: Vec<_> = found.inputs.into_iter().map(choice).collect();
-    if LOOPBACK_OFFERED {
-        choices.extend(found.outputs.into_iter().map(|device| {
-            (
-                format!("{LOOPBACK_PREFIX}{}", device.setting()),
-                format!(
-                    "{} (what it plays)",
-                    device::apps::device_label(&device.name)
-                ),
-            )
-        }));
-    }
-    choices
+    #[cfg(windows)]
+    let loopbacks = found.outputs.into_iter().map(|device| {
+        (
+            format!("{LOOPBACK_PREFIX}{}", device.setting()),
+            format!(
+                "{} (what it plays)",
+                device::apps::device_label(&device.name)
+            ),
+        )
+    });
+    #[cfg(not(windows))]
+    let loopbacks = std::iter::empty();
+    found
+        .inputs
+        .into_iter()
+        .map(choice)
+        .chain(loopbacks)
+        .collect()
 }
 
 /// An output connection. The device opens when a node first plays on it, so a document
@@ -344,17 +349,17 @@ impl Session for OutputSession {
 #[derive(Debug)]
 struct OutputAdapter;
 impl ConnectionAdapter for OutputAdapter {
-    fn about(&self) -> orange_sdk::AdapterAbout {
-        orange_sdk::AdapterAbout {
-            label: "Audio output".into(),
-            purpose: "Plays sounds on a speaker or other output device.".into(),
-        }
-    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         Ok(Arc::new(OutputSession {
             device: device_setting(settings)?,
             output: Mutex::new(None),
         }))
+    }
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "Audio output".into(),
+            purpose: "Plays sounds on a speaker or other output device.".into(),
+        }
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
         device_choices(
@@ -807,6 +812,9 @@ impl Drop for InputProbe {
 #[derive(Debug)]
 struct InputAdapter;
 impl ConnectionAdapter for InputAdapter {
+    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+        Ok(Arc::new(InputSession(spawn_input(settings)?)))
+    }
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
             label: "Audio source".into(),
@@ -848,9 +856,6 @@ impl ConnectionAdapter for InputAdapter {
                 "A file is also played on the default output; otherwise it is only listened to.",
             ),
         ]
-    }
-    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
-        Ok(Arc::new(InputSession(spawn_input(settings)?)))
     }
     fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
         device_choices(input_choices, true)
@@ -1338,7 +1343,7 @@ fn unit_gain() -> Json {
 }
 
 fn play_definition() -> String {
-    Definition::node(crate::PACKAGE, "play", "Play sound")
+    Definition::node(PACKAGE, "play", "Play sound")
         .keywords("sound, music, speaker, song")
         .description("Plays a sound file on an output device and continues when it has ended.")
         .category("audio", "Audio")
@@ -1353,7 +1358,7 @@ fn play_definition() -> String {
 const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg"];
 
 fn play_from_definition() -> String {
-    Definition::node(crate::PACKAGE, "play-from", "Play sound from folder")
+    Definition::node(PACKAGE, "play-from", "Play sound from folder")
         .description(
             "Plays one sound file of a folder, in name order, that `pick` chooses: a counter makes a playlist, and Random u64 (org.orange.math/random-u64) wired into `pick` plays one at random. Without `pick` it plays the first.",
         )
@@ -1368,7 +1373,7 @@ fn play_from_definition() -> String {
 }
 
 fn loop_definition() -> String {
-    Definition::node(crate::PACKAGE, "loop", "Loop sound")
+    Definition::node(PACKAGE, "loop", "Loop sound")
         .description("Plays a sound file again and again on an output device until it is stopped.")
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
@@ -1379,7 +1384,7 @@ fn loop_definition() -> String {
 }
 
 fn pause_definition() -> String {
-    Definition::node(crate::PACKAGE, "pause", "Pause sounds")
+    Definition::node(PACKAGE, "pause", "Pause sounds")
         .description("Holds every sound playing on an output device where it is.")
         .category("audio", "Audio")
         .hidden()
@@ -1388,7 +1393,7 @@ fn pause_definition() -> String {
 }
 
 fn resume_definition() -> String {
-    Definition::node(crate::PACKAGE, "resume", "Resume sounds")
+    Definition::node(PACKAGE, "resume", "Resume sounds")
         .description("Lets the paused sounds of an output device continue.")
         .category("audio", "Audio")
         .hidden()
@@ -1397,7 +1402,7 @@ fn resume_definition() -> String {
 }
 
 fn seek_definition() -> String {
-    Definition::node(crate::PACKAGE, "seek", "Jump to time")
+    Definition::node(PACKAGE, "seek", "Jump to time")
         .description("Moves every sound playing on an output to the same time, in seconds from each sound's start: 0 starts them all again. A sound shorter than that ends, a looping one wraps around, and live audio is not moved.")
         .category("audio", "Audio")
         .hidden()
@@ -1407,7 +1412,7 @@ fn seek_definition() -> String {
 }
 
 fn set_volume_definition() -> String {
-    Definition::node(crate::PACKAGE, "set-volume", "Set volume")
+    Definition::node(PACKAGE, "set-volume", "Set volume")
         .description("Sets the volume of everything an output device plays.")
         .category("audio", "Audio")
         .hidden()
@@ -1417,7 +1422,7 @@ fn set_volume_definition() -> String {
 }
 
 fn stop_definition() -> String {
-    Definition::node(crate::PACKAGE, "stop", "Stop sounds")
+    Definition::node(PACKAGE, "stop", "Stop sounds")
         .description("Stops every sound playing on an output device.")
         .category("audio", "Audio")
         .hidden()
@@ -1426,7 +1431,7 @@ fn stop_definition() -> String {
 }
 
 fn input_level_definition() -> String {
-    Definition::node(crate::PACKAGE, "input-level", "Input level")
+    Definition::node(PACKAGE, "input-level", "Input level")
         .description("Reads how loud an input connection (a microphone, line input, virtual cable or what an output plays) is now, in dBFS. Level does the same for an audio stream.")
         .category("audio", "Audio")
         .hidden()
@@ -1456,7 +1461,7 @@ fn transient_settings(definition: Definition) -> Definition {
 }
 
 fn on_band_level_definition() -> String {
-    let definition = Definition::entry(crate::PACKAGE, "on-band-level", "On band level")
+    let definition = Definition::entry(PACKAGE, "on-band-level", "On band level")
         .description("Fires when a band of an input (a microphone, line input, virtual cable or what an output plays) gets as loud as the threshold, and again only after it has fallen to the release level. Leave the band at 0 to hear everything.")
         .category("audio", "Audio")
         .hidden()
@@ -1485,7 +1490,7 @@ fn threshold_settings(definition: Definition, hold_ms: f64) -> Definition {
 }
 
 fn on_transient_definition() -> String {
-    let definition = Definition::entry(crate::PACKAGE, "on-transient", "On transient")
+    let definition = Definition::entry(PACKAGE, "on-transient", "On transient")
         .keywords("kick, beat, drum, hit, onset, rhythm")
         .description("Fires on each hit in a band of an input, such as a kick drum: a sudden rise above the band's recent level. The band starts at 45 to 120 Hz for kicks; play the track and adjust it until the hits line up with what you hear.")
         .category("audio", "Audio")
@@ -1498,7 +1503,7 @@ fn on_transient_definition() -> String {
 fn band_level_definition() -> String {
     let hz = |hz: f64| serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", hz.to_bits())});
     stream_input(
-        Definition::node(crate::PACKAGE, "band-level", "Band level")
+        Definition::node(PACKAGE, "band-level", "Band level")
             .keywords("bass, frequency, loudness, meter")
             .description("Reads how loud a band of an audio stream is now, in dBFS. Leave a side at 0 to keep it open.")
             .category("audio", "Audio")
@@ -1511,7 +1516,7 @@ fn band_level_definition() -> String {
 }
 
 fn source_control_definition(name: &str, label: &str, description: &str) -> Definition {
-    Definition::node(crate::PACKAGE, name, label)
+    Definition::node(PACKAGE, name, label)
         .description(description)
         .category("audio", "Audio")
         .hidden()
@@ -1531,7 +1536,7 @@ fn source_definitions() -> [(String, SourceControl); 5] {
 }
 
 fn on_finished_definition() -> String {
-    Definition::entry(crate::PACKAGE, "on-finished", "On finished")
+    Definition::entry(PACKAGE, "on-finished", "On finished")
         .keywords("end, done, track over")
         .description("Fires when a sound file source plays to its end. A looping source never finishes; a stopped one does not either.")
         .category("audio", "Audio")
@@ -1545,7 +1550,7 @@ fn stream_input(definition: Definition) -> Definition {
 }
 
 fn audio_in_definition() -> String {
-    Definition::node(crate::PACKAGE, "audio-in", "Audio in")
+    Definition::node(PACKAGE, "audio-in", "Audio in")
         .description("Listens to an input: a microphone, a line input, a virtual cable, or what an output device plays where the system offers that. Gives its sound as an audio stream, with the stream's rate and channels, for Audio out, Level and Record to file.")
         .category("audio", "Audio")
         .hidden()
@@ -1558,7 +1563,7 @@ fn audio_in_definition() -> String {
 
 fn audio_out_definition() -> String {
     stream_input(
-        Definition::node(crate::PACKAGE, "audio-out", "Audio out")
+        Definition::node(PACKAGE, "audio-out", "Audio out")
             .description("Plays an audio stream on an output device until Stop sounds stops it or its input closes. Streams played on the same output are mixed together, so this is also how inputs are mixed.")
             .category("audio", "Audio")
             .hidden()
@@ -1570,7 +1575,7 @@ fn audio_out_definition() -> String {
 
 fn level_definition() -> String {
     stream_input(
-        Definition::node(crate::PACKAGE, "level", "Level")
+        Definition::node(PACKAGE, "level", "Level")
             .description(
                 "Reads how loud an audio stream is now, in dBFS: 0 is full scale, -120 silence.",
             )
@@ -1583,7 +1588,7 @@ fn level_definition() -> String {
 
 fn record_definition() -> String {
     stream_input(
-        Definition::node(crate::PACKAGE, "record", "Record to file")
+        Definition::node(PACKAGE, "record", "Record to file")
             .description("Records an audio stream to a WAV file for a number of seconds, then continues with the seconds recorded. Stopping the run ends the file early.")
             .category("audio", "Audio"),
     )
@@ -1635,7 +1640,7 @@ pub fn package() -> ServicePackage {
     match package {
         Ok(package) => package,
         // The definitions are constants of this crate, checked by its tests.
-        Err(error) => unreachable!("built-in definition is valid: {error}"),
+        Err(error) => unreachable!("built-in definition is valid: {}", error),
     }
 }
 
@@ -1870,7 +1875,7 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         while missing.read().is_ok() && started.elapsed() < Duration::from_secs(10) {
             thread::sleep(POLL);
         }
@@ -2018,17 +2023,16 @@ mod tests {
             choices[0],
             ("wasapi:{in}".to_owned(), "Microphone".to_owned())
         );
-        if LOOPBACK_OFFERED {
-            assert_eq!(
-                choices[1],
-                (
-                    "loopback:wasapi:{out}".to_owned(),
-                    "Speakers (what it plays)".to_owned()
-                )
-            );
-        } else {
-            assert_eq!(choices.len(), 1);
-        }
+        #[cfg(windows)]
+        assert_eq!(
+            choices[1],
+            (
+                "loopback:wasapi:{out}".to_owned(),
+                "Speakers (what it plays)".to_owned()
+            )
+        );
+        #[cfg(not(windows))]
+        assert_eq!(choices.len(), 1);
     }
 
     #[test]

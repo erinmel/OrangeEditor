@@ -275,6 +275,34 @@ fn unix_millis(time: SystemTime) -> Option<i64> {
 #[derive(Debug)]
 struct FolderAdapter;
 impl ConnectionAdapter for FolderAdapter {
+    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+        let path = settings
+            .get("path")
+            .and_then(Json::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or("`path` is required")?;
+        let root = Path::new(path)
+            .canonicalize()
+            .ok()
+            .filter(|root| root.is_dir())
+            .ok_or("`path` is not an existing directory")?;
+        let read_only = match settings.get("read_only") {
+            None => false,
+            Some(Json::Bool(read_only)) => *read_only,
+            Some(_) => return Err("`read_only` must be true or false".into()),
+        };
+        let poll = match settings.get("poll_ms") {
+            None => DEFAULT_POLL_MS,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| (50..=60_000).contains(ms))
+                .ok_or("`poll_ms` must be an integer from 50 to 60000")?,
+        };
+        Ok(Arc::new(Folder {
+            files: orange_sandbox::Folder::new(root, read_only),
+            poll: Duration::from_millis(poll),
+        }))
+    }
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
             label: "Folder".into(),
@@ -311,34 +339,6 @@ impl ConnectionAdapter for FolderAdapter {
             default: Some(DEFAULT_POLL_MS as f64),
             whole: true,
         }]
-    }
-    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
-        let path = settings
-            .get("path")
-            .and_then(Json::as_str)
-            .filter(|path| !path.is_empty())
-            .ok_or("`path` is required")?;
-        let root = Path::new(path)
-            .canonicalize()
-            .ok()
-            .filter(|root| root.is_dir())
-            .ok_or("`path` is not an existing directory")?;
-        let read_only = match settings.get("read_only") {
-            None => false,
-            Some(Json::Bool(read_only)) => *read_only,
-            Some(_) => return Err("`read_only` must be true or false".into()),
-        };
-        let poll = match settings.get("poll_ms") {
-            None => DEFAULT_POLL_MS,
-            Some(value) => value
-                .as_u64()
-                .filter(|ms| (50..=60_000).contains(ms))
-                .ok_or("`poll_ms` must be an integer from 50 to 60000")?,
-        };
-        Ok(Arc::new(Folder {
-            files: orange_sandbox::Folder::new(root, read_only),
-            poll: Duration::from_millis(poll),
-        }))
     }
 }
 
@@ -480,7 +480,7 @@ fn described(definition: Definition, description: &str) -> Definition {
     definition
         .description(description)
         .category("files", "Files")
-        .uses(crate::FOLDER_ADAPTER)
+        .uses(FOLDER_ADAPTER)
 }
 
 const STRING: &str = "core/string@1";
@@ -718,7 +718,7 @@ pub fn package() -> ServicePackage {
     {
         Ok(package) => package,
         // The definitions are built from constants of this crate, checked by its tests.
-        Err(error) => unreachable!("built-in definition is valid: {error}"),
+        Err(error) => unreachable!("built-in definition is valid: {}", error),
     }
 }
 
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn files_are_written_replaced_appended_listed_and_deleted_inside_the_folder() {
         let root = scratch("ops");
-        let session = open(&root, serde_json::json!({})).unwrap();
+        let session = open(&root, json!({})).unwrap();
         let folder = folder(Some(session.as_ref())).unwrap();
 
         folder.write("notes/a.txt", b"one").unwrap();
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn a_file_is_walked_in_pieces_and_grown_piece_by_piece() {
         let root = scratch("pieces");
-        let session = open(&root, serde_json::json!({})).unwrap();
+        let session = open(&root, json!({})).unwrap();
         let folder = folder(Some(session.as_ref())).unwrap();
         folder.write("big.bin", b"0123456789").unwrap();
         assert_eq!(folder.size("big.bin"), Ok(10));
@@ -840,17 +840,17 @@ mod tests {
     fn a_read_only_folder_refuses_changes_and_settings_are_checked() {
         let root = scratch("ro");
         std::fs::write(root.join("kept.txt"), "kept").unwrap();
-        let session = open(&root, serde_json::json!({"read_only": true})).unwrap();
+        let session = open(&root, json!({"read_only": true})).unwrap();
         let folder = folder(Some(session.as_ref())).unwrap();
         assert_eq!(folder.read("kept.txt").unwrap(), b"kept");
         assert_eq!(folder.write("kept.txt", b"x"), Err(READ_ONLY));
         assert_eq!(folder.append("kept.txt", b"x"), Err(READ_ONLY));
         assert_eq!(folder.delete("kept.txt"), Err(READ_ONLY));
 
-        assert!(open(&root.join("missing"), serde_json::json!({})).is_err());
-        assert!(open(&root.join("kept.txt"), serde_json::json!({})).is_err());
-        assert!(open(&root, serde_json::json!({"read_only": "yes"})).is_err());
-        assert!(open(&root, serde_json::json!({"poll_ms": 1})).is_err());
+        assert!(open(&root.join("missing"), json!({})).is_err());
+        assert!(open(&root.join("kept.txt"), json!({})).is_err());
+        assert!(open(&root, json!({"read_only": "yes"})).is_err());
+        assert!(open(&root, json!({"poll_ms": 1})).is_err());
         assert!(FolderAdapter.open(&Map::new()).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
