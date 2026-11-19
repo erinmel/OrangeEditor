@@ -628,7 +628,7 @@ pub fn string_list_equality(config: Config) -> std::time::Duration {
         .map(|_| {
             let start = Instant::now();
             for _ in 0..16 {
-                assert!(std::hint::black_box(&a) == std::hint::black_box(&b));
+                assert_eq!(std::hint::black_box(&a), std::hint::black_box(&b));
             }
             start.elapsed()
         })

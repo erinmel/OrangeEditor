@@ -90,11 +90,11 @@ impl ResourceLimiter for InstanceLimits {
     fn instances(&self) -> usize {
         self.policy.instances
     }
-    fn memories(&self) -> usize {
-        self.policy.memories
-    }
     fn tables(&self) -> usize {
         self.policy.tables
+    }
+    fn memories(&self) -> usize {
+        self.policy.memories
     }
 }
 

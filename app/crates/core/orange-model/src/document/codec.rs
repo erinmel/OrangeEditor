@@ -400,11 +400,13 @@ impl<'de> Visitor<'de> for KeyVisitor {
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("an object key")
     }
-    fn visit_borrowed_str<E>(self, key: &'de str) -> Result<Key<'de>, E> {
-        Ok(Key(Cow::Borrowed(key)))
-    }
+
     fn visit_str<E>(self, key: &str) -> Result<Key<'de>, E> {
         Ok(Key(Cow::Owned(key.to_owned())))
+    }
+
+    fn visit_borrowed_str<E>(self, key: &'de str) -> Result<Key<'de>, E> {
+        Ok(Key(Cow::Borrowed(key)))
     }
 }
 

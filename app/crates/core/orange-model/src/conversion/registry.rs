@@ -470,7 +470,7 @@ fn core_definition(
     from: &str,
     to: &str,
     class: ConversionClass,
-    policies: Vec<super::NamedPolicy>,
+    policies: Vec<NamedPolicy>,
     errors: Vec<ConverterErrorCode>,
 ) -> Result<ConverterDefinition, ConverterRegistrationError> {
     Ok(ConverterDefinition {

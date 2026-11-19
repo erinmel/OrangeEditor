@@ -310,7 +310,7 @@ impl WorkspaceBus {
             .check_schema(document, &registry)
             .map_err(|_| WorkspaceBusError::SchemaMismatch)?;
         let mut events = BTreeMap::new();
-        let mut bytes = std::mem::size_of::<Schema>();
+        let mut bytes = size_of::<Schema>();
         if bytes > limits.max_schema_bytes {
             return Err(WorkspaceBusError::Limit);
         }
@@ -326,7 +326,7 @@ impl WorkspaceBus {
                 .ok_or(WorkspaceBusError::Contract)?;
             bytes = bytes
                 .checked_add(
-                    super::schema::shape_bytes(&shape, limits.max_schema_bytes).map_err(|e| {
+                    schema::shape_bytes(&shape, limits.max_schema_bytes).map_err(|e| {
                         if e == WorkspaceError::Limit {
                             WorkspaceBusError::Limit
                         } else {
@@ -334,7 +334,7 @@ impl WorkspaceBus {
                         }
                     })?,
                 )
-                .and_then(|n| n.checked_add(std::mem::size_of::<(EventDeclId, Event)>()))
+                .and_then(|n| n.checked_add(size_of::<(EventDeclId, Event)>()))
                 .filter(|n| *n <= limits.max_schema_bytes)
                 .ok_or(WorkspaceBusError::Limit)?;
             events.insert(declaration.id, Event { shape });
@@ -436,10 +436,8 @@ impl WorkspaceBus {
         }
         let bytes = events
             .len()
-            .checked_mul(std::mem::size_of::<(EventDeclId, (usize, bool))>())
-            .and_then(|n| {
-                n.checked_add(std::mem::size_of::<Endpoint>() + std::mem::size_of::<Record>())
-            })
+            .checked_mul(size_of::<(EventDeclId, (usize, bool))>())
+            .and_then(|n| n.checked_add(size_of::<Endpoint>() + size_of::<Record>()))
             .ok_or(WorkspaceBusError::Limit)?;
         let hold = reserve(&self.schema.meter.bytes, bytes)?;
         let state = Arc::new(Endpoint {
@@ -585,7 +583,7 @@ impl WorkspaceBus {
                     return Err(WorkspaceBusError::Limit);
                 }
                 let held = charge
-                    .checked_add(std::mem::size_of::<WorkspaceDelivery>())
+                    .checked_add(size_of::<WorkspaceDelivery>())
                     .ok_or(WorkspaceBusError::Limit)?;
                 let item = reserve(&self.schema.meter.items, 1)?;
                 let hold = reserve(&self.schema.meter.bytes, held)?;

@@ -191,7 +191,7 @@ pub(crate) fn convert(
         )]
         let (first, mix) = {
             let position = frame as f64 * step;
-            (position.floor() as usize, (position.fract()) as f32)
+            (position.floor() as usize, position.fract() as f32)
         };
         let next = (first + 1).min(frames.saturating_sub(1));
         for channel in 0..target {

@@ -51,8 +51,8 @@ struct ProducedOutput {
 
 struct Lowering<'a, R: EntropyKernelResolver> {
     scope: usize,
-    zones: crate::zones::Zones,
-    calls: Arc<crate::calls::Calls<'a>>,
+    zones: zones::Zones,
+    calls: Arc<calls::Calls<'a>>,
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
     resolver: &'a R,
@@ -66,7 +66,7 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     work: Vec<(usize, Task)>,
     bytes: usize,
     seeded: BTreeMap<usize, SlotIx>,
-    host_nodes: &'a std::collections::BTreeSet<(usize, NodeId)>,
+    host_nodes: &'a BTreeSet<(usize, NodeId)>,
 }
 impl<R: EntropyKernelResolver> Lowering<'_, R> {
     fn push(
@@ -319,10 +319,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 ));
             }
             for port in &ports {
-                for address in crate::control::output_keys(
-                    &calls.body(self.document, scope).nodes[&node],
-                    port,
-                ) {
+                for address in
+                    control::output_keys(&calls.body(self.document, scope).nodes[&node], port)
+                {
                     let index = self.next_index()?;
                     let slot = self.push_at(node, port, address.clone(), None)?;
                     self.outputs.insert(
@@ -348,7 +347,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             self.completed.insert((scope, node));
             return Ok(());
         }
-        if crate::zones::marker(analysis, node) == Some(false) {
+        if zones::marker(analysis, node) == Some(false) {
             // A zone begin: iteration parameters published by its running zone.
             let zone = self
                 .zones
@@ -444,7 +443,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         // A live value's inputs are its provider's arguments, evaluated at the root by
         // the control plan; the data plan only reads the published value.
         let live = scope == 0
-            && crate::compile::is_live(
+            && compile::is_live(
                 &self.plan.snapshot,
                 &calls.body(document, scope).nodes[&node_id],
             );
@@ -525,11 +524,11 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 Projection::Try => DataOperation::Try {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                 },
-                Projection::Value => DataOperation::Pure(crate::projection::binding(
+                Projection::Value => DataOperation::Pure(projection::binding(
                     &inputs_ports,
                     &output_ports,
                     false,
-                    crate::projection::ProjectionMode::Value,
+                    projection::ProjectionMode::Value,
                 )),
             }
         } else if live || is_host_read(&self.plan.snapshot, node) {
@@ -677,12 +676,12 @@ pub fn compile_data(
     options: CompileOptions<'_>,
 ) -> Result<DataPlan, CompileError> {
     let admission = admit(document, &snapshot, analysis, options, true)?;
-    let calls = Arc::new(crate::calls::Calls::prepare(
+    let calls = Arc::new(calls::Calls::prepare(
         document,
         &snapshot,
         analysis,
         options,
-        crate::calls::CallProfile::HostData,
+        calls::CallProfile::HostData,
     )?);
     let roots: Vec<_> = document
         .exports()
@@ -717,10 +716,10 @@ pub(crate) fn lower_roots(
     options: CompileOptions<'_>,
     admission: Admission<'_>,
     roots: &[DemandRoot],
-    calls: Arc<crate::calls::Calls<'_>>,
+    calls: Arc<calls::Calls<'_>>,
 ) -> Result<DataPlan, CompileError> {
     let mut bytes = calls.signature_bytes;
-    let zones = crate::zones::Zones::prepare(document, analysis, &calls, options, &mut bytes)?;
+    let zones = zones::Zones::prepare(document, analysis, &calls, options, &mut bytes)?;
     let folder = ConstantFolder::new(
         document,
         analysis,

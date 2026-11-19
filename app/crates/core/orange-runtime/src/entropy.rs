@@ -187,7 +187,7 @@ struct NodeState {
     memo: Option<(u64, u64, Option<u64>)>,
 }
 /// Bytes of one dense per-node entropy counter.
-pub(crate) const DENSE_NODE_BYTES: usize = std::mem::size_of::<NodeState>();
+pub(crate) const DENSE_NODE_BYTES: usize = size_of::<NodeState>();
 const FRESH: NodeState = NodeState {
     next: Some(0),
     memo: None,

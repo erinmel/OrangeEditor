@@ -111,7 +111,7 @@ fn replacing_a_wire_removes_the_old_edge_first_and_keeps_literals() {
             typed_source(2, "i64"),
             typed_sink(3, "i64", literal),
         ],
-        vec![common::generic::data_edge(1, (2, "value"), (3, "value"))],
+        vec![data_edge(1, (2, "value"), (3, "value"))],
     );
     let planned = ready(plan(&doc, request((1, "value"), (3, "value"))));
     assert_eq!(planned.replaced, [eid(1)]);

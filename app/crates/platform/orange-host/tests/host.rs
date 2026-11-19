@@ -1140,7 +1140,7 @@ fn a_release_from_a_feed_succeeds_the_installed_version() {
 /// The installed packages of a host, without its base and native ones.
 fn installed(host: &Host) -> impl Iterator<Item = orange_host::PackageInfo<'_>> {
     host.packages()
-        .filter(|package| package.kind == orange_host::PackageKind::Installed)
+        .filter(|package| package.kind == PackageKind::Installed)
 }
 
 /// `manual_graph` with `total` persistent and starting at 0, and an entry that copies

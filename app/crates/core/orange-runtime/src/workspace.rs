@@ -292,8 +292,8 @@ fn charge(shape: &ValueShape, value: &Value, limit: usize) -> Result<usize, Work
 }
 fn root_bytes(count: usize) -> Result<usize, WorkspaceError> {
     count
-        .checked_mul(std::mem::size_of::<(VariableId, Arc<Cell>)>())
-        .and_then(|n| n.checked_add(std::mem::size_of::<SnapshotData>()))
+        .checked_mul(size_of::<(VariableId, Arc<Cell>)>())
+        .and_then(|n| n.checked_add(size_of::<SnapshotData>()))
         .ok_or(WorkspaceError::Limit)
 }
 impl Workspace {
@@ -452,7 +452,7 @@ impl Workspace {
         let new_hold = hold(
             &schema.budget,
             bytes
-                .checked_add(std::mem::size_of::<Cell>())
+                .checked_add(size_of::<Cell>())
                 .ok_or(WorkspaceError::Limit)?,
         )?;
         let root_hold = hold(&schema.budget, root_bytes(self.current.0.values.len())?)?;

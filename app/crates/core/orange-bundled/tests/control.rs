@@ -12,6 +12,7 @@ mod review_fixes;
 use crate::data_graph as support;
 use orange_compiler::{CompileError, CompileOptions, ControlOperation, compile_control};
 use orange_model::{analyze, from_json};
+use proptest::arbitrary::any;
 use serde_json::{Value as Json, json};
 use support::*;
 
@@ -1182,9 +1183,13 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases:96, rng_seed:proptest::test_runner::RngSeed::Fixed(20261024), ..proptest::test_runner::Config::default() })]
     #[test]
     fn nested_seeded_control_matches_independent_source_interpreter(
-        outer in 0i64..5, inner in 0i64..5, selected in proptest::bool::ANY,
-        continue_body in proptest::bool::ANY, delay in 0i64..4, seed in proptest::num::u64::ANY,
-        reverse_storage in proptest::bool::ANY,
+        outer in 0i64..5,
+        inner in 0i64..5,
+        selected in any::<bool>(),
+        continue_body in any::<bool>(),
+        delay in 0i64..4,
+        seed in any::<u64>(),
+        reverse_storage in any::<bool>(),
     ) {
         let mut nodes=vec![core(1,"on-start"),sequence(2,&[7,2]),count(3,outer),sequence(4,&[0,1,2]),count(5,inner),math(6,"add",0,0),var_node(7,"get-variable",100),random(8),branch(9,selected),var_node(10,"set-variable",100),core(11,if continue_body {"continue"} else {"break"}),while_node(12,true,1),set_bool(13,101,true),var_node(14,"get-variable",101),sequence(15,&[1,0]),wait(16,delay),set_bool(17,101,false),branch(18,true)];
         let mut edges=vec![edge(1,1,"then",2,"in"),edge(2,2,"then#7",3,"in"),edge(3,2,"then#2",18,"in"),edge(4,3,"body",4,"in"),edge(5,4,"then#0",13,"in"),edge(6,4,"then#1",5,"in"),edge(7,4,"then#2",12,"in"),edge(8,5,"body",9,"in"),edge(9,9,"true",10,"in"),edge(10,9,"false",11,"in"),edge(11,7,"value",6,"a"),edge(12,8,"value",6,"b"),edge(13,6,"sum",10,"value"),edge(14,14,"value",12,"condition"),edge(15,12,"body",15,"in"),edge(16,15,"then#1",16,"in"),edge(17,15,"then#0",17,"in")];

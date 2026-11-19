@@ -240,8 +240,8 @@ pub(crate) fn enum_choices_in(
         .values()
         .find(|local| local.ty().to_string() == ty)
         .and_then(|local| match &local.shape {
-            orange_model::document::TypeShape::Enum { variants } => Some(variants),
-            orange_model::document::TypeShape::Record { .. } => None,
+            TypeShape::Enum { variants } => Some(variants),
+            TypeShape::Record { .. } => None,
         });
     Some(
         found
@@ -738,34 +738,19 @@ mod trigger_detail_tests {
     fn a_trigger_says_what_fires_it() {
         let config = |json: Json| json.as_object().cloned().unwrap();
         assert_eq!(
-            trigger_detail(
-                "core/on-timer",
-                &config(serde_json::json!({"interval": "1000000000"}))
-            )
-            .as_deref(),
+            trigger_detail("core/on-timer", &config(json!({"interval": "1000000000"}))).as_deref(),
             Some("every 1 s")
         );
         assert_eq!(
-            trigger_detail(
-                "core/on-timeout",
-                &config(serde_json::json!({"delay": "300000000"}))
-            )
-            .as_deref(),
+            trigger_detail("core/on-timeout", &config(json!({"delay": "300000000"}))).as_deref(),
             Some("after 300 ms")
         );
         assert_eq!(human_duration("1500000000").as_deref(), Some("1.5 s"));
         assert_eq!(human_duration("120000000000").as_deref(), Some("2 min"));
         assert_eq!(
-            trigger_detail(
-                "core/on-manual",
-                &config(serde_json::json!({"payload": "core/i64@1"}))
-            )
-            .as_deref(),
+            trigger_detail("core/on-manual", &config(json!({"payload": "core/i64@1"}))).as_deref(),
             Some("with i64")
         );
-        assert_eq!(
-            trigger_detail("core/on-start", &config(serde_json::json!({}))),
-            None
-        );
+        assert_eq!(trigger_detail("core/on-start", &config(json!({}))), None);
     }
 }

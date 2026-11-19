@@ -87,7 +87,7 @@ impl State {
             }
             Edit::Registry => {
                 // Same registered definitions, distinct generation; no implicit provider rebind.
-                self.registry = crate::graph::Source::new(vec![math(900_000, "add", 0, 1)], vec![])
+                self.registry = Source::new(vec![math(900_000, "add", 0, 1)], vec![])
                     .analyzed()
                     .1;
                 return None;
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn only_newest_current_intent_is_published_across_history_and_rebuilds() {
-        let _measuring = crate::counter::exclusive();
+        let _measuring = counter::exclusive();
         for snapshots in [true, false] {
             let mut worker = Worker::spawn(fixture(16), snapshots);
             let edits = [
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn closing_cancels_an_accepted_job_before_analysis_and_joins() {
-        let _measuring = crate::counter::exclusive();
+        let _measuring = counter::exclusive();
         for snapshots in [true, false] {
             let mut worker = Worker::spawn(fixture(16), snapshots);
             let mut request = worker.prepare(1, Edit::MissingReceipt, false);

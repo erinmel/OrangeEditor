@@ -9,6 +9,7 @@ use orange_model::document::NodeKind;
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
 use orange_model::value::shape::ValueShape;
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
+use proptest::arbitrary::any;
 use serde_json::{Value as Json, json};
 use std::sync::{
     Arc,
@@ -282,7 +283,11 @@ fn try_in_an_inactive_arm_does_not_bind_or_warn() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(128))]
     #[test]
-    fn nested_try_chains_match_independent_reference(a in proptest::num::i64::ANY,b in proptest::num::i64::ANY,depth in 1u32..10) {
+    fn nested_try_chains_match_independent_reference(
+        a in any::<i64>(),
+        b in any::<i64>(),
+        depth in 1u32..10,
+    ) {
         let (package,snapshot)=catalog();
         let mut nodes=vec![node(1,"divide",a,b)]; let mut edges=vec![]; let mut exports=vec![export(1,"quotient")];
         let mut ty="core/i64@1".to_owned();
@@ -299,7 +304,10 @@ proptest::proptest! {
         let expected=reference::Reference::new(&doc,&snapshot,&analysis).exports();
         let resolver=Counting::new(package);let plan=compile(&doc,snapshot.clone(),&resolver);
         proptest::prop_assert_eq!(resolver.folds.load(Ordering::Relaxed),1);
-        for (actual,expected) in plan.evaluate(&doc,&snapshot,EvaluationOptions::default()).unwrap().exports().zip(expected) {
+        let evaluation = plan.evaluate(&doc, &snapshot, EvaluationOptions::default()).unwrap();
+        let actual = evaluation.exports();
+        proptest::prop_assert_eq!(actual.len(), expected.len());
+        for (actual,expected) in actual.zip(expected) {
             match (actual.unwrap().outcome,expected) {
                 (Ok(actual),Ok(expected))=>proptest::prop_assert_eq!(actual,&expected),
                 (Err(actual),Err(expected))=>{proptest::prop_assert_eq!(actual.source,expected.source);proptest::prop_assert_eq!(actual.fault.code.as_str(),expected.code);}
@@ -599,8 +607,12 @@ fn nested_option_boxes_are_charged_to_retained_constant_budget() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(128))]
     #[test]
-    fn nested_options_coalesce_with_independent_oracle(depth in 1usize..8, present in proptest::bool::ANY,
-        inner_absent in proptest::bool::ANY, number in proptest::num::i64::ANY) {
+    fn nested_options_coalesce_with_independent_oracle(
+        depth in 1usize..8,
+        present in any::<bool>(),
+        inner_absent in any::<bool>(),
+        number in any::<i64>(),
+    ) {
         let (package,snapshot)=catalog();
         let mut ty="core/i64@1".to_owned();
         let mut value=Value::I64(number);
@@ -619,7 +631,9 @@ proptest::proptest! {
         let analysis=analyze(&doc,&snapshot);
         let expected=reference::Reference::new(&doc,&snapshot,&analysis).exports();
         let plan=compile(&doc,snapshot.clone(),&package);
-        let result=plan.evaluate(&doc,&snapshot,EvaluationOptions::default()).unwrap().export(0).unwrap().unwrap();
+        let evaluation = plan.evaluate(&doc, &snapshot, EvaluationOptions::default()).unwrap();
+        proptest::prop_assert_eq!(evaluation.len(), 1);
+        let result = evaluation.export(0).unwrap().unwrap();
         let answer=if present {value} else {fallback};
         proptest::prop_assert_eq!(result.outcome,Ok(&answer));
         proptest::prop_assert_eq!(expected,vec![Ok(answer)]);

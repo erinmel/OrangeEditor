@@ -119,7 +119,7 @@ impl<R: PureKernelResolver> PurePreview<R> {
         let interrupted = self.open;
         self.cache.start_request(self.request, interrupted);
         self.open = true;
-        let result = crate::compile::compile_preview(
+        let result = compile::compile_preview(
             document,
             registry,
             analysis,

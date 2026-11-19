@@ -252,6 +252,8 @@ pub(super) fn choices() -> Result<Vec<(String, String)>, &'static str> {
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct Activated(mpsc::SyncSender<()>);
 impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
+    // The Windows COM trait requires this exact spelling.
+    //noinspection RsMethodNaming
     fn ActivateCompleted(
         &self,
         _operation: Ref<IActivateAudioInterfaceAsyncOperation>,
@@ -280,9 +282,9 @@ fn activate(pid: u32) -> windows::core::Result<IAudioClient> {
         let value = &mut *variant.Anonymous.Anonymous;
         value.vt = VT_BLOB;
         value.Anonymous.blob = BLOB {
-            cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+            cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
             pBlobData: {
-                let block = CoTaskMemAlloc(std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>())
+                let block = CoTaskMemAlloc(size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>())
                     .cast::<AUDIOCLIENT_ACTIVATION_PARAMS>();
                 if block.is_null() {
                     return Err(windows::core::Error::from(E_FAIL));

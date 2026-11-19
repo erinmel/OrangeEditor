@@ -54,6 +54,13 @@ unsafe impl GlobalAlloc for CountingAllocator {
         pointer
     }
 
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // SAFETY: the caller guarantees `pointer` came from this allocator (hence from
+        // `System`) with this same `layout`.
+        unsafe { System.dealloc(pointer, layout) };
+        released(layout.size());
+    }
+
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller guarantees `layout` has a non-zero size, as `System` requires.
         let pointer = unsafe { System.alloc_zeroed(layout) };
@@ -61,13 +68,6 @@ unsafe impl GlobalAlloc for CountingAllocator {
             allocated(layout.size());
         }
         pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: the caller guarantees `pointer` came from this allocator (hence from
-        // `System`) with this same `layout`.
-        unsafe { System.dealloc(pointer, layout) };
-        released(layout.size());
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {

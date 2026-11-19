@@ -441,10 +441,7 @@ impl AnalysisSession {
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.analysis.report().diagnostics
     }
-    pub fn diagnostics_for<'a>(
-        &'a self,
-        subject: &Subject,
-    ) -> impl Iterator<Item = &'a Diagnostic> {
+    pub fn diagnostics_for(&self, subject: &Subject) -> impl Iterator<Item = &Diagnostic> {
         // Published diagnostics are sorted by subject first.
         let all = &self.analysis.report().diagnostics;
         let start = all.partition_point(|item| item.subject < *subject);

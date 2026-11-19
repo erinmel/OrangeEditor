@@ -98,7 +98,7 @@ fn duration(value: &serde_json::Value) -> Option<u64> {
         && text.bytes().all(|b| b.is_ascii_digit())
         && (text == "0" || !text.starts_with('0'));
     let n: u64 = text.parse().ok().filter(|_| canonical)?;
-    (i64::try_from(n).is_ok()).then_some(n)
+    i64::try_from(n).is_ok().then_some(n)
 }
 
 #[cfg(test)]

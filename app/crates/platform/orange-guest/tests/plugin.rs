@@ -35,8 +35,8 @@ fn ty(text: &str) -> TypeExpr {
     text.parse().unwrap()
 }
 fn plugin(limits: GuestLimits, grants: Grants) -> Result<GuestPlugin, GuestError> {
-    let engine = GuestEngine::new(limits).unwrap();
-    GuestPlugin::new(&engine.compile(&probe_bytes()).unwrap(), grants)
+    let engine = GuestEngine::new(limits)?;
+    GuestPlugin::new(&engine.compile(&probe_bytes())?, grants)
 }
 fn i64s(values: &[i64]) -> Vec<(TypeExpr, Value)> {
     values

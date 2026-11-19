@@ -306,11 +306,7 @@ impl ValidationAnalysis {
         &mut self.report.regions.zones
     }
     /// Replaces one function's summary after a scoped edit rechecked it.
-    pub(super) fn set_summary(
-        &mut self,
-        function: crate::id::FunctionId,
-        summary: Option<super::functions::FunctionSummary>,
-    ) {
+    pub(super) fn set_summary(&mut self, function: FunctionId, summary: Option<FunctionSummary>) {
         match summary {
             Some(summary) => self.report.functions.insert(function, summary),
             None => self.report.functions.remove(&function),
@@ -329,9 +325,7 @@ impl ValidationAnalysis {
         super::data_cycles::sort_cycle_paths(all);
     }
     /// The resolved signatures, for a scoped session update that adds or removes nodes.
-    pub(super) fn resolved_mut(
-        &mut self,
-    ) -> &mut BTreeMap<NodeId, crate::document::SignatureSnapshot> {
+    pub(super) fn resolved_mut(&mut self) -> &mut BTreeMap<NodeId, SignatureSnapshot> {
         &mut self.report.resolved
     }
     pub fn report(&self) -> &ValidationReport {
@@ -633,7 +627,7 @@ fn run_supported_analysis(
     // Each function's own function-pass and conformance diagnostics, which a scoped edit
     // inside its body must leave unchanged.
     let function_diagnostics = local.is_some().then(|| {
-        let mut groups = BTreeMap::<crate::id::FunctionId, Vec<Diagnostic>>::new();
+        let mut groups = BTreeMap::<FunctionId, Vec<Diagnostic>>::new();
         for item in functions.diagnostics.iter().chain(&conformance.diagnostics) {
             if let Some(function) = item.subject.function {
                 groups.entry(function).or_default().push(item.clone());
@@ -671,7 +665,7 @@ fn run_supported_analysis(
         .filter_map(|item| item.subject.node)
         .collect();
     let unexplained = |item: &Diagnostic| {
-        item.code != super::DiagnosticCode::DependencyUnavailable
+        item.code != DiagnosticCode::DependencyUnavailable
             || item
                 .subject
                 .node
@@ -831,13 +825,13 @@ fn domain_blocked_analysis(
     for (body_ref, body) in document.bodies_with_refs() {
         for node in body.nodes.keys() {
             let subject = match body_ref {
-                crate::BodyRef::Root => super::Subject::new(Some(*node), None, None),
+                crate::BodyRef::Root => Subject::new(Some(*node), None, None),
                 crate::BodyRef::Function(function) => {
-                    super::Subject::new(Some(*node), None, None).with_function(function)
+                    Subject::new(Some(*node), None, None).with_function(function)
                 }
             };
             diagnostics.push(Diagnostic::new(
-                super::DiagnosticCode::DomainAnalysisBlocked,
+                DiagnosticCode::DomainAnalysisBlocked,
                 subject,
                 registry.origin(),
             ));
@@ -845,8 +839,8 @@ fn domain_blocked_analysis(
     }
     for function in &incomplete_functions {
         diagnostics.push(Diagnostic::new(
-            super::DiagnosticCode::DomainAnalysisBlocked,
-            super::Subject::default().with_function(*function),
+            DiagnosticCode::DomainAnalysisBlocked,
+            Subject::default().with_function(*function),
             registry.origin(),
         ));
     }

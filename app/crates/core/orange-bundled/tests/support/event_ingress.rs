@@ -455,7 +455,7 @@ fn host_single_handler_item_and_byte_quotas_accept_exact_boundary_and_refuse_one
 
 #[test]
 fn host_replace_is_deferred_until_pump_and_revocation_keeps_accepted_delivery() {
-    let replace = super::event_replace::replacement(10, 4, "fault");
+    let replace = event_replace::replacement(10, 4, "fault");
     let mut after_old_timer = variable_node(4, "set-variable", 200);
     after_old_timer["inputs"] = json!({"value": {"type": "core/u64@1", "value": "1"}});
     let mut after_cancel = variable_node(5, "set-variable", 201);
@@ -568,7 +568,7 @@ fn host_replace_is_deferred_until_pump_and_revocation_keeps_accepted_delivery() 
 
 #[test]
 fn later_fault_target_cannot_commit_staged_host_replace_cancellation() {
-    let mut replace = super::event_replace::replacement(10, 4, "fault");
+    let mut replace = event_replace::replacement(10, 4, "fault");
     replace["activation"]["order"] = json!(0);
     let queue = on_event(20, 1, 1, "fault");
     let (doc, plan) = compile_with_event(

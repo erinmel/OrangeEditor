@@ -19,7 +19,7 @@ pub fn drive(run: &mut Run, limit: usize) -> Result<(), RunError> {
         assert!(run.retention().reserved_bytes <= limit);
         if !progress.ready && run.event_stats().pending == 0 {
             match progress.next_wakeup {
-                Some(at) => run.advance_to(at).unwrap(),
+                Some(at) => run.advance_to(at)?,
                 None => return Ok(()),
             }
         }

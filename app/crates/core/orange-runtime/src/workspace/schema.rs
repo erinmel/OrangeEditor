@@ -25,7 +25,7 @@ pub(super) fn prepare(
     let mut variables = BTreeMap::new();
     let mut values = BTreeMap::new();
     let mut value_bytes = 0usize;
-    let mut schema_bytes = std::mem::size_of::<Schema>();
+    let mut schema_bytes = size_of::<Schema>();
     if schema_bytes > limits.max_schema_bytes {
         return Err(WorkspaceError::Limit);
     }
@@ -47,7 +47,7 @@ pub(super) fn prepare(
             shape
         };
         schema_bytes = schema_bytes
-            .checked_add(std::mem::size_of::<Variable>() + std::mem::size_of::<VariableId>())
+            .checked_add(size_of::<Variable>() + size_of::<VariableId>())
             .and_then(|n| n.checked_add(declaration.ty.as_str().len()))
             .filter(|n| *n <= limits.max_schema_bytes)
             .ok_or(WorkspaceError::Limit)?;
@@ -81,7 +81,7 @@ pub(super) fn prepare(
         let value_hold = hold(
             budget,
             bytes
-                .checked_add(std::mem::size_of::<Cell>())
+                .checked_add(size_of::<Cell>())
                 .ok_or(WorkspaceError::Limit)?,
         )?;
         values.insert(
@@ -108,7 +108,7 @@ pub(super) fn shape_bytes(root: &ValueShape, limit: usize) -> Result<usize, Work
     let mut bytes = 0usize;
     while let Some(shape) = work.pop() {
         bytes = bytes
-            .checked_add(std::mem::size_of::<ValueShape>())
+            .checked_add(size_of::<ValueShape>())
             .filter(|n| *n <= limit)
             .ok_or(WorkspaceError::Limit)?;
         match shape {

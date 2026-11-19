@@ -312,7 +312,7 @@ impl Summarizer<'_, '_> {
         // A function's return (or end) cancels strands a detaching fork left running
         // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
         if definition == ids::FORK
-            && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
+            && node.config.get("join").and_then(Value::as_str) == Some("detach")
         {
             self.report(node.id, DiagnosticCode::DetachInFunction);
         }

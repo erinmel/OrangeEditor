@@ -188,12 +188,12 @@ fn generic_calls_with_constant_arguments_keep_separate_zone_programs() {
         plan.zones()[1].call_instance()
     );
     assert_eq!(plan.zones()[0].begin(), plan.zones()[1].begin());
-    assert!(
+    assert_eq!(
         plan.nodes()
             .iter()
             .filter(|n| matches!(n.operation(), DataOperation::Call { .. }))
-            .count()
-            == 2
+            .count(),
+        2
     );
     assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
     let mut active = activation(

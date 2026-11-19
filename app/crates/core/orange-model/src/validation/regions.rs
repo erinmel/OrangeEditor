@@ -616,15 +616,18 @@ fn switch_cases_valid(
         let Some(value) = cases.get(&instance.to_string()) else {
             return false;
         };
-        let kind_ok = match (key, &variants) {
-            (_, Some(variants)) => value.as_str().is_some_and(|id| variants.contains(id)),
-            (Some("core/i32@1"), _) => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
-            (Some("core/i64@1"), _) => value.as_i64().is_some(),
-            (Some("core/u32@1"), _) => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
-            (Some("core/u64@1"), _) => value.as_u64().is_some(),
-            (Some("core/bool@1"), _) => value.is_boolean(),
-            (Some("core/string@1"), _) => value.is_string(),
-            _ => true,
+        let kind_ok = if let Some(variants) = &variants {
+            value.as_str().is_some_and(|id| variants.contains(id))
+        } else {
+            match key {
+                Some("core/i32@1") => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
+                Some("core/i64@1") => value.as_i64().is_some(),
+                Some("core/u32@1") => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
+                Some("core/u64@1") => value.as_u64().is_some(),
+                Some("core/bool@1") => value.is_boolean(),
+                Some("core/string@1") => value.is_string(),
+                _ => true,
+            }
         };
         if !kind_ok || !seen.insert(value) {
             return false;

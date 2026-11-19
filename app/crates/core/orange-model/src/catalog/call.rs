@@ -229,7 +229,7 @@ pub(crate) fn body_rigid_params(document: &GraphDocument, body: Option<BodyRef>)
 /// every marker, and only a call site instantiates them.
 pub(crate) fn marker_contract(
     document: &GraphDocument,
-    node: &crate::document::NodeInstance,
+    node: &NodeInstance,
 ) -> Result<super::NodeContract, CallInterfaceError> {
     if !is_function_marker(node.definition.id.as_str())
         || node.definition.version != 1
@@ -252,14 +252,14 @@ pub(crate) fn marker_contract(
     for port in interface {
         let ty = port.ty.ok_or(CallInterfaceError::InvalidInterface)?;
         match (entry, port.direction) {
-            (true, crate::document::PortDirection::Input) => {
+            (true, PortDirection::Input) => {
                 ports.push(PortDescriptor::data_out(
                     port.port_id.as_str(),
                     ty,
                     crate::document::OutputSource::Computed,
                 ));
             }
-            (false, crate::document::PortDirection::Output) => {
+            (false, PortDirection::Output) => {
                 ports.push(PortDescriptor::data_in(port.port_id.as_str(), ty));
             }
             _ => {}

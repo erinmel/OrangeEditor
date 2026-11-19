@@ -12,10 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn document_10k() -> (
-    GraphDocument,
-    std::sync::Arc<orange_model::catalog::RegistrySnapshot>,
-) {
+fn document_10k() -> (GraphDocument, Arc<orange_model::catalog::RegistrySnapshot>) {
     let nodes = (0..10_000)
         .map(|n| math(10 + n, "add", n as u64, 1))
         .collect();

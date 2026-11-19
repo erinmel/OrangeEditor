@@ -251,7 +251,7 @@ impl Drop for Recording {
 // A pipe can yield partial samples or a partial stereo frame. Both the level meter
 // and the shared ring consume exactly the same complete frames, in order.
 fn read_samples(mut input: impl Read, mut meter: Meter, levels: &Levels, ring: &Ring) {
-    const SAMPLE: usize = std::mem::size_of::<f32>();
+    const SAMPLE: usize = size_of::<f32>();
     const FRAME: usize = SAMPLE * CHANNELS as usize;
     let mut buffer = [0u8; 8192];
     let mut pending = 0;

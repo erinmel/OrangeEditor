@@ -283,11 +283,7 @@ impl<Id: Copy> ControlCell<Id> {
     pub fn charge(&self, value: &Value) -> Option<usize> {
         self.ty.checked_charge(value, usize::MAX).ok()
     }
-    pub fn checked_charge(
-        &self,
-        value: &Value,
-        limit: usize,
-    ) -> Result<usize, crate::ValueCheckError> {
+    pub fn checked_charge(&self, value: &Value, limit: usize) -> Result<usize, ValueCheckError> {
         self.ty.checked_charge(value, limit)
     }
 }
@@ -817,7 +813,7 @@ struct Cx<'a> {
     document: &'a GraphDocument,
     snapshot: &'a Arc<RegistrySnapshot>,
     analysis: &'a ValidationAnalysis,
-    calls: &'a crate::calls::Calls<'a>,
+    calls: &'a calls::Calls<'a>,
     options: CompileOptions<'a>,
 }
 
@@ -911,12 +907,12 @@ fn compile_control_inner(
     ] {
         charge(&mut graph_items, count, options.limits.max_graph_items)?;
     }
-    let calls = Arc::new(crate::calls::Calls::prepare(
+    let calls = Arc::new(calls::Calls::prepare(
         document,
         &snapshot,
         analysis,
         options,
-        crate::calls::CallProfile::Control,
+        calls::CallProfile::Control,
     )?);
     let cx = Cx {
         effects,
@@ -995,7 +991,7 @@ fn compile_control_inner(
     for node in document.root().nodes.values() {
         options.checkpoint()?;
         let signature = calls.signature(analysis, 0, node.id);
-        let live = signature.kind == NodeKind::Volatile && crate::compile::is_live(&snapshot, node);
+        let live = signature.kind == NodeKind::Volatile && compile::is_live(&snapshot, node);
         if !live && !package_entry(&cx, (0, node.id)) {
             continue;
         }
@@ -1842,7 +1838,7 @@ fn collect_variables(
     // Visit every potential call before binding, including unused/lazy body nodes.
     for node in document.root().nodes.values().chain(called_nodes) {
         options.checkpoint()?;
-        if crate::compile::is_state_read(cx.snapshot, node)
+        if compile::is_state_read(cx.snapshot, node)
             && node.definition.id.as_str() != ids::GET_VARIABLE
         {
             return Err(CompileError::UnsupportedNode { node: node.id });
@@ -1988,7 +1984,7 @@ fn collect_states(
                 let initial = match node.config.get("initial") {
                     Some(raw) => {
                         let mut admitted = *bytes;
-                        crate::calls::charge_json(raw, &mut admitted, options)?;
+                        calls::charge_json(raw, &mut admitted, options)?;
                         let literal = serde_json::from_value(raw.clone()).map_err(|_| invalid())?;
                         Some(
                             decode(

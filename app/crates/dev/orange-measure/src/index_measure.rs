@@ -224,7 +224,7 @@ fn report(name: &str, fixture: Fixture, config: Config, edit_case: EditCase) {
         memory.retained,
         memory.peak,
         memory.released,
-        std::mem::size_of::<DocIndex>()
+        size_of::<DocIndex>()
     );
 }
 

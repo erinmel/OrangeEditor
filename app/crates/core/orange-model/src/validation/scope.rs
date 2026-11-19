@@ -18,7 +18,7 @@ impl<'a> NodeSubset<'a> {
     /// looked up.
     pub(crate) fn nodes_in(
         &self,
-        body: &'a crate::document::GraphBody,
+        body: &'a GraphBody,
         tally: Tally<'_>,
     ) -> Vec<&'a crate::document::NodeInstance> {
         self.nodes
@@ -55,7 +55,7 @@ impl<'a> Tally<'a> {
 
 /// `body`'s nodes, or the subset's, in ID order, counting each one listed.
 pub(crate) fn nodes_of<'a>(
-    body: &'a crate::document::GraphBody,
+    body: &'a GraphBody,
     only: Option<&NodeSubset<'a>>,
     tally: Tally<'_>,
 ) -> Vec<&'a crate::document::NodeInstance> {
@@ -71,7 +71,7 @@ pub(crate) fn nodes_of<'a>(
 
 /// `body`'s edges, or the subset's, sorted by ID, counting each one listed.
 pub(crate) fn edges_of<'a>(
-    body: &'a crate::document::GraphBody,
+    body: &'a GraphBody,
     only: Option<&NodeSubset<'a>>,
     tally: Tally<'_>,
 ) -> Vec<&'a crate::document::Edge> {

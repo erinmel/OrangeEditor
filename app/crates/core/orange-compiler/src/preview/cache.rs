@@ -94,8 +94,8 @@ impl Cache {
         }
         let Some(bytes) = sites
             .len()
-            .checked_mul(std::mem::size_of::<PureCallSite>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Header>()))
+            .checked_mul(size_of::<PureCallSite>())
+            .and_then(|n| n.checked_add(size_of::<Header>()))
         else {
             return;
         };
@@ -181,7 +181,7 @@ impl Cache {
                 metadata_bytes(&key, binding, self.limits.max_bytes)
                     .and_then(|meta| values.checked_add(meta))
             })
-            .and_then(|n| n.checked_add(std::mem::size_of::<Entry>()));
+            .and_then(|n| n.checked_add(size_of::<Entry>()));
         let old = self.entries.get(&index).map_or(0, |e| e.bytes);
         if self.header.is_none()
             || (old == 0 && self.entries.len() >= self.limits.max_entries)

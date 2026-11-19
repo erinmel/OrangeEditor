@@ -278,20 +278,20 @@ fn preflight_node(
             );
             return false;
         }
-        match registry.converter_contract(document, node) {
+        return match registry.converter_contract(document, node) {
             Ok(contract) => {
                 if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
                     unresolved(node.id, code, origin, report, diagnostics);
                     return false;
                 }
-                return true;
+                true
             }
             Err(error) => {
                 let code = contract_code(error);
                 unresolved(node.id, code, origin, report, diagnostics);
-                return false;
+                false
             }
-        }
+        };
     }
     if is_intrinsic(node.definition.id.as_str()) {
         if node.provider.is_some() {
@@ -437,10 +437,7 @@ pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
     }
 }
 
-fn suspension_contract_issue(
-    kind: crate::document::NodeKind,
-    suspends: Option<Suspends>,
-) -> Option<DiagnosticCode> {
+fn suspension_contract_issue(kind: NodeKind, suspends: Option<Suspends>) -> Option<DiagnosticCode> {
     classify_suspension_contract(kind, suspends).map(|issue| match issue {
         SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
         SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
@@ -812,7 +809,7 @@ fn projected_type_failures(
 
 fn port_type_diagnostic(
     node: NodeId,
-    port: crate::id::PortId,
+    port: PortId,
     code: DiagnosticCode,
     origin: &HostOrigin,
 ) -> Diagnostic {

@@ -224,10 +224,10 @@ impl DataPlan {
         slot: SlotIx,
         value: &Value,
         limit: usize,
-    ) -> Result<usize, crate::ValueCheckError> {
+    ) -> Result<usize, ValueCheckError> {
         self.types
             .get(slot.index())
-            .ok_or(crate::ValueCheckError::InvalidType)?
+            .ok_or(ValueCheckError::InvalidType)?
             .checked_charge(value, limit)
     }
     pub fn fault_charge(&self, fault: &ConstantFault) -> Option<usize> {

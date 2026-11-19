@@ -20,12 +20,7 @@ fn seen(run: &Run, n: u32) -> Option<u64> {
     }
 }
 
-fn numeric_watch_run(
-    config: Json,
-) -> (
-    orange_model::GraphDocument,
-    std::sync::Arc<orange_compiler::ControlPlan>,
-) {
+fn numeric_watch_run(config: Json) -> (GraphDocument, Arc<orange_compiler::ControlPlan>) {
     let mut trigger = watch(10, "above", "core/f64@1");
     trigger["config_version"] = json!(2);
     trigger["config"] = config;

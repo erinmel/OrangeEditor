@@ -328,7 +328,7 @@ impl Session {
         ReplayStats {
             version: 1,
             entries,
-            reserved_bytes: capacity * std::mem::size_of::<Entry>()
+            reserved_bytes: capacity * size_of::<Entry>()
                 + match &self.mode {
                     Mode::Record { text_bytes, .. } => *text_bytes,
                     Mode::Replay { entries, .. } => entries.iter().map(Entry::text_bytes).sum(),
@@ -488,7 +488,7 @@ impl RecordedRun {
         }
         let bytes = limits
             .max_entries
-            .checked_mul(std::mem::size_of::<Entry>())
+            .checked_mul(size_of::<Entry>())
             .ok_or(ReplayError::Full)?;
         if bytes > limits.max_bytes {
             return Err(ReplayError::Full);
@@ -499,7 +499,7 @@ impl RecordedRun {
             .map_err(|_| ReplayError::Full)?;
         if entries
             .capacity()
-            .checked_mul(std::mem::size_of::<Entry>())
+            .checked_mul(size_of::<Entry>())
             .is_none_or(|n| n > limits.max_bytes)
         {
             return Err(ReplayError::Full);
@@ -535,7 +535,7 @@ impl RecordedRun {
             return Err(ReplayError::Incomplete);
         };
         let entries: Arc<[Entry]> = entries.into();
-        stats.reserved_bytes = entries.len() * std::mem::size_of::<Entry>()
+        stats.reserved_bytes = entries.len() * size_of::<Entry>()
             + entries.iter().map(Entry::text_bytes).sum::<usize>();
         Ok((
             self.run,

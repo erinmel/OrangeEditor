@@ -1051,9 +1051,10 @@ impl Run {
         } else {
             crate::data::activation_storage(plan.data())
                 .and_then(|bytes| {
-                    bytes.checked_add((plan.watches().len() + plan.sources().len()).checked_mul(
-                        std::mem::size_of::<Option<Value>>() + std::mem::size_of::<u64>(),
-                    )?)
+                    bytes.checked_add(
+                        (plan.watches().len() + plan.sources().len())
+                            .checked_mul(size_of::<Option<Value>>() + size_of::<u64>())?,
+                    )
                 })
                 .ok_or(RunError::ResourceLimit)?
         };
@@ -1160,7 +1161,7 @@ impl Run {
             let template_storage = local_bytes
                 .checked_add(
                     (locals.len() + local_states.len())
-                        .checked_mul(std::mem::size_of::<Option<Value>>())
+                        .checked_mul(size_of::<Option<Value>>())
                         .ok_or(RunError::ResourceLimit)?,
                 )
                 .and_then(|n| n.checked_add(watch_storage))
@@ -1336,8 +1337,9 @@ impl Run {
     /// The last value each output port carried, for a front end to show on a graph.
     /// `None` unless [`Run::keep_port_values`] is on.
     ///
-    /// A port appears once something has pulled its value: the output of a node whose
-    /// result nothing reads, a constant folded at compile time and a fault are absent.
+    /// Computed values appear after a pull. Successful effect outputs also appear
+    /// without a consumer. Folded constants, faults and unwired resource handles
+    /// are absent.
     /// Nodes inside a function report under the function's own node IDs, whichever
     /// call ran last. The table is bounded by the plan's port count, and keeping it
     /// costs one pass over an activation's ports when it ends and on each call here.

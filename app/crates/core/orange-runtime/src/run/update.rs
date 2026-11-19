@@ -273,7 +273,7 @@ impl Cells<'_> {
             let reservation = self.prepare_frame_write(
                 plan,
                 shared,
-                super::function::FrameWriteSpec {
+                function::FrameWriteSpec {
                     frame,
                     variable,
                     value: &new,

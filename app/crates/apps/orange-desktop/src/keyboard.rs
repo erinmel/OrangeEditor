@@ -411,7 +411,7 @@ mod tests {
             if host
                 .inspect(flow, move |run| run.variable(variable_id).cloned())
                 .unwrap()
-                == Some(orange_host::Value::I64(42))
+                == Some(Value::I64(42))
             {
                 break;
             }

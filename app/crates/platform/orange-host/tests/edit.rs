@@ -685,7 +685,7 @@ fn loops_and_forks_are_shown_once_and_start_valid_with_ports_added_and_taken_off
     }));
     assert!(host.remove_port(&mut draft, (fork, "branch#1")).unwrap());
     assert_eq!(ports(&draft, fork), ["<in", ">completed", ">branch#0"]);
-    assert!(host.draft_view(&draft).unwrap().wires.len() == 1);
+    assert_eq!(host.draft_view(&draft).unwrap().wires.len(), 1);
     // The fewest a port may have stay, and a plain port is not variadic.
     assert!(host.remove_port(&mut draft, (fork, "branch#0")).is_err());
     assert!(host.add_port(&mut draft, set, "value").is_err());

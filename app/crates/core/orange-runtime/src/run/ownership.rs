@@ -793,8 +793,8 @@ impl Run {
         enum CancelWait {
             Timer(TimerKey),
             Await(Awaiter),
-            Effect(super::effects::PendingEffect),
-            Stream(super::streams::PendingRead),
+            Effect(effects::PendingEffect),
+            Stream(streams::PendingRead),
         }
         let mut waiters = std::mem::take(timer_keys)
             .into_iter()
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn inline_ownership_ids_preserve_order_through_spill_and_removal() {
-        assert!(std::mem::size_of::<IdSet<u64>>() <= 2 * std::mem::size_of::<u64>());
+        assert!(size_of::<IdSet<u64>>() <= 2 * size_of::<u64>());
         let mut actual = IdSet::<u64>::default();
         let mut expected = BTreeSet::new();
         let mut random = 11u64;

@@ -1159,7 +1159,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
         ],
         vec![],
     );
-    let mut saved: Json = serde_json::from_str(&orange_model::to_json(&source).unwrap()).unwrap();
+    let mut saved: Json = serde_json::from_str(&to_json(&source).unwrap()).unwrap();
     saved["events"] = json!([
         {"id":EVENT,"name":"incoming","payload":"core/u64@1","scope":"run"},
         {"id":NEXT_EVENT,"name":"after-panic","payload":"core/u64@1","scope":"run"}

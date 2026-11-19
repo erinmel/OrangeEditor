@@ -561,8 +561,12 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases:96,rng_seed:proptest::test_runner::RngSeed::Fixed(20261025),..proptest::test_runner::Config::default() })]
     #[test]
     fn nested_forks_match_independent_future_source_interpreter(
-        outer in 0usize..4, inner in 0usize..4, iterations in 0i64..4,
-        seed in proptest::num::u64::ANY, handled_fault in proptest::bool::ANY, reverse in proptest::bool::ANY,
+        outer in 0usize..4,
+        inner in 0usize..4,
+        iterations in 0i64..4,
+        seed in any::<u64>(),
+        handled_fault in any::<bool>(),
+        reverse in any::<bool>(),
     ) {
         let modes=["all","any","race","detach"];
         let mut nodes=vec![core(1,"on-start"),count(2,iterations),fork(3,modes[outer],&[7,2]),fork(4,modes[inner],&[5,1]),wait(5,1),wait(6,3),var_node(7,"set-variable",100),wait(8,9),var_node(9,"set-variable",101),set_bool(10,102,true),wait(11,50),set_bool(12,103,true),set_bool(13,104,true),sequence(14,&[2,0]),var_node(16,"get-variable",105),set_bool(17,106,true),random(30),random(31)];

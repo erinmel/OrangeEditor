@@ -140,13 +140,13 @@ impl Run {
         if let Some(value) = self.resources.entry(handle.id)?.value.as_ref() {
             return Ok(wrap(value.clone()));
         }
-        let bytes = std::mem::size_of::<HandleValue>()
-            .checked_add(std::mem::size_of::<GraphToken>())
-            .and_then(|b| b.checked_add(4 * std::mem::size_of::<usize>()))
+        let bytes = size_of::<HandleValue>()
+            .checked_add(size_of::<GraphToken>())
+            .and_then(|b| b.checked_add(4 * size_of::<usize>()))
             .and_then(|b| b.checked_add(kind.as_str().len()))
             .and_then(|b| {
                 b.checked_add(if stream.is_some() {
-                    3 * std::mem::size_of::<usize>()
+                    3 * size_of::<usize>()
                 } else {
                     0
                 })

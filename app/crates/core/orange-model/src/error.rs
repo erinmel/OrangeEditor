@@ -306,8 +306,8 @@ pub enum ImportResource {
     JsonStringBytes,
 }
 
-impl std::fmt::Display for ImportResource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ImportResource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Bytes => "byte",
             Self::Nodes => "node",

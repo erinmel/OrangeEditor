@@ -435,7 +435,10 @@ impl<T: Send + 'static> Listeners<T> {
         struct Guard<S, T: Send + 'static>(Arc<S>, fn(&S) -> &Listeners<T>, u64);
         impl<S, T: Send + 'static> Drop for Guard<S, T> {
             fn drop(&mut self) {
-                (self.1)(&self.0).entries().retain(|(id, ..)| *id != self.2);
+                let listeners = self.1;
+                listeners(&self.0)
+                    .entries()
+                    .retain(|(id, ..)| *id != self.2);
             }
         }
         let listeners = of(&owner);
@@ -547,7 +550,7 @@ impl Publisher {
     }
     /// Publishes the node's value now.
     pub fn publish(&self, value: Value) -> Result<(), EmitError> {
-        (self.0)(value)
+        self.0(value)
     }
 }
 

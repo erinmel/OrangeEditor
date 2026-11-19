@@ -116,7 +116,7 @@ fn value_charge(
     limit: usize,
 ) -> Result<usize, ValueCheckError> {
     #[cfg(test)]
-    tests::VALUE_CHECKS.with(|count| count.set(count.get() + 1));
+    tests::VALUE_CHECKS.set(tests::VALUE_CHECKS.get() + 1);
     plan.checked_value_charge(slot, value, limit)
 }
 fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
@@ -766,7 +766,7 @@ impl Frame {
         }
         Ok(())
     }
-    fn slot(&self, slot: orange_compiler::SlotIx) -> Option<Outcome<'_>> {
+    fn slot(&self, slot: SlotIx) -> Option<Outcome<'_>> {
         match self.prepared.dynamic_slots[slot.index()] {
             Some(index) => self.registers.get(index),
             None => self.prepared.plan.initial_values()[slot.index()]
@@ -1285,20 +1285,20 @@ mod tests {
         for (ty, value, invalid) in cases {
             let mut frame = input_activation_of(ty);
             frame.begin_epoch().unwrap();
-            VALUE_CHECKS.with(|count| count.set(0));
+            VALUE_CHECKS.set(0);
             frame.set_input(0, value.clone()).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(VALUE_CHECKS.get(), 1);
             let retained = frame.state.retained.get();
             frame.begin_epoch().unwrap();
-            VALUE_CHECKS.with(|count| count.set(0));
+            VALUE_CHECKS.set(0);
             // An invalid replacement does not change the retained check or stamp.
             assert_eq!(
                 frame.set_input(0, invalid),
                 Err(DataError::InvalidInput { index: 0 })
             );
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(VALUE_CHECKS.get(), 1);
             frame.set_input(0, value.clone()).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(VALUE_CHECKS.get(), 1);
             assert_eq!(frame.export(0).unwrap().unwrap().outcome, Ok(&value));
             assert_eq!(frame.state.retained.get(), retained);
             // Equal contents in a different allocation are not identity evidence.
@@ -1308,12 +1308,12 @@ mod tests {
                 _ => unreachable!(),
             };
             frame.begin_epoch().unwrap();
-            VALUE_CHECKS.with(|count| count.set(0));
+            VALUE_CHECKS.set(0);
             frame.set_input(0, fresh).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(VALUE_CHECKS.get(), 1);
             frame.begin_epoch().unwrap();
             frame.set_input(0, value.clone()).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 2);
+            assert_eq!(VALUE_CHECKS.get(), 2);
             // Reuse never bypasses a tighter current resource limit.
             frame.begin_epoch().unwrap();
             frame.state.limits.max_retained_bytes = retained - 1;
@@ -1337,9 +1337,9 @@ mod tests {
                 )
                 .unwrap();
             frame.begin_epoch().unwrap();
-            VALUE_CHECKS.with(|count| count.set(0));
+            VALUE_CHECKS.set(0);
             frame.set_input(0, value).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(VALUE_CHECKS.get(), 1);
         }
     }
 
@@ -1352,12 +1352,12 @@ mod tests {
         frame.set_input(0, Value::List(storage.clone())).unwrap();
         *Arc::make_mut(&mut storage) = ListRepr::Bool(vec![true].into());
         frame.begin_epoch().unwrap();
-        VALUE_CHECKS.with(|count| count.set(0));
+        VALUE_CHECKS.set(0);
         assert_eq!(
             frame.set_input(0, Value::List(storage)),
             Err(DataError::InvalidInput { index: 0 })
         );
-        assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+        assert_eq!(VALUE_CHECKS.get(), 1);
         assert!(matches!(
             frame.export(0),
             Err(DataError::MissingInput { .. })
@@ -1382,23 +1382,23 @@ mod tests {
         };
         for epoch in 0..4 {
             frame.begin_epoch().unwrap();
-            VALUE_CHECKS.with(|count| count.set(0));
+            VALUE_CHECKS.set(0);
             if epoch % 2 == 0 {
                 frame.set_input(0, Value::U64(epoch)).unwrap();
-                assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+                assert_eq!(VALUE_CHECKS.get(), 1);
                 let export = frame.export(0).unwrap().unwrap();
                 assert_eq!(export.outcome, Ok(&Value::U64(epoch)));
             } else {
                 frame
                     .set_input_outcome(0, FoldedValue::Fault(fault.clone()))
                     .unwrap();
-                assert_eq!(VALUE_CHECKS.with(Cell::get), 0);
+                assert_eq!(VALUE_CHECKS.get(), 0);
                 let export = frame.export(0).unwrap().unwrap();
                 assert_eq!(export.outcome, Err(&fault));
             }
             // The reread hits the memoized register without another check.
             frame.export(0).unwrap();
-            assert_eq!(VALUE_CHECKS.with(Cell::get), usize::from(epoch % 2 == 0));
+            assert_eq!(VALUE_CHECKS.get(), usize::from(epoch % 2 == 0));
         }
     }
 }

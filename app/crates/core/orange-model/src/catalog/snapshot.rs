@@ -1287,7 +1287,7 @@ impl RegistrySnapshot {
             ));
         }
         Ok(NodeContract {
-            kind: crate::document::NodeKind::Pure,
+            kind: NodeKind::Pure,
             suspends: None,
             type_params: Vec::new(),
             ports,
@@ -1799,7 +1799,7 @@ mod tests {
         assert!(build(builder().definition(valid)).is_ok());
 
         let event_input = PortDescriptor {
-            direction: crate::document::PortDirection::Input,
+            direction: PortDirection::Input,
             kind: PortKind::Event,
             ty: Some("core/i64@1".parse().unwrap()),
             ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
@@ -1903,7 +1903,7 @@ mod tests {
                 definition.volatility = Some(super::super::Volatility::StateRead);
             }
             if kind == NodeKind::Iterator {
-                definition.suspends = Some(crate::document::Suspends::Maybe);
+                definition.suspends = Some(Suspends::Maybe);
             }
             registry_builder = if intrinsic {
                 registry_builder.intrinsic(definition)

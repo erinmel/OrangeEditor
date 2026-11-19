@@ -37,8 +37,8 @@ pub struct NamedTerm {
 
 impl TypeTerm {
     /// This term as a type expression; printing a parsed term never fails.
-    pub(crate) fn to_type_expr(&self) -> crate::id::TypeExpr {
-        crate::id::TypeExpr::from_canonical(self.to_string())
+    pub(crate) fn to_type_expr(&self) -> TypeExpr {
+        TypeExpr::from_canonical(self.to_string())
     }
 
     pub fn parse(expr: &TypeExpr) -> Result<Self, IdError> {
@@ -202,7 +202,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> Result<TypeTerm, IdError> {
-        TypeTerm::parse(&text.parse().unwrap())
+        TypeTerm::parse(&text.parse()?)
     }
 
     #[test]

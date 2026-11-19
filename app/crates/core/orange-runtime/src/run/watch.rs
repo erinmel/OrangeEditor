@@ -434,7 +434,7 @@ impl Run {
                 .front_mut()
                 .ok_or(RunError::InvalidState)?;
             let (variable, value, previous) = &batch.values[value_index];
-            let payload = super::changes::pair(plan, *variable, value.clone(), previous.clone())
+            let payload = changes::pair(plan, *variable, value.clone(), previous.clone())
                 .ok_or(RunError::ResourceLimit)?;
             let (cause, depth) = batch.cause;
             batch.remaining -= 1;
@@ -755,7 +755,7 @@ impl Run {
         self.stage_live(&plan, index, value)
     }
 
-    fn live_plan(&self) -> Result<std::sync::Arc<ControlPlan>, IngressError> {
+    fn live_plan(&self) -> Result<Arc<ControlPlan>, IngressError> {
         if !matches!(self.state, RunState::Running | RunState::Paused) {
             return Err(IngressError::NotRunning);
         }

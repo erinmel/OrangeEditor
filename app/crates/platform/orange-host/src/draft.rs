@@ -76,7 +76,7 @@ pub struct OpenReport {
     /// writes.
     pub upgraded_from: Option<u32>,
     /// Nodes of definitions a package replaced, rebuilt as their replacements.
-    pub replaced: Vec<orange_model::replace::Replaced>,
+    pub replaced: Vec<Replaced>,
 }
 
 impl OpenReport {

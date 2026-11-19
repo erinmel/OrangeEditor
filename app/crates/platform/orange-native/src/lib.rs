@@ -14,7 +14,7 @@
 //!
 //! The library and the application exchange Rust types directly, and Rust has no
 //! stable binary interface. [`load`] therefore refuses a library unless it reports the
-//! same SDK revision, compiler and target as the application ([`orange_sdk::ABI`]).
+//! same SDK revision, compiler and target as the application ([`ABI`]).
 //! That check cannot see dependency versions or features: a plugin must be built
 //! against the application's lockfile, or behavior is undefined. A panic inside a
 //! plugin ends the application. A loaded library stays loaded until the process ends.

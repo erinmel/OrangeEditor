@@ -1,6 +1,7 @@
 //! Inert host commands and complete-once actor continuations. No executor runs here.
 use super::retained::Hold;
 use super::*;
+use orange_model::id::PortKey;
 use std::sync::atomic::AtomicU8;
 
 /// Non-reused operation identity bound to one process-unique run.
@@ -164,7 +165,7 @@ impl Run {
         let bytes = pending
             .hold
             .bytes
-            .checked_add(std::mem::size_of::<shared::RequestData>())
+            .checked_add(size_of::<shared::RequestData>())
             .ok_or(SharedError::Limit)?;
         let mut hold = Tally::new(Some(self.budget.clone()), 0);
         if !hold.try_set(bytes) {
@@ -447,6 +448,9 @@ impl Run {
         let result = (|| {
             let step = match outcome {
                 Ok(values) => {
+                    let ControlOperation::Effect { effect, .. } = node.operation() else {
+                        return Err(RunError::InvalidState);
+                    };
                     Self::publish_effect_values(
                         plan,
                         &self.layout,
@@ -455,6 +459,7 @@ impl Run {
                         Some(&values),
                         self.options.limits.max_state_bytes,
                     )?;
+                    self.observe_effect_outputs(node.node(), &effect.binding().outputs, &values);
                     (node.then(), ControlOutcome::Then, None)
                 }
                 Err(fault) => failure(node, fault),
@@ -558,6 +563,7 @@ impl Run {
                         Some(&outputs),
                         self.options.limits.max_state_bytes,
                     )?;
+                    self.observe_effect_outputs(node.node(), &effect.binding().outputs, &outputs);
                     (node.then(), ControlOutcome::Then, None)
                 }
             };
@@ -567,12 +573,8 @@ impl Run {
         if self.effects.len() >= self.options.limits.max_pending_effects {
             return Err(RunError::ResourceLimit);
         }
-        let bytes = super::function::values_charge(
-            plan,
-            demand,
-            &values,
-            self.options.limits.max_effect_bytes,
-        )?;
+        let bytes =
+            function::values_charge(plan, demand, &values, self.options.limits.max_effect_bytes)?;
         if self
             .effects
             .bytes
@@ -608,6 +610,18 @@ impl Run {
             },
             limit,
         )
+    }
+
+    /// A completed effect has a result even when no graph wire reads it.
+    fn observe_effect_outputs(&mut self, node: NodeId, ports: &[PortKey], values: &[Value]) {
+        let Some(seen) = &mut self.port_values else {
+            return;
+        };
+        for (port, value) in ports.iter().zip(values) {
+            if !matches!(value, Value::Handle(_) | Value::Stream(_)) {
+                record_port(seen, node, port, value);
+            }
+        }
     }
 }
 impl Drop for Effects {

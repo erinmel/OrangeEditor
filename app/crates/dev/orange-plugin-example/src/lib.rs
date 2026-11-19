@@ -50,7 +50,7 @@ fn package() -> ServicePackage {
     match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by the loader's tests.
-        Err(error) => unreachable!("built-in definition is valid: {error}"),
+        Err(error) => unreachable!("built-in definition is valid: {}", error),
     }
 }
 

@@ -275,7 +275,7 @@ impl Run {
         };
         let tee = match self.tee_stream_inner(handle, options, Some(strand.region)) {
             Ok(tee) => tee,
-            Err(error) => return Ok(failure(node, super::graph::stream_fault(error))),
+            Err(error) => return Ok(failure(node, graph::stream_fault(error))),
         };
         let left = self
             .stream_value(tee.left)

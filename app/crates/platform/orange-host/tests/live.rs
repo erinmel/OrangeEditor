@@ -307,14 +307,14 @@ fn the_run_coalesces_live_ingress_and_only_reevaluates_dependent_watches() {
         RunOptions::default(),
     )
     .unwrap();
-    let pump = |run: &mut Run| {
+    fn pump(run: &mut Run) {
         for _ in 0..1_000 {
             if run.state() == RunState::Stopped || !run.pump(1).unwrap().ready {
                 return;
             }
         }
         panic!("the run did not become idle");
-    };
+    }
     pump(&mut run);
     assert_eq!(
         run.watch_fault(node(2)).unwrap().fault.code,

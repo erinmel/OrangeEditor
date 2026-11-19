@@ -271,7 +271,7 @@ struct Awaiters {
     next: u64,
     by_event: Vec<BTreeSet<u64>>,
     by_token: BTreeMap<u64, Awaiter>,
-    by_strand: super::ids::IdMap<StrandId, u64>,
+    by_strand: ids::IdMap<StrandId, u64>,
     ready: VecDeque<u64>,
 }
 impl Awaiters {
@@ -594,7 +594,7 @@ impl Events {
     pub(super) fn set_tick_pending(
         &mut self,
         timer: usize,
-        pending: Option<super::ticks::TickWindow>,
+        pending: Option<ticks::TickWindow>,
     ) -> Result<(), RunError> {
         self.ticks
             .get_mut(timer)
@@ -1314,7 +1314,7 @@ impl Run {
                     &self.layout,
                     &mut frame,
                     entry,
-                    |source| super::changes::project(&envelope.payload, source),
+                    |source| changes::project(&envelope.payload, source),
                     self.options.limits.max_state_bytes,
                 )?
             }

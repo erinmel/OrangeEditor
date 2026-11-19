@@ -98,14 +98,14 @@ impl std::hash::Hasher for IdHasher {
     fn finish(&self) -> u64 {
         self.0
     }
-    fn write_u64(&mut self, id: u64) {
-        self.0 = (self.0 ^ id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    }
     /// Identities hash through `write_u64`; other input still mixes every byte.
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             self.write_u64(u64::from(byte));
         }
+    }
+    fn write_u64(&mut self, id: u64) {
+        self.0 = (self.0 ^ id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     }
 }
 

@@ -87,7 +87,7 @@ impl Zones {
             calls
                 .scopes
                 .len()
-                .checked_mul(std::mem::size_of::<Option<ZoneIx>>() + 1)
+                .checked_mul(size_of::<Option<ZoneIx>>() + 1)
                 .ok_or(CompileError::ResourceLimit)?,
             options.limits.max_constant_bytes,
         )?;
@@ -117,7 +117,7 @@ impl Zones {
                 }
                 charge(
                     bytes,
-                    std::mem::size_of::<DataZone>() + END_ENTRY_CHARGE,
+                    size_of::<DataZone>() + END_ENTRY_CHARGE,
                     options.limits.max_constant_bytes,
                 )?;
                 let ix = ZoneIx(

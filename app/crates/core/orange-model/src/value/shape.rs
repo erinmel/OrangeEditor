@@ -288,8 +288,8 @@ pub enum ValueCheckError {
 impl ValueCheckError {
     pub const fn message_key(self) -> &'static str {
         match self {
-            Self::InvalidType => "core/value-invalid-type",
-            Self::ResourceLimit => "core/value-resource-limit",
+            InvalidType => "core/value-invalid-type",
+            ResourceLimit => "core/value-resource-limit",
         }
     }
 }
@@ -1363,7 +1363,7 @@ mod tests {
         assert!(keyed.accepts(&entries(vec![a.clone(), b("x"), b("y")])));
         assert_eq!(
             MapRepr::new(vec![(b("x"), Value::U32(1)), (b("x"), Value::U32(2))]),
-            Err(crate::value::DuplicateKey)
+            Err(DuplicateKey)
         );
         let unknown = Value::Enum {
             tag: 2,

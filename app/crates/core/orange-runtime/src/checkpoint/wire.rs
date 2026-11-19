@@ -51,9 +51,6 @@ impl<'de> Visitor<'de> for Discard {
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("unambiguous JSON")
     }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        Ok(())
-    }
     fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
         Ok(())
     }
@@ -67,6 +64,9 @@ impl<'de> Visitor<'de> for Discard {
         Ok(())
     }
     fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
         Ok(())
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {

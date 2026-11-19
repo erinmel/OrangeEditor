@@ -327,7 +327,7 @@ fn max_operations_bounds_one_burst_not_the_run_lifetime() {
     for tick in 1..=200 {
         advance(&mut run, tick * 10);
     }
-    assert_eq!(run.state(), orange_runtime::RunState::Running);
+    assert_eq!(run.state(), RunState::Running);
     assert_eq!(seen(&run), (Some(2000), 0, 200));
 }
 

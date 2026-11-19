@@ -142,14 +142,12 @@ impl ConverterRegistry {
                     reason: ChoiceReason::ProviderAmbiguity,
                 };
             };
-            match definition.resolve_options(supplied_options) {
-                Ok(options) => {
-                    return SelectionOutcome::Automatic(ResolvedConverter {
-                        entry: (*key).clone(),
-                        provider,
-                        options,
-                    });
-                }
+            return match definition.resolve_options(supplied_options) {
+                Ok(options) => SelectionOutcome::Automatic(ResolvedConverter {
+                    entry: (*key).clone(),
+                    provider,
+                    options,
+                }),
                 Err(ConverterRegistrationError::MissingPolicy { name, .. }) => {
                     let mut candidates = self.candidates_for_entries(&entries);
                     if let Some(candidate) = candidates.iter_mut().find(|candidate| {
@@ -159,15 +157,13 @@ impl ConverterRegistry {
                             .reasons
                             .insert(CandidateReason::RequiredPolicy(name));
                     }
-                    return SelectionOutcome::ChoiceRequired {
+                    SelectionOutcome::ChoiceRequired {
                         candidates,
                         reason: ChoiceReason::MissingRequiredPolicies,
-                    };
+                    }
                 }
-                Err(error) => {
-                    return SelectionOutcome::Rejected(SelectionRejection::InvalidOptions(error));
-                }
-            }
+                Err(error) => SelectionOutcome::Rejected(SelectionRejection::InvalidOptions(error)),
+            };
         }
 
         let reason = if lossless.is_empty() {

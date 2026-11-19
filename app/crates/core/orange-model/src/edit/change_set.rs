@@ -134,6 +134,8 @@ impl ChangeSet {
     pub(crate) fn structure_edit(&self) -> Option<&StructureEdit> {
         self.structure.as_deref()
     }
+    /// Document revision before this transaction. Paired with [`Self::to_revision`].
+    //noinspection RsSelfConvention
     pub fn from_revision(&self) -> u64 {
         self.from_revision
     }
@@ -141,6 +143,7 @@ impl ChangeSet {
         self.to_revision
     }
     /// Whole-content identity before this transaction.
+    //noinspection RsSelfConvention
     pub fn from_state(&self) -> u64 {
         self.from_state
     }
@@ -148,6 +151,8 @@ impl ChangeSet {
     pub fn to_state(&self) -> u64 {
         self.to_state
     }
+    /// Semantic identity before this transaction. Paired with [`Self::to_semantic_state`].
+    //noinspection RsSelfConvention
     pub fn from_semantic_state(&self) -> u64 {
         self.from_semantic_state
     }

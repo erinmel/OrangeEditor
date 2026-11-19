@@ -30,8 +30,7 @@ enum State {
 }
 
 /// Bytes one dynamic slot occupies across the parallel register arrays.
-pub(super) const SLOT_BYTES: usize =
-    std::mem::size_of::<Value>() + std::mem::size_of::<State>() + std::mem::size_of::<usize>();
+pub(super) const SLOT_BYTES: usize = size_of::<Value>() + size_of::<State>() + size_of::<usize>();
 
 pub(super) struct Registers {
     values: Vec<Value>,

@@ -229,13 +229,17 @@ fn equals_full_through_edits(
     }
     let mut redo = Vec::new();
     while let Some(inverse) = inverses.pop() {
-        let committed = document.revert(inverse).unwrap();
+        let committed = document
+            .revert(inverse)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         session.update(&document, registry, &committed.change_set, options());
         prop_assert_eq!(session.analysis(), &full(&document, registry));
         redo.push(committed.inverse);
     }
     while let Some(inverse) = redo.pop() {
-        let committed = document.revert(inverse).unwrap();
+        let committed = document
+            .revert(inverse)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         session.update(&document, registry, &committed.change_set, options());
         prop_assert_eq!(session.analysis(), &full(&document, registry));
     }

@@ -145,7 +145,7 @@ impl Host {
                     .and_then(|literal| self.value_in(document, literal).ok())
                     .map(|value| {
                         let ty = variable.ty.to_string();
-                        crate::view::value_text(document, &registry, Some(&ty), &value)
+                        view::value_text(document, &registry, Some(&ty), &value)
                     }),
             })
             .collect();
@@ -319,16 +319,13 @@ impl Host {
             Some(typed) => {
                 // An enum's choice may be given by name or ID, as Declarations shows it.
                 let document = draft.document();
-                let choice = crate::view::enum_choices_in(
-                    document,
-                    &self.registry_for(document),
-                    &variable.ty,
-                )
-                .and_then(|choices| {
-                    choices
-                        .into_iter()
-                        .find(|choice| choice.name == typed.trim() || choice.id == typed.trim())
-                });
+                let choice =
+                    view::enum_choices_in(document, &self.registry_for(document), &variable.ty)
+                        .and_then(|choices| {
+                            choices.into_iter().find(|choice| {
+                                choice.name == typed.trim() || choice.id == typed.trim()
+                            })
+                        });
                 let text = match choice {
                     Some(choice) => choice.literal,
                     None => literal(&variable.ty, typed).map_err(HostError::Variable)?,
@@ -480,6 +477,28 @@ impl Host {
         connection: &Connection,
         secrets: &[(String, String)],
     ) -> Result<String, HostError> {
+        self.save_connection(draft, connection, secrets, None)
+    }
+
+    /// Declares a connection and assigns it to a node in the same undo step.
+    /// Secrets go into the host vault and only their references are assigned to the profile.
+    pub fn declare_connection_for(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        connection: &Connection,
+        secrets: &[(String, String)],
+    ) -> Result<String, HostError> {
+        self.save_connection(draft, connection, secrets, Some(node))
+    }
+
+    fn save_connection(
+        &self,
+        draft: &mut Draft,
+        connection: &Connection,
+        secrets: &[(String, String)],
+        assign: Option<NodeId>,
+    ) -> Result<String, HostError> {
         let id = match &connection.id {
             Some(id) => id.clone(),
             None => draft.fresh_id("connection"),
@@ -488,6 +507,37 @@ impl Host {
             id: Some(id.clone()),
             ..connection.clone()
         };
+        for (setting, _) in secrets {
+            let name = secret_name(&id, setting);
+            put_at(
+                &mut connection.settings,
+                setting,
+                json!(format!("{SECRET_PREFIX}{name}")),
+            );
+        }
+        let (id, declaration) = self.connection_decl(draft, &connection)?;
+        let mut commands = vec![DocCommand::UpsertConnection(declaration)];
+        if let Some(node) = assign {
+            let found = draft
+                .document()
+                .node(node)
+                .ok_or_else(|| refused(&"the document has no such node"))?;
+            let matches = self
+                .presentations
+                .get(&found.definition)
+                .and_then(|presentation| presentation.connection_adapter.as_deref())
+                == Some(connection.adapter.as_str());
+            if !matches {
+                return Err(refused(&"the node uses a different connection adapter"));
+            }
+            let mut config = found.config.clone();
+            config.insert("connection".into(), json!(id));
+            commands.push(DocCommand::SetConfig {
+                node,
+                config_version: found.config_version,
+                config,
+            });
+        }
         if !secrets.is_empty() {
             let store = self.options.secrets.as_ref().ok_or_else(|| {
                 HostError::Connection(
@@ -500,14 +550,10 @@ impl Host {
                 store.replace(&name, secret).map_err(|error| {
                     HostError::Connection(connection.name.clone(), format!("{setting}: {error}"))
                 })?;
-                put_at(
-                    &mut connection.settings,
-                    setting,
-                    Json::String(format!("{SECRET_PREFIX}{name}")),
-                );
             }
         }
-        self.declare_connection(draft, &connection)
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(id)
     }
 
     /// Removes a connection. Nodes that use it show as problems until they use another.

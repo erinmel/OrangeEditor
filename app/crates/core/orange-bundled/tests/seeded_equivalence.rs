@@ -199,8 +199,8 @@ fn first_fault_skips_entropy_until_actual_late_demand_and_matches_provenance() {
             );
         }
     }
-    assert!(
-        compare(17, 9, &[(0, 0, 0, 0)], false, [u32::MAX; 3])
-            != compare(17, 10, &[(0, 0, 0, 0)], false, [u32::MAX; 3])
+    assert_ne!(
+        compare(17, 9, &[(0, 0, 0, 0)], false, [u32::MAX; 3]),
+        compare(17, 10, &[(0, 0, 0, 0)], false, [u32::MAX; 3])
     );
 }

@@ -89,7 +89,7 @@ impl Run {
         &mut self,
         index: usize,
         at: u64,
-        key: super::timers::TimerKey,
+        key: TimerKey,
     ) -> Result<usize, RunError> {
         if self.state != RunState::Running {
             return Ok(1);
@@ -153,7 +153,7 @@ impl Run {
         &mut self,
         index: usize,
         at: u64,
-        key: super::timers::TimerKey,
+        key: TimerKey,
         mut window: TickWindow,
         schedule: TimerSchedule,
     ) -> Result<usize, RunError> {

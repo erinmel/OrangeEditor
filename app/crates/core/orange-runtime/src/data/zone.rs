@@ -87,7 +87,7 @@ impl ZoneMachine {
             source: None,
             carry: None,
             builder: None,
-            base_charge: std::mem::size_of::<Self>(),
+            base_charge: size_of::<Self>(),
             carry_charge: 0,
             builder_charge: 0,
         };

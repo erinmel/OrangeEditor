@@ -402,7 +402,7 @@ pub(crate) fn compile_preview<'a>(
     analysis: &'a ValidationAnalysis,
     resolver: &'a impl PureKernelResolver,
     options: CompileOptions<'a>,
-    cache: &'a mut crate::preview::Cache,
+    cache: &'a mut preview::Cache,
 ) -> Result<PurePlan, CompileError> {
     compile_pure_inner(document, snapshot, analysis, resolver, options, Some(cache))
 }
@@ -412,7 +412,7 @@ fn compile_pure_inner<'a>(
     analysis: &'a ValidationAnalysis,
     resolver: &'a impl PureKernelResolver,
     options: CompileOptions<'a>,
-    mut preview: Option<&'a mut crate::preview::Cache>,
+    mut preview: Option<&'a mut preview::Cache>,
 ) -> Result<PurePlan, CompileError> {
     let (admission, selected) = if preview.is_some() {
         let (admission, selected) = admit_preview(document, &snapshot, analysis, options)?;
@@ -426,14 +426,14 @@ fn compile_pure_inner<'a>(
         ..
     } = admission;
     let calls = Arc::new(if let Some(selected) = &selected {
-        crate::calls::Calls::prepare_preview(document, &snapshot, analysis, options, selected)?
+        calls::Calls::prepare_preview(document, &snapshot, analysis, options, selected)?
     } else {
-        crate::calls::Calls::prepare(
+        calls::Calls::prepare(
             document,
             &snapshot,
             analysis,
             options,
-            crate::calls::CallProfile::Pure,
+            calls::CallProfile::Pure,
         )?
     });
     if let Some(cache) = preview.as_deref_mut() {
@@ -473,17 +473,17 @@ fn compile_pure_inner<'a>(
 /// Internal demand folder shared by checked lowering paths. Callers must perform
 /// fresh semantic and whole-potential-cone admission before constructing it.
 pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
-    preview: Option<&'a mut crate::preview::Cache>,
+    preview: Option<&'a mut preview::Cache>,
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
     snapshot: Arc<RegistrySnapshot>,
     resolver: &'a R,
     options: CompileOptions<'a>,
     incoming: &'a Incoming<'a>,
-    projections: &'a BTreeMap<NodeId, crate::projection::Projection>,
+    projections: &'a BTreeMap<NodeId, projection::Projection>,
     plan: PurePlan,
     frames: Vec<FoldFrame>,
-    pub(crate) calls: Arc<crate::calls::Calls<'a>>,
+    pub(crate) calls: Arc<calls::Calls<'a>>,
     bytes: usize,
     input_values: Vec<Value>,
     output_values: Vec<Value>,
@@ -504,8 +504,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         resolver: &'a R,
         options: CompileOptions<'a>,
         incoming: &'a Incoming<'a>,
-        projections: &'a BTreeMap<NodeId, crate::projection::Projection>,
-        calls: Arc<crate::calls::Calls<'a>>,
+        projections: &'a BTreeMap<NodeId, projection::Projection>,
+        calls: Arc<calls::Calls<'a>>,
     ) -> Result<Self, CompileError> {
         let frames = (0..calls.scopes.len())
             .map(|_| FoldFrame::default())
@@ -803,7 +803,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 continue;
             }
             let binding = if let Some(choice) = &decision {
-                crate::projection::binding(
+                projection::binding(
                     &input_ports,
                     &output_ports,
                     matches!(
@@ -814,17 +814,15 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         .projection(projections, scope, node_id)
                         .ok_or(CompileError::ValidationIncomplete)?
                     {
-                        crate::projection::Projection::Coalesce if choice.selected.is_none() => {
-                            crate::projection::ProjectionMode::Option {
+                        projection::Projection::Coalesce if choice.selected.is_none() => {
+                            projection::ProjectionMode::Option {
                                 boxed: port_type(snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                             }
                         }
-                        crate::projection::Projection::Try => {
-                            crate::projection::ProjectionMode::Result {
-                                boxed: port_type(snapshot, node_id, &sig.ports[0])?.unboxed_error(),
-                            }
-                        }
-                        _ => crate::projection::ProjectionMode::Value,
+                        projection::Projection::Try => projection::ProjectionMode::Result {
+                            boxed: port_type(snapshot, node_id, &sig.ports[0])?.unboxed_error(),
+                        },
+                        _ => projection::ProjectionMode::Value,
                     },
                 )
             } else {
@@ -858,7 +856,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             let fault = if let Some(fault) = inherited {
                 if matches!(
                     calls.projection(projections, scope, node_id),
-                    Some(crate::projection::Projection::Try)
+                    Some(projection::Projection::Try)
                 ) {
                     output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
                         code: fault.fault.code.to_string(),
@@ -890,7 +888,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         },
                     );
                     cache.fold(
-                        crate::preview::FoldKey {
+                        preview::FoldKey {
                             scope,
                             node,
                             signature: sig,
@@ -974,7 +972,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 
 pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
-    pub(crate) projections: BTreeMap<NodeId, crate::projection::Projection>,
+    pub(crate) projections: BTreeMap<NodeId, projection::Projection>,
     pub(crate) host_nodes: BTreeSet<(usize, NodeId)>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
@@ -1191,9 +1189,7 @@ pub(crate) fn admit_roots<'a>(
         }
         let state_read = state_read || live;
         let call = body.nodes[node].definition.id.as_str() == ids::CALL;
-        let zone = data_plan
-            .then(|| crate::zones::marker(analysis, *node))
-            .flatten();
+        let zone = data_plan.then(|| zones::marker(analysis, *node)).flatten();
         if sig.kind != NodeKind::Pure
             && !state_read
             && !(data_plan
@@ -1202,7 +1198,7 @@ pub(crate) fn admit_roots<'a>(
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
-        if let Some(kind) = crate::projection::Projection::resolve(&body.nodes[node], sig)? {
+        if let Some(kind) = projection::Projection::resolve(&body.nodes[node], sig)? {
             projections.insert(*node, kind);
         }
         if body.nodes[node].definition.id.is_core()

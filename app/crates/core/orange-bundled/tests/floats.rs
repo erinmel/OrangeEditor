@@ -142,7 +142,7 @@ fn finite_policy_checks_inputs_then_poles_then_domain_then_result() {
                 values[slot] = bad;
                 assert_eq!(
                     finite(op).evaluate(&f64s(&values)),
-                    Err(KernelError::NonFinite),
+                    Err(NonFinite),
                     "{op:?}"
                 );
             }
@@ -525,15 +525,29 @@ fn boolean_xor_is_an_ordinary_eager_bool_definition() {
     );
 }
 
+fn divisor_away_from_zero() -> impl Strategy<Value = f64> {
+    prop_oneof![-1.0e6f64..-1.0e-6, 1.0e-6f64..1.0e6]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
-    fn total_order_less_is_a_strict_total_order_on_bits(a in any::<u64>(), b in any::<u64>()) {
-        let (a, b) = (f64::from_bits(a), f64::from_bits(b));
-        let less = |x: f64, y: f64| finite(Op::TotalOrderLess).evaluate(&f64s(&[x, y])) == Ok(Value::Bool(true));
+    fn total_order_less_is_a_strict_total_order_on_bits(
+        a in any::<u64>(),
+        b in any::<u64>(),
+        c in any::<u64>(),
+    ) {
+        let (a, b, c) = (f64::from_bits(a), f64::from_bits(b), f64::from_bits(c));
+        let operation = finite(Op::TotalOrderLess);
+        let less = |x: f64, y: f64| operation.evaluate(&f64s(&[x, y])) == Ok(Value::Bool(true));
+        let a_less_b = less(a, b);
+        let b_less_a = less(b, a);
         prop_assert!(!less(a, a));
-        prop_assert_eq!(less(a, b) || less(b, a), a.to_bits() != b.to_bits());
-        prop_assert!(!(less(a, b) && less(b, a)));
+        prop_assert_eq!(a_less_b || b_less_a, a.to_bits() != b.to_bits());
+        prop_assert!(!(a_less_b && b_less_a));
+        if a_less_b && less(b, c) {
+            prop_assert!(less(a, c));
+        }
     }
     #[test]
     fn inverse_trig_stays_in_principal_ranges(x in -1.0f64..=1.0, y in -1.0e6f64..1.0e6, z in -1.0e6f64..1.0e6) {
@@ -565,7 +579,10 @@ proptest! {
         }
     }
     #[test]
-    fn remainder_keeps_dividend_sign_and_divisor_bound(a in -1.0e12f64..1.0e12, b in prop_oneof![-1.0e6f64..-1.0e-6, 1.0e-6f64..1.0e6]) {
+    fn remainder_keeps_dividend_sign_and_divisor_bound(
+        a in -1.0e12f64..1.0e12,
+        b in divisor_away_from_zero(),
+    ) {
         let r = f64::from_bits(bits(finite(Op::Remainder).evaluate(&f64s(&[a, b]))));
         prop_assert!(r.abs() < b.abs());
         prop_assert!(r == 0.0 || r.is_sign_negative() == a.is_sign_negative());

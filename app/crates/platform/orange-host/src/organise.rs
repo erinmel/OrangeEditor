@@ -665,7 +665,7 @@ impl Host {
             .find(|found| found.severity == Severity::Error && !before.contains(&key(found)))
         {
             let names = Names::of_document(self, draft.document());
-            let why = names::describe(new, &names);
+            let why = describe(new, &names);
             draft.withdraw(redo);
             return Err(refused(&format!(
                 "these nodes cannot be a function as they are: {why}"

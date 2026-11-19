@@ -664,7 +664,7 @@ fn accepted_unpublished_resource_closes_on_stop_or_drop_and_aliases_keep_only_me
     drop(value);
     assert_eq!(run.retention().reserved_bytes, 0);
     assert_eq!(log.lock().unwrap().len(), 1);
-    assert_eq!(std::mem::size_of::<Value>(), 16);
+    assert_eq!(size_of::<Value>(), 16);
     let shape = orange_model::value::shape::ValueShape::Handle(kind);
     assert!(!shape.host_eq());
     assert!(!shape.map_key());

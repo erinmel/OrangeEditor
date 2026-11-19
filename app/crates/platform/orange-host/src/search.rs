@@ -577,7 +577,7 @@ mod tests {
     /// decimal-only one, and two decimals wired into it make a valid graph.
     #[test]
     fn one_greater_than_compares_decimals_too() {
-        let (host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        let (host, _) = Host::new(crate::HostOptions::default()).unwrap();
         let found: Vec<_> = host
             .search_nodes("greater", "en")
             .into_iter()
@@ -610,7 +610,7 @@ mod tests {
     /// languages, instead of sharing one sentence with its whole category.
     #[test]
     fn collection_and_json_nodes_each_have_their_own_purpose() {
-        let (host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        let (host, _) = Host::new(crate::HostOptions::default()).unwrap();
         for locale in ["en", "es"] {
             let found: Vec<_> = host
                 .search_nodes("", locale)
@@ -632,7 +632,7 @@ mod tests {
     /// search offers no decimal-only twin.
     #[test]
     fn one_absolute_for_every_number_kind() {
-        let (mut host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        let (mut host, _) = Host::new(crate::HostOptions::default()).unwrap();
         let found: Vec<_> = host
             .search_nodes("absolute", "en")
             .into_iter()
