@@ -1422,11 +1422,7 @@ impl Editor {
                         let view = document.graph.nodes.iter().find(|view| view.id == *node);
                         if id == "spectrum"
                             && view.is_some_and(|view| {
-                                matches!(
-                                    view.definition.as_str(),
-                                    "org.orange.audio/spectrum"
-                                        | "org.orange.audio/multiband-spectrum"
-                                )
+                                view.definition == "org.orange.audio/multiband-spectrum"
                             })
                             && let orange_host::Value::List(values) = value
                         {
@@ -1480,13 +1476,7 @@ impl Editor {
                                 && (id == "level"
                                     || id.starts_with("band_level#")
                                     || id == "payload"
-                                        && matches!(
-                                            view.definition.as_str(),
-                                            "org.orange.audio/band-trigger"
-                                                | "org.orange.audio/transient"
-                                                | "org.orange.audio/on-band-level"
-                                                | "org.orange.audio/on-transient"
-                                        ))
+                                        && view.definition == "org.orange.audio/transient")
                         });
                         let short = if decibels {
                             format!("{short} dBFS")
@@ -2616,7 +2606,7 @@ impl Editor {
             && let Some(draft) = self.editing()
         {
             let result = match edit {
-                canvas::BandEdit::Add(range) => host.add_filtered_audio_band(draft, node, range),
+                canvas::BandEdit::Add(range) => host.add_audio_band(draft, node, range),
                 canvas::BandEdit::Change(band, settings) => {
                     host.change_audio_band(draft, node, band, settings)
                 }

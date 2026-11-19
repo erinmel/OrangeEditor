@@ -15,14 +15,13 @@
 //! and playlists are not provided.
 //!
 //! [`AUDIO_SOURCE`] publishes an audio stream ([`STREAM_TYPE`]) from a device or
-//! sound file. [`LIVE_LEVEL`], [`LIVE_BAND_LEVEL`], [`TRANSIENT`], [`AUDIO_OUT`]
+//! sound file. [`LIVE_LEVEL`], [`MULTIBAND_SPECTRUM`], [`NOISE_GATE`], [`TRANSIENT`], [`AUDIO_OUT`]
 //! and [`RECORD`] take the stream as an input. The value names the capture but
 //! carries no samples. Samples stay in a bounded ring that each consumer reads at
 //! its own pace (see `stream`).
 //!
 //! Analyzers carry their own band or window and read with their own cursor on a
-//! worker. The audio callback only measures and stores. The earlier connection-based
-//! entries [`ON_BAND_LEVEL`] and [`ON_TRANSIENT`] remain available to saved graphs.
+//! worker. The audio callback only measures and stores.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -43,9 +42,8 @@ mod wav;
 pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
 pub use live_nodes::{
-    AUDIO_FORMAT, AUDIO_SOURCE, AUDIO_SPECTRUM, BAND_TRIGGER, FORMAT_TYPE, LIVE_BAND_LEVEL,
-    LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_GATE, NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL,
-    SOURCE_FINISHED, TRANSIENT,
+    AUDIO_FORMAT, AUDIO_SOURCE, FORMAT_TYPE, LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_GATE,
+    NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL, SOURCE_FINISHED, TRANSIENT,
 };
 pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
@@ -53,7 +51,6 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 
 use analysis::{BandMeter, Listening, Onsets};
 use device::{Ended, Levels, Output};
-use level::Gate;
 use orange_sdk::{
     Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
     Listeners, Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
@@ -91,35 +88,17 @@ pub const PLAY: &str = "org.orange.audio/play";
 /// and a seeded random number a repeatable shuffle. A folder without sound files is
 /// the fault `org.orange.audio/Empty`.
 pub const PLAY_FROM: &str = "org.orange.audio/play-from";
-/// Stops every sound playing on an output connection.
-pub const STOP: &str = "org.orange.audio/stop";
 /// Plays a file like [`PLAY`], starting again each time it ends, and continues only
 /// when it is stopped.
 pub const LOOP: &str = "org.orange.audio/loop";
-/// Holds every sound on an output connection where it is.
-pub const PAUSE: &str = "org.orange.audio/pause";
-/// Lets the paused sounds of an output connection continue.
-pub const RESUME: &str = "org.orange.audio/resume";
-/// "Jump to time": moves every sound on an output connection to `seconds` from its
-/// start (0 to [`MAX_SECONDS`]). A sound shorter than that ends; a repeating one wraps
-/// around; a live stream is not moved.
-pub const SEEK: &str = "org.orange.audio/seek";
 /// The type of an audio stream: a record whose one field, `source`, names a live
 /// input. It holds no samples, so copying it is free and every consumer reads the
 /// same sound; it stops working when its input connection closes.
 pub const STREAM_TYPE: &str = "org.orange.audio/stream@1";
-/// Gives what an input connection captures as an audio stream `stream`, with its
-/// `rate` (frames per second) and `channels`. The device opens here if it is not open
-/// yet; a device that cannot be opened within [`OPEN_WAIT`] is the fault
-/// `org.orange.audio/Device`.
-pub const AUDIO_IN: &str = "org.orange.audio/audio-in";
 /// Plays an audio `stream` on an output connection at `gain` (0 to 8), converted to
 /// the output's rate and channels, until the output's sounds are stopped, the run
 /// stops it or the stream's input closes. Streams played on one output are mixed.
 pub const AUDIO_OUT: &str = "org.orange.audio/audio-out";
-/// Reads the latest measured level of an audio `stream` in dBFS as `level`, measured
-/// over the window of the stream's input connection.
-pub const LEVEL: &str = "org.orange.audio/level";
 /// Records `seconds` (more than 0, up to [`MAX_RECORD_SECONDS`]) of an audio `stream`
 /// to a 16-bit PCM WAV file at `path`, at the stream's own rate and channels, and
 /// gives the seconds recorded as `recorded`. Stopping the run ends the file early, still valid.
@@ -128,39 +107,7 @@ pub const RECORD: &str = "org.orange.audio/record";
 pub const MAX_RECORD_SECONDS: f64 = 3_600.0;
 /// How long [`AUDIO_IN`] and [`RECORD`] wait for an input device to open.
 pub const OPEN_WAIT: Duration = Duration::from_secs(3);
-/// Sets the volume of an output connection: `gain` (0 to 8; 1 is unchanged) scales
-/// everything it plays, on top of each sound's own gain.
-pub const SET_VOLUME: &str = "org.orange.audio/set-volume";
-/// Reads the latest measured level of an input connection in dBFS as `level`.
-pub const INPUT_LEVEL: &str = "org.orange.audio/input-level";
-/// The first entry on an input's level, replaced by [`ON_BAND_LEVEL`]: documents that
-/// have it open with On band level instead.
-pub const ON_LEVEL: &str = "org.orange.audio/on-level";
-/// Entry fired when a band of an input connection gets as loud as the node's threshold,
-/// with the level as `payload`; again only after it has fallen to the release level.
-/// Its band, threshold, release, hold and window are its own settings, so several
-/// listen to one device with different thresholds.
-pub const ON_BAND_LEVEL: &str = "org.orange.audio/on-band-level";
-/// Entry fired on each hit in a band of an input connection, such as a kick drum: a
-/// sudden rise of the band's level over its recent average, at most once per gap.
-pub const ON_TRANSIENT: &str = "org.orange.audio/on-transient";
-/// Reads how loud a band of an audio stream is now, in dBFS.
-pub const BAND_LEVEL: &str = "org.orange.audio/band-level";
-/// Plays a file source from its start; continues at once.
-pub const SOURCE_PLAY: &str = "org.orange.audio/source-play";
-/// Holds a file source where it is.
-pub const SOURCE_PAUSE: &str = "org.orange.audio/source-pause";
-/// Lets a held file source go on.
-pub const SOURCE_RESUME: &str = "org.orange.audio/source-resume";
-/// Stops a file source and returns it to its start.
-pub const SOURCE_STOP: &str = "org.orange.audio/source-stop";
-/// Moves a file source to `seconds` from its start.
-pub const SOURCE_SEEK: &str = "org.orange.audio/source-seek";
-/// Entry fired when a file source reaches its end (not when it loops or is stopped).
-pub const ON_FINISHED: &str = "org.orange.audio/on-finished";
 
-const DEFAULT_THRESHOLD_DB: f64 = -30.0;
-const DEFAULT_HYSTERESIS_DB: f64 = 6.0;
 const DEFAULT_WINDOW_MS: u64 = 50;
 const POLL: Duration = Duration::from_millis(10);
 /// How often an open input checks that its device still works.
@@ -878,26 +825,9 @@ fn input(session: Option<&dyn Session>) -> Option<&Arc<InputShared>> {
         .map(|session| &session.0)
 }
 
-#[derive(Debug)]
-struct InputLevel;
-impl ServiceNode for InputLevel {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let shared = input(call.session).ok_or(NO_SESSION)?;
-        if shared.failure().is_some() {
-            return Err(DEVICE);
-        }
-        Ok(vec![Value::F64(shared.levels.latest())])
-    }
-}
-
 /// What an analyzer entry does with each window's band level: fire or not.
 trait Detector: Clone + Send + 'static {
     fn step(&mut self, level: f64) -> bool;
-}
-impl Detector for Gate {
-    fn step(&mut self, level: f64) -> bool {
-        Gate::step(self, level)
-    }
 }
 impl Detector for Onsets {
     fn step(&mut self, level: f64) -> bool {
@@ -992,65 +922,6 @@ fn input_of(session: Option<&Arc<dyn Session>>) -> Result<Arc<InputShared>, Stri
         .ok_or_else(|| "the entry needs an audio input connection".to_owned())
 }
 
-/// On band level: a gate on the level of a band, with the node's own settings.
-#[derive(Debug)]
-struct OnBandLevel;
-impl ServiceSource for OnBandLevel {
-    fn start_with(
-        &self,
-        session: Option<Arc<dyn Session>>,
-        settings: &Map<String, Json>,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String> {
-        let listening = Listening::of(settings, (0.0, 0.0, 50.0))?;
-        band_trigger(input_of(session.as_ref())?, listening, settings, emitter)
-    }
-}
-
-fn band_trigger(
-    input: Arc<InputShared>,
-    listening: Listening,
-    settings: &Map<String, Json>,
-    emitter: Emitter,
-) -> Result<Box<dyn Send>, String> {
-    let threshold = analysis::number(settings, "threshold_db", DEFAULT_THRESHOLD_DB)?;
-    let release = analysis::number(settings, "release_db", threshold - DEFAULT_HYSTERESIS_DB)?;
-    if release > threshold {
-        return Err("`release_db` must not be above `threshold_db`".into());
-    }
-    let hold_ms = analysis::number(settings, "hold_ms", 0.0)?;
-    if !(0.0..=60_000.0).contains(&hold_ms) {
-        return Err("`hold_ms` must be from 0 to 60000".into());
-    }
-    let window_ms = listening.window.as_secs_f64() * 1_000.0;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked above"
-    )]
-    let hold = (hold_ms / window_ms).ceil() as u32;
-    analyze(
-        input,
-        listening,
-        Gate::held(threshold, release, hold),
-        emitter,
-    )
-}
-
-/// On transient: hits in a band, such as a kick drum, with the node's own settings.
-#[derive(Debug)]
-struct OnTransient;
-impl ServiceSource for OnTransient {
-    fn start_with(
-        &self,
-        session: Option<Arc<dyn Session>>,
-        settings: &Map<String, Json>,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String> {
-        transient(input_of(session.as_ref())?, settings, emitter)
-    }
-}
-
 fn transient(
     input: Arc<InputShared>,
     settings: &Map<String, Json>,
@@ -1076,24 +947,6 @@ fn transient(
         Onsets::new(floor, sensitivity, gap),
         emitter,
     )
-}
-
-/// Band level: how loud a band of a stream is now.
-#[derive(Debug)]
-struct BandLevel;
-impl ServiceNode for BandLevel {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let [stream, Value::F64(low), Value::F64(high)] = call.inputs else {
-            return Err(BAD_INPUT);
-        };
-        let source = source(stream)?;
-        let mut band = Map::new();
-        let _ = band.insert("low_hz".into(), Json::from(*low));
-        let _ = band.insert("high_hz".into(), Json::from(*high));
-        let listening = Listening::of(&band, (0.0, 0.0, 50.0)).map_err(|_| BAD_INPUT)?;
-        let ring = source.wait_ring(Some(OPEN_WAIT), &|| call.lease.is_cancelled())?;
-        Ok(vec![Value::F64(analysis::recent_level(&ring, &listening))])
-    }
 }
 
 /// What a transport node does to its file source.
@@ -1138,19 +991,6 @@ impl SourceControl {
     }
 }
 
-/// On finished: a file source reached its end.
-#[derive(Debug)]
-struct OnFinished;
-impl ServiceSource for OnFinished {
-    fn start(
-        &self,
-        session: Option<Arc<dyn Session>>,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String> {
-        when_finished(input_of(session.as_ref())?, emitter)
-    }
-}
-
 fn when_finished(shared: Arc<InputShared>, emitter: Emitter) -> Result<Box<dyn Send>, String> {
     if shared.file.is_none() {
         return Err("Source finished needs a sound file source".into());
@@ -1161,43 +1001,6 @@ fn when_finished(shared: Arc<InputShared>, emitter: Emitter) -> Result<Box<dyn S
         (),
         emitter,
     ))
-}
-
-#[derive(Debug)]
-struct AudioIn;
-impl ServiceNode for AudioIn {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let shared = input(call.session).ok_or(NO_SESSION)?;
-        let ring = shared.wait_ring(Some(OPEN_WAIT), &|| call.lease.is_cancelled())?;
-        Ok(vec![
-            stream_value(shared.id)?,
-            Value::U64(u64::from(ring.rate)),
-            Value::U64(u64::from(ring.channels)),
-        ])
-    }
-}
-
-/// Plays a stream on an output until it is stopped. When the stream's input device
-/// is opened again (it failed, or was unplugged and came back), it plays on from the
-/// new device.
-#[derive(Debug)]
-struct AudioOut;
-impl ServiceNode for AudioOut {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let [stream, Value::F64(gain)] = call.inputs else {
-            return Err(BAD_INPUT);
-        };
-        let session = output(call)?;
-        let source = source(stream)?;
-        play_stream(
-            session,
-            &source,
-            stream_gain(*gain)?,
-            || call.lease.is_cancelled(),
-            |_| {},
-        )?;
-        Ok(Vec::new())
-    }
 }
 
 fn stream_gain(gain: f64) -> Result<f32, KernelFault> {
@@ -1239,21 +1042,6 @@ fn play_stream(
             // The input device closed; follow it to the next one.
             Ended::Done => {}
         }
-    }
-}
-
-#[derive(Debug)]
-struct Level;
-impl ServiceNode for Level {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let [stream] = call.inputs else {
-            return Err(BAD_INPUT);
-        };
-        let source = source(stream)?;
-        if source.failure().is_some() {
-            return Err(DEVICE);
-        }
-        Ok(vec![Value::F64(source.levels.latest())])
     }
 }
 
@@ -1383,63 +1171,6 @@ fn loop_definition() -> String {
         .build()
 }
 
-fn pause_definition() -> String {
-    Definition::node(PACKAGE, "pause", "Pause sounds")
-        .description("Holds every sound playing on an output device where it is.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(OUTPUT_ADAPTER)
-        .build()
-}
-
-fn resume_definition() -> String {
-    Definition::node(PACKAGE, "resume", "Resume sounds")
-        .description("Lets the paused sounds of an output device continue.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(OUTPUT_ADAPTER)
-        .build()
-}
-
-fn seek_definition() -> String {
-    Definition::node(PACKAGE, "seek", "Jump to time")
-        .description("Moves every sound playing on an output to the same time, in seconds from each sound's start: 0 starts them all again. A sound shorter than that ends, a looping one wraps around, and live audio is not moved.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(OUTPUT_ADAPTER)
-        .input("seconds", "core/f64@1")
-        .build()
-}
-
-fn set_volume_definition() -> String {
-    Definition::node(PACKAGE, "set-volume", "Set volume")
-        .description("Sets the volume of everything an output device plays.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(OUTPUT_ADAPTER)
-        .input("gain", "core/f64@1")
-        .build()
-}
-
-fn stop_definition() -> String {
-    Definition::node(PACKAGE, "stop", "Stop sounds")
-        .description("Stops every sound playing on an output device.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(OUTPUT_ADAPTER)
-        .build()
-}
-
-fn input_level_definition() -> String {
-    Definition::node(PACKAGE, "input-level", "Input level")
-        .description("Reads how loud an input connection (a microphone, line input, virtual cable or what an output plays) is now, in dBFS. Level does the same for an audio stream.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-        .output("level", "core/f64@1")
-        .build()
-}
-
 /// A number setting with its limits and the value used when it is left out.
 fn number_setting(minimum: f64, maximum: f64, default: f64) -> Json {
     serde_json::json!({"type": "number", "minimum": minimum, "maximum": maximum, "default": default})
@@ -1460,130 +1191,8 @@ fn transient_settings(definition: Definition) -> Definition {
         .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
 }
 
-fn on_band_level_definition() -> String {
-    let definition = Definition::entry(PACKAGE, "on-band-level", "On band level")
-        .description("Fires when a band of an input (a microphone, line input, virtual cable or what an output plays) gets as loud as the threshold, and again only after it has fallen to the release level. Leave the band at 0 to hear everything.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-        .replaces("on-level", 1, &[])
-        .keywords("bass, loud, clap, microphone, threshold")
-        .payload("core/f64@1");
-    threshold_settings(band_settings(definition, 0.0, 0.0, 50.0), 0.0).build()
-}
-
-fn threshold_settings(definition: Definition, hold_ms: f64) -> Definition {
-    definition
-        .setting(
-            "threshold_db",
-            number_setting(SILENCE_DB, 0.0, DEFAULT_THRESHOLD_DB),
-        )
-        .setting(
-            "release_db",
-            number_setting(
-                SILENCE_DB,
-                0.0,
-                DEFAULT_THRESHOLD_DB - DEFAULT_HYSTERESIS_DB,
-            ),
-        )
-        .setting("hold_ms", number_setting(0.0, 60_000.0, hold_ms))
-}
-
-fn on_transient_definition() -> String {
-    let definition = Definition::entry(PACKAGE, "on-transient", "On transient")
-        .keywords("kick, beat, drum, hit, onset, rhythm")
-        .description("Fires on each hit in a band of an input, such as a kick drum: a sudden rise above the band's recent level. The band starts at 45 to 120 Hz for kicks; play the track and adjust it until the hits line up with what you hear.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-        .payload("core/f64@1");
-    transient_settings(definition).build()
-}
-
-fn band_level_definition() -> String {
-    let hz = |hz: f64| serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", hz.to_bits())});
-    stream_input(
-        Definition::node(PACKAGE, "band-level", "Band level")
-            .keywords("bass, frequency, loudness, meter")
-            .description("Reads how loud a band of an audio stream is now, in dBFS. Leave a side at 0 to keep it open.")
-            .category("audio", "Audio")
-            .hidden(),
-    )
-    .input_default("low_hz", "core/f64@1", hz(0.0))
-    .input_default("high_hz", "core/f64@1", hz(0.0))
-    .output("level", "core/f64@1")
-    .build()
-}
-
-fn source_control_definition(name: &str, label: &str, description: &str) -> Definition {
-    Definition::node(PACKAGE, name, label)
-        .description(description)
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-}
-
-fn source_definitions() -> [(String, SourceControl); 5] {
-    let seconds =
-        serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 0.0f64.to_bits())});
-    [
-        (source_control_definition("source-play", "Play source", "Plays a sound file source from its start and continues at once. Its listeners hear it; it is heard on an output when the source says so.").build(), SourceControl::Play),
-        (source_control_definition("source-pause", "Pause source", "Holds a sound file source where it is.").build(), SourceControl::Pause),
-        (source_control_definition("source-resume", "Resume source", "Lets a held sound file source go on.").build(), SourceControl::Resume),
-        (source_control_definition("source-stop", "Stop source", "Stops a sound file source and returns it to its start.").build(), SourceControl::Stop),
-        (source_control_definition("source-seek", "Jump source to time", "Moves a sound file source to a time from its start, playing or not.").input_default("seconds", "core/f64@1", seconds).build(), SourceControl::Seek),
-    ]
-}
-
-fn on_finished_definition() -> String {
-    Definition::entry(PACKAGE, "on-finished", "On finished")
-        .keywords("end, done, track over")
-        .description("Fires when a sound file source plays to its end. A looping source never finishes; a stopped one does not either.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-        .build()
-}
-
 fn stream_input(definition: Definition) -> Definition {
     definition.input("stream", STREAM_TYPE)
-}
-
-fn audio_in_definition() -> String {
-    Definition::node(PACKAGE, "audio-in", "Audio in")
-        .description("Listens to an input: a microphone, a line input, a virtual cable, or what an output device plays where the system offers that. Gives its sound as an audio stream, with the stream's rate and channels, for Audio out, Level and Record to file.")
-        .category("audio", "Audio")
-        .hidden()
-        .uses(INPUT_ADAPTER)
-        .output("stream", STREAM_TYPE)
-        .output("rate", "core/u64@1")
-        .output("channels", "core/u64@1")
-        .build()
-}
-
-fn audio_out_definition() -> String {
-    stream_input(
-        Definition::node(PACKAGE, "audio-out", "Audio out")
-            .description("Plays an audio stream on an output device until Stop sounds stops it or its input closes. Streams played on the same output are mixed together, so this is also how inputs are mixed.")
-            .category("audio", "Audio")
-            .hidden()
-            .uses(OUTPUT_ADAPTER),
-    )
-    .input_default("gain", "core/f64@1", unit_gain())
-    .build()
-}
-
-fn level_definition() -> String {
-    stream_input(
-        Definition::node(PACKAGE, "level", "Level")
-            .description(
-                "Reads how loud an audio stream is now, in dBFS: 0 is full scale, -120 silence.",
-            )
-            .category("audio", "Audio")
-            .hidden(),
-    )
-    .output("level", "core/f64@1")
-    .build()
 }
 
 fn record_definition() -> String {
@@ -1617,24 +1226,6 @@ pub fn package() -> ServicePackage {
         .node(&play_definition(), Play { looped: false })
         .and_then(|package| package.node(&loop_definition(), Play { looped: true }))
         .and_then(|package| package.node(&play_from_definition(), PlayFrom))
-        .and_then(|package| package.node(&stop_definition(), Stop))
-        .and_then(|package| package.node(&pause_definition(), Control::Pause))
-        .and_then(|package| package.node(&resume_definition(), Control::Resume))
-        .and_then(|package| package.node(&seek_definition(), Control::Seek))
-        .and_then(|package| package.node(&set_volume_definition(), Control::Volume))
-        .and_then(|package| package.node(&input_level_definition(), InputLevel))
-        .and_then(|package| package.source(&on_band_level_definition(), OnBandLevel))
-        .and_then(|package| package.source(&on_transient_definition(), OnTransient))
-        .and_then(|package| package.node(&band_level_definition(), BandLevel))
-        .and_then(|package| package.source(&on_finished_definition(), OnFinished))
-        .and_then(|package| {
-            source_definitions()
-                .into_iter()
-                .try_fold(package, |package, (definition, control)| package.node(&definition, control))
-        })
-        .and_then(|package| package.node(&audio_in_definition(), AudioIn))
-        .and_then(|package| package.node(&audio_out_definition(), AudioOut))
-        .and_then(|package| package.node(&level_definition(), Level))
         .and_then(|package| package.node(&record_definition(), Record))
         .and_then(live_nodes::add);
     match package {
@@ -1678,16 +1269,13 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 21);
-        assert_eq!(package.sources().len(), 11);
-        assert_eq!(package.lives().len(), 6);
-        // Documents with the first On level open with On band level.
-        let replaced: Vec<_> = package
-            .replacements()
-            .iter()
-            .map(|step| (step.from.id.as_str(), step.to.id.as_str()))
-            .collect();
-        assert_eq!(replaced, [(ON_LEVEL, ON_BAND_LEVEL)]);
+        // Play, Loop, Play from folder, Record, Source control, Sound control.
+        assert_eq!(package.nodes().len(), 6);
+        // Audio out, Frequency Splitter, Audio Level Trigger, Transient, Source finished.
+        assert_eq!(package.sources().len(), 5);
+        // Audio source, Noise Gate, Audio format, Level.
+        assert_eq!(package.lives().len(), 4);
+        assert!(package.replacements().is_empty());
         assert_eq!(package.adapters().len(), 2);
         assert_eq!(package.types().len(), 4);
     }
@@ -1708,120 +1296,6 @@ mod tests {
         assert!(InputAdapter.open(&settings(old)).is_ok());
         let bad = serde_json::json!({"device": NULL_DEVICE, "window_ms": 2});
         assert!(InputAdapter.open(&settings(bad)).is_err());
-    }
-
-    /// Two entries listen to one test tone (a 1 kHz square at -6 dBFS) through one
-    /// capture: the one whose band holds the tone fires, the bass band stays quiet.
-    #[test]
-    fn analyzers_share_one_capture_and_each_hears_its_own_band() {
-        let shared = spawn_input(&settings(
-            serde_json::json!({"device": device::TONE_DEVICE}),
-        ))
-        .unwrap();
-        let session: Arc<dyn Session> = Arc::new(InputSession(Arc::clone(&shared)));
-        let fired = |label: &'static str, heard: &Arc<Mutex<Vec<(&'static str, f64)>>>| {
-            let heard = Arc::clone(heard);
-            Emitter::new(move |payload| {
-                if let Some(Value::F64(level)) = payload {
-                    heard.lock().unwrap().push((label, level));
-                }
-                Ok(())
-            })
-        };
-        let heard = Arc::new(Mutex::new(Vec::new()));
-        let whole = OnBandLevel
-            .start_with(
-                Some(Arc::clone(&session)),
-                &settings(serde_json::json!({"threshold_db": -20})),
-                fired("whole", &heard),
-            )
-            .unwrap();
-        let bass = OnBandLevel
-            .start_with(
-                Some(Arc::clone(&session)),
-                &settings(serde_json::json!({"threshold_db": -20, "low_hz": 45, "high_hz": 120})),
-                fired("bass", &heard),
-            )
-            .unwrap();
-        let started = Instant::now();
-        while heard.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(5) {
-            thread::sleep(POLL);
-        }
-        thread::sleep(Duration::from_millis(200));
-        drop((whole, bass));
-        let heard = heard.lock().unwrap().clone();
-        // The whole sound crosses once and stays loud: one event, at about -6 dBFS.
-        assert_eq!(heard.len(), 1, "{heard:?}");
-        assert_eq!(heard[0].0, "whole");
-        assert!((heard[0].1 + 6.0).abs() < 1.0, "{heard:?}");
-        // Settings that cannot work are refused when the flow starts the entry.
-        let bad = settings(serde_json::json!({"low_hz": 200, "high_hz": 100}));
-        assert!(
-            OnTransient
-                .start_with(Some(session), &bad, fired("x", &Arc::default()))
-                .is_err()
-        );
-    }
-
-    /// A file source plays a short tone into its ring when told to: an analyzer hears
-    /// it, and On finished fires at its end.
-    #[test]
-    fn a_file_source_is_heard_by_analyzers_and_finishes() {
-        let path =
-            std::env::temp_dir().join(format!("orange-file-source-{}.wav", std::process::id()));
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 48_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
-        for n in 0..14_400 {
-            // 0.3 s of a 1 kHz square at half scale.
-            let sample = if n / 24 % 2 == 0 {
-                i16::MAX / 2
-            } else {
-                -(i16::MAX / 2)
-            };
-            writer.write_sample(sample).unwrap();
-        }
-        writer.finalize().unwrap();
-
-        let shared = spawn_input(&settings(
-            serde_json::json!({"file": path.to_str().unwrap()}),
-        ))
-        .unwrap();
-        let session: Arc<dyn Session> = Arc::new(InputSession(Arc::clone(&shared)));
-        let heard = Arc::new(Mutex::new(Vec::new()));
-        let record = |what: &'static str| {
-            let heard = Arc::clone(&heard);
-            Emitter::new(move |_| {
-                heard.lock().unwrap().push(what);
-                Ok(())
-            })
-        };
-        let level = OnBandLevel
-            .start_with(
-                Some(Arc::clone(&session)),
-                &settings(serde_json::json!({"threshold_db": -20})),
-                record("loud"),
-            )
-            .unwrap();
-        let finished = OnFinished
-            .start(Some(Arc::clone(&session)), record("finished"))
-            .unwrap();
-        // Nothing plays before Play.
-        thread::sleep(Duration::from_millis(100));
-        assert!(heard.lock().unwrap().is_empty());
-        shared.started.store(true, Ordering::Release);
-        shared.transport().play();
-        let started = Instant::now();
-        while heard.lock().unwrap().len() < 2 && started.elapsed() < Duration::from_secs(5) {
-            thread::sleep(POLL);
-        }
-        drop((level, finished, session));
-        assert_eq!(*heard.lock().unwrap(), ["loud", "finished"]);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -2036,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_nodes_take_and_give_the_stream_type_and_record_asks_where_to_save() {
+    fn record_takes_a_stream_and_asks_where_to_save() {
         let port = |text: &str, direction: &str| -> Option<String> {
             assert!(orange_sdk::NodeDefinition::described(text).is_ok());
             let file: Json = serde_json::from_str(text).unwrap();
@@ -2047,20 +1521,11 @@ mod tests {
                 .map(|port| port["type"].as_str().unwrap_or_default().to_owned())
         };
         assert_eq!(
-            port(&audio_in_definition(), "output").as_deref(),
+            port(&record_definition(), "input").as_deref(),
             Some(STREAM_TYPE)
         );
-        for definition in [
-            audio_out_definition(),
-            level_definition(),
-            record_definition(),
-        ] {
-            assert_eq!(port(&definition, "input").as_deref(), Some(STREAM_TYPE));
-        }
         let (_, record) = orange_sdk::NodeDefinition::described(&record_definition()).unwrap();
         assert!(record.paths[0].save && !record.paths[0].folder);
-        let (_, seek) = orange_sdk::NodeDefinition::described(&seek_definition()).unwrap();
-        assert_eq!(seek.label.unwrap().fallback, "Jump to time");
     }
 
     /// Captures what the default output plays (WASAPI loopback), first while this test

@@ -215,29 +215,6 @@ fn frame_power(frame: &[f32], bands: &mut [Band]) -> f64 {
         / frame.len() as f64
 }
 
-/// The level of the last `frames` frames of `ring` in the band of `listening`: what
-/// Band Level reads. The filter settles on a short stretch before them.
-pub(crate) fn recent_level(ring: &Ring, listening: &Listening) -> f64 {
-    let frames = listening.frames(ring.rate);
-    let settle = frames / 2;
-    let channels = usize::from(ring.channels.max(1));
-    let mut samples = vec![0.0f32; (frames + settle) * channels];
-    let read = ring.recent(&mut samples);
-    let Some(samples) = samples.get(..read) else {
-        return SILENCE_DB;
-    };
-    let mut bands = channel_bands(ring, listening);
-    let (mut sum, mut count) = (0.0, 0usize);
-    for (index, frame) in samples.chunks_exact(channels).enumerate() {
-        let power = frame_power(frame, &mut bands);
-        if index >= settle.min(read / channels / 2) {
-            sum += power;
-            count += 1;
-        }
-    }
-    level_db(sum, count)
-}
-
 /// Fires on a sudden rise of a band's level: a hit, such as a kick drum. A window is a
 /// hit when its level is at least `floor` and stands `rise` decibels above the recent
 /// average, the last hit was more than `gap` windows ago, and the level has fallen

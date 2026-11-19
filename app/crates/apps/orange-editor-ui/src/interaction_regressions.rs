@@ -532,9 +532,11 @@ fn changing_one_audio_card_to_loopback_leaves_the_other_source_unchanged() {
         "audio.json",
         orange_host::new_document().unwrap(),
     );
-    let mic = editor.add_node(&mut host, orange_audio::AUDIO_IN).unwrap();
+    let mic = editor
+        .add_node(&mut host, orange_audio::AUDIO_SOURCE)
+        .unwrap();
     let band = editor
-        .add_node(&mut host, orange_audio::ON_BAND_LEVEL)
+        .add_node(&mut host, orange_audio::AUDIO_SOURCE)
         .unwrap();
     let pointer = |editor: &Editor, id| {
         editor
@@ -652,11 +654,11 @@ fn an_original_spectrum_adds_a_filtered_output_without_disconnecting_its_input()
         .add_node(&mut draft, orange_audio::AUDIO_SOURCE, [0.0, 0.0])
         .unwrap();
     let spectrum = host
-        .add_node(&mut draft, orange_audio::AUDIO_SPECTRUM, [250.0, 0.0])
+        .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [250.0, 0.0])
         .unwrap();
     host.connect(&mut draft, (input, "stream"), (spectrum, "stream"))
         .unwrap();
-    host.add_filtered_audio_band(&mut draft, spectrum, [80, 120])
+    host.add_audio_band(&mut draft, spectrum, [80, 120])
         .unwrap();
     let graph = host.draft_view(&draft).unwrap();
     assert_eq!(graph.nodes.len(), 2);
@@ -674,14 +676,11 @@ fn an_original_spectrum_adds_a_filtered_output_without_disconnecting_its_input()
     assert!(host.check(&draft.text().unwrap()).unwrap().is_empty());
     assert!(draft.undo());
     let original = host.draft_view(&draft).unwrap();
-    assert_eq!(
-        original
-            .nodes
-            .iter()
-            .find(|node| node.id == spectrum)
-            .unwrap()
-            .definition,
-        orange_audio::AUDIO_SPECTRUM
-    );
+    let card = original
+        .nodes
+        .iter()
+        .find(|node| node.id == spectrum)
+        .unwrap();
+    assert!(!card.ports.iter().any(|port| port.id == "band_stream#0"));
     assert_eq!(original.wires, graph.wires);
 }

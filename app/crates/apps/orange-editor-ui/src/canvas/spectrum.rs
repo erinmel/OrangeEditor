@@ -14,18 +14,12 @@ pub(crate) enum BandEdit {
 }
 
 pub(super) fn combined(node: &NodeView) -> bool {
-    matches!(
-        node.definition.as_str(),
-        "org.orange.audio/spectrum" | "org.orange.audio/multiband-spectrum"
-    )
+    node.definition == "org.orange.audio/multiband-spectrum"
 }
 
-/// The band a splitter output belongs to: `band_stream#3` and `band_level#3` are band 3.
+/// The band a splitter output belongs to: `band_stream#3` is band 3.
 pub(super) fn band_of(port: &str) -> Option<u16> {
-    port.strip_prefix("band_stream#")
-        .or_else(|| port.strip_prefix("band_level#"))?
-        .parse()
-        .ok()
+    port.strip_prefix("band_stream#")?.parse().ok()
 }
 
 /// Where band `band` of a splitter starts, in Hz.
@@ -71,27 +65,11 @@ pub(super) fn primary_band(node: &NodeView, port: &PortView) -> Option<u16> {
     if !combined(node) || port.input {
         return None;
     }
-    let prefix = if stream_bands(node) {
-        "band_stream#"
-    } else {
-        "band_level#"
-    };
     port.id
-        .strip_prefix(prefix)?
+        .strip_prefix("band_stream#")?
         .parse::<u16>()
         .ok()
         .filter(|band| node.settings["bands"][band.to_string()].is_object())
-}
-
-pub(super) fn legacy_band(node: &NodeView, port: &PortView) -> bool {
-    primary_band(node, port).is_some_and(|band| {
-        !stream_bands(node)
-            || node.settings["bands"][band.to_string()]["legacy_level"].as_bool() == Some(true)
-    })
-}
-
-fn stream_bands(node: &NodeView) -> bool {
-    node.variadic.iter().any(|port| port.port == "band_stream")
 }
 
 #[derive(Clone, Copy, Default)]
@@ -256,7 +234,7 @@ pub(super) fn band_row(
     controls: bool,
     band: u16,
 ) -> Option<BandEdit> {
-    let port = row.right?;
+    row.right?;
     let colors = Palette::of(ui);
     let at = Pos2::new(
         rect.right() - (CARD_PADDING + 9.0) * zoom,
@@ -353,61 +331,6 @@ pub(super) fn band_row(
             );
         });
     });
-    if legacy_band(node, port) {
-        let rules = slot.translate(Vec2::new(0.0, card::LINE * zoom));
-        ui.scope_builder(
-            UiBuilder::new().max_rect(rules).id_salt(id.with("rules")),
-            |ui| {
-                ui.set_clip_rect(ui.clip_rect().intersect(rules));
-                fields::style_controls(ui, zoom);
-                ui.spacing_mut().item_spacing.x = 3.0 * zoom;
-                ui.horizontal(|ui| {
-                    let old = draft.pending["mode"].as_str().unwrap_or("above");
-                    let mut mode = old;
-                    egui::ComboBox::from_id_salt("direction")
-                        .width(62.0 * zoom)
-                        .truncate()
-                        .selected_text(direction(old))
-                        .show_ui(ui, |ui| {
-                            for candidate in ["above", "below", "both"] {
-                                ui.selectable_value(&mut mode, candidate, direction(candidate));
-                            }
-                        });
-                    if old != mode {
-                        draft.pending["mode"] = mode.into();
-                        commit = true;
-                    }
-                    commit |= number_field(
-                        ui,
-                        &mut draft.pending,
-                        "threshold_db",
-                        -35.0,
-                        -120.0..=0.0,
-                        " dBFS",
-                        t("audio-setting-threshold-db"),
-                    );
-                    commit |= number_field(
-                        ui,
-                        &mut draft.pending,
-                        "hold_ms",
-                        150.0,
-                        0.0..=10_000.0,
-                        " ms",
-                        t("audio-setting-hold-ms"),
-                    );
-                    commit |= number_field(
-                        ui,
-                        &mut draft.pending,
-                        "reset_db",
-                        4.0,
-                        0.0..=24.0,
-                        " dB",
-                        t("audio-reset-margin"),
-                    );
-                });
-            },
-        );
-    }
     if commit
         && draft.pending["low_hz"].as_f64() < draft.pending["high_hz"].as_f64()
         && draft.pending != draft.saved
@@ -442,16 +365,7 @@ pub(super) fn draw_combined(
     let ids: Vec<u16> = node
         .ports
         .iter()
-        .filter_map(|port| {
-            port.id
-                .strip_prefix(if stream_bands(node) {
-                    "band_stream#"
-                } else {
-                    "band_level#"
-                })?
-                .parse()
-                .ok()
-        })
+        .filter_map(|port| port.id.strip_prefix("band_stream#")?.parse().ok())
         .filter(|band: &u16| bands.is_some_and(|bands| bands.contains_key(&band.to_string())))
         .collect();
     let settings = |band: u16| bands.and_then(|bands| bands.get(&band.to_string()));

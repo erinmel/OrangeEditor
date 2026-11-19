@@ -83,6 +83,7 @@ impl Ring {
 
     /// Copies the newest samples into `out`, up to its length in whole frames and no
     /// more than the ring holds, oldest first; returns how many were copied.
+    #[cfg(test)]
     pub(crate) fn recent(&self, out: &mut [f32]) -> usize {
         let written = self.written();
         let frame = usize::from(self.channels);

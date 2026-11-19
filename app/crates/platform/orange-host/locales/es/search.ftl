@@ -56,8 +56,6 @@ alias-org-orange-math-divide = dividir, entre
 alias-org-orange-math-greater = mayor que
 alias-org-orange-math-less = menor que
 alias-org-orange-math-equal = igual
-alias-org-orange-audio-input-level = micrófono, entrada, volumen
-alias-org-orange-audio-on-level = micrófono, sonido, aplauso, fuerte
 alias-org-orange-audio-play = sonido, audio, altavoz, música, reproducir
 
 purpose-core-on-manual = Empieza al pulsar Ejecutar.
@@ -69,7 +67,6 @@ purpose-core-on-event = Empieza cuando se emite un evento.
 purpose-core-on-variable-changed = Empieza cuando cambia una variable.
 purpose-core-on-watch = Empieza cuando cambia un valor vigilado, se vuelve verdadero o cruza un umbral o rango.
 alias-core-on-watch = vigilar, umbral, condición, rango
-purpose-org-orange-audio-on-level = Empieza cuando el micrófono suena fuerte.
 purpose-core-wait = Espera un rato y sigue.
 purpose-core-branch = Va por un lado si es verdadero y por el otro si es falso.
 purpose-core-whole-number = Un número entero que escribes.

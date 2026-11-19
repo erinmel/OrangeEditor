@@ -193,10 +193,6 @@ impl<'a> Card<'a> {
                     }
                     _ => LINE,
                 };
-                let height = height
-                    + right
-                        .filter(|port| spectrum::legacy_band(node, port))
-                        .map_or(0.0, |_| LINE);
                 rows.push(Row {
                     top: y,
                     height,

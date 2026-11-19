@@ -52,8 +52,7 @@ fn write_package_galleries() {
         .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
         .unwrap();
     for range in [[2_000, 3_000], [60, 120], [400, 800], [8_000, 12_000]] {
-        host.add_filtered_audio_band(&mut draft, splitter, range)
-            .unwrap();
+        host.add_audio_band(&mut draft, splitter, range).unwrap();
     }
     std::fs::write(format!("{folder}/splitter-0.json"), draft.text().unwrap()).unwrap();
     for (package, ids) in groups {

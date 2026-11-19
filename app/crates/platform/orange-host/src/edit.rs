@@ -96,7 +96,7 @@ fn new_config(
 }
 
 impl Host {
-    /// Add a frequency range and its stable output ports as one edit.
+    /// Adds a frequency range and its filtered stream output as one edit.
     pub fn add_audio_band(
         &self,
         draft: &mut Draft,
@@ -111,96 +111,6 @@ impl Host {
                 "low_hz": range[0], "high_hz": range[1],
             })),
         )
-    }
-
-    /// Create a filtered stream on this card, upgrading an older spectrum in the
-    /// same undo step. Legacy numeric and execution outputs retain their keys.
-    pub fn add_filtered_audio_band(
-        &self,
-        draft: &mut Draft,
-        node: NodeId,
-        range: [u32; 2],
-    ) -> Result<bool, HostError> {
-        let instance = draft
-            .document()
-            .root()
-            .nodes
-            .get(&node)
-            .filter(|node| {
-                matches!(
-                    node.definition.id.as_str(),
-                    "org.orange.audio/spectrum" | "org.orange.audio/multiband-spectrum"
-                )
-            })
-            .ok_or_else(|| refused(&"select a Frequency Splitter"))?;
-        if instance.definition.version >= 2 {
-            return self.add_audio_band(draft, node, range);
-        }
-
-        let registry = self.registry_for(draft.document());
-        let definition = DefinitionRef {
-            id: "org.orange.audio/multiband-spectrum"
-                .parse()
-                .map_err(|error| refused(&error))?,
-            version: 3,
-        };
-        let mut new = NewNode::new(node, definition);
-        new.inputs.clone_from(&instance.inputs);
-        new.config.clone_from(&instance.config);
-        if let Some(bands) = new.config.get_mut("bands").and_then(Json::as_object_mut) {
-            for band in bands.values_mut() {
-                let band = band
-                    .as_object_mut()
-                    .ok_or_else(|| refused(&"invalid spectrum band"))?;
-                band.insert("legacy_level".to_owned(), true.into());
-            }
-        }
-        let mut replacement = new_node_edit(draft.document(), &registry, new)
-            .map_err(|error| refused(&error))?
-            .commands;
-        for command in &mut replacement {
-            if let DocCommand::AddNode { node: next, .. } = command {
-                next.extensions.clone_from(&instance.extensions);
-                next.variadic.clone_from(&instance.variadic);
-                if let Some(levels) = next
-                    .variadic
-                    .get(&orange_model::port_id!("band_level"))
-                    .cloned()
-                {
-                    next.variadic
-                        .insert(orange_model::port_id!("band_stream"), levels);
-                }
-                next.activation = match &instance.activation {
-                    Some(policy) => Some(policy.clone()),
-                    None => Some(
-                        serde_json::from_value(default_activation())
-                            .map_err(|error| refused(&error))?,
-                    ),
-                };
-            }
-        }
-        let mut commands = vec![DocCommand::RemoveNodes { ids: vec![node] }];
-        commands.extend(replacement);
-        commands.extend(
-            draft
-                .document()
-                .root()
-                .edges
-                .values()
-                .filter(|edge| edge.from.node == node || edge.to.node == node)
-                .cloned()
-                .map(|edge| DocCommand::Connect { edge }),
-        );
-        let staged = self.staged_node(draft, &commands)?;
-        commands.extend(self.audio_band_commands(
-            &staged,
-            node,
-            None,
-            Some(json!({
-                "low_hz": range[0], "high_hz": range[1],
-            })),
-        )?);
-        draft.commit(&registry, commands)
     }
 
     /// Replace a band's settings, or remove the band and its wires when settings are absent.
@@ -227,60 +137,24 @@ impl Host {
             .node(node)
             .filter(|node| node.definition.id.as_str() == "org.orange.audio/multiband-spectrum")
             .ok_or_else(|| refused(&"select a Frequency Splitter"))?;
-        let level = spectrum_band_port(instance);
         let state = instance
             .variadic
-            .get(&level)
+            .get(&band_stream())
             .ok_or_else(|| refused(&"no bands"))?;
-        let before = state
-            .order
-            .iter()
-            .position(|&id| id == band)
-            .ok_or_else(|| refused(&"this spectrum has no such band"))?;
+        if !state.order.contains(&band) {
+            return Err(refused(&"this spectrum has no such band"));
+        }
         if at >= state.order.len() {
             return Err(refused(&"band position is out of range"));
         }
-        let mut order = state.order.clone();
-        order.remove(before);
-        order.insert(at, band);
-        let mut commands = vec![DocCommand::MoveVariadic {
-            node,
-            port: PortKey::new(level, Some(band)),
-            at,
-        }];
-        let bands = instance
-            .config
-            .get("bands")
-            .ok_or_else(|| refused(&"no band settings"))?;
-        let legacy = |band: u16| bands[band.to_string()]["legacy_level"].as_bool() == Some(true);
-        if legacy(band) {
-            commands.push(DocCommand::MoveVariadic {
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::MoveVariadic {
                 node,
-                port: PortKey::new(orange_model::port_id!("band_level"), Some(band)),
-                at: order[..at].iter().filter(|&&band| legacy(band)).count(),
-            });
-        }
-        for (field, port) in [
-            ("above_port", orange_model::port_id!("band_above")),
-            ("below_port", orange_model::port_id!("band_below")),
-        ] {
-            let route = |band: u16| {
-                bands[band.to_string()][field]
-                    .as_u64()
-                    .and_then(|n| u16::try_from(n).ok())
-            };
-            if let Some(id) = route(band) {
-                commands.push(DocCommand::MoveVariadic {
-                    node,
-                    port: PortKey::new(port, Some(id)),
-                    at: order[..at]
-                        .iter()
-                        .filter(|&&band| route(band).is_some())
-                        .count(),
-                });
-            }
-        }
-        draft.commit(&self.registry_for(draft.document()), commands)
+                port: PortKey::new(band_stream(), Some(band)),
+                at,
+            }],
+        )
     }
 
     fn edit_audio_band(
@@ -313,14 +187,12 @@ impl Host {
         let bands = bands
             .as_object_mut()
             .ok_or_else(|| refused(&"invalid spectrum bands"))?;
-        let level = spectrum_band_port(instance);
-        let ids = instance.variadic.get(&level);
+        let ids = instance.variadic.get(&band_stream());
         let id = band.unwrap_or_else(|| ids.map_or(0, |ids| ids.next));
         let name = id.to_string();
-        let saved = bands.get(&name);
-        let legacy = saved.is_some_and(|band| band["legacy_level"].as_bool() == Some(true));
-        let has_triggers = level.as_str() == "band_level" || legacy;
-        if band.is_some() && saved.is_none_or(|_| !ids.is_some_and(|ids| ids.order.contains(&id))) {
+        if band.is_some()
+            && (!bands.contains_key(&name) || !ids.is_some_and(|ids| ids.order.contains(&id)))
+        {
             return Err(refused(&"this spectrum has no such band"));
         }
         let mut commands = Vec::new();
@@ -330,7 +202,7 @@ impl Host {
                 .and_then(|view| {
                     view.variadic
                         .iter()
-                        .find(|port| port.port == level.as_str())?
+                        .find(|port| port.port == "band_stream")?
                         .max
                 })
                 .ok_or_else(|| refused(&"this spectrum has no band limit"))?;
@@ -339,22 +211,15 @@ impl Host {
             }
             commands.push(DocCommand::InsertVariadic {
                 node,
-                port: level,
+                port: band_stream(),
                 at: ids.map_or(0, |ids| ids.order.len()),
             });
         } else if settings.is_none() {
             commands.push(DocCommand::RemoveVariadic {
                 node,
-                port: PortKey::new(level, Some(id)),
+                port: PortKey::new(band_stream(), Some(id)),
             });
-            if legacy {
-                commands.push(DocCommand::RemoveVariadic {
-                    node,
-                    port: PortKey::new(orange_model::port_id!("band_level"), Some(id)),
-                });
-            }
         }
-
         let mut settings = settings;
         if let Some(band) = &mut settings {
             let [low, high] = ["low_hz", "high_hz"].map(|field| band[field].as_f64());
@@ -367,58 +232,6 @@ impl Host {
                 .is_some_and(|name| !name.trim().is_empty())
             {
                 band["name"] = format!("Band {}", u32::from(id) + 1).into();
-            }
-            if !matches!(
-                band["mode"].as_str(),
-                None | Some("above" | "below" | "both")
-            ) {
-                return Err(refused(&"choose Above, Below, or Both"));
-            }
-            if legacy {
-                band["legacy_level"] = true.into();
-            } else if let Some(fields) = band.as_object_mut() {
-                fields.remove("legacy_level");
-            }
-        }
-        for (direction, field, port) in [
-            ("above", "above_port", orange_model::port_id!("band_above")),
-            ("below", "below_port", orange_model::port_id!("band_below")),
-        ] {
-            if !has_triggers {
-                break;
-            }
-            let old = saved
-                .and_then(|band| band[field].as_u64())
-                .and_then(|n| u16::try_from(n).ok());
-            let enabled = settings.as_ref().is_some_and(|band| {
-                matches!(band["mode"].as_str().unwrap_or("above"), "both")
-                    || band["mode"].as_str().unwrap_or("above") == direction
-            });
-            let next = match (old, enabled) {
-                (Some(port_id), false) => {
-                    commands.push(DocCommand::RemoveVariadic {
-                        node,
-                        port: PortKey::new(port, Some(port_id)),
-                    });
-                    None
-                }
-                (None, true) => {
-                    let state = instance.variadic.get(&port);
-                    let id = state.map_or(0, |state| state.next);
-                    commands.push(DocCommand::InsertVariadic {
-                        node,
-                        port,
-                        at: state.map_or(0, |state| state.order.len()),
-                    });
-                    Some(id)
-                }
-                (old, _) => old,
-            };
-            if let Some(band) = settings.as_mut().and_then(Json::as_object_mut) {
-                band.remove(field);
-                if let Some(next) = next {
-                    band.insert(field.to_owned(), next.into());
-                }
             }
         }
         if let Some(settings) = settings {
@@ -506,12 +319,9 @@ impl Host {
     }
 }
 
-fn spectrum_band_port(node: &NodeInstance) -> PortId {
-    if node.definition.version >= 2 {
-        orange_model::port_id!("band_stream")
-    } else {
-        orange_model::port_id!("band_level")
-    }
+/// The output each Frequency Splitter band has: its filtered stream.
+fn band_stream() -> PortId {
+    orange_model::port_id!("band_stream")
 }
 
 /// The layout command that puts `node` at `at`, in whole units so a saved file stays
@@ -535,88 +345,6 @@ impl Host {
         at: [f32; 2],
     ) -> Result<NodeId, HostError> {
         let (node, commands) = self.new_node_commands(draft, definition, at)?;
-        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
-        Ok(node)
-    }
-
-    /// Adds a Band level read wired into When, as one undoable edit.
-    pub fn add_band_trigger(&self, draft: &mut Draft, at: [f32; 2]) -> Result<NodeId, HostError> {
-        let (level, mut commands) =
-            self.new_node_commands(draft, "org.orange.audio/live-band-level", at)?;
-        let (when, entry) = self.node_commands(
-            draft,
-            "core/on-watch",
-            [at[0] + 360.0, at[1]],
-            "node:band-trigger",
-        )?;
-        commands.extend(entry);
-        commands.push(DocCommand::SetConfig {
-            node: when,
-            config_version: 2,
-            config: serde_json::from_value(json!({
-                "mode": "above", "threshold": -20, "release": -26, "hold": 50
-            }))
-            .map_err(|error| refused(&error))?,
-        });
-        let wire = serde_json::from_value(json!({
-            "id": draft.fresh_id("edge"),
-            "from": {"node": level, "port": "level"},
-            "to": {"node": when, "port": "watch"}
-        }))
-        .map_err(|error| refused(&error))?;
-        commands.push(DocCommand::Connect { edge: wire });
-        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
-        Ok(when)
-    }
-
-    /// Adds a meter or threshold entry at a spectrum selection, sharing its source.
-    /// The new card, its frequency limits and its wire form one undoable edit.
-    pub fn add_spectrum_band(
-        &self,
-        draft: &mut Draft,
-        spectrum: NodeId,
-        range: [u32; 2],
-        trigger: bool,
-        at: [f32; 2],
-    ) -> Result<NodeId, HostError> {
-        let [low, high] = range;
-        if !(20..high).contains(&low) || high > 24_000 {
-            return Err(refused(&"choose a valid frequency range"));
-        }
-        if !draft
-            .document()
-            .node(spectrum)
-            .is_some_and(|node| node.definition.id.as_str() == "org.orange.audio/spectrum")
-        {
-            return Err(refused(&"select a range on an Audio spectrum node"));
-        }
-        let destination = port_ref((spectrum, "stream"))?;
-        let from = draft
-            .document()
-            .root()
-            .edges
-            .values()
-            .find(|edge| edge.to == destination)
-            .map(|edge| edge.from.clone())
-            .ok_or_else(|| refused(&"connect an audio source to the spectrum first"))?;
-        let definition = if trigger {
-            "org.orange.audio/band-trigger"
-        } else {
-            "org.orange.audio/live-band-level"
-        };
-        let (node, mut commands) = self.new_node_commands(draft, definition, at)?;
-        for (port, hz) in [("low_hz", low), ("high_hz", high)] {
-            let text = literal("core/f64@1", &hz.to_string()).map_err(HostError::Variable)?;
-            commands.push(DocCommand::SetLiteral {
-                port: port_ref((node, port))?,
-                literal: Some(serde_json::from_str(&text).map_err(|error| refused(&error))?),
-            });
-        }
-        let edge = serde_json::from_value(json!({
-            "id": draft.fresh_id("edge"), "from": from, "to": {"node": node, "port": "stream"}
-        }))
-        .map_err(|error| refused(&error))?;
-        commands.push(DocCommand::Connect { edge });
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
     }

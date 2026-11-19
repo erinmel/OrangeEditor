@@ -80,13 +80,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     host.set_input(&mut draft, (greater, "b"), Some("50"))?;
     fs::write(".artifacts/ui-audit/graphs/propagation.json", draft.text()?)?;
     let mut draft = host.draft(&orange_host::new_document()?)?;
-    let manual = host.add_node(&mut draft, "core/on-manual", [0.0, 0.0])?;
-    let input = host.add_node(&mut draft, orange_audio::AUDIO_IN, [0.0, 150.0])?;
+    let input = host.add_node(&mut draft, orange_audio::AUDIO_SOURCE, [0.0, 150.0])?;
     let output = host.add_node(&mut draft, orange_audio::AUDIO_OUT, [310.0, 150.0])?;
-    let band = host.add_node(&mut draft, orange_audio::ON_BAND_LEVEL, [0.0, 390.0])?;
-    let _ = band;
-    host.connect(&mut draft, (manual, "then"), (input, "in"))?;
-    host.connect(&mut draft, (input, "then"), (output, "in"))?;
     host.connect(&mut draft, (input, "stream"), (output, "stream"))?;
     for mut connection in host.declarations(&draft).connections {
         connection.settings = serde_json::json!({"device": orange_audio::NULL_DEVICE});

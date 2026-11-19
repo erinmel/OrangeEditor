@@ -423,8 +423,7 @@ fn band_outputs_are_ordered_by_frequency() {
         .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
         .unwrap();
     for range in [[2_000, 3_000], [60, 120], [400, 800]] {
-        host.add_filtered_audio_band(&mut draft, splitter, range)
-            .unwrap();
+        host.add_audio_band(&mut draft, splitter, range).unwrap();
     }
     let graph = host.draft_view(&draft).unwrap();
     let node = graph.nodes.iter().find(|node| node.id == splitter).unwrap();
@@ -451,7 +450,7 @@ fn dragging_a_band_edge_resizes_the_band() {
     let splitter = host
         .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [0.0, 0.0])
         .unwrap();
-    host.add_filtered_audio_band(&mut draft, splitter, [100, 1_000])
+    host.add_audio_band(&mut draft, splitter, [100, 1_000])
         .unwrap();
     let mut session = Session::new();
     session.graph = host.draft_view(&draft).unwrap();

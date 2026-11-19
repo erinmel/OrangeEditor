@@ -188,7 +188,7 @@ fn bands(settings: &Map<String, Json>, streams: bool) -> Result<Vec<BandSpec>, S
             Ok(BandSpec {
                 listening,
                 rule: Rule::parse(band, false)?,
-                level: (!streams || band.get("legacy_level").and_then(Json::as_bool) == Some(true))
+                level: (!streams)
                     .then(|| port(&format!("band_level#{id}")))
                     .transpose()?,
                 above: route("above_port", "band_above")?,

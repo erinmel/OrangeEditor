@@ -2739,17 +2739,6 @@ fn field_text(value: &str) -> String {
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
 fn port_title(port: &PortView) -> String {
-    if let Some((base, _)) = port.id.split_once('#')
-        && let Some(name) = &port.label
-        && let Some(label) = match base {
-            "band_level" => Some("band-port-level"),
-            "band_above" => Some("band-port-above"),
-            "band_below" => Some("band-port-below"),
-            _ => None,
-        }
-    {
-        return tf(label, &[("name", name.as_str().into())]);
-    }
     step_label(port)
         .or_else(|| port.label.clone())
         .unwrap_or_else(|| crate::port_label(&port.id))
@@ -3292,8 +3281,7 @@ mod tests {
             };
             assert_eq!(owner, spectrum);
             assert!(range[0] < range[1]);
-            host.add_filtered_audio_band(&mut draft, owner, range)
-                .unwrap();
+            host.add_audio_band(&mut draft, owner, range).unwrap();
         }
         let placed = host.draft_view(&draft).unwrap();
         assert_eq!(placed.nodes.len(), 2);
@@ -3404,10 +3392,8 @@ mod tests {
                 [position.x, position.y],
             )
             .unwrap();
-        host.add_filtered_audio_band(&mut draft, node, [400, 600])
-            .unwrap();
-        host.add_filtered_audio_band(&mut draft, node, [1000, 1100])
-            .unwrap();
+        host.add_audio_band(&mut draft, node, [400, 600]).unwrap();
+        host.add_audio_band(&mut draft, node, [1000, 1100]).unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
         canvas.load(&graph);

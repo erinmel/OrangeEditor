@@ -1,54 +1,11 @@
 //! Bounded, logarithmic spectrum snapshots on a worker, outside capture callbacks.
-use crate::{Analyzing, EmitError, InputShared, Lifecycle, SILENCE_DB, Value};
-use orange_sdk::{ListRepr, Publisher};
-use std::{f64::consts::TAU, sync::Arc, thread, time::Duration};
+use crate::SILENCE_DB;
+use std::f64::consts::TAU;
 
 pub(crate) const FRAMES: usize = 4096;
 const BUCKETS: usize = 96;
 const MIN_HZ: f64 = 20.0;
 const MAX_HZ: f64 = 24_000.0;
-const PACE: Duration = Duration::from_millis(50);
-
-pub(crate) fn watch(
-    input: Arc<InputShared>,
-    publisher: Publisher,
-) -> Result<Box<dyn Send>, String> {
-    let life = Arc::new(Lifecycle::new());
-    let running = Arc::clone(&life);
-    thread::Builder::new()
-        .name("orange-audio-spectrum".into())
-        .spawn(move || {
-            let mut fft = Analyzer::new();
-            let mut samples = Vec::new();
-            while let Ok(ring) = input.wait_ring(None, &|| running.stopped()) {
-                let channels = usize::from(ring.channels.max(1));
-                samples.resize(FRAMES * channels, 0.0);
-                let mut previous = 0;
-                while !running.stopped() && !ring.closed() {
-                    let written = ring.written();
-                    if written != previous && ring.recent(&mut samples) == samples.len() {
-                        previous = written;
-                        let values = fft.measure(&samples, channels, ring.rate);
-                        if publisher.publish(Value::List(Arc::new(ListRepr::F64(Box::new(values)))))
-                            == Err(EmitError::Closed)
-                        {
-                            return;
-                        }
-                    }
-                    if !running.rest(PACE) {
-                        return;
-                    }
-                }
-                if publisher.publish(Value::List(Arc::new(ListRepr::F64(Box::new([])))))
-                    == Err(EmitError::Closed)
-                {
-                    return;
-                }
-            }
-        })
-        .map_err(|error| error.to_string())?;
-    Ok(Box::new(Analyzing(life)))
-}
 
 pub(crate) struct Analyzer {
     window: Vec<f64>,

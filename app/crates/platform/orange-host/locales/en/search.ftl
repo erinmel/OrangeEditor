@@ -46,8 +46,6 @@ alias-core-wait = delay, sleep, pause
 alias-core-set-variable = assign, store, write
 alias-core-get-variable = read, load
 alias-core-branch = if, else, condition
-alias-org-orange-audio-input-level = microphone, mic, input, volume, loudness
-alias-org-orange-audio-on-level = microphone, mic, sound, clap, loud
 alias-org-orange-audio-play = sound, audio, speaker, music
 
 purpose-core-on-manual = Starts when you press Run.
@@ -59,7 +57,6 @@ purpose-core-on-event = Starts when an event is emitted.
 purpose-core-on-variable-changed = Starts when a variable changes.
 purpose-core-on-watch = Starts when a watched value changes, rises to true, or crosses a threshold or range.
 alias-core-on-watch = on watch, threshold, condition, rising, range
-purpose-org-orange-audio-on-level = Starts when the microphone gets loud.
 purpose-core-wait = Waits for a while, then goes on.
 purpose-core-branch = Goes one way if true, the other if false.
 purpose-core-whole-number = A whole number you type.

@@ -4,9 +4,9 @@ use crate::{
     Analyzing, BAD_INPUT, Call, Control, DEVICE_CHECK, Definition, EmitError, Emitter,
     INPUT_ADAPTER, InputShared, KernelFault, Lifecycle, Listening, Map, OUTPUT_ADAPTER,
     OutputSession, PACKAGE, RecordRepr, SILENCE_DB, STREAM_TYPE, ServiceNode, ServicePackage,
-    ServiceSource, Session, SourceControl, Stop, Value, band_trigger, input_of, number_setting,
-    play_stream, source, stream_gain, stream_input, stream_value, threshold_settings, transient,
-    transient_settings, unit_gain, watch_windows, when_finished,
+    ServiceSource, Session, SourceControl, Stop, Value, input_of, number_setting, play_stream,
+    source, stream_gain, stream_input, stream_value, transient, transient_settings, unit_gain,
+    watch_windows, when_finished,
 };
 use orange_sdk::{Arguments, DefinitionError, LiveSource, Publisher};
 use serde_json::{Value as Json, json};
@@ -17,8 +17,6 @@ use std::thread;
 pub const AUDIO_SOURCE: &str = "org.orange.audio/audio-source";
 /// Reports the stream's negotiated rate and number of channels.
 pub const AUDIO_FORMAT: &str = "org.orange.audio/audio-format";
-/// Shows the live frequency spectrum of a wired stream.
-pub const AUDIO_SPECTRUM: &str = "org.orange.audio/spectrum";
 /// Continuous frequency plot and stable, user-defined band outputs.
 pub const MULTIBAND_SPECTRUM: &str = "org.orange.audio/multiband-spectrum";
 /// Full-stream RMS, threshold state and a configurable trigger.
@@ -29,10 +27,6 @@ pub const NOISE_GATE: &str = "org.orange.audio/noise-gate";
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
 /// Measures a stream's level in dBFS continuously.
 pub const LIVE_LEVEL: &str = "org.orange.audio/live-level";
-/// Measures a selected band of a stream in dBFS continuously.
-pub const LIVE_BAND_LEVEL: &str = "org.orange.audio/live-band-level";
-/// Fires when a wired stream's selected band crosses its threshold.
-pub const BAND_TRIGGER: &str = "org.orange.audio/band-trigger";
 /// Fires when a stream has a hit in a selected band.
 pub const TRANSIENT: &str = "org.orange.audio/transient";
 /// Fires when the wired file source plays to its end.
@@ -255,37 +249,6 @@ impl LiveSource for Meter {
     }
 }
 
-struct BandTrigger;
-impl ServiceSource for BandTrigger {
-    fn start_with_arguments(
-        &self,
-        _session: Option<Arc<dyn Session>>,
-        settings: &Map<String, Json>,
-        arguments: &Arguments,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String> {
-        band_trigger(
-            input_stream(arguments)?,
-            band_listening(settings, arguments, 50.0)?,
-            settings,
-            emitter,
-        )
-    }
-}
-
-struct Spectrum;
-impl LiveSource for Spectrum {
-    fn start(
-        &self,
-        _session: Option<Arc<dyn Session>>,
-        _settings: &Map<String, Json>,
-        arguments: &Arguments,
-        publisher: Publisher,
-    ) -> Result<Box<dyn Send>, String> {
-        crate::spectrum::watch(input_stream(arguments)?, publisher)
-    }
-}
-
 struct ReactiveAudio {
     spectrum: bool,
     streams: bool,
@@ -382,12 +345,6 @@ fn choice(ty: &str, variant: &str) -> Json {
     json!({"type": ty, "value": {"variant": variant}})
 }
 
-fn band_inputs(definition: Definition) -> Definition {
-    definition
-        .input_default("low_hz", F64, zero())
-        .input_default("high_hz", F64, zero())
-}
-
 fn live(name: &str, label: &str, description: &str) -> Definition {
     Definition::read(PACKAGE, name, label)
         .description(description)
@@ -441,34 +398,6 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Reports the rate and channel count of a stream.",
     ))
     .live("format", FORMAT_TYPE);
-    let spectrum = stream_input(live("spectrum", "Audio spectrum", "Shows the stream’s frequency spectrum. Drag across it to select a band and add a meter or threshold trigger."))
-        .keywords("fft, frequency, bands, spectrum, bass, multiband, audio reactive")
-        .live("spectrum", "core/list@1<core/f64@1>").hidden();
-    let spectrum_bands = entry(
-        "multiband-spectrum",
-        "Audio Spectrum",
-        "Draw frequency bands on the live spectrum and wire their levels and threshold events.",
-    )
-    .keywords("fft, band level, band trigger, bass, multiband, frequency, spectrum, audio reactive")
-    .setting("bands", json!({"type": "object"}))
-    .live("spectrum", "core/list@1<core/f64@1>")
-    .source_outputs("band_level", Some(F64), crate::reactive::MAX_BANDS)
-    .source_outputs("band_above", None, crate::reactive::MAX_BANDS)
-    .source_outputs("band_below", None, crate::reactive::MAX_BANDS)
-    .hidden();
-    let spectrum_streams = entry(
-        "multiband-spectrum",
-        "Frequency Splitter",
-        "Draw frequency bands on the live spectrum. Each band outputs its filtered audio stream.",
-    )
-    .version(2)
-    .keywords("fft, bandpass, bass, multiband, frequency, audio spectrum, band trigger, audio filter, split audio")
-    .setting("bands", json!({"type": "object"}))
-    .live("spectrum", "core/list@1<core/f64@1>")
-    .source_outputs("band_stream", Some(STREAM_TYPE), crate::reactive::MAX_BANDS)
-    // A passive source has no execution outcome, even with no bands configured.
-    .source_outputs("band_above", None, 0)
-    .hidden();
     let frequency_splitter = entry(
         "multiband-spectrum",
         "Frequency Splitter",
@@ -479,9 +408,8 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .setting("bands", json!({"type": "object"}))
     .live("spectrum", "core/list@1<core/f64@1>")
     .source_outputs("band_stream", Some(STREAM_TYPE), crate::reactive::MAX_BANDS)
-    .source_outputs("band_level", Some(F64), crate::reactive::MAX_BANDS)
-    .source_outputs("band_above", None, crate::reactive::MAX_BANDS)
-    .source_outputs("band_below", None, crate::reactive::MAX_BANDS);
+    // A passive source has no execution outcome, even with no bands configured.
+    .source_outputs("band_above", None, 0);
     let noise = entry(
         "noise-level",
         "Audio Level Trigger",
@@ -511,22 +439,6 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Measures a stream's level in dBFS as it changes.",
     )
     .keywords("volume, loudness, meter");
-    let band = band_inputs(
-        meter(
-            "live-band-level",
-            "Band level",
-            "Measures a band of a stream in dBFS as it changes. Leave a side at 0 to keep it open.",
-        )
-        .keywords("bass, frequency, loudness, meter")
-        .hidden(),
-    );
-    let trigger = threshold_settings(band_inputs(entry(
-        "band-trigger",
-        "Band trigger",
-        "Fires when a frequency band reaches its threshold. The level output carries the measured dBFS at the trigger.",
-    )).keywords("when, loud, bass, frequency, threshold, multi-band, audio reactive")
-        .then_label("Triggered").payload(F64)
-        .setting("window_ms", number_setting(5.0, 1_000.0, 50.0)), 50.0).hidden();
     let transient = transient_settings(
         entry(
             "transient",
@@ -569,24 +481,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .live(&gate.build(), NoiseGate)?
         .source(&audio_out.build(), LiveAudioOut)?
         .live(&audio_format.build(), AudioFormat)?
-        .live(&spectrum.build(), Spectrum)?
         .live(&level.build(), Meter { band: false })?
-        .live(&band.build(), Meter { band: true })?
-        .source(&trigger.build(), BandTrigger)?
-        .source(
-            &spectrum_bands.build(),
-            ReactiveAudio {
-                spectrum: true,
-                streams: false,
-            },
-        )?
-        .source(
-            &spectrum_streams.build(),
-            ReactiveAudio {
-                spectrum: true,
-                streams: true,
-            },
-        )?
         .source(
             &frequency_splitter.build(),
             ReactiveAudio {

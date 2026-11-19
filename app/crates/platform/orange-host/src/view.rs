@@ -15,28 +15,18 @@ fn spectrum_band_label(node: &NodeInstance, key: &PortKey) -> Option<String> {
     }
     let id = key.instance()?;
     let bands = node.config.get("bands")?.as_object()?;
-    let band = match key.port().as_str() {
-        "band_stream" => {
-            let band = bands.get(&id.to_string())?;
-            let low = band["low_hz"].as_f64()?;
-            let high = band["high_hz"].as_f64()?;
-            let name = band["name"].as_str()?;
-            return Some(if name == format!("Band {}", u32::from(id) + 1) {
-                format!("{low}–{high} Hz")
-            } else {
-                format!("{name} · {low}–{high} Hz")
-            });
-        }
-        "band_level" => bands.get(&id.to_string()),
-        "band_above" => bands
-            .values()
-            .find(|band| band["above_port"].as_u64() == Some(u64::from(id))),
-        "band_below" => bands
-            .values()
-            .find(|band| band["below_port"].as_u64() == Some(u64::from(id))),
-        _ => None,
-    }?;
-    band.get("name")?.as_str().map(str::to_owned)
+    if key.port().as_str() != "band_stream" {
+        return None;
+    }
+    let band = bands.get(&id.to_string())?;
+    let low = band["low_hz"].as_f64()?;
+    let high = band["high_hz"].as_f64()?;
+    let name = band["name"].as_str()?;
+    Some(if name == format!("Band {}", u32::from(id) + 1) {
+        format!("{low}–{high} Hz")
+    } else {
+        format!("{name} · {low}–{high} Hz")
+    })
 }
 
 /// One port of a node.
@@ -618,8 +608,7 @@ impl Host {
             for instance in instances {
                 let key = PortKey::new(port.port_id.clone(), instance);
                 let id = key.to_string();
-                if node.definition.version >= 2
-                    && node.definition.id.as_str() == "org.orange.audio/multiband-spectrum"
+                if node.definition.id.as_str() == "org.orange.audio/multiband-spectrum"
                     && id == "spectrum"
                     && !wired(node.id, &id, input)
                 {
