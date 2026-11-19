@@ -266,6 +266,14 @@ pub fn exact_type(ty: &str) -> String {
     ty.replace("core/", "").replace("@1", "")
 }
 
+/// How much a message a graph logs matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteLevel {
+    Info,
+    Warning,
+    Error,
+}
+
 /// A wire that needs a conversion chosen: its two ends, the conversions that join
 /// them, and where the list is shown.
 #[derive(Debug, Clone)]
@@ -425,6 +433,13 @@ pub struct Editor {
     search: String,
     palette_highlighted: usize,
     log_events: bool,
+    /// Whether successful steps and live values are written to the Log as they happen;
+    /// off, the Log has the run's lifecycle, warnings, faults and the graph's own
+    /// messages, and nothing is formatted for the rest.
+    live_trace: bool,
+    /// The last message a graph logged and how many times in a row, so repeats share
+    /// one line.
+    last_note: Option<(String, u32)>,
     packages_tab: bool,
     /// What the Packages tab is filtered by.
     package_search: String,
@@ -1139,7 +1154,39 @@ impl Editor {
             .is_some_and(|document| document.flow.is_some())
     }
 
+    /// A message a graph logged: `level` is info, warning or error. A message the same
+    /// as the last one adds to its count instead of a new line.
+    pub fn note(&mut self, level: NoteLevel, text: &str) {
+        let line = match level {
+            NoteLevel::Info => text.to_owned(),
+            NoteLevel::Warning => tf("log-warning", &[("text", text.into())]),
+            NoteLevel::Error => tf("log-error", &[("text", text.into())]),
+        };
+        if let Some((last, count)) = &mut self.last_note
+            && *last == line
+            && let Some(shown) = self.log.back_mut()
+        {
+            *count += 1;
+            *shown = tf(
+                "log-repeated",
+                &[("line", line.as_str().into()), ("count", (*count).into())],
+            );
+            return;
+        }
+        self.say(line.clone());
+        self.last_note = Some((line, 1));
+    }
+
+    /// Says that `count` messages a graph logged were dropped because they came faster
+    /// than the Log takes them.
+    pub fn notes_dropped(&mut self, count: u64) {
+        if count > 0 {
+            self.say(tf("log-dropped", &[("count", count.into())]));
+        }
+    }
+
     fn say(&mut self, line: String) {
+        self.last_note = None;
         if self.log.len() >= MAX_LOG_LINES {
             let _ = self.log.pop_front();
         }
@@ -1323,7 +1370,26 @@ impl Editor {
             if !ours {
                 continue;
             }
-            let said = lines(&event, &document.names);
+            // Only what the Log will show is formatted: successful steps and live values
+            // are written only while Live trace is on.
+            let failed_step = matches!(&event.kind, FlowEvent::Node(step)
+            if step.fault.is_some()
+                || matches!(
+                    step.outcome,
+                    orange_host::ControlOutcome::Failed | orange_host::ControlOutcome::TimedOut
+                ));
+            let logged = match &event.kind {
+                FlowEvent::Node(_) => self.live_trace || failed_step,
+                FlowEvent::Ports(_) | FlowEvent::PortsCleared(_) | FlowEvent::Variables(_) => {
+                    self.live_trace
+                }
+                _ => true,
+            };
+            let said = if logged {
+                lines(&event, &document.names)
+            } else {
+                Vec::new()
+            };
             // The canvas follows the run: a step can pulse along an execution wire, and the
             // latest value on an output shows beside it.
             match &event.kind {
@@ -2252,6 +2318,9 @@ impl Editor {
     pub fn log_panel(&mut self, ui: &mut egui::Ui) {
         ui.set_min_height(ui.available_height());
         if self.log_events {
+            let _ = ui
+                .checkbox(&mut self.live_trace, t("live-trace"))
+                .on_hover_text(t("live-trace-hint"));
             egui::ScrollArea::vertical()
                 .id_salt("editor-events")
                 .stick_to_bottom(true)
@@ -2582,6 +2651,55 @@ mod tests {
         assert!(palette(&host, "no such node anywhere").is_empty());
     }
 
+    /// Without Live trace, a run still updates what the editor shows but writes no
+    /// line for each value; the Log keeps the run's lifecycle.
+    #[test]
+    fn a_run_without_live_trace_updates_values_but_logs_no_value_lines() {
+        let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let bound = host.bind(&self::graph()).unwrap();
+        editor.open(&mut host, "graph.json", bound);
+        editor.run(&mut host);
+        let go = editor.graph().unwrap().nodes[0].id;
+        editor.trigger(&host, go);
+        let started = Instant::now();
+        loop {
+            let _ = editor.take_events(&events);
+            let set = editor
+                .document
+                .as_ref()
+                .and_then(|document| document.values.get(&id(100)))
+                .is_some_and(|value| value == "7");
+            if set {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the variable was set"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!editor.log().any(|line| line.contains("count =")));
+        assert!(editor.log().count() > 0, "the run's start is still logged");
+    }
+
+    /// A message a graph logs again and again shares one line with a count.
+    #[test]
+    fn repeated_graph_messages_share_one_line() {
+        let mut editor = Editor::new();
+        editor.note(NoteLevel::Warning, "loud");
+        editor.note(NoteLevel::Warning, "loud");
+        editor.note(NoteLevel::Warning, "loud");
+        editor.note(NoteLevel::Info, "quiet");
+        let lines: Vec<_> = editor.log().collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("loud") && lines[0].contains('3'),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "quiet");
+    }
+
     #[test]
     fn a_document_is_shown_checked_run_and_triggered_without_a_window() {
         let (mut host, events) = Host::new(HostOptions::default()).unwrap();
@@ -2633,6 +2751,8 @@ mod tests {
         let bound = host.bind(&self::graph()).unwrap();
         editor.open(&mut host, "graph.json", bound);
         assert!(editor.problems().is_empty());
+        // Variable changes are written to the Log only while Live trace is on.
+        editor.live_trace = true;
         editor.run(&mut host);
         assert!(editor.is_running());
         let go = editor.graph().unwrap().nodes[0].id;
@@ -2769,6 +2889,8 @@ mod tests {
         assert!(editor.set_input(&mut host, (set, "value"), Some("3")));
         assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
         assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        // Variable changes are written to the Log only while Live trace is on.
+        editor.live_trace = true;
         editor.run(&mut host);
         assert!(editor.is_running());
         assert!(editor.set_input(&mut host, (set, "value"), Some("4")));
@@ -2817,6 +2939,8 @@ mod tests {
         assert!(editor.connect(&mut host, (number, "result"), (set, "value")));
         assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
         assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        // Variable changes are written to the Log only while Live trace is on.
+        editor.live_trace = true;
         editor.run(&mut host);
         editor.trigger(&host, trigger);
         let started = Instant::now();

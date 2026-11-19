@@ -7,6 +7,7 @@
 #[cfg(test)]
 mod gallery;
 mod keyboard;
+mod logbook;
 mod picture;
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
@@ -45,6 +46,8 @@ struct Shot {
 
 struct Desktop {
     keyboard: keyboard::Keyboard,
+    /// Messages Log message nodes wrote, waiting for the editor's Log.
+    logbook: logbook::LogBook,
     host: Host,
     events: Receiver<HostEvent>,
     editor: Editor,
@@ -88,7 +91,13 @@ impl Drop for Desktop {
 
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        if self.editor.take_events(&self.events) {
+        // What the graph logged, between frames, then the run's own events.
+        let (notes, dropped) = self.logbook.take();
+        for (level, text) in &notes {
+            self.editor.note(*level, text);
+        }
+        self.editor.notes_dropped(dropped);
+        if self.editor.take_events(&self.events) || !notes.is_empty() {
             // A bounded poll may leave a backlog, including events from retired flows.
             ui.ctx().request_repaint();
         }
@@ -339,8 +348,10 @@ fn start(
         ..HostOptions::default()
     };
     let keyboard = keyboard::Keyboard::default();
+    let logbook = logbook::LogBook::default();
     let services = vec![
         keyboard.package().map_err(|error| error.to_string())?,
+        logbook.package().map_err(|error| error.to_string())?,
         orange_net::package(),
         orange_files::package(),
         orange_audio::package(),
@@ -387,6 +398,7 @@ fn start(
     }
     Ok(Desktop {
         keyboard,
+        logbook,
         host,
         events,
         editor,

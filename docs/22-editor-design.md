@@ -182,6 +182,15 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   or document-wide errors block a new run. Rejected live updates keep the last
   validated snapshot.
 
+### 4.1 Log
+
+The Log holds what a person acts on: the run's lifecycle, warnings, faults, and the
+messages a graph writes with **Log message** (information, warning or error). A message
+repeated in a row shares one line with a count; messages that come faster than the
+Log takes them (more than 256 waiting) are counted and dropped. Successful steps and
+live values are written only while **Live trace** is on; without it they still reach
+the canvas (pulses, value pills) and Properties, but no text is formatted for them.
+
 ## 5. Variables and connections
 
 Implemented 2026-11-16 (FR-114, FR-116); the drag handle and menu use plain text
