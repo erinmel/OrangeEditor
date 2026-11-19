@@ -2588,10 +2588,6 @@ fn port_type_label(definition: &str, ty: &str) -> String {
             | "org.orange.math/greater-or-equal"
             | "org.orange.math/less"
             | "org.orange.math/less-or-equal" => return t("type-ordered").into(),
-            "org.orange.math/float-greater"
-            | "org.orange.math/float-greater-or-equal"
-            | "org.orange.math/float-less"
-            | "org.orange.math/float-less-or-equal" => return t("type-float").into(),
             _ => {}
         }
     }
@@ -3437,10 +3433,6 @@ mod tests {
         assert_eq!(short_type("org.orange.audio/stream@1"), "Audio stream");
         assert_eq!(short_type("$T"), "T");
         assert_eq!(port_type_label("org.orange.math/greater", "$T"), "Ordered");
-        assert_eq!(
-            port_type_label("org.orange.math/float-greater", "$T"),
-            "Float"
-        );
         // The way in and the way on read as Enter and Exit; other ports keep their names.
         assert_eq!(
             step_label(&port("in", true, true)).as_deref(),

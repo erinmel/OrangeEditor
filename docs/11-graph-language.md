@@ -267,7 +267,7 @@ Aggregate `eq` requires the contained types to implement `eq`; wrapping a float 
 
 The initial host supports explicit package structural derives for `eq`, `hash`, `display` and `serialize`, checking every field/payload before registry publication. Other derives report unsupported capability; packages may supply explicit implementations instead. The host does not invent a default enum variant or ordering rule. Recursive nominal schemas remain legal, but a cyclic or over-budget automatic derivation has no supported proof and requires an explicit implementation. Constraint-family membership is separate from operation support: `duration: num` supplies add/subtract, not multiply/divide. Capability queries prove declarations only. Equality and order nodes exist: the bundled `org.orange.math/equal` and `not-equal` (`T: eq`) and `less`, `less-or-equal`, `greater` and `greater-or-equal` (`T: ord`), listed in [12 §4.1](12-graph-data-structures.md). They execute the host-owned subset only: Core orders for integers, bool (false before true), string (code point), duration and timestamp; native Core equality of bool, integers, string, bytes, duration, timestamp and option/list/map of them (maps independent of insertion order); and equality of package records and enums whose `eq` is a declared structural derive (equal field presence or tags, then equal members). A type that validation accepts but this subset lacks, such as `list<json>`, a record or enum whose `eq` is a package implementation (also nested inside a derive), `ord` on a package type or json/error/result, is refused at compile time with `KernelUnsupportedType`. Package-implemented constraint kernels, `hash`/`display`/`serialize`/`default` kernels, float total order and value-level serialization checks are later work.
 
-Comparison merge (2026-11-18): `less`, `less-or-equal`, `greater` and `greater-or-equal` declare `T: compare` instead of `T: ord`, so one node compares whole numbers, decimals, text and times; both inputs still share one `T`, so a whole number meets a decimal only through a visible conversion (§6). `ord` keeps its meaning everywhere else (Min/Max, Switch, map keys). The float-only `float-less`, `float-less-or-equal`, `float-greater` and `float-greater-or-equal` stay registered and runnable for saved graphs and are hidden from search. `equal` and `not-equal` keep `T: eq`; IEEE equality stays on `float-equal`.
+Comparison merge (2026-11-18): `less`, `less-or-equal`, `greater` and `greater-or-equal` declare `T: compare` instead of `T: ord`, so one node compares whole numbers, decimals, text and times; both inputs still share one `T`, so a whole number meets a decimal only through a visible conversion (§6). `ord` keeps its meaning everywhere else (Min/Max, Switch, map keys). The float-only `float-less`, `float-less-or-equal`, `float-greater` and `float-greater-or-equal` are removed; nothing had shipped that used them. `equal` and `not-equal` keep `T: eq`; IEEE equality stays on `float-equal`.
 
 ### 5.5 Generics and inference
 
@@ -355,11 +355,10 @@ results lie in the principal ranges, and `arctangent2` follows the IEEE signed-z
 quadrant rules (atan2(±0, -x) is ±π; atan2(±0, +0) is ±0). They use the platform
 library, so last-bit results are platform-scoped like the logarithms.
 
-Ten predicates return `core/bool@1`, have empty config and never fault: they
-answer for NaN and infinities. `float-equal`, `float-not-equal`, `float-less`,
-`float-less-or-equal`, `float-greater` and `float-greater-or-equal` are the IEEE
-comparisons: NaN is unordered (every comparison is false except not-equal) and
--0 equals +0. `total-order-less` is IEEE 754 totalOrder: -NaN < -∞ < … < -0 < +0 <
+Six predicates return `core/bool@1`, have empty config and never fault: they
+answer for NaN and infinities. `float-equal` and `float-not-equal` are the IEEE
+equality: NaN equals nothing and -0 equals +0. Ordering decimals is the shared
+`less`, `less-or-equal`, `greater` and `greater-or-equal` (§5.4 `compare`). `total-order-less` is IEEE 754 totalOrder: -NaN < -∞ < … < -0 < +0 <
 … < +∞ < +NaN, with NaNs of one sign ordered by payload; it is a strict total order
 on bit patterns. `is-nan`, `is-finite` and `is-infinite` classify one value. These
 are the explicit float comparison nodes §5.4 refers to; f32/f64 still implement no

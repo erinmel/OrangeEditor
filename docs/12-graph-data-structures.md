@@ -781,7 +781,7 @@ Semantics: [11 §5.6](11-graph-language.md).
 | `float-clamp` | `value`, `min`, `max` |
 | `sine`, `cosine`, `tangent`, `arcsine`, `arccosine`, `arctangent` | `value` |
 | `arctangent2` | `y`, `x` |
-| `float-equal`, `float-not-equal`, `float-less`, `float-less-or-equal`, `float-greater`, `float-greater-or-equal`, `total-order-less` (predicates) | `a`, `b` |
+| `float-equal`, `float-not-equal`, `total-order-less` (predicates) | `a`, `b` |
 | `is-nan`, `is-finite`, `is-infinite` (predicates) | `value` |
 
 Every config schema is closed. Non-predicates have only `float_policy`: finite

@@ -900,21 +900,6 @@ impl Host {
                 continue;
             }
             presentations.extend(package.presentations().iter().cloned());
-        }
-        // The float-only orderings stay runnable for saved graphs; search offers the
-        // shared comparisons instead.
-        for superseded in orange_bundled::SUPERSEDED {
-            if let Ok(id) = superseded.parse() {
-                presentations
-                    .entry(DefinitionRef { id, version: 1 })
-                    .or_insert_with(Presentation::default)
-                    .hidden = true;
-            }
-        }
-        for package in &packages {
-            if disabled.contains(package.id()) {
-                continue;
-            }
             for (locale, catalog) in package.catalogs() {
                 catalogs.add(locale, catalog).map_err(|e| {
                     start(&format!("package {} text in {locale}: {e}", package.id()))

@@ -46,10 +46,6 @@ pub enum FloatOperation {
     Arctangent2,
     Equal,
     NotEqual,
-    Less,
-    LessOrEqual,
-    Greater,
-    GreaterOrEqual,
     TotalOrderLess,
     IsNan,
     IsFinite,
@@ -57,7 +53,7 @@ pub enum FloatOperation {
 }
 
 impl FloatOperation {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 29] = [
         Self::SquareRoot,
         Self::Exponential,
         Self::NaturalLog,
@@ -83,10 +79,6 @@ impl FloatOperation {
         Self::Arctangent2,
         Self::Equal,
         Self::NotEqual,
-        Self::Less,
-        Self::LessOrEqual,
-        Self::Greater,
-        Self::GreaterOrEqual,
         Self::TotalOrderLess,
         Self::IsNan,
         Self::IsFinite,
@@ -120,10 +112,6 @@ impl FloatOperation {
             Self::Arctangent2 => "org.orange.math/arctangent2",
             Self::Equal => "org.orange.math/float-equal",
             Self::NotEqual => "org.orange.math/float-not-equal",
-            Self::Less => "org.orange.math/float-less",
-            Self::LessOrEqual => "org.orange.math/float-less-or-equal",
-            Self::Greater => "org.orange.math/float-greater",
-            Self::GreaterOrEqual => "org.orange.math/float-greater-or-equal",
             Self::TotalOrderLess => "org.orange.math/total-order-less",
             Self::IsNan => "org.orange.math/is-nan",
             Self::IsFinite => "org.orange.math/is-finite",
@@ -145,10 +133,6 @@ impl FloatOperation {
             | Self::Remainder
             | Self::Equal
             | Self::NotEqual
-            | Self::Less
-            | Self::LessOrEqual
-            | Self::Greater
-            | Self::GreaterOrEqual
             | Self::TotalOrderLess => &["a", "b"],
             Self::Clamp => &["value", "min", "max"],
             _ => &["value"],
@@ -166,10 +150,6 @@ impl FloatOperation {
             self,
             Self::Equal
                 | Self::NotEqual
-                | Self::Less
-                | Self::LessOrEqual
-                | Self::Greater
-                | Self::GreaterOrEqual
                 | Self::TotalOrderLess
                 | Self::IsNan
                 | Self::IsFinite
@@ -300,10 +280,6 @@ impl ResolvedFloat {
                     // IEEE comparisons: NaN is unordered and -0 equals +0.
                     Equal => Some(a == b),
                     NotEqual => Some(a != b),
-                    Less => Some(a < b),
-                    LessOrEqual => Some(a <= b),
-                    Greater => Some(a > b),
-                    GreaterOrEqual => Some(a >= b),
                     TotalOrderLess => Some(a.total_cmp(&b).is_lt()),
                     IsNan => Some(a.is_nan()),
                     IsFinite => Some(a.is_finite()),

@@ -86,10 +86,6 @@ fn answer(op: Op) -> (Vec<f64>, f64) {
         Op::Arctangent2 => (vec![0.0, 1.0], 0.0),
         Op::Equal => (vec![1.0, 1.0], 1.0),
         Op::NotEqual => (vec![1.0, 2.0], 1.0),
-        Op::Less => (vec![1.0, 2.0], 1.0),
-        Op::LessOrEqual => (vec![2.0, 2.0], 1.0),
-        Op::Greater => (vec![1.0, 2.0], 0.0),
-        Op::GreaterOrEqual => (vec![1.0, 2.0], 0.0),
         Op::TotalOrderLess => (vec![-0.0, 0.0], 1.0),
         Op::IsNan => (vec![1.0], 0.0),
         Op::IsFinite => (vec![1.0], 1.0),
@@ -448,14 +444,6 @@ fn predicates_compare_and_classify_every_ieee_value_without_faults() {
             let unordered = a.is_nan() || b.is_nan();
             assert_eq!(truth(Op::Equal, &[a, b]), !unordered && a == b);
             assert_eq!(truth(Op::NotEqual, &[a, b]), unordered || a != b);
-            for (op, holds) in [
-                (Op::Less, a < b),
-                (Op::LessOrEqual, a <= b),
-                (Op::Greater, a > b),
-                (Op::GreaterOrEqual, a >= b),
-            ] {
-                assert_eq!(truth(op, &[a, b]), !unordered && holds, "{op:?} {a} {b}");
-            }
         }
     }
     // IEEE equality ignores the zero sign; total order separates it and orders NaNs

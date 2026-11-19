@@ -3545,18 +3545,12 @@ mod preview_tests {
     use orange_host::HostOptions;
 
     #[test]
-    fn greater_compares_every_number_kind_and_the_old_float_greater_still_runs() {
+    fn greater_compares_every_number_kind() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
-        // Greater takes whole numbers and decimals alike; the decimal-only node kept
-        // for saved graphs still refuses whole numbers.
+        // Greater takes whole numbers and decimals alike.
         for (definition, valid, invalid) in [
             ("org.orange.math/greater", "core/i64@1", None),
             ("org.orange.math/greater", "core/f64@1", None),
-            (
-                "org.orange.math/float-greater",
-                "core/f64@1",
-                Some("core/i64@1"),
-            ),
         ] {
             let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
             let node = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
