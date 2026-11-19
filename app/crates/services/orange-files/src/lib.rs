@@ -7,7 +7,7 @@
 //! and links that lead out of the folder are refused. An application that does not
 //! want file access leaves the package out.
 //!
-//! A file larger than that is handled in pieces: `size`, `read-range` and
+//! A file larger than that is handled in pieces: `file-info`, `read-range` and
 //! `append-bytes` let a graph walk through it with bounded memory, and `copy` and
 //! `move` have no size limit because they never hold the content.
 //!
@@ -52,8 +52,9 @@ pub const APPEND_TEXT: &str = "org.orange.files/append-text";
 pub const READ_BYTES: &str = "org.orange.files/read-bytes";
 /// Creates or replaces a file from bytes. Inputs `path` and `data`.
 pub const WRITE_BYTES: &str = "org.orange.files/write-bytes";
-/// Lists a directory. Input `path` (empty for the folder itself); output `names`,
-/// sorted, a directory's name ending with `/`.
+/// Lists a directory. Inputs `path` (empty for the folder itself), `pattern` (a glob,
+/// empty for everything) and `recursive`; output `names`, sorted, a directory's name
+/// ending with `/`.
 pub const LIST: &str = "org.orange.files/list";
 /// Says whether a file or directory exists. Input `path`; output `found`.
 pub const EXISTS: &str = "org.orange.files/exists";
@@ -67,16 +68,12 @@ pub const MOVE: &str = "org.orange.files/move";
 pub const COPY: &str = "org.orange.files/copy";
 /// Creates a directory and the directories on its path. Input `path`.
 pub const MAKE_DIRECTORY: &str = "org.orange.files/make-directory";
-/// Removes an empty directory. Input `path`.
-pub const REMOVE_DIRECTORY: &str = "org.orange.files/remove-directory";
 /// Copies a bounded directory tree to a new path. Inputs `path` and `to`.
 pub const COPY_DIRECTORY: &str = "org.orange.files/copy-directory";
 /// Moves a bounded directory tree to a new path. Inputs `path` and `to`.
 pub const MOVE_DIRECTORY: &str = "org.orange.files/move-directory";
 /// Deletes a bounded directory tree. Input `path`.
 pub const DELETE_DIRECTORY: &str = "org.orange.files/delete-directory";
-/// Lists paths filtered by a glob. Inputs `path`, `pattern` and `recursive`.
-pub const LIST_FILTERED: &str = "org.orange.files/list-filtered";
 /// Reports metadata for a file or directory. Input `path`.
 pub const FILE_INFO: &str = "org.orange.files/file-info";
 /// Entry fired when a file in the folder is created, changed or deleted, with its
@@ -197,9 +194,6 @@ impl Folder {
             .append(path, data, MAX_FILE_BYTES)
             .map_err(refused)
     }
-    fn size(&self, path: &str) -> Result<u64, KernelFault> {
-        self.files.size(path).map_err(refused)
-    }
     fn read_range(&self, path: &str, offset: u64, length: u64) -> Result<Vec<u8>, KernelFault> {
         self.files
             .read_range(path, offset, length, MAX_FILE_BYTES)
@@ -211,10 +205,6 @@ impl Folder {
             return Err(TOO_LARGE);
         }
         self.files.append(path, data, u64::MAX).map_err(refused)
-    }
-    fn list(&self, path: &str) -> Result<Vec<Arc<String>>, KernelFault> {
-        let names = self.files.list(path, MAX_ENTRIES).map_err(refused)?;
-        Ok(names.into_iter().map(Arc::new).collect())
     }
     fn exists(&self, path: &str) -> Result<bool, KernelFault> {
         self.files.exists(path).map_err(refused)
@@ -230,9 +220,6 @@ impl Folder {
     }
     fn make_directory(&self, path: &str) -> Result<(), KernelFault> {
         self.files.make_directory(path).map_err(refused)
-    }
-    fn remove_directory(&self, path: &str) -> Result<(), KernelFault> {
-        self.files.remove_directory(path).map_err(refused)
     }
 
     fn list_filtered(
@@ -360,14 +347,11 @@ enum Operation {
     Move,
     Copy,
     MakeDirectory,
-    RemoveDirectory,
-    Size,
     ReadRange,
     AppendBytes,
     CopyDirectory,
     MoveDirectory,
     DeleteDirectory,
-    ListFiltered,
     FileInfo,
 }
 impl ServiceNode for Operation {
@@ -391,12 +375,6 @@ impl ServiceNode for Operation {
             (Self::WriteBytes, [Value::Str(path), Value::Bytes(data)]) => {
                 folder.write(path, data).map(|()| Vec::new())
             }
-            (Self::List, [Value::Str(path)]) => {
-                let names = folder.list(path)?.into_boxed_slice();
-                Ok(vec![Value::List(Arc::new(orange_sdk::ListRepr::Str(
-                    names,
-                )))])
-            }
             (Self::Exists, [Value::Str(path)]) => Ok(vec![Value::Bool(folder.exists(path)?)]),
             (Self::Delete, [Value::Str(path)]) => folder.delete(path).map(|()| Vec::new()),
             (Self::Move, [Value::Str(path), Value::Str(to)]) => {
@@ -408,10 +386,6 @@ impl ServiceNode for Operation {
             (Self::MakeDirectory, [Value::Str(path)]) => {
                 folder.make_directory(path).map(|()| Vec::new())
             }
-            (Self::RemoveDirectory, [Value::Str(path)]) => {
-                folder.remove_directory(path).map(|()| Vec::new())
-            }
-            (Self::Size, [Value::Str(path)]) => Ok(vec![Value::U64(folder.size(path)?)]),
             (Self::ReadRange, [Value::Str(path), Value::U64(offset), Value::U64(length)]) => {
                 let data = folder.read_range(path, *offset, *length)?;
                 Ok(vec![Value::Bytes(Arc::new(data))])
@@ -435,7 +409,7 @@ impl ServiceNode for Operation {
                 .map(|()| Vec::new())
                 .map_err(refused),
             (
-                Self::ListFiltered,
+                Self::List,
                 [
                     Value::Str(path),
                     Value::Str(pattern),
@@ -489,7 +463,7 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 19] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 16] = [
         (
             "copy-directory",
             "Copy folder",
@@ -523,13 +497,6 @@ pub fn package() -> ServicePackage {
                 output("modified_unix_ms", "core/option@1<core/i64@1>"),
                 output("read_only", "core/bool@1"),
             ],
-        ),
-        (
-            "size",
-            "File size",
-            "Gives the size of a file in a folder, in bytes.",
-            Operation::Size,
-            vec![path(), output("bytes", "core/u64@1")],
         ),
         (
             "read-range",
@@ -572,13 +539,6 @@ pub fn package() -> ServicePackage {
             vec![path()],
         ),
         (
-            "remove-directory",
-            "Remove directory",
-            "Removes an empty directory from a folder.",
-            Operation::RemoveDirectory,
-            vec![path()],
-        ),
-        (
             "read-text",
             "Read text file",
             "Reads a UTF-8 text file from a folder.",
@@ -612,13 +572,6 @@ pub fn package() -> ServicePackage {
             "Creates or replaces a file in a folder from bytes.",
             Operation::WriteBytes,
             vec![path(), input("data", BYTES)],
-        ),
-        (
-            "list",
-            "List folder",
-            "Lists the files and directories in a folder.",
-            Operation::List,
-            vec![path(), output("names", "core/list@1<core/string@1>")],
         ),
         (
             "exists",
@@ -660,10 +613,8 @@ pub fn package() -> ServicePackage {
                         (
                             Operation::CopyDirectory
                             | Operation::MoveDirectory
-                            | Operation::RemoveDirectory
                             | Operation::DeleteDirectory
-                            | Operation::List
-                            | Operation::ListFiltered,
+                            | Operation::List,
                             "path",
                         ) => definition.path_input(port, true, &[]),
                         (
@@ -698,11 +649,12 @@ pub fn package() -> ServicePackage {
     .input_default("folder", STRING, json!({"type": STRING, "value": ""}))
     .payload("core/json@1")
     .build();
-    let list_filtered = described(
-        Definition::node(PACKAGE, "list-filtered", "List matching paths"),
-        "Lists paths in a folder optionally filtered by a glob, including subfolders when enabled.",
+    let list = described(
+        Definition::node(PACKAGE, "list", "List folder"),
+        "Lists the files and folders in a folder, folders ending in /. A pattern such as *.txt keeps the matching ones; Recursive includes what the subfolders hold.",
     )
     .input_default("path", STRING, json!({"type": STRING, "value": ""}))
+    .path_input("path", true, &[])
     .input_default("pattern", STRING, json!({"type": STRING, "value": ""}))
     .input_default(
         "recursive",
@@ -714,7 +666,7 @@ pub fn package() -> ServicePackage {
     match package
         .and_then(|package| package.source(&on_change, watch::Watch::Legacy))
         .and_then(|package| package.source(&on_path_change, watch::Watch::Detailed))
-        .and_then(|package| package.node(&list_filtered, Operation::ListFiltered))
+        .and_then(|package| package.node(&list, Operation::List))
     {
         Ok(package) => package,
         // The definitions are built from constants of this crate, checked by its tests.
@@ -746,7 +698,7 @@ mod tests {
     fn the_package_builds_with_its_nodes() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 20);
+        assert_eq!(package.nodes().len(), 17);
         assert_eq!(package.sources().len(), 2);
         assert_eq!(package.adapters().len(), 1);
     }
@@ -765,7 +717,7 @@ mod tests {
         // Replacing leaves no temporary file behind.
         let names = |path: &str| -> Vec<String> {
             folder
-                .list(path)
+                .list_filtered(path, "", false, &|| false)
                 .unwrap()
                 .iter()
                 .map(|name| name.as_str().to_owned())
@@ -790,10 +742,7 @@ mod tests {
         assert_eq!(folder.copy("c.txt", "../d.txt"), Err(BAD_PATH));
         assert_eq!(folder.rename("../c.txt", "d.txt"), Err(BAD_PATH));
         folder.make_directory("deep/er").unwrap();
-        assert_eq!(folder.remove_directory("deep"), Err(FAILED));
-        folder.remove_directory("deep/er").unwrap();
-        folder.remove_directory("deep").unwrap();
-        assert_eq!(folder.remove_directory("deep"), Err(NOT_FOUND));
+        assert_eq!(folder.exists("deep/er"), Ok(true));
         assert_eq!(folder.make_directory("../out"), Err(BAD_PATH));
 
         for escape in ["../x", "/x", "notes/../../x", "C:/x", "a\\b", "nul", ""] {
@@ -810,7 +759,6 @@ mod tests {
         let session = open(&root, json!({})).unwrap();
         let folder = folder(Some(session.as_ref())).unwrap();
         folder.write("big.bin", b"0123456789").unwrap();
-        assert_eq!(folder.size("big.bin"), Ok(10));
         assert_eq!(folder.read_range("big.bin", 0, 4).unwrap(), b"0123");
         assert_eq!(folder.read_range("big.bin", 8, 4).unwrap(), b"89");
         // Past the end there is nothing to read, which is not a failure.
@@ -820,7 +768,6 @@ mod tests {
             folder.read_range("big.bin", 0, MAX_FILE_BYTES + 1),
             Err(TOO_LARGE)
         );
-        assert_eq!(folder.size("missing.bin"), Err(NOT_FOUND));
         assert_eq!(folder.read_range("../big.bin", 0, 1), Err(BAD_PATH));
         // A copy made piece by piece equals the original.
         let mut offset = 0;
