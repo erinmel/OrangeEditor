@@ -1,5 +1,206 @@
 # Tooling, environment and research register
 
+## Qodana findings triage - 2026-11-19
+
+The supplied Qodana SARIF (RustRover build 262.10968.211) recorded 6 critical,
+22 high and 264 moderate findings. Source edits address the patterns behind
+17 high and 260 moderate findings. These include explicit enum matching,
+platform-gated audio choices, clearer test failure reporting and 223
+redundant path qualifications. Fresh RustRover inspections of the seven
+files changed for high findings no longer showed their reported unused,
+constant-condition or unreachable-code diagnostics.
+
+Rust 1.99.1 compiled the exact test targets behind all six critical
+diagnostics. Five `E0308` reports point at `proptest!` invocations whose
+generated tests Cargo registers and runs. One `E0382` report points at a
+formatting assertion that uses an ID borrowed from a vector. The editor's
+`add_node` accepts a shared `&str`. These diagnostics are false positives
+for the checked build. The analyzer's internal failure mode was not
+isolated. Five high diagnostics concern
+the required Windows COM method name, three public change-set accessor
+names and the reserved workspace exclusion for `plugins`. Four moderate
+diagnostics propose removing parentheses required for calls through tuple
+fields. These code patterns are retained.
+
+The follow-up test review added exact export counts to the nested Try and
+Coalesce property tests and transitivity to the float total-order property.
+The bundled integration suite passed 824 tests with six ignored. The
+catalogue insertion test passed separately. Strict Clippy passed for
+`orange-bundled --tests`.
+
+Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), default features, Cargo.lock
+SHA-256 `899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo check --locked --offline --workspace --all-targets` and
+`cargo clippy --locked --offline --workspace --all-targets -- -D warnings`
+passed. The offline acceptance suite passed 1,933 tests with 28 ignored.
+The guest, SDK, measurement and example-plugin packages passed 50 more
+unit tests and doctests.
+The live Docker lab passed through RustRover, including authenticated
+exchanges and credential rejection. Cargo metadata policy passed.
+
+`qodana.yaml` now names the Rust analyzer image. A full Qodana rescan has
+not been run. The Qodana CLI is absent from this session and its shell
+cannot access the Docker Desktop API, so the original SARIF remains the
+baseline and the post-change severity totals are unverified.
+
+## Canvas grid and network lab usability - 2026-11-19
+
+Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), default features and root
+Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+The editor test suite passed 123 tests with 1 ignored. It exercises moving
+expanded and collapsed groups with one snap offset, Alt bypass and persisted
+grid options. Strict Clippy passed for `orange-editor-ui --all-targets`.
+`node tools/check-automation.mjs --offline` passed 1,933 tests with 28
+ignored, and `cargo build --locked --offline -p orange-desktop` passed.
+`orange check` accepted the updated lab. The `docker_network` static check
+accepted all four baseline and six authenticated profiles.
+
+The live `docker_network` test ran through RustRover against the running
+Compose stack. Baseline and authenticated runs both passed HTTP JSON,
+binary responses and two stream lines, text and binary WebSocket and MQTT,
+and AMQP confirms and deliveries. HTTP and WebSocket also returned the
+expected 401 responses.
+
+## Docker network lab - 2026-11-19
+
+Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), Node.js 24.18.0, Docker CLI
+29.6.1, Compose 5.1.4 and default feature sets. Root Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+The standalone mock's Cargo.lock SHA-256 is
+`37245F74BD5C2C1770F0F841F765E62E6A94C90DC4BA935BE90D51EC428C2E7D`.
+
+`node tools/check-automation.mjs --offline` passed 1,931 tests with 28 ignored.
+This includes validation of the saved baseline graph, credential-backed
+profiles and deliberate wrong-credential profile, plus HTTP route/stream
+encoding and WebSocket handshake authorization tests. Strict Clippy passed
+for the standalone mock and the `orange-net` integration test. Compose
+configuration validation passed for the localhost-published stack.
+
+`docker compose -f tools/network-lab/compose.yaml up --build --wait` was
+blocked by access to the Docker Desktop Linux engine's named pipe. A separate
+IPv4 loopback probe returned `EACCES`. The live exchange test in
+`cargo test --locked -p orange-net --test docker_network -- --ignored --nocapture`
+remains pending. The stack specifies Mosquitto 2.0.22 and RabbitMQ 4.1.8.
+See the [lab guide](../tools/README.md#docker-network-lab) for the cases.
+
+## Connection dropdowns, JSON paths and catalogue rendering - 2026-11-19
+
+FR-08/11/23/25/101/105. Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`),
+Node.js 24.18.0, default features and Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`node tools/check-automation.mjs --offline` passed 1,928 tests, with 27
+ignored. The desktop painted all 211 searchable kinds, checked that each
+places one card and checked category labels in English and Spanish. The
+same suite round-tripped 73 conversions and verified that the connection
+dropdown switches only among compatible profiles. A dock regression
+covered an 8 KiB unbroken request body and response.
+
+The desktop ran the saved `json-extraction.json` example with nested and
+quoted-key selectors, a missing field and a non-text field. `orange check`
+accepted the file, and `orange run` with `trigger 1` and `--watch` reported
+`extracted_text = "Studio mic"`.
+`cargo clippy --locked --offline -p orange-desktop -p orange-editor-ui
+-p orange-bundled --all-targets -- -D warnings` and
+`cargo build --locked --offline -p orange-desktop` passed. The TCP group
+could not run because IPv4 loopback was denied with `EACCES`. Test results
+cover the scenarios exercised here.
+
+## Automation acceptance suite - 2026-11-18
+
+Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), Node.js 24.18.0, default
+features and Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`node tools/check-automation.mjs --offline` passed the selected deterministic
+suites. The desktop catalog round trip saved and reopened all 210 searchable
+node kinds and 73 conversion entries. A saved graph executed an actual file
+connection through the editor and reported the exact text for an existing
+file and a failure for a missing file. The socket-free HTTP graph and the
+saved network and JSON failure-route tests also passed.
+
+`node tools/check-automation.mjs --offline --network` recorded 1,923 passed,
+zero failed and 27 ignored across the deterministic suites. It exited 1
+because an IPv4 loopback connection was denied with `EACCES`. The TCP
+fixtures and the desktop POST-and-response test therefore remain unexecuted
+in this environment. Public HTTPS, external brokers and physical devices
+are separate checks. Strict Clippy passed for the desktop crate.
+
+## Expandable text fields - 2026-11-18
+
+FR-23–26, FR-101. Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), default
+features, Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo test --locked --offline -p orange-editor-ui --lib --quiet` passed
+119 tests, with one ignored. The headless canvas test expands and closes
+MQTT, WebSocket, AMQP and custom text inputs, checks port offsets before
+and during expansion, and verifies that the saved literal preserves the
+multiline message. The HTTP body and typed-header regressions also passed.
+`cargo build --locked --offline -p orange-desktop` and strict Clippy for
+the desktop and editor crates passed. No broker connection was needed.
+
+## Inline HTTP request editing - 2026-11-18
+
+FR-23, FR-101. Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`), default
+features and unchanged Cargo.lock SHA-256
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo test --locked --offline -p orange-editor-ui --lib --quiet` passed
+118 tests, with one ignored. Headless pointer and keyboard tests cover
+opening the complete saved body, preserving JSON and newlines, committing
+with Ctrl+Enter or focus loss, cancelling with Escape, and serializing
+binary request headers as a string list. The Windows desktop debug build
+passed. The tests exercise editing and use no external endpoint.
+
+## Request result inspection and connection editing - 2026-11-18
+
+FR-04, FR-23, FR-114. Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`),
+Cargo 1.99.1 (`5f94df478`), default features, egui 0.37.0. Cargo.lock
+SHA-256 remains
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo test --locked --offline -p orange-runtime -p orange-host -p orange-editor-ui --no-fail-fast --quiet`
+passed 261 tests, with one ignored. Headless pointer tests selected POST on
+all three HTTP request variants in Properties and opened the response
+inspector directly from a canvas output. The copy handler received the
+original body even when the preview hit its display limit. The connection save regression
+kept the form open and reloaded the stored credential reference.
+`cargo test --locked --offline -p orange-net --lib --quiet` passed 18 tests,
+including an in-memory HTTP graph that received status 201, success, and a
+JSON body on unwired outputs. These tests use no external endpoint.
+`cargo build --locked --offline -p orange-desktop` and strict Clippy for
+the desktop, editor, network, host and runtime crates passed.
+
+## Network connection and HTTP request authoring - 2026-11-18
+
+FR-19–24, FR-114, FR-120. Windows x64 MSVC, Rust 1.99.1 (`58cf8f9c3`),
+Cargo 1.99.1 (`5f94df478`), default features, egui 0.37.0 and ureq 3.5.1.
+Cargo.lock SHA-256:
+`899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+The lockfile adds the existing network package as an editor dev dependency.
+
+The desktop build, strict Clippy for editor/host/network/desktop, rustdoc
+with warnings denied for affected libraries, formatting, and
+`node tools/check-cargo-metadata.mjs` passed. The default-feature editor and
+host test suites passed. `cargo test --locked --offline -p orange-net --lib`
+passed all 17 tests. An in-memory HTTP transport checked POST method, URL
+path and query, profile and request headers, synthetic API key, unchanged
+multiline JSON bytes, and a 201 response, without opening a socket.
+The `http` test
+`a_completed_profile_replaces_the_placeholder_for_new_and_existing_requests`
+and the `connection_smoke` test
+`saved_connection_graph_runs_json_feedback_and_failure_routes_without_a_server`
+passed. They exercise atomic assignment, the unused-profile regression, and
+opening and running a saved graph with v1 Request definitions.
+
+The full `cargo test --locked --offline -p orange-net --no-fail-fast` run
+did not pass. Loopback TCP connect was denied by the environment (WSAEACCES
+10013) in a standalone IPv4 socket probe. The HTTP, WebSocket, MQTT and AMQP
+socket fixtures consequently failed to exchange traffic. The public smoke
+test likewise reached its failure route. A direct DNS probe from the same
+environment could not resolve `httpbin.org`. On a network-enabled system,
+`cargo test --locked --offline -p orange-net --test http a_real_https_endpoint_is_reached_with_certificate_verification -- --ignored --exact`
+sends a synthetic POST to [httpbin](https://httpbin.org/) and checks that a
+mismatched TLS name is rejected. These checks do not qualify the live
+protocol gates.
+
 ## Long operator previews and audio monitoring - 2026-11-17
 
 FR-104, FR-115. Windows, Rust 1.99.1, default features and unchanged
@@ -6683,3 +6884,93 @@ an HTTPS 200 response and rejection of a certificate for the wrong hostname.
 The restricted shell denied a direct TCP loopback connection and its network
 suite reported failures. The successful rerun used the IDE terminal. WSS and
 real-broker interoperability for MQTT and AMQP remain outside this run.
+
+### Canvas toolbar and Settings (2026-11-19)
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and Cargo.lock
+SHA-256 `899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo test --locked --offline -p orange-editor-ui --lib --quiet` passed 125 tests
+with one ignored. At 490 logical points, the UI test changed snap, grid style and
+spacing through the toolbar and grouped and ungrouped nodes. The group test
+clicked a collapsed frame and checked that its members stayed hidden from the
+node selection. At 425 logical points, Settings search found the canvas page by
+its snap label and the keyboard shortcuts page by a key combination.
+`cargo clippy --locked --offline -p orange-editor-ui -p orange-desktop --all-targets -- -D warnings`
+and `cargo build --locked --offline -p orange-desktop` passed. The built editor's
+`--screenshot` captured the full window with the canvas toolbar visible.
+The sandbox denied the preference write during that run. The UI tests cover
+preference serialization and restoration in memory.
+`node tools/check-automation.mjs --offline` passed 1,935 tests with 28 ignored.
+The optional TCP integration fixtures were outside this run.
+
+### Qodana report follow-up (2026-11-19)
+
+Qodana build `262.10968.211` reported 15 regular findings and stored 13
+additional sanity diagnostics under `qodana.sanity.results`. The previous export
+had 292 regular findings and 20 sanity diagnostics. The remaining issues had
+the same inspection IDs, messages and files in both exports.
+
+All 13 unresolved paths and five regular type mismatches came from the same
+four `proptest!` test files. The locked proptest 1.12.0 macro accepts strategy
+expressions and builds matching tuple strategies and patterns. Both the paths
+and tuple shapes are valid under rustc. The tests now use the equivalent
+primitive `any::<T>()` strategies and a named divisor strategy. The editor
+test's E0382 was also a false positive. The definition ID is borrowed as
+`&str`, and the assertion now passes it explicitly in its failure message.
+RustRover reproduced the errors before the changes and reported zero errors
+in those five files after them.
+
+An isolated copy of the bundled integration suite restored the original
+strategy expressions in the five affected property tests. With proptest
+1.12.0 locked, rustc compiled the original expressions and all five tests
+passed. The compiler's expanded source showed matching flat tuple strategies
+and destructuring patterns for all five cases. This checks the actual
+reported syntax, independent of the equivalent syntax used to clear the
+inspections.
+
+The workspace now contains the documented `plugins/` directory referenced by
+Cargo's exclusion. The two SDK call sites use explicit callable values. The
+Windows COM callback keeps the exact name required by windows 0.62.2, and the
+three public `ChangeSet` getters keep their from/to pairing. Those four
+methods have local naming exceptions. RustRover cleared the reported naming,
+SDK and manifest inspections on recheck.
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and Cargo.lock
+SHA-256 `899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo check --locked --offline --workspace --all-targets` and
+`cargo clippy --locked --offline --workspace --all-targets -- -D warnings`
+passed. `node tools/check-automation.mjs --offline` passed 1,935 tests with
+28 ignored. The shell could not access the Docker daemon for a fresh Qodana run.
+
+### Single-row canvas commands (2026-11-19)
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and the lockfile
+recorded above. `cargo test --locked --offline -p orange-editor-ui --lib --quiet`
+passed 125 tests with one ignored. Toolbar tests checked icon alignment at
+820, 1280 and 1600 logical points. At 490 logical points the pointer checks
+toggled snapping, changed grid type and spacing in one popup, and grouped
+and ungrouped nodes.
+`cargo clippy --locked --offline -p orange-editor-ui -p orange-desktop --all-targets -- -D warnings`
+and `cargo build --locked --offline -p orange-desktop` passed. A screenshot
+from the rebuilt editor confirmed the single toolbar row. The sandbox denied
+saving preferences when closing the screenshot run.
+
+### Grid controls, display scale and editor shortcuts (2026-11-19)
+
+The graph toolbar adapts the [Lucide 0.577.0 outlines](https://github.com/lucide-icons/lucide/tree/0.577.0/icons)
+for Group, Ungroup and Arrange, and the [Tabler Icons 3.44.0 magnet](https://github.com/tabler/tabler-icons/blob/v3.44.0/icons/outline/magnet.svg)
+for Snap to grid. The editor-ui crate carries both upstream license notices in
+`licenses/`. The icons use the pinned egui 0.37.0 painter with no new Cargo
+dependency. The scale dropdown and stepped grid slider also use egui 0.37.0.
+
+Windows x86-64 MSVC, Rust and Cargo 1.99.1, default features and Cargo.lock
+SHA-256 `899BE8F94CB7699F5AB3F2D5DC797C93D17CEF54B65718BD157CE62DECB740E2`.
+`cargo test --locked --offline -p orange-editor-ui --lib --quiet` passed 130
+tests with one ignored. The tests exercised all three grid types and four
+spacings, opening and committing a scale choice, keeping Settings reachable
+at 410 logical points, toggling both panels and snapping, grouping and
+ungrouping, and restoring older custom bindings with a new-default conflict.
+`cargo clippy --locked --offline -p orange-editor-ui -p orange-desktop --all-targets -- -D warnings`
+passed. The toolbar icons were inspected in a screenshot from the desktop
+build. Settings persistence was verified in memory because the sandbox
+denied the desktop preference write.

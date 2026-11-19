@@ -5,6 +5,8 @@
 //! file adds only what a desktop program has: a window, files named on the command
 //! line or chosen in the system's file dialogs, and the built-in service packages.
 #[cfg(test)]
+mod automation;
+#[cfg(test)]
 mod gallery;
 mod keyboard;
 mod logbook;
@@ -337,6 +339,19 @@ fn window_title(path: Option<&str>) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy())
 }
 
+fn built_in_services(
+    keyboard: &keyboard::Keyboard,
+    logbook: &logbook::LogBook,
+) -> Result<Vec<orange_sdk::ServicePackage>, String> {
+    Ok(vec![
+        keyboard.package().map_err(|error| error.to_string())?,
+        logbook.package().map_err(|error| error.to_string())?,
+        orange_net::package(),
+        orange_files::package(),
+        orange_audio::package(),
+    ])
+}
+
 fn start(
     path: Option<String>,
     canvas_only: bool,
@@ -348,13 +363,7 @@ fn start(
     };
     let keyboard = keyboard::Keyboard::default();
     let logbook = logbook::LogBook::default();
-    let services = vec![
-        keyboard.package().map_err(|error| error.to_string())?,
-        logbook.package().map_err(|error| error.to_string())?,
-        orange_net::package(),
-        orange_files::package(),
-        orange_audio::package(),
-    ];
+    let services = built_in_services(&keyboard, &logbook)?;
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();

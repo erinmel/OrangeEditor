@@ -243,6 +243,29 @@ Priority: **M** required for the foundation 1.0; **S** optional/deferred, not a 
 | FR-118 | Types a graph declares itself (FR-12 enums, FR-08): without any package, a person declares enums and records in the document, uses them for variables, values and map keys, renames them and their members without changing saved values, and runs the graph. An enum value on an input is chosen from the type's choices by name, on the card and in Properties, and shown by name. | `orange-model` tests: an enum and a record used by variables and as map keys, saved and loaded; renaming and adding a variant; removal leaving users unresolved; malformed declarations reported without hiding the rest; a type that contains itself. `orange-host` tests: a graph with its own enum checks and runs, and draft edits rename, remove and undo; an enum input lists its choices by name, writes one and shows it by name. `orange-editor-ui` test: types are shown by name. | 11,12 / V01,V02 |
 | FR-119 | Audio sources and listeners (FR-31/32/56 first part): a microphone, system capture or sound file is one source opened once; entries that listen keep their own band and thresholds, fire on a band crossing its level or on hits such as kicks, and a file source owns its transport and says when it has finished. A saved On level opens as On band level. | `orange-audio` tests: band filter keeps and cuts, settings defaults and limits, onset hits once per gap and once for a held note, two analyzers on one test-tone capture each hear their own band, a file source is silent until played, heard by an analyzer and finishes; an old On level document opens and checks. | 05 / V07,V10 |
 | FR-120 | A package brings its own words (FR-01 search, 13): a built-in package adds keywords and its own catalogue in other languages, and the search finds and names its nodes in the chosen language with no host change; an editor labels a node's connection by its adapter and names a package's types by package and name. | `orange-audio` tests: "kick" finds On transient in English, "bombo" finds Al golpe in Spanish, an English name still matches in Spanish, an unknown language falls back to English; connection labels come from adapters. `orange-editor-ui` tests: package types read "Audio stream" and "Geo point" and share a colour per package. | 13,22 / V01 |
+
+Connection authoring trace (FR-19–24, FR-114, FR-120). Network profiles choose an
+authentication mode for the selected protocol and save secrets as vault
+references. The text HTTP request exposes request content, type and headers.
+HTTP and HTTPS use the same adapter and are both discoverable in search.
+Opening a graph acquires the profiles its nodes name. The connection and
+request checks remain partial evidence for the networking gates. See
+[05](05-services-and-platforms.md#connection-manager) and
+[10](10-tooling-and-sources.md).
+
+Request inspection trace (FR-04, FR-23, FR-114). The canvas and Properties
+offer consistent HTTP method controls. Completed request outputs can be
+inspected without wiring a consumer. Copy preserves the complete observed
+text or JSON, and saving an existing connection leaves the form open.
+
+HTTP input editing trace (FR-23, FR-101). The request's text body and headers
+are edited on the card with multiline text, using the stored input for edits
+and retaining typed header lists for the binary and streamed nodes.
+
+Expandable text trace (FR-23, FR-24, FR-25, FR-26, FR-101). Unwired text
+inputs use a compact card control that expands during editing. The shared
+editor supports MQTT, AMQP, and WebSocket message inputs and package-defined
+text inputs. It preserves saved payload types and newline content.
 | FR-121 | Live values and wired trigger inputs: package providers publish typed values and can be re-armed when root inputs change. Watches react to those publications and old provider guards lose authority. | `orange-host/tests/live.rs`, model registration tests and service integration tests. | 11 §10.5, 12 §4 / V02,V04 |
 | FR-122 | When can react to a change, boolean rising edge, numeric threshold or range. A threshold can release at a separate bound. Hold and cooldown use virtual time. | `orange-bundled` Watch integration tests exercise version 1, hysteresis, brief pulses, range direction, hold and cooldown. | 11 §10.5 / V02,V06 |
 | FR-123 | Audio listeners and transport can be wired to a shared source. Frequency Splitter adds a filtered PCM stream output when the user releases a range, for up to 12 bands. Its chart collapses independently of the editable band output rows. Audio Level Trigger provides an RMS meter and above or below threshold entry with a hold. Drawing on an older spectrum upgrades the card and keeps the old keys and wires. Audio Out can follow a Boolean wire that enables playback. | File-source integration exercises filtering through two downstream meters, legacy port migration and routes, whole-stream qualification, port identity across edits and undo, and disabled playback. Editor regressions drive range selection, chart collapse, editing and removing a band at different canvas zoom levels, and repairing an isolated meter while a graph runs. Physical audio device qualification is tracked separately. | 04,05,11,12,22 / V02,V06,V07,V10 |
@@ -580,6 +603,11 @@ member/element access, length, typed extraction) and string↔json converters ex
 with exact source text, last-wins duplicate keys and distinct null/missing/error
 outcomes. Known answers, a serde-backed navigation property and compiled folds are
 verified through public APIs (11 §5.10, 12 §4.7). JSON construction remains open.
+
+JSON path extraction (FR-08/11) adds bounded dot-and-bracket navigation over
+validated JSON text. Focused bundled tests cover nested arrays, quoted keys,
+exact source spelling, null, missing and malformed paths. The manual-trigger
+example writes a nested field to a run variable.
 
 L04d record update trace (2026-11-08; FR-08/12): `set-field` replaces one record field,
 clearing an optional field with None and keeping a boxed present None, through the

@@ -54,6 +54,43 @@ A host workspace value actor now serializes typed Set/Update/CAS and publishes i
 
 ## Development
 
+Run `node tools/check-automation.mjs --offline` for the deterministic
+acceptance suite. Add `--network` on a machine with IPv4 loopback access to
+run the HTTP, WebSocket, MQTT and AMQP socket checks. See
+[automation acceptance](tools/README.md#automation-acceptance).
+
+To try a request in the editor, create an **HTTP / HTTPS** profile in
+**Connections** with base URL `https://httpbin.org` and authentication **None**.
+Connect **On Manual** to **HTTP request** and select that profile in the
+request card's dropdown. Set the method to **GET**
+and the request path to `/get`. Run the graph, then fire On Manual. Click the
+**response** port label or its value preview to open a copyable inspector, or
+open **Results** in the Request node's properties. No output wire is required
+to read the response.
+
+To try a JSON request against the same profile, choose **POST**, set the path
+to `/anything` and the content type to `application/json`. Enter
+`{"message":"hello"}` in **Body** and `X-Example: orange-editor` in
+**Request headers**. The test service echoes those values. Use sample values
+with public echo APIs. The app can check a profile before running a graph
+using **Check settings** in the Connections panel.
+
+Open [json-extraction.json](app/crates/apps/orange-cli/graphs/json-extraction.json)
+in the editor and click **Run**, then **Fire** on **Read sample JSON**.
+The graph reads `items[0].name` and writes `Studio mic` to
+`extracted_text` in **Variables**. Change the **Get JSON path** field to
+`method` or `headers["Content-Type"]` and fire again. This example works
+offline. **Get JSON field** takes a single literal key such as `method`.
+
+Use the same **Parse JSON → Get JSON path** chain for the HTTP **response**
+output. With **On MQTT message**, the **payload** contains `[topic, text]`.
+Use **List get** at index `1` and **Coalesce** with a text fallback such as
+`{}`, then feed the text to **Parse JSON**. Wire the entry's execution output
+to **Set variable** to consume the extracted value on every message.
+Use **On MQTT binary message** for raw bytes. UTF-8 decoding recovers text
+from UTF-8 bytes. Encrypted payloads require the sender's format and a
+matching key.
+
 The workspace defaults to its own `target/` directory. If you build another
 worktree nested inside this checkout, pass `--target-dir target` from that
 worktree's root to keep the two builds separate. Incremental compilation is
