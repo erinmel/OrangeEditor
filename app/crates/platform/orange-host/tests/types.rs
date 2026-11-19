@@ -305,7 +305,7 @@ fn record_and_enum_nodes_start_with_a_registered_type_or_say_none_is_declared() 
     let mut draft = bare.draft(&blank).unwrap();
     let refused = bare.add_node(&mut draft, "org.orange.collections/make-record", [0.0, 0.0]);
     assert!(
-        matches!(&refused, Err(HostError::Document(why)) if why.contains("no active package declares")),
+        matches!(&refused, Err(HostError::Document(why)) if why.contains("declare one in the Types tab")),
         "{refused:?}"
     );
     assert!(!draft.can_undo().0);

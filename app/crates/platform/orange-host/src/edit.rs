@@ -75,10 +75,16 @@ fn new_config(
         );
         let choices = view::nominal_choices(access, registry);
         let Some((ty, members)) = choices.first() else {
+            // Says what to make first: a record type, an enum, or an enum with a choice
+            // that carries a value.
+            let needs = match access {
+                NominalAccess::EnumPayload => "an enum with a choice that carries a value",
+                _ if record => "a record type",
+                _ => "an enum type",
+            };
             return Err(HostError::Document(format!(
-                "`{}` names {} type, and no active package declares one",
-                found.definition.id,
-                if record { "a record" } else { "an enum" }
+                "`{}` needs {needs}: declare one in the Types tab first",
+                found.definition.id
             )));
         };
         let _ = config.insert("type".to_owned(), json!(ty));

@@ -2486,6 +2486,13 @@ mod tests {
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
             .count();
         assert_eq!(count(&all), offered + host.conversions().len());
+        // Conversions are found by Spanish words too.
+        assert!(
+            palette(&host, "convertir entero texto")
+                .iter()
+                .flat_map(|(_, items)| items)
+                .any(|item| item.id.starts_with(palette::CONVERSION))
+        );
         let to_text = palette(&host, "whole number text");
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
             item.id.starts_with(palette::CONVERSION) && item.label.contains("Text")
@@ -3027,7 +3034,7 @@ mod tests {
                     editor
                         .log()
                         .skip(before)
-                        .any(|line| line.contains("no active package declares")),
+                        .any(|line| line.contains("declare one in the Types tab")),
                     "{kind} was refused without the reason"
                 ),
             }

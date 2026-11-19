@@ -235,7 +235,7 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
         .map(|conversion| conversion_item(conversion, language))
         .filter(|item| {
             let terms = format!(
-                "{} {} convert conversion{}",
+                "{} {} convert conversion convertir conversión{}",
                 item.label,
                 item.purpose,
                 conversion_words(&item.id)
@@ -279,11 +279,14 @@ fn conversion_words(id: &str) -> String {
         .unwrap_or_default();
     let mut words = String::new();
     for (types, said) in [
-        (&["i32", "i64", "u32", "u64"][..], "whole number integer"),
-        (&["f32", "f64"][..], "decimal float number"),
-        (&["string"][..], "text string"),
-        (&["bool"][..], "true false boolean"),
-        (&["bytes"][..], "bytes binary"),
+        (
+            &["i32", "i64", "u32", "u64"][..],
+            "whole number integer int entero número",
+        ),
+        (&["f32", "f64"][..], "decimal float number número"),
+        (&["string"][..], "text string texto cadena"),
+        (&["bool"][..], "true false boolean verdadero falso booleano"),
+        (&["bytes"][..], "bytes binary binario"),
     ] {
         if types.iter().any(|ty| converter.contains(ty)) {
             words.push(' ');

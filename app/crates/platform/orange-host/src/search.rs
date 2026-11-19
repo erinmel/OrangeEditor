@@ -605,4 +605,26 @@ mod tests {
         }
         assert_eq!(host.problems(&mut draft).unwrap(), []);
     }
+
+    /// Every collection and JSON node says what it does in its own words, in both
+    /// languages, instead of sharing one sentence with its whole category.
+    #[test]
+    fn collection_and_json_nodes_each_have_their_own_purpose() {
+        let (host, _) = crate::Host::new(crate::HostOptions::default()).unwrap();
+        for locale in ["en", "es"] {
+            let found: Vec<_> = host
+                .search_nodes("", locale)
+                .into_iter()
+                .filter(|found| {
+                    found.definition.starts_with("org.orange.collections/")
+                        || found.definition.starts_with("org.orange.json/")
+                })
+                .collect();
+            assert!(found.len() >= 30, "{locale}: {}", found.len());
+            let mut purposes: Vec<_> = found.iter().map(|found| found.purpose.clone()).collect();
+            purposes.sort();
+            purposes.dedup();
+            assert_eq!(purposes.len(), found.len(), "{locale}: {purposes:?}");
+        }
+    }
 }
