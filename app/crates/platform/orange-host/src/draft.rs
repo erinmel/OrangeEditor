@@ -116,6 +116,12 @@ impl Draft {
         to_json(&self.document).map_err(|error| refused(&error))
     }
 
+    /// The document as [`Draft::text`] writes it, with only the top-level nodes `keep`
+    /// accepts and the edges between them: part of a large graph, for a preview.
+    pub fn text_of(&self, keep: impl Fn(NodeId) -> bool) -> Result<String, HostError> {
+        to_json(&self.document.with_root_nodes(keep)).map_err(|error| refused(&error))
+    }
+
     /// What the kept analysis did for the last edit, once [`Host::problems`] has been
     /// asked: whether it re-checked a scope or ran in full, and why.
     pub fn analysis_work(&self) -> Option<&EditStats> {

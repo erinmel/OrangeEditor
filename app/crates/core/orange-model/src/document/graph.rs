@@ -148,6 +148,47 @@ pub enum BodyRef {
 }
 
 impl GraphDocument {
+    /// A copy holding only the top-level nodes `keep` accepts and the edges between
+    /// them, with everything else (declarations, functions, signatures) copied whole and
+    /// no editor layout: part of a large graph, for a preview, without copying the rest.
+    pub fn with_root_nodes(&self, keep: impl Fn(NodeId) -> bool) -> Self {
+        Self {
+            format_version: self.format_version,
+            graph_id: self.graph_id,
+            revision: self.revision,
+            state_id: fresh_state_id(),
+            semantic_state_id: fresh_state_id(),
+            package_lock: self.package_lock.clone(),
+            type_lock: self.type_lock.clone(),
+            variables: self.variables.clone(),
+            events: self.events.clone(),
+            connections: self.connections.clone(),
+            types: self.types.clone(),
+            signatures: self.signatures.clone(),
+            root: GraphBody {
+                nodes: self
+                    .root
+                    .nodes
+                    .iter()
+                    .filter(|(id, _)| keep(**id))
+                    .map(|(id, node)| (*id, node.clone()))
+                    .collect(),
+                edges: self
+                    .root
+                    .edges
+                    .iter()
+                    .filter(|(_, edge)| keep(edge.from.node) && keep(edge.to.node))
+                    .map(|(id, edge)| (*id, edge.clone()))
+                    .collect(),
+            },
+            functions: self.functions.clone(),
+            exports: self.exports.clone(),
+            editor: Map::new(),
+            extensions: self.extensions.clone(),
+            node_bodies: OnceLock::new(),
+        }
+    }
+
     /// An empty document of the current format version at revision 0.
     pub fn new(graph_id: GraphId) -> Self {
         Self {

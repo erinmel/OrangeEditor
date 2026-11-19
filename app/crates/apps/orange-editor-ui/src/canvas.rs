@@ -886,6 +886,16 @@ impl Canvas {
         }
     }
 
+    /// Forgets the previews of `nodes` only, keeping every other one.
+    pub(crate) fn clear_previews_of(&mut self, nodes: &std::collections::BTreeSet<NodeId>) {
+        for node in nodes {
+            if let Some(ports) = self.values.get_mut(node) {
+                ports.retain(|_, sample| !sample.preview);
+            }
+        }
+        self.values.retain(|_, ports| !ports.is_empty());
+    }
+
     pub(crate) fn clear_previews(&mut self) {
         self.values.retain(|_, ports| {
             ports.retain(|_, sample| !sample.preview);

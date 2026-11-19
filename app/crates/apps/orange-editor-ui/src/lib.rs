@@ -25,6 +25,8 @@
 pub mod canvas;
 mod card_sources;
 mod declarations;
+#[cfg(test)]
+mod edit_timing;
 pub mod i18n;
 pub mod icons;
 #[cfg(test)]
@@ -628,7 +630,10 @@ impl Editor {
             return;
         };
         document.names = Names::of_document(host, document.draft.document()).without_ids();
+        let before = std::mem::take(&mut document.graph);
         document.graph = host.draft_view(&document.draft).unwrap_or_default();
+        // Only what the edit touched, and what follows it, can preview differently.
+        let touched = touched_by_edit(&before, &document.graph);
         document.declared = host.declarations(&document.draft);
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
@@ -675,7 +680,7 @@ impl Editor {
         if let Some(line) = said {
             self.say(line);
         }
-        self.preview_values(host);
+        self.preview_scope(host, touched.as_ref());
     }
 
     /// Follows up an edit of the draft. A refused edit says why in the log and changed
@@ -3626,10 +3631,17 @@ impl Editor {
     /// graph: Greater wired to two Ints shows true or false as soon as it is wired.
     /// Outputs that depend on a trigger, a variable or an effect are left blank.
     pub fn preview_values(&mut self, host: &mut Host) {
+        self.preview_scope(host, None);
+    }
+
+    /// Previews the outputs of `scope`'s nodes only, keeping every other preview, or
+    /// of the whole graph without a scope.
+    fn preview_scope(
+        &mut self,
+        host: &mut Host,
+        scope: Option<&std::collections::BTreeSet<NodeId>>,
+    ) {
         let Some(document) = &self.document else {
-            return;
-        };
-        let Ok(text) = document.draft.text() else {
             return;
         };
         let wanted: Vec<(NodeId, orange_host::PortKey)> = document
@@ -3638,6 +3650,7 @@ impl Editor {
             .iter()
             // A pure generic kernel still needs a concrete type before it can run.
             // Skip unbound cards rather than retrying their previews on every edit.
+            .filter(|node| scope.is_none_or(|scope| scope.contains(&node.id)))
             .filter(|node| {
                 !node.entry
                     && node.ports.iter().all(|port| {
@@ -3651,26 +3664,42 @@ impl Editor {
                     .filter_map(move |port| Some((node.id, port.id.parse().ok()?)))
             })
             .collect();
-        if document.flow.is_none() {
-            self.canvas.clear_run();
-        } else {
-            self.canvas.clear_previews();
+        match scope {
+            Some(scope) => self.canvas.clear_previews_of(scope),
+            None if document.flow.is_none() => self.canvas.clear_run(),
+            None => self.canvas.clear_previews(),
         }
         if wanted.is_empty() {
             return;
         }
-        // Try one batch first. Unrelated effects or invalid nodes can make the
-        // complete document unsuitable, even when a pure branch is ready.
-        let found = match host.preview(&text, &wanted) {
-            Ok(found) => found,
-            Err(_) => {
-                let Ok(saved) = serde_json::from_str(&text) else {
-                    return;
-                };
+        // The whole graph is tried in one batch; a scope previews only its own nodes
+        // and what they read, never compiling the rest. Unrelated effects or invalid
+        // nodes can make the complete document unsuitable, even when a pure branch is
+        // ready, so a batch that fails is split.
+        let whole = if scope.is_none() {
+            let Ok(text) = document.draft.text() else {
+                return;
+            };
+            host.preview(&text, &wanted).ok()
+        } else {
+            None
+        };
+        let found = match whole {
+            Some(found) => found,
+            None => {
                 let mut upstream = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
                 for wire in &document.graph.wires {
                     upstream.entry(wire.to.0).or_default().push(wire.from.0);
                 }
+                // Only what the wanted outputs read is written out; batches are cut
+                // again from that.
+                let needed = dependencies(&upstream, wanted.iter().map(|(node, _)| *node));
+                let Ok(text) = document.draft.text_of(|node| needed.contains(&node)) else {
+                    return;
+                };
+                let Ok(saved) = serde_json::from_str(&text) else {
+                    return;
+                };
                 let mut found = Vec::new();
                 let mut batches = vec![wanted.as_slice()];
                 while let Some(batch) = batches.pop() {
@@ -3704,6 +3733,55 @@ impl Editor {
     }
 }
 
+/// Each node's incoming wires.
+fn incoming(graph: &GraphView) -> std::collections::HashMap<NodeId, Vec<&orange_host::WireView>> {
+    let mut wires: std::collections::HashMap<NodeId, Vec<&orange_host::WireView>> =
+        std::collections::HashMap::new();
+    for wire in &graph.wires {
+        wires.entry(wire.to.0).or_default().push(wire);
+    }
+    wires
+}
+
+/// The nodes an edit may have changed the preview of: those whose card or incoming
+/// wires changed, and every node downstream of them. `None` when the graph was not
+/// shown before, so everything is previewed.
+fn touched_by_edit(
+    before: &GraphView,
+    after: &GraphView,
+) -> Option<std::collections::BTreeSet<NodeId>> {
+    use std::collections::{BTreeSet, HashMap};
+    if before.nodes.is_empty() {
+        return None;
+    }
+    let old: HashMap<NodeId, &orange_host::NodeView> =
+        before.nodes.iter().map(|node| (node.id, node)).collect();
+    let (old_in, new_in) = (incoming(before), incoming(after));
+    let mut touched: BTreeSet<NodeId> = after
+        .nodes
+        .iter()
+        .filter(|node| {
+            old.get(&node.id).is_none_or(|old| *old != *node)
+                || old_in.get(&node.id) != new_in.get(&node.id)
+        })
+        .map(|node| node.id)
+        .collect();
+    // What reads a touched node is touched too.
+    let mut outgoing: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for wire in &after.wires {
+        outgoing.entry(wire.from.0).or_default().push(wire.to.0);
+    }
+    let mut pending: Vec<NodeId> = touched.iter().copied().collect();
+    while let Some(node) = pending.pop() {
+        for next in outgoing.get(&node).into_iter().flatten() {
+            if touched.insert(*next) {
+                pending.push(*next);
+            }
+        }
+    }
+    Some(touched)
+}
+
 /// Retain the requested root nodes and their upstream dependencies. The host still
 /// validates and compiles the projection, including the original providers and types.
 fn preview_dependencies(
@@ -3711,6 +3789,15 @@ fn preview_dependencies(
     upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
     outputs: impl Iterator<Item = NodeId>,
 ) -> Option<serde_json::Value> {
+    let mut scoped = saved.clone();
+    keep_dependencies(&mut scoped, upstream, outputs).then_some(scoped)
+}
+
+/// The `outputs` nodes and every node they read, through any number of wires.
+fn dependencies(
+    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    outputs: impl Iterator<Item = NodeId>,
+) -> std::collections::BTreeSet<NodeId> {
     let mut nodes = std::collections::BTreeSet::new();
     let mut pending: Vec<_> = outputs.collect();
     while let Some(node) = pending.pop() {
@@ -3720,19 +3807,31 @@ fn preview_dependencies(
             pending.extend(sources);
         }
     }
+    nodes
+}
+
+/// Cuts `document` down, in place, to the `outputs` nodes and what they read. Returns
+/// false when it has no node or edge list.
+fn keep_dependencies(
+    document: &mut serde_json::Value,
+    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    outputs: impl Iterator<Item = NodeId>,
+) -> bool {
+    let nodes = dependencies(upstream, outputs);
     let contains = |id: &serde_json::Value| {
         id.as_str()
             .and_then(|id| id.parse::<NodeId>().ok())
             .is_some_and(|id| nodes.contains(&id))
     };
-    let mut scoped = saved.clone();
-    scoped["nodes"]
-        .as_array_mut()?
-        .retain(|node| contains(&node["id"]));
-    scoped["edges"]
-        .as_array_mut()?
-        .retain(|edge| contains(&edge["from"]["node"]) && contains(&edge["to"]["node"]));
-    Some(scoped)
+    let Some(kept) = document["nodes"].as_array_mut() else {
+        return false;
+    };
+    kept.retain(|node| contains(&node["id"]));
+    let Some(edges) = document["edges"].as_array_mut() else {
+        return false;
+    };
+    edges.retain(|edge| contains(&edge["from"]["node"]) && contains(&edge["to"]["node"]));
+    true
 }
 
 #[cfg(test)]

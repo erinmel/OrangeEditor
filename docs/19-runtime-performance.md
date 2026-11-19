@@ -472,3 +472,21 @@ These checks were repeated against `69d6c92`.
   editor always sees a flow end.
 - **Log.** The editor formats steps and values as Log text only while Live trace is on.
   The cost difference has not been measured yet.
+
+## Edit to view (2026-11-18)
+
+Measured with `cargo test --release -p orange-editor-ui edit_timing -- --ignored --nocapture`:
+one input edit in a 5,000-node graph (2,500 literal → Absolute chains), Windows 11,
+Rust 1.99.1, release build, four rounds after opening.
+
+| Step | Before | After |
+|---|---:|---:|
+| Whole edit | 180–209 ms | 36–48 ms |
+| Value previews | 137–162 ms | 0.6–7 ms |
+| Graph view rebuild | 20–26 ms | 15–19 ms (unchanged code; machine noise) |
+
+An edit now previews only the nodes whose card or incoming wires changed and every
+node downstream of them; other previews are kept. The preview document holds only those
+nodes and what they read (`GraphDocument::with_root_nodes`), so the rest of the graph is
+neither written out nor compiled. The graph view rebuild (about 15 ms) is now the largest
+step and the next candidate.
