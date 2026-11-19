@@ -267,7 +267,7 @@ Aggregate `eq` requires the contained types to implement `eq`; wrapping a float 
 
 The initial host supports explicit package structural derives for `eq`, `hash`, `display` and `serialize`, checking every field/payload before registry publication. Other derives report unsupported capability; packages may supply explicit implementations instead. The host does not invent a default enum variant or ordering rule. Recursive nominal schemas remain legal, but a cyclic or over-budget automatic derivation has no supported proof and requires an explicit implementation. Constraint-family membership is separate from operation support: `duration: num` supplies add/subtract, not multiply/divide. Capability queries prove declarations only. Equality and order nodes exist: the bundled `org.orange.math/equal` and `not-equal` (`T: eq`) and `less`, `less-or-equal`, `greater` and `greater-or-equal` (`T: ord`), listed in [12 §4.1](12-graph-data-structures.md). They execute the host-owned subset only: Core orders for integers, bool (false before true), string (code point), duration and timestamp; native Core equality of bool, integers, string, bytes, duration, timestamp and option/list/map of them (maps independent of insertion order); and equality of package records and enums whose `eq` is a declared structural derive (equal field presence or tags, then equal members). A type that validation accepts but this subset lacks, such as `list<json>`, a record or enum whose `eq` is a package implementation (also nested inside a derive), `ord` on a package type or json/error/result, is refused at compile time with `KernelUnsupportedType`. Package-implemented constraint kernels, `hash`/`display`/`serialize`/`default` kernels, float total order and value-level serialization checks are later work.
 
-Comparison merge (2026-11-18): `less`, `less-or-equal`, `greater` and `greater-or-equal` declare `T: compare` instead of `T: ord`, so one node compares whole numbers, decimals, text and times; both inputs still share one `T`, so a whole number meets a decimal only through a visible conversion (§6). `ord` keeps its meaning everywhere else (Min/Max, Switch, map keys). The float-only `float-less`, `float-less-or-equal`, `float-greater` and `float-greater-or-equal` stay registered and runnable for saved graphs and are hidden from search. `equal` and `not-equal` keep `T: eq`; IEEE equality stays on `float-equal`.
+Comparison merge (2026-11-18): `less`, `less-or-equal`, `greater` and `greater-or-equal` declare `T: compare` instead of `T: ord`, so one node compares whole numbers, decimals, text and times; both inputs still share one `T`, so a whole number meets a decimal only through a visible conversion (§6). `ord` keeps its meaning everywhere else (Min/Max, Switch, map keys). The float-only `float-less`, `float-less-or-equal`, `float-greater` and `float-greater-or-equal` are removed; nothing had shipped that used them. `equal` and `not-equal` keep `T: eq`; IEEE equality stays on `float-equal`.
 
 ### 5.5 Generics and inference
 
@@ -316,10 +316,13 @@ have empty config. Kernel errors carry safe static text and no operand values.
 L02b float vocabulary (2026-11-08): [12 §4.3](12-graph-data-structures.md)
 lists sixteen ordinary pure math definitions with `T: float` and exact native
 f32/f64 specializations. Every input and `result` is `$T`; inputs are strict.
-Operations that L02a already names for integers use a `float-` prefix
-(`float-negate`, `float-absolute`, `float-minimum`, `float-maximum`,
-`float-clamp`, `float-remainder`): their NaN and signed-zero rules differ, so
-they are separate contracts instead of a widening of the `T: int` definitions.
+Shared numeric operations (2026-11-18): `negate`, `absolute`, `minimum`, `maximum`
+and `clamp` are one definition each for every number kind, with `T: num` and
+exact specializations for the four integers and f32/f64. A whole number binds the
+integer kernel (its `int_overflow` setting applies) and a decimal binds the float
+kernel (its `float_policy` applies, with the NaN and signed-zero rules below); the
+other family's setting is accepted and has no effect. `float-remainder` stays separate
+because its rule (truncated, dividend's sign) differs from integer `remainder`.
 
 Every node accepts only `float_policy`: `finite` (default) or `ieee`. Under
 `finite`, checks run in IEEE exception order: a non-finite input is
@@ -334,9 +337,9 @@ is returned, including NaN and infinities.
 value of the same type and keep the sign of zero. Negate and absolute act on the
 sign bit only, so NaN payloads are unchanged. `float-remainder` is the exact
 truncated remainder: it has the dividend's sign and a magnitude below the divisor.
-`float-minimum`/`float-maximum` follow IEEE 754-2019 minimum/maximum: NaN
+For decimals, `minimum`/`maximum` follow IEEE 754-2019 minimum/maximum: NaN
 propagates (the first NaN operand) and -0 orders below +0.
-`float-clamp(value,min,max)` is maximum(minimum(value,max),min); a NaN bound or
+`clamp(value,min,max)` is maximum(minimum(value,max),min); a NaN bound or
 min > max is `core/Domain` under both policies, so the native panicking clamp
 is never reached. A NaN value propagates under `ieee`.
 
@@ -355,11 +358,10 @@ results lie in the principal ranges, and `arctangent2` follows the IEEE signed-z
 quadrant rules (atan2(±0, -x) is ±π; atan2(±0, +0) is ±0). They use the platform
 library, so last-bit results are platform-scoped like the logarithms.
 
-Ten predicates return `core/bool@1`, have empty config and never fault: they
-answer for NaN and infinities. `float-equal`, `float-not-equal`, `float-less`,
-`float-less-or-equal`, `float-greater` and `float-greater-or-equal` are the IEEE
-comparisons: NaN is unordered (every comparison is false except not-equal) and
--0 equals +0. `total-order-less` is IEEE 754 totalOrder: -NaN < -∞ < … < -0 < +0 <
+Six predicates return `core/bool@1`, have empty config and never fault: they
+answer for NaN and infinities. `float-equal` and `float-not-equal` are the IEEE
+equality: NaN equals nothing and -0 equals +0. Ordering decimals is the shared
+`less`, `less-or-equal`, `greater` and `greater-or-equal` (§5.4 `compare`). `total-order-less` is IEEE 754 totalOrder: -NaN < -∞ < … < -0 < +0 <
 … < +∞ < +NaN, with NaNs of one sign ordered by payload; it is a strict total order
 on bit patterns. `is-nan`, `is-finite` and `is-infinite` classify one value. These
 are the explicit float comparison nodes §5.4 refers to; f32/f64 still implement no
@@ -388,7 +390,7 @@ reads a machine or UI locale.
   `core/Domain`. `split` returns every piece, empty ones included (`""` gives
   `[""]`); an empty separator is `core/Domain`. `join` inserts the separator
   between items of a `list<string>`.
-- **Unicode rules.** `trim`, `trim-start` and `trim-end` remove Unicode White_Space.
+- **Unicode rules.** `trim` removes Unicode White_Space from both ends, the start or the end, as its `ends` setting says (`both` by default).
   `to-uppercase`/`to-lowercase` use Unicode default full case mapping (`ß` → `SS`,
   final sigma), never a locale's tailoring (no Turkish dotless i). The Unicode data
   version is the toolchain's `char::UNICODE_VERSION`, so it is part of the locked

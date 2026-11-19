@@ -776,12 +776,12 @@ Semantics: [11 §5.6](11-graph-language.md).
 | `square-root`, `exponential`, `natural-log`, `log2`, `log10` | `value` |
 | `power` | `base`, `exponent` |
 | `floor`, `ceiling`, `truncate`, `round-ties-even` | `value` |
-| `float-negate`, `float-absolute` | `value` |
-| `float-minimum`, `float-maximum`, `float-remainder` | `a`, `b` |
-| `float-clamp` | `value`, `min`, `max` |
+| `negate`, `absolute` (shared with integers) | `value` |
+| `minimum`, `maximum` (shared with integers), `float-remainder` | `a`, `b` |
+| `clamp` (shared with integers) | `value`, `min`, `max` |
 | `sine`, `cosine`, `tangent`, `arcsine`, `arccosine`, `arctangent` | `value` |
 | `arctangent2` | `y`, `x` |
-| `float-equal`, `float-not-equal`, `float-less`, `float-less-or-equal`, `float-greater`, `float-greater-or-equal`, `total-order-less` (predicates) | `a`, `b` |
+| `float-equal`, `float-not-equal`, `total-order-less` (predicates) | `a`, `b` |
 | `is-nan`, `is-finite`, `is-infinite` (predicates) | `value` |
 
 Every config schema is closed. Non-predicates have only `float_policy`: finite
@@ -810,7 +810,8 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 | `find` | `text`, `pattern: string` | `core/option@1<core/u64@1>` | `unit`: scalar/byte |
 | `substring` | `text: string`, `start`, `length: core/u64@1` | string | `unit`: scalar/byte |
 | `replace` | `text`, `pattern`, `replacement: string` | string | empty |
-| `trim`, `trim-start`, `trim-end`, `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
+| `trim` | `value: string` | string | `ends`: `both` (default), `start` or `end` |
+| `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
 | `split` | `text`, `separator: string` | `core/list@1<core/string@1>` | empty |
 | `join` | `items: core/list@1<core/string@1>`, `separator: string` | string | empty |
 

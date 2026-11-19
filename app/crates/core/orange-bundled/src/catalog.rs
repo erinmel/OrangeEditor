@@ -99,15 +99,6 @@ pub struct MathPackage {
     json: ProviderKey,
 }
 
-/// Definitions that saved graphs keep using but search no longer offers: the
-/// float-only orderings, which the shared comparisons now cover.
-pub const SUPERSEDED: [&str; 4] = [
-    "org.orange.math/float-less",
-    "org.orange.math/float-less-or-equal",
-    "org.orange.math/float-greater",
-    "org.orange.math/float-greater-or-equal",
-];
-
 impl MathPackage {
     pub fn new(content_digest: impl Into<String>) -> Result<Self, CatalogError> {
         let content_digest = content_digest.into();
@@ -193,9 +184,18 @@ impl MathPackage {
             provider
                 .implements
                 .insert((definition.definition.clone(), definition.config_version));
-            provider
-                .specializations
-                .insert(definition.definition.clone(), numeric[..4].to_vec());
+            // A shared operation takes decimals too.
+            let shared =
+                crate::IntegerOperation::from_definition_id(definition.definition.id.as_str())
+                    .is_some_and(crate::IntegerOperation::shared);
+            provider.specializations.insert(
+                definition.definition.clone(),
+                if shared {
+                    numeric.clone()
+                } else {
+                    numeric[..4].to_vec()
+                },
+            );
             builder = builder.definition(definition);
         }
         for definition in crate::float_definitions()? {

@@ -46,10 +46,6 @@ pub enum FloatOperation {
     Arctangent2,
     Equal,
     NotEqual,
-    Less,
-    LessOrEqual,
-    Greater,
-    GreaterOrEqual,
     TotalOrderLess,
     IsNan,
     IsFinite,
@@ -57,7 +53,7 @@ pub enum FloatOperation {
 }
 
 impl FloatOperation {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 29] = [
         Self::SquareRoot,
         Self::Exponential,
         Self::NaturalLog,
@@ -83,15 +79,20 @@ impl FloatOperation {
         Self::Arctangent2,
         Self::Equal,
         Self::NotEqual,
-        Self::Less,
-        Self::LessOrEqual,
-        Self::Greater,
-        Self::GreaterOrEqual,
         Self::TotalOrderLess,
         Self::IsNan,
         Self::IsFinite,
         Self::IsInfinite,
     ];
+
+    /// Whether this operation's definition also serves whole numbers (one Negate,
+    /// Absolute, Minimum, Maximum and Clamp for every number kind).
+    pub const fn shared(self) -> bool {
+        matches!(
+            self,
+            Self::Negate | Self::Absolute | Self::Minimum | Self::Maximum | Self::Clamp
+        )
+    }
 
     pub const fn definition_id(self) -> &'static str {
         match self {
@@ -105,11 +106,12 @@ impl FloatOperation {
             Self::Ceiling => "org.orange.math/ceiling",
             Self::Truncate => "org.orange.math/truncate",
             Self::RoundTiesEven => "org.orange.math/round-ties-even",
-            Self::Negate => "org.orange.math/float-negate",
-            Self::Absolute => "org.orange.math/float-absolute",
-            Self::Minimum => "org.orange.math/float-minimum",
-            Self::Maximum => "org.orange.math/float-maximum",
-            Self::Clamp => "org.orange.math/float-clamp",
+            // One definition for every number kind; see [`Self::shared`].
+            Self::Negate => "org.orange.math/negate",
+            Self::Absolute => "org.orange.math/absolute",
+            Self::Minimum => "org.orange.math/minimum",
+            Self::Maximum => "org.orange.math/maximum",
+            Self::Clamp => "org.orange.math/clamp",
             Self::Remainder => "org.orange.math/float-remainder",
             Self::Sine => "org.orange.math/sine",
             Self::Cosine => "org.orange.math/cosine",
@@ -120,10 +122,6 @@ impl FloatOperation {
             Self::Arctangent2 => "org.orange.math/arctangent2",
             Self::Equal => "org.orange.math/float-equal",
             Self::NotEqual => "org.orange.math/float-not-equal",
-            Self::Less => "org.orange.math/float-less",
-            Self::LessOrEqual => "org.orange.math/float-less-or-equal",
-            Self::Greater => "org.orange.math/float-greater",
-            Self::GreaterOrEqual => "org.orange.math/float-greater-or-equal",
             Self::TotalOrderLess => "org.orange.math/total-order-less",
             Self::IsNan => "org.orange.math/is-nan",
             Self::IsFinite => "org.orange.math/is-finite",
@@ -145,10 +143,6 @@ impl FloatOperation {
             | Self::Remainder
             | Self::Equal
             | Self::NotEqual
-            | Self::Less
-            | Self::LessOrEqual
-            | Self::Greater
-            | Self::GreaterOrEqual
             | Self::TotalOrderLess => &["a", "b"],
             Self::Clamp => &["value", "min", "max"],
             _ => &["value"],
@@ -166,10 +160,6 @@ impl FloatOperation {
             self,
             Self::Equal
                 | Self::NotEqual
-                | Self::Less
-                | Self::LessOrEqual
-                | Self::Greater
-                | Self::GreaterOrEqual
                 | Self::TotalOrderLess
                 | Self::IsNan
                 | Self::IsFinite
@@ -179,11 +169,13 @@ impl FloatOperation {
 }
 
 /// Ordinary package definitions with `T: float` and exact f32/f64 specializations.
+/// The shared operations are defined once, with the integer ones.
 pub fn float_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     let generic: TypeExpr = "$T".parse()?;
     let boolean: TypeExpr = "core/bool@1".parse()?;
     FloatOperation::ALL
         .into_iter()
+        .filter(|operation| !operation.shared())
         .map(|operation| {
             let mut ports: Vec<_> = operation
                 .input_ports()
@@ -300,10 +292,6 @@ impl ResolvedFloat {
                     // IEEE comparisons: NaN is unordered and -0 equals +0.
                     Equal => Some(a == b),
                     NotEqual => Some(a != b),
-                    Less => Some(a < b),
-                    LessOrEqual => Some(a <= b),
-                    Greater => Some(a > b),
-                    GreaterOrEqual => Some(a >= b),
                     TotalOrderLess => Some(a.total_cmp(&b).is_lt()),
                     IsNan => Some(a.is_nan()),
                     IsFinite => Some(a.is_finite()),
@@ -435,9 +423,13 @@ impl MathPackage {
             "core/f64@1" => Scalar::F64,
             _ => return Err(BindingError::UnsupportedType),
         };
-        if config.keys().any(|key| key != "float_policy")
-            || operation.is_predicate() && !config.is_empty()
-        {
+        // A shared operation's whole-number overflow policy does not apply to decimals.
+        let own = |key: &str| {
+            key == "float_policy" && !operation.is_predicate()
+                || key == "int_overflow"
+                    && matches!(operation, FloatOperation::Negate | FloatOperation::Absolute)
+        };
+        if config.keys().any(|key| !own(key)) {
             return Err(BindingError::InvalidConfig);
         }
         let policy = match config.get("float_policy").map(|v| v.as_str()) {

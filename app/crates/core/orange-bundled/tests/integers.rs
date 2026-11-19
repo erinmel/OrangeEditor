@@ -239,11 +239,12 @@ fn binding_checks_exact_provider_versions_specializations_and_operation_config()
                 BindingError::UnsupportedType
             );
         }
-        for config in [
-            json!({"unknown":true}),
-            json!({"float_policy":"ieee"}),
-            json!({"int_overflow":7}),
-        ] {
+        let mut invalid = vec![json!({"unknown":true}), json!({"int_overflow":7})];
+        // A shared operation also takes the policy decimals follow.
+        if !op.shared() {
+            invalid.push(json!({"float_policy":"ieee"}));
+        }
+        for config in invalid {
             assert_eq!(
                 bind_in(&package, snapshot.clone(), op, "core/i64@1", config).unwrap_err(),
                 BindingError::InvalidConfig

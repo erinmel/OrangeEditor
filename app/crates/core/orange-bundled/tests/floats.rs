@@ -86,10 +86,6 @@ fn answer(op: Op) -> (Vec<f64>, f64) {
         Op::Arctangent2 => (vec![0.0, 1.0], 0.0),
         Op::Equal => (vec![1.0, 1.0], 1.0),
         Op::NotEqual => (vec![1.0, 2.0], 1.0),
-        Op::Less => (vec![1.0, 2.0], 1.0),
-        Op::LessOrEqual => (vec![2.0, 2.0], 1.0),
-        Op::Greater => (vec![1.0, 2.0], 0.0),
-        Op::GreaterOrEqual => (vec![1.0, 2.0], 0.0),
         Op::TotalOrderLess => (vec![-0.0, 0.0], 1.0),
         Op::IsNan => (vec![1.0], 0.0),
         Op::IsFinite => (vec![1.0], 1.0),
@@ -329,12 +325,12 @@ fn input_contracts_bindings_and_provider_pins_are_exact() {
                 BindingError::UnsupportedType
             );
         }
-        let mut invalid = vec![
-            json!({"unknown":true}),
-            json!({"int_overflow":"checked"}),
-            json!({"float_policy":"strict"}),
-            json!({"float_policy":7}),
-        ];
+        let mut invalid = vec![json!({"unknown":true})];
+        // Negate and Absolute serve whole numbers too, whose overflow policy they take.
+        if !matches!(op, Op::Negate | Op::Absolute) {
+            invalid.push(json!({"int_overflow":"checked"}));
+        }
+        invalid.extend([json!({"float_policy":"strict"}), json!({"float_policy":7})]);
         if op.is_predicate() {
             invalid.push(json!({"float_policy":"ieee"}));
         }
@@ -448,14 +444,6 @@ fn predicates_compare_and_classify_every_ieee_value_without_faults() {
             let unordered = a.is_nan() || b.is_nan();
             assert_eq!(truth(Op::Equal, &[a, b]), !unordered && a == b);
             assert_eq!(truth(Op::NotEqual, &[a, b]), unordered || a != b);
-            for (op, holds) in [
-                (Op::Less, a < b),
-                (Op::LessOrEqual, a <= b),
-                (Op::Greater, a > b),
-                (Op::GreaterOrEqual, a >= b),
-            ] {
-                assert_eq!(truth(op, &[a, b]), !unordered && holds, "{op:?} {a} {b}");
-            }
         }
     }
     // IEEE equality ignores the zero sign; total order separates it and orders NaNs
@@ -614,7 +602,9 @@ fn graph(
     variables: Json,
 ) -> GraphDocument {
     let mut signatures = serde_json::Map::new();
-    let definitions = float_definitions().unwrap();
+    // The shared operations (Absolute, Clamp, …) are defined with the integer ones.
+    let mut definitions = float_definitions().unwrap();
+    definitions.extend(orange_bundled::integer_definitions().unwrap());
     for node in &mut nodes {
         let Some(definition) = definitions
             .iter()
@@ -646,7 +636,10 @@ fn graph(
 #[test]
 fn actual_definitions_fold_constants_and_keep_original_fault_sources() {
     let (package, snapshot) = catalog();
-    assert_eq!(float_definitions().unwrap().len(), Op::ALL.len());
+    assert_eq!(
+        float_definitions().unwrap().len(),
+        Op::ALL.iter().filter(|op| !op.shared()).count()
+    );
     let mut nodes = vec![];
     let mut exports = vec![];
     let mut expected = vec![];

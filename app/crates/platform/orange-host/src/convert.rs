@@ -250,7 +250,7 @@ mod tests {
             .add_node(&mut draft, "core/number", [0.0, 0.0])
             .unwrap();
         let negate_decimal = host
-            .add_node(&mut draft, "org.orange.math/float-negate", [300.0, 0.0])
+            .add_node(&mut draft, "org.orange.math/negate", [300.0, 0.0])
             .unwrap();
         host.choose_type(&mut draft, negate_decimal, "T", Some("core/f64@1"))
             .unwrap();

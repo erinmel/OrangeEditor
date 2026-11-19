@@ -24,7 +24,7 @@ mod nominal;
 mod text;
 mod text_conversion;
 
-pub use catalog::{MathPackage, SUPERSEDED, math_definitions};
+pub use catalog::{MathPackage, math_definitions};
 pub use collections::{
     CollectionOperation, MAX_COLLECTION_BYTES, ResolvedCollection, collection_definitions,
 };
