@@ -22,14 +22,6 @@ cargo run --release -p orange-measure --locked --offline -- --warmup 2 --runs 7 
 
 `--offline` requires already cached exact dependencies. On an online fresh development setup, first populate the cache with the locked dependencies. The W9 profile always uses its fixed 1,000 seeded edits plus its fixed additional edit mix, independent of the generic sample-count arguments. No heavy profile runs as part of ordinary workspace unit tests.
 
-For Windows whole-process working-set observations, PowerShell 7 can launch the already-built binary with [measure-memory.ps1](../tools/measure-memory.ps1), recording stdout/stderr, binary digest, exit code and sampled PeakWorkingSet64. Example:
-
-```powershell
-pwsh -NoProfile -File tools/measure-memory.ps1 -Profile authoring-compare -Runs 15 -Warmup 3 -Label pair1
-```
-
-Each invocation is a separate child process. The sampler polls every 10 ms, including fixture construction and teardown. This is observed Windows working set, not allocator bytes or Linux RSS; brief terminal peaks may escape observation. Nonzero child exit fails the wrapper. No release dependency or core process launcher is introduced.
-
 Before/after index comparison uses the *same measurement source*, with only `orange-model/src/index.rs` replaced by its pre-membership version from e9aead5 (Git blob `9ee3c28b6cca0b1ce3fa9bc6ef9fd139e01ab253`) in an isolated checkout. To reproduce from a checkout containing these tools, create an owned baseline worktree at that checkout's HEAD, then `git -C .artifacts/index-before restore --source=e9aead5 -- app/crates/core/orange-model/src/index.rs` and build its release binary. Do not restore that file over a working checkout with unrelated edits. Import comparison restores only `codec.rs`, `error.rs` and `lib.rs` from 6854560 in its isolated baseline; both import variants run identical encoded fixtures.
 
 Three independent paired processes were collected for index and import, alternating baseline/current order in the second pair. Authoring contains both candidates in each process; pair 2 sets `ORANGE_MEASURE_OWNER_FIRST=1` to reverse their order. Tables show the range of process p50 values and the worst observed process p95, rather than treating 45 samples from one process as three replications. Untimed oracle checking follows every index update; scenario full-analysis comparisons are outside the reported worker-update timer.
@@ -117,8 +109,6 @@ Times in milliseconds. Peak/live are *additional requested allocator bytes*, exc
 Default JSON budgets intentionally reject the million-element case before document materialization. A smaller array remains admitted and retains memory; hosts can tighten or explicitly raise profiles. Accepted shapes incur the small additional counting work shown by the paired results. The old importer, input bytes, node counts and decoded-JSON budgets are separate boundaries; this is not a hard process-memory ceiling or a claim that native providers are isolated. All measured parse results returned to their pre-import baseline after drop.
 
 **Current session attribution**
-
-Run [measure-session.ps1](../tools/measure-session.ps1) with PowerShell 7, for example `pwsh -NoProfile -File tools/measure-session.ps1 -Warmup 1 -Runs 3`. It creates a uniquely named ignored source copy, records source/lock/toolchain hashes, injects consuming partition helpers **only into the copied source**, and adds a bin to the copied development package. It never modifies the original model API. The short ignored target directory avoids Windows linker path limits. The helper Rust source is retained at [session-memory.rs](../tools/session-memory.rs); no new dependency or unsafe implementation is introduced.
 
 The graph's lazy node directory is warmed before the document/registry baseline. Clean cases have no diagnostics; warning cases retain overridden literals; error cases add one isolated unknown definition to an otherwise clean graph. Three measured constructions follow one warmup for each case, and all partitions return to the warmed baseline after drop.
 
