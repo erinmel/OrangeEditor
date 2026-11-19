@@ -23,6 +23,14 @@ pub const MULTIBAND_SPECTRUM: &str = "org.orange.audio/multiband-spectrum";
 pub const NOISE_LEVEL: &str = "org.orange.audio/noise-level";
 /// Attenuates quiet samples on a derived audio stream.
 pub const NOISE_GATE: &str = "org.orange.audio/noise-gate";
+/// Turns loud parts of a stream down by a ratio above a threshold.
+pub const COMPRESSOR: &str = "org.orange.audio/compressor";
+/// Keeps a stream's peaks under a ceiling.
+pub const LIMITER: &str = "org.orange.audio/limiter";
+/// Makes a stream louder or quieter by a number of decibels.
+pub const GAIN: &str = "org.orange.audio/gain";
+/// Keeps the low, high or middle frequencies of a stream.
+pub const FILTER: &str = "org.orange.audio/filter";
 /// The record output of Audio format, with U64 fields `rate` and `channels`.
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
 /// Measures a stream's level in dBFS continuously.
@@ -92,8 +100,12 @@ impl LiveSource for AudioSource {
     }
 }
 
-struct NoiseGate;
-impl LiveSource for NoiseGate {
+/// A stream processor: its worker's name and how its settings build it.
+struct Processor(
+    &'static str,
+    fn(&Map<String, Json>) -> Result<crate::processors::Make, String>,
+);
+impl LiveSource for Processor {
     fn start(
         &self,
         _session: Option<Arc<dyn Session>>,
@@ -101,7 +113,8 @@ impl LiveSource for NoiseGate {
         arguments: &Arguments,
         publisher: Publisher,
     ) -> Result<Box<dyn Send>, String> {
-        crate::noise_gate::start(input_stream(arguments)?, settings, publisher)
+        let Self(name, make) = self;
+        crate::processors::start(name, input_stream(arguments)?, make(settings)?, publisher)
     }
 }
 
@@ -426,13 +439,41 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .setting("threshold_db", number_setting(-120.0, 0.0, -35.0))
     .setting("hold_ms", number_setting(0.0, 10_000.0, 150.0))
     .setting("reset_db", number_setting(0.0, 24.0, 4.0));
-    let gate = crate::noise_gate::settings(stream_input(live(
+    let gate = crate::processors::gate_settings(stream_input(live(
         "noise-gate",
         "Noise Gate",
         "Mutes quiet audio and outputs a gated stream for playback or recording.",
     )))
     .keywords("microphone, noise gate, mute, silence, threshold, audio filter, background noise")
     .live("gated_stream", STREAM_TYPE);
+    let compressor = crate::processors::compressor_settings(stream_input(live(
+        "compressor",
+        "Compressor",
+        "Turns the loud parts of a stream down so its level stays even. Ratio sets how much, Attack and Release how fast, and Makeup raises the result again.",
+    )))
+    .keywords("compression, dynamics, loudness, even out, level, voice, audio effect")
+    .live("compressed_stream", STREAM_TYPE);
+    let limiter = crate::processors::limiter_settings(stream_input(live(
+        "limiter",
+        "Limiter",
+        "Keeps a stream's peaks under the ceiling so it never clips.",
+    )))
+    .keywords("clip, clipping, peak, ceiling, protect, loudness, audio effect")
+    .live("limited_stream", STREAM_TYPE);
+    let gain = crate::processors::gain_settings(stream_input(live(
+        "gain",
+        "Gain",
+        "Makes a stream louder or quieter by a number of decibels.",
+    )))
+    .keywords("volume, louder, quieter, amplify, boost, attenuate, decibels, audio effect")
+    .live("adjusted_stream", STREAM_TYPE);
+    let filter = crate::processors::filter_settings(stream_input(live(
+        "filter",
+        "Filter",
+        "Keeps the low (low-pass), high (high-pass) or middle (band-pass) frequencies of a stream around the cutoff.",
+    )))
+    .keywords("eq, equalizer, low pass, high pass, band pass, bass, treble, frequency, audio effect")
+    .live("filtered_stream", STREAM_TYPE);
     let level = meter(
         "live-level",
         "Level",
@@ -478,7 +519,23 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .enumeration("source-command", SOURCE_COMMANDS)
         .enumeration("sound-command", SOUND_COMMANDS)
         .live(&audio_source.build(), AudioSource)?
-        .live(&gate.build(), NoiseGate)?
+        .live(
+            &gate.build(),
+            Processor("noise-gate", crate::processors::gate),
+        )?
+        .live(
+            &compressor.build(),
+            Processor("compressor", crate::processors::compressor),
+        )?
+        .live(
+            &limiter.build(),
+            Processor("limiter", crate::processors::limiter),
+        )?
+        .live(&gain.build(), Processor("gain", crate::processors::gain))?
+        .live(
+            &filter.build(),
+            Processor("filter", crate::processors::filter),
+        )?
         .source(&audio_out.build(), LiveAudioOut)?
         .live(&audio_format.build(), AudioFormat)?
         .live(&level.build(), Meter { band: false })?

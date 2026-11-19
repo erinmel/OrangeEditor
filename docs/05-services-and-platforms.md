@@ -532,6 +532,18 @@ silence, so downstream playback and recorders retain their stream. The worker
 owns a bounded one-second output ring and resets the envelope on lost samples
 or a replaced source ring. It runs outside the audio callback.
 
+Compressor, Limiter, Gain and Filter work the same way: each takes a live
+`stream`, processes it on its own worker with the shared reading loop, and
+publishes a stream of the same type, rate and channels (`compressed_stream`,
+`limited_stream`, `adjusted_stream`, `filtered_stream`). Settings:
+
+| Node | Settings and defaults |
+|---|---|
+| Compressor | Threshold -18 dBFS, Ratio 4 (1–20), Attack 10 ms, Release 120 ms, Makeup 0 dB. Reduction is (level − threshold) × (1 − 1/ratio), linked across channels |
+| Limiter | Ceiling -1 dBFS, Release 50 ms. A peak over the ceiling lowers the gain at once |
+| Gain | -60 to +24 dB, default 0 |
+| Filter | Low-pass, high-pass or band-pass biquad; Cutoff 1 kHz (kept under 0.45 × rate), Q 0.707 |
+
 ### Application playback and virtual cables
 
 On Linux, the source selector uses `pw-dump` to list active playback streams

@@ -33,7 +33,7 @@ mod file_source;
 mod level;
 mod live_nodes;
 mod mixer;
-mod noise_gate;
+mod processors;
 mod reactive;
 mod spectrum;
 mod stream;
@@ -42,8 +42,9 @@ mod wav;
 pub use device::{Device, Devices, LOOPBACK_OFFERED, LOOPBACK_PREFIX, NULL_DEVICE, devices};
 pub use level::SILENCE_DB;
 pub use live_nodes::{
-    AUDIO_FORMAT, AUDIO_SOURCE, FORMAT_TYPE, LIVE_LEVEL, MULTIBAND_SPECTRUM, NOISE_GATE,
-    NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL, SOURCE_FINISHED, TRANSIENT,
+    AUDIO_FORMAT, AUDIO_SOURCE, COMPRESSOR, FILTER, FORMAT_TYPE, GAIN, LIMITER, LIVE_LEVEL,
+    MULTIBAND_SPECTRUM, NOISE_GATE, NOISE_LEVEL, SOUND_CONTROL, SOURCE_CONTROL, SOURCE_FINISHED,
+    TRANSIENT,
 };
 pub use mixer::MAX_VOICES;
 pub use stream::{MAX_LAG_MS, RING_SECONDS, START_MS};
@@ -1273,8 +1274,9 @@ mod tests {
         assert_eq!(package.nodes().len(), 6);
         // Audio out, Frequency Splitter, Audio Level Trigger, Transient, Source finished.
         assert_eq!(package.sources().len(), 5);
-        // Audio source, Noise Gate, Audio format, Level.
-        assert_eq!(package.lives().len(), 4);
+        // Audio source, Noise Gate, Compressor, Limiter, Gain, Filter, Audio format,
+        // Level.
+        assert_eq!(package.lives().len(), 8);
         assert!(package.replacements().is_empty());
         assert_eq!(package.adapters().len(), 2);
         assert_eq!(package.types().len(), 4);

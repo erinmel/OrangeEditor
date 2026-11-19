@@ -25,7 +25,7 @@ a package node is pinned to the exact provider a graph was built with.
 | Language | Typed math and logic, text, lists, maps, JSON, options and results, user enums and records, variables, branching, loops, time, errors and cancellation, graph-local functions |
 | Triggers | Manual, start, timers, keys, custom events, conditions on values ("When"), file changes, network messages, audio levels and hits |
 | Services | HTTP/HTTPS, WebSocket, MQTT, AMQP 0-9-1, files in a granted folder, credentials in the OS store |
-| Audio | Play and control sound files, input devices, system and per-application capture, levels, frequency bands, transients, noise gate |
+| Audio | Play and control sound files, input devices, system and per-application capture, levels, frequency bands, transients, and stream effects: noise gate, compressor, limiter, gain and filters |
 | Editor | Canvas with editable cards, palette search in English and Spanish, properties, declarations, connections, packages, problems, log, undo |
 | Extension | Installed packages with hot install, update and removal; native plugin libraries |
 
@@ -43,7 +43,7 @@ the foundation.
 | Audio | Working on Windows; Linux per-application capture needs PipeWire and is not verified on hardware; macOS per-application capture is not implemented |
 | Wasm packages | Pure, action and async nodes run; host service imports and resources are missing |
 | Native plugins | Load at start; not sandboxed |
-| File format | Version 1 with an upgrade chain for later versions (12 §6.3) |
+| File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
 | Releases | Packaging scripts exist; publishing is disabled until a release is qualified |
 
 ## What is missing
@@ -53,24 +53,21 @@ These are the gaps between the vision and the repository today, most important f
 1. **Documentation for people who use it.** No getting-started guide, no tutorial and
    no node reference. A reference could be generated from the node catalogue, which
    already carries names and purposes in English and Spanish.
-2. **One migration contract.** The document format has an upgrade chain, nodes can name
-   a replacement, and packages have versions, but no single page says what a 1.x → 2.0
-   change may break and how users and plugins are carried across.
-3. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
+2. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
    network access are each described, but nowhere together with what an attacker could
    do and what stops it.
-4. **Plugin and embedding guides.** [04](04-expansion-plugins.md) is a contract, not a
+3. **Plugin and embedding guides.** [04](04-expansion-plugins.md) is a contract, not a
    walkthrough, and the public Rust API has no stability policy that says what may change
    in a minor release.
-5. **Flow-started subscriptions.** Event outputs on actions (11 §10.4) are specified but
+4. **Flow-started subscriptions.** Event outputs on actions (11 §10.4) are specified but
    not implemented; triggers are always armed while a graph runs.
-6. **Audio tuning surface.** Band and transient detection work, but there is no spectrum
+5. **Audio tuning surface.** Band and transient detection work, but there is no spectrum
    view with hit markers for tuning them, and When thresholds cannot be wired.
-7. **Platform qualification.** Frame time, memory and latency targets are measured on
+6. **Platform qualification.** Frame time, memory and latency targets are measured on
    one Windows machine only; macOS and Linux audio, input and capture need real runs.
-8. **Wasm guest services.** Installed Wasm packages cannot yet call host services or own
+7. **Wasm guest services.** Installed Wasm packages cannot yet call host services or own
    resources, so service plugins must be native libraries today.
-9. **Accessibility.** Keyboard use works for shortcuts and search; screen reader output
+8. **Accessibility.** Keyboard use works for shortcuts and search; screen reader output
    from the canvas has not been checked.
 
 ## Glossary

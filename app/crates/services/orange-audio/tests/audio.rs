@@ -1148,3 +1148,94 @@ fn a_nodes_connection_is_named_by_its_adapter() {
     );
     assert_eq!(host.connection_label(orange_audio::LIVE_LEVEL), None);
 }
+
+/// One playing file runs through Gain, Limiter, Compressor and two Filters at once;
+/// a Level after each shows what it did to the same sound.
+#[test]
+fn every_stream_processor_changes_the_level_it_should() {
+    let mut host = host();
+    // A loud 3 kHz tone (8 kHz rate) for two seconds, about -10 dBFS RMS as played.
+    let path = wav_signal("processors.wav", 2_000, |frame| {
+        let phase = std::f64::consts::TAU * 3_000.0 * f64::from(frame) / 8_000.0;
+        #[expect(clippy::cast_possible_truncation, reason = "bounded PCM sample")]
+        let sample = (phase.sin() * 23_000.0) as i16;
+        sample
+    });
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let add =
+        |draft: &mut orange_host::Draft, kind| host.add_node(draft, kind, [0.0, 0.0]).unwrap();
+    let source = add(&mut draft, orange_audio::AUDIO_SOURCE);
+    let dry = add(&mut draft, orange_audio::LIVE_LEVEL);
+    host.connect(&mut draft, (source, "stream"), (dry, "stream"))
+        .unwrap();
+    let mut meters = Vec::new();
+    for (kind, output, settings) in [
+        (
+            orange_audio::GAIN,
+            "adjusted_stream",
+            json!({"gain_db": -12}),
+        ),
+        (
+            orange_audio::LIMITER,
+            "limited_stream",
+            json!({"ceiling_db": -12}),
+        ),
+        (
+            orange_audio::COMPRESSOR,
+            "compressed_stream",
+            json!({"threshold_db": -20, "ratio": 10, "attack_ms": 1}),
+        ),
+        (
+            orange_audio::FILTER,
+            "filtered_stream",
+            json!({"mode": "low-pass", "cutoff_hz": 200}),
+        ),
+        (
+            orange_audio::FILTER,
+            "filtered_stream",
+            json!({"mode": "high-pass", "cutoff_hz": 200}),
+        ),
+    ] {
+        let processor = add(&mut draft, kind);
+        host.set_config(&mut draft, processor, &settings).unwrap();
+        let meter = add(&mut draft, orange_audio::LIVE_LEVEL);
+        host.connect(&mut draft, (source, "stream"), (processor, "stream"))
+            .unwrap();
+        host.connect(&mut draft, (processor, output), (meter, "stream"))
+            .unwrap();
+        meters.push(meter);
+    }
+    let mut input = host.declarations(&draft).connections.remove(0);
+    input.settings = json!({"file": path, "autoplay": true});
+    host.declare_connection(&mut draft, &input).unwrap();
+    let text = draft.text().unwrap();
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let flow = host.open(&text).unwrap();
+    let level = |meter| {
+        host.inspect(flow, move |run| {
+            match run.live_port_value(meter, &"level".parse().unwrap()) {
+                Some(Value::F64(db)) => Some(*db),
+                _ => None,
+            }
+        })
+        .unwrap()
+    };
+    // Wait until the tone is playing through every meter.
+    until("every meter to hear the tone", || {
+        level(dry).is_some_and(|db| db > -15.0)
+            && meters.iter().all(|meter| level(*meter).is_some())
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let dry = level(dry).unwrap();
+    let [gain, limited, compressed, low, high] = [0, 1, 2, 3, 4].map(|n| level(meters[n]).unwrap());
+    assert!((dry - 12.0 - gain).abs() < 1.5, "gain {gain} from {dry}");
+    // The limiter holds peaks at -12 dBFS, so the RMS level ends well under that.
+    assert!(limited < -12.0 && limited > -24.0, "limited {limited}");
+    assert!(compressed < dry - 6.0, "compressed {compressed} from {dry}");
+    // 3 kHz is far above a 200 Hz low-pass and passes a 200 Hz high-pass.
+    assert!(low < dry - 20.0, "low-pass {low} from {dry}");
+    assert!((high - dry).abs() < 1.5, "high-pass {high} from {dry}");
+    host.close(flow).unwrap();
+    std::fs::remove_file(path).unwrap();
+}
