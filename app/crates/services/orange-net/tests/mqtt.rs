@@ -246,11 +246,13 @@ fn document(host: &Host, url: &str) -> String {
                 "data": {"type": BYTES, "value": "AP8="}, "retain": no}),
         ),
     ] {
+        // The message entries take their topic as an input from version 2.
+        let entry = definition == orange_net::MQTT_MESSAGE || definition == orange_net::MQTT_BINARY;
         let mut new = NewNode::new(
             node(n),
             DefinitionRef {
                 id: definition.parse().unwrap(),
-                version: 1,
+                version: if entry { 2 } else { 1 },
             },
         );
         new.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
@@ -314,7 +316,7 @@ fn host() -> Host {
 }
 
 #[test]
-fn new_mqtt_entries_use_the_wirable_version_and_saved_v1_entries_still_check() {
+fn new_mqtt_entries_take_their_topic_as_an_input() {
     let host = host();
     let graph = document(&host, "mqtt://localhost");
     assert!(host.check(&graph).unwrap().is_empty());

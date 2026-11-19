@@ -11,18 +11,13 @@ const ON_KEY: &str = "org.orange.input/on-key-pressed";
 #[derive(Debug, Clone)]
 struct Binding {
     key: Key,
+    /// Exactly the modifiers that must be held, each one named on its own.
     modifiers: Modifiers,
     repeat: bool,
-    /// The chord is exactly the modifiers held, each one named on its own (version
-    /// 3); older nodes name the Primary modifier and match logically.
-    exact: bool,
 }
 
 impl Binding {
     fn matches(&self, held: Modifiers) -> bool {
-        if !self.exact {
-            return held.matches_logically(self.modifiers);
-        }
         // egui reports Ctrl as `command` too on Windows and Linux; Command is the
         // macOS key only.
         held.ctrl == self.modifiers.ctrl
@@ -73,20 +68,6 @@ impl Drop for Subscription {
     }
 }
 
-fn modifiers(name: &str) -> Option<Modifiers> {
-    let mut modifiers = Modifiers::NONE;
-    for part in name.split('+') {
-        match part {
-            "None" => {}
-            "Primary" => modifiers.command = true,
-            "Alt" => modifiers.alt = true,
-            "Shift" => modifiers.shift = true,
-            _ => return None,
-        }
-    }
-    Some(modifiers)
-}
-
 impl ServiceSource for Source {
     fn start_with(
         &self,
@@ -104,43 +85,18 @@ impl ServiceSource for Source {
         arguments: &Arguments,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let selected = match arguments.get("key") {
-            Some(Value::Str(key)) if !key.is_empty() => Some(key.as_str()),
-            _ => None,
-        };
-        let key = selected
-            .or_else(|| settings.get("key").and_then(Json::as_str))
-            .unwrap_or("F8");
+        let key = settings.get("key").and_then(Json::as_str).unwrap_or("F8");
         let key = Key::from_name(key).ok_or("Choose a supported logical key")?;
-        // Version 3 names each modifier as a true-or-false input; older versions
-        // name a chord in a setting.
-        let exact = flag(arguments, "ctrl").is_some();
-        let modifiers = if exact {
-            Modifiers {
+        let binding = Binding {
+            key,
+            modifiers: Modifiers {
                 ctrl: flag(arguments, "ctrl").unwrap_or(false),
                 shift: flag(arguments, "shift").unwrap_or(false),
                 alt: flag(arguments, "alt").unwrap_or(false),
                 mac_cmd: flag(arguments, "command").unwrap_or(false),
                 command: false,
-            }
-        } else {
-            let modifier_name = settings
-                .get("modifiers")
-                .and_then(Json::as_str)
-                .unwrap_or("None");
-            modifiers(modifier_name).ok_or("Choose supported modifiers")?
-        };
-        let repeat = flag(arguments, "repeat").unwrap_or_else(|| {
-            settings
-                .get("repeat")
-                .and_then(Json::as_bool)
-                .unwrap_or(false)
-        });
-        let binding = Binding {
-            key,
-            modifiers,
-            repeat,
-            exact,
+            },
+            repeat: flag(arguments, "repeat").unwrap_or(false),
         };
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state
@@ -158,24 +114,6 @@ impl ServiceSource for Source {
 
 impl Keyboard {
     pub fn package(&self) -> Result<ServicePackage, orange_sdk::DefinitionError> {
-        let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
-            .description("Fires when a logical key is pressed while this editor is focused. Editing text and editor shortcuts take priority. Primary means Ctrl on Windows/Linux and Command on macOS. Release the key to fire again; optional repeat follows the operating system. No global keyboard hook.")
-            .category("input", "Input")
-            .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
-            .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
-            .setting("modifiers", json!({"title":"Modifiers", "type":"string", "enum":["None","Primary","Alt","Shift","Primary+Shift","Primary+Alt","Alt+Shift","Primary+Alt+Shift"], "default":"None"}))
-            .setting("repeat", json!({"title":"Allow key repeat", "type":"boolean", "default":false}));
-        let previous = definition.clone().hidden().build();
-        let wired = definition
-            .clone()
-            .version(2)
-            .input_default(
-                "key",
-                "core/string@1",
-                json!({"type": "core/string@1", "value": ""}),
-            )
-            .hidden()
-            .build();
         // Version 3: the key from a list, and each modifier its own No | Yes input.
         let off = || json!({"type": "core/bool@1", "value": false});
         let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
@@ -196,8 +134,6 @@ impl Keyboard {
                 "Starts flows when keys are pressed while this editor has focus.",
             )
             .with_catalogs(crate::CATALOGS)
-            .source(&previous, Source(Arc::clone(&self.state)))?
-            .source(&wired, Source(Arc::clone(&self.state)))?
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 

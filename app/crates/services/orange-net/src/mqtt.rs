@@ -1013,15 +1013,6 @@ pub(crate) fn publish_bytes_definition() -> String {
     .build()
 }
 
-pub(crate) fn message_definition() -> String {
-    Definition::entry(crate::PACKAGE, "mqtt-message", "On MQTT message")
-        .category("network", "Network")
-        .hidden()
-        .uses(crate::MQTT_ADAPTER)
-        .payload("core/list@1<core/string@1>")
-        .build()
-}
-
 pub(crate) fn topic_definition(binary: bool) -> String {
     let (name, label, payload) = if binary {
         ("mqtt-binary", "On MQTT binary message", "core/bytes@1")
@@ -1044,15 +1035,6 @@ pub(crate) fn topic_definition(binary: bool) -> String {
             }),
         )
         .payload(payload)
-        .build()
-}
-
-pub(crate) fn binary_definition() -> String {
-    Definition::entry(crate::PACKAGE, "mqtt-binary", "On MQTT binary message")
-        .category("network", "Network")
-        .hidden()
-        .uses(crate::MQTT_ADAPTER)
-        .payload("core/bytes@1")
         .build()
 }
 

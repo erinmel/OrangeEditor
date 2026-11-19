@@ -421,18 +421,6 @@ pub fn package() -> ServicePackage {
         })
         .and_then(|package| {
             package.source(
-                &mqtt::message_definition(),
-                mqtt::MqttMessage { binary: false },
-            )
-        })
-        .and_then(|package| {
-            package.source(
-                &mqtt::binary_definition(),
-                mqtt::MqttMessage { binary: true },
-            )
-        })
-        .and_then(|package| {
-            package.source(
                 &mqtt::topic_definition(false),
                 mqtt::MqttMessage { binary: false },
             )
