@@ -30,6 +30,35 @@ Graph **directory bundle** saves use immutable generation directories plus a sma
 
 ## Connection manager
 
+The Connections panel offers one HTTP / HTTPS protocol. The base URL chooses
+the scheme and may include a path prefix. Put a query in the node's request
+path. WebSocket also accepts either WS or WSS. HTTP and WebSocket offer None,
+Basic, Bearer and API key authentication. HTTP also offers OAuth client
+credentials and refresh token. MQTT offers None and Username and password,
+with an optional password. AMQP offers Username and password or the broker's
+default guest credentials. The API key is stored as a credential reference in
+`api_key.token`, and `api_key.header` defaults to `X-API-Key`. Standard and
+custom HTTP profile headers are sent to the configured origin. A redirect for
+a request with profile headers or OAuth is returned as a status for the graph.
+
+Check settings validates and opens a profile without firing a Request node.
+Create and edit network profiles in Connections. The node's dropdown lists
+saved profiles for its protocol and changes the node reference in one undoable
+edit. The editor creates graph-owned profiles. Host-provided shared
+profiles are configured by the embedding host or CLI. Opening or updating a
+flow acquires profiles named by its nodes, including nodes in function bodies.
+Unused declarations can remain incomplete. Adding a node prefers a configured
+profile of the correct protocol over a placeholder.
+
+The text HTTP Request uses method, relative path, body (`content`), content
+type and optional request `headers` (one `Name: value` line per header).
+Every input remains wireable. The body is sent as UTF-8 without reformatting,
+including when it contains JSON. The node returns status, success (2xx), and
+response text. The failed route is for an invalid request, transport failure,
+or unreadable response. Existing saved version 1 nodes are upgraded to
+version 2 with the same ports, literals and wires, and empty defaults for the
+new inputs. Binary and streamed request variants retain their payload types.
+
 Credentials, authorization and binary payloads (2026-11-12; `orange-sdk`,
 `orange-vault`, `orange-host`, `orange-net`). A setting value that is exactly
 `credential://<name>` (name: 1 to 128 of `a-z 0-9 . _ - /`) is a reference. When the

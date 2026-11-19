@@ -1,0 +1,11 @@
+[package]
+name = "orange-network-web"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[workspace]
+
+[dependencies]
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }

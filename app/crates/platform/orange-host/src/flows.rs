@@ -36,7 +36,7 @@ impl Host {
             &resolver,
             CompileOptions::default(),
         )?);
-        let opened = self.sessions(&document, previous)?;
+        let opened = self.sessions(&document, &registry, previous)?;
         // The session of a node that uses a connection: the one it names.
         let session_of = |node: &orange_model::document::NodeInstance,
                           refused: &dyn Fn(&str) -> HostError|
@@ -64,8 +64,7 @@ impl Host {
         let mut feeds = Vec::new();
         let mut manual_entries = Vec::new();
         let mut package_order = Vec::new();
-        let mut package_entries =
-            std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+        let mut package_entries = BTreeMap::<_, BTreeSet<_>>::new();
         for entry in plan.manuals() {
             let node = document
                 .node(entry.node())
@@ -179,12 +178,7 @@ impl Host {
 
     /// Starts the source of every package entry of a flow. On a failure the sources
     /// already started are stopped again.
-    fn feed(
-        sink: &flow::Sink,
-        id: FlowId,
-        flow: &mut Flow,
-        feeds: Vec<Feed>,
-    ) -> Result<(), HostError> {
+    fn feed(sink: &Sink, id: FlowId, flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
         for (node, source, session, settings) in feeds {
             let inbox = flow.inbox.clone();
             let thread = flow

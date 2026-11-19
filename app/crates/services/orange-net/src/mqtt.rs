@@ -651,86 +651,6 @@ static CLIENTS: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub(crate) struct MqttAdapter;
 impl ConnectionAdapter for MqttAdapter {
-    fn about(&self) -> orange_sdk::AdapterAbout {
-        orange_sdk::AdapterAbout {
-            label: "MQTT broker".into(),
-            purpose: "Publishes and receives messages on the topics of an MQTT broker.".into(),
-        }
-    }
-    fn texts(&self) -> Vec<orange_sdk::SettingText> {
-        use crate::{secret_setting, text_setting};
-        vec![
-            orange_sdk::SettingText {
-                required: true,
-                ..text_setting(
-                    "url",
-                    "Broker",
-                    "mqtt://host, or mqtts://host for TLS, with an optional :port.",
-                    "mqtts://broker.example.com",
-                )
-            },
-            text_setting(
-                "username",
-                "User name",
-                "The user name the broker knows.",
-                "",
-            ),
-            secret_setting("password", "Password", "The user's password."),
-            text_setting(
-                "client_id",
-                "Client ID",
-                "How the broker knows this client; made up when left empty.",
-                "",
-            ),
-            orange_sdk::SettingText {
-                list: true,
-                ..text_setting(
-                    "topics",
-                    "Topics",
-                    "The topic filters to subscribe to, one per line.",
-                    "sensors/#",
-                )
-            },
-            text_setting(
-                "ca_file",
-                "Certificate authority file",
-                "A PEM file of the authorities to trust, for a broker with a private one.",
-                "",
-            ),
-        ]
-    }
-    fn fields(&self) -> Vec<orange_sdk::SettingField> {
-        vec![
-            orange_sdk::SettingField {
-                setting: "qos".into(),
-                label: "Quality of service".into(),
-                help: "0 sends at most once, 1 at least once, and 2 uses the four-step delivery exchange.".into(),
-                unit: String::new(),
-                min: 0.0,
-                max: 2.0,
-                default: Some(0.0),
-                whole: true,
-            },
-            orange_sdk::SettingField {
-                setting: "keep_alive_s".into(),
-                label: "Keep alive".into(),
-                help: "How often the broker hears from this client when nothing is sent.".into(),
-                unit: "s".into(),
-                min: 5.0,
-                max: 3600.0,
-                default: Some(30.0),
-                whole: true,
-            },
-        ]
-    }
-    fn toggles(&self) -> Vec<orange_sdk::SettingToggle> {
-        vec![orange_sdk::SettingToggle {
-            setting: "persistent".into(),
-            label: "Keep the session".into(),
-            help: "The broker keeps subscriptions and messages while this client is away; needs a client ID.".into(),
-            default: false,
-        }]
-    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         let url = settings
             .get("url")
@@ -800,14 +720,13 @@ impl ConnectionAdapter for MqttAdapter {
             }
             Some(_) => return Err("`will` must be an object with `topic` and `message`".into()),
         };
-        let client_id = match given_id {
-            Some(id) => id,
-            None => format!(
+        let client_id = given_id.unwrap_or_else(|| {
+            format!(
                 "orange-{}-{}",
                 std::process::id(),
                 CLIENTS.fetch_add(1, Ordering::Relaxed)
-            ),
-        };
+            )
+        });
         let number = |name: &str, default: u64, range: std::ops::RangeInclusive<u64>| match settings
             .get(name)
         {
@@ -873,6 +792,86 @@ impl ConnectionAdapter for MqttAdapter {
             .spawn(move || run(&io))
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(MqttSession(shared)))
+    }
+    fn about(&self) -> orange_sdk::AdapterAbout {
+        orange_sdk::AdapterAbout {
+            label: "MQTT broker".into(),
+            purpose: "Publishes and receives messages on the topics of an MQTT broker.".into(),
+        }
+    }
+    fn texts(&self) -> Vec<orange_sdk::SettingText> {
+        use crate::{secret_setting, text_setting};
+        vec![
+            orange_sdk::SettingText {
+                required: true,
+                ..text_setting(
+                    "url",
+                    "Broker",
+                    "mqtt://host, or mqtts://host for TLS, with an optional :port.",
+                    "mqtts://broker.example.com",
+                )
+            },
+            text_setting(
+                "username",
+                "User name",
+                "The user name the broker knows.",
+                "",
+            ),
+            secret_setting("password", "Password", "The user's password."),
+            text_setting(
+                "client_id",
+                "Client ID",
+                "How the broker knows this client; made up when left empty.",
+                "",
+            ),
+            orange_sdk::SettingText {
+                list: true,
+                ..text_setting(
+                    "topics",
+                    "Topics",
+                    "The topic filters to subscribe to, one per line.",
+                    "sensors/#",
+                )
+            },
+            text_setting(
+                "ca_file",
+                "Certificate authority file",
+                "A PEM file of the authorities to trust, for a broker with a private one.",
+                "",
+            ),
+        ]
+    }
+    fn toggles(&self) -> Vec<orange_sdk::SettingToggle> {
+        vec![orange_sdk::SettingToggle {
+            setting: "persistent".into(),
+            label: "Keep the session".into(),
+            help: "The broker keeps subscriptions and messages while this client is away; needs a client ID.".into(),
+            default: false,
+        }]
+    }
+    fn fields(&self) -> Vec<orange_sdk::SettingField> {
+        vec![
+            orange_sdk::SettingField {
+                setting: "qos".into(),
+                label: "Quality of service".into(),
+                help: "0 sends at most once, 1 at least once, and 2 uses the four-step delivery exchange.".into(),
+                unit: String::new(),
+                min: 0.0,
+                max: 2.0,
+                default: Some(0.0),
+                whole: true,
+            },
+            orange_sdk::SettingField {
+                setting: "keep_alive_s".into(),
+                label: "Keep alive".into(),
+                help: "How often the broker hears from this client when nothing is sent.".into(),
+                unit: "s".into(),
+                min: 5.0,
+                max: 3600.0,
+                default: Some(30.0),
+                whole: true,
+            },
+        ]
     }
 }
 

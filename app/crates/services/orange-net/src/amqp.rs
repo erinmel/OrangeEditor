@@ -275,6 +275,23 @@ impl Settings {
 #[derive(Debug)]
 pub(crate) struct AmqpAdapter;
 impl ConnectionAdapter for AmqpAdapter {
+    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+        let settings = Arc::new(Settings::parse(settings)?);
+        let life = Arc::new(Lifecycle::new());
+        let (requests, receive) = mpsc::sync_channel(MAX_QUEUED);
+        let (worker_settings, worker_life) = (Arc::clone(&settings), Arc::clone(&life));
+        thread::Builder::new()
+            .name("orange-net-amqp-publish".into())
+            .spawn(move || publisher(&worker_settings, &worker_life, &receive))
+            .map_err(|_| "the AMQP publisher worker could not start")?;
+        Ok(Arc::new(AmqpSession {
+            settings,
+            requests,
+            life,
+            consumers: Arc::new(AtomicUsize::new(0)),
+        }))
+    }
+
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
             label: "AMQP 0-9-1 broker".into(),
@@ -365,23 +382,6 @@ impl ConnectionAdapter for AmqpAdapter {
                 whole: true,
             },
         ]
-    }
-
-    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
-        let settings = Arc::new(Settings::parse(settings)?);
-        let life = Arc::new(Lifecycle::new());
-        let (requests, receive) = mpsc::sync_channel(MAX_QUEUED);
-        let (worker_settings, worker_life) = (Arc::clone(&settings), Arc::clone(&life));
-        thread::Builder::new()
-            .name("orange-net-amqp-publish".into())
-            .spawn(move || publisher(&worker_settings, &worker_life, &receive))
-            .map_err(|_| "the AMQP publisher worker could not start")?;
-        Ok(Arc::new(AmqpSession {
-            settings,
-            requests,
-            life,
-            consumers: Arc::new(AtomicUsize::new(0)),
-        }))
     }
 }
 

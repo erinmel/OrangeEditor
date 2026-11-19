@@ -70,7 +70,7 @@ fn document(host: &Host, connection: Json) -> String {
         node(3),
         DefinitionRef {
             id: orange_net::HTTP_REQUEST.parse().unwrap(),
-            version: 1,
+            version: 2,
         },
     );
     request.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
@@ -133,6 +133,52 @@ fn a_node_sends_a_request_on_the_documents_connection() {
         panic!("the reply is text");
     };
     assert_eq!(reply.as_str(), "POST /scene HTTP/1.1|hi");
+}
+
+#[test]
+fn a_completed_profile_replaces_the_placeholder_for_new_and_existing_requests() {
+    use orange_host::{Connection, ConnectionScope};
+
+    let mut host = host();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let request = host
+        .add_node(&mut draft, orange_net::HTTP_REQUEST, [0.0, 0.0])
+        .unwrap();
+    assert!(
+        matches!(host.open(&draft.text().unwrap()), Err(HostError::Connection(_, reason)) if reason.contains("base_url"))
+    );
+    let id = host
+        .declare_connection_for(
+            &mut draft,
+            request,
+            &Connection {
+                id: None,
+                name: "Z configured API".into(),
+                adapter: orange_net::HTTP_ADAPTER.into(),
+                scope: ConnectionScope::Graph,
+                settings: json!({"base_url": "https://example.test/v1"}),
+            },
+            &[],
+        )
+        .unwrap();
+    assert_eq!(host.declarations(&draft).connections.len(), 2);
+    assert!(draft.undo());
+    assert_eq!(host.declarations(&draft).connections.len(), 1);
+    assert!(draft.redo());
+    let another = host
+        .add_node(&mut draft, orange_net::HTTP_REQUEST, [0.0, 100.0])
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    for node in view
+        .nodes
+        .iter()
+        .filter(|node| [request, another].contains(&node.id))
+    {
+        assert_eq!(node.settings["connection"], id);
+    }
+    // The unused declaration still exists. Opening the graph must ignore it.
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.close(flow).unwrap();
 }
 
 #[test]
@@ -248,25 +294,36 @@ fn an_https_connection_opens_and_a_failed_handshake_takes_the_failed_route() {
     assert_eq!(read(&host, flow, 100), Some(Value::I64(-1)));
 }
 
-/// Needs the public internet, so it is not part of the normal run:
-/// `cargo test -p orange-net -- --ignored`.
+/// Needs the public internet and sends a synthetic request to an echo API.
 #[test]
-#[ignore = "contacts https://example.com"]
+#[ignore = "contacts https://httpbin.org and https://wrong.host.badssl.com"]
 fn a_real_https_endpoint_is_reached_with_certificate_verification() {
     let mut host = host();
+    let body = json!({"message": "hello from OrangeEditor"});
     let mut saved: Json =
-        serde_json::from_str(&document(&host, graph_connection("https://example.com"))).unwrap();
+        serde_json::from_str(&document(&host, graph_connection("https://httpbin.org"))).unwrap();
     for node in saved["nodes"].as_array_mut().unwrap() {
         if node["definition_id"] == orange_net::HTTP_REQUEST {
-            node["inputs"]["method"]["value"] = json!("GET");
-            node["inputs"]["path"]["value"] = json!("/");
-            node["inputs"]["content"]["value"] = json!("");
+            node["inputs"]["path"]["value"] = json!("/anything?check=1");
+            node["inputs"]["content"]["value"] = json!(body.to_string());
+            node["inputs"]["content_type"] = json!({"type": STRING, "value": "application/json"});
+            node["inputs"]["headers"] =
+                json!({"type": STRING, "value": "X-Example: orange-editor"});
         }
     }
     let flow = host.open(&saved.to_string()).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the reply", || read(&host, flow, 100).is_some());
     assert_eq!(read(&host, flow, 100), Some(Value::I64(200)));
+    until("the response body", || read(&host, flow, 101).is_some());
+    let Some(Value::Str(response)) = read(&host, flow, 101) else {
+        panic!("httpbin returns text");
+    };
+    let response: Json = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["method"], "POST");
+    assert_eq!(response["args"]["check"], "1");
+    assert_eq!(response["headers"]["X-Example"], "orange-editor");
+    assert_eq!(response["json"], body);
 
     // A certificate for another name must be refused, not accepted.
     let wrong = document(&host, graph_connection("https://wrong.host.badssl.com"));
@@ -296,7 +353,7 @@ fn scene_package(host: &Host) -> Vec<u8> {
         node(303),
         DefinitionRef {
             id: orange_net::HTTP_REQUEST.parse().unwrap(),
-            version: 1,
+            version: 2,
         },
     );
     request.config = serde_json::from_value(json!({"connection": STAND_IN})).unwrap();
@@ -444,6 +501,13 @@ fn a_plugin_node_is_listed_with_the_text_its_definition_gives() {
     );
     assert_eq!(shown.category.as_ref().unwrap().fallback, "Network");
     assert_eq!(listed.provider.unwrap().package, orange_net::PACKAGE);
+    for locale in ["en", "es"] {
+        assert!(
+            host.search_nodes("HTTPS", locale)
+                .iter()
+                .any(|found| found.definition == orange_net::HTTP_REQUEST)
+        );
+    }
 }
 
 /// A credential store holding one refresh token, which a connection may replace.

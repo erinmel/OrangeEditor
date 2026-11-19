@@ -374,6 +374,11 @@ pub fn inspect(value: &Value) -> String {
             MAX_INSPECT_CHARS,
             "\n… truncated",
         ),
+        Value::Json(text) => bounded_text(
+            format_args!("{}", text.as_str()),
+            MAX_INSPECT_CHARS,
+            "\n… truncated",
+        ),
         Value::Bytes(bytes) => {
             let shown: Vec<String> = bytes
                 .iter()

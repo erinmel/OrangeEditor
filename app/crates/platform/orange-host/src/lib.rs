@@ -726,7 +726,7 @@ const LOCAL_REGISTRIES: usize = 8;
 #[derive(Debug)]
 struct LocalRegistry {
     base: u64,
-    types: Vec<orange_model::document::LocalTypeDecl>,
+    types: Vec<LocalTypeDecl>,
     registry: Arc<RegistrySnapshot>,
 }
 
@@ -1059,15 +1059,35 @@ impl Host {
         Ok(())
     }
 
-    /// Opens the session of every connection `document` declares, keeping the session
-    /// of a graph connection whose declaration is the same as in `previous`.
+    /// Opens connections named by the document's nodes, keeping unchanged graph
+    /// sessions from `previous`. An unused draft profile can stay incomplete.
     fn sessions(
         &mut self,
         document: &GraphDocument,
+        registry: &RegistrySnapshot,
         previous: Option<&Opened>,
     ) -> Result<Opened, HostError> {
         let mut sessions = BTreeMap::new();
-        for decl in document.connections().values() {
+        let used: BTreeSet<ConnectionId> = document
+            .bodies()
+            .flat_map(|body| body.nodes.values())
+            .filter(|node| {
+                registry
+                    .definition(&node.definition)
+                    .is_some_and(|definition| {
+                        definition
+                            .references
+                            .iter()
+                            .any(|field| field.kind == ReferenceKind::Connection)
+                    })
+            })
+            .filter_map(|node| node.config.get("connection")?.as_str()?.parse().ok())
+            .collect();
+        for decl in document
+            .connections()
+            .values()
+            .filter(|decl| used.contains(&decl.id))
+        {
             let refused = |reason: String| HostError::Connection(decl.name.clone(), reason);
             let adapter = self
                 .adapters

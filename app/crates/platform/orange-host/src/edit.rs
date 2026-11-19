@@ -744,21 +744,39 @@ impl Host {
         Ok((node, commands))
     }
 
-    /// The connection a new node that uses one of kind `adapter` names: the first one
-    /// of that kind the document declares, in name order, or a new graph connection with
-    /// default settings when it declares none, returned to be declared with the node.
+    /// The connection a new node that uses one of kind `adapter` names: prefer a
+    /// configured profile, then choose in name order. With none, declare a profile
+    /// with default settings alongside the node.
     /// A node whose definition does not say its kind takes the first connection.
     fn connection_for(
         &self,
         draft: &Draft,
         adapter: Option<&str>,
-    ) -> Result<(String, Option<orange_model::document::ConnectionDecl>), HostError> {
+    ) -> Result<(String, Option<ConnectionDecl>), HostError> {
+        let required: Vec<_> = adapter
+            .into_iter()
+            .flat_map(|kind| self.adapter_texts(kind))
+            .filter(|setting| setting.required)
+            .collect();
         let existing = draft
             .document()
             .connections()
             .values()
             .filter(|decl| adapter.is_none_or(|kind| decl.adapter == kind))
-            .min_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+            .min_by_key(|decl| {
+                let incomplete = match decl.scope {
+                    ConnectionScope::Shared => !self.shared.contains_key(&decl.id),
+                    ConnectionScope::Graph => required.iter().any(|field| {
+                        let mut path = field.setting.split('/');
+                        let setting = path.next().and_then(|root| decl.settings.get(root));
+                        setting
+                            .and_then(|value| path.try_fold(value, |value, key| value.get(key)))
+                            .and_then(Json::as_str)
+                            .is_none_or(|text| text.trim().is_empty())
+                    }),
+                };
+                (incomplete, &decl.name, &decl.id)
+            });
         if let Some(decl) = existing {
             return Ok((decl.id.to_string(), None));
         }

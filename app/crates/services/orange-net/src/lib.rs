@@ -35,7 +35,8 @@ pub const PACKAGE: &str = "org.orange.net";
 /// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…` or `https://…`),
 /// `timeout_ms` (whole request, default 30,000) and the authorization settings
 /// `bearer` (a token, sent as `Authorization: Bearer …`), `basic` (`{"user", "password"}`)
-/// and `headers` (an object of header names and values sent with every request), or
+/// or `api_key` (`{"header", "token"}`, with `X-API-Key` the default header), plus
+/// `headers` (an object of header names and values sent with every request), or
 /// `oauth` (`{"token_url", "client_id", "client_secret"}` for the client-credentials
 /// grant, or with `"refresh_token"` for the refresh grant; optional `scope` and
 /// `client_auth`: `body` or `basic`), which gets an access token when first needed,
@@ -288,10 +289,56 @@ pub(crate) fn auth_headers(settings: &Map<String, Json>) -> Result<Vec<(String, 
         }
         headers.push(("Authorization".to_owned(), authorization));
     }
+    if let Some(api_key) = settings.get("api_key") {
+        if ["bearer", "basic", "oauth"]
+            .iter()
+            .any(|key| settings.contains_key(*key))
+        {
+            return Err("give `api_key` or another authentication method".into());
+        }
+        let name = match api_key.get("header") {
+            None => "X-API-Key",
+            Some(header) => header
+                .as_str()
+                .ok_or("`api_key.header` must be a header name")?,
+        };
+        let token = api_key
+            .get("token")
+            .and_then(Json::as_str)
+            .filter(|text| value(text))
+            .ok_or("`api_key.token` is required")?;
+        if !valid_api_key_header(name) {
+            return Err("`api_key.header` must name an application header".into());
+        }
+        if headers.iter().any(|(header, _)| {
+            header.eq_ignore_ascii_case(name) || header.eq_ignore_ascii_case("authorization")
+        }) {
+            return Err("`headers` already sets the authentication header".into());
+        }
+        headers.push((name.to_owned(), token.to_owned()));
+    }
     if headers.len() > MAX_HEADERS {
         return Err(format!("more than {MAX_HEADERS} headers"));
     }
     Ok(headers)
+}
+
+fn valid_api_key_header(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        && ![
+            "authorization",
+            "proxy-authorization",
+            "host",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "upgrade",
+        ]
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -423,7 +470,7 @@ pub fn package() -> ServicePackage {
     match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by its tests.
-        Err(error) => unreachable!("built-in definition is valid: {error}"),
+        Err(error) => unreachable!("built-in definition is valid: {}", error),
     }
 }
 
@@ -464,6 +511,17 @@ pub(crate) fn auth_texts() -> Vec<SettingText> {
             "basic/password",
             "Password",
             "Sent with the user name as basic authorization.",
+        ),
+        text_setting(
+            "api_key/header",
+            "Header name",
+            "The header containing the API key.",
+            "X-API-Key",
+        ),
+        secret_setting(
+            "api_key/token",
+            "API key",
+            "The key sent in the selected header.",
         ),
     ]
 }

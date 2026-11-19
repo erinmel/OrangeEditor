@@ -70,7 +70,7 @@ impl HttpSession {
         method: &str,
         path: &str,
         content_type: &str,
-        extra: &[Arc<String>],
+        extra: &[&str],
         body: Vec<u8>,
         streamed: bool,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
@@ -108,12 +108,30 @@ impl HttpSession {
         method: &str,
         path: &str,
         content_type: &str,
-        extra: &[Arc<String>],
+        extra: &[&str],
         body: Vec<u8>,
         streamed: bool,
         token: Option<&str>,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
-        if extra.len() > MAX_HEADERS {
+        let request = self.build_request(method, path, content_type, extra, body, token)?;
+        let agent = if streamed {
+            &self.stream_agent
+        } else {
+            &self.agent
+        };
+        agent.run(request).map_err(|_| TRANSPORT)
+    }
+
+    fn build_request(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        extra: &[&str],
+        body: Vec<u8>,
+        token: Option<&str>,
+    ) -> Result<Request<Vec<u8>>, KernelFault> {
+        if extra.len() > MAX_HEADERS || content_type.chars().any(char::is_control) {
             return Err(BAD_REQUEST);
         }
         let method = Method::from_bytes(method.as_bytes()).map_err(|_| BAD_REQUEST)?;
@@ -145,13 +163,7 @@ impl HttpSession {
             }
             request = request.header(name, value);
         }
-        let request = request.body(body).map_err(|_| BAD_REQUEST)?;
-        let agent = if streamed {
-            &self.stream_agent
-        } else {
-            &self.agent
-        };
-        agent.run(request).map_err(|_| TRANSPORT)
+        request.body(body).map_err(|_| BAD_REQUEST)
     }
 }
 impl Session for HttpSession {
@@ -163,9 +175,12 @@ impl Session for HttpSession {
 #[derive(Debug)]
 pub(crate) struct HttpAdapter;
 impl ConnectionAdapter for HttpAdapter {
+    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+        self.open_renewing(settings, Renew::none())
+    }
     fn about(&self) -> orange_sdk::AdapterAbout {
         orange_sdk::AdapterAbout {
-            label: "Web service (HTTP)".into(),
+            label: "HTTP / HTTPS".into(),
             purpose: "Sends requests to a web address, such as a REST API.".into(),
         }
     }
@@ -174,7 +189,7 @@ impl ConnectionAdapter for HttpAdapter {
             required: true,
             ..crate::text_setting(
                 "base_url",
-                "Address",
+                "Base URL",
                 "Where requests go; each request's path is added to it.",
                 "https://api.example.com",
             )
@@ -207,6 +222,76 @@ impl ConnectionAdapter for HttpAdapter {
         ]);
         texts
     }
+    fn open_renewing(
+        &self,
+        settings: &Map<String, Json>,
+        renew: Renew,
+    ) -> Result<Arc<dyn Session>, String> {
+        let base_url = settings
+            .get("base_url")
+            .and_then(Json::as_str)
+            .ok_or("`base_url` is required")?;
+        crate::connection_uri(base_url, ["http", "https"])
+            .filter(|uri| uri.query().is_none())
+            .ok_or("`base_url` must be an absolute http:// or https:// address without user info, query or fragment")?;
+        let timeout = match settings.get("timeout_ms") {
+            None => DEFAULT_TIMEOUT_MS,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| *ms > 0)
+                .ok_or("`timeout_ms` must be a positive integer")?,
+        };
+        let headers = auth_headers(settings)?;
+        // Profile headers can contain credentials under application-defined names.
+        // An authenticated request returns the redirect status to the graph.
+        let configure = || {
+            let config = Agent::config_builder().http_status_as_error(false);
+            if headers.is_empty() && !settings.contains_key("oauth") {
+                config
+            } else {
+                config.max_redirects(0)
+            }
+        };
+        // Opening only builds the client; nothing is sent until a node runs.
+        let agent = configure()
+            .timeout_global(Some(Duration::from_millis(timeout)))
+            .build()
+            .new_agent();
+        let stream_timeout = match settings.get("stream_timeout_ms") {
+            None => DEFAULT_STREAM_TIMEOUT_MS,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| *ms > 0)
+                .ok_or("`stream_timeout_ms` must be a positive integer")?,
+        };
+        // A streamed response may last long: only reaching the server and the whole
+        // body have limits.
+        let stream_agent = configure()
+            .timeout_connect(Some(Duration::from_millis(timeout)))
+            .timeout_recv_response(Some(Duration::from_millis(timeout)))
+            .timeout_recv_body(Some(Duration::from_millis(stream_timeout)))
+            .build()
+            .new_agent();
+        let oauth = match settings.get("oauth") {
+            None => None,
+            Some(_)
+                if headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("authorization")) =>
+            {
+                return Err("give `oauth` or another authorization, not both".into());
+            }
+            Some(setting) => Some(oauth::OAuth::from_setting(setting, renew)?),
+        };
+        Ok(Arc::new(HttpSession {
+            agent,
+            stream_agent,
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            headers,
+            oauth,
+            listeners: Arc::new(Listeners::new()),
+        }))
+    }
     fn fields(&self) -> Vec<orange_sdk::SettingField> {
         #[expect(clippy::cast_precision_loss, reason = "minutes in milliseconds")]
         let field =
@@ -235,71 +320,6 @@ impl ConnectionAdapter for HttpAdapter {
             ),
         ]
     }
-    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
-        self.open_renewing(settings, Renew::none())
-    }
-    fn open_renewing(
-        &self,
-        settings: &Map<String, Json>,
-        renew: Renew,
-    ) -> Result<Arc<dyn Session>, String> {
-        let base_url = settings
-            .get("base_url")
-            .and_then(Json::as_str)
-            .ok_or("`base_url` is required")?;
-        crate::connection_uri(base_url, ["http", "https"])
-            .filter(|uri| uri.query().is_none())
-            .ok_or("`base_url` must be an absolute http:// or https:// address without user info, query or fragment")?;
-        let timeout = match settings.get("timeout_ms") {
-            None => DEFAULT_TIMEOUT_MS,
-            Some(value) => value
-                .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`timeout_ms` must be a positive integer")?,
-        };
-        // Opening only builds the client; nothing is sent until a node runs.
-        let agent = Agent::config_builder()
-            .timeout_global(Some(Duration::from_millis(timeout)))
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
-        let stream_timeout = match settings.get("stream_timeout_ms") {
-            None => DEFAULT_STREAM_TIMEOUT_MS,
-            Some(value) => value
-                .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`stream_timeout_ms` must be a positive integer")?,
-        };
-        // A streamed response may last long: only reaching the server and the whole
-        // body have limits.
-        let stream_agent = Agent::config_builder()
-            .timeout_connect(Some(Duration::from_millis(timeout)))
-            .timeout_recv_response(Some(Duration::from_millis(timeout)))
-            .timeout_recv_body(Some(Duration::from_millis(stream_timeout)))
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
-        let headers = auth_headers(settings)?;
-        let oauth = match settings.get("oauth") {
-            None => None,
-            Some(_)
-                if headers
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case("authorization")) =>
-            {
-                return Err("give `oauth` or another authorization, not both".into());
-            }
-            Some(setting) => Some(oauth::OAuth::from_setting(setting, renew)?),
-        };
-        Ok(Arc::new(HttpSession {
-            agent,
-            stream_agent,
-            base_url: base_url.trim_end_matches('/').to_owned(),
-            headers,
-            oauth,
-            listeners: Arc::new(Listeners::new()),
-        }))
-    }
 }
 
 #[derive(Debug)]
@@ -310,10 +330,29 @@ impl ServiceNode for HttpRequest {
             .session
             .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
             .ok_or(NO_SESSION)?;
-        let [Value::Str(method), Value::Str(path), Value::Str(body)] = call.inputs else {
+        let [
+            Value::Str(method),
+            Value::Str(path),
+            Value::Str(body),
+            Value::Str(content_type),
+            Value::Str(headers),
+        ] = call.inputs
+        else {
             return Err(BAD_REQUEST);
         };
-        let mut response = session.send(method, path, "", &[], body.as_bytes().to_vec(), false)?;
+        let headers: Vec<_> = headers
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(MAX_HEADERS + 1)
+            .collect();
+        let mut response = session.send(
+            method,
+            path,
+            content_type,
+            &headers,
+            body.as_bytes().to_vec(),
+            false,
+        )?;
         let status = response.status().as_u16();
         let text = response
             .body_mut()
@@ -350,14 +389,16 @@ impl ServiceNode for HttpRequestBytes {
         let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
             return Err(BAD_REQUEST);
         };
-        if content_type.chars().any(char::is_control) {
-            return Err(BAD_REQUEST);
-        }
+        let headers: Vec<_> = headers
+            .iter()
+            .take(MAX_HEADERS + 1)
+            .map(|line| line.as_str())
+            .collect();
         let mut response = session.send(
             method,
             path,
             content_type,
-            headers,
+            &headers,
             body.as_ref().clone(),
             false,
         )?;
@@ -407,11 +448,16 @@ impl ServiceNode for HttpStream {
         let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
             return Err(BAD_REQUEST);
         };
+        let headers: Vec<_> = headers
+            .iter()
+            .take(MAX_HEADERS + 1)
+            .map(|line| line.as_str())
+            .collect();
         let mut response = session.send(
             method,
             path,
             content_type,
-            headers,
+            &headers,
             body.as_ref().clone(),
             true,
         )?;
@@ -521,6 +567,7 @@ pub(crate) fn http_stream_definition() -> String {
         Definition::node(crate::PACKAGE, "http-stream", "HTTP request (streamed)")
             .description("Sends a request and delivers the response line by line as it arrives. Any status is a result; `success` is true for 200 to 299, and the node fails only when the request cannot be completed.")
             .category("network", "Network")
+            .keywords("http, https, streaming response, sse")
             .uses(crate::HTTP_ADAPTER),
     )
     .output("status", "core/i64@1")
@@ -532,6 +579,7 @@ pub(crate) fn http_stream_definition() -> String {
 pub(crate) fn http_stream_line_definition() -> String {
     Definition::entry(crate::PACKAGE, "http-stream-line", "On HTTP stream line")
         .category("network", "Network")
+        .keywords("http, https, streaming response, sse")
         .uses(crate::HTTP_ADAPTER)
         .payload("core/string@1")
         .build()
@@ -546,6 +594,7 @@ pub(crate) fn http_request_bytes_definition() -> String {
         )
         .description("Sends a request with a binary body and returns the response as bytes. Any status is a result; `success` is true for 200 to 299, and the node fails only when the request cannot be completed.")
         .category("network", "Network")
+        .keywords("http, https, binary, bytes")
         .uses(crate::HTTP_ADAPTER),
     )
     .output("status", "core/i64@1")
@@ -557,12 +606,17 @@ pub(crate) fn http_request_bytes_definition() -> String {
 
 pub(crate) fn http_request_definition() -> String {
     Definition::node(crate::PACKAGE, "http-request", "HTTP request")
-        .description("Sends a request and returns the response as text. Any status, such as 404 or 500, is a result; `success` is true for 200 to 299. The node fails (its `failed` step) only when the request cannot be completed: no connection, a timeout or a body that is not text. Leave `content` empty to send no body.")
+        .version(2)
+        .replaces("http-request", 1, &[])
+        .description("Sends a request over HTTP or HTTPS and returns the response as text. Choose a connection, enter a path starting with /, and optionally set a content type, body and headers (one Name: value per line). Each HTTP status is a result. The failed route handles requests that could not be completed.")
         .category("network", "Network")
+        .keywords("HTTP, HTTPS, REST, API, GET, POST, JSON, headers")
         .uses(crate::HTTP_ADAPTER)
         .input_default("method", "core/string@1", serde_json::json!({"type": "core/string@1", "value": "GET"}))
         .input_default("path", "core/string@1", no_text())
         .input_default("content", "core/string@1", no_text())
+        .input_default("content_type", "core/string@1", no_text())
+        .input_default("headers", "core/string@1", no_text())
         .output("status", "core/i64@1")
         .output("success", "core/bool@1")
         .output("response", "core/string@1")
@@ -572,6 +626,187 @@ pub(crate) fn http_request_definition() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use ureq::unversioned::resolver::DefaultResolver;
+    use ureq::unversioned::transport::{
+        Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, Transport,
+    };
+
+    #[derive(Debug)]
+    struct MockApi(Arc<Mutex<Vec<u8>>>);
+
+    impl MockApi {
+        fn session(&self, base_url: &str, headers: Vec<(String, String)>) -> HttpSession {
+            let agent = Agent::with_parts(
+                Agent::config_builder()
+                    .proxy(None)
+                    .http_status_as_error(false)
+                    .build(),
+                Self(Arc::clone(&self.0)),
+                DefaultResolver::default(),
+            );
+            HttpSession {
+                stream_agent: agent.clone(),
+                agent,
+                base_url: base_url.to_owned(),
+                headers,
+                oauth: None,
+                listeners: Arc::new(Listeners::new()),
+            }
+        }
+    }
+
+    impl ConnectionAdapter for MockApi {
+        fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+            let address = settings
+                .get("base_url")
+                .and_then(Json::as_str)
+                .ok_or("base URL required")?;
+            Ok(Arc::new(self.session(address, auth_headers(settings)?)))
+        }
+    }
+
+    impl Connector for MockApi {
+        type Out = MockHttp;
+
+        fn connect(
+            &self,
+            details: &ConnectionDetails<'_>,
+            _: Option<()>,
+        ) -> Result<Option<MockHttp>, ureq::Error> {
+            Ok(Some(MockHttp {
+                buffers: LazyBuffers::new(details.config.input_buffer_size(), details.config.output_buffer_size()),
+                request: Arc::clone(&self.0),
+                reply: &b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}"[..],
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockHttp {
+        buffers: LazyBuffers,
+        request: Arc<Mutex<Vec<u8>>>,
+        reply: &'static [u8],
+    }
+
+    impl Transport for MockHttp {
+        fn buffers(&mut self) -> &mut dyn Buffers {
+            &mut self.buffers
+        }
+
+        fn transmit_output(&mut self, amount: usize, _: NextTimeout) -> Result<(), ureq::Error> {
+            self.request
+                .lock()
+                .unwrap()
+                .extend_from_slice(&self.buffers.output()[..amount]);
+            Ok(())
+        }
+
+        fn await_input(&mut self, _: NextTimeout) -> Result<bool, ureq::Error> {
+            let count = self.reply.read(self.buffers.input_append_buf())?;
+            self.buffers.input_appended(count);
+            Ok(count != 0)
+        }
+
+        fn is_open(&mut self) -> bool {
+            !self.reply.is_empty()
+        }
+    }
+
+    #[test]
+    fn the_mock_api_receives_the_method_path_authentication_headers_and_json_body() {
+        let request = Arc::new(Mutex::new(Vec::new()));
+        let settings = serde_json::json!({
+            "api_key": {"header": "X-Integration-Key", "token": "mock-key"},
+            "headers": {"X-Client": "Orange"}
+        });
+        let session = MockApi(Arc::clone(&request)).session(
+            "http://127.0.0.1/v1",
+            auth_headers(settings.as_object().unwrap()).unwrap(),
+        );
+        let json_body = b"{\n  \"message\": \"hello\"\n}";
+        let mut response = session
+            .send(
+                "POST",
+                "/anything?test=1",
+                "application/json",
+                &["Accept: application/json", "X-Trace: sample"],
+                json_body.to_vec(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(response.status(), 201);
+        assert_eq!(
+            response.body_mut().read_to_string().unwrap(),
+            r#"{"ok":true}"#
+        );
+
+        let request = request.lock().unwrap();
+        let (head, body) = std::str::from_utf8(&request)
+            .unwrap()
+            .split_once("\r\n\r\n")
+            .unwrap();
+        assert!(head.starts_with("POST /v1/anything?test=1 HTTP/1.1\r\n"));
+        let head = head.to_ascii_lowercase();
+        for header in [
+            "content-type: application/json",
+            "accept: application/json",
+            "x-trace: sample",
+            "x-integration-key: mock-key",
+            "x-client: orange",
+        ] {
+            assert!(head.contains(header), "{head}");
+        }
+        assert_eq!(body.as_bytes(), json_body);
+    }
+
+    #[test]
+    fn an_http_graph_observes_the_status_and_body_without_output_wires() {
+        use orange_host::{FlowEvent, Host, HostOptions, ServicePackage};
+
+        let package = ServicePackage::new(crate::PACKAGE, env!("CARGO_PKG_VERSION"))
+            .adapter(crate::HTTP_ADAPTER, MockApi(Arc::default()))
+            .node(&http_request_definition(), HttpRequest)
+            .unwrap();
+        let (mut host, events) =
+            Host::with_services(HostOptions::default(), vec![package]).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let trigger = host
+            .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+            .unwrap();
+        let request = host
+            .add_node(&mut draft, crate::HTTP_REQUEST, [260.0, 0.0])
+            .unwrap();
+        let mut connection = host.declarations(&draft).connections.remove(0);
+        connection.settings = serde_json::json!({"base_url": "http://127.0.0.1"});
+        host.declare_connection(&mut draft, &connection).unwrap();
+        host.connect(&mut draft, (trigger, "then"), (request, "in"))
+            .unwrap();
+
+        let flow = host.open(&draft.text().unwrap()).unwrap();
+        host.observe(flow, true).unwrap();
+        host.trigger(flow, trigger, None).unwrap();
+        let mut results = std::collections::BTreeMap::new();
+        orange_testkit::until("the unwired response", || {
+            while let Ok(event) = events.try_recv() {
+                if event.flow == flow
+                    && let FlowEvent::Ports(ports) = event.kind
+                {
+                    results.extend(ports.into_iter().filter_map(|(node, port, value)| {
+                        (node == request).then(|| (port.to_string(), value))
+                    }));
+                }
+            }
+            results.len() == 3
+        });
+        assert_eq!(results["status"], Value::I64(201));
+        assert_eq!(results["success"], Value::Bool(true));
+        assert_eq!(
+            results["response"],
+            Value::Str(Arc::new(r#"{"ok":true}"#.into()))
+        );
+        host.close(flow).unwrap();
+    }
 
     #[test]
     fn only_2xx_is_success_and_every_status_is_an_answer() {
