@@ -428,7 +428,7 @@ impl ServiceNode for Operation {
                     .modified()
                     .ok()
                     .and_then(unix_millis)
-                    .map_or(Value::None, |ms| Value::Some(Arc::new(Value::I64(ms))));
+                    .map_or(Value::None, Value::I64);
                 Ok(vec![
                     Value::Bool(directory),
                     Value::U64(if directory { 0 } else { metadata.len() }),
