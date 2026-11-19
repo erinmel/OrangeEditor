@@ -4,7 +4,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
-use orange_model::document::{ConfigValue, DefinitionRef, NodeInstance, SignatureSnapshot};
+use orange_model::document::{
+    ConfigValue, DefinitionRef, NodeInstance, PortDescriptor, SignatureSnapshot,
+};
 use orange_model::id::{NodeId, PortKey};
 use orange_model::{GraphDocument, Value};
 
@@ -190,6 +192,21 @@ impl<'a> BindingRequest<'a> {
     pub fn signature(&self) -> &'a SignatureSnapshot {
         self.signature
     }
+    /// The concrete keys of a port in this binding. Variadic instances follow
+    /// the persisted order, which can differ from their numeric IDs.
+    pub fn port_keys(&self, port: &PortDescriptor) -> Vec<PortKey> {
+        if port.variadic.is_none() {
+            return vec![PortKey::new(port.port_id.clone(), None)];
+        }
+        self.node
+            .variadic
+            .get(&port.port_id)
+            .into_iter()
+            .flat_map(|state| &state.order)
+            .map(|instance| PortKey::new(port.port_id.clone(), Some(*instance)))
+            .collect()
+    }
+
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
         &self.snapshot
     }

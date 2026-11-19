@@ -1264,10 +1264,18 @@ impl Host {
     /// Checks a document against the current registry without running it. An empty
     /// list means [`Host::open`] would accept it as far as validation goes.
     pub fn check(&self, json: &str) -> Result<Vec<Diagnostic>, HostError> {
+        self.check_diagnostics(json, false)
+    }
+
+    fn check_diagnostics(
+        &self,
+        json: &str,
+        include_advisories: bool,
+    ) -> Result<Vec<Diagnostic>, HostError> {
         let document = self.linked(json)?;
         let registry = self.registry_for(&document);
         let analysis = analyzed(&document, &registry);
-        if analysis.is_ready_for_lowering(&document, &registry) {
+        if !include_advisories && analysis.is_ready_for_lowering(&document, &registry) {
             Ok(Vec::new())
         } else {
             Ok(analysis.report().diagnostics.clone())

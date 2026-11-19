@@ -194,6 +194,26 @@ pub(super) fn chart_toggle(
     } else {
         colors.text
     };
+    chart_heading(painter, rect, zoom, open, tint);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            ui.is_enabled(),
+            open,
+            t("spectrum-live-trace"),
+        )
+    });
+    response.clicked()
+}
+
+pub(super) fn chart_heading(
+    painter: &egui::Painter,
+    rect: Rect,
+    zoom: f32,
+    open: bool,
+    tint: Color32,
+) {
+    let at = rect.min + Vec2::new(CARD_PADDING, BODY_TOP + 13.0) * zoom;
     painter.text(
         at,
         Align2::LEFT_CENTER,
@@ -212,15 +232,6 @@ pub(super) fn chart_toggle(
         FontId::proportional(12.0 * zoom),
         tint,
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::Role::Button,
-            ui.is_enabled(),
-            open,
-            t("spectrum-live-trace"),
-        )
-    });
-    response.clicked()
 }
 
 #[expect(clippy::too_many_arguments, reason = "one output row's drawing state")]

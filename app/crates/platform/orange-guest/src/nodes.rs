@@ -225,6 +225,9 @@ impl GuestPackage {
                 PortKind::Exec if control => continue,
                 _ => return Err(ResolveError::Contract),
             }
+            if port.variadic.is_some() {
+                return Err(ResolveError::Contract);
+            }
             let ty = port.ty.clone().ok_or(ResolveError::Contract)?;
             if ty.as_str().contains('$') {
                 return Err(ResolveError::UnsupportedType);

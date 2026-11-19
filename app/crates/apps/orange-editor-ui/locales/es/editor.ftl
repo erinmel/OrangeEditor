@@ -290,7 +290,7 @@ remove-field = Quitar este campo
 field = Campo
 no-value = sin valor
 
-search-heading = Idioma
+search-heading = General
 display-heading = Pantalla y lienzo
 shortcuts-heading = Atajos de teclado
 settings-title = Ajustes
@@ -376,7 +376,7 @@ already-assigned = Ya asignado a { $action }
 stop-with-key = Detener ({ $key })
 run-with-key = Ejecutar ({ $key })
 run-blocked-hint = Corrige los errores que bloquean la ejecución en Problemas.
-run-isolated-problems = El grafo se ejecuta sin los nodos aislados que tienen errores. Corrígelos para incluirlos en la ejecución.
+run-isolated-problems = El grafo se ejecuta sin los nodos incompletos. Resuelve sus avisos para incluirlos en el grafo activo.
 problems-count = Problemas ({ $count })
 variables-count = Variables ({ $count })
 variable-get-hint = Añadir un nodo Obtener para { $name }.
@@ -503,3 +503,39 @@ log-warning = Aviso: { $text }
 log-error = Error: { $text }
 log-repeated = { $line } (×{ $count })
 log-dropped = Se descartaron { $count } mensajes del grafo: llegaron más rápido de lo que el registro los toma.
+
+filter-all = Todo
+problem-errors = Errores ({ $count })
+problem-warnings = Avisos ({ $count })
+search-log = Buscar mensajes del registro
+search-problems = Buscar problemas
+clear-log = Limpiar registro
+no-log-results = No hay mensajes que coincidan.
+no-problem-results = No hay problemas que coincidan.
+search-variables = Filtrar por nombre, tipo o ámbito
+search-connections = Filtrar por nombre o protocolo
+search-types = Filtrar por nombre o clase
+no-declaration-matches = No hay coincidencias.
+import-package = Importar paquete…
+install-package = Instalar paquete
+package-permissions = Permitir que el paquete pueda
+package-grant-log = Escribir en su registro
+package-grant-files = Leer y escribir sus propios archivos de datos
+package-grant-http = Hacer solicitudes HTTPS
+package-no-permissions = Este paquete no solicita permisos adicionales.
+package-imported = Se instaló { $name }.
+package-import-failed = La instalación del paquete informó de un error. { $error }
+settings-language = Idioma
+settings-node-search = Búsqueda de nodos
+preview-names-only = Solo nombres
+preview-node-cards = Tarjetas de nodos
+preview-node-cards-hint = Muestra el nodo, sus puertos y su gráfica directamente en los resultados.
+edit-text-hint = Editar texto. Pulsa Ctrl+Enter para aplicar o Esc para cancelar.
+resize-text-area = Arrastra para cambiar la altura del área de texto
+log-format-hint = Usa { "{}" } o un marcador numerado como { "{0}" } para insertar un argumento. Duplica las llaves para escribirlas literalmente.
+new-variable-for-node = La variable nueva quedará seleccionada en { $name }.
+connection-use-count = { $count ->
+    [one] Usada por un nodo
+   *[other] Usada por { $count } nodos
+    }
+log-level = Nivel de registro

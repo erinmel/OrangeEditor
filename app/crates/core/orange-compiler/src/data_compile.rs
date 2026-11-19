@@ -112,8 +112,16 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         Ok(SlotIx(index))
     }
     fn input(&mut self, node: NodeId, port: &PortDescriptor) -> Result<DataInput, CompileError> {
+        self.input_at(node, port, key(port))
+    }
+
+    fn input_at(
+        &mut self,
+        node: NodeId,
+        port: &PortDescriptor,
+        port_key: PortKey,
+    ) -> Result<DataInput, CompileError> {
         self.options.checkpoint()?;
-        let port_key = key(port);
         if let Some(edge) = self
             .calls
             .incoming(self.incoming, self.scope)
@@ -154,7 +162,12 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             node,
             port: port_key.clone(),
         })?;
-        let slot = self.push(node, port, Some(FoldedValue::Value(value)))?;
+        let slot = self.push_at(
+            node,
+            port,
+            port_key.clone(),
+            Some(FoldedValue::Value(value)),
+        )?;
         Ok(DataInput {
             source: InputSource {
                 port: port_key,
@@ -799,9 +812,9 @@ pub(crate) fn lower_roots(
                     .signature(analysis, scope, export.node)
                     .ports
                     .iter()
-                    .find(|p| key(p) == export.port)
+                    .find(|p| &p.port_id == export.port.port())
                     .ok_or(CompileError::ValidationIncomplete)?;
-                let input = state.input(export.node, port)?;
+                let input = state.input_at(export.node, port, export.port.clone())?;
                 let index = NodeIx(
                     u32::try_from(state.plan.nodes.len())
                         .map_err(|_| CompileError::ResourceLimit)?,

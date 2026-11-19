@@ -291,7 +291,7 @@ remove-field = Remove this field
 field = Field
 no-value = no value
 
-search-heading = Language
+search-heading = General
 display-heading = Display and canvas
 shortcuts-heading = Keyboard shortcuts
 settings-title = Settings
@@ -377,7 +377,7 @@ already-assigned = Already assigned to { $action }
 stop-with-key = Stop ({ $key })
 run-with-key = Run ({ $key })
 run-blocked-hint = Fix the blocking errors in Problems to run this graph.
-run-isolated-problems = Running with isolated nodes that have errors left out. Fix them to include them in the live graph.
+run-isolated-problems = Running with incomplete nodes excluded. Fix their warnings to include them in the live graph.
 problems-count = Problems ({ $count })
 variables-count = Variables ({ $count })
 variable-get-hint = Add a Get node for { $name }.
@@ -506,3 +506,39 @@ log-warning = Warning: { $text }
 log-error = Error: { $text }
 log-repeated = { $line } (×{ $count })
 log-dropped = { $count } messages from the graph were dropped: they came faster than the log takes them.
+
+filter-all = All
+problem-errors = Errors ({ $count })
+problem-warnings = Warnings ({ $count })
+search-log = Search log messages
+search-problems = Search problems
+clear-log = Clear log
+no-log-results = No matching log messages.
+no-problem-results = No matching problems.
+search-variables = Filter by name, type, or scope
+search-connections = Filter by name or protocol
+search-types = Filter by name or kind
+no-declaration-matches = No matches.
+import-package = Import package…
+install-package = Install package
+package-permissions = Allow this package to use
+package-grant-log = Write to its log
+package-grant-files = Read and write its own data files
+package-grant-http = Make HTTPS requests
+package-no-permissions = This package requests no additional permissions.
+package-imported = Installed { $name }.
+package-import-failed = Package installation reported an error. { $error }
+settings-language = Language
+settings-node-search = Node search
+preview-names-only = Names only
+preview-node-cards = Node cards
+preview-node-cards-hint = Show the node, its ports, and any chart directly in the search results.
+edit-text-hint = Edit text. Press Ctrl+Enter to apply or Esc to cancel.
+resize-text-area = Drag to resize the text area
+log-format-hint = Use { "{}" } or a numbered placeholder like { "{0}" } to insert an argument. Use doubled braces for literal braces.
+new-variable-for-node = The new variable will be selected on { $name }.
+connection-use-count = { $count ->
+    [one] Used by one node
+   *[other] Used by { $count } nodes
+    }
+log-level = Log level

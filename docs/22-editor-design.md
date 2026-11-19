@@ -33,7 +33,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Ports are round. Execution uses amber ports and thicker amber wires. Data uses typed colors. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect outputs even without outgoing wires. |
-| Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent scroll positions. |
+| Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent search, filters and scroll positions. |
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
@@ -101,10 +101,10 @@ other code places anything on a card.
 * **No redundant words.** No type labels (hover shows the type); a field's name is
   left out when it only repeats the card's title (Audio source's device list, Get
   variable's variable).
-* **Problems stay inside the card.** A node's problem is an icon at the right end of
-  its header, in space the title leaves free, and a thin outline inside the card's edge
-  (the selection outline stays outside). A port's problem is a thin ring around its
-  dot. Hovering the icon says what is wrong; clicking it opens Problems.
+* **Problems stay with the card.** A node's problem is an icon and a thin accent at
+  the right end of its header, in space the title leaves free. A port's problem is a
+  thin ring centered on its dot. Both are painted with the owning card. Hovering the
+  icon says what is wrong. Clicking it opens Problems.
 * **Defaults read like values.** An empty field shows its default the way a value is
   shown (an enum by its choice's name), dimmed.
 * **Measurements:** header 30, flow and output rows 28, a field block 52 (name 18,
@@ -173,8 +173,11 @@ highlighted result. Dragging a result shows a placement preview under the pointe
 * The desktop title follows the current file name. Running, Stopped or No graph
   and the unsaved indicator remain in the status bar.
 * Settings uses a centered, resizable dialog with a shared search field, an
-  independently scrolling content pane and a fixed Done button. The section list
-  becomes a selector in compact windows. Search finds settings sections, shortcut
+  independently scrolling content pane and a fixed Done button. General groups Language
+  and Node search. Node search displays either names or read-only canvas cards with
+  their ports and charts directly in the results. The same choice applies to the node
+  tree and canvas quick-add. The section
+  list becomes a selector in compact windows. Search finds settings sections, shortcut
   actions and key combinations. Display and canvas groups controls by interface,
   panels and canvas. Interface scale applies when a percentage is chosen in
   its dropdown. At large scales or narrow widths, the editing commands can scroll
@@ -192,29 +195,44 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   running. Icons are centered within their buttons. Hovering an enabled button
   highlights its background, including the red Stop control. Menu and toolbar
   shortcut labels follow the current binding.
-* A graph with healthy nodes may start with isolated erroneous nodes omitted
-  from its execution snapshot. The editor keeps them on the canvas and in Problems.
-  Repairing them makes them eligible for the next validated live update. Connected
-  or document-wide errors block a new run. Rejected live updates keep the last
-  validated snapshot.
+* Problems shows errors and warnings with icons, counts and filters alongside search.
+  A red error
+  blocks execution. An amber warning is advisory. A graph with other usable nodes
+  may omit isolated incomplete nodes from its execution snapshot and show their
+  diagnostics as warnings. A standalone unreferenced value or action can also stay
+  out of the execution snapshot. Graph exports count as consumers. A Frequency
+  Splitter with no input audio stays idle and
+  warns even when it is the only card. If omitting it leaves a consumer without a
+  required input, Problems reports the consumer's error. Wiring or repairing an
+  omitted node makes it eligible for the next validated live update. Rejected live
+  updates keep the last validated snapshot.
 
 ### 4.1 Log
 
-The Log holds what a person acts on: the run's lifecycle, warnings, faults, and the
-messages a graph writes with **Log message** (information, warning or error). A message
-repeated in a row shares one line with a count; messages that come faster than the
-Log takes them (more than 256 waiting) are counted and dropped. Successful steps and
-live values are written only while **Live trace** is on; without it they still reach
-the canvas (pulses, value pills) and Properties, but no text is formatted for them.
+The Log has text search and level filters for CRITICAL, ERROR, WARN, INFO, DEBUG,
+TRACE and All. It shows run lifecycle, runtime faults and messages written by the
+graph. Successful steps and live values are recorded at TRACE only when Live trace
+is on. Consecutive graph messages with the same text and level share a line and
+a count. At most 256 graph messages wait for the UI, and excess messages are counted.
+
+New **Log message** nodes use definition version 2. Level defaults to INFO. Add up
+to 24 Argument input ports in slot order, then use sequential braces or zero-based
+numbered braces in Message. Doubled braces write literal braces. Unknown placeholders
+stay visible. Arguments accept text, including values formatted by explicit conversion
+nodes. A message is bounded at 16 KiB at a valid UTF-8 boundary. The saved version 1
+definition retains its original severity choices and literal-message behavior.
 
 ## 5. Variables and connections
 
-Implemented 2026-11-16; the drag handle and menu use plain text
-symbols until the bundled icon font (§4) lands.
-
-* **Variables** list like Blueprint variables: name, type chip, current value while
-  running; drag one onto the canvas to get a Get, Alt-drag for a Set; edit in place.
-* **Connections** are created from every adapter the host has (network, WebSocket,
+* **Variables** filter by name, type or scope. Each scope groups editable names,
+  types and initial values, with the current value shown while running. Drag a
+  variable onto the canvas for Get or Alt-drag for Set. The node tree also lists
+  draggable Get variable and Set variable nodes. Each picks the variable by name and
+  type. Declaring from a node opens the same Variables form and selects the new
+  variable on the originating node.
+* **Types** filters records and enums by name or kind. Larger lists start collapsed
+  so their declarations can be scanned before opening individual types.
+* **Connections** filter by name or protocol and group by adapter. They use the adapters the host has (network, WebSocket,
   audio, files, any package), listed by name and purpose, not by package ID. Each
   adapter's settings are drawn from its schema; a secret field (password, token, key)
   is entered in a masked field and stored in the operating system's credential store,
@@ -226,12 +244,15 @@ symbols until the bundled icon font (§4) lands.
   canvas and in Properties. A wired method is read from its source. HTTP
   Properties places the observed status and response under Results, before
   request setup.
-* Unwired text inputs start compact and expand into scrollable editors inside
-  the card when clicked. This applies to HTTP bodies and headers, MQTT, AMQP,
-  and WebSocket text messages, and text inputs in other definitions. Enter
-  adds a line. Clicking away applies the edit and Escape discards it. Each
-  card collapses to its compact layout when editing ends. Wired inputs show
-  their source, and dropdowns and file choosers keep their respective controls.
+* Multiline inputs use a stable, scrollable area sized to their text. A resize grip
+  sets the height in the current editor view. HTTP bodies and headers, network
+  messages and Log message use this treatment. Clicking the canvas area enters
+  editing without resizing the card. Enter adds a line, Ctrl/Cmd+Enter or clicking
+  away commits, and Escape discards the canvas edit.
+* **Packages** lists installed and built-in providers with search. Import package
+  opens the desktop archive picker, then shows the requested capabilities for
+  individual approval. Installing makes the package available to the node tree in
+  the same session and keeps active flows pinned to their providers (04).
 
 ## 6. Audio
 

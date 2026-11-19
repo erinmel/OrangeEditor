@@ -121,11 +121,13 @@ impl ConnectionForm {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Forms {
     variable: VariableForm,
+    variable_target: Option<(NodeId, String)>,
     connection: ConnectionForm,
     /// Open the new-variable form at the next frame.
     open_variable: bool,
     /// Whether the Connections panel is showing a form.
     open_connection: bool,
+    scroll_to_connection: bool,
     /// The variable form is shown.
     variable_open: bool,
     /// What is being typed in place in the Variables list, by variable ID and field,
@@ -140,11 +142,14 @@ impl Forms {
     pub(crate) fn focus_inline(&mut self, key: (String, &'static str)) {
         self.focus = Some(key);
     }
-    pub(crate) fn reveal_variable(&mut self) {
+    pub(crate) fn reveal_variable(&mut self, target: Option<(NodeId, String)>) {
+        self.variable = VariableForm::default();
+        self.variable_target = target;
         self.open_variable = true;
     }
     pub(crate) fn reveal_connection(&mut self) {
         self.open_connection = true;
+        self.scroll_to_connection = true;
     }
     pub(crate) fn edit_connection(&mut self, connection: &Connection) {
         self.connection = ConnectionForm {
@@ -564,14 +569,28 @@ impl Editor {
         self.edited(host, result)
     }
 
+    pub(crate) fn new_variable_for_node(&mut self, node: NodeId, pointer: &str) {
+        self.panels.nodes = true;
+        self.tab = Tab::Variables;
+        self.forms.reveal_variable(Some((node, pointer.to_owned())));
+    }
+
     pub(crate) fn variables_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(declared) = self.declarations().cloned() else {
             ui.weak(t("open-graph-variables"));
             return;
         };
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.variables_section(ui, host, &declared);
-        });
+        search_field(
+            ui,
+            "variables-search",
+            &mut self.declaration_search[0],
+            t("search-variables"),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("variables-list")
+            .show(ui, |ui| {
+                self.variables_section(ui, host, &declared);
+            });
     }
 
     pub(crate) fn connections_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -579,9 +598,17 @@ impl Editor {
             ui.weak(t("open-graph-connections"));
             return;
         };
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.connections_section(ui, host, &declared);
-        });
+        search_field(
+            ui,
+            "connections-search",
+            &mut self.declaration_search[1],
+            t("search-connections"),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("connections-list")
+            .show(ui, |ui| {
+                self.connections_section(ui, host, &declared);
+            });
     }
 
     /// Adds a Get node for variable `id` where it was let go, or a Set node with `set`.
@@ -648,7 +675,12 @@ impl Editor {
         let adding = section_heading(ui, t("variables"), t("add-variable"));
         if adding {
             self.forms.variable = VariableForm::default();
+            self.forms.variable_target = None;
             self.forms.variable_open = true;
+            self.declaration_search[0].clear();
+        }
+        if self.forms.variable_open {
+            self.variable_form(ui, host);
         }
         let running = self
             .document
@@ -661,7 +693,32 @@ impl Editor {
             .unwrap_or_default();
         let mut remove = None;
         let mut change: Option<Variable> = None;
-        for variable in &declared.variables {
+        let query = self.declaration_search[0].trim().to_lowercase();
+        let mut visible: Vec<_> = declared
+            .variables
+            .iter()
+            .filter(|variable| {
+                contains_query(
+                    &query,
+                    &[
+                        &variable.name,
+                        &variable.ty,
+                        &type_name(&variable.ty),
+                        scope_name(variable.scope),
+                    ],
+                )
+            })
+            .collect();
+        visible.sort_by_cached_key(|variable| (variable.scope as u8, variable.name.to_lowercase()));
+        if visible.is_empty() && !declared.variables.is_empty() {
+            ui.weak(t("no-declaration-matches"));
+        }
+        let mut previous_scope = None;
+        for variable in visible {
+            if previous_scope != Some(variable.scope) {
+                ui.strong(scope_name(variable.scope));
+                previous_scope = Some(variable.scope);
+            }
             let Some(id) = variable.id.clone() else {
                 continue;
             };
@@ -814,13 +871,40 @@ impl Editor {
         } else if !declared.variables.is_empty() {
             ui.weak(t("variable-drag-empty-hint"));
         }
+        if let Some(variable) = change {
+            let _ = self.declare_variable(host, &variable);
+        }
+        if let Some(id) = remove {
+            let _ = self.remove_variable(host, &id);
+        }
+    }
+
+    fn variable_form(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let mut declare = false;
         let mut cancel = false;
-        if self.forms.variable_open {
+        {
+            let target = self
+                .forms
+                .variable_target
+                .as_ref()
+                .and_then(|(node, _)| self.graph()?.nodes.iter().find(|view| view.id == *node));
+            let can_use_workspace = target.is_none_or(|view| {
+                !matches!(
+                    view.definition.as_str(),
+                    "core/set-variable" | "core/update-variable" | "core/on-variable-changed"
+                )
+            });
+            let target_name = target.map(|node| node.name.clone());
             let enums = &self.canvas.enums;
             let form = &mut self.forms.variable;
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.strong(t("new-variable"));
+                if let Some(name) = &target_name {
+                    ui.weak(tf(
+                        "new-variable-for-node",
+                        &[("name", name.as_str().into())],
+                    ));
+                }
                 egui::Grid::new("orange-variable-form")
                     .num_columns(2)
                     .spacing([8.0, 6.0])
@@ -853,6 +937,9 @@ impl Editor {
                             .selected_text(scope_name(form.scope))
                             .show_ui(ui, |ui| {
                                 for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
+                                    if scope == VarScope::Workspace && !can_use_workspace {
+                                        continue;
+                                    }
                                     let _ = ui.selectable_value(
                                         &mut form.scope,
                                         scope,
@@ -901,20 +988,25 @@ impl Editor {
                 persistent: form.persistent,
                 initial: Some(form.initial.trim().to_owned()).filter(|text| !text.is_empty()),
             };
-            if self.declare_variable(host, &variable).is_some() {
+            let target = self.forms.variable_target.clone().filter(|(node, _)| {
+                self.graph()
+                    .is_some_and(|graph| graph.nodes.iter().any(|view| view.id == *node))
+            });
+            let declared = if let Some((node, pointer)) = target {
+                self.declare_variable_for(host, node, &pointer, &variable)
+            } else {
+                self.declare_variable(host, &variable)
+            };
+            if declared.is_some() {
                 self.forms.variable = VariableForm::default();
+                self.forms.variable_target = None;
                 self.forms.variable_open = false;
             }
         }
         if cancel {
             self.forms.variable = VariableForm::default();
+            self.forms.variable_target = None;
             self.forms.variable_open = false;
-        }
-        if let Some(variable) = change {
-            let _ = self.declare_variable(host, &variable);
-        }
-        if let Some(id) = remove {
-            let _ = self.remove_variable(host, &id);
         }
     }
 
@@ -1013,47 +1105,8 @@ impl Editor {
         };
         if section_heading(ui, t("connections"), t("add-connection")) {
             self.forms.connection = ConnectionForm::default();
-            self.forms.open_connection = true;
-        }
-        let mut remove = None;
-        for connection in &declared.connections {
-            let id = connection.id.clone().unwrap_or_default();
-            let users = self.connection_users(host, &id);
-            let detail = format!("{}\n{}", label_of(&connection.adapter), connection.adapter);
-            let (edit, delete) = item_frame(ui)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let pressed = declaration_row(ui, &connection.name, &detail);
-                    if users.is_empty() {
-                        ui.weak(tf(
-                            "connection-unused",
-                            &[("adapter", label_of(&connection.adapter).into())],
-                        ));
-                    } else {
-                        let _ = ui
-                            .weak(tf(
-                                "connection-used",
-                                &[
-                                    ("adapter", label_of(&connection.adapter).into()),
-                                    ("count", users.len().into()),
-                                    ("nodes", users.join(", ").into()),
-                                ],
-                            ))
-                            .on_hover_text(users.join("\n"));
-                    }
-                    pressed
-                })
-                .inner;
-            if edit {
-                self.forms.edit_connection(connection);
-                self.probing = None;
-            }
-            if delete {
-                remove = connection.id.clone();
-            }
-        }
-        if declared.connections.is_empty() {
-            ui.weak(t("no-connections"));
+            self.forms.reveal_connection();
+            self.declaration_search[1].clear();
         }
         if self.forms.connection.adapter.is_empty()
             && let Some(first) = adapters
@@ -1074,6 +1127,7 @@ impl Editor {
         let mut cancel = false;
         let mut test = false;
         let open = self.forms.open_connection;
+        let reveal = std::mem::take(&mut self.forms.scroll_to_connection);
         let probing = &mut self.probing;
         let form = &mut self.forms.connection;
         let title = if form.changing.is_some() {
@@ -1083,7 +1137,10 @@ impl Editor {
         };
         if open {
             egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.strong(title);
+                let heading = ui.strong(title);
+                if reveal {
+                    heading.scroll_to_me(Some(egui::Align::Min));
+                }
                 ui.small(t("name"));
                 let name = ui.add(
                     egui::TextEdit::singleline(&mut form.name)
@@ -1219,6 +1276,68 @@ impl Editor {
         }
         if refresh {
             let _ = self.adapter_choices(host, &adapter, true);
+        }
+        let mut remove = None;
+        let query = self.declaration_search[1].trim().to_lowercase();
+        let mut visible: Vec<_> = declared
+            .connections
+            .iter()
+            .filter(|connection| {
+                contains_query(
+                    &query,
+                    &[
+                        &connection.name,
+                        &connection.adapter,
+                        &label_of(&connection.adapter),
+                    ],
+                )
+            })
+            .collect();
+        visible.sort_by_cached_key(|connection| {
+            (
+                label_of(&connection.adapter),
+                connection.name.to_lowercase(),
+            )
+        });
+        if visible.is_empty() && !declared.connections.is_empty() {
+            ui.weak(t("no-declaration-matches"));
+        }
+        let mut previous_adapter = None;
+        for connection in visible {
+            if previous_adapter != Some(connection.adapter.as_str()) {
+                ui.strong(label_of(&connection.adapter));
+                previous_adapter = Some(connection.adapter.as_str());
+            }
+            let id = connection.id.clone().unwrap_or_default();
+            let users = self.connection_users(host, &id);
+            let detail = format!("{}\n{}", label_of(&connection.adapter), connection.adapter);
+            let (edit, delete) = item_frame(ui)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let pressed = declaration_row(ui, &connection.name, &detail);
+                    if users.is_empty() {
+                        ui.weak(tf(
+                            "connection-unused",
+                            &[("adapter", label_of(&connection.adapter).into())],
+                        ));
+                    } else {
+                        let _ = ui
+                            .weak(tf("connection-use-count", &[("count", users.len().into())]))
+                            .on_hover_text(users.join("\n"));
+                    }
+                    pressed
+                })
+                .inner;
+            if edit {
+                self.forms.edit_connection(connection);
+                self.probing = None;
+            }
+            if delete {
+                remove = connection.id.clone();
+            }
+        }
+        if declared.connections.is_empty() {
+            ui.weak(t("no-connections"));
         }
         if let Some(id) = remove {
             let _ = self.remove_connection(host, &id);

@@ -190,6 +190,38 @@ fn request_body_is_edited_on_the_card_from_the_complete_stored_text() {
 }
 
 #[test]
+fn dragging_a_text_grip_resizes_the_card_and_preserves_its_input_anchor() {
+    let mut session = Session::new();
+    session.request_inputs = Some(BTreeMap::new());
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
+    node.definition = "org.orange.net/mqtt-publish".into();
+    node.schema = None;
+    node.ports = vec![port("text", true, false, "core/string@1")];
+    let _ = session.frame(vec![]);
+    let control = session.control(0);
+    let before = session.canvas.card(&session.graph.nodes[0]);
+    let (height, dot) = (
+        before.size.y,
+        before.offset(&session.graph.nodes[0].ports[0]),
+    );
+    let grip = control.center_bottom() - Vec2::new(0.0, 4.0);
+    let event = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = session.frame(vec![egui::Event::PointerMoved(grip)]);
+    let _ = session.frame(vec![event(grip, true)]);
+    let after = grip + Vec2::new(0.0, 46.0);
+    let _ = session.frame(vec![egui::Event::PointerMoved(after)]);
+    let _ = session.frame(vec![event(after, false)]);
+    let changed = session.canvas.card(&session.graph.nodes[0]);
+    assert!(changed.size.y > height);
+    assert_eq!(changed.offset(&session.graph.nodes[0].ports[0]), dot);
+}
+
+#[test]
 fn binary_request_headers_commit_the_line_list_when_the_field_loses_focus() {
     let mut session = Session::new();
     session.request_inputs = Some(BTreeMap::new());
@@ -222,7 +254,7 @@ fn binary_request_headers_commit_the_line_list_when_the_field_loses_focus() {
 }
 
 #[test]
-fn messaging_and_package_text_ports_expand_on_the_card_and_collapse_after_applying() {
+fn multiline_text_fields_keep_their_height_on_focus_and_apply() {
     for definition in [
         "org.orange.net/mqtt-publish",
         "org.orange.net/amqp-publish",
@@ -246,7 +278,7 @@ fn messaging_and_package_text_ports_expand_on_the_card_and_collapse_after_applyi
                 .unwrap()
                 .offset
         };
-        let compact = height(&session);
+        let initial_height = height(&session);
         let text_anchor = anchor(&session, "text");
         let flag_anchor = anchor(&session, "flag");
         assert!(
@@ -256,13 +288,9 @@ fn messaging_and_package_text_ports_expand_on_the_card_and_collapse_after_applyi
                 .is_none()
         );
         let _ = session.frame(vec![]);
-        let growth = height(&session) - compact;
-        assert!(growth > 0.0, "{definition}");
+        assert_eq!(height(&session), initial_height, "{definition}");
         assert_eq!(anchor(&session, "text"), text_anchor);
-        assert_eq!(
-            anchor(&session, "flag"),
-            flag_anchor + Vec2::new(0.0, growth)
-        );
+        assert_eq!(anchor(&session, "flag"), flag_anchor);
         let message = "{\n  \"message\": \"hello\"\n}";
         let _ = session.frame(vec![egui::Event::Paste(message.into())]);
         let apply = egui::Event::Key {
@@ -278,7 +306,7 @@ fn messaging_and_package_text_ports_expand_on_the_card_and_collapse_after_applyi
             serde_json::from_str::<serde_json::Value>(&literal).unwrap()["value"],
             message
         );
-        assert_eq!(height(&session), compact, "{definition}");
+        assert_eq!(height(&session), initial_height, "{definition}");
         assert_eq!(anchor(&session, "flag"), flag_anchor);
     }
 }

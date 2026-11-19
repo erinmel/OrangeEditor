@@ -6,7 +6,7 @@ use super::card::FieldOf;
 use super::settings;
 use super::*;
 use crate::properties::{
-    choose_http_method, http_request_label, http_request_variant, watch_label, watch_number_value,
+    choose_http_method, http_request_variant, input_label, watch_label, watch_number_value,
 };
 
 /// What a field changed.
@@ -114,25 +114,21 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                 .value
                 .as_deref()
                 .or(port.default.as_deref())
-                .filter(|_| kind != crate::properties::TextInput::HeaderList)
-                .map(field_text);
-            let first = text
-                .as_deref()
-                .and_then(|text| text.lines().next())
-                .filter(|line| !line.is_empty());
-            let shown = first.unwrap_or_else(|| {
-                if port.value.is_some() && kind == crate::properties::TextInput::HeaderList {
-                    t("http-edit-headers")
-                } else {
-                    kind.hint()
-                }
-            });
-            (shown.to_owned(), port.value.is_none())
+                .map(|text| crate::properties::text_area_preview(text, kind))
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| kind.hint().to_owned());
+            (text, port.value.is_none())
         }
         FieldOf::Input(port) => match (&port.value, &port.default) {
-            (Some(value), _) => (field_text(value), false),
-            (None, Some(default)) => (field_text(default), true),
-            (None, None) => ("—".to_owned(), true),
+            (Some(value), _) => (
+                crate::properties::choice_caption(port, &field_text(value)).into_owned(),
+                false,
+            ),
+            (None, Some(default)) => (
+                crate::properties::choice_caption(port, &field_text(default)).into_owned(),
+                true,
+            ),
+            (None, None) => ("-".to_owned(), true),
         },
         FieldOf::Path(port, path) => port
             .value
@@ -184,18 +180,15 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
 fn add_port_text(variadic: &orange_host::VariadicView) -> String {
     tf(
         "add-port",
-        &[("name", crate::properties::words(&variadic.port).into())],
+        &[("name", crate::port_label(&variadic.port).into())],
     )
 }
 
 /// The name line's text of a field.
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
-        FieldOf::Input(port) | FieldOf::TextArea(port, ..) if http_request_variant(node) => {
-            http_request_label(&port.id).map_or_else(|| port_title(port), str::to_owned)
-        }
         FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            port_title(port)
+            input_label(node, &port.id).map_or_else(|| port_title(port), str::to_owned)
         }
         FieldOf::Setting(name, schema) => {
             if node.definition == "core/on-watch" {
@@ -359,7 +352,7 @@ impl Canvas {
         let zoom = slot.height() / field.control_height();
         let colors = Palette::of(ui);
         match field {
-            FieldOf::TextArea(port, kind, expanded) => {
+            FieldOf::TextArea(port, kind, height) => {
                 let (preview, dim) = shown(node, field);
                 if stored_text.is_none() && port.ty.as_deref() == Some("core/string@1") {
                     return self
@@ -375,11 +368,23 @@ impl Canvas {
                         .map(|text| FieldEdit::Input(port.id.clone(), text));
                 }
                 let read = || stored_text.and_then(|read| read(node.id, &port.id));
-                if expanded
-                    && let Some(edit) = self
-                        .expanded_text
-                        .as_mut()
-                        .filter(|edit| edit.node == node.id && edit.port == port.id)
+                let grip = Rect::from_min_max(
+                    Pos2::new(slot.left(), slot.bottom() - 9.0 * zoom),
+                    slot.max,
+                );
+                let resized = crate::properties::text_resize_grip(ui, grip, id.with("resize"));
+                if resized != 0.0 {
+                    self.text_heights.entry(node.id).or_default().insert(
+                        port.id.clone(),
+                        (height + resized / zoom).clamp(60.0, 280.0),
+                    );
+                    ui.ctx().request_repaint();
+                }
+                let slot = Rect::from_min_max(slot.min, Pos2::new(slot.right(), grip.top()));
+                if let Some(edit) = self
+                    .expanded_text
+                    .as_mut()
+                    .filter(|edit| edit.node == node.id && edit.port == port.id)
                 {
                     let editor_id = id.with("request-input");
                     // egui drops focus on Escape before the widget is drawn.
@@ -413,20 +418,19 @@ impl Canvas {
                     let response = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_cursor(egui::CursorIcon::Text)
-                        .on_hover_text(t("expand-text-hint"));
+                        .on_hover_text(t("edit-text-hint"));
                     frame(ui.painter(), slot, zoom, &colors, response.hovered());
-                    let _ = field_text_in(
-                        ui.painter(),
-                        slot,
-                        zoom,
-                        &preview,
-                        if dim { colors.weak } else { colors.text },
-                        Some((
-                            crate::icons::EXPAND.encode_utf8(&mut [0; 4]),
-                            colors.weak,
-                            FontId::new(15.0 * zoom, crate::icons::family()),
-                        )),
+                    let content = slot.shrink2(Vec2::new(6.0, 4.0) * zoom);
+                    let tint = if dim { colors.weak } else { colors.text };
+                    let galley = ui.painter().layout(
+                        preview,
+                        FontId::monospace(12.5 * zoom),
+                        tint,
+                        content.width(),
                     );
+                    ui.painter()
+                        .with_clip_rect(content.intersect(ui.clip_rect()))
+                        .galley(content.min, galley, tint);
                     if response.clicked() {
                         if stored_text.is_none() {
                             return Some(FieldEdit::Configure(slot.left_bottom()));
@@ -446,9 +450,9 @@ impl Canvas {
             FieldOf::Input(port) => {
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
                 if http_request_variant(node) && port.id == "method" {
-                    let (text, dim) = shown(node, field);
+                    let (text, _) = shown(node, field);
                     let mut chosen = None;
-                    dropdown(ui, slot, id, &text, dim, |ui| {
+                    dropdown(ui, slot, id, &text, false, |ui| {
                         chosen = choose_http_method(ui, &text);
                     });
                     return chosen.and_then(|method| input(method.to_owned()));
@@ -466,8 +470,15 @@ impl Canvas {
                         let mut chosen = None;
                         dropdown(ui, slot, id, &text, dim, |ui| {
                             for choice in choices.iter().filter(|choice| !choice.payload) {
-                                let current = port.value.as_deref() == Some(choice.name.as_str());
-                                if ui.selectable_label(current, &choice.name).clicked() && !current
+                                let current = port.value.as_deref().or(port.default.as_deref())
+                                    == Some(choice.name.as_str());
+                                if ui
+                                    .selectable_label(
+                                        current,
+                                        crate::properties::choice_caption(port, &choice.name),
+                                    )
+                                    .clicked()
+                                    && !current
                                 {
                                     chosen = Some(choice.literal.clone());
                                 }
@@ -586,11 +597,14 @@ impl Canvas {
                     .settings
                     .pointer(pointer)
                     .and_then(serde_json::Value::as_str);
-                let (text, dim) = shown(node, field);
+                let variables = &self.variables;
+                let (text, dim) = variables
+                    .iter()
+                    .find(|(id, _)| named == Some(id.as_str()))
+                    .map_or_else(|| shown(node, field), |(_, name)| (name.clone(), false));
                 let mut edit = None;
-                let variables = self.variables.clone();
                 dropdown(ui, slot, id, &text, dim, |ui| {
-                    for (variable, name) in &variables {
+                    for (variable, name) in variables {
                         let current = named == Some(variable.as_str());
                         if ui.selectable_label(current, name.as_str()).clicked() && !current {
                             edit = Some(FieldEdit::Setting(

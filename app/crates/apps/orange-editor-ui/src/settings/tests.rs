@@ -239,3 +239,36 @@ fn shortcut_columns_stay_aligned_and_the_binding_opens_the_editor() {
         assert!(editor.shortcut_edit.is_some());
     }
 }
+
+#[test]
+fn settings_title_uses_strong_text_and_general_exposes_the_preview_preference() {
+    let mut editor = Editor::new();
+    editor.settings_open = true;
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let expected = ctx.style_of(ctx.theme()).visuals.strong_text_color();
+    let mut seen_title = false;
+    let mut seen_preview = false;
+    for _ in 0..3 {
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            editor.settings_window(ui.ctx()).unwrap();
+        });
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.text() == t("settings-title") {
+                    seen_title = true;
+                    assert!(
+                        text.galley
+                            .job
+                            .sections
+                            .iter()
+                            .any(|section| section.format.color == expected)
+                    );
+                }
+                seen_preview |= text.galley.text() == t("preview-node-cards");
+            }
+        }
+        output.drop_without_applying_deltas();
+    }
+    assert!(seen_title && seen_preview);
+}

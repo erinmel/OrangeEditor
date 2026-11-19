@@ -219,7 +219,13 @@ mod tests {
             .unwrap();
         assert!(editor.set_input(host, (number, "value"), Some("9")));
         assert!(editor.connect(host, (number, "result"), (set, "value")));
-        assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        assert!(!editor.document.as_ref().unwrap().run_blocked);
+        assert!(
+            editor
+                .problems()
+                .iter()
+                .any(|problem| problem.contains("shadowed"))
+        );
         (editor, number, set)
     }
 
@@ -320,7 +326,7 @@ mod tests {
                 .iter()
                 .any(|wire| wire.from.0 == call && wire.to == (set, "value".to_owned()))
         );
-        assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        assert!(!editor.document.as_ref().unwrap().run_blocked);
 
         // A trigger cannot go into a function; the preview says so and nothing changes.
         let go = editor.graph().unwrap().nodes[0].id;

@@ -103,41 +103,69 @@ impl Editor {
             ui.weak(t("open-graph-types"));
             return;
         };
+        search_field(
+            ui,
+            "types-search",
+            &mut self.declaration_search[2],
+            t("search-types"),
+        );
+        let query = self.declaration_search[2].trim().to_lowercase();
         let mut change = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(t("types"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button((icons::text(icons::ADD), t("record")))
-                        .on_hover_text(t("record-hint"))
-                        .clicked()
-                    {
-                        change = Some(Change::New(false));
-                    }
-                    if ui
-                        .button((icons::text(icons::ADD), t("enum")))
-                        .on_hover_text(t("enum-hint"))
-                        .clicked()
-                    {
-                        change = Some(Change::New(true));
-                    }
+        egui::ScrollArea::vertical()
+            .id_salt("types-list")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(t("types"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button((icons::text(icons::ADD), t("record")))
+                            .on_hover_text(t("record-hint"))
+                            .clicked()
+                        {
+                            change = Some(Change::New(false));
+                        }
+                        if ui
+                            .button((icons::text(icons::ADD), t("enum")))
+                            .on_hover_text(t("enum-hint"))
+                            .clicked()
+                        {
+                            change = Some(Change::New(true));
+                        }
+                    });
                 });
-            });
-            ui.add_space(4.0);
-            if declared.types.is_empty() {
-                ui.weak(t("no-types"));
-            }
-            for decl in &declared.types {
-                let uses = self.uses_of(&decl.ty().to_string());
-                if let Some(asked) = self.type_card(ui, decl, uses) {
-                    change = Some(asked);
+                ui.add_space(4.0);
+                if declared.types.is_empty() {
+                    ui.weak(t("no-types"));
                 }
-            }
-        });
+                let mut visible: Vec<_> = declared
+                    .types
+                    .iter()
+                    .filter(|decl| {
+                        let kind = match decl.shape {
+                            TypeShape::Enum { .. } => t("enum"),
+                            TypeShape::Record { .. } => t("record"),
+                        };
+                        contains_query(&query, &[&decl.name, kind])
+                    })
+                    .collect();
+                visible.sort_by_cached_key(|decl| decl.name.to_lowercase());
+                if visible.is_empty() && !declared.types.is_empty() {
+                    ui.weak(t("no-declaration-matches"));
+                }
+                let open_by_default = visible.len() <= 4;
+                for decl in visible {
+                    let uses = self.uses_of(&decl.ty().to_string());
+                    if let Some(asked) = self.type_card(ui, decl, uses, open_by_default) {
+                        change = Some(asked);
+                    }
+                }
+            });
         let Some(change) = change else {
             return;
         };
+        if matches!(change, Change::New(_)) {
+            self.declaration_search[2].clear();
+        }
         let Some(draft) = self.editing() else {
             return;
         };
@@ -181,6 +209,7 @@ impl Editor {
         ui: &mut egui::Ui,
         decl: &LocalTypeDecl,
         uses: usize,
+        open_by_default: bool,
     ) -> Option<Change> {
         let key = decl.id.to_string();
         let mut changed = decl.clone();
@@ -202,7 +231,7 @@ impl Editor {
                 let state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
-                    true,
+                    open_by_default,
                 );
                 let header = state.show_header(ui, |ui| {
                     badge(ui, kind, accent);

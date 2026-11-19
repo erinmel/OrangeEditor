@@ -25,6 +25,7 @@
 pub mod canvas;
 mod card_sources;
 mod declarations;
+mod diagnostics;
 #[cfg(test)]
 mod edit_timing;
 pub mod i18n;
@@ -34,6 +35,7 @@ mod interaction_regressions;
 mod keymap;
 mod menu;
 mod organise;
+mod package_import;
 mod properties;
 mod quick_add;
 mod settings;
@@ -51,13 +53,6 @@ use orange_host::{
     StopMode, describe, lines,
 };
 use std::collections::VecDeque;
-
-/// The nodes the Variables list adds for a variable: the button's message, its hint's
-/// message and the kind.
-const VARIABLE_NODES: [(&str, &str, &str); 2] = [
-    ("variable-get", "variable-get-hint", "core/get-variable"),
-    ("variable-set", "variable-set-hint", "core/set-variable"),
-];
 
 /// Lets a window without the system's frame be resized from its edges and corners,
 /// as a framed one is: the cursor shows the direction and a press hands the resize to
@@ -268,12 +263,8 @@ pub fn exact_type(ty: &str) -> String {
 }
 
 /// How much a message a graph logs matters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteLevel {
-    Info,
-    Warning,
-    Error,
-}
+pub use diagnostics::NoteLevel;
+use diagnostics::{LogLine, ProblemLocation};
 
 /// A wire that needs a conversion chosen: its two ends, the conversions that join
 /// them, and where the list is shown.
@@ -337,7 +328,7 @@ struct Document {
     /// What checking found, one line each; empty when the document is valid.
     problems: Vec<String>,
     /// The top-level node each problem is about, in the same order.
-    problem_nodes: Vec<Option<NodeId>>,
+    problem_locations: Vec<ProblemLocation>,
     run_blocked: bool,
     run_omitted: Vec<NodeId>,
     /// The flow running this document, with the entries a person can fire.
@@ -396,6 +387,8 @@ pub enum FileRequest {
     Open,
     /// Choose where to save the open graph.
     SaveAs,
+    /// Choose an expansion package archive to install.
+    ImportPackage,
     /// Choose a file or folder for a node's text input that holds a path, such as the
     /// sound file of Play sound, and hand it to [`Editor::choose_path`].
     ChoosePath {
@@ -440,7 +433,14 @@ pub struct Editor {
     live_trace: bool,
     /// The last message a graph logged and how many times in a row, so repeats share
     /// one line.
-    last_note: Option<(String, u32)>,
+    last_note: bool,
+    log_filter: Option<NoteLevel>,
+    log_search: String,
+    problems_search: String,
+    problems_filter: Option<bool>,
+    declaration_search: [String; 3],
+    node_search_previews: bool,
+    pending_package: Option<package_import::PackageImport>,
     packages_tab: bool,
     /// What the Packages tab is filtered by.
     package_search: String,
@@ -458,13 +458,11 @@ pub struct Editor {
     inspected_port: Option<(NodeId, String, bool)>,
     document: Option<Document>,
     canvas: Canvas,
-    log: VecDeque<String>,
+    log: VecDeque<LogLine>,
     /// The node whose values the properties panel is editing, and what is typed in
     /// each of its fields.
     inspected: Option<NodeId>,
     typed: std::collections::BTreeMap<String, String>,
-    /// A variable being declared from the properties of the node that will name it.
-    quick_variable: Option<properties::QuickVariable>,
     /// The left panel shows the document's declarations instead of the node kinds.
     tab: Tab,
     forms: declarations::Forms,
@@ -501,6 +499,24 @@ pub struct Editor {
     paste_asked: bool,
 }
 
+fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
+    ui.add(
+        egui::TextEdit::singleline(query)
+            .id_salt(id)
+            .hint_text(hint)
+            .desired_width(f32::INFINITY),
+    );
+}
+
+fn contains_query(query: &str, fields: &[&str]) -> bool {
+    query.is_empty()
+        || query.split_whitespace().all(|word| {
+            fields
+                .iter()
+                .any(|field| field.to_lowercase().contains(word))
+        })
+}
+
 impl Editor {
     pub fn new() -> Self {
         Self::default()
@@ -519,7 +535,11 @@ impl Editor {
     /// Shows the editor in `language` (a BCP 47 tag) and makes the node search match in
     /// it and English. Nothing about the graph changes with it.
     pub fn set_language(&mut self, language: &str) {
-        self.language = language.trim().to_owned();
+        let language = language.trim();
+        if self.language != language {
+            language.clone_into(&mut self.language);
+            self.previews.invalidate();
+        }
         i18n::set_language(self.language());
     }
 
@@ -574,7 +594,7 @@ impl Editor {
             graph,
             unsaved: false,
             problems: Vec::new(),
-            problem_nodes: Vec::new(),
+            problem_locations: Vec::new(),
             run_blocked: false,
             run_omitted: Vec::new(),
             flow: None,
@@ -1019,7 +1039,7 @@ impl Editor {
     pub fn new_variable_form(&mut self) {
         self.panels.nodes = true;
         self.tab = Tab::Variables;
-        self.forms.reveal_variable();
+        self.forms.reveal_variable(None);
     }
 
     /// Whether there is an edit to undo, and one to do again.
@@ -1147,7 +1167,7 @@ impl Editor {
 
     /// The log, oldest line first.
     pub fn log(&self) -> impl Iterator<Item = &str> {
-        self.log.iter().map(String::as_str)
+        self.log.iter().map(LogLine::display)
     }
 
     /// Whether the open document is running.
@@ -1155,45 +1175,6 @@ impl Editor {
         self.document
             .as_ref()
             .is_some_and(|document| document.flow.is_some())
-    }
-
-    /// A message a graph logged: `level` is info, warning or error. A message the same
-    /// as the last one adds to its count instead of a new line.
-    pub fn note(&mut self, level: NoteLevel, text: &str) {
-        let line = match level {
-            NoteLevel::Info => text.to_owned(),
-            NoteLevel::Warning => tf("log-warning", &[("text", text.into())]),
-            NoteLevel::Error => tf("log-error", &[("text", text.into())]),
-        };
-        if let Some((last, count)) = &mut self.last_note
-            && *last == line
-            && let Some(shown) = self.log.back_mut()
-        {
-            *count += 1;
-            *shown = tf(
-                "log-repeated",
-                &[("line", line.as_str().into()), ("count", (*count).into())],
-            );
-            return;
-        }
-        self.say(line.clone());
-        self.last_note = Some((line, 1));
-    }
-
-    /// Says that `count` messages a graph logged were dropped because they came faster
-    /// than the Log takes them.
-    pub fn notes_dropped(&mut self, count: u64) {
-        if count > 0 {
-            self.say(tf("log-dropped", &[("count", count.into())]));
-        }
-    }
-
-    fn say(&mut self, line: String) {
-        self.last_note = None;
-        if self.log.len() >= MAX_LOG_LINES {
-            let _ = self.log.pop_front();
-        }
-        self.log.push_back(line);
     }
 
     fn problems_of(error: &HostError, names: &Names) -> Vec<String> {
@@ -1212,7 +1193,7 @@ impl Editor {
             return;
         };
         let mut marks = canvas::Marks::default();
-        document.problem_nodes.clear();
+        document.problem_locations.clear();
         document.run_blocked = false;
         document.run_omitted.clear();
         let wired: std::collections::BTreeSet<_> = document
@@ -1220,59 +1201,96 @@ impl Editor {
             .wires
             .iter()
             .flat_map(|wire| [wire.from.0, wire.to.0])
+            .chain(
+                document
+                    .draft
+                    .document()
+                    .exports()
+                    .iter()
+                    .map(|export| export.node),
+            )
             .collect();
-        document.problems = match host.problems(&mut document.draft) {
-            Ok(diagnostics) => diagnostics
-                .iter()
-                .map(|diagnostic| {
-                    let text = describe(diagnostic, &document.names);
-                    let error = diagnostic.severity == orange_host::Severity::Error;
-                    // Only the top level is on the canvas.
-                    let node = diagnostic
-                        .subject
-                        .node
-                        .filter(|_| diagnostic.subject.function.is_none());
-                    let wire = host.wire_of(&document.draft, diagnostic);
-                    if error {
-                        if let Some(node) = node.filter(|id| {
-                            wire.is_none()
-                                && !wired.contains(id)
-                                && document.graph.nodes.iter().any(|view| view.id == *id)
-                        }) {
-                            document.run_omitted.push(node);
-                        } else {
-                            document.run_blocked = true;
-                        }
-                    }
-                    if let Some(wire) = wire {
-                        canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
-                    } else if let Some(node) = node {
-                        canvas::Marks::add(&mut marks.nodes, node, error, text.clone());
-                        // The port at fault is ringed as well as the node marked.
-                        if let Some(port) = &diagnostic.subject.port {
-                            canvas::Marks::add(
-                                &mut marks.ports,
-                                (node, port.to_string()),
-                                error,
-                                text.clone(),
-                            );
-                        }
-                    }
-                    document.problem_nodes.push(node);
-                    text
-                })
-                .collect(),
+        let diagnostics = match host.diagnostics(&mut document.draft) {
+            Ok(diagnostics) => diagnostics,
             Err(error) => {
-                document.run_blocked = true;
-                Self::problems_of(&error, &document.names)
+                document.set_problem_error(&error);
+                self.canvas.set_marks(marks);
+                return;
             }
         };
+        let mut inactive_splitters = std::collections::BTreeSet::new();
+        let mut isolated = std::collections::BTreeSet::new();
+        for diagnostic in diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == orange_host::Severity::Error)
+        {
+            let Some(node) = diagnostics::top_node(diagnostic) else {
+                continue;
+            };
+            let Some(view) = document.graph.nodes.iter().find(|view| view.id == node) else {
+                continue;
+            };
+            if view.definition == "org.orange.audio/multiband-spectrum"
+                && diagnostics::missing_splitter_stream(diagnostic)
+            {
+                inactive_splitters.insert(node);
+            }
+            if !wired.contains(&node) && diagnostic.subject.edge.is_none() {
+                isolated.insert(node);
+            }
+        }
+        if document
+            .graph
+            .nodes
+            .iter()
+            .all(|node| isolated.contains(&node.id))
+        {
+            // Isolated values and actions have no caller. Keep an incomplete
+            // entry visible as an error when it is the only way into the graph.
+            for node in document.graph.nodes.iter().filter(|node| node.entry) {
+                isolated.remove(&node.id);
+            }
+        }
+        document.run_omitted = isolated.union(&inactive_splitters).copied().collect();
+        // An isolated action without an execution path is a draft card. Keeping it
+        // out of the run also keeps its service connection inactive.
+        document
+            .run_omitted
+            .extend(diagnostics.iter().filter_map(|diagnostic| {
+                (diagnostic.code.as_str() == "W-UNREACHABLE")
+                    .then(|| diagnostics::top_node(diagnostic))
+                    .flatten()
+                    .filter(|node| !wired.contains(node))
+            }));
         document.run_omitted.sort_unstable();
         document.run_omitted.dedup();
-        document.run_blocked |= !document.run_omitted.is_empty()
-            && document.run_omitted.len() == document.graph.nodes.len();
-        if document.run_blocked {
-            document.run_omitted.clear();
+        document.problems.clear();
+        for diagnostic in &diagnostics {
+            let advisory = diagnostics::top_node(diagnostic).is_some_and(|node| {
+                isolated.contains(&node)
+                    || inactive_splitters.contains(&node)
+                        && diagnostics::missing_splitter_stream(diagnostic)
+            });
+            let wire = host.wire_of(&document.draft, diagnostic);
+            document.record_problem(diagnostic, wire, advisory, &mut marks);
+        }
+        // An unwired splitter stays idle. Validate any consumers in the graph that runs.
+        if !document.run_blocked && inactive_splitters.iter().any(|node| wired.contains(node)) {
+            let projected = document
+                .runtime_text(host)
+                .and_then(|text| host.draft(&text))
+                .and_then(|mut draft| host.problems(&mut draft));
+            match projected {
+                Ok(diagnostics) => {
+                    for diagnostic in diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity == orange_host::Severity::Error)
+                    {
+                        document.record_problem(diagnostic, None, false, &mut marks);
+                    }
+                }
+                Err(error) => document.set_problem_error(&error),
+            }
         }
         self.canvas.set_marks(marks);
     }
@@ -1280,6 +1298,7 @@ impl Editor {
     /// Starts the open document as a flow. A document that cannot start says why in
     /// its problems.
     pub fn run(&mut self, host: &mut Host) {
+        self.check(host);
         self.preview_values(host);
         let Some(document) = &mut self.document else {
             return;
@@ -1319,7 +1338,11 @@ impl Editor {
                     self.say(t("run-isolated-problems").to_owned());
                 }
             }
-            Err(error) => document.problems = Self::problems_of(&error, &document.names),
+            Err(error) => {
+                document.set_problem_error(&error);
+                self.panels.log = true;
+                self.log_events = false;
+            }
         }
     }
 
@@ -1349,7 +1372,7 @@ impl Editor {
             return;
         };
         if let Err(error) = host.trigger(*flow, node, None) {
-            self.say(format!("[{flow}] {error}"));
+            self.say_at(NoteLevel::Error, format!("[{flow}] {error}"));
         }
     }
 
@@ -1526,8 +1549,18 @@ impl Editor {
                 }
                 _ => {}
             }
+            let level = match &event.kind {
+                FlowEvent::SourceRefused { .. } | FlowEvent::SourceFault { .. } => NoteLevel::Error,
+                FlowEvent::Node(_) if failed_step => NoteLevel::Error,
+                FlowEvent::TraceLost(_) => NoteLevel::Warning,
+                FlowEvent::Node(_)
+                | FlowEvent::Ports(_)
+                | FlowEvent::PortsCleared(_)
+                | FlowEvent::Variables(_) => NoteLevel::Trace,
+                _ => NoteLevel::Info,
+            };
             for line in said {
-                self.say(line);
+                self.say_at(level, line);
             }
         }
         any
@@ -1570,6 +1603,7 @@ impl Editor {
             resize_borders(ui.ctx());
         }
         let _ = self.settings_window(ui.ctx());
+        self.package_import_dialog(ui.ctx(), host);
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -2075,7 +2109,7 @@ impl Editor {
         self.panels.properties = !packages;
         self.panels.packages = packages;
         if packages {
-            Self::packages_panel(ui, host, &mut self.package_search);
+            self.packages_panel(ui, host);
         } else {
             self.properties_panel(ui, host);
         }
@@ -2144,8 +2178,6 @@ impl Editor {
             }
         }
         let mut add = None;
-        let mut variable_node = None;
-        let mut new_variable = false;
         let search_id = ui.scope_id().with("node-palette-search");
         let (up, down, enter) =
             if ui.memory(|memory| memory.has_focus(search_id)) && !self.search.trim().is_empty() {
@@ -2176,57 +2208,8 @@ impl Editor {
         if field.changed() {
             self.palette_highlighted = 0;
         }
-        let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
-            // The graph's own variables first: reading or writing one is the most
-            // common node, and declaring one starts here too.
-            if self.document.is_some() && !searching {
-                egui::CollapsingHeader::new(tf(
-                    "variables-count",
-                    &[("count", variables.len().into())],
-                ))
-                .id_salt("orange-variables")
-                .default_open(variables.len() <= 4)
-                .show(ui, |ui| {
-                    for (id, name, ty) in &variables {
-                        // The buttons take their room first; the name is cut to what
-                        // is left, so a long name never runs under them.
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    for (label, hint, definition) in VARIABLE_NODES.iter().rev() {
-                                        if ui
-                                            .small_button(t(label))
-                                            .on_hover_text(tf(
-                                                hint,
-                                                &[("name", name.as_str().into())],
-                                            ))
-                                            .clicked()
-                                        {
-                                            variable_node = Some((*definition, id.clone()));
-                                        }
-                                    }
-                                    ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let _ = ui
-                                                .add(egui::Label::new(name.as_str()).truncate())
-                                                .on_hover_text(format!(
-                                                    "{name}
-{}",
-                                                    type_name(ty)
-                                                ));
-                                        },
-                                    );
-                                },
-                            );
-                        });
-                    }
-                    new_variable = ui.button(t("new-variable-ellipsis")).clicked();
-                });
-            }
             let language = if self.language.is_empty() {
                 orange_host::SOURCE_LANGUAGE
             } else {
@@ -2256,22 +2239,21 @@ impl Editor {
                             let active =
                                 searching && field.has_focus() && index == self.palette_highlighted;
                             index += 1;
+                            let draft = self.document.as_ref().map(|document| &document.draft);
+                            let card = self
+                                .node_search_previews
+                                .then(|| self.previews.card(host, None, &item.id))
+                                .flatten();
                             let row = palette::result_row(
                                 ui,
                                 &item.label,
                                 &item.purpose,
-                                &item.id,
+                                None,
                                 active,
+                                card,
                             );
                             if row.drag_started() {
-                                let card = self
-                                    .previews
-                                    .card(
-                                        host,
-                                        self.document.as_ref().map(|document| &document.draft),
-                                        &item.id,
-                                    )
-                                    .cloned();
+                                let card = self.previews.card(host, draft, &item.id).cloned();
                                 row.dnd_set_drag_payload(palette::PaletteDrag {
                                     item: item.clone(),
                                     card,
@@ -2287,12 +2269,6 @@ impl Editor {
                     });
             }
         });
-        if new_variable {
-            self.new_variable_form();
-        }
-        if let Some((definition, variable)) = variable_node {
-            let _ = self.add_variable_node(host, definition, &variable);
-        }
         if let Some(definition) = add {
             if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
@@ -2302,36 +2278,24 @@ impl Editor {
         }
     }
 
-    /// The open document's variables that nodes can name, as (ID, name, type).
-    fn variables_to_use(&self) -> Vec<(String, String, String)> {
-        self.declarations()
-            .map(|declared| {
-                declared
-                    .variables
-                    .iter()
-                    .filter_map(|variable| {
-                        Some((
-                            variable.id.clone()?,
-                            variable.name.clone(),
-                            variable.ty.clone(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// The packages this host has, found by name, ID or description: each a framed row
     /// with its name and version, what it adds, and whether it is in use.
-    fn packages_panel(ui: &mut egui::Ui, host: &Host, search: &mut String) {
+    fn packages_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        if self.file_dialogs
+            && ui
+                .button((icons::text(icons::ADD), t("import-package")))
+                .clicked()
+        {
+            self.ask(FileRequest::ImportPackage);
+        }
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         let _ = ui.add(
-            egui::TextEdit::singleline(search)
+            egui::TextEdit::singleline(&mut self.package_search)
                 .hint_text(t("search-packages-hint"))
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(4.0);
-        let wanted = search.trim().to_lowercase();
+        let wanted = self.package_search.trim().to_lowercase();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut shown = 0;
             for package in host.packages() {
@@ -2399,60 +2363,6 @@ impl Editor {
                 ui.weak(t("no-package-matches"));
             }
         });
-    }
-
-    /// Draws the current diagnostics tab in the supplied container.
-    pub fn log_panel(&mut self, ui: &mut egui::Ui) {
-        ui.set_min_height(ui.available_height());
-        if self.log_events {
-            let _ = ui
-                .checkbox(&mut self.live_trace, t("live-trace"))
-                .on_hover_text(t("live-trace-hint"));
-            egui::ScrollArea::vertical()
-                .id_salt("editor-events")
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for line in &self.log {
-                        ui.monospace(line.as_str());
-                    }
-                });
-            return;
-        }
-        let problems = self.problems().to_vec();
-        let nodes = self
-            .document
-            .as_ref()
-            .map(|document| document.problem_nodes.clone())
-            .unwrap_or_default();
-        let mut focus = None;
-        egui::ScrollArea::vertical()
-            .id_salt("editor-problems")
-            .show(ui, |ui| {
-                if problems.is_empty() {
-                    ui.weak(t("no-problems"));
-                } else {
-                    for (index, problem) in problems.iter().enumerate() {
-                        // A problem about a node takes you to it.
-                        match nodes.get(index).copied().flatten() {
-                            Some(node) => {
-                                if ui
-                                    .link(problem.as_str())
-                                    .on_hover_text(t("show-node"))
-                                    .clicked()
-                                {
-                                    focus = Some(node);
-                                }
-                            }
-                            None => {
-                                ui.label(problem.as_str());
-                            }
-                        }
-                    }
-                }
-            });
-        if let (Some(node), Some(document)) = (focus, &self.document) {
-            self.canvas.focus(&document.graph, node);
-        }
     }
 
     /// Draws the editable canvas and handles its actions in the supplied container.
@@ -2593,11 +2503,7 @@ impl Editor {
             self.set_setting(host, node, &pointer, Some(value));
         }
         if let Some((node, pointer)) = done.new_variable {
-            // Naming the new variable needs a form, which the properties panel has.
-            self.canvas.select(Some(node));
-            self.panels.properties = true;
-            self.panels.packages = false;
-            self.quick_variable = Some(properties::QuickVariable::new(node, &pointer));
+            self.new_variable_for_node(node, &pointer);
         }
         if let Some((node, device)) = done.device {
             self.choose_device(host, node, device);
@@ -3392,12 +3298,11 @@ mod tests {
         editor.new_variable_form();
         assert!(editor.tab == Tab::Variables && editor.panels.nodes);
         assert!(draw(&mut editor, &mut host) > 0);
-        // The quick form draws in the properties of the node it is for.
+        // A node uses the same form on the Variables tab.
         editor.tab = Tab::Nodes;
-        editor.canvas().select(Some(set));
-        editor.quick_variable = Some(properties::QuickVariable::for_test(set));
+        editor.new_variable_for_node(set, "/variable");
+        assert!(editor.tab == Tab::Variables && editor.panels.nodes);
         assert!(draw_at(&mut editor, &mut host, [520.0, 360.0]) > 0);
-        assert!(editor.quick_variable.is_some());
     }
 
     #[test]

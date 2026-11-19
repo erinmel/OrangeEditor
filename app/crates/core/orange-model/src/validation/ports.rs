@@ -88,8 +88,7 @@ impl<'a> PortResolver<'a> {
             .insert(port.clone(), result.clone());
         result
     }
-}
-impl PortResolver<'_> {
+
     /// Whether `edge` carries data from an output to an input.
     pub(crate) fn is_data_edge(&self, edge: &Edge) -> bool {
         matches!(

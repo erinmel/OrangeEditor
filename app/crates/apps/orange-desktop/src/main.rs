@@ -261,7 +261,46 @@ fn trouble(title: &str, message: &str) {
 impl Desktop {
     /// Carries out a file action of the editor with the system's dialogs. The dialogs
     /// wait for the person, as a desktop program's dialogs do.
+    fn import_package(&mut self) {
+        use std::io::Read;
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(t("import-package"))
+            .add_filter(t("desktop-package-filter"), &["orangeplug"])
+            .pick_file()
+        else {
+            return;
+        };
+        // Match the host archive limit, including the header.
+        const MAX_ARCHIVE_BYTES: u64 = 256 << 20;
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(&path)
+            .and_then(|file| file.take(MAX_ARCHIVE_BYTES + 1).read_to_end(&mut bytes));
+        if let Err(error) = read {
+            trouble(t("desktop-package-error"), &error.to_string());
+            return;
+        }
+        if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
+            trouble(t("desktop-package-error"), t("desktop-package-too-large"));
+            return;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
+        if let Err(error) = self
+            .editor
+            .review_package(&self.host, name.into_owned(), bytes)
+        {
+            trouble(t("desktop-package-error"), &error.to_string());
+        }
+    }
+
     fn carry_out(&mut self, request: FileRequest) {
+        if request == FileRequest::ImportPackage {
+            self.import_package();
+            return;
+        }
         if let FileRequest::ChoosePath {
             node,
             port,
@@ -314,7 +353,7 @@ impl Desktop {
                     ),
                 }
             }
-            FileRequest::ChoosePath { .. } => {}
+            FileRequest::ChoosePath { .. } | FileRequest::ImportPackage => {}
             FileRequest::SaveAs => {
                 let name = current
                     .and_then(Path::file_name)
@@ -359,6 +398,8 @@ fn start(
 ) -> Result<Desktop, String> {
     let options = HostOptions {
         secrets: Some(Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
+        package_dir: preferences_path()
+            .and_then(|path| path.parent().map(|dir| dir.join("packages"))),
         ..HostOptions::default()
     };
     let keyboard = keyboard::Keyboard::default();

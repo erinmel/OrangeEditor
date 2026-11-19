@@ -684,3 +684,56 @@ fn an_original_spectrum_adds_a_filtered_output_without_disconnecting_its_input()
     assert!(!card.ports.iter().any(|port| port.id == "band_stream#0"));
     assert_eq!(original.wires, graph.wires);
 }
+
+#[test]
+fn a_disconnected_get_allows_run_and_an_exported_get_blocks_it() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let get = editor.add_node(&mut host, "core/get-variable").unwrap();
+    assert!(!editor.document.as_ref().unwrap().run_blocked);
+    assert!(!editor.canvas.marks().nodes[&get].error);
+    editor.run(&mut host);
+    assert!(editor.is_running(), "{:?}", editor.problems());
+    editor.stop(&mut host);
+
+    let saved = editor.document.as_ref().unwrap().draft.text().unwrap();
+    let mut graph: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    graph["exports"] = serde_json::json!([{"id": "value", "node": get, "port": "value"}]);
+    editor.open_untitled(&mut host, graph.to_string());
+    assert!(editor.document.as_ref().unwrap().run_blocked);
+    editor.run(&mut host);
+    assert!(!editor.is_running());
+}
+
+#[test]
+fn a_splitter_without_audio_warns_without_blocking_a_manual_flow() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package(), orange_net::package()],
+    )
+    .unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let request = editor
+        .add_node(&mut host, "org.orange.net/http-request")
+        .unwrap();
+    assert!(!editor.canvas.marks().nodes[&request].error);
+    let splitter = editor
+        .add_node(&mut host, orange_audio::MULTIBAND_SPECTRUM)
+        .unwrap();
+    assert!(!editor.document.as_ref().unwrap().run_blocked);
+    assert!(!editor.canvas.marks().nodes[&splitter].error);
+    let manual = editor.add_node(&mut host, "core/on-manual").unwrap();
+    editor.run(&mut host);
+    assert!(editor.is_running(), "{:?}", editor.problems());
+    editor.stop(&mut host);
+    let invalid = editor.add_node(&mut host, "core/set-variable").unwrap();
+    assert!(editor.connect(&mut host, (manual, "then"), (invalid, "in")));
+    // An unresolved variable on the execution path blocks Run.
+    assert!(editor.document.as_ref().unwrap().run_blocked);
+    assert!(!editor.canvas.marks().nodes[&splitter].error);
+    assert!(editor.canvas.marks().nodes[&invalid].error);
+    editor.run(&mut host);
+    assert!(!editor.is_running());
+}

@@ -837,6 +837,17 @@ impl Definition {
             "kind": "data", "type": ty}));
         self
     }
+    /// A group of zero to max data inputs of one type. The graph supplies an
+    /// ordered instance of the port for each argument added to the node.
+    #[must_use]
+    pub fn variadic_input(mut self, name: &str, ty: &str, max: u16) -> Self {
+        self.ports.push(serde_json::json!({
+            "port_id": name, "direction": "input", "kind": "data", "type": ty,
+            "variadic": {"min": 0, "max": max}
+        }));
+        self
+    }
+
     /// A data input like [`input`](Self::input) that takes `default`, a literal such as
     /// `{"type": "core/u64@1", "value": "0"}`, when nothing is written or wired to it.
     #[must_use]

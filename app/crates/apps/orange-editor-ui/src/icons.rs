@@ -39,6 +39,7 @@ pub const GRID: char = '\u{e9b0}'; // grid_view
 pub const FIT: char = '\u{ea10}'; // fit_screen
 pub const ACTUAL_SIZE: char = '\u{e8ff}'; // zoom_in
 pub const LANGUAGE: char = '\u{e8e2}'; // translate
+pub const DISPLAY: char = '\u{e30c}'; // desktop_windows
 pub const KEYBOARD: char = '\u{e312}'; // keyboard
 pub const EDIT: char = '\u{e3c9}'; // edit
 pub const EXPAND: char = '\u{e5cc}'; // chevron_right
@@ -94,6 +95,7 @@ pub const ALL: &[char] = &[
     GRID,
     ACTUAL_SIZE,
     LANGUAGE,
+    DISPLAY,
     KEYBOARD,
     EDIT,
     EXPAND,

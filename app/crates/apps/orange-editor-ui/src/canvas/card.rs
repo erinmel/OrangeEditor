@@ -26,8 +26,8 @@ pub(super) const END: f32 = 8.0;
 pub(super) enum FieldOf<'a> {
     /// A value typed on an input that no wire feeds.
     Input(&'a PortView),
-    /// An inline text field, expanded while editing.
-    TextArea(&'a PortView, crate::properties::TextInput, bool),
+    /// An inline text area with a fixed height for this frame.
+    TextArea(&'a PortView, crate::properties::TextInput, f32),
     /// A file or folder on an input, chosen with the system's chooser.
     Path(&'a PortView, &'a orange_host::PathInput),
     /// A setting of the node, by name and schema.
@@ -52,7 +52,7 @@ impl FieldOf<'_> {
 
     pub(super) const fn control_height(self) -> f32 {
         match self {
-            Self::TextArea(_, _, true) => 78.0,
+            Self::TextArea(_, _, height) => height,
             _ => CONTROL,
         }
     }
@@ -167,10 +167,14 @@ pub(super) fn literal(node: &NodeView) -> bool {
 
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
-        Self::with_controls(node, true, None)
+        Self::with_controls(node, true, |_| None)
     }
 
-    pub fn with_controls(node: &'a NodeView, chart_open: bool, expanded: Option<&str>) -> Self {
+    pub fn with_controls(
+        node: &'a NodeView,
+        chart_open: bool,
+        text_height: impl Fn(&PortView) -> Option<f32>,
+    ) -> Self {
         if spectrum::is_noise(node) {
             return Self::meter(node);
         }
@@ -245,7 +249,23 @@ impl<'a> Card<'a> {
                 && let Some(kind) = crate::properties::TextInput::for_port(node, port)
             {
                 lefts.push(Left::Field {
-                    editor: FieldOf::TextArea(port, kind, expanded == Some(port.id.as_str())),
+                    editor: FieldOf::TextArea(
+                        port,
+                        kind,
+                        text_height(port).unwrap_or_else(|| {
+                            let text = port
+                                .value
+                                .as_deref()
+                                .or(port.default.as_deref())
+                                .unwrap_or("");
+                            let text = crate::properties::text_area_preview(text, kind);
+                            crate::properties::text_area_height(
+                                &text,
+                                width - 2.0 * CARD_PADDING,
+                                kind,
+                            )
+                        }),
+                    ),
                     named: !literal,
                 });
                 continue;

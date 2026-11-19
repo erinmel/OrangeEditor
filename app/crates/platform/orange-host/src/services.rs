@@ -104,13 +104,8 @@ impl Services {
             if ty.as_str().contains('$') {
                 return Err(ResolveError::UnsupportedType);
             }
-            let key: PortKey = port
-                .port_id
-                .as_str()
-                .parse()
-                .map_err(|_| ResolveError::Contract)?;
             if port.direction == PortDirection::Input {
-                inputs.push(key);
+                inputs.extend(request.port_keys(port));
             } else {
                 if let Some(item) = ty
                     .as_str()
@@ -119,7 +114,7 @@ impl Services {
                 {
                     stream = Some(item.parse().map_err(|_| ResolveError::Contract)?);
                 }
-                outputs.push(key);
+                outputs.push(PortKey::new(port.port_id.clone(), None));
             }
         }
         let connection = if *uses_connection {

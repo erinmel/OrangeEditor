@@ -245,27 +245,29 @@ impl Editor {
                             }
                             for (index, choice) in choices.iter().take(SHOWN).enumerate() {
                                 let on = index == highlighted;
-                                let name = match &choice.input {
-                                    Some(input) => {
-                                        format!("{} → {}", choice.label, port_label(input))
-                                    }
-                                    None => choice.label.clone(),
-                                };
+                                let target = choice.input.as_deref().map(port_label);
                                 let detail = if choice.purpose.is_empty() {
                                     choice.category.clone()
                                 } else {
                                     format!("{} · {}", choice.category, choice.purpose)
                                 };
-                                let row =
-                                    palette::result_row(ui, &name, &detail, &choice.definition, on);
+                                let draft = self.document.as_ref().map(|document| &document.draft);
+                                let card = self
+                                    .node_search_previews
+                                    .then(|| self.previews.card(host, None, &choice.definition))
+                                    .flatten();
+                                let row = palette::result_row(
+                                    ui,
+                                    &choice.label,
+                                    &detail,
+                                    target.as_deref(),
+                                    on,
+                                    card,
+                                );
                                 if row.drag_started() {
                                     let card = self
                                         .previews
-                                        .card(
-                                            host,
-                                            self.document.as_ref().map(|document| &document.draft),
-                                            &choice.definition,
-                                        )
+                                        .card(host, draft, &choice.definition)
                                         .cloned();
                                     row.dnd_set_drag_payload(palette::PaletteDrag {
                                         item: PaletteItem {
@@ -322,7 +324,8 @@ mod presentation_tests {
         editor.search = "and".into();
         let before = editor.document.as_ref().unwrap().draft.text().unwrap();
         {
-            for picker in [false, true] {
+            for (picker, previews) in [(false, false), (false, true), (true, false), (true, true)] {
+                editor.node_search_previews = previews;
                 let context = egui::Context::default();
                 if picker {
                     editor.open_quick_add(None, [0.0, 0.0], egui::pos2(10.0, 10.0));
@@ -351,7 +354,7 @@ mod presentation_tests {
                         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "And")), "search result is visible, picker={picker}");
                         for label in ["a", "b", "result"] {
                             let drawn = output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label));
-                            assert!(!drawn, "{label}, picker={picker}");
+                            assert_eq!(drawn, previews, "{label}, picker={picker}");
                         }
                     }
                     output.drop_without_applying_deltas();

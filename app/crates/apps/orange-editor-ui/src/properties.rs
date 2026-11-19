@@ -1,15 +1,21 @@
 //! The properties panel: what the selected node settles (the declarations it names,
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
-use orange_host::{Connection, NodeView, ReferenceKind, VarScope, Variable};
+use orange_host::{Connection, NodeView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
 const HTTP_METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 pub(crate) fn choose_http_method(ui: &mut egui::Ui, shown: &str) -> Option<&'static str> {
+    let selected_color = ui.visuals().strong_text_color();
     let mut chosen = None;
     for method in HTTP_METHODS {
-        if ui.selectable_label(shown == method, method).clicked() && shown != method {
+        let selected = shown == method;
+        let mut label = egui::RichText::new(method);
+        if selected {
+            label = label.strong().color(selected_color);
+        }
+        if ui.selectable_label(selected, label).clicked() && !selected {
             chosen = Some(method);
         }
     }
@@ -48,6 +54,8 @@ impl TextInput {
         }
         match port.id.as_str() {
             "content" if http_request(node) => Some(Self::Body),
+            "path" | "content_type" if http_request_variant(node) => None,
+            "message" if node.definition == "org.orange.logging/log-message" => Some(Self::Message),
             "headers" if http_request(node) => Some(Self::Headers),
             "headers" if http_request_variant(node) => Some(Self::HeaderList),
             "path" if node.definition == "org.orange.json/get-path" => Some(Self::JsonPath),
@@ -90,6 +98,62 @@ impl TextInput {
     }
 }
 
+pub(crate) fn text_area_preview(text: &str, kind: TextInput) -> String {
+    if kind == TextInput::HeaderList
+        && let Ok(lines) = serde_json::from_str::<Vec<String>>(text)
+    {
+        return lines.join("\n");
+    }
+    serde_json::from_str::<String>(text).unwrap_or_else(|_| text.to_owned())
+}
+
+pub(crate) fn choice_caption<'a>(
+    port: &orange_host::PortView,
+    name: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    match port.ty.as_deref() {
+        Some("org.orange.logging/severity@1") if name == "warning" => "WARN".into(),
+        Some("org.orange.logging/level@1" | "org.orange.logging/severity@1") => {
+            name.to_ascii_uppercase().into()
+        }
+        _ => name.into(),
+    }
+}
+
+pub(crate) fn text_area_height(text: &str, width: f32, kind: TextInput) -> f32 {
+    let chars_per_line = (width / 7.5).max(8.0) as usize;
+    let lines = text
+        .lines()
+        .take(14)
+        .map(|line| line.chars().count().div_ceil(chars_per_line).max(1))
+        .sum::<usize>()
+        .min(14);
+    let minimum = if matches!(kind, TextInput::Text | TextInput::JsonPath) {
+        60.0
+    } else {
+        82.0
+    };
+    (lines as f32 * 16.0 + 24.0).clamp(minimum, 248.0)
+}
+
+pub(crate) fn text_resize_grip(ui: &egui::Ui, rect: egui::Rect, id: egui::Id) -> f32 {
+    let grip = ui
+        .interact(rect, id, egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+        .on_hover_text(t("resize-text-area"));
+    let color = if grip.hovered() || grip.dragged() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().widgets.noninteractive.bg_stroke.color
+    };
+    ui.painter().hline(
+        (rect.center().x - 12.0)..=(rect.center().x + 12.0),
+        rect.center().y,
+        egui::Stroke::new(2.0, color),
+    );
+    grip.drag_delta().y
+}
+
 /// Reads a literal or its definition default without the display preview's truncation.
 pub(crate) fn stored_input_text(
     host: &Host,
@@ -124,6 +188,14 @@ pub(crate) fn stored_input_text(
         ),
         _ => None,
     }
+}
+
+pub(crate) fn input_label(node: &NodeView, port: &str) -> Option<&'static str> {
+    if http_request_variant(node) {
+        return http_request_label(port);
+    }
+    (node.definition == "org.orange.logging/log-message" && matches!(port, "level" | "severity"))
+        .then(|| t("log-level"))
 }
 
 pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {
@@ -421,7 +493,10 @@ impl Editor {
         self.declarations()
             .into_iter()
             .flat_map(|declared| &declared.variables)
-            .filter_map(|variable| Some((variable.id.clone()?, variable.name.clone())))
+            .filter_map(|variable| {
+                let label = format!("{} ({})", variable.name, type_name(&variable.ty));
+                Some((variable.id.clone()?, label))
+            })
             .collect()
     }
 
@@ -529,6 +604,8 @@ impl Editor {
         ui.set_max_width(ui.available_width());
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.weak_bg_fill = visuals.extreme_bg_color;
         let selected = self.canvas.selected().and_then(|id| {
             self.graph()?
                 .nodes
@@ -538,7 +615,6 @@ impl Editor {
         });
         let Some(node) = selected else {
             self.inspected = None;
-            self.quick_variable = None;
             ui.add_space(4.0);
             let many = self.canvas.selection();
             if many.len() > 1 {
@@ -554,13 +630,6 @@ impl Editor {
             return;
         };
         self.inspect(&node, host);
-        if self
-            .quick_variable
-            .as_ref()
-            .is_some_and(|quick| quick.node != node.id)
-        {
-            self.quick_variable = None;
-        }
         ui.add_space(2.0);
         let _ = ui
             .add(
@@ -667,15 +736,6 @@ impl Editor {
             Change::RemovePort(port) => {
                 let _ = self.remove_port(host, (node.id, &port));
             }
-            Change::Declare(pointer, variable) => {
-                if self
-                    .declare_variable_for(host, node.id, &pointer, &variable)
-                    .is_some()
-                {
-                    self.quick_variable = None;
-                }
-            }
-            Change::CancelDeclare => self.quick_variable = None,
             Change::Delete => {
                 let _ = self.remove_node(host, node.id);
             }
@@ -741,61 +801,9 @@ impl Editor {
                 });
         });
         if quick {
-            self.quick_variable = Some(QuickVariable {
-                node: node.id,
-                pointer: pointer.to_owned(),
-                name: String::new(),
-                ty: COMMON_TYPES[1].to_owned(),
-            });
-        }
-        if kind == ReferenceKind::Variable
-            && let Some(form) = self
-                .quick_variable
-                .as_mut()
-                .filter(|form| form.pointer == pointer)
-        {
-            chosen = Self::quick_variable_form(ui, form).or(chosen);
+            self.new_variable_for_node(node.id, pointer);
         }
         chosen
-    }
-
-    /// The short form for a variable declared from the node that will name it: a name
-    /// and a type. The Document tab has the whole form.
-    fn quick_variable_form(ui: &mut egui::Ui, form: &mut QuickVariable) -> Option<Change> {
-        let mut change = None;
-        let _ = egui::Frame::group(ui.style()).show(ui, |ui| {
-            row(ui, t("name"), None, |ui| {
-                let _ = ui.add(
-                    egui::TextEdit::singleline(&mut form.name)
-                        .hint_text(t("new-variable-placeholder"))
-                        .desired_width(ui.available_width()),
-                );
-            });
-            row(ui, t("type"), None, |ui| {
-                let _ = egui::ComboBox::from_id_salt("orange-quick-variable-type")
-                    .selected_text(type_name(&form.ty))
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for ty in COMMON_TYPES {
-                            let _ = ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
-                        }
-                    });
-            });
-            ui.horizontal(|ui| {
-                let ready = !form.name.trim().is_empty();
-                if ui
-                    .add_enabled(ready, egui::Button::new(t("declare")))
-                    .clicked()
-                {
-                    change = Some(Change::Declare(form.pointer.clone(), form.variable()));
-                }
-                if ui.button(t("cancel")).clicked() {
-                    change = Some(Change::CancelDeclare);
-                }
-            });
-            ui.weak(t("scope-under-document"));
-        });
-        change
     }
 
     /// Fields for the settings the node's schema describes, but not those naming a
@@ -1025,10 +1033,16 @@ impl Editor {
         for port in node.ports.iter().filter(|port| port.input && !port.exec) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
             let multiline = TextInput::for_port(node, port).filter(|kind| *kind != TextInput::Text);
-            let label = http_request_variant(node)
-                .then(|| http_request_label(&port.id))
-                .flatten()
-                .map_or_else(|| port_label(&port.id), str::to_owned);
+            let label = input_label(node, &port.id).map_or_else(
+                || port.label.clone().unwrap_or_else(|| port_label(&port.id)),
+                str::to_owned,
+            );
+            if node.definition == "org.orange.logging/log-message"
+                && port.id == "message"
+                && node.variadic.iter().any(|port| port.port == "argument")
+            {
+                ui.add(egui::Label::new(egui::RichText::new(t("log-format-hint")).weak()).wrap());
+            }
             row(ui, &label, Some(ty.clone()), |ui| {
                 if port.connected {
                     ui.weak(t("from-a-wire"));
@@ -1044,7 +1058,11 @@ impl Editor {
                         serde_json::from_str::<String>(shown).unwrap_or_else(|_| shown.to_owned());
                     egui::ComboBox::from_id_salt(("http-method", node.id))
                         .width(ui.available_width())
-                        .selected_text(&shown)
+                        .selected_text(
+                            egui::RichText::new(&shown)
+                                .strong()
+                                .color(ui.visuals().strong_text_color()),
+                        )
                         .show_ui(ui, |ui| {
                             if let Some(method) = choose_http_method(ui, &shown) {
                                 write =
@@ -1055,18 +1073,42 @@ impl Editor {
                 }
                 if let Some(multiline) = multiline {
                     let typed = self.typed.entry(port.id.clone()).or_default();
-                    let response = egui::ScrollArea::vertical()
-                        .id_salt(("property-text", node.id, &port.id))
-                        .max_height(126.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(typed)
-                                    .font(egui::TextStyle::Monospace)
-                                    .layouter(&mut wrap_property_text)
-                                    .hint_text(multiline.hint())
-                                    .desired_rows(3)
-                                    .desired_width(ui.available_width()),
-                            )
+                    let response = ui
+                        .vertical(|ui| {
+                            let id = ui.make_persistent_id(("property-text", node.id, &port.id));
+                            let automatic =
+                                text_area_height(typed, ui.available_width(), multiline);
+                            let height = ui
+                                .data(|data| data.get_temp::<f32>(id))
+                                .unwrap_or(automatic);
+                            let response = egui::ScrollArea::vertical()
+                                .id_salt(id)
+                                .max_height(height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(typed)
+                                            .id(id.with("input"))
+                                            .font(egui::TextStyle::Monospace)
+                                            .layouter(&mut wrap_property_text)
+                                            .hint_text(multiline.hint())
+                                            .min_size(egui::vec2(0.0, height))
+                                            .desired_width(ui.available_width()),
+                                    )
+                                })
+                                .inner;
+                            let (grip, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 8.0),
+                                egui::Sense::hover(),
+                            );
+                            let delta = text_resize_grip(ui, grip, id.with("resize"));
+                            if delta != 0.0 {
+                                ui.data_mut(|data| {
+                                    data.insert_temp(id, (height + delta).clamp(60.0, 280.0))
+                                });
+                                ui.ctx().request_repaint();
+                            }
+                            response
                         })
                         .inner;
                     if response.lost_focus() {
@@ -1088,11 +1130,21 @@ impl Editor {
                 if let Some(choices) = port.ty.as_deref().and_then(|ty| self.canvas.enums.get(ty)) {
                     let _ = egui::ComboBox::from_id_salt(("orange-choice", port.id.as_str()))
                         .width(ui.available_width())
-                        .selected_text(port.value.as_deref().unwrap_or(t("choose")))
+                        .selected_text(choice_caption(
+                            port,
+                            port.value
+                                .as_deref()
+                                .or(port.default.as_deref())
+                                .unwrap_or(t("choose")),
+                        ))
                         .show_ui(ui, |ui| {
                             for choice in choices.iter().filter(|choice| !choice.payload) {
-                                let current = port.value.as_deref() == Some(choice.name.as_str());
-                                if ui.selectable_label(current, &choice.name).clicked() && !current
+                                let current = port.value.as_deref().or(port.default.as_deref())
+                                    == Some(choice.name.as_str());
+                                if ui
+                                    .selectable_label(current, choice_caption(port, &choice.name))
+                                    .clicked()
+                                    && !current
                                 {
                                     write = Some(Change::Input(
                                         port.id.clone(),
@@ -1157,50 +1209,6 @@ impl Editor {
     }
 }
 
-/// A variable being declared from a node's properties, for the node to name.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct QuickVariable {
-    node: NodeId,
-    pointer: String,
-    name: String,
-    ty: String,
-}
-
-impl QuickVariable {
-    /// An empty form for the variable `node` names at `pointer`.
-    pub(crate) fn new(node: NodeId, pointer: &str) -> Self {
-        Self {
-            node,
-            pointer: pointer.to_owned(),
-            name: String::new(),
-            ty: COMMON_TYPES[1].to_owned(),
-        }
-    }
-
-    /// A form for `node`'s `/variable`, with a name typed.
-    #[cfg(test)]
-    pub(crate) fn for_test(node: NodeId) -> Self {
-        Self {
-            node,
-            pointer: "/variable".to_owned(),
-            name: "speed".to_owned(),
-            ty: COMMON_TYPES[2].to_owned(),
-        }
-    }
-
-    /// The variable to declare: one for each run, with no starting value.
-    fn variable(&self) -> Variable {
-        Variable {
-            id: None,
-            name: self.name.trim().to_owned(),
-            ty: self.ty.clone(),
-            scope: VarScope::Run,
-            persistent: false,
-            initial: None,
-        }
-    }
-}
-
 /// What a person asked for in the properties panel.
 enum Change {
     Setting(String, Option<Json>),
@@ -1209,9 +1217,6 @@ enum Change {
     AddPort(String),
     RemovePort(String),
     /// Declare a variable and name it at the setting.
-    Declare(String, Variable),
-    CancelDeclare,
-
     Delete,
 }
 

@@ -1444,8 +1444,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                 && !node.definition.id.is_core()
                 && matches!(sig.kind, NodeKind::Action | NodeKind::Async)
             {
-                // Custom outcomes/subscriptions and optional/lazy/variadic effects
-                // need separate execution protocols and remain fail-closed.
+                // Effects accept bounded, eager variadic inputs. Outputs, lazy or
+                // optional inputs, and custom control still require other protocols.
                 for port in &sig.ports {
                     if port.kind == PortKind::Event
                         || (port.kind == PortKind::Exec
@@ -1454,9 +1454,10 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                                 "in" | "then" | "failed" | "cancelled"
                             ))
                         || (port.kind == PortKind::Data
-                            && (port.variadic.is_some()
-                                || (port.direction == PortDirection::Input
-                                    && (port.is_optional() || port.is_lazy()))))
+                            && (port.variadic.is_some_and(|bounds| {
+                                port.direction != PortDirection::Input || bounds.max.is_none()
+                            }) || (port.direction == PortDirection::Input
+                                && (port.is_optional() || port.is_lazy()))))
                     {
                         return Err(CompileError::UnsupportedPort {
                             node: node.id,
@@ -2133,7 +2134,8 @@ impl NodeLowering<'_, '_> {
                 && port.port_id.as_str() == "timeout";
             if (port.is_optional() && !optional_await_timeout)
                 || port.is_lazy()
-                || port.variadic.is_some()
+                || (port.variadic.is_some()
+                    && !matches!(operation, ControlOperation::Effect { .. }))
             {
                 return Err(CompileError::UnsupportedPort {
                     node: id,
@@ -2207,10 +2209,11 @@ impl NodeLowering<'_, '_> {
                 ResolveError::Contract => CompileError::KernelContract { node: id },
                 ResolveError::UnsupportedType => CompileError::KernelUnsupportedType { node: id },
             })?;
-            let inputs: Vec<_> = cx
-                .ports(key)
+            let inputs: Vec<_> = signature
+                .ports
                 .iter()
                 .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
+                .flat_map(|port| request.port_keys(port))
                 .collect();
             let outputs: Vec<_> = cx
                 .ports(key)
@@ -2221,7 +2224,7 @@ impl NodeLowering<'_, '_> {
                         && p.port_id.as_str() != "error"
                 })
                 .collect();
-            if binding.inputs.as_ref() != inputs.iter().map(|p| port_key(p)).collect::<Vec<_>>()
+            if binding.inputs.as_ref() != inputs
                 || binding.outputs.as_ref()
                     != outputs.iter().map(|p| port_key(p)).collect::<Vec<_>>()
                 || binding.action.is_some() != (signature.kind == NodeKind::Action)
@@ -2245,7 +2248,15 @@ impl NodeLowering<'_, '_> {
             {
                 return Err(CompileError::UnsupportedNode { node: id });
             }
-            let ports: Vec<_> = inputs.iter().map(|p| p.port_id.clone()).collect();
+            charge(
+                self.graph_items,
+                inputs.len(),
+                cx.options.limits.max_graph_items,
+            )?;
+            let roots = inputs
+                .into_iter()
+                .map(|port| input_key_root(&mut self.roots, scope, id, port))
+                .collect();
             return Ok(ControlOperation::Effect {
                 effect: ControlEffect {
                     binding,
@@ -2253,7 +2264,7 @@ impl NodeLowering<'_, '_> {
                     shared: None,
                 },
                 demand: UpdateDemand {
-                    roots: ports.into_iter().map(|p| self.input(key, p)).collect(),
+                    roots,
                     inputs: Arc::from([]),
                 },
             });
@@ -2792,12 +2803,26 @@ fn input_root(
     node: NodeId,
     port: orange_model::id::PortId,
 ) -> usize {
+    input_key_root(
+        roots,
+        scope,
+        node,
+        orange_model::id::PortKey::new(port, None),
+    )
+}
+
+fn input_key_root(
+    roots: &mut Vec<DemandRoot>,
+    scope: usize,
+    node: NodeId,
+    port: orange_model::id::PortKey,
+) -> usize {
     let index = roots.len();
     roots.push(DemandRoot {
         scope,
-        id: format!("{node}/{}", port.as_str()),
+        id: format!("{node}/{port}"),
         node,
-        port: orange_model::id::PortKey::new(port, None),
+        port,
         input: true,
     });
     index

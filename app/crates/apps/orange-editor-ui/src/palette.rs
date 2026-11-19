@@ -10,18 +10,24 @@ pub(crate) struct PaletteDrag {
     pub card: Option<NodeView>,
 }
 
-/// One result of a node search, shared by the docked palette and the canvas picker:
-/// The node's name stays on one line. Its purpose is available on hover.
+/// A draggable name or an inline canvas card in a search result.
 pub(crate) fn result_row(
     ui: &mut egui::Ui,
     name: &str,
     detail: &str,
-    _id: &str,
+    target: Option<&str>,
     highlighted: bool,
+    card: Option<&NodeView>,
 ) -> egui::Response {
     let width = ui.available_width();
+    let preview = card.map(|node| {
+        let size = crate::canvas::node_size(node);
+        let zoom = ((width - 12.0).max(1.0) / size.x).min(0.90);
+        (node, size * zoom, zoom)
+    });
+    let height = preview.map_or(28.0, |(_, size, _)| size.y + 12.0);
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click_and_drag());
+        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
     let response = response.on_hover_ui(|ui| {
         ui.set_max_width(280.0);
         ui.label(if detail.is_empty() { name } else { detail });
@@ -45,12 +51,32 @@ pub(crate) fn result_row(
         ui.painter()
             .rect_stroke(rect, 5.0, visuals.fg_stroke, egui::StrokeKind::Inside);
     }
-    let galley = egui::WidgetText::from(egui::RichText::new(name).strong()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        (rect.width() - 16.0).max(0.0),
-        egui::TextStyle::Body,
-    );
+    if let Some((node, size, zoom)) = preview {
+        let preview_rect = egui::Rect::from_center_size(rect.center(), size);
+        let mut preview_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(response.id)
+                .max_rect(preview_rect),
+        );
+        crate::canvas::preview_card(&mut preview_ui, node, name, preview_rect, zoom);
+        return response;
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let color = visuals.text_color();
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = (rect.width() - 16.0).max(0.0);
+    job.wrap.max_rows = 1;
+    job.append(name, 0.0, egui::TextFormat::simple(font.clone(), color));
+    if let Some(target) = target {
+        let mut icon = [0; 4];
+        job.append(
+            crate::icons::FLOW.encode_utf8(&mut icon),
+            5.0,
+            egui::TextFormat::simple(egui::FontId::new(font.size, crate::icons::family()), color),
+        );
+        job.append(target, 5.0, egui::TextFormat::simple(font, color));
+    }
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
     ui.painter().galley(
         egui::pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -64,6 +90,11 @@ pub(crate) fn result_row(
 fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
     let ports: &[(&str, bool, &str, &str)] = match definition {
         "core/get-variable" => &[("value", false, t("port-value"), "$T")],
+        "core/set-variable" => &[
+            ("in", true, t("port-enter"), ""),
+            ("value", true, t("port-value"), "$T"),
+            ("then", false, t("port-exit"), ""),
+        ],
         "org.orange.collections/make-enum" => &[
             ("payload", true, t("port-payload-optional"), "$T"),
             ("result", false, t("port-enum"), "$Enum"),
@@ -91,8 +122,8 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
             .map(|&(id, input, label, ty)| orange_host::PortView {
                 id: id.to_owned(),
                 input,
-                exec: false,
-                ty: Some(ty.to_owned()),
+                exec: ty.is_empty(),
+                ty: (!ty.is_empty()).then(|| ty.to_owned()),
                 value: None,
                 connected: false,
                 default: None,
@@ -102,7 +133,11 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
         position: None,
         settings: serde_json::Value::Null,
         schema: None,
-        references: Vec::new(),
+        references: if matches!(definition, "core/get-variable" | "core/set-variable") {
+            vec![("/variable".to_owned(), orange_host::ReferenceKind::Variable)]
+        } else {
+            Vec::new()
+        },
         types: Vec::new(),
         variadic: Vec::new(),
         paths: Vec::new(),
@@ -145,12 +180,14 @@ impl PaletteCache {
 #[derive(Debug, Default)]
 pub(crate) struct PreviewCache {
     generation: Option<u64>,
+    templates: HashMap<String, Option<NodeView>>,
     cards: HashMap<String, Option<NodeView>>,
 }
 
 impl PreviewCache {
     pub fn invalidate(&mut self) {
         self.cards.clear();
+        self.templates.clear();
         self.generation = None;
     }
 
@@ -158,6 +195,7 @@ impl PreviewCache {
     fn follow(&mut self, host: &Host) {
         if self.generation != Some(host.registry().generation()) {
             self.cards.clear();
+            self.templates.clear();
             self.generation = Some(host.registry().generation());
         }
     }
@@ -169,7 +207,12 @@ impl PreviewCache {
         definition: &str,
     ) -> Option<&NodeView> {
         self.follow(host);
-        if !self.cards.contains_key(definition) {
+        let cards = if draft.is_some() {
+            &mut self.cards
+        } else {
+            &mut self.templates
+        };
+        if !cards.contains_key(definition) {
             let configured = (|| {
                 if let Some(draft) = draft {
                     host.placement_preview(draft, definition).ok()
@@ -183,9 +226,9 @@ impl PreviewCache {
                 Some(card) if !card.ports.is_empty() => Some(card),
                 other => reference_card(host, definition).or(other),
             };
-            self.cards.insert(definition.to_owned(), card);
+            cards.insert(definition.to_owned(), card);
         }
-        self.cards.get(definition).and_then(Option::as_ref)
+        cards.get(definition).and_then(Option::as_ref)
     }
 }
 
@@ -213,18 +256,23 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
     let mut groups: Vec<(String, Vec<PaletteItem>)> = Vec::new();
     // Found nodes come best first, so a category's place is that of its best node.
     for found in host.search_nodes(search, language) {
+        let category = if matches!(
+            found.definition.as_str(),
+            "core/get-variable" | "core/set-variable"
+        ) {
+            text_in(language, "variables", "Variables")
+        } else {
+            found.category
+        };
         let item = PaletteItem {
             id: found.definition,
             label: found.label,
             package: found.package,
             purpose: found.purpose,
         };
-        match groups
-            .iter_mut()
-            .find(|(category, _)| *category == found.category)
-        {
+        match groups.iter_mut().find(|(name, _)| *name == category) {
             Some((_, items)) => items.push(item),
-            None => groups.push((found.category, vec![item])),
+            None => groups.push((category, vec![item])),
         }
     }
     // Conversions are search results too, in a category of their own.
@@ -405,7 +453,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                height = result_row(ui, "And", "Both inputs", "core/and", false)
+                height = result_row(ui, "And", "Both inputs", None, false, None)
                     .rect
                     .height();
             },
@@ -425,6 +473,53 @@ mod tests {
     }
 
     #[test]
+    fn a_wire_result_uses_the_bundled_arrow_font() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            result_row(ui, "Absolute", "", Some("value"), true, None);
+        });
+        assert!(output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Text(text) => {
+                text.galley.text().contains(crate::icons::FLOW)
+                    && text
+                        .galley
+                        .job
+                        .sections
+                        .iter()
+                        .any(|section| section.format.font_id.family == crate::icons::family())
+            }
+            _ => false,
+        }));
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn the_splitter_search_card_paints_its_chart_without_hover() {
+        let (host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_audio::package()]).unwrap();
+        let mut previews = PreviewCache::default();
+        let card = previews
+            .card(&host, None, orange_audio::MULTIBAND_SPECTRUM)
+            .unwrap();
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(300.0);
+            result_row(ui, "Frequency Splitter", "", None, false, Some(card));
+        });
+        for expected in [t("spectrum-live-trace"), t("spectrum-connect"), "Hz"] {
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == expected
+                )),
+                "missing chart text {expected}",
+            );
+        }
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
     fn the_result_can_be_dragged_from_the_preview_line() {
         let ctx = egui::Context::default();
         let mut rect = egui::Rect::NOTHING;
@@ -439,7 +534,7 @@ mod tests {
                 ..Default::default()
             };
             ctx.run_ui(input, |ui| {
-                let row = result_row(ui, "AND", "Both values must be true", "core/and", false);
+                let row = result_row(ui, "AND", "Both values must be true", None, false, None);
                 rect = row.rect;
                 dragged |= row.drag_started();
             })

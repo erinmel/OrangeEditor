@@ -364,12 +364,25 @@ impl Host {
     /// edit touched is checked again, unless packages changed or graph-implemented
     /// nodes have to be linked in first.
     pub fn problems(&self, draft: &mut Draft) -> Result<Vec<Diagnostic>, HostError> {
+        self.draft_diagnostics(draft, false)
+    }
+
+    /// All validation diagnostics, including warnings on a runnable draft.
+    pub fn diagnostics(&self, draft: &mut Draft) -> Result<Vec<Diagnostic>, HostError> {
+        self.draft_diagnostics(draft, true)
+    }
+
+    fn draft_diagnostics(
+        &self,
+        draft: &mut Draft,
+        include_advisories: bool,
+    ) -> Result<Vec<Diagnostic>, HostError> {
         let registry = &self.registry_for(&draft.document);
         if !self.graphs.is_empty() {
             // Linked graphs rewrite the document before it is checked, so there is no
             // edit of the linked form to follow.
             draft.analysis = None;
-            return self.check(&draft.text()?);
+            return self.check_diagnostics(&draft.text()?, include_advisories);
         }
         // Edits were followed as they were made; only new packages start over.
         let current = draft
@@ -384,7 +397,7 @@ impl Host {
         };
         let analysis = kept.session.analysis();
         Ok(
-            if analysis.is_ready_for_lowering(&draft.document, registry) {
+            if !include_advisories && analysis.is_ready_for_lowering(&draft.document, registry) {
                 Vec::new()
             } else {
                 analysis.report().diagnostics.clone()

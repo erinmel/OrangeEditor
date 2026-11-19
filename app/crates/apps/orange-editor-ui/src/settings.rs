@@ -36,15 +36,21 @@ impl Section {
 
     fn icon(self) -> char {
         match self {
-            Self::Search => icons::LANGUAGE,
-            Self::Display => icons::PROPERTIES,
+            Self::Search => icons::SETTINGS,
+            Self::Display => icons::DISPLAY,
             Self::Shortcuts => icons::KEYBOARD,
         }
     }
 
     fn matches(self, query: &str) -> bool {
         let labels: &[&str] = match self {
-            Self::Search => &["search-section-words"],
+            Self::Search => &[
+                "search-section-words",
+                "settings-node-search",
+                "preview-node-cards",
+                "preview-names-only",
+                "settings-language",
+            ],
             Self::Display => &[
                 "display-section-words",
                 "interface-scale",
@@ -75,7 +81,11 @@ impl Editor {
             (ctx.content_rect().size() - egui::vec2(24.0, 36.0)).max(egui::vec2(250.0, 220.0));
         let min_size = egui::vec2(680.0, 380.0).min(viewport);
         let max_size = egui::vec2(1050.0, 720.0).min(viewport);
-        let shown = egui::Window::new(egui::RichText::new(t("settings-title")).strong())
+        let theme = ctx.style_of(ctx.theme());
+        let title = egui::RichText::new(t("settings-title"))
+            .strong()
+            .color(theme.visuals.strong_text_color());
+        let shown = egui::Window::new(title)
             .id(egui::Id::unique("orange-settings"))
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -136,7 +146,7 @@ impl Editor {
         ui.painter()
             .hline(content.x_range(), header_bottom, divider);
         let compact = content.width() < 580.0;
-        let nav_width = (content.width() * 0.24).clamp(166.0, 208.0);
+        let nav_width = (content.width() * 0.25).clamp(170.0, 224.0);
         let nav_rect = if compact {
             egui::Rect::from_min_max(
                 egui::pos2(content.left() + 8.0, header_bottom + 8.0),
@@ -186,6 +196,7 @@ impl Editor {
                     .size(23.0)
                     .strong(),
             );
+            page.separator();
             page.add_space(8.0);
             match self.settings_tab {
                 Section::Shortcuts => self.keybindings_ui(
@@ -201,9 +212,26 @@ impl Editor {
                         .id_salt("settings-fields")
                         .show(&mut page, |ui| {
                             if self.settings_tab == Section::Search {
-                                ui.label(t("settings-language-help"));
-                                ui.add_space(10.0);
-                                self.language_choice(ui);
+                                settings_group(ui, t("settings-language"), |ui| {
+                                    self.language_choice(ui);
+                                    ui.weak(t("settings-language-help"));
+                                });
+                                ui.add_space(12.0);
+                                settings_group(ui, t("settings-node-search"), |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.selectable_value(
+                                            &mut self.node_search_previews,
+                                            false,
+                                            t("preview-names-only"),
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.node_search_previews,
+                                            true,
+                                            t("preview-node-cards"),
+                                        )
+                                        .on_hover_text(t("preview-node-cards-hint"));
+                                    });
+                                });
                             } else {
                                 self.display_settings(ui, ctx);
                             }
@@ -396,14 +424,7 @@ fn settings_pane(ui: &mut egui::Ui, id: &str, rect: egui::Rect) -> egui::Ui {
 }
 
 fn settings_group(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(12)
-        .corner_radius(6)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.strong(title);
-            ui.add_space(4.0);
-            contents(ui);
-        });
+    ui.strong(title);
+    ui.separator();
+    ui.indent(title, contents);
 }

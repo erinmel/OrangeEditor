@@ -387,6 +387,7 @@ pub struct Canvas {
     /// Text being typed on a card, and whether its field has had the keys yet.
     typing: Option<(NodeId, String, String, bool)>,
     expanded_text: Option<ExpandedText>,
+    text_heights: BTreeMap<NodeId, BTreeMap<String, f32>>,
     /// A whole number being dragged: its node, port, value before and pixels moved.
     /// A node was dragged and not yet let go.
     moving: bool,
@@ -449,6 +450,7 @@ impl Default for Canvas {
             number_drag: None,
             typing: None,
             expanded_text: None,
+            text_heights: BTreeMap::new(),
             moving: false,
             fit: true,
             wiring: None,
@@ -643,6 +645,7 @@ impl Canvas {
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
         self.expanded_text = None;
+        self.text_heights.clear();
         self.selected_group_frame = None;
         self.collapsed_spectra.clear();
         self.titles = titles(graph);
@@ -705,6 +708,7 @@ impl Canvas {
     fn forget_missing(&mut self) {
         let places = &self.places;
         self.collapsed_spectra.retain(|id| places.contains_key(id));
+        self.text_heights.retain(|id, _| places.contains_key(id));
         self.selection.retain(|id| places.contains_key(id));
         if !self.selected.is_some_and(|id| self.selection.contains(&id)) {
             self.selected = None;
@@ -907,12 +911,9 @@ impl Canvas {
     }
 
     fn card<'a>(&self, node: &'a NodeView) -> card::Card<'a> {
-        let expanded = self
-            .expanded_text
-            .as_ref()
-            .filter(|edit| edit.node == node.id)
-            .map(|edit| edit.port.as_str());
-        card::Card::with_controls(node, !self.collapsed_spectra.contains(&node.id), expanded)
+        card::Card::with_controls(node, !self.collapsed_spectra.contains(&node.id), |port| {
+            self.text_heights.get(&node.id)?.get(&port.id).copied()
+        })
     }
 
     fn bounds(&self, graph: &GraphView) -> Option<Rect> {
@@ -1800,13 +1801,14 @@ impl Canvas {
         // Each card owns its marks. A card in front covers the card and its marks.
         let mut port_marks = BTreeMap::<_, Vec<_>>::new();
         for ((node, port), mark) in &self.marks.ports {
-            for input in [true, false] {
-                if let Some(found) = geometry.port(*node, port, input) {
-                    port_marks
-                        .entry(*node)
-                        .or_default()
-                        .push((found.offset, mark.error));
-                }
+            let found = geometry
+                .port(*node, port, true)
+                .or_else(|| geometry.port(*node, port, false));
+            if let Some(found) = found {
+                port_marks
+                    .entry(*node)
+                    .or_default()
+                    .push((found.offset, mark.error));
             }
         }
         for node in node_order(graph, front) {
@@ -2398,11 +2400,12 @@ fn draw_mark(
 ) -> bool {
     let center = mark_position(rect, zoom);
     let color = colors.problem(mark.error);
-    painter.rect_stroke(
-        rect,
-        CARD_RADIUS * zoom,
+    painter.line_segment(
+        [
+            center - Vec2::new(10.0, -10.0) * zoom,
+            center + Vec2::new(10.0, 10.0) * zoom,
+        ],
         Stroke::new(1.5 * zoom.max(0.6), color),
-        StrokeKind::Inside,
     );
     if zoom >= 0.45 {
         let _ = painter.text(
@@ -2464,6 +2467,38 @@ fn node_order(
                 .filter(move |node| Some(node.id) == front),
         )
         .map(|node| &**node)
+}
+
+/// Paints a read-only canvas card inside its search result.
+pub(crate) fn preview_card(ui: &mut egui::Ui, node: &NodeView, name: &str, rect: Rect, zoom: f32) {
+    let layout = card::Card::new(node);
+    let painter = ui
+        .painter()
+        .with_clip_rect(ui.clip_rect().intersect(rect.expand(6.0)));
+    let colors = Palette::of(ui);
+    let _ = draw_node(
+        ui,
+        &painter,
+        node,
+        &layout,
+        (name, name),
+        rect,
+        zoom,
+        &colors,
+        (false, None, false, false),
+        ui.scope_id(),
+        None,
+        None,
+        (None, None),
+    );
+    if zoom >= 0.45 {
+        if spectrum::combined(node) {
+            spectrum::chart_heading(&painter, rect, zoom, true, colors.text);
+            let _ = spectrum::draw_combined(ui, &painter, node, rect, zoom, None, false, None);
+        } else if spectrum::is_noise(node) {
+            let _ = spectrum::draw_noise(ui, &painter, node, rect, zoom, None, false);
+        }
+    }
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.

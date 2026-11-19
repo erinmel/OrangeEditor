@@ -103,7 +103,7 @@ impl BodyPasses {
         options.checkpoint()?;
         let input_diagnostics = validate_inputs_in(
             document,
-            resolved,
+            &nodes.resolved,
             registry,
             scope,
             Some(index),

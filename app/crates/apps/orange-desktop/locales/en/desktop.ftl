@@ -14,3 +14,7 @@ desktop-save-graph-as = Save the graph as
 desktop-not-saved = Not saved
 desktop-configure-folder = Choose a root folder in the node’s folder connection first.
 desktop-outside-folder = Choose a path inside the node’s root folder.
+
+desktop-package-filter = OrangeEditor package
+desktop-package-error = Could not read package
+desktop-package-too-large = The archive exceeds the package size limit.
