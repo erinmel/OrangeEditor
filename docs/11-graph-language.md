@@ -387,7 +387,7 @@ reads a machine or UI locale.
   `core/Domain`. `split` returns every piece, empty ones included (`""` gives
   `[""]`); an empty separator is `core/Domain`. `join` inserts the separator
   between items of a `list<string>`.
-- **Unicode rules.** `trim`, `trim-start` and `trim-end` remove Unicode White_Space.
+- **Unicode rules.** `trim` removes Unicode White_Space from both ends, the start or the end, as its `ends` setting says (`both` by default).
   `to-uppercase`/`to-lowercase` use Unicode default full case mapping (`ß` → `SS`,
   final sigma), never a locale's tailoring (no Turkish dotless i). The Unicode data
   version is the toolchain's `char::UNICODE_VERSION`, so it is part of the locked

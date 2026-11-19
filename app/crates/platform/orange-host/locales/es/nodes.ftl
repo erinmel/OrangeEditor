@@ -172,9 +172,7 @@ name-org-orange-text-starts-with = Empieza por
 name-org-orange-text-substring = Subcadena
 name-org-orange-text-to-lowercase = A minúsculas
 name-org-orange-text-to-uppercase = A mayúsculas
-name-org-orange-text-trim = Recortar
-name-org-orange-text-trim-end = Recortar al final
-name-org-orange-text-trim-start = Recortar al inicio
+name-org-orange-text-trim = Recortar espacios
 
 port-result = resultado
 port-value = valor

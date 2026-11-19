@@ -79,8 +79,6 @@ fn all_sixteen_operations_have_known_answers() {
         ),
         (Op::Replace, vec![s("a-b-c"), s("-"), s("--")], s("a--b--c")),
         (Op::Trim, vec![s("\u{3000} x \u{a0}\n")], s("x")),
-        (Op::TrimStart, vec![s("  x  ")], s("x  ")),
-        (Op::TrimEnd, vec![s("  x  ")], s("  x")),
         (Op::ToUppercase, vec![s("stra\u{df}e")], s("STRASSE")),
         (
             Op::ToLowercase,
@@ -93,6 +91,19 @@ fn all_sixteen_operations_have_known_answers() {
         assert_eq!(eval(op, &inputs), Ok(expected), "{op:?}");
     }
     assert_eq!(text_definitions().unwrap().len(), Op::ALL.len());
+    // One Trim takes whitespace from both ends, the start or the end.
+    for (ends, expected) in [("both", "x"), ("start", "x  "), ("end", "  x")] {
+        assert_eq!(
+            bind(Op::Trim, json!({ "ends": ends })).evaluate(&[s("  x  ")]),
+            Ok(s(expected)),
+            "{ends}"
+        );
+    }
+    let (package, snapshot) = catalog();
+    assert_eq!(
+        bind_in(&package, snapshot, Op::Trim, json!({"ends": "middle"})).unwrap_err(),
+        BindingError::InvalidConfig
+    );
 }
 
 #[test]

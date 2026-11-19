@@ -30,12 +30,18 @@ pub enum TextOperation {
     Substring,
     Replace,
     Trim,
-    TrimStart,
-    TrimEnd,
     ToUppercase,
     ToLowercase,
     Split,
     Join,
+}
+
+/// Which ends of the text `trim` takes whitespace from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimEnds {
+    Both,
+    Start,
+    End,
 }
 
 /// Index unit of `find` and `substring`: Unicode scalar values or UTF-8 bytes.
@@ -52,7 +58,7 @@ const OPTION_U64: &str = "core/option@1<core/u64@1>";
 const LIST: &str = "core/list@1<core/string@1>";
 
 impl TextOperation {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 14] = [
         Self::ByteLength,
         Self::ScalarLength,
         Self::Concat,
@@ -63,8 +69,6 @@ impl TextOperation {
         Self::Substring,
         Self::Replace,
         Self::Trim,
-        Self::TrimStart,
-        Self::TrimEnd,
         Self::ToUppercase,
         Self::ToLowercase,
         Self::Split,
@@ -83,8 +87,6 @@ impl TextOperation {
             Self::Substring => "org.orange.text/substring",
             Self::Replace => "org.orange.text/replace",
             Self::Trim => "org.orange.text/trim",
-            Self::TrimStart => "org.orange.text/trim-start",
-            Self::TrimEnd => "org.orange.text/trim-end",
             Self::ToUppercase => "org.orange.text/to-uppercase",
             Self::ToLowercase => "org.orange.text/to-lowercase",
             Self::Split => "org.orange.text/split",
@@ -102,8 +104,6 @@ impl TextOperation {
             Self::ByteLength
             | Self::ScalarLength
             | Self::Trim
-            | Self::TrimStart
-            | Self::TrimEnd
             | Self::ToUppercase
             | Self::ToLowercase => &[("value", STRING)],
             Self::Concat => &[("a", STRING), ("b", STRING)],
@@ -139,6 +139,16 @@ impl TextOperation {
     pub const fn has_unit(self) -> bool {
         matches!(self, Self::Find | Self::Substring)
     }
+
+    /// The one setting the node takes, if any: `unit` for find and substring, `ends`
+    /// for trim.
+    pub const fn setting(self) -> Option<&'static str> {
+        match self {
+            Self::Find | Self::Substring => Some("unit"),
+            Self::Trim => Some("ends"),
+            _ => None,
+        }
+    }
 }
 
 /// Ordinary non-generic package definitions in the `org.orange.text` namespace.
@@ -156,10 +166,12 @@ pub fn text_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 operation.output_type().parse::<TypeExpr>()?,
                 OutputSource::Computed,
             ));
-            let properties = if operation.has_unit() {
-                json!({"unit":{"enum":["scalar","byte"],"default":"scalar"}})
-            } else {
-                json!({})
+            let properties = match operation.setting() {
+                Some("unit") => json!({"unit":{"enum":["scalar","byte"],"default":"scalar"}}),
+                Some(_) => {
+                    json!({"ends":{"title":"Ends","enum":["both","start","end"],"default":"both"}})
+                }
+                None => json!({}),
             };
             Ok(NodeDefinition {
                 definition: DefinitionRef {
@@ -189,6 +201,7 @@ pub struct ResolvedText {
     provider: ProviderKey,
     operation: TextOperation,
     unit: TextUnit,
+    ends: TrimEnds,
 }
 
 fn string(value: &Value) -> Result<&str, KernelError> {
@@ -312,9 +325,17 @@ impl ResolvedText {
                 }
                 text(source.replace(pattern, replacement))
             }
-            Trim => text(first()?.trim().to_owned()),
-            TrimStart => text(first()?.trim_start().to_owned()),
-            TrimEnd => text(first()?.trim_end().to_owned()),
+            Trim => {
+                let source = first()?;
+                text(
+                    match self.ends {
+                        TrimEnds::Both => source.trim(),
+                        TrimEnds::Start => source.trim_start(),
+                        TrimEnds::End => source.trim_end(),
+                    }
+                    .to_owned(),
+                )
+            }
             ToUppercase | ToLowercase => {
                 let source = first()?;
                 // A scalar maps to at most three scalars of at most four bytes, and
@@ -415,7 +436,10 @@ impl MathPackage {
         {
             return Err(BindingError::Unavailable);
         }
-        if config.keys().any(|key| key != "unit") || !operation.has_unit() && !config.is_empty() {
+        if config
+            .keys()
+            .any(|key| Some(key.as_str()) != operation.setting())
+        {
             return Err(BindingError::InvalidConfig);
         }
         let unit = match config.get("unit").map(|v| v.as_str()) {
@@ -423,11 +447,18 @@ impl MathPackage {
             Some(Some("byte")) => TextUnit::Byte,
             _ => return Err(BindingError::InvalidConfig),
         };
+        let ends = match config.get("ends").map(|v| v.as_str()) {
+            None | Some(Some("both")) => TrimEnds::Both,
+            Some(Some("start")) => TrimEnds::Start,
+            Some(Some("end")) => TrimEnds::End,
+            _ => return Err(BindingError::InvalidConfig),
+        };
         Ok(ResolvedText {
             snapshot,
             provider: provider.clone(),
             operation,
             unit,
+            ends,
         })
     }
 }

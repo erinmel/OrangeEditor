@@ -810,7 +810,8 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 | `find` | `text`, `pattern: string` | `core/option@1<core/u64@1>` | `unit`: scalar/byte |
 | `substring` | `text: string`, `start`, `length: core/u64@1` | string | `unit`: scalar/byte |
 | `replace` | `text`, `pattern`, `replacement: string` | string | empty |
-| `trim`, `trim-start`, `trim-end`, `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
+| `trim` | `value: string` | string | `ends`: `both` (default), `start` or `end` |
+| `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
 | `split` | `text`, `separator: string` | `core/list@1<core/string@1>` | empty |
 | `join` | `items: core/list@1<core/string@1>`, `separator: string` | string | empty |
 
