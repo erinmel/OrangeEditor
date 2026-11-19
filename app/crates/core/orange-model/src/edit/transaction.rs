@@ -4,7 +4,7 @@
 //! Commands check only what the document's storage cannot represent: unique IDs, edge
 //! endpoints in one body, existing targets. Port kinds, fan-in, types, regions and
 //! references from config are the validator's job (00d). Runtime effects are never part of
-//! a transaction (FR-03).
+//! a transaction.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};

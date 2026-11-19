@@ -1,5 +1,5 @@
 //! Property: for any sequence of edits, undoing all of them restores the original content
-//! and redoing all of them reproduces the edited content (FR-03 document state). A
+//! and redoing all of them reproduces the edited content. A
 //! rejected edit leaves the document byte-identical.
 
 use crate::behaviour::common;

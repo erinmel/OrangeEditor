@@ -1,4 +1,4 @@
-//! FR-02: copy/paste keeps internal edges and remaps every ID and reference without
+//! Copy/paste keeps internal edges and remaps every ID and reference without
 //! aliasing the originals.
 
 use crate::behaviour::common;

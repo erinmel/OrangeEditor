@@ -297,7 +297,7 @@ pub struct GraphView {
 }
 
 /// The cards of a draft's last view and the nodes edited since, so the next view
-/// builds only those again (docs/19 "Edit to view").
+/// builds only those again (docs/10 "Performance").
 #[derive(Default)]
 pub(crate) struct ViewCache {
     /// What every card was drawn with; a change to any of it draws every card again.

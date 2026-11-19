@@ -209,7 +209,7 @@ the canvas (pulses, value pills) and Properties, but no text is formatted for th
 
 ## 5. Variables and connections
 
-Implemented 2026-11-16 (FR-114, FR-116); the drag handle and menu use plain text
+Implemented 2026-11-16; the drag handle and menu use plain text
 symbols until the bundled icon font (§4) lands.
 
 * **Variables** list like Blueprint variables: name, type chip, current value while

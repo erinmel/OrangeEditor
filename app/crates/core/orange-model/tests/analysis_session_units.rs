@@ -280,7 +280,7 @@ fn published_session_and_analysis_are_send_and_sync() {
     assert_send_sync::<ValidationAnalysis>();
 }
 
-/// Descriptive Windows release probe, not an NFR-15 gate or timing assertion.
+/// Descriptive Windows release probe, not a gate or timing assertion.
 /// Run: cargo test -p orange-model --test analysis_session_units --release --locked
 /// --offline measure_config_unit_reuse -- --ignored --nocapture
 #[test]

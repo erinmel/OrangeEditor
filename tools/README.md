@@ -100,7 +100,7 @@ When finished, bring down this Compose project with
 ## Performance
 
 For complete-execution latency/allocation JSON, CI architecture coverage and the older
-reference-machine procedure, see [CI and performance](../docs/18-ci-and-performance.md).
+reference-machine procedure, see [CI and performance](../docs/10-development.md#checks).
 Use separate feature-mode binaries for latency and allocation measurements.
 
 The Rust `orange-measure` binary is development tooling. It is not a core dependency, and heavy measurement profiles are not invoked by ordinary workspace tests.
@@ -124,7 +124,7 @@ Offline mode requires cached dependencies; otherwise fetch the locked dependenci
 
 For the pre-membership index comparator, create an owned worktree at the checkout containing this harness, restore only `app/crates/core/orange-model/src/index.rs` from `e9aead5` in that worktree, then build its binary and run the same `index-update` command. For pre-budget import, restore only `codec.rs`, `error.rs` and `lib.rs` from `6854560` in the isolated comparator. Never restore over unrelated work.
 
-Method, measured results, selected ownership direction and limitations are in [the verification record](../docs/17-authoring-verification.md). These profiles do not declare UI, security-isolation or reference-machine NFR gates passed.
+Method, measured results, selected ownership direction and limitations are in [the verification record](../docs/10-development.md#performance). These profiles do not declare UI, security-isolation or reference-machine NFR gates passed.
 
 ## Package archive vectors
 

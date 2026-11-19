@@ -3,7 +3,7 @@
 //! The codec checks structure only; whether nodes, ports and types make sense is the
 //! validator's job (00d), so unknown definitions and orphan edges load fine (12 I-4).
 //! Every extensible object keeps unknown keys in `extensions` so that a newer writer's
-//! fields survive load→save (FR-05).
+//! fields survive load→save.
 //!
 //! State owned by transactions (revision, bodies, declarations, locks, exports, activation
 //! policies, editor layout) is private and changes only through [`GraphDocument::apply`].

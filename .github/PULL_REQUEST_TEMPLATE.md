@@ -1,23 +1,16 @@
-## Change and reason
+## What and why
 
-Describe the concrete problem and resulting behavior. Include a before/after example when useful.
+What changes for a user, a plugin author or a downstream crate, and why.
 
-## Scope and contracts
+## Contracts
 
-Work unit/subunit or probe:
+Changes to the graph language, document format, public API, ADRs or translated text,
+and any migration they need. "None" if there are none.
 
-Affected FR/NFR/fixture IDs:
+## Checks
 
-Dependencies/parent PRs:
+The commands you ran and their results. Say which checks did not run and why.
 
-Public contract/schema/ADR changes and compatibility or migration impact:
+## Risks
 
-Translatable text/accessibility or security/redaction impact:
-
-## Validation
-
-List exact commands, versions/platform/features/lockfile where applicable, results and evidence links. Label each check PASS, FAIL, NOT RUN, UNAVAILABLE or INAPPLICABLE with a reason. Identify checks still required by a later delivery gate.
-
-## Review and limitations
-
-State material risks, recovery/revert implications and remaining limitations. Record self-review in solo mode or independent review in team mode. Update this description if the final scope changes.
+What could break, and what is still left to do.

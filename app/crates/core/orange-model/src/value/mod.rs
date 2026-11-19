@@ -4,7 +4,7 @@
 //! The static type disambiguates: `option<T>` is `None` or the unboxed `T`, and boxes in
 //! `Some` only when `T` can itself be a bare None. Missing exists only as an absent record
 //! field. JSON null exists only inside `Json`. Together these keep None, missing, JSON null
-//! and Error distinct by construction (FR-08). Result successes box only when their
+//! and Error distinct by construction. Result successes box only when their
 //! payload can itself carry the Err tag. Secrets are never values.
 
 mod base64;

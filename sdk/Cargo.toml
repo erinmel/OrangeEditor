@@ -1,4 +1,4 @@
-# Guest-side SDK workspace (docs/15-monorepo-layout.md), built separately from the host.
+# Guest-side SDK workspace (docs/02-architecture.md), built separately from the host.
 [workspace]
 resolver = "3"
 members = ["guests/probe", "tools/componentize"]

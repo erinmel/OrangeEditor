@@ -44,7 +44,7 @@ impl EditStats {
 }
 
 /// Why a committed semantic edit ran the full analysis instead of a scoped update
-/// (NFR-15 asks for full-scope cases to be reported). The first condition the scoped
+/// (the edit budget asks for full-scope cases to be reported). The first condition the scoped
 /// update found is reported; several may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]

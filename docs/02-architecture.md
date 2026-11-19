@@ -1,454 +1,89 @@
-# Architecture and ownership
+# Architecture
 
-Editor projection update (2026-11-14; ADR-02/21, PERF-EDITOR): canvas topology and
-frame geometry are separate private modules. A borrowed per-frame port/size index
-and conservative Bezier bounds remove global endpoint scans and offscreen paint
-shapes. Saved layouts skip topology, existing positions survive semantic edits,
-and unsaved cyclic nodes use columns reached from acyclic roots, stacked in document
-order. The host indexes connectivity and output kinds while building `GraphView`.
-The editor caches one palette by registry generation/search and consumes at most
-256 events per poll; desktop schedules further polling after a nonempty batch.
-These indexes trade O(N+E+P) temporary storage for fewer repeated scans, without
-retaining graph payloads/providers. See [21](21-editor-performance.md) for exact
-scope, measurements and remaining synchronous-edit/virtualization work.
+## Layers
 
-Session host (2026-11-10; ADR-21): `orange-host` is the one place the layers are
-composed and the surface every front end attaches to. A `Host` owns the package store
-and its registry, the bundled native kernels, the guest engine, a pool of effect worker threads and
-every running graph. The pool keeps `HostOptions::effect_workers` threads and grows
-to `max_effect_workers` while every thread is busy, so nodes that hold a thread for a
-long time (a sound playing to its end, a slow server) never stall the others; added
-threads end after ten idle seconds. Service sessions wait on `orange_sdk::Lifecycle`
-for their first flow and their stop instead of polling. `Host::open` validates, compiles and starts a
-document as a *flow*: one run, owned by one thread, driven through `RunDriver` against
-the host's monotonic clock. Flows share nothing mutable, so pausing, faulting or
-stopping one never holds another. Control (`pause`, `resume`, `stop`, `trigger`,
-`emit`) is a bounded, non-blocking send to the flow's mailbox and reports `Busy` when
-it is full. `Host::inspect` runs a read-only closure on the flow's own thread between
-two turns, so no run is ever locked. Observation is one bounded channel of
-`HostEvent`s (state changes, node steps, refused inputs, errors, `Finished`); a slow
-observer loses events, counted by `events_dropped`, and never slows a run. State is
-sampled once per turn, so two changes inside one turn show only the last. An async
-package node is executed on a worker and its result returns through the mailbox; a
-cancelled effect lease is forwarded to the guest. `orange-cli` builds the `orange`
-binary (`check`, `run`) on `orange-host` alone and is the reference front end. Not
-Native services and connections (2026-11-10): a `ServicePackage` is trusted Rust
-compiled into the application and passed to `Host::with_services`. It contributes
-asynchronous nodes (`ServiceNode`), registered under the provider ID `native`, and
-connection adapters (`ConnectionAdapter`) by kind. Opening a document opens a
-`Session` for each connection it declares: a graph-scoped one from the document's
-settings, owned by that flow; a shared one from settings given to
-`Host::share_connection`, opened once and used by every flow that declares its ID.
-`open` must not block; an adapter connects on first use. A service node runs on a
-worker thread with its inputs, its session and the effect lease, and its result or
-fault returns through the flow's mailbox, so no service code runs on a flow thread. A
-connection the host cannot provide refuses the document before anything runs.
-A service package also contributes entry nodes with a `ServiceSource` each. When a
-flow opens, the host starts the source of every package entry in the document, giving
-it the entry's session and an `Emitter` bound to that node and flow. `Emitter::emit`
-is a bounded, non-blocking send to the flow's mailbox (`Busy` when full, `Closed` once
-the flow has ended); the entry's activation policy then decides what a busy or paused
-flow does with it. The source returns a guard that the host drops when the flow is
-closed. An entry no service provides refuses the document. `FlowInfo::manual_entries`
-lists only `core/on-manual` entries, since package entries are not for a user to fire.
-`orange-net` is the first service package and the only crate with a network client.
-Plugin SDK (2026-11-11): the types a native plugin implements (`ServicePackage`,
-`ServiceNode`, `ServiceSource`, `ConnectionAdapter`, `Session`, `Emitter`) are the
-`orange-sdk` crate, which depends on the model, kernel and runtime only. A plugin crate
-depends on it alone; `orange-net` does, and uses the host only in its tests. The host
-re-exports the same types.
-Shared variables (2026-11-11): `Host::share_variables(json)` declares, once, the
-`workspace`-scope variables of a document as the host's shared variables. A document
-that declares a subset with the same IDs and types reads them with
-`core/get-variable` and writes them with `core/set-shared` or `core/update-shared`.
-The host holds one runtime `Workspace` behind a lock; each flow applies its shared
-writes on its own thread under that lock, so writes from different flows are applied
-one at a time and none is lost, and every other flow is woken and takes the new
-snapshot before its next turn. `Host::shared_variable` reads the current value, `Host::shared_variables` all of them
-as one state, and `Host::shared_writes` counts writes so a front end reads again only
-after a change. A
-document that uses shared variables does not open before they are declared. The
-declaration cannot be extended or replaced afterwards, the values are not stored
-between sessions, workspace-scope events are not wired, and an observed flow does not
-report shared values.
-Placing built-in nodes (2026-11-11): at start the host chooses, for every built-in
-definition that has an implementation and no choice yet, the first provider that
-implements it as the one a newly placed node binds to. Before this the bundled base
-nodes had none, so `new_node_edit` refused them and `Host::nodes` listed them without
-a provider.
-Package management and names (2026-11-11): `Host::packages` lists the service packages
-compiled into the application and every installed package with its manifest;
-`Host::uninstall` removes an installed one, also from the package directory;
-`Host::install_release` installs an archive only if it has a given content digest.
-Installing a version of a package that already has an active version uses the store's
-update, so both stay published and newly placed nodes bind to the new one.
-`NodeInfo::label` and `NodeInfo::category` give every listed node a name and a
-palette category in the default language: the definition file's text, or text made
-from the node's ID (`core/set-variable` is "Set variable" in "Core"). The example
-`app/crates/platform/orange-host/examples/attach.rs` is a complete front end in one file.
-Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
-nodes unregistered, and an application chooses its service packages (the `orange`
-command: `--no-base`, `--no-net`, `--no-audio`). Core language nodes are always present.
-Persistent and editable variables (2026-11-12): with `HostOptions::state_dir`, the
-run variables a document declares `persistent` are written to
-`<graph ID>.variables.json` after each turn in which one changed, and a flow opened on
-that graph starts with the stored values that still have the same ID and type;
-persistent shared variables use `shared.variables.json`. The file is
-`{"format": "orange.variables", "format_version": 1, "variables": [{"id", "name",
-"literal"}]}`, written to a temporary name and renamed. `Host::set_variable(flow, id,
-value)` writes a run variable from outside the graph on the flow's own thread
-(`Run::set_variable`): the value must have the declared type, an On Variable Changed
-entry fires as for a graph write, and a paused run takes the value without firing.
-`Host::set_shared_variable` does the same for a shared variable.
-`Host::stored_variables` and `Host::store_variable` read and edit stored values while
-no flow runs. Not stored: node state, local variables, and anything of a flow that
-ends between two turns' writes and the save that follows them.
-
-Binding hand-written documents (2026-11-13): `Host::bind(json)` completes a document
-whose package nodes carry only `definition_id`, `definition_version`, `config`,
-`inputs` and `type_pins`. Each root node without a `signature` whose definition is
-outside the core language is placed through the same path an editor uses
-(`new_node_edit`), which records the host's provider for it, the package lock entry
-and the signature snapshot; an entry node without an `activation` gets a queue of
-sixteen that faults when full; other fields the author wrote are kept. Bound nodes and
-the rest of the document are untouched, so binding twice gives the same text. Nodes
-inside function bodies are not bound. `orange bind` saves the result over the file,
-keeping the previous version as `.bak`, and prints the remaining diagnostics.
-Declarations, settings and the clipboard (2026-11-14): `Host::declarations`,
-`declare_variable`, `remove_variable`, `declare_connection`, `remove_connection`
-and `choose_type` work like the other edits, on the text. A connection setting whose
-name says it is a secret (password, token, bearer, key) must be a
-`credential://<name>` reference, or it is refused before the document changes. The
-view tells a front end what a node settles: its settings, the JSON schema its kind
-declares for them (the timers get one from the host, matching their own checks), which
-settings name a declaration, and its type parameters; the editor draws fields from
-that and knows no node kind by name. `Host::copy` gives text holding the source
-document and the copied node IDs; `Host::paste` copies them with the model's
-remapping (12 §2), so a paste works across documents and through the system
-clipboard. The clipboard text holds what a document holds and no secret. File
-dialogs belong to the application: `Editor` asks for New, Open and Save as through
-`take_request`, and `orange-desktop` answers with `rfd`.
-
-Node set-up (2026-11-15): a port a kind both implies and declares (`in`, `body`,
-`completed` of loops and forks) is shown once. A variadic port is shown as its
-instances (`branch#0`, `branch#1`, 11 §4.5), with its bounds in `NodeView::variadic`;
-`Host::add_port` and `remove_port` add and take off one instance (with its wires) as
-one edit, keeping at least the minimum. `add_node` starts a node valid where a default
-exists: variadic ports get their minimum instances, a while loop the bound
-`NEW_WHILE_BOUND`, and a record or enum node the first registered type (and member)
-it can name, from `TypeRegistry::nominal_types`; with none registered, adding it is
-refused with that reason. The view gives `core/while` and `core/for-each` settings
-schemas matching their checks, record and enum nodes a schema listing the registered
-types and the chosen type's members, and `NodeView::detail` (the variable a variable
-node names, a record node's type and member) for a card to show. In the editor,
-variables are declared where they are needed: the toolbar's New variable… and the
-Variables list atop the Nodes tab (with Get and Set buttons that add a node already
-naming the variable) open the Document form, and a variable chooser in the properties
-panel has New variable…, a short form whose declaration the node then names
-(`Editor::declare_variable_for`). The properties panel lays fields out as label and
-field rows in one label column that narrows with the panel, writes a field when typing
-ends, and adds or takes off variadic instances. Cards tint their header with the node family's color, show the
-detail beside the title, every port as a dot on the edge (a step port is green, with an arrow beside its name; the way in is a tinted row inside the card; `in` and `then` read "Enter" and "Exit", their IDs unchanged), port names with variadic instances counted from one, short
-type hints on unfed value ports, and a hint on a node with no ports yet. Editor text
-is still fallback English without a catalogue (13, L-01 open).
-
-Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
-`remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the
-document's text and return the edited text, each through one transaction of the
-model; `new_document` gives an empty one. A front end therefore keeps only the text,
-and undo is keeping the text before each edit (`Editor` keeps 200). New node and wire
-IDs are derived from the document, so the same edit of the same text gives the same
-document. `connect` replaces the wire already on a value input or a step output,
-refuses a step wired to a value, and refuses a wire that checking finds a problem
-with, giving the reasons. A node that is not set up yet still shows its step ports,
-so it can be wired before its variable is chosen. The canvas reports what the person
-did (`CanvasResponse::connect`, `disconnect`, `remove`) and changes nothing itself;
-`Editor` applies it, refreshes the view and, when the document is running, hands the
-new text to `Host::update`.
-
-Canvas and parts of the editor (2026-11-13): `orange-editor-ui` is made of parts an
-application takes as it needs. `canvas::Canvas` draws one graph and knows nothing of
-files, flows or panels: an application asks its host for `Host::view(json)` (a
-`GraphView`: each top-level node with its name, kind, ports and saved place, and the
-wires), calls `Canvas::show(ui, &graph, triggers)` every frame and acts on the
-`CanvasResponse` (a trigger pressed, nodes moved, a node selected). `Editor` composes
-the canvas with a toolbar and the panels of `Panels`, which the application or the
-toolbar switches off. Places are stored in the document's `editor.nodes` map by
-`orange_host::place`; the compiler never reads that section, so moving a node is not
-an edit of a running flow. A node without a saved place is laid out in columns along
-the wires. The ports a kind has without declaring them come from
-`orange_model::catalog::implicit_port_names`; the routes for failure and cancelling
-are drawn only once something is wired to them. A step port is an arrowhead and a
-value port a circle, filled when wired, so the two are told apart without color.
-
-Editor crates (2026-11-13): `orange-editor-ui` is an egui library whose `Editor`
-holds what is shown and draws into any `egui::Ui`; every button calls a public method
-(`open`, `check`, `run`, `stop`, `trigger`, `take_events`), so tests and other hosts
-drive it without a window. It depends on `egui` and `orange-host` only.
-`orange-desktop` (program `orange-editor`) owns the eframe window, the host and the
-built-in service packages. What a graph's nodes and variables are called and how
-values, steps, problems and flow events read as text (`Names`, `plain`, `said`,
-`describe`, `lines`) moved from the terminal into `orange-host`, so both front ends say
-the same things.
-
-Live preview (2026-11-13): `Host::preview(json, ports)` returns the values of pure
-outputs without running anything, through the compiler's `PurePreview`. The outputs
-are the ones named, or the document's `exports` when none is. An output that follows
-from constants and pure nodes has a value or the fault computing it gives, with the
-node that fails; one that depends on a variable, a trigger or an effect cannot be
-previewed and refuses the call. The host keeps one engine per registry generation, so
-results an edit did not change are reused. `orange preview` prints them.
-`orange run --watch` observes each flow and prints `FlowEvent::Variables` and
-`FlowEvent::Ports`. `bind` also rewrites the plain forms a person writes into the
-stored ones: a float literal given as a JSON number becomes its `bits`, and a duration
-with a unit (`ms`, `s`, `m`, `h`) in a `core/duration@1` literal or in the settings of
-`core/on-timer` and `core/on-timeout` becomes nanoseconds. The `orange` command saves
-a bound file indented. Names in the terminal (2026-11-13) are a front-end matter and
-live in `orange-cli`: a node is called by its `name` field, which the document keeps
-as an extension field, else by its definition's label, with the end of its ID added
-when two nodes would be called the same; a variable by its declared name. Run output,
-diagnostics, `trigger` and `set` use them; `trigger <flow>` alone fires a graph's
-only manual entry; `set` takes a plain value for string, boolean, 64-bit integer and
-`f64` variables and a full literal for any other type. IDs are still accepted
-everywhere.
-
-Documents and reuse (2026-11-12): `save_document` refuses text that is not a
-document, keeps the replaced file as `<file>.bak`, writes through a temporary file and
-removes the autosave; `autosave_document` writes `<file>.autosave` only;
-`recover_document` returns the saved file, an autosave that is a document and differs
-from it, and the backup when the saved file is missing or damaged.
-`Host::requirements` lists the packages a document is locked to and whether this host
-has exactly each one, without opening it. `Host::export` builds a `Bundle` (the
-document and the stored archives it needs; requirements without a stored archive are
-returned separately) and `Bundle::from_bytes` reads one without installing or running
-anything. `publish_function` turns a document function into a package with one
-graph-made node: the function must be an action or async function without type
-parameters, using only its local variables and at most one connection. Not provided:
-selecting nodes of a graph and extracting them into a function, which is an editor
-operation on the model and is not built; migration of older document formats;
-remapping of IDs on import.
-
-Package switches (2026-11-12): `Host::packages` lists the base nodes (ID
-`org.orange.base`), each native service package and each installed package with its
-kind, whether it is in use (`active`) and whether the next start uses it (`enabled`).
-`Host::set_enabled(id, bool)` changes the second only: a host leaves out the IDs in
-`HostOptions::disabled_packages` and in `disabled.json` of its package directory
-(`{"format": "orange.disabled-packages", "format_version": 1, "packages": [ids]}`)
-when it starts, so a switch takes effect at the next start and running flows are never
-disturbed. A left-out service package is not registered, a left-out stored archive is
-not read, and a document that uses their nodes does not open. Installing a package
-enables it. A native package names itself for the list with
-`ServicePackage::about(name, description)`.
-Stored packages (2026-11-11): with `HostOptions::package_dir` the host saves every
-installed archive in that directory under the name of its SHA-256, and an index,
-`installed.json`, lists them in installation order with the granted capabilities. A
-host started on the directory installs them again through the same checks as a first
-installation; one that no longer installs is listed by `Host::not_restored` and the
-host still starts. Files are written to a temporary name and renamed. This is a replay
-of installations, not the package journal: `orange-packages`' `FileJournal` is not
-used by the host, so provider choices made after installation, removals, revocations
-and rollback history do not survive a restart, and the host has no API for them yet.
-Two hosts on one directory are not coordinated.
-Editor-facing API (2026-11-11): `Host::nodes()` lists every definition a document can
-use with its presentation (label, description and category from the definition file;
-none for core and bundled nodes) and the provider a new node binds to.
-`Host::observe(flow, on)` makes a flow send `FlowEvent::Variables` with each variable
-whose value differs from the last one reported, starting with all of them; several
-writes between two reports appear as the latest value. An observed flow also sends
-`FlowEvent::Ports` with each output port whose value changed: the run keeps the last
-value each producer published (`Run::keep_port_values`, `Run::port_values`), taken
-from an activation's value registers when it ends and from live activations on each
-report. A port appears once a node has read it, so an output nothing reads, a constant
-folded at compile time and a fault are absent; nodes inside a function report under
-the function's node IDs, whichever call ran last. Not provided yet: built-in text for
-core and bundled nodes.
-Package nodes implemented as graphs are linked into an in-memory copy of the document
-as function calls when it is checked or opened (04).
-Live edit (2026-11-11; 11 §15): `Host::update(flow, json)` applies an edited document to
-a running flow. The host compares the documents without layout and returns at once if
-nothing that runs changed. Otherwise it validates, compiles and resolves the edit on the
-caller's thread, then hands the result to the flow's thread, which replaces the run
-between two turns: it starts the new run with the carried variables first and retires
-the old one only if that succeeded, so a failure at any step leaves the flow as it
-was. The flow keeps its ID, its thread and its place in the event stream, which reports
-`Updated` followed by the new run's state. Its mailbox is replaced, so inputs still
-queued for the old graph and results of work the old graph issued are dropped. A
-connection whose declaration is unchanged keeps its session, so a socket survives an
-edit; package entries are detached from the old mailbox and re-attached to the new one.
-`update` waits for the swap and returns how many variables were kept and reset. Not
-yet in the host: replacing only the changed part of a graph, shared workspaces between flows,
-persistent package storage, and pausing or closing sessions with their flow.
-
-Kernel interface crate (2026-11-10; ADR-03/21): `orange-kernel` holds what a native
-node implementation is written against: `PureKernel`, `EntropyKernel`, `ActionKernel`,
-`EffectBinding`, `KernelFault` and their resolvers. It depends only on `orange-model`.
-`orange-compiler` depends on it and re-exports the same names; `orange-bundled` and
-`orange-guest` depend on it in product builds and use the compiler only in tests. A
-provider or package loader therefore needs neither the compiler nor the runtime. This
-is not the planned `orange-contracts` crate, which remains the versioned wire and
-component contract for external code.
-
-Run driver (2026-11-10; ADR-14): `orange-runtime` exposes `RunDriver`/`RunInbox`, a
-bounded thread-safe mailbox and a bounded `turn` that owns one `Run`. Host threads
-(sockets, hotkeys, effect workers) send inputs; the owning thread turns. It needs no
-async runtime and adds no dependency; `orange-host` remains the planned composition
-root for services and reactors.
-
-Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance` and `GuestPlugin`
-expose cloneable instance-lifetime `GuestCancellation` handles. Cancellation is
-monotonic and terminal for that instance; an old handle cannot retarget a later
-instance. Hosts periodically call `GuestEngine::advance_epoch` while workers run
-guest code. Store-local callbacks distinguish local cancellation from an explicit
-engine-wide broadcast; no library-owned ticker thread, core dependency or new
-Wasm feature is introduced. Blocking host imports still need a separate bounded
-service/cancellation protocol.
-
-Guest admission (review correction, 2026-11-09): raw and plugin stores share
-aggregate initial/growth limits for memory and table elements and finite object
-counts. Canonical imports/results use an explicit hostcall transfer allowance;
-decoded plugin outputs share an additional nominal budget under that policy.
-Compiled components are immutable/shareable. The current Pure binding's mutable
-instance is serialized across its plan users; future run-lease cancellation must
-first provide a distinct operation/activation owner rather than cancel that shared
-instance. This correction adds no async service or instance-pooling implementation.
-
-Fault ownership (2026-11-09; ADR-03/16/21): public core `KernelFault` identifiers
-borrow built-in text or share package-owned text, while fallback messages remain
-static. Plans, previews, runtime slots, streams and replay journals retain and
-account for shared text independently of package instances. Final-owner retirement
-frees it; no global identifier table can change another package's error identity.
-The core owns this text representation without depending on the guest loader.
-
-`orange-model`, `orange-compiler` (checked plans for the supported control and data subset), `orange-bundled` (native scalar, comparison and conversion kernels), `orange-runtime` (checked-plan execution: data epochs, entropy, local/run state, calls, zones, events and time) and `orange-packages` (manifests, lifecycle state and registry transactions) are implemented Cargo packages; the remaining boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
-
-Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
-
-```mermaid
-flowchart TD
-  desktop[orange-desktop / eframe app] --> editor[orange-editor-ui egui]
-  desktop --> host[orange-host]
-  headless[orange-cli] --> host
-  editor --> model[orange-model]
-  editor --> api[orange-contracts]
-  model --> api
-  host --> runtime[orange-runtime]
-  host --> packages[orange-packages]
-  host --> services[orange-services]
-  runtime --> compiler[orange-compiler]
-  compiler --> model
-  runtime --> api
-  packages --> api
-  packages --> model
-  services --> api
-  bundled[orange-bundled] --> api
-  bundled --> model
+```text
+apps        orange-desktop   orange-editor-ui   orange-cli
+              │                 │                  │
+platform    orange-host ── orange-packages ── orange-guest (Wasm) ── orange-native (dll)
+              │              orange-sdk   orange-vault   orange-sandbox
+services    orange-audio   orange-net   orange-files        (ServicePackages on orange-sdk)
+              │
+core        orange-runtime ← orange-compiler ← orange-model    orange-kernel   orange-bundled
+dev         orange-testkit   orange-measure   orange-plugin-example
 ```
 
-Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
+Dependencies point down. The core has no UI, window, network or engine dependency;
+`tools/check-cargo-metadata.mjs` enforces that in CI. Every crate lives in
+`app/crates/<layer>/<crate>`; installable expansions go in `plugins/` and build on their
+own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
 
-Implemented package storage (updated 2026-11-09): `orange-packages` depends on `orange-model` and validates manifests/archives and registry transactions. Its `Journal` seam is inert; explicit `DirectorySink` and `FileJournal` adapters perform filesystem staging and persistence. Independently stored executable bytes must match their verified entry before loading. Journal format 2 protects frame lengths and payloads; complete corruption is refused without truncating identity history. Package code loading belongs to `orange-guest`; manifest grants, executable draining, `orange-contracts` and non-node slots remain later work.
+| Crate | Owns |
+|---|---|
+| `orange-model` | The graph document, transactions and undo, indexes, types and inference, validation, the node catalogue |
+| `orange-compiler` | Turns a checked document into immutable data plans and control plans |
+| `orange-runtime` | Runs plans: data epochs, structured control, virtual time, events, streams, resources |
+| `orange-kernel` | The traits a node implementation provides: pure, entropy, effect |
+| `orange-bundled` | The shipped native nodes: math, logic, text, lists, JSON, comparisons, conversions |
+| `orange-packages` | Package archives, manifests, the install store, provider slots and the registry |
+| `orange-guest` | Wasm components on Wasmtime with fuel, epochs and memory limits |
+| `orange-native` | Loads native plugin libraries that export a `ServicePackage` |
+| `orange-sdk` | What a Rust plugin implements: nodes, triggers, live values, connection adapters |
+| `orange-sandbox` | File access confined to one directory |
+| `orange-vault` | Credentials in the operating system's store |
+| `orange-host` | The session every front end attaches to: drafts, flows, effects, services |
+| `orange-audio`, `orange-net`, `orange-files` | The base service packages |
+| `orange-editor-ui` | The egui editor as a library |
+| `orange-desktop`, `orange-cli` | The `orange-editor` window and the `orange` terminal runner |
 
-## Foundation application and general capabilities
+## From an edit to a running graph
 
-ADR-22 selects a usable basic application as well as reusable libraries. The editor, language and general file/network/input/audio capabilities are foundation deliverables. Concrete capability services stay outside model/compiler/runtime; installing a specialized plugin adds domain-specific nodes and event sources through public contracts. OBS, Twitch, browser-canvas servers and website-specific clients are not host responsibilities or release dependencies.
+1. **Edit.** A front end holds a `Draft` from `Host::draft`. Every edit (`add_node`,
+   `connect`, `set_input`, …) is one model transaction with an exact inverse for undo.
+   Type inference writes what the wires settle in the same transaction.
+2. **Check.** `Host::problems` keeps an `AnalysisSession` beside the draft and re-checks
+   only what an edit touched ([16](16-incremental-validation.md)).
+3. **Show.** `Host::draft_view` turns the draft into a `GraphView` of cards and wires.
+   It rebuilds only the cards of nodes the edits changed; unchanged cards are shared.
+   Previews compute the values of pure outputs that the edit touched, never running an
+   effect.
+4. **Compile.** `Host::open` resolves every node to its exact provider, validates the
+   whole document and compiles it to data and control plans.
+5. **Run.** The document becomes a *flow*: one run on its own thread, driven against the
+   host's clock. Flows share nothing mutable, so pausing or faulting one never holds
+   another.
 
-The host owns an input-trigger service and audio capture/playback services. Keyboard, manual/button, timer and package event sources enter the same bounded run-owned event queues; no input hook or audio callback executes graph code. Node configuration and accessible controls are projected through the editor contribution model. Typed callable graphs and insertable event-containing templates follow 11 §14; a visual frame alone supplies neither behavior reuse nor resource ownership.
+## The host
 
-## Boundaries
+- **Control** (`pause`, `resume`, `stop`, `trigger`, `emit`) is a bounded, non-blocking
+  send to a flow's mailbox; a full mailbox answers `Busy`.
+- **Observation** is one bounded channel of `HostEvent`s. A slow observer loses
+  telemetry, counted, but never the end of a flow, and never slows a run.
+- **Effects** run on a worker pool that grows while every worker is busy, up to a
+  bound, so a sound playing to its end or a slow server never stalls other nodes. The
+  queue of waiting effects is bounded too.
+- **Services** come from `ServicePackage`s: compiled in (`Host::with_services`) or loaded
+  from native libraries. Opening a document opens a session for each connection its
+  nodes name; graph-scoped sessions belong to the flow, shared ones to the host.
+- **Packages** install, update and uninstall while the editor is open. A running flow
+  keeps the provider it was compiled with until it stops ([04](04-expansion-plugins.md)).
 
-| Crate | Owns | Must not own |
+## Trust
+
+| Code | Runs where | Bounded by |
 |---|---|---|
-| orange-model | GraphDocument, stable IDs, type schemas, package locks, migrations and document edits | Engine or UI entities, sockets, credentials, runtime futures |
-| orange-contracts | Versioned wire/component contracts, errors, handles, permission vocabulary, declarative editor schema, TextRef/MessageRef | Concrete UI widgets or Rust trait objects crossing package boundaries |
-| orange-kernel | Rust interface for trusted native node implementations: kernels, effect bindings, fault envelope and exact-provider resolvers | Plans, scheduling, guest loading, any dependency beyond the model |
-| orange-compiler | Validation, monomorphized type resolution, control/effect regions, compact immutable ExecutionPlan | Network/audio actions, editor state |
-| orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
-| orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
-| orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
-| orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation, editing drafts with incremental validation | UI, windows, rendering; graph semantics |
-| orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
-| orange-sdk | Plugin SDK: the service package, node, trigger, connection adapter and session types a native plugin crate implements | Package store, guest engine, front ends, any network or OS client |
-| orange-native | Loads `ServicePackage`s from native plugin libraries at start; the only crate with unsafe code | Sandboxing; installing or unloading while running |
-| orange-plugin-example | Example native plugin library with one node | Product functionality |
-| orange-audio | Base audio service package on `orange-sdk`: output and input device connections, play, stop and input-level nodes, and the level entry | Graph semantics; anything the SDK does not expose; DSP |
-| orange-net | Base network service package on `orange-sdk`: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the SDK does not expose |
-| orange-sandbox | File access confined to one directory: path rules, link checks and atomic writes, with no dependency | Deciding which directory, limits or faults; that is its users' |
-| orange-files | Base file service package on `orange-sdk` and `orange-sandbox` | Anything outside the folder a connection names |
-| orange-vault | Credential stores behind the SDK's `SecretStore`: the operating system's and one in memory | Deciding which settings are secrets; the host resolves references |
-| orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
-| orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
-| orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
-| orange-editor-ui | egui editor: document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |
-| orange-desktop | Main thread/window/input, eframe app hosting `orange-editor-ui` | Graph execution scheduler |
-| orange-cli | Headless loading, run/stop, structured output and exit status | GPU/window initialization |
+| Bundled nodes | In process | Reviewed with the core |
+| Wasm packages | In process, in Wasmtime | Fuel, epochs, memory, grants given at install |
+| Native plugins and services | In process | Nothing: trusted like the application |
+| Graphs | In the runtime | Declared limits on time, memory, queues and recursion |
 
-Ownership: one composition root owns service lifetimes. Each run owns an immutable `RegistrySnapshot`, compiled plan, variable store, cancellation tree, resource table and subscription leases. Shared connections are host resources leased to runs; dropping one run cannot close another run's lease. Registry generations own installed package instances; package files are immutable and content-addressed. Removal hides new contributions immediately and deletes code only after all generation references are released.
+Credentials stay in the OS store; documents, traces and exports hold references and
+redacted values only. Product text is translated through Fluent catalogues
+([13](13-internationalization.md)); the language of the interface never changes what a
+graph means.
 
-## Rust relationships (conceptual, not compiled API)
+## Decisions
 
-```mermaid
-classDiagram
-  GraphDocument "1" *-- "many" NodeInstance
-  GraphDocument "1" *-- "1" PackageLock
-  NodeInstance --> DefinitionId
-  NodeInstance --> ProviderBinding
-  RegistrySnapshot "1" *-- "many" NodeDefinition
-  RegistrySnapshot "1" *-- "many" ProviderDescriptor
-  Compiler --> GraphDocument
-  Compiler --> RegistrySnapshot
-  Compiler ..> ExecutionPlan
-  Run "1" *-- "1" ExecutionPlan
-  Run "1" *-- "1" VariableStore
-  Run "1" *-- "many" ActivationFrame
-  Run "1" *-- "1" ResourceTable
-  Run --> HostServices
-  Kernel : run(cx) -> ActionOutcome
-  NativeKernel ..|> Kernel
-  ComponentKernel ..|> Kernel
-  WorkerKernel ..|> Kernel
-  ExecutionPlan --> Kernel
-  HostServices --> ConnectionManager
-  HostServices --> CredentialBroker
-  HostServices --> AudioEngine
-```
-
-`Kernel`, `FileService`, `CredentialBroker`, `ConnectionManager`, `AudioControl`, `AudioCapture`, `InputTriggers`, `SceneBridge`, `PackageStore` and `Clock` are internal Rust traits for substitution/tests. External components use versioned serialized/component interfaces, not these Rust traits. Kernels come in three shapes ([12 §10](12-graph-data-structures.md)): a pure kernel returns `Result<(), NodeError>`; an action kernel returns `Outcome(OutcomeIx) | Suspend(PendingOp) | Fail(NodeError)`, so it selects exactly one declared outcome; an iterator kernel provides `open/next/close`. Control intrinsics (Branch, Switch, Sequence, Fork, loops) are compiled control instructions, not kernels. Resources are non-forgeable table handles with owner/run/generation checks. Document, registry, plan and run-state layouts are defined in [12](12-graph-data-structures.md), and their semantics in [11](11-graph-language.md). `Value` is immutable or uniquely owned; `VariableStore` is mutated only through runtime commands. `Arc` shares immutable plans/large values; no shared mutable graph behind a lock on the execution path.
-
-## Thread and runtime model
-
-- Main OS thread: eframe window/input/render integration and the egui editor with AccessKit. It consumes bounded view changes and sends document/runtime commands. Never waits synchronously for graph, file, network, vault or decoder work.
-- Dedicated **Tokio** host runtime: I/O reactors, timers, authenticated sessions and async continuations. Feature/version/MSRV pin must be verified in WU-01; network dependencies never run on the UI thread. Tokio explicitly provides its own I/O/timer/scheduler runtime services ([runtime documentation](https://docs.rs/tokio/latest/tokio/runtime/), resolved 1.54.0 on 2026-10-20; version pin pending).
-- Run actors on the bounded compute executor: each run is one logical actor that executes one strand segment at a time and owns its plan, run state, activations and queues ([11 §9](11-graph-language.md), ADR-14). Different runs execute in parallel. Run state is never locked.
-- Bounded compute executor: run actors, offloaded heavy pure programs, component calls and decoding, with cooperative yielding, or process termination for uncooperative trusted workers. Blocking OS calls use bounded blocking workers; cancellation can abandon their results but may not interrupt an OS syscall.
-- Audio callback threads: preallocated sample buffers and bounded nonblocking commands only. Decoder/control resampling preparation occurs off callback threads. Capture and playback callbacks exchange preallocated blocks with bounded workers; level analysis and event decisions occur off callback threads. No general guest invocation, vault call, mutex wait, file read or ECS query in callbacks.
-- Optional external package workers: versioned IPC with heartbeats and bounded frames. Worker exit faults only affected package activations; host handles and child operations are revoked.
-
-Bridge messages carry `RunId`, `Generation`, `ActivationId`, sequence and a bounded payload/reference. UI inspection updates may coalesce by node; effect completions and errors use lossless bounded paths with producer backpressure. Sender shutdown wakes pending receivers. Host adapter messages are applied at documented host boundaries; headless runs see `CapabilityUnavailable` if they explicitly request rendering.
-
-## Editor foundation decision
-
-Selected, conditional on probe P-02 ([09](09-feasibility-probes.md)): **egui for the editor UI and custom graph canvas, hosted by eframe, with a host-owned declarative extension UI model** (ADR-02). The `orange-editor-ui` crate depends on egui only, so downstream products can embed the same editor in their own window or engine. No egui API is claimed compiled here.
-
-Alternatives and fallback order are in ADR-02 (Slint first). Do not lock the document/runtime/package APIs to widget entities, so a failed UI experiment does not invalidate the engine.
-
-Canvas uses stable document IDs and persistent view state; spatial index for node/port hit-testing; visible region + margin culling; cached edge paths invalidated only when endpoints/viewport change; virtualized palette/inspectors; batch drawing; independent text editing sessions with focus/caret/IME ownership. Pan updates transforms/culling, not graph definitions. A document transaction emits changed IDs and revisions; the adapter patches affected elements. Nonselected offscreen node controls are not instantiated. Selection and validation never rely solely on orange/red colors.
-
-Native dialogs, clipboard, DPI, screen-reader traversal/action names, keyboard-only workflows and cross-platform composition are **required capability tests**, not presumed features of a UI toolkit. A screen reader must reach nodes, ports, errors and logical connections using a structured accessibility representation even if the canvas is custom rendered. WU-02 stop/go precedes committing the large editor UI.
-
-All product-owned visible and accessible text follows [13](13-internationalization.md). Host modules validate and resolve immutable package catalogues; the editor keeps locale/search/text metrics in view state. Core errors/diagnostics emit stable keys and typed redacted arguments. Locale switching patches text/accessibility without graph transactions, recompilation, preview evaluation or changing provider pins. P-02 includes expansion, CJK/RTL, plural/fallback and language switching during IME; UTF-8 input alone cannot pass the i18n gate.
-
-## Architecture invariants
-
-Headless authoring ownership example (corrected 2026-11-01 UTC): `headless_authoring` demonstrates one background owner of a fixed small document, its `AnalysisSession`, 64 recent undo/redo entries and at most one active run. Capacity-one channels preserve accepted command order. A run slot binds the pinned plan, run identity and inspection; retained terminal results have a separate identity and never replace a fresh run's initial value. Repeated starts are rejected without destroying the active run. Empty history is a recoverable editing error. The workflow enters a virtual wait before the edit, then resumes its original checked plan; graceful stop observes On Stop. Every terminal worker path joins explicit cleanup: normal shutdown is graceful, transport/sequence/fatal failures use immediate stop, and bounded pumping/disposal failures are reported. The caller always closes channels and joins before propagating conversation failure. It deliberately blocks for determinism; real UI submission/polling and larger graph/history byte admission remain host work. No UI dependency, execution-domain change or general host actor API is introduced.
-
-1. Core crates build/test without UI, GPU or network access.
-2. Each side effect has one owning activation and one cancellable lifetime.
-3. Graph/package IDs outlive processes; runtime/entity IDs do not.
-4. Editors, workers and components request service operations through checked handles.
-5. Package install and provider choice are registry transactions; running snapshots do not mutate.
-6. Native host privileges are explicit; guest permission policy never claims to sandbox native code.
-7. `orange-model` and `orange-compiler` own the graph language in [11](11-graph-language.md). Packages extend it only through the surface in [11 §16](11-graph-language.md), never by adding port kinds, control intrinsics or scheduling rules.
-
-Associated requirements: FR-01–07, FR-34–41, FR-44–51. Validation and consequences: [03](03-data-and-execution.md), [04](04-expansion-plugins.md), [06](06-quality-and-validation.md), [11](11-graph-language.md), [12](12-graph-data-structures.md), [13](13-internationalization.md), ADR-01/02/03/08/13–17 in [08](08-decisions.md).
-
-E1a dependency boundary: orange-compiler depends on orange-model and exposes trusted PureKernelResolver/PureKernel interfaces; orange-bundled depends on orange-compiler to implement them. The compiler has no dependency on the concrete bundled provider, UI, host services or guest loader. The native adapter resolves exact provider locks from the document and types from fresh signatures, never cached type_args. PurePlan retains an Arc snapshot and immutable executable bindings. The diagram remains the broader target; these provisional pure-fold interfaces do not freeze the final runtime/component ABI.
+The reasons behind these choices are in [08](08-decisions.md): Rust without a game
+engine (ADR-02), the foundation split into an embeddable core and a separate editor
+(ADR-21), exact provider pinning (ADR-07), and the delivery scope (ADR-22).

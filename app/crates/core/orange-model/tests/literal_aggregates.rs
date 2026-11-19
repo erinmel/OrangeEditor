@@ -1,4 +1,4 @@
-//! Aggregate literals (12 §6.1) and FR-08: list, map, option, record, enum and json round
+//! Aggregate literals (12 §6.1): list, map, option, record, enum and json round
 //! trips with stable IDs; None, missing, JSON null and Error stay distinct.
 
 use std::sync::Arc;
@@ -209,7 +209,7 @@ fn records_distinguish_missing_from_present_none() {
     assert_ne!(
         point(3, None),
         point(3, Some(Value::None)),
-        "FR-08: missing ≠ None"
+        "missing ≠ None"
     );
     assert_eq!(
         decode_err("org.example/point@1", json!({})),
@@ -272,7 +272,7 @@ fn json_keeps_exact_text_and_its_own_null() {
         Value::Json(Arc::new(JsonText::new(text.into()).unwrap())),
     );
     let null = decode(&literal("core/json@1", json!("null")), &schemas()).unwrap();
-    assert_ne!(null, Value::None, "FR-08: JSON null ≠ None");
+    assert_ne!(null, Value::None, "JSON null ≠ None");
     assert!(matches!(
         decode_err("core/json@1", json!("{")),
         LiteralError::TypeMismatch { .. }

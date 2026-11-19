@@ -1,4 +1,4 @@
-//! Unknown keys and unresolved package nodes survive load→save (FR-05; structural basis
+//! Unknown keys and unresolved package nodes survive load→save (structural basis
 //! for G-29). The codec never needs the definition to keep a node.
 
 use crate::behaviour::common;

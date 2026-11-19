@@ -1,6 +1,6 @@
 # Host services, integrations and platform capability
 
-The [connection manager](#connection-manager) records the implemented network subset alongside the remaining service contracts. Exact dependency pins and verification evidence are recorded in [10](10-tooling-and-sources.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
+The [connection manager](#connection-manager) records the implemented network subset alongside the remaining service contracts. Exact dependency pins and verification evidence are recorded in [10](10-development.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
 
 Service statuses, errors, remediation, connection/vault dialogs and audio controls follow [13](13-internationalization.md): stable codes and typed redacted message arguments, localized by the host. OS paths, protocol tokens, credential references, device names and remote payloads remain content/identity. The UI locale cannot change connection settings, routing, file encodings or graph parse/format semantics. OS-owned dialog language follows the recorded platform capability.
 
@@ -61,7 +61,7 @@ new inputs. Binary and streamed request variants retain their payload types.
 
 Credentials, authorization and binary payloads (2026-11-12; `orange-sdk`,
 `orange-vault`, `orange-host`, `orange-net`). A setting value that is exactly
-`credential://<name>` (name: 1 to 128 of `a-z 0-9 . _ - /`) is a reference. When the
+`credential://<name>` (name: 1 to 128 of `a-z 0-9. _ - /`) is a reference. When the
 host opens a connection it replaces each reference, at any depth of the settings, with
 the secret from `HostOptions::secrets` (`SecretStore`) and hands the result to the
 adapter only; the document, the shared-connection table, events and errors keep the
@@ -72,7 +72,7 @@ D-Bus, which keeps secrets across restarts; a machine without a Secret Service r
 the store as unavailable rather than keeping secrets somewhere weaker)
 and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
 entries and read the secret from standard input. An editor sets secrets up without that command
-(2026-11-16, FR-114): adapters describe their settings (`ConnectionAdapter::about`,
+(2026-11-16): adapters describe their settings (`ConnectionAdapter::about`,
 `texts`, `toggles`, with `choices` and `fields`), and a text setting marked `secret`
 is typed masked; `Host::declare_connection_with_secrets` stores it with
 `SecretStore::replace` under `connection/<connection ID>/<setting>` before the
@@ -122,7 +122,7 @@ provided: OAuth for WebSocket and MQTT connections; the device-code and password
 OpenID Connect discovery; cancelling a stream that sends nothing (it ends at the next
 line or at the timeout); streaming of request bodies.
 
-MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
+MQTT (2026-11-12; `orange-net` qualified for 3.1.1). Adapter
 `org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
 `mqtts://` for TLS on 8883 with the bundled roots), `username`, `password`,
 `client_id` (generated when absent), `topics` (up to 64 filters, `+` and `#`
@@ -200,7 +200,7 @@ are not implemented. The HTTP base must be absolute, with an explicit host and
 without URL user information, a query or a fragment. Put the query on the
 individual request path. A WebSocket URL may include its resource query.
 
-Answers and failures (2026-11-15, FR-107): the request nodes also return `success`,
+Answers and failures (2026-11-15): the request nodes also return `success`,
 true for 200 to 299, so a graph branches on it while a 404 or 500 still arrives as
 `status` and `response`; `failed` stays for a request that could not be completed.
 `method` defaults to `GET` and `path`, `content` (and on the binary and streamed
@@ -224,7 +224,7 @@ hear each message. A diagram whose mailbox is full misses that message. Binary
 messages are ignored; ping/pong is answered by the library. Not implemented: binary
 payloads, subprotocols and headers, connection-state events (opened, closed, failed),
 per-message acknowledgement, and messages that arrived before a diagram started
-listening. State (2026-11-15, FR-107): the entries `ws-connected` (payload the URL) and
+listening. State (2026-11-15): the entries `ws-connected` (payload the URL) and
 `ws-disconnected` (payload why: closed by the server, connection lost) fire each time
 the socket opens or an open socket stops; a failed attempt to connect fires neither.
 `ws-status` reads `connected` and `queued`, the messages waiting. The sends' `then` is
@@ -265,12 +265,12 @@ Each request carries owner/generation/deadline, typed payload/stream and a check
 |---|---|
 | HTTP/HTTPS | HTTP/1.1 and HTTP/2 via compatible client; methods/headers/query/multipart/JSON/bytes/streams; retain status, headers and body separately. Automatic retry only with explicit safe/idempotent/replayable-body rule; 429/Retry-After observed. TLS and redirect policy from profile. HTTP/3 is later. |
 | WebSocket | RFC6455 text/binary, fragmentation/message limits, ping/pong/close, subprotocols and bounded receiver. One stream consumer owner with explicit fan-out subscriptions. Reconnect opens a new session; delivery/replay of lost messages is application policy. |
-| MQTT | **Conditional; FR-25.** Select 5.0 or 3.1.1; client ID, clean start/session expiry, topic filters, QoS 0/1/2, retain and last will. Preserve retained/duplicate/QoS metadata; protocol QoS does not make downstream file writes exactly once. Limit inflight publishes and account for broker/session reconnect state. |
+| MQTT | **Conditional.** Select 5.0 or 3.1.1; client ID, clean start/session expiry, topic filters, QoS 0/1/2, retain and last will. Preserve retained/duplicate/QoS metadata; protocol QoS does not make downstream file writes exactly once. Limit inflight publishes and account for broker/session reconnect state. |
 | AMQP | The built-in adapter implements AMQP 0-9-1, using existing broker topology, publisher confirms and manual consumer acknowledgements after host mailbox admission. Processing-success acknowledgement remains a separate capability. AMQP 1.0 requires a different adapter. |
 | REST | **Outside foundation delivery.** HTTP-oriented convenience nodes for resource paths, status mapping, pagination and schema decoding. No separate transport or universal service schema. |
 | GraphQL | **Outside foundation delivery.** Query/mutation operationName/variables over HTTP; retain GraphQL `data` and `errors` together, separate from HTTP failure. Subscription uses explicitly negotiated **graphql-transport-ws**; legacy `graphql-ws` subprotocol is not silently substituted. Schema import/introspection optional; credentials and introspection permission explicit. |
 | gRPC | **Outside foundation delivery.** HTTP/2 plus protobuf `FileDescriptorSet`/import resolution; select fully qualified service/method and reflect dynamic messages. Unary/client-stream/server-stream/bidirectional have separate node contracts and bounded stream handles. Preserve status/details/trailers/metadata/deadlines; cancel each direction and drain half-close correctly. Reflection is optional and server-dependent; descriptor import works without it. gRPC-Web and arbitrary custom codecs are later. |
-| Webhooks | **Optional plugin; FR-29.** Outbound HTTP node templates. Inbound explicit listener with default loopback bind, chosen port, route/method, finite body/deadline/concurrency limits and provider-specific bearer/HMAC signature verification, replay window/dedup policy. Public bind/TLS requires explicit configuration; no automatic firewall/NAT/tunnel changes. A response token is completed once before timeout; stop closes owned listeners and outstanding responses safely. |
+| Webhooks | **Optional plugin.** Outbound HTTP node templates. Inbound explicit listener with default loopback bind, chosen port, route/method, finite body/deadline/concurrency limits and provider-specific bearer/HMAC signature verification, replay window/dedup policy. Public bind/TLS requires explicit configuration; no automatic firewall/NAT/tunnel changes. A response token is completed once before timeout; stop closes owned listeners and outstanding responses safely. |
 
 AMQP 1.0 is a different separately versioned optional adapter, not a baseline commitment. The broker matrix must name versions and test features; shared terminology such as queue/ack does not prove wire compatibility. Long-running gRPC/GraphQL streams and MQTT subscriptions use the runtime's bounded event policy, with transport-specific recovery; loss is reported rather than fabricated catch-up.
 
@@ -329,13 +329,13 @@ repeating one; the volume multiplies each sound's own gain. A playing node waits
 however long its sound is paused or repeats, and reports a stalled device when the
 device has asked for no samples for two seconds. The callback rules are unchanged.
 
-Folder playback (2026-11-13, FR-31): `play-from` (inputs `folder`, `pick`, `gain`;
+Folder playback (2026-11-13): `play-from` (inputs `folder`, `pick`, `gain`;
 output `file`) plays the sound file a number chooses among the folder's WAV, FLAC, MP3
 and Ogg files in name order, counting round; a counter makes a playlist and a seeded
 random number a repeatable shuffle, so the node itself draws no randomness. A folder
 without sound files is the fault `org.orange.audio/Empty`.
 
-From the editor (2026-11-15, FR-105): every audio node's definition names its
+From the editor (2026-11-15): every audio node's definition names its
 connection kind (`editor.connection_adapter`, 12 §4), so a node dropped onto the canvas
 is bound to the document's first connection of that kind, or to a new graph connection
 of that kind with no settings (the system default device) declared in the same edit.
@@ -350,7 +350,7 @@ runtime's entropy rules, 11) wired into `pick`; the audio package draws no rando
 itself. Device lists were read on Windows 11 (WASAPI) only (10); macOS and Linux
 listing, and devices that appear or disappear while the list is open, are not checked.
 
-Devices that come and go (2026-11-15, FR-108): devices are listed with cpal 0.18's
+Devices that come and go (2026-11-15): devices are listed with cpal 0.18's
 `DeviceId`, persisted as `<host>:<id>` (WASAPI endpoint ID, CoreAudio UID, ALSA PCM
 name), and the choice list writes the identifier and shows the name; a setting that
 is not an identifier, or names an endpoint that is gone, is matched by name, so older
@@ -362,7 +362,7 @@ with backoff from 500 ms to 5 s, and `input-level` fails while it is down. Overr
 (`Xrun`), followed route changes and a refused real-time mode are not failures. The
 error callback only stores a flag; the data callbacks are unchanged.
 
-Setting up from the editor (2026-11-15, FR-109): `play` and `loop` mark `path` as a
+Setting up from the editor (2026-11-15): `play` and `loop` mark `path` as a
 sound file and `play-from` marks `folder` as a folder (definition hint `paths`, 12 §4),
 and the editor asks the application for the system's chooser. The input adapter lists
 `threshold_db`, `release_db`, `hold_ms` and `window_ms` through
@@ -374,7 +374,7 @@ identifiers, a device unplugged while playing, and silent rerouting of a default
 output are not checked. Rerouting to another device is not done: only the same
 setting is opened again.
 
-Audio streams (2026-11-16, FR-115; 22 §6): `audio-in` (Audio in) gives what an input
+Audio streams (2026-11-16, 22 §6): `audio-in` (Audio in) gives what an input
 connection captures as a value of the package record type `org.orange.audio/stream@1`
 (one field, `source: u64`), with the capture's `rate` and `channels`; `audio-out`
 (Audio out, inputs `stream` and `gain`), `level` (Level, output `level` in dBFS) and
@@ -433,7 +433,7 @@ synchronization. Crossings closer than
 10 ms are reported as one.
 
 
-Audio is a general host capability (FR-30–32, FR-54/55), not a DSP evaluation domain in the graph runtime. Basic operations are open/decode, play/pause/stop/seek/loop, gain/mute and bounded mixing/routing, plus selected-device capture and level events. TTS synthesis, transcription, sound recognition and a DSP/DAW editor are outside baseline. Existing virtual cables are selectable OS endpoints; creating virtual endpoints or drivers is outside baseline (FR-33).
+Audio is a general host capability, not a DSP evaluation domain in the graph runtime. Basic operations are open/decode, play/pause/stop/seek/loop, gain/mute and bounded mixing/routing, plus selected-device capture and level events. TTS synthesis, transcription, sound recognition and a DSP/DAW editor are outside baseline. Existing virtual cables are selectable OS endpoints; creating virtual endpoints or drivers is outside baseline.
 
 `AudioAsset` owns decoder/metadata or a streaming source descriptor. `PlaybackSession` owns selected output route, mixer controls, player instances and device leases. Nodes choose opened assets, folder lists/filters or explicit file references; random selection uses the graph seed and a recorded sorted file snapshot (filesystem iteration order is not a seed). Empty set, changed file and decode errors are observable. Playlist transition/loop/shuffle policy is explicit. Already-opened assets are handles with run/workspace ownership, not copies of file contents per node.
 
@@ -463,11 +463,11 @@ Capture callbacks copy into preallocated bounded rings; overflow/gaps are counte
 
 Threshold nodes configure above/below, level metric, threshold, optional hysteresis and a nonnegative continuous hold duration. Zero hold means the first qualifying analysis window, not zero physical latency. One event fires on qualification; it rearms only after the configured reset condition. A failing window, capture gap or restart resets hold state. Hold uses capture timestamps and monotonic time, never UI frames. Meter updates may coalesce; accepted trigger events use the bounded event policy. Deterministic tests use injected level/timestamp sequences and recorded audio; live microphone input is external ingestion, not seeded replay.
 
-Frequency-band energy and fundamental-pitch estimation are separate conditional capabilities (FR-56). Before adoption select and test window/rate, frequency resolution/range, latency, thresholds and confidence/unvoiced handling; do not call a loud harmonic the detected fundamental or promise arbitrary sound recognition. These choices need a bounded feasibility slice, not speculative DSP in the core.
+Frequency-band energy and fundamental-pitch estimation are separate conditional capabilities. Before adoption select and test window/rate, frequency resolution/range, latency, thresholds and confidence/unvoiced handling; do not call a loud harmonic the detected fundamental or promise arbitrary sound recognition. These choices need a bounded feasibility slice, not speculative DSP in the core.
 
 A future TTS or other generator plugin can return a validated asset handle or feed a negotiated bounded PCM sink. The service defines sample format, backpressure, end-of-stream, underflow, cancellation and ownership; selected output device/gain are the same as file playback. Plugin work stays off hardware callbacks. This path must be exercised with a synthetic producer before public audio API freeze, without shipping a TTS integration.
 
-### Sources and analyzers (2026-11-17; FR-119, ADR-30)
+### Sources and analyzers (2026-11-17; ADR-30)
 
 An **audio source** connection (`org.orange.audio/input`) is a microphone or other input, what the system plays (loopback), or a **sound file**. It is opened once per flow and shared: the capture callback only stores samples in the source's ring and measures the whole-sound level. A file source plays into the same ring at real-time pace once Play source (or "Play at start") starts it, optionally also heard on an output ("Hear it"), so whatever listens to a microphone listens to a file the same way.
 
@@ -581,4 +581,4 @@ Historical research register, not dependency approval or current delivery scope.
 | [Windows SYSVAD](https://learn.microsoft.com/en-us/samples/microsoft/windows-driver-samples/sysvad-virtual-audio-device-driver-sample/) | Driver sample; endpoint installation requires driver deployment | No Orange driver planned; existing-endpoint tests remain |
 | [Apple audio driver](https://developer.apple.com/documentation/coreaudio/creating-an-audio-server-driver-plug-in) | Official driver extension entry point | JS-only; do not infer completed deployment design |
 
-Requirements: FR-17–24, FR-30–32, FR-52, FR-54–55; optional FR-25–29/33/43/56 are not baseline gates. Verification: V04/V07/V09/V10; ADR-09/10/11 in [08](08-decisions.md).
+Verification: V04/V07/V09/V10; ADR-09/10/11 in [08](08-decisions.md).

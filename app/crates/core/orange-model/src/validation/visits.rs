@@ -1,5 +1,5 @@
 //! Per-update validation work counters for an [`AnalysisSession`](super::AnalysisSession)
-//! (NFR-15, 16 §3).
+//! (16 §3).
 //!
 //! A scoped update counts the items each pass actually iterates: plain counters bumped in
 //! the loops and walks themselves, with no logging, allocation or global state. A full

@@ -1,5 +1,4 @@
-//! Release timing of one semantic edit, and of validation, in large documents (NFR-15
-//! evidence aid).
+//! Release timing of one semantic edit, and of validation, in large documents.
 //!
 //! Run with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored
 //! --nocapture`. It asserts nothing: it prints timings for the machine it runs on.

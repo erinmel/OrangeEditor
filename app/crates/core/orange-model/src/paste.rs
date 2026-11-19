@@ -1,4 +1,4 @@
-//! Copy and paste with full ID remapping (FR-02, 12 §2).
+//! Copy and paste with full ID remapping (12 §2).
 //!
 //! Every pasted node, edge and declaration gets a fresh ID, so pasted content never aliases
 //! the original. Config references are discovered and rewritten only at the fields registered

@@ -1,4 +1,4 @@
-//! Where one edit's time goes on a large graph (docs/19). Run with
+//! Where one edit's time goes on a large graph (docs/10, "Performance"). Run with
 //! `cargo test --release -p orange-editor-ui edit_timing -- --ignored --nocapture`.
 use super::*;
 use std::time::{Duration, Instant};

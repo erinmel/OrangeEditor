@@ -1,4 +1,4 @@
-# Host application workspace (docs/15-monorepo-layout.md). Installable plugins build independently.
+# Host application workspace (docs/02-architecture.md). Installable plugins build independently.
 [workspace]
 resolver = "3"
 members = ["app/crates/*/*"]

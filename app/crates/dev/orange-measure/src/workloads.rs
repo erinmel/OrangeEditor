@@ -1432,7 +1432,7 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
             .wrapping_add(1442695040888963407);
         (*seed >> 33) as usize % bound
     };
-    // The four NFR-15 kinds draw from the original seed, so their sequence is unchanged;
+    // The four edit kinds draw from the original seed, so their sequence is unchanged;
     // the other kinds draw from their own.
     let (mut seed, mut extra_seed): (u64, u64) = (0x5eed_0009, 0x5eed_0f09);
     let mut zone_seed: u64 = 0x5eed_2009;
