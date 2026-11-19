@@ -326,10 +326,7 @@ impl ConnectionAdapter for HttpAdapter {
 pub(crate) struct HttpRequest;
 impl ServiceNode for HttpRequest {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let session = call
-            .session
-            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
-            .ok_or(NO_SESSION)?;
+        let session = http_session(call)?;
         let [
             Value::Str(method),
             Value::Str(path),
@@ -368,40 +365,53 @@ impl ServiceNode for HttpRequest {
     }
 }
 
+/// The HTTP session a request node is bound to.
+fn http_session<'c>(call: &Call<'c>) -> Result<&'c HttpSession, KernelFault> {
+    call.session
+        .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
+        .ok_or(NO_SESSION)
+}
+
+/// Sends the request a binary or streamed request node describes: method, path,
+/// content type, header lines and a byte body.
+fn send_binary(
+    call: &Call<'_>,
+    streamed: bool,
+) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
+    let session = http_session(call)?;
+    let [
+        Value::Str(method),
+        Value::Str(path),
+        Value::Str(content_type),
+        Value::List(headers),
+        Value::Bytes(body),
+    ] = call.inputs
+    else {
+        return Err(BAD_REQUEST);
+    };
+    let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
+        return Err(BAD_REQUEST);
+    };
+    let headers: Vec<_> = headers
+        .iter()
+        .take(MAX_HEADERS + 1)
+        .map(|line| line.as_str())
+        .collect();
+    session.send(
+        method,
+        path,
+        content_type,
+        &headers,
+        body.as_ref().clone(),
+        streamed,
+    )
+}
+
 #[derive(Debug)]
 pub(crate) struct HttpRequestBytes;
 impl ServiceNode for HttpRequestBytes {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let session = call
-            .session
-            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
-            .ok_or(NO_SESSION)?;
-        let [
-            Value::Str(method),
-            Value::Str(path),
-            Value::Str(content_type),
-            Value::List(headers),
-            Value::Bytes(body),
-        ] = call.inputs
-        else {
-            return Err(BAD_REQUEST);
-        };
-        let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
-            return Err(BAD_REQUEST);
-        };
-        let headers: Vec<_> = headers
-            .iter()
-            .take(MAX_HEADERS + 1)
-            .map(|line| line.as_str())
-            .collect();
-        let mut response = session.send(
-            method,
-            path,
-            content_type,
-            &headers,
-            body.as_ref().clone(),
-            false,
-        )?;
+        let mut response = send_binary(call, false)?;
         let status = response.status().as_u16();
         let kind = response
             .headers()
@@ -431,36 +441,8 @@ pub(crate) struct HttpStream;
 impl ServiceNode for HttpStream {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         use std::io::BufRead;
-        let session = call
-            .session
-            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
-            .ok_or(NO_SESSION)?;
-        let [
-            Value::Str(method),
-            Value::Str(path),
-            Value::Str(content_type),
-            Value::List(headers),
-            Value::Bytes(body),
-        ] = call.inputs
-        else {
-            return Err(BAD_REQUEST);
-        };
-        let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
-            return Err(BAD_REQUEST);
-        };
-        let headers: Vec<_> = headers
-            .iter()
-            .take(MAX_HEADERS + 1)
-            .map(|line| line.as_str())
-            .collect();
-        let mut response = session.send(
-            method,
-            path,
-            content_type,
-            &headers,
-            body.as_ref().clone(),
-            true,
-        )?;
+        let session = http_session(call)?;
+        let mut response = send_binary(call, true)?;
         let code = response.status().as_u16();
         let (status, ok) = (Value::I64(i64::from(code)), Value::Bool(success(code)));
         let mut reader = std::io::BufReader::new(response.body_mut().as_reader());

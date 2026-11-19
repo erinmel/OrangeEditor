@@ -109,6 +109,19 @@ impl<'a> DependencyGraph<'a> {
     }
 }
 
+/// A typed data input.
+fn data_input(port: &PortDescriptor) -> bool {
+    port.kind == PortKind::Data && port.direction == PortDirection::Input && port.ty.is_some()
+}
+
+/// A typed data output computed from the node's inputs.
+fn computed_output(port: &PortDescriptor) -> bool {
+    port.kind == PortKind::Data
+        && port.direction == PortDirection::Output
+        && port.source == Some(OutputSource::Computed)
+        && port.ty.is_some()
+}
+
 /// [`validate_data_cycles`] over the bodies in `scope`.
 pub(crate) fn validate_data_cycles_in(
     document: &GraphDocument,
@@ -268,22 +281,13 @@ impl<'a> DependencyGraph<'a> {
         let inputs: Vec<_> = signature
             .ports
             .iter()
-            .filter(|port| {
-                port.kind == PortKind::Data
-                    && port.direction == PortDirection::Input
-                    && port.ty.is_some()
-            })
+            .filter(|port| data_input(port))
             .flat_map(|port| concrete_vertices(node.id, node, port))
             .collect();
         let outputs: Vec<_> = signature
             .ports
             .iter()
-            .filter(|port| {
-                port.kind == PortKind::Data
-                    && port.direction == PortDirection::Output
-                    && port.source == Some(OutputSource::Computed)
-                    && port.ty.is_some()
-            })
+            .filter(|port| computed_output(port))
             .flat_map(|port| concrete_vertices(node.id, node, port))
             .collect();
         // A private hub represents the complete input-to-computed-output relation
@@ -324,20 +328,11 @@ impl<'a> DependencyGraph<'a> {
         else {
             return;
         };
-        let inputs = begin_signature.ports.iter().filter(|port| {
-            port.kind == PortKind::Data
-                && port.direction == PortDirection::Input
-                && port.ty.is_some()
-        });
+        let inputs = begin_signature.ports.iter().filter(|port| data_input(port));
         let outputs: Vec<_> = end_signature
             .ports
             .iter()
-            .filter(|port| {
-                port.kind == PortKind::Data
-                    && port.direction == PortDirection::Output
-                    && port.source == Some(OutputSource::Computed)
-                    && port.ty.is_some()
-            })
+            .filter(|port| computed_output(port))
             .collect();
         for input in inputs {
             for from in concrete_vertices(begin, begin_node, input) {

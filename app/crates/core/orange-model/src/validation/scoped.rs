@@ -1273,14 +1273,7 @@ fn zone_update<'a>(
                     continue;
                 };
                 visits.ports += 2;
-                let data = matches!(
-                    (ports.port(&edge.from), ports.port(&edge.to)),
-                    (Ok(from), Ok(to)) if from.kind == PortKind::Data
-                        && to.kind == PortKind::Data
-                        && from.direction == PortDirection::Output
-                        && to.direction == PortDirection::Input
-                );
-                if !data {
+                if !ports.is_data_edge(edge) {
                     continue;
                 }
                 let target = edge.to.node;
@@ -1470,14 +1463,7 @@ fn classify_edges(
             };
         }
         kinds.data = true;
-        let data = matches!(
-            (ports.port(&edge.from), ports.port(&edge.to)),
-            (Ok(from), Ok(to)) if from.kind == PortKind::Data
-                && to.kind == PortKind::Data
-                && from.direction == PortDirection::Output
-                && to.direction == PortDirection::Input
-        );
-        if !data {
+        if !ports.is_data_edge(edge) {
             why = Why::EdgeKind;
             return false;
         }

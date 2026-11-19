@@ -8,7 +8,9 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::catalog::{instance_port, is_intrinsic};
-use crate::document::{GraphDocument, PortDescriptor, PortRef, SignatureSnapshot};
+use crate::document::{
+    Edge, GraphDocument, PortDescriptor, PortDirection, PortKind, PortRef, SignatureSnapshot,
+};
 use crate::id::NodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -87,6 +89,19 @@ impl<'a> PortResolver<'a> {
         result
     }
 }
+impl PortResolver<'_> {
+    /// Whether `edge` carries data from an output to an input.
+    pub(crate) fn is_data_edge(&self, edge: &Edge) -> bool {
+        matches!(
+            (self.port(&edge.from), self.port(&edge.to)),
+            (Ok(from), Ok(to)) if from.kind == PortKind::Data
+                && to.kind == PortKind::Data
+                && from.direction == PortDirection::Output
+                && to.direction == PortDirection::Input
+        )
+    }
+}
+
 impl Deref for PortResolver<'_> {
     type Target = BTreeMap<NodeId, SignatureSnapshot>;
     fn deref(&self) -> &Self::Target {

@@ -81,6 +81,17 @@ pub(super) struct Row<'a> {
 }
 
 impl Row<'_> {
+    /// Whether input `port` sits on this row, as a port or as a field's port.
+    fn holds_input(&self, port: &PortView) -> bool {
+        match self.left {
+            Some(Left::Port(left)) => std::ptr::eq(left, port),
+            Some(Left::Field { editor, .. }) => {
+                editor.port().is_some_and(|left| std::ptr::eq(left, port))
+            }
+            _ => false,
+        }
+    }
+
     /// The middle of the row's first line, where its dots are.
     pub(super) fn anchor(&self) -> f32 {
         match self.left {
@@ -368,13 +379,7 @@ impl<'a> Card<'a> {
     pub fn offset(&self, port: &PortView) -> Option<Vec2> {
         self.rows.iter().find_map(|row| {
             let here = if port.input {
-                match row.left {
-                    Some(Left::Port(left)) => std::ptr::eq(left, port),
-                    Some(Left::Field { editor, .. }) => {
-                        editor.port().is_some_and(|left| std::ptr::eq(left, port))
-                    }
-                    _ => false,
-                }
+                row.holds_input(port)
             } else {
                 row.right.is_some_and(|right| std::ptr::eq(right, port))
             };
@@ -384,13 +389,7 @@ impl<'a> Card<'a> {
 
     /// The row an input sits on, where a dropped wire lands on it.
     pub fn row_of(&self, port: &PortView) -> Option<&Row<'a>> {
-        self.rows.iter().find(|row| match row.left {
-            Some(Left::Port(left)) => std::ptr::eq(left, port),
-            Some(Left::Field { editor, .. }) => {
-                editor.port().is_some_and(|left| std::ptr::eq(left, port))
-            }
-            _ => false,
-        })
+        self.rows.iter().find(|row| row.holds_input(port))
     }
 }
 
