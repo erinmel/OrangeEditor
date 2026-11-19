@@ -11,7 +11,7 @@ use orange_kernel::{
 use orange_model::Value;
 use orange_model::catalog::{TypeArgs, intrinsic_id};
 use orange_model::conversion::{ConverterConfig, ConverterProvider};
-use orange_model::id::PortKey;
+use orange_model::id::{PortKey, TypeExpr};
 use std::sync::Arc;
 
 fn ports(names: &[&str]) -> Result<Box<[PortKey]>, ResolveError> {
@@ -19,6 +19,28 @@ fn ports(names: &[&str]) -> Result<Box<[PortKey]>, ResolveError> {
         .iter()
         .map(|name| name.parse().map_err(|_| ResolveError::Contract))
         .collect()
+}
+
+/// The type the node's signature gives its port `name`.
+fn port_type<'r>(
+    request: &'r BindingRequest<'_>,
+    name: &str,
+) -> Result<&'r TypeExpr, ResolveError> {
+    request
+        .signature()
+        .ports
+        .iter()
+        .find(|port| port.port_id.as_str() == name)
+        .and_then(|port| port.ty.as_ref())
+        .ok_or(ResolveError::Contract)
+}
+
+/// A kernel that cannot be bound: its type is not one it handles, or it is missing.
+fn unbound(error: BindingError) -> ResolveError {
+    match error {
+        BindingError::UnsupportedType => ResolveError::UnsupportedType,
+        _ => ResolveError::Unavailable,
+    }
 }
 
 impl PureKernelResolver for MathPackage {
@@ -51,24 +73,13 @@ impl PureKernelResolver for MathPackage {
         // A shared operation (Negate, Absolute, Minimum, Maximum, Clamp) binds decimals
         // to its float kernel below and whole numbers here.
         let decimal = |port: &str| {
-            request
-                .signature()
-                .ports
-                .iter()
-                .find(|found| found.port_id.as_str() == port)
-                .and_then(|found| found.ty.as_ref())
-                .is_some_and(|ty| matches!(ty.as_str(), "core/f32@1" | "core/f64@1"))
+            port_type(request, port)
+                .is_ok_and(|ty| matches!(ty.as_str(), "core/f32@1" | "core/f64@1"))
         };
         if let Some(operation) = IntegerOperation::from_definition_id(definition.id.as_str())
             && !(operation.shared() && decimal(operation.input_ports()[0]))
         {
-            let ty = request
-                .signature()
-                .ports
-                .iter()
-                .find(|port| port.port_id.as_str() == operation.input_ports()[0])
-                .and_then(|port| port.ty.as_ref())
-                .ok_or(ResolveError::Contract)?;
+            let ty = port_type(request, operation.input_ports()[0])?;
             let kernel = self
                 .resolve_integer(
                     request.snapshot().clone(),
@@ -78,10 +89,7 @@ impl PureKernelResolver for MathPackage {
                     ty,
                     request.config(),
                 )
-                .map_err(|error| match error {
-                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
-                    _ => ResolveError::Unavailable,
-                })?;
+                .map_err(unbound)?;
             return Ok(KernelBinding {
                 inputs: ports(operation.input_ports())?,
                 outputs: ports(&[operation.output_port()])?,
@@ -114,10 +122,7 @@ impl PureKernelResolver for MathPackage {
                     request.config_version(),
                     request.config(),
                 )
-                .map_err(|error| match error {
-                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
-                    _ => ResolveError::Unavailable,
-                })?;
+                .map_err(unbound)?;
             let inputs: Vec<&str> = kernel.input_ports().iter().map(String::as_str).collect();
             return Ok(KernelBinding {
                 inputs: ports(&inputs)?,
@@ -127,13 +132,7 @@ impl PureKernelResolver for MathPackage {
         }
         if let Some(operation) = CollectionOperation::from_definition_id(definition.id.as_str()) {
             let first = operation.inputs()[0].0;
-            let container = request
-                .signature()
-                .ports
-                .iter()
-                .find(|port| port.port_id.as_str() == first)
-                .and_then(|port| port.ty.as_ref())
-                .ok_or(ResolveError::Contract)?;
+            let container = port_type(request, first)?;
             let kernel = self
                 .resolve_collection(
                     request.snapshot().clone(),
@@ -143,10 +142,7 @@ impl PureKernelResolver for MathPackage {
                     container,
                     request.config(),
                 )
-                .map_err(|error| match error {
-                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
-                    _ => ResolveError::Unavailable,
-                })?;
+                .map_err(unbound)?;
             let inputs: Vec<&str> = operation.inputs().iter().map(|(name, _)| *name).collect();
             return Ok(KernelBinding {
                 inputs: ports(&inputs)?,
@@ -172,13 +168,7 @@ impl PureKernelResolver for MathPackage {
             });
         }
         if let Some(operation) = FloatOperation::from_definition_id(definition.id.as_str()) {
-            let ty = request
-                .signature()
-                .ports
-                .iter()
-                .find(|port| port.port_id.as_str() == operation.input_ports()[0])
-                .and_then(|port| port.ty.as_ref())
-                .ok_or(ResolveError::Contract)?;
+            let ty = port_type(request, operation.input_ports()[0])?;
             let kernel = self
                 .resolve_float(
                     request.snapshot().clone(),
@@ -188,10 +178,7 @@ impl PureKernelResolver for MathPackage {
                     ty,
                     request.config(),
                 )
-                .map_err(|error| match error {
-                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
-                    _ => ResolveError::Unavailable,
-                })?;
+                .map_err(unbound)?;
             return Ok(KernelBinding {
                 inputs: ports(operation.input_ports())?,
                 outputs: ports(&[operation.output_port()])?,
@@ -202,30 +189,20 @@ impl PureKernelResolver for MathPackage {
             let [a, b] = comparison.input_ports() else {
                 return Err(ResolveError::Contract);
             };
-            let ty = |name: &str| {
-                request
-                    .signature()
-                    .ports
-                    .iter()
-                    .find(|port| port.port_id.as_str() == name)
-                    .and_then(|port| port.ty.clone())
-            };
-            let ty = ty(a)
-                .filter(|ty_a| ty(b).as_ref() == Some(ty_a))
-                .ok_or(ResolveError::Contract)?;
+            let ty = port_type(request, a)?;
+            if port_type(request, b)? != ty {
+                return Err(ResolveError::Contract);
+            }
             let resolved = self
                 .resolve_comparison(
                     request.snapshot().clone(),
                     provider,
                     definition,
                     request.config_version(),
-                    &ty,
+                    ty,
                     request.config(),
                 )
-                .map_err(|error| match error {
-                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
-                    _ => ResolveError::Unavailable,
-                })?;
+                .map_err(unbound)?;
             return Ok(KernelBinding {
                 inputs: ports(comparison.input_ports())?,
                 outputs: ports(&[comparison.output_port()])?,
@@ -238,14 +215,7 @@ impl PureKernelResolver for MathPackage {
         let args: TypeArgs = if !operation.is_numeric() {
             Default::default()
         } else {
-            let ty = request
-                .signature()
-                .ports
-                .iter()
-                .find(|port| port.port_id.as_str() == inputs[0])
-                .and_then(|port| port.ty.clone())
-                .ok_or(ResolveError::Contract)?;
-            [("T".into(), ty)].into()
+            [("T".into(), port_type(request, inputs[0])?.clone())].into()
         };
         let kernel = MathPackage::resolve(
             self,
@@ -284,85 +254,20 @@ const CONTRACT: KernelFault = KernelFault {
 };
 impl PureKernel for Native {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
-        match self {
-            Self::Integer(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Json(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Nominal(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Collection(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Text(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Float(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: error.message(),
-                })?;
-            }
-            Self::Math(kernel) => {
-                let [output] = outputs else {
-                    return Err(CONTRACT);
-                };
-                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code().into(),
-                    message_key: error.message_key().into(),
-                    message: match error {
-                        crate::KernelError::InputContract => CONTRACT.message,
-                        other => other.message(),
-                    },
-                })?;
-            }
+        let evaluated = match self {
+            Self::Integer(kernel) => kernel.evaluate(inputs),
+            Self::Json(kernel) => kernel.evaluate(inputs),
+            Self::Nominal(kernel) => kernel.evaluate(inputs),
+            Self::Collection(kernel) => kernel.evaluate(inputs),
+            Self::Text(kernel) => kernel.evaluate(inputs),
+            Self::Float(kernel) => kernel.evaluate(inputs),
+            Self::Math(kernel) => kernel.evaluate(inputs),
             Self::Comparison(comparison) => {
                 let ([a, b], [output]) = (inputs, outputs) else {
                     return Err(CONTRACT);
                 };
                 *output = Value::Bool(comparison.evaluate(a, b).map_err(|_| CONTRACT)?);
+                return Ok(());
             }
             Self::Conversion(conversion) => {
                 let [input] = inputs else {
@@ -381,8 +286,21 @@ impl PureKernel for Native {
                     }
                     _ => return Err(CONTRACT),
                 }
+                return Ok(());
             }
-        }
+        };
+        let [output] = outputs else {
+            return Err(CONTRACT);
+        };
+        *output = evaluated.map_err(|error| KernelFault {
+            code: error.code().into(),
+            message_key: error.message_key().into(),
+            message: match (self, error) {
+                // Math names the broken contract the way every bundled kernel does.
+                (Self::Math(_), crate::KernelError::InputContract) => CONTRACT.message,
+                (_, other) => other.message(),
+            },
+        })?;
         Ok(())
     }
 }
