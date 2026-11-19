@@ -201,3 +201,161 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
     host.close(flow).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// One manual entry runs every file action in a chain, each on what the one before
+/// it made: bytes are written, grown and read back in part, text is appended, files
+/// and folders are copied, moved and deleted, and the results are kept in variables.
+#[test]
+fn every_file_action_runs_in_one_chain() {
+    use orange_host::{VarScope, Variable};
+    let root = std::env::temp_dir()
+        .join(format!("orange-files-chain-{}", std::process::id()))
+        .join("folder");
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut host, _events) =
+        Host::with_services(HostOptions::default(), vec![orange_files::package()]).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let manual = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let mut previous = manual;
+    // Each step: the action, then its inputs as a person types them.
+    let steps: [(&str, &[(&str, &str)]); 16] = [
+        (
+            orange_files::WRITE_BYTES,
+            &[
+                ("path", "data/a.bin"),
+                ("data", r#"{"type":"core/bytes@1","value":"AAEC"}"#),
+            ],
+        ),
+        (
+            "org.orange.files/append-bytes",
+            &[
+                ("path", "data/a.bin"),
+                ("data", r#"{"type":"core/bytes@1","value":"AwQ="}"#),
+            ],
+        ),
+        (
+            "org.orange.files/read-range",
+            &[
+                ("path", "data/a.bin"),
+                ("offset", r#"{"type":"core/u64@1","value":"1"}"#),
+                ("length", r#"{"type":"core/u64@1","value":"3"}"#),
+            ],
+        ),
+        (orange_files::READ_BYTES, &[("path", "data/a.bin")]),
+        (
+            orange_files::WRITE_TEXT,
+            &[("path", "notes.txt"), ("text", "one")],
+        ),
+        (
+            orange_files::APPEND_TEXT,
+            &[("path", "notes.txt"), ("text", "-two")],
+        ),
+        (orange_files::READ_TEXT, &[("path", "notes.txt")]),
+        (
+            orange_files::COPY,
+            &[("path", "notes.txt"), ("to", "copy.txt")],
+        ),
+        (
+            orange_files::MOVE,
+            &[("path", "copy.txt"), ("to", "moved.txt")],
+        ),
+        (orange_files::MAKE_DIRECTORY, &[("path", "empty/inner")]),
+        (
+            orange_files::COPY_DIRECTORY,
+            &[("path", "data"), ("to", "data-copy")],
+        ),
+        (
+            orange_files::MOVE_DIRECTORY,
+            &[("path", "data-copy"), ("to", "archive")],
+        ),
+        (orange_files::DELETE_DIRECTORY, &[("path", "empty")]),
+        (orange_files::DELETE, &[("path", "moved.txt")]),
+        (orange_files::EXISTS, &[("path", "archive/a.bin")]),
+        (orange_files::FILE_INFO, &[("path", "notes.txt")]),
+    ];
+    let mut nodes = Vec::new();
+    for (definition, inputs) in steps {
+        let action = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
+        for (port, value) in inputs {
+            assert!(
+                host.set_input(&mut draft, (action, port), Some(value))
+                    .unwrap(),
+                "{definition} {port}"
+            );
+        }
+        host.connect(&mut draft, (previous, "then"), (action, "in"))
+            .unwrap();
+        previous = action;
+        nodes.push(action);
+    }
+    // Keep what the reading steps found.
+    let mut kept = Vec::new();
+    for (step, output, ty) in [
+        (2, "data", "core/bytes@1"),
+        (3, "data", "core/bytes@1"),
+        (6, "text", "core/string@1"),
+        (14, "found", "core/bool@1"),
+        (15, "bytes", "core/u64@1"),
+    ] {
+        let variable = host
+            .declare_variable(
+                &mut draft,
+                &Variable {
+                    id: None,
+                    name: format!("{output} {step}"),
+                    ty: ty.into(),
+                    scope: VarScope::Run,
+                    persistent: false,
+                    initial: None,
+                },
+            )
+            .unwrap();
+        let store = host
+            .add_node(&mut draft, "core/set-variable", [0.0, 0.0])
+            .unwrap();
+        host.set_config(&mut draft, store, &json!({"variable": variable}))
+            .unwrap();
+        host.connect(&mut draft, (nodes[step], output), (store, "value"))
+            .unwrap();
+        host.connect(&mut draft, (previous, "then"), (store, "in"))
+            .unwrap();
+        previous = store;
+        kept.push(variable.parse::<VariableId>().unwrap());
+    }
+    let mut folder = host.declarations(&draft).connections.remove(0);
+    folder.settings = json!({"path": root.to_str().unwrap()});
+    host.declare_connection(&mut draft, &folder).unwrap();
+    let text = draft.text().unwrap();
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, manual, None).unwrap();
+    let read = |index: usize| {
+        let variable = kept[index];
+        host.inspect(flow, move |run| run.variable(variable).cloned())
+            .unwrap()
+    };
+    until("the chain to finish", || read(4).is_some());
+    let bytes = |value: Option<Value>| match value {
+        Some(Value::Bytes(data)) => data.as_ref().clone(),
+        other => panic!("not bytes: {other:?}"),
+    };
+    assert_eq!(bytes(read(0)), [1, 2, 3]);
+    assert_eq!(bytes(read(1)), [0, 1, 2, 3, 4]);
+    assert_eq!(
+        read(2),
+        Some(Value::Str(std::sync::Arc::new("one-two".into())))
+    );
+    assert_eq!(read(3), Some(Value::Bool(true)));
+    assert_eq!(read(4), Some(Value::U64(7)));
+    assert!(root.join("archive/a.bin").is_file());
+    assert!(!root.join("data-copy").exists());
+    assert!(!root.join("empty").exists());
+    assert!(!root.join("moved.txt").exists());
+    assert!(!root.join("copy.txt").exists());
+    host.close(flow).unwrap();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}

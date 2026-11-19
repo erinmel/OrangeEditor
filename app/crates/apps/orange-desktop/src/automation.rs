@@ -15,17 +15,7 @@ fn desktop_host() -> (Host, orange_host::Events) {
 #[test]
 fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let (mut host, _) = desktop_host();
-    let mut template: Json = serde_json::from_str(&orange_host::new_document().unwrap()).unwrap();
-    template["types"] = json!([
-        {"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name": "Mode", "kind": "enum",
-            "variants": [
-                {"id": "ready", "name": "Ready"},
-                {"id": "message", "name": "Message", "payload": "core/string@1"}
-            ]},
-        {"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6e", "name": "Item", "kind": "record",
-            "fields": [{"id": "name", "name": "Name", "type": "core/string@1"}]}
-    ]);
-    let template = template.to_string();
+    let template = typed_template();
     let nodes = host.search_nodes("", "en");
     for locale in ["en", "es"] {
         let mut labels = std::collections::BTreeMap::new();
@@ -102,6 +92,27 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
         nodes.len(),
         conversions.len()
     );
+}
+
+/// The template's enum, whose `message` choice carries text.
+const MODE_TYPE: &str = "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d";
+/// The template's record, with one text field `name`.
+const ITEM_TYPE: &str = "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6e";
+
+/// A new document that declares an enum with a payload choice and a record, so the
+/// nodes that need a declared type can be added.
+fn typed_template() -> String {
+    let mut template: Json = serde_json::from_str(&orange_host::new_document().unwrap()).unwrap();
+    template["types"] = json!([
+        {"id": MODE_TYPE, "name": "Mode", "kind": "enum",
+            "variants": [
+                {"id": "ready", "name": "Ready"},
+                {"id": "message", "name": "Message", "payload": "core/string@1"}
+            ]},
+        {"id": ITEM_TYPE, "name": "Item", "kind": "record",
+            "fields": [{"id": "name", "name": "Name", "type": "core/string@1"}]}
+    ]);
+    template.to_string()
 }
 
 fn check_round_trip(host: &Host, draft: &orange_host::Draft, label: &str) -> String {
@@ -371,4 +382,218 @@ fn desktop_http_request_reports_the_actual_socket_response() {
     }
     reply.join().unwrap();
     editor.stop(&mut host);
+}
+
+/// The type arguments of `ty`, such as `["core/string@1", "core/i64@1"]` for a map.
+fn type_arguments(ty: &str) -> Vec<&str> {
+    let Some(open) = ty.find('<') else {
+        return Vec::new();
+    };
+    let inner = &ty[open + 1..ty.len() - 1];
+    let (mut depth, mut start, mut parts) = (0, 0, Vec::new());
+    for (index, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(inner[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(inner[start..].trim());
+    parts
+}
+
+/// The stored value of a sample of type `ty` (12 §6.1), the `n`th of its kind so map
+/// keys differ; `None` for a type this test does not make values of. Floats keep their
+/// own `bits` form and are made only at the top level.
+fn sample_value(ty: &str, n: u32) -> Option<Json> {
+    let base = ty.split('<').next().unwrap_or(ty);
+    Some(match base {
+        // 64-bit integers are stored as text, smaller ones as numbers.
+        "core/i64@1" | "core/u64@1" => json!((n + 1).to_string()),
+        "core/i32@1" | "core/u32@1" => json!(n + 1),
+        // Valid JSON text, so Parse JSON and JSON paths have something to read.
+        "core/string@1" => json!(if n == 0 { "[1]" } else { "b" }),
+        "core/bool@1" => json!(true),
+        "core/json@1" => json!(if n == 0 {
+            r#"[{"a":1},2]"#
+        } else {
+            r#"{"a":[1,2],"b":"text"}"#
+        }),
+        "core/bytes@1" => json!("AP8="),
+        // A declared type is named `local/t<its ID without hyphens>@1`.
+        _ if ty.contains(&ITEM_TYPE.replace('-', "")) => json!({"name": "x"}),
+        _ if ty.contains(&MODE_TYPE.replace('-', "")) => {
+            json!({"variant": "message", "payload": "x"})
+        }
+        "core/list@1" => {
+            let [item] = type_arguments(ty)[..] else {
+                return None;
+            };
+            json!([sample_value(item, 0)?, sample_value(item, 1)?])
+        }
+        "core/option@1" => {
+            let [item] = type_arguments(ty)[..] else {
+                return None;
+            };
+            json!({"some": sample_value(item, n)?})
+        }
+        "core/map@1" => {
+            let [key, value] = type_arguments(ty)[..] else {
+                return None;
+            };
+            json!([
+                [sample_value(key, 0)?, sample_value(value, 0)?],
+                [sample_value(key, 1)?, sample_value(value, 1)?]
+            ])
+        }
+        _ => return None,
+    })
+}
+
+/// A sample literal for an input of type `ty`; `variant` 1 gives a JSON object
+/// instead of an array.
+fn sample(ty: &str, variant: u32) -> Option<Json> {
+    let literal = match ty {
+        "core/f64@1" => json!({"bits": format!("{:016x}", 0.5f64.to_bits())}),
+        "core/f32@1" => json!({"bits": format!("{:08x}", 0.5f32.to_bits())}),
+        "core/json@1" => json!({"value": sample_value(ty, variant)?}),
+        _ => json!({"value": sample_value(ty, 0)?}),
+    };
+    let mut literal = literal;
+    literal["type"] = json!(ty);
+    Some(literal)
+}
+
+/// What one node gave when its outputs were computed from sample inputs.
+enum Computed {
+    Values,
+    Fault(String),
+    Unfilled(String),
+}
+
+/// Adds `definition` to a fresh draft, gives every open type parameter `ty`, fills its
+/// inputs with samples and computes its outputs without running anything.
+fn compute(host: &mut Host, template: &str, definition: &str, ty: &str, variant: u32) -> Computed {
+    let mut draft = host.draft(template).unwrap();
+    let node = host.add_node(&mut draft, definition, [0.0, 0.0]).unwrap();
+    let card = host.draft_view(&draft).unwrap().nodes[0].clone();
+    for choice in &card.types {
+        if choice.chosen.is_none() && choice.found.is_none() {
+            let _ = host.choose_type(&mut draft, node, &choice.name, Some(ty));
+        }
+    }
+    let card = host.draft_view(&draft).unwrap().nodes[0].clone();
+    for port in card.ports.iter().filter(|port| port.input && !port.exec) {
+        if port.value.is_some() || port.default.is_some() {
+            continue;
+        }
+        if let Some(literal) = port.ty.as_deref().and_then(|ty| sample(ty, variant)) {
+            let _ = host.set_input(
+                &mut draft,
+                (node, port.id.as_str()),
+                Some(&literal.to_string()),
+            );
+        }
+    }
+    let outputs: Vec<_> = card
+        .ports
+        .iter()
+        .filter(|port| !port.input && !port.exec)
+        .map(|port| (node, port.id.parse().unwrap()))
+        .collect();
+    match host.preview(&draft.text().unwrap(), &outputs) {
+        Ok(values) => match values.into_iter().find_map(|value| value.value.err()) {
+            None => Computed::Values,
+            Some((_, fault)) => Computed::Fault(format!("{}: {}", fault.code, fault.message)),
+        },
+        Err(error) => Computed::Unfilled(format!("{error:?}").chars().take(200).collect()),
+    }
+}
+
+/// Every node without control flow computes its outputs from sample inputs, for the
+/// first candidate type that fits. Live and volatile nodes, which only a running flow
+/// computes, and loop zones, which work only in pairs, are counted apart: the packages'
+/// own tests run those.
+#[test]
+fn every_pure_catalogue_node_computes_its_outputs_from_sample_inputs() {
+    let (mut host, _) = desktop_host();
+    let template = typed_template();
+    let candidates = [
+        "core/i64@1",
+        "core/f64@1",
+        "core/string@1",
+        "core/bool@1",
+        "core/json@1",
+        "core/list@1<core/i64@1>",
+    ];
+    let (mut computed, mut faults, mut unfilled, mut flows) = (0, Vec::new(), Vec::new(), 0);
+    let (mut live, mut zones) = (Vec::new(), Vec::new());
+    for found in host.search_nodes("", "en") {
+        let mut draft = host.draft(&template).unwrap();
+        host.add_node(&mut draft, &found.definition, [0.0, 0.0])
+            .unwrap();
+        let card = host.draft_view(&draft).unwrap().nodes[0].clone();
+        let has_outputs = card.ports.iter().any(|port| !port.input && !port.exec);
+        if card.entry || card.ports.iter().any(|port| port.exec) || !has_outputs {
+            flows += 1;
+            continue;
+        }
+        let mut last = None;
+        'tries: for ty in candidates {
+            for variant in [0, 1] {
+                match compute(&mut host, &template, &found.definition, ty, variant) {
+                    Computed::Values => {
+                        last = None;
+                        computed += 1;
+                        break 'tries;
+                    }
+                    other => last = Some(other),
+                }
+            }
+        }
+        match last {
+            Some(Computed::Fault(fault)) => faults.push(format!("{}: {fault}", found.definition)),
+            // Streams and live values exist only in a running flow (so does a stream
+            // input's value), and Now and Random
+            // change on every read: preview never computes them by design.
+            Some(Computed::Unfilled(why))
+                if why.contains("ExportType")
+                    || why.contains("UnsupportedNode")
+                    || why.contains(r#"PortId("stream")"#) =>
+            {
+                live.push(found.definition.clone());
+            }
+            // Loop zones work only as a begin and end pair.
+            Some(Computed::Unfilled(why)) if why.contains("ZoneStructure") => {
+                zones.push(found.definition.clone());
+            }
+            Some(Computed::Unfilled(why)) => unfilled.push(format!("{}: {why}", found.definition)),
+            _ => {}
+        }
+    }
+    eprintln!(
+        "computed {computed}, faulted {}, not filled {}, live or volatile {}, zones {}, with control flow {flows}",
+        faults.len(),
+        unfilled.len(),
+        live.len(),
+        zones.len()
+    );
+    assert!(
+        unfilled.is_empty(),
+        "nodes this test could not give inputs:
+{}",
+        unfilled.join(
+            "
+"
+        )
+    );
+    assert!(
+        faults.is_empty(),
+        "nodes that fault on sample inputs:\n{}",
+        faults.join("\n")
+    );
 }
