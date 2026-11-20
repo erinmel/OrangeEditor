@@ -233,6 +233,7 @@ fn toolbar_hover_fills_the_button_around_its_centered_icon() {
     let ctx = egui::Context::default();
     icons::install(&ctx);
     theme::apply(&ctx);
+    ctx.style_mut_of(ctx.theme(), |style| style.animation_time = 0.0);
     let mut rects = [egui::Rect::NOTHING; 4];
     for hovered in [None, Some(0), Some(1), Some(2), Some(3)] {
         let events = hovered

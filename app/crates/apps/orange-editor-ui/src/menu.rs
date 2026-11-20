@@ -489,7 +489,7 @@ mod tests {
         let wires = editor.graph().unwrap().wires.clone();
         editor.open_menu(MenuTarget::Node(node), [0.0; 2], egui::Pos2::ZERO);
         assert!(editor.run_command(&mut host, Command::Rename));
-        assert_eq!(editor.renaming_node.as_ref().unwrap().0, node);
+        assert_eq!(editor.renaming_node.as_ref().unwrap().node, node);
         assert!(editor.rename_node(&mut host, node, "  New label  "));
         assert!(editor.text().unwrap().contains("New label"));
         assert_eq!(editor.graph().unwrap().wires, wires);

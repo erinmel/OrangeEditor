@@ -222,45 +222,15 @@ fn button_face(
     icon_color: Option<egui::Color32>,
     idle_fill: Option<egui::Color32>,
 ) -> egui::Response {
-    let size = egui::vec2(BUTTON_WIDTH, ui.spacing().interact_size.y);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact(&response);
-        let highlighted = response.hovered() || response.is_pointer_button_down_on();
-        let fill = match idle_fill {
-            Some(fill) if highlighted => fill.gamma_multiply(1.18),
-            Some(fill) => fill,
-            None if highlighted => visuals.bg_fill,
-            None => egui::Color32::TRANSPARENT,
-        };
-        let stroke = if response.has_focus() {
-            ui.visuals().selection.stroke
-        } else {
-            egui::Stroke::NONE
-        };
-        let painter = ui.painter();
-        painter.rect(
-            rect,
-            visuals.corner_radius,
-            fill,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
-
-        let color = icon_color.unwrap_or(visuals.fg_stroke.color);
-        paint_command(
-            ui,
-            egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0)),
-            icon,
-            color,
-        );
-    }
-    if let Some(cursor) = ui.visuals().interact_cursor
-        && response.hovered()
-    {
-        ui.ctx().set_cursor_icon(cursor);
-    }
-    response
+    orange_ui_controls::icon_button(
+        ui,
+        BUTTON_WIDTH,
+        icon_color,
+        idle_fill,
+        |ui, rect, color| {
+            paint_command(ui, rect, icon, color);
+        },
+    )
 }
 
 fn graph_icon(icon: char) -> Option<Lucide> {

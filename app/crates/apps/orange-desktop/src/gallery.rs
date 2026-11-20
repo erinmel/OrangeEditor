@@ -38,7 +38,7 @@ fn write_package_galleries() {
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     for (index, conversion) in host.conversions().iter().step_by(6).take(12).enumerate() {
         #[expect(clippy::cast_precision_loss, reason = "a small grid")]
-        let at = [(index % 4) as f32 * 260.0, (index / 4) as f32 * 200.0];
+        let at = [(index % 4) as f32 * 350.0, (index / 4) as f32 * 240.0];
         host.add_conversion(&mut draft, conversion, at).unwrap();
     }
     std::fs::write(
@@ -60,7 +60,7 @@ fn write_package_galleries() {
             let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
             for (index, id) in chunk.iter().enumerate() {
                 #[expect(clippy::cast_precision_loss, reason = "a small grid")]
-                let at = [(index % 4) as f32 * 260.0, (index / 4) as f32 * 330.0];
+                let at = [(index % 4) as f32 * 385.0, (index / 4) as f32 * 445.0];
                 if let Err(error) = host.add_node(&mut draft, id, at) {
                     eprintln!("{id}: {error}");
                 }

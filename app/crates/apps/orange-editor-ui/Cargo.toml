@@ -13,6 +13,7 @@ egui-lucide.workspace = true
 egui_extras.workspace = true
 egui_material_icons.workspace = true
 orange-host = { path = "../../platform/orange-host", version = "=0.0.0" }
+orange-ui-controls = { path = "../../platform/orange-ui-controls", version = "=0.0.0" }
 serde_json.workspace = true
 
 [lints]

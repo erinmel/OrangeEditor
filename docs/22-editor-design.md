@@ -28,7 +28,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Area | Decision |
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
-| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented control for Dots, Lines and Hidden, and a slider for 12, 24, 36 or 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom percentage opens Fit and Actual size. |
+| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented radio group for Dots, Lines and Hidden, with one highlighted choice and arrow-key navigation. The spacing slider shows four stops at 12, 24, 36 and 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom percentage opens a continuous slider, Fit and Actual size. The slider keeps the center point of the viewport fixed. |
 | Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Execution ports are diamonds, stream ports are squares, and other data ports are circles. Execution wires are thicker. Connector hues are adjusted for contrast against the canvas and card surfaces. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
@@ -42,6 +42,10 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Titles.** The header uses a category symbol such as a calculator for math or a
   speaker for audio. The node name appears white in dark mode. Double-click the
   name in Properties or on the card, or choose **Rename node** in the card menu.
+  Rename replaces the title where it was double-clicked, including on nodes supplied
+  by a package. The card menu opens the field in Properties. Enter applies the name.
+  Escape or leaving the field discards it. Keep the title baseline in the same
+  position in display and edit mode.
   At overview zoom, titles keep a readable minimum size and truncate to the card.
   Clearing it restores the type label. The tooltip on a renamed card still identifies
   its node type. The edit participates in Undo.
@@ -76,6 +80,8 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   field; On timer shows its interval; an event trigger shows the event it waits for.
   Rising Edge and Falling Edge in the palette and canvas search place a When
   trigger with the corresponding transition and a boolean input.
+  Guard places a Branch with a boolean condition. Wire its True output to
+  continue when the condition passes.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 * **Arithmetic.** Add and other arithmetic cards use their named ports and values.
   Comparison cards may retain a comparison expression. Ordinary arithmetic has
@@ -83,10 +89,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Configuration templates.** Scalar controls are drawn from each definition's
   schema. Network connection references are dropdowns of compatible saved
   profiles and display the selected name. Profile editing lives in Connections.
-  The default picker order is HTTP/HTTPS, WebSocket, AMQP, MQTT, Folder, Audio Source
-  and Audio Output, followed by other adapters. The desktop Folder form opens the
+  The default picker order is HTTP/HTTPS, WebSocket, AMQP, MQTT, Folder, then an Audio
+  group with the source and output adapters, followed by other adapters. The desktop Folder form opens the
   native picker for its root. File nodes using that profile store paths relative
-  to the chosen root. Embeddings without a dialog handler show a text field.
+  to the chosen root. The path field names the folder connection, and desktop picker
+  errors name the connection when it is known. Embeddings without a dialog handler
+  show a text field.
   Device nodes have an inline device selector. Fields preserve their JSON types.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.
@@ -96,6 +104,23 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   glyphs use the same centered renderer and support a host painter. The live
   shortcut is shown when assigned. Dropdowns use the local surface fill, a
   centered chevron and the theme's selection outline on focus or when open.
+
+  The private `orange-ui-controls` crate owns button roles, dropdowns, search
+  layout, icon button geometry, disclosure rows, segmented radios and sliders. The semantic
+  palette exposes text, muted text, panel, dialog and inset layers, plus colors
+  and foregrounds for primary, secondary and destructive actions. Apps can
+  override those tokens per egui context. Tertiary actions and quiet menu
+  buttons gain emphasis on hover. Hover and press transitions follow egui's
+  animation time, including immediate state changes when it is zero.
+  Apps supply their own icons and labels. Connection form actions wrap as the
+  panel narrows, and the segmented control stacks its choices in one frame.
+  Two-option and multi-option selectors share an indicator that moves to the
+  selected segment using the same animation time. A short underline shows keyboard
+  focus while the indicator moves.
+  Continuous and stepped sliders share a thin rail and pill-shaped thumb. The
+  stepped control draws small borderless pills in the thumb's shape that blend
+  into the active or inactive rail, optionally labels values below it,
+  and changes by one step with the arrow keys. Grid spacing shows the labels.
 
 ### 3.1 Card anatomy (rules, 2026-11-18, revised)
 
@@ -176,6 +201,9 @@ check every card against these rules after a rendering change.
 Palette and canvas search use the same full-width name rows. Purpose and category
 appear together on hover. Up and Down move the highlight, and Enter adds the
 highlighted result. Dragging a result shows a placement preview under the pointer.
+The palette uses the shared search field with a clear action and compact category
+rows with disclosure chevrons. Node search settings use a segmented control with
+Names only on the left and Node cards on the right.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts and the words of each node's description, in the
@@ -207,18 +235,21 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   ungroups the selected frame. Alt+G switches snapping.
 * The desktop title follows the current file name. Running, Stopped or No graph
   and the unsaved indicator remain in the status bar.
-* Settings uses a centered, resizable dialog with a shared search field, an
-  independently scrolling content pane and a fixed Done button. General groups Language
+* Settings uses a centered, resizable dialog with a search field above the text
+  navigation in the left sidebar, an independently scrolling content pane, and a
+  fixed Done button. General groups Language
   and Node search. Node search displays either names or read-only canvas cards with
   their ports and charts directly in the results. The same choice applies to the node
-  tree and canvas quick-add. The section
-  list becomes a selector in compact windows. Search finds settings sections, shortcut
+  tree and canvas quick-add. Search and the section selector share a single strip in
+  compact windows. Search finds settings sections, shortcut
   actions and key combinations. Display and canvas groups controls by interface,
+  including the persisted System, Light, and Dark appearance choices,
   panels and canvas. Interface scale applies when a percentage is chosen in
   its dropdown. At large scales or narrow widths, the editing commands can scroll
   horizontally so Settings and the run controls stay visible.
   The Keyboard shortcuts page displays grouped, left-aligned action labels and
-  single-line bindings. Select a binding to edit it in the same table row. Type
+  single-line bindings. Select a binding to replace its cell with an inline field
+  and compact actions while keeping the same row height. Type
   a replacement or use Record keys to capture a chord. Shortcuts can be removed or reset, and conflicts require
   explicit reassignment. The desktop saves bindings, node language and canvas preferences
   under the user's configuration directory on exit. Graph documents carry none of
@@ -288,15 +319,24 @@ modal, and `Surface::Card` for fields drawn on the canvas. Fills and borders are
 derived from that surface and the active theme. Canvas controls retain the card's
 zoom-scaled dimensions.
 
+Use the shared 4, 8, and 12 point spacing increments for gaps, control insets, and
+separation between layout regions. Standard controls use a 28 point minimum
+height and a 6 point radius. Settings uses the panel layer for its sidebar and
+footer and the dialog layer for its content. Light and Dark provide the same
+semantic roles.
+
 | Control | Rule |
 | --- | --- |
 | Dropdown | Use `Dropdown::show_select` with a centered chevron and a selected value or prompt. A borderless fill distinguishes it from its surface. Use an inset fill on cards and a stronger fill on focus or open. Truncate long selections inside fixed-width fields. |
-| Search | Use `controls::search` for dock lists. Inset the field from the dock edge. Show a search icon and a hint naming what the field matches. The clear action appears with a query and returns focus to the field. |
+| Search | Use `controls::search` for dock lists. Inset the field from the dock edge. Center the icon, text, and clear action vertically within the input. Keep hint copy short enough for a sidebar. Clearing the text returns focus to the field. |
 | Primary button | Use `Action::Primary` for the main confirmation in a dialog. The selection color supplies its fill and border. |
-| Secondary button | Use `Action::Secondary` for ordinary framed commands and secondary dialog actions. Derive a neutral fill and outline from the surrounding surface. |
+| Secondary button | Use `Action::Secondary` for ordinary commands with a neutral fill. |
+| Outlined button | Use `Action::Outline` for Cancel, Close, and secondary dialog actions. Its resting fill matches the surrounding surface. |
 | Destructive button | Use `Action::Destructive` for commands that remove saved data. Pair a restrained error tint with an explicit label. Clear log is a neutral command with a centered trash icon and is disabled for an empty log. |
-| Toggle | Use `Action::Toggle` for a persistent on/off control or a selected filter. Keep unselected filters flat. Use the selection fill for the active state and expose the state through the label or accessibility role. |
+| Toggle | Use `Action::Toggle` for pressed commands and filters, and the labeled toggle for a Boolean setting. Keep inactive toggles flat. Toggle and segmented controls share the selection fill and focus color. |
 | Menu row | Use `Action::Menu` for commands in context menus. Align the shared command icon, label and shortcut. The row gains a background on hover or focus. |
+| List row | Use the shared raised row surface for clickable search results. The palette owns node names, card previews, and the drag payload. |
+| Dialog actions | Put Cancel first, followed by one filled confirmation, in the shared recessed footer. Use the primary color for actions like Install and Save, and the destructive color for Remove. |
 
 Toolbar icon buttons and list rows retain their compact shapes and visible hover
 and focus states. Use the shared controls whenever a choice or action needs a

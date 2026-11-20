@@ -1,9 +1,11 @@
 //! Configurable shortcuts and presentation preferences.
 #[cfg(test)]
 mod tests;
+use crate::controls::{self, Action as ButtonRole, Surface};
 use crate::i18n::{t, tf};
 use crate::icons;
 use egui::{Key, KeyboardShortcut, Modifiers};
+use orange_ui_controls::{CONTROL_HEIGHT, SPACE_SMALL, Theme};
 use std::collections::BTreeMap;
 
 type Action = (&'static str, &'static str, Key, Modifiers);
@@ -151,9 +153,9 @@ fn format_shortcut(binding: KeyboardShortcut) -> String {
 fn shortcut_row(ui: &mut egui::Ui, width: f32, height: f32) -> (egui::Rect, [egui::Rect; 2]) {
     let (row, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let inner = row.shrink2(egui::vec2((width * 0.05).min(10.0), 0.0));
-    let shortcut_width = (inner.width() * 0.42)
-        .clamp(108.0, 180.0)
-        .min(inner.width() * 0.52);
+    let shortcut_width = (inner.width() * 0.48)
+        .clamp(142.0, 252.0)
+        .min(inner.width() * 0.64);
     let binding = egui::Rect::from_min_max(
         egui::pos2(inner.right() - shortcut_width, inner.top()),
         inner.max,
@@ -344,6 +346,7 @@ impl crate::Editor {
               "grid_step":self.canvas.grid_step,"grid_style":self.canvas.grid_style.key(),
               "scroll_pans":self.canvas.scroll_pans,"language":self.language,
               "scale":self.preferred_scale.unwrap_or(1.0),"tab":self.tab.key(),
+              "appearance":self.preferred_theme.map(egui::ThemePreference::name),
               "node_search_previews":self.node_search_previews})
     }
     /// Restores supported preferences while preserving defaults for absent settings.
@@ -365,6 +368,12 @@ impl crate::Editor {
             .filter(|scale| scale.is_finite() && (0.75..=2.0).contains(scale))
             .map(|scale| scale as f32);
         self.scale_applied = false;
+        self.preferred_theme = match value["appearance"].as_str() {
+            Some("light") => Some(egui::ThemePreference::Light),
+            Some("dark") => Some(egui::ThemePreference::Dark),
+            Some("system") => Some(egui::ThemePreference::System),
+            _ => None,
+        };
         self.node_search_previews = value["node_search_previews"].as_bool().unwrap_or(false);
         if let Some(tab) = value["tab"].as_str().and_then(crate::Tab::from_key) {
             self.tab = tab;
@@ -405,38 +414,31 @@ impl crate::Editor {
     }
 
     pub(crate) fn keybindings_ui(&mut self, ui: &mut egui::Ui, query: &str) {
-        let reset = |ui: &mut egui::Ui| {
-            ui.add(
-                egui::Button::new((icons::text(icons::REFRESH), t("restore-default-shortcuts")))
-                    .fill(ui.visuals().faint_bg_color),
-            )
-            .clicked()
-        };
-        let reset_requested = if ui.available_width() >= 510.0 {
-            ui.horizontal(|ui| {
+        let reset_requested = ui
+            .horizontal(|ui| {
+                ui.strong(t("shortcuts-heading"))
+                    .on_hover_text(t("settings-shortcuts-help"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let requested = reset(ui);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.weak(t("settings-shortcuts-help"));
-                    });
-                    requested
+                    controls::button(
+                        ui,
+                        Surface::Dialog,
+                        ButtonRole::Outline,
+                        true,
+                        egui::Button::new(t("restore-default-shortcuts")).truncate(),
+                    )
+                    .clicked()
                 })
                 .inner
             })
-            .inner
-        } else {
-            ui.weak(t("settings-shortcuts-help"));
-            reset(ui)
-        };
+            .inner;
         if reset_requested {
             self.canvas.keys = Keymap::default();
             self.shortcut_edit = None;
         }
-        ui.add_space(10.0);
         let searched_chord = parse_shortcut(query);
         let table_width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - 6.0).max(0.0);
-        let (header, [action, binding]) = shortcut_row(ui, table_width, 30.0);
+        let (header, [action, binding]) = shortcut_row(ui, table_width, CONTROL_HEIGHT);
         ui.painter()
             .rect_filled(header, 5.0, ui.visuals().faint_bg_color);
         for (cell, label) in [(action, "shortcut-action"), (binding, "shortcut-binding")] {
@@ -468,8 +470,8 @@ impl crate::Editor {
                         }
                         any = true;
                         if !headed {
-                            ui.add_space(8.0);
-                            let (_, [heading, _]) = shortcut_row(ui, table_width, 25.0);
+                            ui.add_space(SPACE_SMALL);
+                            let (_, [heading, _]) = shortcut_row(ui, table_width, 19.0);
                             put_left(
                                 ui,
                                 heading,
@@ -494,31 +496,46 @@ impl crate::Editor {
         label: &str,
         keys: String,
     ) {
+        let (row, [action_cell, binding_cell]) = shortcut_row(ui, width, CONTROL_HEIGHT + 2.0);
+        let theme = Theme::of(ui);
+        let divider = egui::Stroke::new(1.0, theme.border.gamma_multiply(0.6));
+        ui.painter().hline(row.x_range(), row.bottom(), divider);
+        let action_label = put_left(
+            ui,
+            action_cell,
+            egui::Label::new(egui::RichText::new(label).color(theme.text)).truncate(),
+        );
         if self
             .shortcut_edit
             .as_ref()
             .is_some_and(|edit| edit.action == action)
         {
-            self.edit_shortcut_ui(ui);
+            self.edit_shortcut_ui(ui, row, binding_cell, action_label.id);
             return;
         }
-        let (row, [action_cell, binding_cell]) = shortcut_row(ui, width, 35.0);
         let current = self.canvas.keys.0.get(action).copied().flatten();
-        let visuals = ui.visuals();
-        let divider = visuals.widgets.noninteractive.bg_stroke;
-        ui.painter().hline(row.x_range(), row.bottom(), divider);
-        let action_label = put_left(ui, action_cell, egui::Label::new(label).truncate());
-        let shortcut = ui
-            .put(
-                binding_cell.shrink2(egui::vec2(0.0, 4.0)),
-                egui::Button::new(egui::RichText::new(&keys).monospace())
-                    .shortcut_text(icons::text(icons::EDIT))
-                    .fill(ui.visuals().extreme_bg_color)
-                    .stroke(divider)
-                    .truncate(),
-            )
-            .labelled_by(action_label.id)
-            .on_hover_text(format!("{}\n{keys}", t("shortcut-edit")));
+        let cell = binding_cell.shrink2(egui::vec2(0.0, 3.0));
+        let mut binding_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("shortcut-binding", action))
+                .max_rect(cell)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        binding_ui.spacing_mut().interact_size.y = cell.height();
+        binding_ui.spacing_mut().button_padding.y = 2.0;
+        let shortcut = controls::button(
+            &mut binding_ui,
+            Surface::Card,
+            ButtonRole::Outline,
+            true,
+            egui::Button::new(())
+                .left_text(egui::RichText::new(&keys).monospace())
+                .shortcut_text(icons::text(icons::EDIT))
+                .min_size(cell.size())
+                .truncate(),
+        )
+        .labelled_by(action_label.id)
+        .on_hover_text(format!("{}\n{keys}", t("shortcut-edit")));
         if shortcut.clicked() {
             self.begin_shortcut_edit(action, current);
         }
@@ -548,7 +565,13 @@ impl crate::Editor {
         });
     }
 
-    fn edit_shortcut_ui(&mut self, ui: &mut egui::Ui) {
+    fn edit_shortcut_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: egui::Rect,
+        cell: egui::Rect,
+        label: egui::Id,
+    ) {
         let Some(mut edit) = self.shortcut_edit.take() else {
             return;
         };
@@ -581,56 +604,92 @@ impl crate::Editor {
         } else if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             return;
         }
-        let mut keep_editing = true;
-        let mut scroll_to_editor = edit.focus && !edit.recording;
-        let row = egui::Frame::new()
-            .fill(ui.visuals().faint_bg_color)
-            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-            .inner_margin(12)
-            .corner_radius(6)
-            .show(ui, |ui| {
-                ui.strong(action_label(edit.action));
-                let mut enter = false;
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let mut input = egui::TextEdit::singleline(&mut edit.text)
-                        .id(ui.make_persistent_id(("shortcut-entry", edit.action)))
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width((ui.available_width() - 135.0).max(90.0))
-                        .interactive(!edit.recording)
-                        .hint_text(t("shortcut-example"))
-                        .show(ui);
-                    scroll_to_editor |= input.response.changed();
-                    if !edit.recording && std::mem::take(&mut edit.focus) {
-                        use egui::text::{CCursor, CCursorRange};
-                        input.response.request_focus();
-                        input.state.cursor.set_char_range(Some(CCursorRange::two(
-                            CCursor::new(0),
-                            CCursor::new(edit.text.chars().count()),
-                        )));
-                        input.state.store(ui.ctx(), input.response.id);
-                    }
-                    enter = input.response.lost_focus()
-                        && ui.input(|state| state.key_pressed(Key::Enter));
-                    if ui
-                        .add_enabled(
-                            !edit.recording,
-                            egui::Button::new(if edit.recording {
-                                t("press-keys")
-                            } else {
-                                t("shortcut-record")
-                            }),
-                        )
-                        .clicked()
-                    {
-                        edit.recording = true;
-                    }
+        let scroll_to_editor = edit.focus && !edit.recording;
+        let mut recording_label = String::new();
+        let (enter, apply, cancel, remove) = {
+            let mut editor_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("shortcut-binding", edit.action))
+                    .max_rect(cell)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let ui = &mut editor_ui;
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().button_padding.x = 2.0;
+            ui.spacing_mut().button_padding.y = 2.0;
+            ui.spacing_mut().interact_size.y = 22.0;
+            let shown = if edit.recording {
+                &mut recording_label
+            } else {
+                &mut edit.text
+            };
+            let mut field = egui::TextEdit::singleline(shown)
+                .id(ui.make_persistent_id(("shortcut-entry", edit.action)))
+                .font(egui::TextStyle::Monospace)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(egui::vec2(0.0, 24.0))
+                .desired_width((cell.width() - 94.0).max(12.0))
+                .margin(egui::Margin::symmetric(3, 1))
+                .interactive(!edit.recording)
+                .hint_text(if edit.recording {
+                    t("press-keys")
+                } else {
+                    t("shortcut-example")
+                })
+                .show(ui);
+            let response = field.response.response.labelled_by(label);
+            if !edit.recording && std::mem::take(&mut edit.focus) {
+                use egui::text::{CCursor, CCursorRange};
+                response.request_focus();
+                field.state.cursor.set_char_range(Some(CCursorRange::two(
+                    CCursor::new(0),
+                    CCursor::new(edit.text.chars().count()),
+                )));
+                field.state.store(ui.ctx(), response.id);
+            }
+            let enter = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            let binding = parse_shortcut(&edit.text);
+            let can_apply = !edit.recording
+                && binding.is_some_and(|binding| {
+                    self.canvas.keys.conflict(edit.action, binding).is_none()
                 });
-                let binding = parse_shortcut(&edit.text);
-                let conflict = binding
-                    .and_then(|binding| self.canvas.keys.conflict(edit.action, binding))
-                    .map(str::to_owned);
-                if let Some(other) = &conflict {
+            if shortcut_edit_button(
+                ui,
+                icons::KEYBOARD,
+                t("shortcut-record"),
+                !edit.recording,
+                ButtonRole::Tertiary,
+            ) {
+                edit.recording = true;
+            }
+            let apply = shortcut_edit_button(
+                ui,
+                icons::CHECK,
+                t("shortcut-save"),
+                can_apply,
+                ButtonRole::Primary,
+            );
+            let cancel =
+                shortcut_edit_button(ui, icons::CLOSE, t("cancel"), true, ButtonRole::Tertiary);
+            let remove = shortcut_edit_button(
+                ui,
+                icons::DELETE,
+                t("remove-shortcut"),
+                self.canvas
+                    .keys
+                    .0
+                    .get(edit.action)
+                    .is_some_and(Option::is_some),
+                ButtonRole::Tertiary,
+            );
+            (enter, apply, cancel, remove)
+        };
+        let binding = parse_shortcut(&edit.text);
+        let conflict = binding.and_then(|binding| self.canvas.keys.conflict(edit.action, binding));
+        let mut reassign = false;
+        if !edit.recording {
+            if let Some(other) = conflict {
+                ui.horizontal_wrapped(|ui| {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
                         tf(
@@ -638,49 +697,61 @@ impl crate::Editor {
                             &[("action", action_label(other).into())],
                         ),
                     );
-                } else if binding.is_none() && !edit.text.trim().is_empty() {
-                    ui.colored_label(ui.visuals().error_fg_color, t("shortcut-invalid"));
-                }
-                ui.horizontal_wrapped(|ui| {
-                    let apply = ui
-                        .add_enabled(
-                            binding.is_some() && !edit.recording,
-                            egui::Button::new(if conflict.is_some() {
-                                t("shortcut-reassign")
-                            } else {
-                                t("shortcut-save")
-                            })
-                            .fill(ui.visuals().selection.bg_fill),
-                        )
-                        .clicked();
-                    if (apply || enter && conflict.is_none())
-                        && let Some(binding) = binding
-                    {
-                        if let Some(other) = conflict {
-                            self.canvas.keys.0.insert(other, None);
-                        }
-                        self.canvas
-                            .keys
-                            .0
-                            .insert(edit.action.to_owned(), Some(binding));
-                        keep_editing = false;
-                    }
-                    if ui.button(t("cancel")).clicked() {
-                        keep_editing = false;
-                    }
-                    if ui.button(t("remove-shortcut")).clicked() {
-                        self.canvas.keys.0.insert(edit.action.to_owned(), None);
-                        keep_editing = false;
-                    }
+                    reassign = controls::button(
+                        ui,
+                        Surface::Dialog,
+                        ButtonRole::Primary,
+                        true,
+                        egui::Button::new(t("shortcut-reassign")),
+                    )
+                    .clicked();
                 });
-            });
-        if keep_editing {
-            self.shortcut_edit = Some(edit);
+            } else if binding.is_none() && !edit.text.trim().is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, t("shortcut-invalid"));
+            }
+        }
+        if remove {
+            self.canvas.keys.0.insert(edit.action.to_owned(), None);
+        } else if !cancel {
+            if (reassign || !edit.recording && conflict.is_none() && (apply || enter))
+                && let Some(binding) = binding
+            {
+                if let Some(other) = conflict {
+                    self.canvas.keys.0.insert(other.to_owned(), None);
+                }
+                self.canvas
+                    .keys
+                    .0
+                    .insert(edit.action.to_owned(), Some(binding));
+            } else {
+                self.shortcut_edit = Some(edit);
+            }
         }
         if scroll_to_editor {
-            row.response.scroll_to_me(Some(egui::Align::Center));
+            ui.scroll_to_rect(row, None);
         }
     }
+}
+
+fn shortcut_edit_button(
+    ui: &mut egui::Ui,
+    icon: char,
+    label: &str,
+    enabled: bool,
+    role: ButtonRole,
+) -> bool {
+    let response = controls::button(
+        ui,
+        Surface::Dialog,
+        role,
+        enabled,
+        egui::Button::new(icons::centered(icon)).min_size(egui::Vec2::splat(20.0)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    response
+        .on_hover_text(label)
+        .on_disabled_hover_text(label)
+        .clicked()
 }
 
 /// Adds `widget` at the left of `cell`, centred vertically: `Ui::put` would centre it

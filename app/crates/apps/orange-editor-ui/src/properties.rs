@@ -74,6 +74,7 @@ pub(crate) enum TextInput {
 impl TextInput {
     pub(crate) fn for_port(node: &NodeView, port: &orange_host::PortView) -> Option<Self> {
         if node.paths.iter().any(|path| path.port == port.id)
+            || is_folder_path(node, &port.id)
             || (http_request_variant(node) && port.id == "method")
         {
             return None;
@@ -453,17 +454,37 @@ pub(crate) fn watch_label(name: &str) -> &'static str {
     }
 }
 
+pub(crate) fn folder_path_label(node: &NodeView, label: String, folder: Option<&str>) -> String {
+    match folder.filter(|_| node.definition.starts_with("org.orange.files/")) {
+        Some(folder) => tf(
+            "folder-path-label",
+            &[("port", label.into()), ("folder", folder.into())],
+        ),
+        None => label,
+    }
+}
+
+pub(crate) fn is_folder_path(node: &NodeView, port: &str) -> bool {
+    node.definition.starts_with("org.orange.files/")
+        && (matches!(port, "path" | "to") || node.paths.iter().any(|path| path.port == port))
+}
+
 impl Editor {
     /// The configured root for a folder-scoped file node's path picker.
     pub fn file_picker_root(&self, node: NodeId) -> Option<Option<String>> {
+        self.file_picker_folder(node).map(|folder| {
+            folder.and_then(|connection| connection.settings["path"].as_str().map(str::to_owned))
+        })
+    }
+
+    /// The folder connection referenced by a file node. The outer option identifies
+    /// folder-scoped file nodes, including drafts that need a connection.
+    pub fn file_picker_folder(&self, node: NodeId) -> Option<Option<&Connection>> {
         let node = self.graph()?.nodes.iter().find(|view| view.id == node)?;
         if !node.definition.starts_with("org.orange.files/") {
             return None;
         }
-        Some(
-            self.named_connection(node)
-                .and_then(|connection| connection.settings["path"].as_str().map(str::to_owned)),
-        )
+        Some(self.named_connection(node))
     }
 
     /// Changes one setting of a node, keeping the others: `value` at the JSON
@@ -536,7 +557,7 @@ impl Editor {
     }
 
     /// The declared connection `node` names, if it names one.
-    fn named_connection(&self, node: &NodeView) -> Option<Connection> {
+    fn named_connection(&self, node: &NodeView) -> Option<&Connection> {
         let id = node
             .references
             .iter()
@@ -546,7 +567,6 @@ impl Editor {
             .connections
             .iter()
             .find(|connection| connection.id.as_deref() == Some(id))
-            .cloned()
     }
 
     pub(crate) fn node_config_window(&mut self, ctx: &egui::Context, host: &mut Host) {
@@ -633,6 +653,54 @@ impl Editor {
         serde_json::from_str::<String>(&shown).unwrap_or(shown)
     }
 
+    fn properties_title(&mut self, ui: &mut egui::Ui, host: &mut Host, node: &NodeView) {
+        let font = egui::TextStyle::Heading;
+        let height = ui
+            .text_style_height(&font)
+            .max(ui.spacing().interact_size.y);
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::hover(),
+        );
+        let mut title_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("properties-title")
+                .max_rect(row)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let ui = &mut title_ui;
+        let ink = canvas::node_title_color(ui.visuals());
+        if let Some(rename) = &mut self.renaming_node
+            && rename.node == node.id
+        {
+            if let Some(save) = rename.field(ui, font) {
+                let name = std::mem::take(&mut rename.name);
+                self.renaming_node = None;
+                if save {
+                    self.rename_node(host, node.id, &name);
+                }
+            }
+            return;
+        }
+        self.renaming_node = None;
+        ui.add_space(3.0);
+        let title = ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(self.canvas.display_name(node))
+                        .heading()
+                        .color(ink),
+                )
+                .truncate()
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("{}\n{}", node.name, t("rename-node-double-click")));
+        if title.double_clicked() {
+            self.begin_node_rename(node.id);
+        }
+    }
+
     pub(crate) fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         // What the panel holds never widens it; only dragging its edge does. Text is cut
         // short with an ellipsis and shown whole on hover.
@@ -650,6 +718,7 @@ impl Editor {
         });
         let Some(node) = selected else {
             self.inspected = None;
+            self.renaming_node = None;
             ui.add_space(4.0);
             let many = self.canvas.selection();
             if many.len() > 1 {
@@ -672,21 +741,7 @@ impl Editor {
         };
         self.inspect(&node, host);
         ui.add_space(2.0);
-        let title = ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(self.canvas.display_name(&node))
-                        .heading()
-                        .color(canvas::node_title_color(ui.visuals())),
-                )
-                .truncate()
-                .sense(egui::Sense::click()),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!("{}\n{}", node.name, t("rename-node-double-click")));
-        if title.double_clicked() {
-            self.begin_node_rename(node.id);
-        }
+        self.properties_title(ui, host, &node);
         let mut subtitle = self.canvas.kind_name(&node).to_owned();
         if let Some(detail) = &node.detail {
             subtitle.push_str(" · ");
@@ -1101,6 +1156,16 @@ impl Editor {
             {
                 ui.add(egui::Label::new(egui::RichText::new(t("log-format-hint")).weak()).wrap());
             }
+            let label = if is_folder_path(node, &port.id) {
+                folder_path_label(
+                    node,
+                    label,
+                    self.named_connection(node)
+                        .map(|folder| folder.name.as_str()),
+                )
+            } else {
+                label
+            };
             row(ui, &label, Some(ty.clone()), |ui| {
                 if port.connected {
                     ui.weak(t("from-a-wire"));
@@ -1463,7 +1528,7 @@ mod width_tests {
     use super::*;
 
     #[test]
-    fn the_white_properties_title_opens_rename_on_double_click() {
+    fn the_white_properties_title_edits_inline_on_double_click() {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
@@ -1500,6 +1565,7 @@ mod width_tests {
                 .all(|section| section.format.color == egui::Color32::WHITE)
         );
         let at = title.pos + title.galley.rect.center().to_vec2();
+        let baseline = title.pos.y;
         output.drop_without_applying_deltas();
         frame(&mut editor, vec![egui::Event::PointerMoved(at)]).drop_without_applying_deltas();
         for expected in [None, Some((node, "Sample amount".to_owned()))] {
@@ -1515,7 +1581,48 @@ mod width_tests {
                 )
                 .drop_without_applying_deltas();
             }
-            assert_eq!(editor.renaming_node, expected);
+            assert_eq!(
+                editor
+                    .renaming_node
+                    .as_ref()
+                    .map(|rename| (rename.node, rename.name.clone())),
+                expected
+            );
+        }
+        let editing = frame(&mut editor, vec![]);
+        let editing_baseline = editing
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Sample amount" => {
+                    Some(text.pos.y)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!((editing_baseline - baseline).abs() <= 1.0);
+        editing.drop_without_applying_deltas();
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for (typed, finish, expected) in [
+            ("Discard this", egui::Key::Escape, "Sample amount"),
+            ("Updated amount", egui::Key::Enter, "Updated amount"),
+        ] {
+            if editor.renaming_node.is_none() {
+                assert!(editor.begin_node_rename(node));
+            }
+            frame(&mut editor, vec![]).drop_without_applying_deltas();
+            frame(&mut editor, vec![egui::Event::Text(typed.into())])
+                .drop_without_applying_deltas();
+            assert_eq!(editor.renaming_node.as_ref().unwrap().name, typed);
+            frame(&mut editor, vec![key(finish)]).drop_without_applying_deltas();
+            assert!(editor.renaming_node.is_none());
+            assert_eq!(editor.graph().unwrap().nodes[0].name, expected);
         }
     }
 

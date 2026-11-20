@@ -15,7 +15,7 @@ mod picture;
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
 use orange_editor_ui::canvas::Canvas;
-use orange_editor_ui::i18n::{self, t};
+use orange_editor_ui::i18n::{self, t, tf};
 use orange_editor_ui::{Editor, FileRequest};
 use orange_host::{GraphView, Host, HostOptions};
 use std::path::Path;
@@ -172,15 +172,24 @@ impl Desktop {
         extensions: &[String],
         current: &str,
     ) {
-        let root = match self.editor.file_picker_root(node) {
-            Some(root) => match root
+        let folder_connection = self.editor.file_picker_folder(node);
+        let folder_name = folder_connection
+            .flatten()
+            .map(|connection| connection.name.as_str());
+        let root = match folder_connection {
+            Some(connection) => match connection
+                .and_then(|connection| connection.settings["path"].as_str())
                 .filter(|root| !root.trim().is_empty())
                 .and_then(|root| std::fs::canonicalize(root).ok())
                 .filter(|root| root.is_dir())
             {
                 Some(root) => Some(root),
                 None => {
-                    trouble(t("desktop-choose-file"), t("desktop-configure-folder"));
+                    let message = folder_name.map_or_else(
+                        || t("desktop-configure-folder").to_owned(),
+                        |name| tf("desktop-configure-named-folder", &[("folder", name.into())]),
+                    );
+                    trouble(t("desktop-choose-file"), &message);
                     return;
                 }
             },
@@ -217,7 +226,11 @@ impl Desktop {
         if let Some(path) = chosen {
             let path = if let Some(root) = &root {
                 let Some(relative) = relative_selection(root, &path, save) else {
-                    trouble(t("desktop-choose-file"), t("desktop-outside-folder"));
+                    let message = folder_name.map_or_else(
+                        || t("desktop-outside-folder").to_owned(),
+                        |name| tf("desktop-outside-named-folder", &[("folder", name.into())]),
+                    );
+                    trouble(t("desktop-choose-file"), &message);
                     return;
                 };
                 relative
@@ -533,6 +546,9 @@ fn main() -> ExitCode {
         "OrangeEditor",
         options,
         Box::new(move |creation| {
+            creation
+                .egui_ctx
+                .set_theme(eframe::egui::ThemePreference::System);
             orange_editor_ui::apply_theme(&creation.egui_ctx);
             orange_editor_ui::icons::install(&creation.egui_ctx);
             Ok(Box::new(desktop))

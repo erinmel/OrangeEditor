@@ -3293,6 +3293,7 @@ dependencies = [
  "orange-audio",
  "orange-host",
  "orange-net",
+ "orange-ui-controls",
  "serde_json",
 ]
 
@@ -3457,6 +3458,13 @@ version = "0.0.0"
 dependencies = [
  "orange-model",
  "serde_json",
+]
+
+[[package]]
+name = "orange-ui-controls"
+version = "0.0.0"
+dependencies = [
+ "egui",
 ]
 
 [[package]]

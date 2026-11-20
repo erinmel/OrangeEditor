@@ -367,7 +367,8 @@ impl Host {
     /// activation if it is a trigger. Returns the new node's ID. What the node still
     /// needs (a variable to name, a type to choose) shows in the draft's problems.
     /// The authoring IDs `preset:rising-edge` and `preset:falling-edge` create a
-    /// boolean When trigger with the corresponding transition.
+    /// boolean When trigger with the corresponding transition. `preset:guard`
+    /// creates a Branch.
     pub fn add_node(
         &self,
         draft: &mut Draft,
@@ -452,7 +453,11 @@ impl Host {
             "preset:falling-edge" => Some("falling"),
             _ => None,
         };
-        let definition = watch_mode.map_or(definition, |_| intrinsic::ON_WATCH);
+        let definition = match definition {
+            "preset:guard" => intrinsic::BRANCH,
+            _ if watch_mode.is_some() => intrinsic::ON_WATCH,
+            _ => definition,
+        };
         let version = self
             .nodes()
             .filter(|info| info.definition.definition.id.as_str() == definition)

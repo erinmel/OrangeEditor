@@ -1,7 +1,8 @@
-//! Searchable preferences with a fixed search header and independently scrollable pages.
+//! Searchable preferences with sidebar navigation and independently scrollable pages.
 use super::*;
 use crate::canvas::{GRID_STEPS, GridStyle};
 use crate::controls::{Action, Dropdown as _, Surface};
+use orange_ui_controls::{CONTROL_HEIGHT, SPACE_LARGE, SPACE_MEDIUM, SPACE_SMALL};
 
 const GRID_STYLES: [GridStyle; 3] = [GridStyle::Dots, GridStyle::Lines, GridStyle::Hidden];
 
@@ -35,14 +36,6 @@ impl Section {
         })
     }
 
-    fn icon(self) -> char {
-        match self {
-            Self::Search => icons::SETTINGS,
-            Self::Display => icons::DISPLAY,
-            Self::Shortcuts => icons::KEYBOARD,
-        }
-    }
-
     fn matches(self, query: &str) -> bool {
         let labels: &[&str] = match self {
             Self::Search => &[
@@ -55,6 +48,10 @@ impl Section {
             Self::Display => &[
                 "display-section-words",
                 "interface-scale",
+                "appearance",
+                "appearance-system",
+                "appearance-light",
+                "appearance-dark",
                 "show-left-panel",
                 "show-right-panel",
                 "wheel-pans",
@@ -79,7 +76,7 @@ impl Editor {
         }
         icons::install(ctx);
         let viewport =
-            (ctx.content_rect().size() - egui::vec2(24.0, 36.0)).max(egui::vec2(250.0, 220.0));
+            (ctx.content_rect().size() - egui::vec2(32.0, 56.0)).max(egui::vec2(240.0, 200.0));
         let min_size = egui::vec2(680.0, 380.0).min(viewport);
         let max_size = egui::vec2(1050.0, 720.0).min(viewport);
         let theme = ctx.style_of(ctx.theme());
@@ -88,9 +85,10 @@ impl Editor {
             .color(theme.visuals.strong_text_color());
         let shown = egui::Window::new(title)
             .id(egui::Id::unique("orange-settings"))
+            .frame(egui::Frame::window(&theme).inner_margin(egui::Margin::same(8)))
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_size(egui::vec2(840.0, 540.0).min(viewport))
+            .default_size(egui::vec2(840.0, 640.0).min(viewport))
             .min_size(min_size)
             .max_size(max_size)
             .collapsible(false)
@@ -116,14 +114,35 @@ impl Editor {
         ctx: &egui::Context,
         content: egui::Rect,
     ) -> bool {
-        let header_bottom = content.top() + 46.0;
-        let footer_y = content.bottom() - 44.0;
+        let palette = orange_ui_controls::Theme::of(ui);
+        let footer_height = CONTROL_HEIGHT + SPACE_SMALL * 2.0;
+        let footer_y = content.bottom() - footer_height;
+        let divider = egui::Stroke::new(1.0, palette.border);
+        let compact = content.width() < 540.0;
+        let nav_width = (content.width() * 0.23).clamp(152.0, 195.0);
+        let strip_height = CONTROL_HEIGHT + SPACE_MEDIUM * 2.0;
+        let nav_rect = egui::Rect::from_min_max(
+            content.min,
+            if compact {
+                egui::pos2(content.right(), content.top() + strip_height)
+            } else {
+                egui::pos2(content.left() + nav_width, footer_y)
+            },
+        );
+        ui.painter().rect_filled(nav_rect, 6, palette.panel);
         let mut header = settings_pane(
             ui,
-            "settings-search-header",
+            "settings-search-sidebar",
             egui::Rect::from_min_max(
-                content.min + egui::vec2(8.0, 6.0),
-                egui::pos2(content.right() - 8.0, header_bottom),
+                nav_rect.min + egui::Vec2::splat(SPACE_MEDIUM),
+                egui::pos2(
+                    if compact {
+                        nav_rect.center().x + 18.0
+                    } else {
+                        nav_rect.right() - SPACE_MEDIUM
+                    },
+                    nav_rect.top() + SPACE_MEDIUM + CONTROL_HEIGHT,
+                ),
             ),
         );
         self.settings_search_ui(&mut header);
@@ -143,37 +162,25 @@ impl Editor {
             self.settings_tab = Section::ALL[first];
         }
 
-        let divider = ui.visuals().widgets.noninteractive.bg_stroke;
-        ui.painter()
-            .hline(content.x_range(), header_bottom, divider);
-        let compact = content.width() < 580.0;
-        let nav_width = (content.width() * 0.25).clamp(170.0, 224.0);
-        let nav_rect = if compact {
+        let navigation = if compact {
+            ui.painter()
+                .hline(content.x_range(), nav_rect.bottom(), divider);
             egui::Rect::from_min_max(
-                egui::pos2(content.left() + 8.0, header_bottom + 8.0),
-                egui::pos2(content.right() - 8.0, header_bottom + 42.0),
+                egui::pos2(nav_rect.center().x + 24.0, nav_rect.top() + SPACE_MEDIUM),
+                egui::pos2(
+                    nav_rect.right() - SPACE_MEDIUM,
+                    nav_rect.bottom() - SPACE_SMALL,
+                ),
             )
         } else {
-            egui::Rect::from_min_max(
-                egui::pos2(content.left(), header_bottom),
-                egui::pos2(content.left() + nav_width, footer_y),
-            )
-        };
-        if !compact {
-            ui.painter()
-                .rect_filled(nav_rect, 0.0, ui.visuals().faint_bg_color);
             ui.painter()
                 .vline(nav_rect.right(), nav_rect.y_range(), divider);
-        }
-        let mut nav = settings_pane(
-            ui,
-            "settings-navigation",
-            if compact {
-                nav_rect
-            } else {
-                nav_rect.shrink(8.0)
-            },
-        );
+            egui::Rect::from_min_max(
+                nav_rect.min + egui::vec2(SPACE_MEDIUM, strip_height),
+                nav_rect.max - egui::vec2(SPACE_MEDIUM, SPACE_SMALL),
+            )
+        };
+        let mut nav = settings_pane(ui, "settings-navigation", navigation);
         self.settings_navigation(&mut nav, matches, compact);
         if previous != self.settings_tab || !matches.iter().any(|&found| found) {
             self.shortcut_edit = None;
@@ -184,21 +191,21 @@ impl Editor {
             "settings-page",
             egui::Rect::from_min_max(
                 if compact {
-                    egui::pos2(content.left() + 12.0, nav_rect.bottom() + 7.0)
+                    egui::pos2(
+                        content.left() + SPACE_MEDIUM,
+                        nav_rect.bottom() + SPACE_MEDIUM,
+                    )
                 } else {
-                    egui::pos2(nav_rect.right() + 18.0, header_bottom + 14.0)
+                    egui::pos2(nav_rect.right() + SPACE_LARGE, content.top() + SPACE_MEDIUM)
                 },
-                egui::pos2(content.right() - 12.0, footer_y - 8.0),
+                egui::pos2(content.right() - SPACE_MEDIUM, footer_y - SPACE_MEDIUM),
             ),
         );
         if matches.iter().any(|&found| found) {
-            page.label(
-                egui::RichText::new(self.settings_tab.title())
-                    .size(23.0)
-                    .strong(),
-            );
-            page.separator();
-            page.add_space(8.0);
+            if self.settings_tab != Section::Shortcuts {
+                page.strong(self.settings_tab.title());
+                page.separator();
+            }
             match self.settings_tab {
                 Section::Shortcuts => self.keybindings_ui(
                     &mut page,
@@ -218,20 +225,21 @@ impl Editor {
                                     ui.weak(t("settings-language-help"));
                                 });
                                 ui.add_space(12.0);
-                                settings_group(ui, t("settings-node-search"), |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.selectable_value(
-                                            &mut self.node_search_previews,
-                                            false,
-                                            t("preview-names-only"),
-                                        );
-                                        ui.selectable_value(
-                                            &mut self.node_search_previews,
-                                            true,
-                                            t("preview-node-cards"),
-                                        )
-                                        .on_hover_text(t("preview-node-cards-hint"));
-                                    });
+                                let label = ui.strong(t("settings-node-search"));
+                                ui.separator();
+                                ui.indent(label.id, |ui| {
+                                    ui.set_max_width(ui.available_width().min(252.0));
+                                    let _ = orange_ui_controls::segmented(
+                                        ui,
+                                        Surface::Dialog,
+                                        &label,
+                                        &mut self.node_search_previews,
+                                        &[
+                                            (false, t("preview-names-only")),
+                                            (true, t("preview-node-cards")),
+                                        ],
+                                    )
+                                    .on_hover_text(t("preview-node-cards-hint"));
                                 });
                             } else {
                                 self.display_settings(ui, ctx);
@@ -242,10 +250,11 @@ impl Editor {
         } else {
             page.label(egui::RichText::new(t("settings-empty")).strong());
         }
-        ui.painter().hline(content.x_range(), footer_y, divider);
+        let footer = egui::Rect::from_min_max(egui::pos2(content.left(), footer_y), content.max);
+        ui.painter().rect_filled(footer, 6, palette.panel);
         let done = egui::Rect::from_min_size(
-            egui::pos2(content.right() - 110.0, footer_y + 7.0),
-            egui::vec2(100.0, 30.0),
+            egui::pos2(content.right() - 94.0, footer_y + SPACE_SMALL),
+            egui::vec2(86.0, CONTROL_HEIGHT),
         );
         controls::button(
             &mut settings_pane(ui, "settings-footer", done),
@@ -259,38 +268,19 @@ impl Editor {
     }
 
     fn settings_search_ui(&mut self, header: &mut egui::Ui) {
-        let search_id = header.scope_id().with("field");
+        let search_id = header.make_persistent_id("field");
         if self.shortcut_edit.is_none()
             && header.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
         {
             header.memory_mut(|memory| memory.request_focus(search_id));
         }
-        header.horizontal(|ui| {
-            let clear = t("clear-settings-search");
-            let clear_width = ui.fonts_mut(|fonts| {
-                fonts
-                    .layout_no_wrap(
-                        clear.to_owned(),
-                        egui::TextStyle::Button.resolve(ui.style()),
-                        ui.visuals().text_color(),
-                    )
-                    .size()
-                    .x
-            }) + 2.0 * ui.spacing().button_padding.x
-                + ui.spacing().item_spacing.x;
-            let has_query = !self.settings_search.is_empty();
-            let width = ui.available_width() - if has_query { clear_width } else { 0.0 };
-            ui.add_sized(
-                [width.max(60.0), 30.0],
-                egui::TextEdit::singleline(&mut self.settings_search)
-                    .id(search_id)
-                    .hint_text(t("settings-search-all")),
-            );
-            if has_query && ui.button(clear).clicked() {
-                self.settings_search.clear();
-                ui.memory_mut(|memory| memory.request_focus(search_id));
-            }
-        });
+        let _ = controls::search(
+            header,
+            "field",
+            &mut self.settings_search,
+            t("settings-search-hint"),
+        )
+        .on_hover_text(t("settings-search-all"));
     }
 
     fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 3], compact: bool) {
@@ -312,14 +302,18 @@ impl Editor {
             for (section, found) in Section::ALL.into_iter().zip(matches) {
                 if found {
                     let selected = self.settings_tab == section;
-                    let button = egui::Button::selectable(
-                        selected,
-                        (icons::text(section.icon()), section.title()),
+                    let width = nav.available_width();
+                    if controls::button(
+                        nav,
+                        Surface::Panel,
+                        Action::Toggle(selected),
+                        true,
+                        egui::Button::new(())
+                            .left_text(section.title())
+                            .truncate()
+                            .min_size(egui::vec2(width, CONTROL_HEIGHT)),
                     )
-                    .truncate();
-                    if nav
-                        .add_sized([nav.available_width(), 31.0], button)
-                        .clicked()
+                    .clicked()
                     {
                         self.settings_tab = section;
                     }
@@ -330,18 +324,60 @@ impl Editor {
 
     fn display_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         settings_group(ui, t("settings-interface"), |ui| {
+            self.appearance_picker(ui, ctx);
+            ui.add_space(SPACE_MEDIUM);
             self.interface_scale_picker(ui, ctx);
         });
         ui.add_space(8.0);
         settings_group(ui, t("settings-panels"), |ui| {
-            ui.checkbox(&mut self.panels.nodes, t("show-left-panel"));
-            ui.checkbox(&mut self.panels.properties, t("show-right-panel"));
+            orange_ui_controls::toggle(
+                ui,
+                Surface::Dialog,
+                &mut self.panels.nodes,
+                t("show-left-panel"),
+            );
+            orange_ui_controls::toggle(
+                ui,
+                Surface::Dialog,
+                &mut self.panels.properties,
+                t("show-right-panel"),
+            );
         });
         ui.add_space(8.0);
         settings_group(ui, t("settings-canvas"), |ui| {
-            ui.checkbox(&mut self.canvas.scroll_pans, t("wheel-pans"));
-            ui.checkbox(&mut self.canvas.snap, t("snap-grid"));
+            orange_ui_controls::toggle(
+                ui,
+                Surface::Dialog,
+                &mut self.canvas.scroll_pans,
+                t("wheel-pans"),
+            );
+            orange_ui_controls::toggle(ui, Surface::Dialog, &mut self.canvas.snap, t("snap-grid"));
             self.grid_menu(ui);
+        });
+    }
+
+    fn appearance_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use egui::ThemePreference::{Dark, Light, System};
+        ui.scope(|ui| {
+            ui.set_max_width(ui.available_width().min(300.0));
+            let label = ui.label(t("appearance"));
+            let mut preference = ctx.options(|options| options.theme_preference);
+            if orange_ui_controls::segmented(
+                ui,
+                Surface::Dialog,
+                &label,
+                &mut preference,
+                &[
+                    (System, t("appearance-system")),
+                    (Light, t("appearance-light")),
+                    (Dark, t("appearance-dark")),
+                ],
+            )
+            .changed()
+            {
+                self.preferred_theme = Some(preference);
+                ctx.set_theme(preference);
+            }
         });
     }
 
@@ -372,32 +408,14 @@ impl Editor {
 
     pub(crate) fn grid_menu(&mut self, ui: &mut egui::Ui) {
         let kind = ui.strong(t("grid-type"));
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            for (index, style) in GRID_STYLES.into_iter().enumerate() {
-                let label = grid_style_label(style);
-                let selected = self.canvas.grid_style == style;
-                let outside = if index == 0 { 5 } else { 0 };
-                let far = if index == GRID_STYLES.len() - 1 { 5 } else { 0 };
-                let segment = egui::Button::new(label)
-                    .frame_when_inactive(true)
-                    .selected(selected)
-                    .min_size(egui::vec2(62.0, 26.0))
-                    .corner_radius(egui::CornerRadius {
-                        nw: outside,
-                        sw: outside,
-                        ne: far,
-                        se: far,
-                    });
-                let response = ui.add(segment).labelled_by(kind.id);
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, label)
-                });
-                if response.clicked() {
-                    self.canvas.grid_style = style;
-                }
-            }
-        });
+        let options = GRID_STYLES.map(|style| (style, grid_style_label(style)));
+        let _ = orange_ui_controls::segmented(
+            ui,
+            Surface::Dialog,
+            &kind,
+            &mut self.canvas.grid_style,
+            &options,
+        );
         ui.add_space(4.0);
         self.grid_spacing_slider(ui);
     }
@@ -411,11 +429,13 @@ impl Editor {
                 label
             })
             .inner;
-        ui.spacing_mut().slider_width = 134.0;
-        ui.add(
-            egui::Slider::new(&mut self.canvas.grid_step, small..=large)
-                .step_by(f64::from(next - small))
-                .show_value(false),
+        orange_ui_controls::stepped_slider(
+            ui,
+            Surface::Dialog,
+            &mut self.canvas.grid_step,
+            small..=large,
+            std::num::NonZeroU16::new(next - small).unwrap_or(std::num::NonZeroU16::MIN),
+            orange_ui_controls::StepLabels::Values,
         )
         .labelled_by(label.id)
     }

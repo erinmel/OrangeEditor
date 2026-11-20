@@ -13,7 +13,9 @@ desktop-not-opened = Not opened
 desktop-save-graph-as = Save the graph as
 desktop-not-saved = Not saved
 desktop-configure-folder = Choose a root folder in the node’s folder connection first.
+desktop-configure-named-folder = Choose an existing root folder for { $folder } in Connections.
 desktop-outside-folder = Choose a path inside the node’s root folder.
+desktop-outside-named-folder = This path is outside { $folder }. Choose a path inside its root folder.
 
 desktop-package-filter = OrangeEditor package
 desktop-package-error = Could not read package

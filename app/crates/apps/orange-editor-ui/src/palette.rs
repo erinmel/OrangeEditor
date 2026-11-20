@@ -44,13 +44,7 @@ pub(crate) fn result_row(
         return response;
     }
     let visuals = ui.style().interact_selectable(&response, highlighted);
-    if highlighted || response.hovered() || response.has_focus() {
-        ui.painter().rect_filled(rect, 5.0, visuals.weak_bg_fill);
-    }
-    if response.has_focus() || highlighted {
-        ui.painter()
-            .rect_stroke(rect, 5.0, visuals.fg_stroke, egui::StrokeKind::Inside);
-    }
+    orange_ui_controls::list_row(ui, crate::controls::Surface::Panel, &response, highlighted);
     if let Some((node, size, zoom)) = preview {
         let preview_rect = egui::Rect::from_center_size(rect.center(), size);
         let mut preview_ui = ui.new_child(
@@ -318,52 +312,59 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
 }
 
 pub(crate) fn search_with_presets(
-    mut results: Vec<orange_host::Found>,
+    results: Vec<orange_host::Found>,
     search: &str,
     language: &str,
 ) -> Vec<orange_host::Found> {
-    let Some(index) = results
-        .iter()
-        .position(|found| found.definition == "core/on-watch")
-    else {
-        return results;
-    };
-    let watch = &results[index];
     let query = search.trim().to_lowercase();
-    let presets: Vec<_> = [
-        (
-            "preset:rising-edge",
-            "rising-edge",
-            "Rising Edge",
-            "Fires when a boolean becomes true.",
-        ),
-        (
-            "preset:falling-edge",
-            "falling-edge",
-            "Falling Edge",
-            "Fires when a boolean becomes false.",
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(id, key, fallback, purpose)| {
-        let label = text_in(language, key, fallback);
-        let purpose = text_in(language, &format!("{key}-help"), purpose);
-        let terms = format!("{fallback} {label}").to_lowercase();
-        query
-            .split_whitespace()
-            .all(|word| terms.contains(word))
-            .then(|| orange_host::Found {
-                definition: id.to_owned(),
-                label,
-                package: watch.package.clone(),
-                category: watch.category.clone(),
-                purpose,
-                matched: watch.matched,
-            })
-    })
-    .collect();
-    results.splice(index..index, presets);
-    results
+    let mut choices = Vec::with_capacity(results.len());
+    for base in results {
+        choices.extend(
+            [
+                (
+                    "core/on-watch",
+                    "preset:rising-edge",
+                    "rising-edge",
+                    "Rising Edge",
+                    "Fires when a boolean becomes true.",
+                ),
+                (
+                    "core/on-watch",
+                    "preset:falling-edge",
+                    "falling-edge",
+                    "Falling Edge",
+                    "Fires when a boolean becomes false.",
+                ),
+                (
+                    "core/branch",
+                    "preset:guard",
+                    "guard-preset",
+                    "Guard",
+                    "Wire True to continue only when the condition passes.",
+                ),
+            ]
+            .into_iter()
+            .filter(|(parent, ..)| *parent == base.definition)
+            .filter_map(|(_, id, key, fallback, purpose)| {
+                let label = text_in(language, key, fallback);
+                let purpose = text_in(language, &format!("{key}-help"), purpose);
+                let terms = format!("{fallback} {label}").to_lowercase();
+                query
+                    .split_whitespace()
+                    .all(|word| terms.contains(word))
+                    .then(|| orange_host::Found {
+                        definition: id.to_owned(),
+                        label,
+                        package: base.package.clone(),
+                        category: base.category.clone(),
+                        purpose,
+                        matched: base.matched,
+                    })
+            }),
+        );
+        choices.push(base);
+    }
+    choices
 }
 
 /// Other words for the two types a conversion ID names, so "whole number text" finds
@@ -474,6 +475,29 @@ mod tests {
     use orange_host::HostOptions;
 
     #[test]
+    fn guard_search_places_a_branch_with_a_boolean_condition() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        assert!(
+            palette_in(&host, "guarda", "es")
+                .iter()
+                .flat_map(|(_, items)| items)
+                .any(|item| item.id == "preset:guard")
+        );
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
+        let choice = editor.quick_choices(&host, "guard").remove(0);
+        assert_eq!(choice.definition, "preset:guard");
+        let node = editor.pick_quick(&mut host, &choice).unwrap();
+        let graph = editor.graph().unwrap();
+        let card = graph.nodes.iter().find(|card| card.id == node).unwrap();
+        assert_eq!(card.definition, "core/branch");
+        assert!(card.ports.iter().any(|port| port.input
+            && port.id == "condition"
+            && port.ty.as_deref() == Some("core/bool@1")));
+    }
+
+    #[test]
     fn edge_presets_are_searchable_and_place_a_typed_watch() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = crate::Editor::new();
@@ -543,6 +567,7 @@ mod tests {
     fn a_result_is_one_compact_line_without_a_card() {
         let ctx = egui::Context::default();
         let mut height = 0.0;
+        let mut row_layer = None;
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -552,9 +577,9 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                height = result_row(ui, "And", "Both inputs", None, false, None)
-                    .rect
-                    .height();
+                let row = result_row(ui, "And", "Both inputs", None, false, None);
+                height = row.rect.height();
+                row_layer = Some((row.rect, orange_ui_controls::Theme::of(ui).secondary));
             },
         );
         output.textures_delta.clear();
@@ -568,6 +593,10 @@ mod tests {
             .collect();
         assert_eq!(texts, ["And"]);
         assert!(height <= 28.0);
+        let (rect, fill) = row_layer.unwrap();
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(layer) if layer.rect == rect && layer.fill == fill)
+        }));
         output.drop_without_applying_deltas();
     }
 

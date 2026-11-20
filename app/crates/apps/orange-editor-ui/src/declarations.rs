@@ -3,7 +3,7 @@
 //! says about them; a secret is typed masked, kept in the host's credential store and
 //! written into the document only as its `credential://<name>` reference.
 use super::*;
-use crate::controls::{Dropdown as _, Surface};
+use crate::controls::{Action, Dropdown as _, Surface, button};
 use crate::properties::COMMON_TYPES;
 use orange_host::{
     AdapterInfo, Connection, ConnectionScope, Declarations, SECRET_PREFIX, SettingChoices,
@@ -1209,7 +1209,14 @@ impl Editor {
                 ui.separator();
                 if form.scope == ConnectionScope::Shared {
                     ui.weak(t("connection-host-hint"));
-                    cancel = ui.button(t("cancel")).clicked();
+                    cancel = button(
+                        ui,
+                        Surface::Panel,
+                        Action::Secondary,
+                        true,
+                        egui::Button::new(t("cancel")),
+                    )
+                    .clicked();
                     return;
                 }
                 if adapter != form.adapter {
@@ -1221,7 +1228,15 @@ impl Editor {
                         let path = current["path"].as_str().unwrap_or_default();
                         ui.small(t("connection-folder-root"));
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button(t("choose-folder")).clicked() {
+                            if button(
+                                ui,
+                                Surface::Panel,
+                                Action::Secondary,
+                                true,
+                                egui::Button::new(t("choose-folder")),
+                            )
+                            .clicked()
+                            {
                                 pick_folder = Some(path.to_owned());
                             }
                             if !path.is_empty() {
@@ -1308,20 +1323,34 @@ impl Editor {
                         }
                         ui.weak(t("secret-hint"));
                     });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
                     let label = if form.changing.is_some() {
                         t("save")
                     } else {
                         t("add")
                     };
-                    declare = ui.add_enabled(ready, egui::Button::new(label)).clicked();
+                    declare = button(
+                        ui,
+                        Surface::Panel,
+                        Action::Primary,
+                        ready,
+                        egui::Button::new(label),
+                    )
+                    .clicked();
                     let close = if form.saved {
                         t("connection-done")
                     } else {
                         t("cancel")
                     };
-                    cancel = ui.button(close).clicked();
+                    cancel = button(
+                        ui,
+                        Surface::Panel,
+                        Action::Secondary,
+                        true,
+                        egui::Button::new(close),
+                    )
+                    .clicked();
                     if form.saved {
                         ui.label(t("connection-saved"));
                     }
@@ -1464,9 +1493,21 @@ fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut Connec
     let before = form.adapter.clone();
     let _ = egui::ComboBox::from_id_salt("orange-connection-adapter")
         .selected_text(shown)
-        .width(ui.available_width() - 8.0)
+        .width((ui.available_width() - 8.0).max(0.0))
         .show_select(ui, Surface::Panel, |ui| {
+            let mut in_audio = false;
             for adapter in adapters {
+                let audio = matches!(
+                    adapter.id.as_str(),
+                    "org.orange.audio/input" | "org.orange.audio/output"
+                );
+                if audio != in_audio {
+                    ui.separator();
+                    if audio {
+                        ui.weak(t("connection-audio-group"));
+                    }
+                    in_audio = audio;
+                }
                 let hover = if adapter.purpose.is_empty() {
                     adapter.id.clone()
                 } else {

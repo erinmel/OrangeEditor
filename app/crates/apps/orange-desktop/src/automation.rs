@@ -114,6 +114,15 @@ fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
     let write = editor
         .add_node(&mut author, orange_files::WRITE_TEXT)
         .unwrap();
+    let selected = editor.file_picker_folder(write).flatten().unwrap();
+    assert_eq!(selected.name, "Work");
+    assert_eq!(selected.id.as_deref(), Some(author_connection.as_str()));
+    let root = author_folder.canonicalize().unwrap();
+    assert_eq!(
+        super::relative_selection(&root, &author_folder.join("hello.txt"), true).as_deref(),
+        Some("hello.txt")
+    );
+    assert!(super::relative_selection(&root, &consumer_folder.join("hello.txt"), true).is_none());
     assert!(editor.set_input(&mut author, (write, "path"), Some("hello.txt")));
     assert!(editor.set_input(&mut author, (write, "text"), Some("from package")));
     assert!(editor.connect(&mut author, (entry, "then"), (write, "in")));

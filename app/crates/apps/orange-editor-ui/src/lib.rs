@@ -460,6 +460,7 @@ pub struct Editor {
     settings_search: String,
     settings_tab: settings::Section,
     preferred_scale: Option<f32>,
+    preferred_theme: Option<egui::ThemePreference>,
     scale_applied: bool,
     shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
@@ -495,7 +496,7 @@ pub struct Editor {
     pub(crate) probing: Option<Probing>,
     /// A function being made of the selected nodes, while its preview is open.
     extracting: Option<organise::Extracting>,
-    renaming_node: Option<(NodeId, String)>,
+    renaming_node: Option<organise::NodeRename>,
     /// The language the node search also matches in, as a BCP 47 tag; empty is English.
     language: String,
     refresh_problem_text: bool,
@@ -510,7 +511,7 @@ pub struct Editor {
 }
 
 fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
-    controls::search(ui, id, query, hint);
+    let _ = controls::search(ui, id, query, hint);
 }
 
 fn contains_query(query: &str, fields: &[&str]) -> bool {
@@ -1525,6 +1526,9 @@ impl Editor {
             if let Some(scale) = self.preferred_scale {
                 ui.ctx().set_zoom_factor(scale);
             }
+            if let Some(theme) = self.preferred_theme {
+                ui.ctx().set_theme(theme);
+            }
             self.scale_applied = true;
         }
         self.preferred_scale = Some(ui.ctx().zoom_factor());
@@ -1906,7 +1910,10 @@ impl Editor {
         let grid = icons::button(ui, true, icons::GRID, t("grid-settings"), "");
         let _ = egui::Popup::menu(&grid)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| self.grid_menu(ui));
+            .show(|ui| {
+                ui.set_width(ui.available_width().min(250.0));
+                self.grid_menu(ui);
+            });
     }
 
     /// Draws the workspace status and panel controls in a bottom panel.
@@ -1957,6 +1964,7 @@ impl Editor {
 
     fn toggle_right_panel(&mut self) {
         if self.panels.properties || self.panels.packages {
+            self.renaming_node = None;
             self.packages_tab = self.panels.packages && !self.panels.properties;
             self.panels.properties = false;
             self.panels.packages = false;
@@ -2024,6 +2032,20 @@ impl Editor {
         }
         if self.document.is_some() {
             ui.menu_button(format!("{:.0}%", self.canvas.zoom() * 100.0), |ui| {
+                let label = ui.label(t("canvas-zoom"));
+                let mut zoom = self.canvas.zoom();
+                if orange_ui_controls::continuous_slider(
+                    ui,
+                    controls::Surface::Dialog,
+                    &mut zoom,
+                    canvas::ZOOM_RANGE,
+                )
+                .labelled_by(label.id)
+                .changed()
+                {
+                    self.canvas.zoom_around_center(zoom);
+                }
+                ui.separator();
                 if ui.button(t("fit-to-view")).clicked() {
                     self.canvas.fit();
                     ui.close();
@@ -2060,6 +2082,7 @@ impl Editor {
         self.panels.properties = !packages;
         self.panels.packages = packages;
         if packages {
+            self.renaming_node = None;
             self.packages_panel(ui, host);
         } else {
             self.properties_panel(ui, host);
@@ -2129,7 +2152,8 @@ impl Editor {
             }
         }
         let mut add = None;
-        let search_id = ui.scope_id().with("node-palette-search");
+        let search_salt = "node-palette-search";
+        let search_id = ui.make_persistent_id(search_salt);
         let (up, down, enter) =
             if ui.memory(|memory| memory.has_focus(search_id)) && !self.search.trim().is_empty() {
                 ui.input_mut(|input| {
@@ -2145,17 +2169,7 @@ impl Editor {
         if up || down {
             ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
-        let field = ui.add(
-            egui::TextEdit::singleline(&mut self.search)
-                .id(search_id)
-                .event_filter(egui::EventFilter {
-                    horizontal_arrows: true,
-                    vertical_arrows: true,
-                    ..Default::default()
-                })
-                .hint_text(t("search-hint"))
-                .desired_width(f32::INFINITY),
-        );
+        let field = controls::search(ui, search_salt, &mut self.search, t("search-hint"));
         if field.changed() {
             self.palette_highlighted = 0;
         }
@@ -2182,10 +2196,13 @@ impl Editor {
             }
             let mut index = 0;
             for (category, items) in found {
-                egui::CollapsingHeader::new(category.as_str())
-                    .id_salt((category.as_str(), searching))
-                    .default_open(searching)
-                    .show(ui, |ui| {
+                orange_ui_controls::tree_section(
+                    ui,
+                    controls::Surface::Panel,
+                    egui::CollapsingHeader::new(category.as_str())
+                        .id_salt((category.as_str(), searching))
+                        .default_open(searching),
+                    |ui| {
                         for item in items {
                             let active =
                                 searching && field.has_focus() && index == self.palette_highlighted;
@@ -2217,7 +2234,8 @@ impl Editor {
                                 add = Some(item.id.clone());
                             }
                         }
-                    });
+                    },
+                );
             }
         });
         if let Some(definition) = add {
@@ -2245,7 +2263,7 @@ impl Editor {
             self.ask(FileRequest::ImportPackage);
         }
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        controls::search(
+        let _ = controls::search(
             ui,
             "package-search",
             &mut self.package_search,
@@ -2395,8 +2413,11 @@ impl Editor {
             self.panels.properties = true;
             self.panels.packages = false;
         }
-        if let Some(node) = done.rename_node {
-            self.begin_node_rename(node);
+        if done.rename_node.is_some() {
+            self.renaming_node = None;
+        }
+        if let Some((node, name)) = done.set_name {
+            self.rename_node(host, node, &name);
         }
         if done.show_problems || done.show_runtime_log {
             self.panels.log = true;
@@ -2511,7 +2532,6 @@ impl Editor {
         self.node_config_window(ui.ctx(), host);
         self.port_inspector_window(ui.ctx());
         self.function_window(ui.ctx(), host);
-        self.node_rename_dialog(ui.ctx(), host);
     }
 }
 
@@ -2611,12 +2631,12 @@ mod tests {
         let count = |groups: &[(String, Vec<PaletteItem>)]| {
             groups.iter().map(|(_, items)| items.len()).sum::<usize>()
         };
-        // The catalogue also offers the two boolean edge presets and the conversions.
+        // The catalogue also offers three authoring presets and the conversions.
         let offered = host
             .nodes()
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
             .count();
-        assert_eq!(count(&all), offered + host.conversions().len() + 2);
+        assert_eq!(count(&all), offered + host.conversions().len() + 3);
         // Conversions are found by Spanish words too.
         assert!(
             palette(&host, "convertir entero texto")
@@ -4220,7 +4240,7 @@ mod palette_keyboard_tests {
             context
                 .run_ui(input, |ui| {
                     if key.is_none() {
-                        let search = ui.scope_id().with("node-palette-search");
+                        let search = ui.make_persistent_id("node-palette-search");
                         ui.memory_mut(|memory| memory.request_focus(search));
                     }
                     editor.nodes_panel(ui, &mut host);

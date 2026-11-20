@@ -135,6 +135,35 @@ fn recording_an_inline_shortcut_keeps_all_modifiers() {
 }
 
 #[test]
+fn inline_shortcut_edit_preserves_row_spacing() {
+    let mut editor = Editor::new();
+    let context = egui::Context::default();
+    crate::icons::install(&context);
+    let frame = |editor: &mut Editor| {
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(330.0);
+            editor.keybindings_ui(ui, "");
+        });
+        let row_y = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == t(label) => Some(text.pos.y),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let spacing = row_y("action-redo") - row_y("action-undo");
+        output.drop_without_applying_deltas();
+        spacing
+    };
+    let idle = frame(&mut editor);
+    editor.begin_shortcut_edit("undo", original("undo"));
+    assert_eq!(frame(&mut editor), idle);
+}
+
+#[test]
 fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
     let mut editor = Editor::new();
     editor.settings_open = true;

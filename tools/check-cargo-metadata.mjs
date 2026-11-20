@@ -42,8 +42,10 @@ const policy = {
   'orange-vault': {core: false, normal: ['orange-sdk']},
   // Example native plugin library, loaded by orange-native's tests.
   'orange-plugin-example': {core: false, normal: ['orange-sdk']},
+  // Theme-aware egui controls, free of graph and host types.
+  'orange-ui-controls': {core: false, normal: []},
   // The editor reaches services through the host. UI tests install real bundled adapters.
-  'orange-editor-ui': {core: false, normal: ['orange-host'], dev: ['orange-audio', 'orange-net']},
+  'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net']},
   // Desktop application: the window, the editor interface and the built-in service packages.
   'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault']},
   // Base audio service package: the only crate with an audio device library. Built on

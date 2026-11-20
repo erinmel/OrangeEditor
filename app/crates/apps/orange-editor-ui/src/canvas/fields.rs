@@ -146,6 +146,9 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                     (ask.to_owned(), true)
                 },
                 |value| {
+                    if node.definition.starts_with("org.orange.files/") {
+                        return (value, false);
+                    }
                     let name = std::path::Path::new(&value)
                         .file_name()
                         .map_or(value.clone(), |name| name.to_string_lossy().into_owned());

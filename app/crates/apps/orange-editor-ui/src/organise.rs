@@ -7,6 +7,69 @@ use crate::i18n::{t, tf};
 use crate::{Editor, FileRequest, controls};
 use orange_host::{Extraction, FunctionPackagePreview, Group, Host, HostError, NodeId, Publish};
 
+#[derive(Debug, Clone)]
+pub(crate) struct NodeRename {
+    pub(crate) node: NodeId,
+    pub(crate) name: String,
+    pub(crate) focus: bool,
+}
+
+impl NodeRename {
+    pub(crate) fn new(node: NodeId, name: String) -> Self {
+        Self {
+            node,
+            name,
+            focus: true,
+        }
+    }
+
+    // Some(true) commits the name. Some(false) discards the pending edit.
+    pub(crate) fn field(
+        &mut self,
+        ui: &mut egui::Ui,
+        font: impl Into<egui::FontSelection>,
+    ) -> Option<bool> {
+        let id = ui.make_persistent_id(("rename-node", self.node));
+        let (save, cancel) = if ui.memory(|memory| memory.has_focus(id)) {
+            ui.input_mut(|input| {
+                (
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            })
+        } else {
+            (false, false)
+        };
+        let mut field = egui::TextEdit::singleline(&mut self.name)
+            .id(id)
+            .font(font)
+            .align(egui::Align2::LEFT_CENTER)
+            .min_size(egui::vec2(0.0, ui.available_height()))
+            .margin(egui::Margin::symmetric(3, 0))
+            .text_color(crate::canvas::node_title_color(ui.visuals()))
+            .desired_width(f32::INFINITY)
+            .hint_text(t("rename-node-default"))
+            .show(ui);
+        let response = field
+            .response
+            .response
+            .on_hover_text(t("rename-inline-hint"));
+        if std::mem::take(&mut self.focus) {
+            use egui::text::{CCursor, CCursorRange};
+            response.request_focus();
+            field.state.cursor.set_char_range(Some(CCursorRange::two(
+                CCursor::new(0),
+                CCursor::new(self.name.chars().count()),
+            )));
+            field.state.store(ui.ctx(), id);
+        } else if save || cancel || response.lost_focus() {
+            response.surrender_focus();
+            return Some(save && !cancel);
+        }
+        None
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct FunctionExport {
     function: String,
@@ -86,7 +149,17 @@ impl Editor {
                 if let Err(error) = &export.preview {
                     ui.label(error);
                 }
-                return (false, ui.button(t("close")).clicked());
+                return (
+                    controls::button(
+                        ui,
+                        Surface::Dialog,
+                        Action::Outline,
+                        true,
+                        egui::Button::new(t("close")),
+                    )
+                    .clicked(),
+                    false,
+                );
             };
             egui::Grid::new("function-package-fields")
                 .num_columns(2)
@@ -133,21 +206,17 @@ impl Editor {
             if let Some(error) = &export.error {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            ui.horizontal(|ui| {
-                let save = dialog_button(
-                    ui,
-                    Action::Primary,
-                    [&export.package, &export.version, &export.node]
-                        .iter()
-                        .all(|field| !field.trim().is_empty()),
-                    t("function-package-save"),
-                )
-                .clicked();
-                (save, ui.button(t("cancel")).clicked())
-            })
-            .inner
+            let (cancel, save) = controls::dialog_actions(
+                ui,
+                Action::Primary,
+                [&export.package, &export.version, &export.node]
+                    .iter()
+                    .all(|field| !field.trim().is_empty()),
+                egui::Button::new(t("function-package-save")),
+            );
+            (cancel.clicked(), save.clicked())
         });
-        let (save, cancel) = modal.inner;
+        let (cancel, save) = modal.inner;
         if cancel || modal.should_close() {
             self.function_export = None;
         } else if save {
@@ -185,56 +254,19 @@ impl Editor {
     }
 
     pub(crate) fn begin_node_rename(&mut self, node: NodeId) -> bool {
-        let Some(view) = self
+        let Some(name) = self
             .graph()
             .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+            .map(|view| view.name.clone())
         else {
             return false;
         };
-        self.renaming_node = Some((node, view.name.clone()));
+        self.canvas.cancel_node_rename();
+        self.renaming_node = Some(NodeRename::new(node, name));
+        self.canvas.select(Some(node));
+        self.panels.properties = true;
+        self.panels.packages = false;
         true
-    }
-
-    pub(crate) fn node_rename_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
-        let Some((node, name)) = &mut self.renaming_node else {
-            return;
-        };
-        let id = egui::Id::unique(("rename-node", *node));
-        let modal = egui::Modal::new(id).show(ctx, |ui| {
-            ui.heading(t("rename-node"));
-            let mut field = egui::TextEdit::singleline(name)
-                .hint_text(t("rename-node-default"))
-                .show(ui);
-            if ui
-                .ctx()
-                .data_mut(|data| !data.get_temp::<bool>(id).unwrap_or(false))
-            {
-                use egui::text::{CCursor, CCursorRange};
-                field.response.request_focus();
-                field.state.cursor.set_char_range(Some(CCursorRange::two(
-                    CCursor::new(0),
-                    CCursor::new(name.chars().count()),
-                )));
-                field.state.store(ui.ctx(), field.response.id);
-                ui.ctx().data_mut(|data| data.insert_temp(id, true));
-            }
-            ui.horizontal(|ui| {
-                let save = ui.button(t("rename-apply")).clicked()
-                    || (field.response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                (save, ui.button(t("cancel")).clicked())
-            })
-            .inner
-        });
-        let (save, cancel) = modal.inner;
-        if save || cancel || modal.should_close() {
-            ctx.data_mut(|data| data.remove::<bool>(id));
-            if let Some((node, name)) = self.renaming_node.take()
-                && save
-            {
-                self.rename_node(host, node, &name);
-            }
-        }
     }
 
     /// Groups the selected nodes under `name`, as one edit. Returns the group's ID.
@@ -381,7 +413,15 @@ impl Editor {
             .show(ctx, |ui| match &extracting.preview {
                 Err(why) => {
                     ui.label(tf("not-a-function", &[("why", why.to_string().into())]));
-                    if dialog_button(ui, Action::Secondary, true, t("close")).clicked() {
+                    if controls::button(
+                        ui,
+                        Surface::Dialog,
+                        Action::Outline,
+                        true,
+                        egui::Button::new(t("close")),
+                    )
+                    .clicked()
+                    {
                         cancel = true;
                     }
                 }
@@ -420,15 +460,14 @@ impl Editor {
                             ui.label(format!("{name}: {}", crate::type_name(ty)));
                         }
                     }
-                    ui.horizontal(|ui| {
-                        let named = !extracting.name.trim().is_empty();
-                        if dialog_button(ui, Action::Primary, named, t("make-function")).clicked() {
-                            make = true;
-                        }
-                        if dialog_button(ui, Action::Secondary, true, t("cancel")).clicked() {
-                            cancel = true;
-                        }
-                    });
+                    let (dismiss, confirm) = controls::dialog_actions(
+                        ui,
+                        Action::Primary,
+                        !extracting.name.trim().is_empty(),
+                        egui::Button::new(t("make-function")),
+                    );
+                    make = confirm.clicked();
+                    cancel = dismiss.clicked();
                 }
             });
         // Enter makes the function once it has a name; Escape cancels.
@@ -451,22 +490,6 @@ impl Editor {
             self.extracting = None;
         }
     }
-}
-
-/// A button of a dialog, drawn like every other dialog action.
-fn dialog_button(
-    ui: &mut egui::Ui,
-    action: Action,
-    enabled: bool,
-    text: impl Into<egui::WidgetText>,
-) -> egui::Response {
-    controls::button(
-        ui,
-        Surface::Dialog,
-        action,
-        enabled,
-        egui::Button::new(text),
-    )
 }
 
 /// Room between the cards that feed a new function call and the call.

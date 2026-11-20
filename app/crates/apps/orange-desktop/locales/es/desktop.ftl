@@ -12,7 +12,9 @@ desktop-not-opened = No se abrió
 desktop-save-graph-as = Guardar el grafo como
 desktop-not-saved = No se guardó
 desktop-configure-folder = Elige primero una carpeta raíz en la conexión del nodo.
+desktop-configure-named-folder = Elige una carpeta raíz existente para { $folder } en Conexiones.
 desktop-outside-folder = Elige una ruta dentro de la carpeta raíz del nodo.
+desktop-outside-named-folder = Esta ruta está fuera de { $folder }. Elige una ruta dentro de su carpeta raíz.
 
 desktop-package-filter = Paquete de OrangeEditor
 desktop-package-error = No se pudo leer el paquete

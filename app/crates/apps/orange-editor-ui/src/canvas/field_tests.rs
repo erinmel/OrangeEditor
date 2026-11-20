@@ -18,6 +18,32 @@ fn port(name: &str, input: bool, exec: bool, ty: &str) -> PortView {
     }
 }
 
+#[test]
+fn a_file_path_label_identifies_its_folder_connection() {
+    let mut node = node();
+    node.definition = "org.orange.files/write-text".into();
+    let label = crate::properties::folder_path_label(&node, "path".into(), Some("Reports"));
+    assert!(label.starts_with("path"));
+    assert!(label.ends_with("Reports"));
+    let mut input = port("path", true, false, "core/string@1");
+    input.value = Some("monthly/today.csv".into());
+    let path = orange_host::PathInput {
+        port: "path".into(),
+        folder: false,
+        save: true,
+        extensions: Vec::new(),
+    };
+    assert_eq!(
+        fields::shown(&node, card::FieldOf::Path(&input, &path)),
+        ("monthly/today.csv".into(), false)
+    );
+    node.definition = "org.orange.audio/play".into();
+    assert_eq!(
+        crate::properties::folder_path_label(&node, "path".into(), Some("Speakers")),
+        "path"
+    );
+}
+
 /// A branch-like node: a way in, two ways out, a true-or-false input, a number and
 /// a choice setting.
 fn node() -> NodeView {
@@ -76,6 +102,12 @@ impl Session {
     }
 
     fn frame(&mut self, events: Vec<egui::Event>) -> CanvasResponse {
+        let (response, output) = self.frame_output(events);
+        output.drop_without_applying_deltas();
+        response
+    }
+
+    fn frame_output(&mut self, events: Vec<egui::Event>) -> (CanvasResponse, egui::FullOutput) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
             events,
@@ -92,8 +124,7 @@ impl Session {
             *corner = ui.available_rect_before_wrap().min;
             response = canvas.show_with_path_controls(ui, graph, &[], false, request_input);
         });
-        output.drop_without_applying_deltas();
-        response
+        (response, output)
     }
 
     /// The middle of the control of the field on row `index`, on the screen.
@@ -133,6 +164,64 @@ fn double_clicking_the_card_title_requests_a_rename() {
         assert_eq!(session.click(at).rename_node, None);
         assert_eq!(session.click(at).rename_node, expected);
     }
+}
+
+#[test]
+fn a_package_node_title_can_be_renamed_in_its_card() {
+    let mut session = Session::new();
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let node = host
+        .add_node(&mut draft, "org.orange.audio/gain", [40.0, 40.0])
+        .unwrap();
+    assert!(
+        host.rename_node(&mut draft, node, "Headphone gain")
+            .unwrap()
+    );
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.places.clear();
+    session.canvas.places.insert(node, Pos2::new(40.0, 40.0));
+    let name = session.graph.nodes[0].name.clone();
+    let title_y = |output: &egui::FullOutput| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(title) if title.galley.text() == name => Some(title.pos.y),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (_, idle) = session.frame_output(vec![]);
+    let baseline = title_y(&idle);
+    idle.drop_without_applying_deltas();
+    let at = session.corner
+        + (session.canvas.places[&node] + Vec2::new(45.0, HEADER_HEIGHT / 2.0)
+            - session.canvas.origin)
+            * session.canvas.zoom;
+    session.click(at);
+    assert_eq!(session.click(at).rename_node, Some(node));
+    let (_, editing) = session.frame_output(vec![]);
+    let editing_y = title_y(&editing);
+    assert!(
+        (editing_y - baseline).abs() <= 1.0,
+        "idle {baseline}, editing {editing_y}"
+    );
+    editing.drop_without_applying_deltas();
+    session.frame(vec![egui::Event::Text("Monitor gain".to_owned())]);
+    let result = session.frame(vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    assert_eq!(result.set_name, Some((node, "Monitor gain".into())));
+    assert!(session.canvas.node_rename.is_none());
 }
 
 #[test]

@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn appearance_switches_and_persists_including_system() {
+    use egui::{Theme, ThemePreference};
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut editor = Editor::new();
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    for (setting, os, expected) in [
+        ("light", Theme::Dark, Theme::Light),
+        ("dark", Theme::Light, Theme::Dark),
+        ("system", Theme::Light, Theme::Light),
+        ("system", Theme::Dark, Theme::Dark),
+    ] {
+        editor.restore_preferences(&serde_json::json!({"version": 1, "appearance": setting}));
+        assert_eq!(editor.preferences()["appearance"], setting);
+        for _ in 0..2 {
+            ctx.run_ui(
+                egui::RawInput {
+                    system_theme: Some(os),
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.ui_with_layout(ui, &mut host, |_, _, _| {});
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(ctx.theme(), expected);
+    }
+    assert_eq!(editor.preferred_theme, Some(ThemePreference::System));
+    editor.restore_preferences(&serde_json::json!({"version": 1}));
+    assert_eq!(editor.preferred_theme, None);
+}
+
+#[test]
 fn one_search_filters_keyboard_shortcuts_on_a_compact_window() {
     let mut editor = Editor::new();
     editor.settings_open = true;
@@ -248,6 +282,7 @@ fn settings_title_uses_strong_text_and_general_exposes_the_preview_preference() 
     theme::apply(&ctx);
     let expected = ctx.style_of(ctx.theme()).visuals.strong_text_color();
     let mut seen_title = false;
+    let mut seen_names = false;
     let mut seen_preview = false;
     for _ in 0..3 {
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -265,10 +300,11 @@ fn settings_title_uses_strong_text_and_general_exposes_the_preview_preference() 
                             .any(|section| section.format.color == expected)
                     );
                 }
+                seen_names |= text.galley.text() == t("preview-names-only");
                 seen_preview |= text.galley.text() == t("preview-node-cards");
             }
         }
         output.drop_without_applying_deltas();
     }
-    assert!(seen_title && seen_preview);
+    assert!(seen_title && seen_names && seen_preview);
 }

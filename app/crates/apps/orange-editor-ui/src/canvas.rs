@@ -8,6 +8,7 @@
 //! other panels of the editor.
 use crate::diagnostics::ProblemLevel;
 use crate::i18n::{t, tf};
+use crate::organise::NodeRename;
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use orange_host::{GraphView, NodeId, NodeView, PortView};
@@ -208,6 +209,8 @@ pub struct CanvasResponse {
     pub selected: Option<NodeId>,
     /// A node title was double-clicked.
     pub rename_node: Option<NodeId>,
+    /// The name applied by editing a title directly on its card.
+    pub set_name: Option<(NodeId, String)>,
     /// A value was written on an input with its control on the card, typed as a
     /// person types it.
     pub set_input: Option<(NodeId, String, String)>,
@@ -437,6 +440,7 @@ pub struct Canvas {
     selected_group_frame: Option<String>,
     hidden: std::collections::HashSet<NodeId>,
     renaming: Option<(String, String)>,
+    node_rename: Option<NodeRename>,
 }
 impl Default for Canvas {
     fn default() -> Self {
@@ -491,6 +495,7 @@ impl Default for Canvas {
             selected_group_frame: None,
             hidden: std::collections::HashSet::new(),
             renaming: None,
+            node_rename: None,
         }
     }
 }
@@ -978,6 +983,16 @@ impl Canvas {
         self.zoom = 1.0;
     }
 
+    pub(crate) fn zoom_around_center(&mut self, zoom: f32) {
+        self.zoom_at(zoom, self.size / 2.0);
+    }
+
+    fn zoom_at(&mut self, zoom: f32, offset: Vec2) {
+        let before = self.origin + offset / self.zoom;
+        self.zoom = zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+        self.origin = before - offset / self.zoom;
+    }
+
     /// Moves a node, as dragging it does. Unknown nodes are ignored.
     pub fn move_node(&mut self, node: NodeId, by: Vec2) {
         if let Some(place) = self.places.get_mut(&node) {
@@ -1345,6 +1360,10 @@ impl Canvas {
         self.show_with_path_controls(ui, graph, triggers, false, None)
     }
 
+    pub(crate) fn cancel_node_rename(&mut self) {
+        self.node_rename = None;
+    }
+
     pub(crate) fn show_with_path_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -1449,9 +1468,7 @@ impl Canvas {
                 }
             }
             if (factor - 1.0).abs() > f32::EPSILON {
-                let before = self.origin + (pointer - area.min) / self.zoom;
-                self.zoom = (self.zoom * factor).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
-                self.origin = before - (pointer - area.min) / self.zoom;
+                self.zoom_at(self.zoom * factor, pointer - area.min);
             } else if scroll != Vec2::ZERO {
                 self.origin -= scroll / self.zoom;
             }
@@ -1544,6 +1561,7 @@ impl Canvas {
                 )
                 .contains(at)
             {
+                self.node_rename = Some(NodeRename::new(node.id, node.name.clone()));
                 done.rename_node = Some(node.id);
             }
             if touched.secondary_clicked()
@@ -1553,6 +1571,14 @@ impl Canvas {
                 self.front = Some(node.id);
                 done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
             }
+        }
+
+        if self.node_rename.as_ref().is_some_and(|rename| {
+            Some(rename.node) != self.selected
+                || zoom < TITLE_ZOOM
+                || !graph.nodes.iter().any(|node| node.id == rename.node)
+        }) {
+            self.cancel_node_rename();
         }
 
         // Ports: dragging from an output draws a wire; the second mouse button opens
@@ -1976,12 +2002,21 @@ impl Canvas {
                 self.failures.contains_key(&node.id) || self.marks.nodes.contains_key(&node.id);
             let chart_open = !self.collapsed_spectra.contains(&node.id);
             let layout = geometry.card(node.id);
+            let renaming = self
+                .node_rename
+                .as_mut()
+                .filter(|rename| rename.node == node.id);
+            let title = if renaming.is_some() {
+                ""
+            } else {
+                self.display_name(node)
+            };
             let (pressed, slots) = draw_node(
                 ui,
                 &painter,
                 node,
                 layout,
-                (self.display_name(node), self.kind_name(node)),
+                (title, self.kind_name(node)),
                 rect,
                 zoom,
                 &colors,
@@ -1989,13 +2024,29 @@ impl Canvas {
                 response.id,
                 formula.as_deref(),
                 self.descriptions.get(&node.definition).map(String::as_str),
-                (
-                    connection,
-                    (!controls)
-                        .then(|| self.connection_selection(node))
-                        .flatten(),
-                ),
+                (connection, self.connection_selection(node)),
             );
+            if let Some(rename) = self
+                .node_rename
+                .as_mut()
+                .filter(|rename| rename.node == node.id)
+            {
+                let title = title_area(rect, zoom, marked).shrink2(Vec2::new(0.0, zoom));
+                let font = FontId::proportional((14.0 * zoom).max(9.0));
+                let mut field = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt("inline-title")
+                        .max_rect(title)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                field.set_clip_rect(field.clip_rect().intersect(title));
+                if let Some(save) = rename.field(&mut field, font) {
+                    if save {
+                        done.set_name = Some((node.id, std::mem::take(&mut rename.name)));
+                    }
+                    self.cancel_node_rename();
+                }
+            }
             if pressed {
                 done.trigger = Some(node.id);
             }
@@ -2913,7 +2964,13 @@ fn draw_node<'a>(
                     continue;
                 }
                 if named {
-                    let label = fields::name(node, editor, connection);
+                    let mut label = fields::name(node, editor, connection);
+                    if editor
+                        .port()
+                        .is_some_and(|port| crate::properties::is_folder_path(node, &port.id))
+                    {
+                        label = crate::properties::folder_path_label(node, label, profile);
+                    }
                     let (label, _) = elide(
                         painter,
                         &label,

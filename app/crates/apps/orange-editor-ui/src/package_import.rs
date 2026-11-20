@@ -1,6 +1,6 @@
 //! Install archives through the host while the editor and its flows stay open.
 use super::*;
-use crate::controls::{Action, Surface};
+use crate::controls::Action;
 use orange_host::Grants;
 
 #[derive(Debug)]
@@ -16,8 +16,6 @@ impl Editor {
         let Some(key) = &self.pending_package_removal else {
             return;
         };
-        let mut remove = false;
-        let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::unique("orange-remove-package")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             ui.heading(t("remove-package"));
@@ -25,26 +23,17 @@ impl Editor {
                 "remove-package-hint",
                 &[("package", key.to_string().into())],
             ));
-            ui.horizontal(|ui| {
-                remove = controls::button(
-                    ui,
-                    Surface::Dialog,
-                    Action::Destructive,
-                    true,
-                    egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
-                )
-                .clicked();
-                cancel = controls::button(
-                    ui,
-                    Surface::Dialog,
-                    Action::Secondary,
-                    true,
-                    egui::Button::new(t("cancel")),
-                )
-                .clicked();
-            });
+            controls::dialog_actions(
+                ui,
+                Action::Destructive,
+                true,
+                egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
+            )
         });
-        if remove && let Some(key) = self.pending_package_removal.take() {
+        let (cancel, remove) = &modal.inner;
+        if remove.clicked()
+            && let Some(key) = self.pending_package_removal.take()
+        {
             match host.uninstall(&key) {
                 Ok(()) => {
                     self.previews.invalidate();
@@ -64,7 +53,7 @@ impl Editor {
             }
             self.panels.log = true;
             self.log_events = true;
-        } else if cancel || modal.should_close() {
+        } else if cancel.clicked() || modal.should_close() {
             self.pending_package_removal = None;
         }
     }
@@ -90,8 +79,6 @@ impl Editor {
         let Some(import) = &mut self.pending_package else {
             return;
         };
-        let mut install = false;
-        let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::unique("orange-import-package")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             ui.heading(t("import-package"));
@@ -123,27 +110,15 @@ impl Editor {
             } else {
                 ui.label(t("package-no-permissions"));
             }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                install = controls::button(
-                    ui,
-                    Surface::Dialog,
-                    Action::Primary,
-                    true,
-                    egui::Button::new(t("install-package")),
-                )
-                .clicked();
-                cancel = controls::button(
-                    ui,
-                    Surface::Dialog,
-                    Action::Secondary,
-                    true,
-                    egui::Button::new(t("cancel")),
-                )
-                .clicked();
-            });
+            controls::dialog_actions(
+                ui,
+                Action::Primary,
+                true,
+                egui::Button::new(t("install-package")),
+            )
         });
-        if install {
+        let (cancel, install) = &modal.inner;
+        if install.clicked() {
             if let Some(import) = self.pending_package.take() {
                 match host.install(&import.archive, import.approved) {
                     Ok(key) => self.say(tf(
@@ -163,7 +138,7 @@ impl Editor {
                 self.panels.log = true;
                 self.log_events = true;
             }
-        } else if cancel || modal.should_close() {
+        } else if cancel.clicked() || modal.should_close() {
             self.pending_package = None;
         }
     }
