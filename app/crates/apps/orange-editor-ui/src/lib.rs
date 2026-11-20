@@ -24,6 +24,7 @@
 
 pub mod canvas;
 mod card_sources;
+pub mod controls;
 mod declarations;
 mod diagnostics;
 #[cfg(test)]
@@ -46,6 +47,7 @@ mod types_tab;
 pub use properties::{COMMON_TYPES, port_label, set_at};
 pub use quick_add::QuickChoice;
 
+use crate::controls::{Dropdown as _, Surface};
 use canvas::Canvas;
 use i18n::{t, tf};
 use orange_host::{
@@ -264,7 +266,7 @@ pub fn exact_type(ty: &str) -> String {
 
 /// How much a message a graph logs matters.
 pub use diagnostics::NoteLevel;
-use diagnostics::{LogLine, ProblemLocation};
+use diagnostics::{LogLine, ProblemLevel, ProblemLocation};
 
 /// A wire that needs a conversion chosen: its two ends, the conversions that join
 /// them, and where the list is shown.
@@ -338,7 +340,7 @@ struct Document {
 }
 
 impl Document {
-    /// The draft retains every node. Only the runnable copy omits isolated errors.
+    /// The runnable copy omits draft cards while keeping them in the editor.
     fn runtime_text(&self, host: &Host) -> Result<String, HostError> {
         let text = self.draft.text()?;
         if self.run_omitted.is_empty() {
@@ -389,6 +391,8 @@ pub enum FileRequest {
     SaveAs,
     /// Choose an expansion package archive to install.
     ImportPackage,
+    /// Choose where to write a validated expansion package archive.
+    ExportPackage { name: String, archive: Vec<u8> },
     /// Choose a file or folder for a node's text input that holds a path, such as the
     /// sound file of Play sound, and hand it to [`Editor::choose_path`].
     ChoosePath {
@@ -424,6 +428,7 @@ impl std::fmt::Debug for Probing {
 /// The state of the editor between frames.
 #[derive(Debug, Default)]
 pub struct Editor {
+    function_export: Option<organise::FunctionExport>,
     search: String,
     palette_highlighted: usize,
     log_events: bool,
@@ -437,10 +442,11 @@ pub struct Editor {
     log_filter: Option<NoteLevel>,
     log_search: String,
     problems_search: String,
-    problems_filter: Option<bool>,
+    problems_filter: Option<ProblemLevel>,
     declaration_search: [String; 3],
     node_search_previews: bool,
     pending_package: Option<package_import::PackageImport>,
+    pending_package_removal: Option<orange_host::PackageKey>,
     packages_tab: bool,
     /// What the Packages tab is filtered by.
     package_search: String,
@@ -487,6 +493,7 @@ pub struct Editor {
     pub(crate) probing: Option<Probing>,
     /// A function being made of the selected nodes, while its preview is open.
     extracting: Option<organise::Extracting>,
+    renaming_node: Option<(NodeId, String)>,
     /// The language the node search also matches in, as a BCP 47 tag; empty is English.
     language: String,
     /// The right-click menu, while it is open.
@@ -500,12 +507,7 @@ pub struct Editor {
 }
 
 fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
-    ui.add(
-        egui::TextEdit::singleline(query)
-            .id_salt(id)
-            .hint_text(hint)
-            .desired_width(f32::INFINITY),
-    );
+    controls::search(ui, id, query, hint);
 }
 
 fn contains_query(query: &str, fields: &[&str]) -> bool {
@@ -559,6 +561,7 @@ impl Editor {
     /// A text that is not a document opens nothing, and the log says why.
     pub fn open(&mut self, host: &mut Host, path: impl Into<String>, text: String) {
         self.node_config_menu = None;
+        self.renaming_node = None;
         self.inspected_port = None;
         self.previews.invalidate();
         self.stop(host);
@@ -1192,107 +1195,20 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        let mut marks = canvas::Marks::default();
-        document.problem_locations.clear();
-        document.run_blocked = false;
-        document.run_omitted.clear();
-        let wired: std::collections::BTreeSet<_> = document
-            .graph
-            .wires
-            .iter()
-            .flat_map(|wire| [wire.from.0, wire.to.0])
-            .chain(
-                document
-                    .draft
-                    .document()
-                    .exports()
-                    .iter()
-                    .map(|export| export.node),
-            )
-            .collect();
-        let diagnostics = match host.diagnostics(&mut document.draft) {
-            Ok(diagnostics) => diagnostics,
-            Err(error) => {
-                document.set_problem_error(&error);
-                self.canvas.set_marks(marks);
-                return;
-            }
-        };
-        let mut inactive_splitters = std::collections::BTreeSet::new();
-        let mut isolated = std::collections::BTreeSet::new();
-        for diagnostic in diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == orange_host::Severity::Error)
-        {
-            let Some(node) = diagnostics::top_node(diagnostic) else {
-                continue;
-            };
-            let Some(view) = document.graph.nodes.iter().find(|view| view.id == node) else {
-                continue;
-            };
-            if view.definition == "org.orange.audio/multiband-spectrum"
-                && diagnostics::missing_splitter_stream(diagnostic)
-            {
-                inactive_splitters.insert(node);
-            }
-            if !wired.contains(&node) && diagnostic.subject.edge.is_none() {
-                isolated.insert(node);
-            }
-        }
-        if document
-            .graph
-            .nodes
-            .iter()
-            .all(|node| isolated.contains(&node.id))
-        {
-            // Isolated values and actions have no caller. Keep an incomplete
-            // entry visible as an error when it is the only way into the graph.
-            for node in document.graph.nodes.iter().filter(|node| node.entry) {
-                isolated.remove(&node.id);
-            }
-        }
-        document.run_omitted = isolated.union(&inactive_splitters).copied().collect();
-        // An isolated action without an execution path is a draft card. Keeping it
-        // out of the run also keeps its service connection inactive.
-        document
+        self.canvas.set_marks(document.check_problems(host));
+        let mut drafts = document
             .run_omitted
-            .extend(diagnostics.iter().filter_map(|diagnostic| {
-                (diagnostic.code.as_str() == "W-UNREACHABLE")
-                    .then(|| diagnostics::top_node(diagnostic))
-                    .flatten()
-                    .filter(|node| !wired.contains(node))
-            }));
-        document.run_omitted.sort_unstable();
-        document.run_omitted.dedup();
-        document.problems.clear();
-        for diagnostic in &diagnostics {
-            let advisory = diagnostics::top_node(diagnostic).is_some_and(|node| {
-                isolated.contains(&node)
-                    || inactive_splitters.contains(&node)
-                        && diagnostics::missing_splitter_stream(diagnostic)
-            });
-            let wire = host.wire_of(&document.draft, diagnostic);
-            document.record_problem(diagnostic, wire, advisory, &mut marks);
-        }
-        // An unwired splitter stays idle. Validate any consumers in the graph that runs.
-        if !document.run_blocked && inactive_splitters.iter().any(|node| wired.contains(node)) {
-            let projected = document
-                .runtime_text(host)
-                .and_then(|text| host.draft(&text))
-                .and_then(|mut draft| host.problems(&mut draft));
-            match projected {
-                Ok(diagnostics) => {
-                    for diagnostic in diagnostics
-                        .iter()
-                        .filter(|diagnostic| diagnostic.severity == orange_host::Severity::Error)
-                    {
-                        document.record_problem(diagnostic, None, false, &mut marks);
-                    }
-                }
-                Err(error) => document.set_problem_error(&error),
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for problem in &document.problem_locations {
+            if problem.level != ProblemLevel::Draft
+                && let Some(node) = problem.node
+            {
+                drafts.remove(&node);
             }
         }
-        self.canvas.set_marks(marks);
+        self.canvas.set_draft_marks(drafts);
     }
 
     /// Starts the open document as a flow. A document that cannot start says why in
@@ -1604,6 +1520,8 @@ impl Editor {
         }
         let _ = self.settings_window(ui.ctx());
         self.package_import_dialog(ui.ctx(), host);
+        self.package_removal_dialog(ui.ctx(), host);
+        self.function_export_dialog(ui.ctx(), host);
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -2022,7 +1940,13 @@ impl Editor {
     }
 
     fn workspace_diagnostics(&mut self, ui: &mut egui::Ui, centered: bool) {
-        let count = self.problems().len();
+        let count = self.document.as_ref().map_or(0, |document| {
+            document
+                .problem_locations
+                .iter()
+                .filter(|problem| problem.level != ProblemLevel::Draft)
+                .count()
+        });
         let problems = if count == 0 {
             t("problems").to_owned()
         } else {
@@ -2127,7 +2051,7 @@ impl Editor {
         let mut chosen = None;
         let _ = egui::ComboBox::from_id_salt("orange-language")
             .selected_text((icons::text(icons::LANGUAGE), format!(" {name}")))
-            .show_ui(ui, |ui| {
+            .show_select(ui, Surface::Dialog, |ui| {
                 for (tag, name) in &languages {
                     if ui
                         .selectable_label(*tag == current, name.as_ref())
@@ -2282,17 +2206,23 @@ impl Editor {
     /// with its name and version, what it adds, and whether it is in use.
     fn packages_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         if self.file_dialogs
-            && ui
-                .button((icons::text(icons::ADD), t("import-package")))
-                .clicked()
+            && controls::button(
+                ui,
+                Surface::Panel,
+                controls::Action::Secondary,
+                true,
+                egui::Button::new((icons::text(icons::ADD), t("import-package"))),
+            )
+            .clicked()
         {
             self.ask(FileRequest::ImportPackage);
         }
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        let _ = ui.add(
-            egui::TextEdit::singleline(&mut self.package_search)
-                .hint_text(t("search-packages-hint"))
-                .desired_width(f32::INFINITY),
+        controls::search(
+            ui,
+            "package-search",
+            &mut self.package_search,
+            t("search-packages-hint"),
         );
         ui.add_space(4.0);
         let wanted = self.package_search.trim().to_lowercase();
@@ -2357,6 +2287,24 @@ impl Editor {
                                 ("active", if package.active { "yes" } else { "no" }.into()),
                             ],
                         ));
+                        if matches!(package.kind, PackageKind::Installed)
+                            && let (Ok(id), Ok(version)) =
+                                (package.id.parse(), package.version.parse())
+                            && controls::button(
+                                ui,
+                                Surface::Panel,
+                                controls::Action::Destructive,
+                                true,
+                                egui::Button::new((
+                                    icons::text(icons::DELETE),
+                                    t("remove-package"),
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.pending_package_removal =
+                                Some(orange_host::PackageKey { id, version });
+                        }
                     });
             }
             if shown == 0 {
@@ -2420,9 +2368,16 @@ impl Editor {
             self.panels.properties = true;
             self.panels.packages = false;
         }
+        if let Some(node) = done.rename_node {
+            self.begin_node_rename(node);
+        }
         if done.show_problems || done.show_runtime_log {
             self.panels.log = true;
             self.log_events = done.show_runtime_log;
+            if done.show_problems {
+                self.problems_filter = None;
+                self.problems_search.clear();
+            }
         }
         if done.moved {
             self.keep_layout();
@@ -2451,6 +2406,9 @@ impl Editor {
         }
         if let Some((node, port, typed)) = done.set_input {
             let _ = self.set_input(host, (node, &port), Some(&typed));
+        }
+        if let Some((node, port)) = done.remove_port {
+            let _ = self.remove_port(host, (node, &port));
         }
         if (done.copy || done.cut)
             && let Some(clip) = self.copy(host)
@@ -2526,6 +2484,7 @@ impl Editor {
         self.node_config_window(ui.ctx(), host);
         self.port_inspector_window(ui.ctx());
         self.function_window(ui.ctx(), host);
+        self.node_rename_dialog(ui.ctx(), host);
     }
 }
 

@@ -2,6 +2,7 @@
 //! make their own choices (Mood: calm, happy) and structures without a package
 //! (12 §6.5). Values store member IDs, so names can change freely.
 use super::*;
+use crate::controls::{Dropdown as _, Surface};
 use orange_host::{FieldDecl, LocalTypeDecl, TypeShape, VariantDecl};
 use std::cell::RefCell;
 
@@ -479,7 +480,7 @@ fn payload_choice(
     let _ = egui::ComboBox::from_id_salt(salt)
         .width(78.0)
         .selected_text(shown)
-        .show_ui(ui, |ui| {
+        .show_select(ui, Surface::Panel, |ui| {
             if payload {
                 let _ = ui.selectable_value(&mut chosen, None, t("no-value"));
             }

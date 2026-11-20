@@ -1,6 +1,7 @@
 //! Searchable preferences with a fixed search header and independently scrollable pages.
 use super::*;
 use crate::canvas::{GRID_STEPS, GridStyle};
+use crate::controls::{Action, Dropdown as _, Surface};
 
 const GRID_STYLES: [GridStyle; 3] = [GridStyle::Dots, GridStyle::Lines, GridStyle::Hidden];
 
@@ -246,10 +247,13 @@ impl Editor {
             egui::pos2(content.right() - 110.0, footer_y + 7.0),
             egui::vec2(100.0, 30.0),
         );
-        ui.put(
-            done,
+        controls::button(
+            &mut settings_pane(ui, "settings-footer", done),
+            Surface::Dialog,
+            Action::Primary,
+            true,
             egui::Button::new(egui::RichText::new(t("settings-done")).strong())
-                .fill(ui.visuals().selection.bg_fill),
+                .min_size(done.size()),
         )
         .clicked()
     }
@@ -297,7 +301,7 @@ impl Editor {
             egui::ComboBox::from_id_salt("section")
                 .width(nav.available_width())
                 .selected_text(self.settings_tab.title())
-                .show_ui(nav, |ui| {
+                .show_select(nav, Surface::Dialog, |ui| {
                     for (section, found) in Section::ALL.into_iter().zip(matches) {
                         if found {
                             ui.selectable_value(&mut self.settings_tab, section, section.title());
@@ -347,7 +351,7 @@ impl Editor {
         egui::ComboBox::from_id_salt("interface-scale")
             .width(90.0)
             .selected_text(format!("{:.0}%", scale * 100.0))
-            .show_ui(ui, |ui| {
+            .show_select(ui, Surface::Dialog, |ui| {
                 for percent in [75_u16, 90, 100, 110, 125, 150, 175, 200] {
                     if ui
                         .selectable_value(

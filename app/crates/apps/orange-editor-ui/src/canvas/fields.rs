@@ -5,6 +5,7 @@
 use super::card::FieldOf;
 use super::settings;
 use super::*;
+use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
     choose_http_method, http_request_variant, input_label, watch_label, watch_number_value,
 };
@@ -173,11 +174,14 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             |name| (name, false),
         ),
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
-        FieldOf::AddPort(variadic) => (add_port_text(variadic), true),
+        FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
     }
 }
 
-fn add_port_text(variadic: &orange_host::VariadicView) -> String {
+fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> String {
+    if node.definition == "org.orange.logging/log-message" && variadic.port == "argument" {
+        return t("log-add-part").to_owned();
+    }
     tf(
         "add-port",
         &[("name", crate::port_label(&variadic.port).into())],
@@ -188,7 +192,9 @@ fn add_port_text(variadic: &orange_host::VariadicView) -> String {
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
         FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            input_label(node, &port.id).map_or_else(|| port_title(port), str::to_owned)
+            crate::properties::log_part_label(node, &port.id).unwrap_or_else(|| {
+                input_label(node, &port.id).map_or_else(|| port_title(port), str::to_owned)
+            })
         }
         FieldOf::Setting(name, schema) => {
             if node.definition == "core/on-watch" {
@@ -201,7 +207,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         }
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
-        FieldOf::AddPort(variadic) => add_port_text(variadic),
+        FieldOf::AddPort(variadic) => add_port_text(node, variadic),
     }
 }
 
@@ -418,7 +424,15 @@ impl Canvas {
                     let response = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_cursor(egui::CursorIcon::Text)
-                        .on_hover_text(t("edit-text-hint"));
+                        .on_hover_text(
+                            if kind == crate::properties::TextInput::LogMessage
+                                && node.variadic.iter().any(|port| port.port == "argument")
+                            {
+                                t("log-format-hint")
+                            } else {
+                                t("edit-text-hint")
+                            },
+                        );
                     frame(ui.painter(), slot, zoom, &colors, response.hovered());
                     let content = slot.shrink2(Vec2::new(6.0, 4.0) * zoom);
                     let tint = if dim { colors.weak } else { colors.text };
@@ -631,7 +645,13 @@ impl Canvas {
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
             FieldOf::AddPort(variadic) => {
                 // A quiet button across the card: "+ Add branch".
-                let touched = ui.interact(slot, id, Sense::click());
+                let label = add_port_text(node, variadic);
+                let touched = ui
+                    .interact(slot, id, Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                touched.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label)
+                });
                 let painter = ui.painter();
                 if touched.hovered() {
                     painter.rect_filled(slot, 5.0 * zoom, colors.background);
@@ -642,16 +662,20 @@ impl Canvas {
                     Stroke::new(1.0, colors.outline),
                     StrokeKind::Inside,
                 );
-                let _ = painter.text(
-                    slot.center(),
-                    Align2::CENTER_CENTER,
-                    format!("+  {}", add_port_text(variadic)),
-                    FontId::proportional(12.0 * zoom),
-                    if touched.hovered() {
-                        colors.text
-                    } else {
-                        colors.weak
-                    },
+                let label =
+                    painter.layout_no_wrap(label, FontId::proportional(12.0 * zoom), colors.text);
+                let center = slot.center() - Vec2::new(label.size().x / 2.0, 0.0);
+                crate::icons::paint_centered(
+                    painter,
+                    center - Vec2::new(8.0 * zoom, 0.0),
+                    crate::icons::ADD,
+                    14.0 * zoom,
+                    colors.text,
+                );
+                painter.galley(
+                    center + Vec2::new(3.0 * zoom, -label.size().y / 2.0),
+                    label,
+                    colors.text,
                 );
                 touched
                     .clicked()
@@ -1025,7 +1049,7 @@ fn dropdown(
             .height(320.0)
             .wrap_mode(egui::TextWrapMode::Truncate)
             .selected_text(selection)
-            .show_ui(ui, |ui| {
+            .show_select(ui, Surface::Card, |ui| {
                 ui.style_mut().override_font_id = None;
                 ui.set_min_width(slot.width() / zoom.max(0.5));
                 list(ui);

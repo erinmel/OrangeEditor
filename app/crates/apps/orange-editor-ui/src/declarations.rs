@@ -3,6 +3,7 @@
 //! says about them; a secret is typed masked, kept in the host's credential store and
 //! written into the document only as its `credential://<name>` reference.
 use super::*;
+use crate::controls::{Dropdown as _, Surface};
 use crate::properties::COMMON_TYPES;
 use orange_host::{
     AdapterInfo, Connection, ConnectionScope, Declarations, SECRET_PREFIX, SettingChoices,
@@ -212,7 +213,7 @@ pub(crate) fn choice_fields(
                 .width((ui.available_width() - refresh_width).max(60.0))
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(shown)
-                .show_ui(ui, |ui| {
+                .show_select(ui, Surface::Panel, |ui| {
                     if ui
                         .selectable_label(current.is_none(), choice.unset.as_str())
                         .clicked()
@@ -813,7 +814,7 @@ impl Editor {
                         .width(84.0)
                         .wrap_mode(egui::TextWrapMode::Truncate)
                         .selected_text(egui::RichText::new(type_name(&variable.ty)).color(color))
-                        .show_ui(ui, |ui| {
+                        .show_select(ui, Surface::Panel, |ui| {
                             for common in COMMON_TYPES {
                                 let _ = ui.selectable_value(
                                     &mut ty,
@@ -919,7 +920,7 @@ impl Editor {
                         ui.label(t("type"));
                         let _ = egui::ComboBox::from_id_salt("orange-variable-type")
                             .selected_text(type_name(&form.ty))
-                            .show_ui(ui, |ui| {
+                            .show_select(ui, Surface::Panel, |ui| {
                                 for ty in COMMON_TYPES {
                                     let _ = ui.selectable_value(
                                         &mut form.ty,
@@ -935,7 +936,7 @@ impl Editor {
                         ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
                         let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
                             .selected_text(scope_name(form.scope))
-                            .show_ui(ui, |ui| {
+                            .show_select(ui, Surface::Panel, |ui| {
                                 for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
                                     if scope == VarScope::Workspace && !can_use_workspace {
                                         continue;
@@ -1370,7 +1371,7 @@ fn choice_list(
                 .clone()
                 .unwrap_or_else(|| t("empty-until-written").to_owned()),
         )
-        .show_ui(ui, |ui| {
+        .show_select(ui, Surface::Panel, |ui| {
             let _ = ui.selectable_value(initial, None, t("empty-until-written"));
             for choice in choices.iter().filter(|choice| !choice.payload) {
                 let _ = ui.selectable_value(initial, Some(choice.name.clone()), &choice.name);
@@ -1390,7 +1391,7 @@ fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut Connec
     let _ = egui::ComboBox::from_id_salt("orange-connection-adapter")
         .selected_text(shown)
         .width(ui.available_width() - 8.0)
-        .show_ui(ui, |ui| {
+        .show_select(ui, Surface::Panel, |ui| {
             for adapter in adapters {
                 let hover = if adapter.purpose.is_empty() {
                     adapter.id.clone()

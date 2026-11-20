@@ -433,10 +433,6 @@ impl crate::Editor {
             self.shortcut_edit = None;
         }
         ui.add_space(10.0);
-        if self.shortcut_edit.is_some() {
-            self.edit_shortcut_ui(ui);
-            ui.add_space(8.0);
-        }
         let searched_chord = parse_shortcut(query);
         let table_width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - 6.0).max(0.0);
@@ -452,6 +448,7 @@ impl crate::Editor {
         }
         egui::ScrollArea::vertical()
             .id_salt("keymap-actions")
+            .animated(false)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -461,7 +458,12 @@ impl crate::Editor {
                     for &(action, label, _, _) in actions {
                         let keys = self.canvas.keys.label(action);
                         let label = t(label);
-                        if !self.shortcut_matches(action, label, query, searched_chord) {
+                        if !self
+                            .shortcut_edit
+                            .as_ref()
+                            .is_some_and(|edit| edit.action == action)
+                            && !self.shortcut_matches(action, label, query, searched_chord)
+                        {
                             continue;
                         }
                         any = true;
@@ -492,16 +494,17 @@ impl crate::Editor {
         label: &str,
         keys: String,
     ) {
-        let (row, [action_cell, binding_cell]) = shortcut_row(ui, width, 35.0);
-        let current = self.canvas.keys.0.get(action).copied().flatten();
-        let editing = self
+        if self
             .shortcut_edit
             .as_ref()
-            .is_some_and(|edit| edit.action == action);
-        let visuals = ui.visuals();
-        if editing {
-            ui.painter().rect_filled(row, 4.0, visuals.faint_bg_color);
+            .is_some_and(|edit| edit.action == action)
+        {
+            self.edit_shortcut_ui(ui);
+            return;
         }
+        let (row, [action_cell, binding_cell]) = shortcut_row(ui, width, 35.0);
+        let current = self.canvas.keys.0.get(action).copied().flatten();
+        let visuals = ui.visuals();
         let divider = visuals.widgets.noninteractive.bg_stroke;
         ui.painter().hline(row.x_range(), row.bottom(), divider);
         let action_label = put_left(ui, action_cell, egui::Label::new(label).truncate());
@@ -510,11 +513,7 @@ impl crate::Editor {
                 binding_cell.shrink2(egui::vec2(0.0, 4.0)),
                 egui::Button::new(egui::RichText::new(&keys).monospace())
                     .shortcut_text(icons::text(icons::EDIT))
-                    .fill(if editing {
-                        ui.visuals().selection.bg_fill
-                    } else {
-                        ui.visuals().extreme_bg_color
-                    })
+                    .fill(ui.visuals().extreme_bg_color)
                     .stroke(divider)
                     .truncate(),
             )
@@ -567,7 +566,12 @@ impl crate::Editor {
                 })
             });
             if let Some((key, modifiers)) = pressed {
-                ui.input_mut(|input| input.consume_key(modifiers, key));
+                ui.input_mut(|input| {
+                    input.consume_key(modifiers, key);
+                    input
+                        .events
+                        .retain(|event| !matches!(event, egui::Event::Text(_)));
+                });
                 edit.recording = false;
                 if key != Key::Escape {
                     edit.text = format_shortcut(normalized(modifiers, key));
@@ -578,7 +582,8 @@ impl crate::Editor {
             return;
         }
         let mut keep_editing = true;
-        egui::Frame::new()
+        let mut scroll_to_editor = edit.focus && !edit.recording;
+        let row = egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
             .inner_margin(12)
@@ -589,12 +594,14 @@ impl crate::Editor {
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     let mut input = egui::TextEdit::singleline(&mut edit.text)
+                        .id(ui.make_persistent_id(("shortcut-entry", edit.action)))
                         .font(egui::TextStyle::Monospace)
                         .desired_width((ui.available_width() - 135.0).max(90.0))
                         .interactive(!edit.recording)
                         .hint_text(t("shortcut-example"))
                         .show(ui);
-                    if std::mem::take(&mut edit.focus) {
+                    scroll_to_editor |= input.response.changed();
+                    if !edit.recording && std::mem::take(&mut edit.focus) {
                         use egui::text::{CCursor, CCursorRange};
                         input.response.request_focus();
                         input.state.cursor.set_char_range(Some(CCursorRange::two(
@@ -669,6 +676,9 @@ impl crate::Editor {
             });
         if keep_editing {
             self.shortcut_edit = Some(edit);
+        }
+        if scroll_to_editor {
+            row.response.scroll_to_me(Some(egui::Align::Center));
         }
     }
 }

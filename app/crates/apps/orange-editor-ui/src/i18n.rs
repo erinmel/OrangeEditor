@@ -40,8 +40,9 @@ thread_local! {
     static PORTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
 
-/// Adds an application's own catalogues, such as the desktop's dialog text, to the
-/// editor's. Call it before the editor draws; it has no effect once text was read.
+/// Registers an application's Fluent catalogues. Messages with the same ID and
+/// language override editor messages. Call this once per process before any editor
+/// text is read, including labels resolved before the first frame.
 pub fn add_application_catalogs(catalogs: &'static [(&'static str, &'static str)]) -> bool {
     APPLICATION.set(catalogs).is_ok()
 }

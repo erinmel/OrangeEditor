@@ -6,6 +6,7 @@
 //! only this: it asks its host for a [`GraphView`], calls [`Canvas::show`] each frame
 //! and acts on the [`CanvasResponse`]. Nothing here knows about files, flows or the
 //! other panels of the editor.
+use crate::diagnostics::ProblemLevel;
 use crate::i18n::{t, tf};
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
@@ -205,6 +206,8 @@ pub struct CanvasResponse {
     pub show_runtime_log: bool,
     /// The node that was clicked.
     pub selected: Option<NodeId>,
+    /// A node title was double-clicked.
+    pub rename_node: Option<NodeId>,
     /// A value was written on an input with its control on the card, typed as a
     /// person types it.
     pub set_input: Option<(NodeId, String, String)>,
@@ -222,6 +225,8 @@ pub struct CanvasResponse {
     pub device: Option<(NodeId, Option<String>)>,
     /// One more instance of a variadic port was asked for on a card.
     pub add_port: Option<(NodeId, String)>,
+    /// An added port was removed from its card.
+    pub remove_port: Option<(NodeId, String)>,
     /// Refresh the adapter choices for a node's device picker.
     pub(crate) refresh_devices: Option<String>,
     pub(crate) spectrum_edit: Option<(NodeId, BandEdit)>,
@@ -399,6 +404,7 @@ pub struct Canvas {
     selected_wire: Option<WireEnds>,
     /// Problems drawn on nodes and wires.
     marks: Marks,
+    draft_marks: BTreeSet<NodeId>,
     help_revision: Option<(u64, String)>,
     descriptions: std::collections::HashMap<String, String>,
     labels: std::collections::HashMap<String, String>,
@@ -457,6 +463,7 @@ impl Default for Canvas {
             hover_wire: None,
             selected_wire: None,
             marks: Marks::default(),
+            draft_marks: BTreeSet::new(),
             activity: std::collections::HashMap::new(),
             entry_activity: BTreeMap::new(),
             help_revision: None,
@@ -499,6 +506,34 @@ struct Palette {
     exec: Color32,
 }
 impl Palette {
+    fn port_color(&self, ty: Option<&str>, exec: bool) -> Color32 {
+        let color = if exec { self.exec } else { type_color(ty) };
+        let card = luminance(self.card);
+        let background = luminance(self.background);
+        let endpoint = if card > 0.18 {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        for amount in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0] {
+            let ink = color.lerp_to_gamma(endpoint, amount);
+            let light = luminance(ink);
+            let contrast = |surface: f32| (surface.max(light) + 0.05) / (surface.min(light) + 0.05);
+            if contrast(card) >= 3.0 && contrast(background) >= 3.0 {
+                return ink;
+            }
+        }
+        endpoint
+    }
+
+    fn problem_level(&self, level: ProblemLevel) -> Color32 {
+        match level {
+            ProblemLevel::Blocker => self.error,
+            ProblemLevel::Warning => self.warning,
+            ProblemLevel::Draft => self.weak,
+        }
+    }
+
     fn problem(&self, error: bool) -> Color32 {
         if error { self.error } else { self.warning }
     }
@@ -559,6 +594,16 @@ pub(crate) fn type_color(ty: Option<&str>) -> Color32 {
 }
 
 impl Canvas {
+    fn mark_level(&self, node: NodeId, mark: &Mark) -> ProblemLevel {
+        if mark.error {
+            ProblemLevel::Blocker
+        } else if self.draft_marks.contains(&node) {
+            ProblemLevel::Draft
+        } else {
+            ProblemLevel::Warning
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -840,43 +885,82 @@ impl Canvas {
     }
 
     fn draw_grid(&self, painter: &egui::Painter, area: Rect, colors: &Palette) {
-        let step = f32::from(self.grid_step) * self.zoom;
-        let style = self.grid_style;
-        if step < 12.0 || style == GridStyle::Hidden {
+        if self.grid_style == GridStyle::Hidden {
             return;
         }
+        painter.add(egui::Shape::mesh(self.grid_mesh(
+            area,
+            painter.ctx().pixels_per_point(),
+            colors,
+        )));
+    }
+
+    fn grid_mesh(&self, area: Rect, pixels_per_point: f32, colors: &Palette) -> egui::Mesh {
+        const MAJOR: u32 = 4;
+        let base_step = f32::from(self.grid_step) * self.zoom;
+        let major_step = base_step * 4.0;
+        let (step, stride) = if base_step < 12.0 {
+            (major_step, MAJOR)
+        } else {
+            (base_step, 1)
+        };
+        // The first position in either direction is a major intersection in graph
+        // coordinates. Panning and dropping minor marks keep the same alignment.
         let first = area.min
             - Vec2::new(
-                (self.origin.x * self.zoom).rem_euclid(step),
-                (self.origin.y * self.zoom).rem_euclid(step),
+                (self.origin.x * self.zoom).rem_euclid(major_step),
+                (self.origin.y * self.zoom).rem_euclid(major_step),
             );
-        let mut marks = egui::Mesh::default();
-        let mut y = first.y;
-        while y < area.bottom() {
-            if style == GridStyle::Lines {
-                let line =
-                    Rect::from_min_size(Pos2::new(area.left(), y), Vec2::new(area.width(), 1.0));
-                marks.add_colored_rect(line, colors.grid.gamma_multiply(0.5));
-            } else {
-                let mut x = first.x;
-                while x < area.right() {
-                    let dot = Rect::from_center_size(Pos2::new(x, y), Vec2::splat(1.35));
-                    marks.add_colored_rect(dot, colors.grid);
-                    x += step;
+        let positions = |start, end| {
+            std::iter::successors(Some((start, 0_u32)), move |&(at, index)| {
+                Some((at + step, index + stride))
+            })
+            .take_while(move |&(at, _)| at < end)
+            .map(|(at, index)| (at, index.is_multiple_of(MAJOR)))
+        };
+        let dots = self.grid_style == GridStyle::Dots;
+        let fade = ((base_step - 8.0) / 16.0).clamp(0.0, 1.0);
+        let minor = mix(
+            colors.background,
+            colors.text,
+            if dots { 0.32 } else { 0.22 } * fade,
+        );
+        let major = mix(
+            colors.background,
+            colors.text,
+            if dots { 0.48 } else { 0.36 },
+        );
+        let color = |strong| if strong { major } else { minor };
+        let pixel_edge = |at: f32| (at * pixels_per_point).floor() / pixels_per_point;
+        let pixel = 1.0 / pixels_per_point;
+        let mut mesh = egui::Mesh::default();
+        let rows = positions(first.y, area.bottom());
+        let columns = positions(first.x, area.right());
+        if dots {
+            for (y, strong_row) in rows {
+                for (x, strong_column) in columns.clone() {
+                    let strong = strong_row && strong_column;
+                    let radius = if strong { 1.75 } else { 1.2 };
+                    grid_dot(&mut mesh, Pos2::new(x, y), radius, color(strong));
                 }
             }
-            y += step;
-        }
-        if style == GridStyle::Lines {
-            let mut x = first.x;
-            while x < area.right() {
-                let line =
-                    Rect::from_min_size(Pos2::new(x, area.top()), Vec2::new(1.0, area.height()));
-                marks.add_colored_rect(line, colors.grid.gamma_multiply(0.5));
-                x += step;
+        } else {
+            for (y, strong) in rows {
+                let line = Rect::from_min_size(
+                    Pos2::new(area.left(), pixel_edge(y)),
+                    Vec2::new(area.width(), pixel),
+                );
+                mesh.add_colored_rect(line, color(strong));
+            }
+            for (x, strong) in columns {
+                let line = Rect::from_min_size(
+                    Pos2::new(pixel_edge(x), area.top()),
+                    Vec2::new(pixel, area.height()),
+                );
+                mesh.add_colored_rect(line, color(strong));
             }
         }
-        painter.add(egui::Shape::mesh(marks));
+        mesh
     }
 
     /// Shows the whole graph at the next frame.
@@ -1225,6 +1309,11 @@ impl Canvas {
     /// The problems to draw on nodes and wires from now on.
     pub fn set_marks(&mut self, marks: Marks) {
         self.marks = marks;
+        self.draft_marks.clear();
+    }
+
+    pub(crate) fn set_draft_marks(&mut self, nodes: BTreeSet<NodeId>) {
+        self.draft_marks = nodes;
     }
 
     /// Selects a node and moves the view so it is in the middle, at the same zoom.
@@ -1436,6 +1525,20 @@ impl Canvas {
                 }
                 done.selected = self.selected;
             }
+            if zoom >= TITLE_ZOOM
+                && !shift
+                && !command
+                && touched.double_clicked_by(egui::PointerButton::Primary)
+                && let Some(at) = touched.interact_pointer_pos()
+                && title_area(
+                    rect,
+                    zoom,
+                    self.failures.contains_key(&node.id) || self.marks.nodes.contains_key(&node.id),
+                )
+                .contains(at)
+            {
+                done.rename_node = Some(node.id);
+            }
             if touched.secondary_clicked()
                 && let Some(screen) = touched.interact_pointer_pos()
             {
@@ -1637,10 +1740,8 @@ impl Canvas {
                 .and_then(|port| port.ty);
             let color = if let Some(mark) = mark {
                 colors.problem(mark.error)
-            } else if wire.exec {
-                colors.exec
             } else {
-                type_color(ty)
+                colors.port_color(ty, wire.exec)
             };
             // The wire leaves and arrives level, bending more the further it goes.
             let points = wire_points(from, to, zoom);
@@ -1808,7 +1909,7 @@ impl Canvas {
                 port_marks
                     .entry(*node)
                     .or_default()
-                    .push((found.offset, mark.error));
+                    .push((found.offset, self.mark_level(*node, mark)));
             }
         }
         for node in node_order(graph, front) {
@@ -1974,6 +2075,44 @@ impl Canvas {
             let label_font = FontId::proportional(12.5 * zoom);
             let inset = CARD_PADDING * zoom;
             for row in &layout.rows {
+                let part = row.input().and_then(|port| {
+                    crate::properties::log_part_label(node, &port.id).map(|label| (port, label))
+                });
+                if controls && let Some((port, label)) = &part {
+                    let target = Rect::from_center_size(
+                        Pos2::new(
+                            rect.right() - inset - 8.0 * zoom,
+                            rect.top() + row.anchor() * zoom,
+                        ),
+                        Vec2::splat(18.0 * zoom),
+                    );
+                    let remove = tf("log-remove-part", &[("part", label.as_str().into())]);
+                    let touched = ui.interact(
+                        target,
+                        response.id.with(("remove-log-part", node.id, &port.id)),
+                        Sense::click(),
+                    );
+                    touched.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &remove)
+                    });
+                    let touched = touched
+                        .on_hover_text(remove)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    crate::icons::paint_centered(
+                        &painter,
+                        target.center(),
+                        crate::icons::CLOSE,
+                        14.0 * zoom,
+                        if touched.hovered() {
+                            colors.text
+                        } else {
+                            colors.weak
+                        },
+                    );
+                    if touched.clicked() {
+                        done.remove_port = Some((node.id, port.id.clone()));
+                    }
+                }
                 let wired = match row.left {
                     Some(card::Left::Port(port)) if !port.exec => Some(port),
                     _ => None,
@@ -1992,8 +2131,11 @@ impl Canvas {
                     {
                         continue;
                     }
-                    let name =
-                        painter.layout_no_wrap(port_title(port), label_font.clone(), colors.text);
+                    let label = part
+                        .as_ref()
+                        .filter(|_| input)
+                        .map_or_else(|| port_title(port), |(_, label)| label.clone());
+                    let name = painter.layout_no_wrap(label, label_font.clone(), colors.text);
                     let half = rect.width() / 2.0 - 1.5 * inset;
                     let gap = 8.0 * zoom;
                     let name_width = name.size().x.min(half);
@@ -2005,7 +2147,8 @@ impl Canvas {
                             rect.width()
                         } - name_width
                             - 2.0 * inset
-                            - gap;
+                            - gap
+                            - if part.is_some() { 20.0 * zoom } else { 0.0 };
                         (
                             Pos2::new(rect.left() + inset + name_width + gap, y),
                             Align2::LEFT_CENTER,
@@ -2103,11 +2246,11 @@ impl Canvas {
                 }
             }
             let node = node.id;
-            for &(offset, error) in port_marks.get(&node).into_iter().flatten() {
+            for &(offset, level) in port_marks.get(&node).into_iter().flatten() {
                 painter.circle_stroke(
                     rect.min + offset * zoom,
                     (PORT_RADIUS + 2.5) * zoom,
-                    Stroke::new(1.5 * zoom.max(0.6), colors.problem(error)),
+                    Stroke::new(1.5 * zoom.max(0.6), colors.problem_level(level)),
                 );
             }
             if let Some(why) = self.failures.get(&node) {
@@ -2121,7 +2264,7 @@ impl Canvas {
                     rect,
                     zoom,
                     &colors,
-                    &failed,
+                    (&failed, ProblemLevel::Blocker),
                     response.id.with(("failed", node)),
                 );
             } else if let Some(mark) = self.marks.nodes.get(&node) {
@@ -2131,7 +2274,7 @@ impl Canvas {
                     rect,
                     zoom,
                     &colors,
-                    mark,
+                    (mark, self.mark_level(node, mark)),
                     response.id.with(("mark", node)),
                 );
             }
@@ -2270,6 +2413,28 @@ impl Canvas {
     }
 }
 
+/// Adds a round grid point to the shared grid mesh, without a shape per point.
+fn grid_dot(mesh: &mut egui::Mesh, center: Pos2, radius: f32, color: Color32) {
+    const D: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    const OUTLINE: [(f32, f32); 8] = [
+        (1.0, 0.0),
+        (D, D),
+        (0.0, 1.0),
+        (-D, D),
+        (-1.0, 0.0),
+        (-D, -D),
+        (0.0, -1.0),
+        (D, -D),
+    ];
+    let first = mesh.vertices.len() as u32;
+    for (x, y) in OUTLINE {
+        mesh.colored_vertex(center + Vec2::new(x, y) * radius, color);
+    }
+    for edge in 1..7 {
+        mesh.add_triangle(first, first + edge, first + edge + 1);
+    }
+}
+
 /// The values a whole-number type holds.
 fn whole_range(ty: &str) -> (i128, i128) {
     match ty {
@@ -2395,30 +2560,21 @@ fn draw_mark(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    mark: &Mark,
+    (mark, level): (&Mark, ProblemLevel),
     id: egui::Id,
 ) -> bool {
     let center = mark_position(rect, zoom);
-    let color = colors.problem(mark.error);
-    painter.line_segment(
-        [
-            center - Vec2::new(10.0, -10.0) * zoom,
-            center + Vec2::new(10.0, 10.0) * zoom,
-        ],
-        Stroke::new(1.5 * zoom.max(0.6), color),
-    );
+    let color = colors.problem_level(level);
     if zoom >= 0.45 {
         let _ = painter.text(
             center,
             Align2::CENTER_CENTER,
-            if mark.error {
-                crate::icons::ERROR
-            } else {
-                crate::icons::WARNING
-            },
+            level.glyph(),
             FontId::new(MARK_SIZE * zoom, crate::icons::family()),
             color,
         );
+    } else {
+        painter.circle_filled(center, 2.5 * zoom.max(0.6), color);
     }
     let area = Rect::from_center_size(center, Vec2::splat((MARK_SIZE + 4.0) * zoom.max(0.75)));
     let response = ui.interact(area, id, Sense::click());
@@ -2429,11 +2585,7 @@ fn draw_mark(
     response
         .on_hover_ui(|ui| {
             ui.set_max_width(360.0);
-            ui.strong(if mark.error {
-                t("node-needs-attention")
-            } else {
-                t("node-warning")
-            });
+            ui.strong(level.label());
             ui.label(&mark.text);
             ui.small(t("open-details-hint"));
         })
@@ -2442,6 +2594,23 @@ fn draw_mark(
 
 /// How big a card's problem marker is, in graph units.
 const MARK_SIZE: f32 = 15.0;
+const TITLE_ZOOM: f32 = 0.33;
+
+fn title_area(rect: Rect, zoom: f32, marked: bool) -> Rect {
+    let marker = if marked { MARK_SIZE + 6.0 } else { 0.0 };
+    Rect::from_min_max(
+        rect.min + Vec2::new(CARD_PADDING * zoom + (20.0 * zoom).max(11.0), 0.0),
+        rect.right_top() + Vec2::new(-(CARD_PADDING + marker) * zoom, HEADER_HEIGHT * zoom),
+    )
+}
+
+pub(crate) fn node_title_color(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::WHITE
+    } else {
+        visuals.strong_text_color()
+    }
+}
 
 /// Where a card's problem marker sits: the right end of its header, inside the padding.
 fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
@@ -2555,24 +2724,33 @@ fn draw_node<'a>(
     };
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
 
-    // Text smaller than this is a smudge: far out, a card is only its shape and dots.
+    // At overview zoom, the title remains readable while the body simplifies.
     let readable = zoom >= 0.45;
     let pad = CARD_PADDING * zoom;
     let font = FontId::proportional(12.5 * zoom);
     let mut pressed = false;
     let mut slots = Vec::new();
-    if readable {
-        let title = FontId::proportional(14.0 * zoom);
+    if zoom >= TITLE_ZOOM {
+        let title = FontId::proportional((14.0 * zoom).max(9.0));
         let clip = header.shrink2(Vec2::new(pad, 0.0));
         let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
-        let mut left = clip.left_center();
-        if node.entry {
-            draw_arrow(&header_painter, left, 11.0 * zoom, colors.exec, zoom);
-            left.x += 19.0 * zoom;
-        }
-        let marker = if marked { MARK_SIZE + 6.0 } else { 0.0 };
-        let (shown, cut) = elide(painter, name, &title, clip.right() - left.x - marker * zoom);
-        let _ = header_painter.text(left, Align2::LEFT_CENTER, &shown, title, colors.text);
+        let left = clip.left_center();
+        crate::icons::paint_centered(
+            &header_painter,
+            left + Vec2::new((7.0 * zoom).max(4.0), 0.0),
+            family_icon(node),
+            (15.0 * zoom).max(8.0),
+            colors.text,
+        );
+        let label = title_area(rect, zoom, marked);
+        let (shown, cut) = elide(painter, name, &title, label.width());
+        let _ = header_painter.text(
+            label.left_center(),
+            Align2::LEFT_CENTER,
+            &shown,
+            title,
+            node_title_color(ui.visuals()),
+        );
         let detail = node
             .detail
             .as_deref()
@@ -2583,21 +2761,29 @@ fn draw_node<'a>(
                 .on_hover_ui(|ui| {
                     // One paragraph: what the node does, else what it is set to.
                     ui.set_max_width(300.0);
-                    ui.label(description.or(detail).unwrap_or(name));
+                    if let Some(detail) = detail {
+                        ui.strong(detail);
+                    }
+                    if let Some(description) = description {
+                        ui.label(description);
+                    }
+                    if detail.is_none() && description.is_none() && cut {
+                        ui.label(name);
+                    }
                     if let Some(formula) = formula {
                         ui.monospace(formula);
                     }
                 });
         }
-        if layout.empty {
-            let _ = painter.text(
-                Pos2::new(rect.center().x, rect.top() + layout.rows[0].anchor() * zoom),
-                Align2::CENTER_CENTER,
-                t("set-up-in-properties"),
-                FontId::proportional(11.5 * zoom),
-                colors.weak,
-            );
-        }
+    }
+    if readable && layout.empty {
+        let _ = painter.text(
+            Pos2::new(rect.center().x, rect.top() + layout.rows[0].anchor() * zoom),
+            Align2::CENTER_CENTER,
+            t("set-up-in-properties"),
+            FontId::proportional(11.5 * zoom),
+            colors.weak,
+        );
     }
     let half = rect.width() / 2.0 - 1.5 * pad;
     for row in &layout.rows {
@@ -2674,7 +2860,8 @@ fn draw_node<'a>(
                 if !readable {
                     continue;
                 }
-                let label = port_title(port);
+                let label = crate::properties::log_part_label(node, &port.id)
+                    .unwrap_or_else(|| port_title(port));
                 if port.exec {
                     // The way in is a tinted chip inside the card.
                     let arrow = 11.0 * zoom;
@@ -2748,21 +2935,65 @@ fn draw_node<'a>(
     (pressed, slots)
 }
 
-/// Draws a round port, filled when wired. Amber marks an execution port.
+/// Draws a connector shape, filled when wired.
 fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, colors: &Palette) {
     let radius = PORT_RADIUS * zoom;
-    let color = if port.exec {
-        colors.exec
-    } else {
-        type_color(port.ty.as_deref())
-    };
+    let color = colors.port_color(port.ty.as_deref(), port.exec);
     let fill = if port.connected { color } else { colors.card };
     let outline = if port.connected {
         Stroke::NONE
     } else {
         Stroke::new(1.5 * zoom.max(0.6), color)
     };
-    painter.circle(at, radius, fill, outline);
+    if port.exec {
+        let corner = radius * 1.2;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                at - Vec2::X * corner,
+                at - Vec2::Y * corner,
+                at + Vec2::X * corner,
+                at + Vec2::Y * corner,
+            ],
+            fill,
+            outline,
+        ));
+    } else if card::stream_type(port.ty.as_deref()) {
+        painter.rect(
+            Rect::from_center_size(at, Vec2::splat(radius * 1.8)),
+            0.0,
+            fill,
+            outline,
+            StrokeKind::Inside,
+        );
+    } else {
+        painter.circle(at, radius, fill, outline);
+    }
+}
+
+fn luminance(color: Color32) -> f32 {
+    let linear = egui::Rgba::from(color);
+    0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b()
+}
+
+fn family_icon(node: &NodeView) -> char {
+    use crate::icons;
+    if node.entry {
+        return icons::FLOW;
+    }
+    let (namespace, name) = node.definition.split_once('/').unwrap_or_default();
+    match (namespace, name) {
+        ("core", "call" | "function-entry" | "function-outputs" | "return") => icons::FUNCTION,
+        ("core", "count" | "while" | "for-each" | "break" | "continue") => icons::REFRESH,
+        ("core", "number" | "whole-number") => icons::MATH,
+        ("core", name) if name.contains("variable") || name.contains("shared") => icons::VARIABLE,
+        ("core", _) => icons::NODE,
+        ("org.orange.math", _) => icons::MATH,
+        ("org.orange.audio", _) => icons::AUDIO,
+        ("org.orange.net", _) => icons::NETWORK,
+        ("org.orange.files", _) => icons::OPEN,
+        ("org.orange.logging", _) => icons::LOG,
+        _ => icons::PACKAGES,
+    }
 }
 
 /// A value as its field on a card shows it: text without its quotes, others as
@@ -2874,6 +3105,34 @@ mod tests {
     use super::*;
     use orange_host::WireView;
     use std::sync::Arc;
+
+    #[test]
+    fn connector_colors_contrast_on_the_default_light_and_dark_surfaces() {
+        for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
+            let ctx = egui::Context::default();
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                *ui.visuals_mut() = visuals.clone();
+                let colors = Palette::of(ui);
+                for ty in [
+                    None,
+                    Some("core/bool@1"),
+                    Some("core/i64@1"),
+                    Some("core/string@1"),
+                    Some("core/stream@1<core/i64@1>"),
+                    Some("local/custom@1"),
+                ] {
+                    for exec in [false, true] {
+                        let ink = luminance(colors.port_color(ty, exec));
+                        for surface in [colors.card, colors.background] {
+                            let surface = luminance(surface);
+                            assert!((ink.max(surface) + 0.05) / (ink.min(surface) + 0.05) >= 3.0);
+                        }
+                    }
+                }
+            })
+            .drop_without_applying_deltas();
+        }
+    }
 
     fn id(n: u32) -> NodeId {
         format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
@@ -3958,6 +4217,35 @@ mod snap_tests {
         assert_eq!(snapped(Pos2::new(13.0, 35.0), 24), Pos2::new(24.0, 24.0));
         assert_eq!(snapped(Pos2::new(-13.0, 11.0), 24), Pos2::new(-24.0, 0.0));
         assert!(Canvas::new().snap && !Canvas::new().scroll_pans);
+    }
+
+    #[test]
+    fn grid_keeps_major_marks_at_distant_zoom_and_aligns_lines_to_pixels() {
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let area = Rect::from_min_size(Pos2::ZERO, Vec2::splat(110.0));
+            let mut canvas = Canvas::new();
+            let colors = Palette::of(ui);
+            let near = canvas.grid_mesh(area, 2.0, &colors);
+            let major = near.vertices[0].color;
+            assert!(near.vertices.iter().any(|vertex| vertex.color != major));
+
+            canvas.zoom = 0.25;
+            canvas.origin = Pos2::new(6.0, 6.0);
+            let far = canvas.grid_mesh(area, 2.0, &colors);
+            assert!(!far.vertices.is_empty());
+            assert!(far.vertices.iter().all(|vertex| vertex.color == major));
+            assert!((far.vertices[0].pos.x - 0.25).abs() < f32::EPSILON);
+
+            canvas.grid_style = GridStyle::Lines;
+            canvas.origin = Pos2::new(7.0, 7.0);
+            let lines = canvas.grid_mesh(area, 2.0, &colors);
+            assert!(lines.vertices.iter().all(|vertex| {
+                let twice = vertex.pos * 2.0;
+                twice.x.fract().abs() < f32::EPSILON && twice.y.fract().abs() < f32::EPSILON
+            }));
+        });
+        output.drop_without_applying_deltas();
     }
 }
 

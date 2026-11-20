@@ -3,6 +3,7 @@
 //! Codepoints below preserve the editor's public char-based icon API.
 use crate::i18n::t;
 use egui_lucide::Lucide;
+use std::sync::Arc;
 
 /// The icon family registered by the Material library.
 pub const FAMILY: &str = egui_material_icons::FONT_FAMILY_OUTLINED;
@@ -18,7 +19,7 @@ pub const UNGROUP: char = '\u{f731}'; // ungroup
 pub const FUNCTION: char = '\u{e24a}'; // functions
 pub const ARRANGE: char = '\u{e97a}'; // account_tree
 pub const VARIABLE: char = '\u{ead3}'; // data_object
-pub const ADD: char = '\u{e990}'; // add_circle
+pub const ADD: char = '\u{e145}'; // add
 pub const COPY: char = '\u{e14d}'; // content_copy
 pub const CUT: char = '\u{e14e}'; // content_cut
 pub const PASTE: char = '\u{e14f}'; // content_paste
@@ -31,6 +32,7 @@ pub const RUN: char = '\u{e037}'; // play_arrow
 pub const STOP: char = '\u{e047}'; // stop
 pub const WATCH: char = '\u{e8f4}'; // visibility
 pub const NODES: char = '\u{f716}'; // left_panel_open
+pub(crate) const NODE: char = '\u{e87b}'; // extension
 pub const PROPERTIES: char = '\u{e429}'; // tune
 pub const PACKAGES: char = '\u{f569}'; // package_2
 pub const LOG: char = '\u{eb8e}'; // terminal
@@ -60,6 +62,10 @@ pub const RIGHT_CLOSE: char = '\u{f705}'; // right_panel_close
 pub const FLOW: char = '\u{e5c8}'; // arrow_forward
 pub const ERROR: char = '\u{f8b6}'; // error
 pub const WARNING: char = '\u{f083}'; // warning
+pub const SEARCH: char = '\u{e8b6}'; // search
+pub const MATH: char = '\u{ea5f}'; // calculate
+pub const AUDIO: char = '\u{e050}'; // volume_up
+pub const NETWORK: char = '\u{e894}'; // language
 
 /// Every icon the editor draws, for the test that each is in the font.
 pub const ALL: &[char] = &[
@@ -87,6 +93,7 @@ pub const ALL: &[char] = &[
     STOP,
     WATCH,
     NODES,
+    NODE,
     PROPERTIES,
     PACKAGES,
     LOG,
@@ -116,6 +123,10 @@ pub const ALL: &[char] = &[
     FLOW,
     ERROR,
     WARNING,
+    SEARCH,
+    MATH,
+    AUDIO,
+    NETWORK,
 ];
 
 /// Adds the icon font and SVG loader to `ctx`, once.
@@ -138,9 +149,71 @@ pub fn family() -> egui::FontFamily {
     egui::FontFamily::Name(FAMILY.into())
 }
 
+/// Paints a command icon identified by a constant from this module. Return `false`
+/// to use the editor's default icon. The rectangle and color include widget state.
+pub type CommandPainter =
+    dyn Fn(&egui::Painter, egui::Rect, char, egui::Color32) -> bool + Send + Sync;
+
+/// Installs an icon painter for centered command icons in this egui context.
+/// Pass `None` to restore the defaults. Text and tooltips are supplied by the editor.
+pub fn set_command_painter(ctx: &egui::Context, painter: Option<Arc<CommandPainter>>) {
+    ctx.data_mut(|data| {
+        let id = command_painter_id();
+        if let Some(painter) = painter {
+            data.insert_temp(id, painter);
+        } else {
+            data.remove::<Arc<CommandPainter>>(id);
+        }
+    });
+    ctx.request_repaint();
+}
+
+fn command_painter_id() -> egui::Id {
+    egui::Id::unique("orange-command-icon-painter")
+}
+
 /// An icon as text, from the icon font.
 pub fn text(icon: char) -> egui::RichText {
     egui::RichText::new(icon.to_string()).family(family())
+}
+
+pub(crate) fn paint_centered(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    icon: char,
+    size: f32,
+    color: egui::Color32,
+) {
+    let glyph = painter.layout_no_wrap(icon.to_string(), egui::FontId::new(size, family()), color);
+    if glyph.num_vertices > 0 {
+        let origin = center - glyph.mesh_bounds.center().to_vec2();
+        painter.galley(origin, glyph, color);
+    }
+}
+
+pub(crate) fn centered(icon: char) -> egui::Atom<'static> {
+    egui::Atom::paint(egui::Vec2::splat(16.0), move |ui, args| {
+        paint_command(ui, args.rect, icon, args.fallback_text_color);
+    })
+}
+
+fn paint_command(ui: &egui::Ui, rect: egui::Rect, icon: char, color: egui::Color32) {
+    let painter = ui
+        .ctx()
+        .data(|data| data.get_temp::<Arc<CommandPainter>>(command_painter_id()));
+    if painter.is_some_and(|painter| painter(ui.painter(), rect, icon, color)) {
+        return;
+    }
+    let size = rect.width().min(rect.height());
+    if let Some(svg) = graph_icon(icon) {
+        svg.size(size)
+            .color(egui::Color32::WHITE)
+            .image()
+            .tint(color)
+            .paint_at(ui, rect);
+    } else {
+        paint_centered(ui.painter(), rect.center(), icon, size, color);
+    }
 }
 
 fn button_face(
@@ -175,24 +248,12 @@ fn button_face(
         );
 
         let color = icon_color.unwrap_or(visuals.fg_stroke.color);
-        if let Some(svg) = graph_icon(icon) {
-            svg.size(16.0)
-                .color(egui::Color32::WHITE)
-                .image()
-                .tint(color)
-                .paint_at(
-                    ui,
-                    egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0)),
-                );
-        } else {
-            let glyph =
-                painter.layout_no_wrap(icon.to_string(), egui::FontId::new(16.0, family()), color);
-            // Material symbols have different bearings. Center the visible glyph.
-            if glyph.num_vertices > 0 {
-                let origin = rect.center() - glyph.mesh_bounds.center().to_vec2();
-                painter.galley(origin, glyph, color);
-            }
-        }
+        paint_command(
+            ui,
+            egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0)),
+            icon,
+            color,
+        );
     }
     if let Some(cursor) = ui.visuals().interact_cursor
         && response.hovered()

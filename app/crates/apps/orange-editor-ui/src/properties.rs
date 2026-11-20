@@ -1,6 +1,7 @@
 //! The properties panel: what the selected node settles (the declarations it names,
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
+use crate::controls::{Dropdown as _, Surface};
 use orange_host::{Connection, NodeView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
@@ -35,10 +36,35 @@ pub(crate) fn http_request_variant(node: &NodeView) -> bool {
     )
 }
 
+pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host::PortView> {
+    let inputs = node.ports.iter().filter(|port| port.input && !port.exec);
+    let first = |port: &&orange_host::PortView| {
+        node.definition == "org.orange.logging/log-message"
+            && matches!(port.id.as_str(), "level" | "severity")
+    };
+    inputs
+        .clone()
+        .filter(first)
+        .chain(inputs.filter(move |port| !first(port)))
+}
+
+pub(crate) fn log_part_label(node: &NodeView, id: &str) -> Option<String> {
+    (node.definition == "org.orange.logging/log-message" && id.starts_with("argument#"))
+        .then(|| {
+            node.ports
+                .iter()
+                .filter(|port| port.id.starts_with("argument#"))
+                .position(|port| port.id == id)
+        })
+        .flatten()
+        .map(|index| tf("log-part", &[("number", (index + 1).into())]))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TextInput {
     Text,
     Message,
+    LogMessage,
     Body,
     Headers,
     HeaderList,
@@ -55,7 +81,14 @@ impl TextInput {
         match port.id.as_str() {
             "content" if http_request(node) => Some(Self::Body),
             "path" | "content_type" if http_request_variant(node) => None,
-            "message" if node.definition == "org.orange.logging/log-message" => Some(Self::Message),
+            "message" if node.definition == "org.orange.logging/log-message" => {
+                Some(Self::LogMessage)
+            }
+            id if node.definition == "org.orange.logging/log-message"
+                && id.starts_with("argument#") =>
+            {
+                None
+            }
             "headers" if http_request(node) => Some(Self::Headers),
             "headers" if http_request_variant(node) => Some(Self::HeaderList),
             "path" if node.definition == "org.orange.json/get-path" => Some(Self::JsonPath),
@@ -78,6 +111,7 @@ impl TextInput {
         t(match self {
             Self::Text => "text-input-hint",
             Self::Message => "message-input-hint",
+            Self::LogMessage => "log-message-hint",
             Self::Body => "http-body-hint",
             Self::Headers | Self::HeaderList => "http-headers-hint",
             Self::JsonPath => "json-path-input-hint",
@@ -620,6 +654,12 @@ impl Editor {
             if many.len() > 1 {
                 ui.strong(tf("nodes-selected", &[("count", many.len().into())]));
                 ui.label(t("selection-copy-hint"));
+                if ui
+                    .button((icons::text(icons::FUNCTION), t("make-function-ellipsis")))
+                    .clicked()
+                {
+                    self.preview_function(host);
+                }
                 if ui.button(t("delete-them")).clicked() {
                     let _ = self.remove_nodes(host, &many);
                 }
@@ -631,12 +671,21 @@ impl Editor {
         };
         self.inspect(&node, host);
         ui.add_space(2.0);
-        let _ = ui
+        let title = ui
             .add(
-                egui::Label::new(egui::RichText::new(self.canvas.display_name(&node)).heading())
-                    .truncate(),
+                egui::Label::new(
+                    egui::RichText::new(self.canvas.display_name(&node))
+                        .heading()
+                        .color(canvas::node_title_color(ui.visuals())),
+                )
+                .truncate()
+                .sense(egui::Sense::click()),
             )
-            .on_hover_text(node.name.as_str());
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("{}\n{}", node.name, t("rename-node-double-click")));
+        if title.double_clicked() {
+            self.begin_node_rename(node.id);
+        }
         let mut subtitle = self.canvas.kind_name(&node).to_owned();
         if let Some(detail) = &node.detail {
             subtitle.push_str(" · ");
@@ -781,7 +830,7 @@ impl Editor {
                 .selected_text(shown)
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .width(ui.available_width())
-                .show_ui(ui, |ui| {
+                .show_select(ui, Surface::Panel, |ui| {
                     for (id, name) in &declared {
                         let current = named.as_deref() == Some(id.as_str());
                         if ui.selectable_label(current, name.as_str()).clicked() && !current {
@@ -874,7 +923,7 @@ impl Editor {
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
-                        .show_ui(ui, |ui| {
+                        .show_select(ui, Surface::Panel, |ui| {
                             if !needed
                                 && ui
                                     .selectable_label(current.is_null(), t("not-set"))
@@ -959,7 +1008,7 @@ impl Editor {
                 let _ = egui::ComboBox::from_id_salt(("orange-type", param.name.as_str()))
                     .selected_text(shown)
                     .width(ui.available_width())
-                    .show_ui(ui, |ui| {
+                    .show_select(ui, Surface::Panel, |ui| {
                         if ui
                             .selectable_label(param.chosen.is_none(), t("from-the-wires"))
                             .clicked()
@@ -1030,11 +1079,15 @@ impl Editor {
     /// Fields for the values on the node's inputs.
     fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
         let mut write = None;
-        for port in node.ports.iter().filter(|port| port.input && !port.exec) {
+        for port in input_ports(node) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
             let multiline = TextInput::for_port(node, port).filter(|kind| *kind != TextInput::Text);
             let label = input_label(node, &port.id).map_or_else(
-                || port.label.clone().unwrap_or_else(|| port_label(&port.id)),
+                || {
+                    log_part_label(node, &port.id)
+                        .or_else(|| port.label.clone())
+                        .unwrap_or_else(|| port_label(&port.id))
+                },
                 str::to_owned,
             );
             if node.definition == "org.orange.logging/log-message"
@@ -1063,7 +1116,7 @@ impl Editor {
                                 .strong()
                                 .color(ui.visuals().strong_text_color()),
                         )
-                        .show_ui(ui, |ui| {
+                        .show_select(ui, Surface::Panel, |ui| {
                             if let Some(method) = choose_http_method(ui, &shown) {
                                 write =
                                     Some(Change::Input(port.id.clone(), Some(method.to_owned())));
@@ -1137,7 +1190,7 @@ impl Editor {
                                 .or(port.default.as_deref())
                                 .unwrap_or(t("choose")),
                         ))
-                        .show_ui(ui, |ui| {
+                        .show_select(ui, Surface::Panel, |ui| {
                             for choice in choices.iter().filter(|choice| !choice.payload) {
                                 let current = port.value.as_deref().or(port.default.as_deref())
                                     == Some(choice.name.as_str());
@@ -1403,6 +1456,63 @@ mod tests {
 #[cfg(test)]
 mod width_tests {
     use super::*;
+
+    #[test]
+    fn the_white_properties_title_opens_rename_on_double_click() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        assert!(editor.rename_node(&mut host, node, "Sample amount"));
+        let context = egui::Context::default();
+        context.set_theme(egui::Theme::Dark);
+        let mut frame = |editor: &mut Editor, events| {
+            context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.properties_panel(ui, &mut host);
+                },
+            )
+        };
+        let output = frame(&mut editor, vec![]);
+        let title = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Sample amount" => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            title
+                .galley
+                .job
+                .sections
+                .iter()
+                .all(|section| section.format.color == egui::Color32::WHITE)
+        );
+        let at = title.pos + title.galley.rect.center().to_vec2();
+        output.drop_without_applying_deltas();
+        frame(&mut editor, vec![egui::Event::PointerMoved(at)]).drop_without_applying_deltas();
+        for expected in [None, Some((node, "Sample amount".to_owned()))] {
+            for pressed in [true, false] {
+                frame(
+                    &mut editor,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                )
+                .drop_without_applying_deltas();
+            }
+            assert_eq!(editor.renaming_node, expected);
+        }
+    }
 
     #[test]
     fn a_value_field_with_its_clear_button_does_not_widen_a_resizable_panel() {

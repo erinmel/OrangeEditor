@@ -1,5 +1,6 @@
 //! Protocol-specific controls for the bundled network adapters.
 use super::{Typed, set_text, text_at, text_fields};
+use crate::controls::{Dropdown as _, Surface};
 use crate::i18n::t;
 use orange_host::SettingText;
 use serde_json::Value as Json;
@@ -168,7 +169,7 @@ pub(super) fn fields(
     egui::ComboBox::from_id_salt("connection-authentication")
         .selected_text(auth.label())
         .width(ui.available_width())
-        .show_ui(ui, |ui| {
+        .show_select(ui, Surface::Panel, |ui| {
             for mode in modes(adapter) {
                 let _ = ui.selectable_value(&mut auth, *mode, mode.label());
             }

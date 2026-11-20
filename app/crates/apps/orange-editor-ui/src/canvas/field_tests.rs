@@ -123,6 +123,48 @@ impl Session {
 }
 
 #[test]
+fn double_clicking_the_card_title_requests_a_rename() {
+    for (y, expected) in [(HEADER_HEIGHT / 2.0, Some(id(1))), (BODY_TOP, None)] {
+        let mut session = Session::new();
+        let _ = session.frame(vec![]);
+        let at = session.corner
+            + (session.canvas.places[&id(1)] + Vec2::new(45.0, y) - session.canvas.origin)
+                * session.canvas.zoom;
+        assert_eq!(session.click(at).rename_node, None);
+        assert_eq!(session.click(at).rename_node, expected);
+    }
+}
+
+#[test]
+fn a_fitted_card_keeps_its_title_at_overview_zoom() {
+    let mut session = Session::new();
+    session.canvas.zoom = 0.39;
+    let output = session.context.run_ui(egui::RawInput::default(), |ui| {
+        let _ = session.canvas.show(ui, &session.graph, &[]);
+    });
+    let title = output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text() == "Check" => text
+            .galley
+            .job
+            .sections
+            .first()
+            .map(|section| section.format.font_id.size),
+        _ => None,
+    });
+    output.drop_without_applying_deltas();
+    assert_eq!(title, Some(9.0));
+}
+
+#[test]
+fn both_number_literal_cards_use_the_math_icon() {
+    let mut view = node();
+    for definition in ["core/number", "core/whole-number"] {
+        view.definition = definition.into();
+        assert_eq!(family_icon(&view), crate::icons::MATH);
+    }
+}
+
+#[test]
 fn request_body_is_edited_on_the_card_from_the_complete_stored_text() {
     let mut session = Session::new();
     let body = format!("{{\n  \"data\": \"{}\"\n}}\n", "x".repeat(160));

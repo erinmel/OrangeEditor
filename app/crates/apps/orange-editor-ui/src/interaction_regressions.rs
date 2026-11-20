@@ -291,7 +291,7 @@ fn toolbar_hover_fills_the_button_around_its_centered_icon() {
 }
 
 #[test]
-fn an_isolated_audio_error_can_be_repaired_in_the_live_graph() {
+fn a_standalone_audio_trigger_can_be_finished_while_the_graph_runs() {
     let (mut host, _events) = Host::with_services(
         orange_host::HostOptions::default(),
         vec![orange_audio::package()],
@@ -306,9 +306,18 @@ fn an_isolated_audio_error_can_be_repaired_in_the_live_graph() {
     let meter = editor
         .add_node(&mut host, orange_audio::NOISE_LEVEL)
         .unwrap();
-    assert!(editor.document.as_ref().unwrap().run_blocked);
-    let manual = editor.add_node(&mut host, "core/on-manual").unwrap();
-    assert_eq!(editor.document.as_ref().unwrap().run_omitted, [meter]);
+    let document = editor.document.as_ref().unwrap();
+    assert!(!document.run_blocked);
+    assert_eq!(document.run_omitted, [meter]);
+    assert!(
+        document
+            .problem_locations
+            .iter()
+            .any(|problem| problem.level == ProblemLevel::Draft)
+    );
+    editor.run(&mut host);
+    assert!(editor.is_running(), "{:?}", editor.problems());
+    let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
     let source = editor
         .add_node(&mut host, orange_audio::AUDIO_SOURCE)
         .unwrap();
@@ -324,10 +333,6 @@ fn an_isolated_audio_error_can_be_repaired_in_the_live_graph() {
         .clone();
     input.settings = serde_json::json!({"device": orange_audio::NULL_DEVICE});
     editor.declare_connection(&mut host, &input).unwrap();
-    editor.run(&mut host);
-    let (flow, entries) = editor.document.as_ref().unwrap().flow.as_ref().unwrap();
-    let flow = *flow;
-    assert!(entries.contains(&manual));
     assert!(!editor.problems().is_empty());
     assert!(
         editor
@@ -362,6 +367,44 @@ fn an_isolated_audio_error_can_be_repaired_in_the_live_graph() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     editor.stop(&mut host);
+}
+
+#[test]
+fn a_wired_audio_trigger_blocks_run_until_its_input_is_supplied() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let meter = editor
+        .add_node(&mut host, orange_audio::NOISE_LEVEL)
+        .unwrap();
+    let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+    assert!(editor.connect(&mut host, (meter, "then"), (sequence, "in")));
+    let document = editor.document.as_ref().unwrap();
+    assert!(document.run_blocked);
+    assert!(!document.run_omitted.contains(&meter));
+    assert!(editor.canvas.marks().ports[&(meter, "stream".to_owned())].error);
+    editor.run(&mut host);
+    assert!(!editor.is_running());
+}
+
+#[test]
+fn an_unwired_timer_with_incomplete_settings_is_also_a_draft() {
+    let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let timer = editor.add_node(&mut host, "core/on-timer").unwrap();
+    assert!(editor.set_setting(&mut host, timer, "/interval", Some(serde_json::json!("0"))));
+    let document = editor.document.as_ref().unwrap();
+    assert_eq!(document.run_omitted, [timer]);
+    assert!(!document.run_blocked);
+
+    let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+    assert!(editor.connect(&mut host, (timer, "then"), (sequence, "in")));
+    assert!(editor.document.as_ref().unwrap().run_blocked);
 }
 
 #[test]
@@ -692,6 +735,15 @@ fn a_disconnected_get_allows_run_and_an_exported_get_blocks_it() {
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
     let get = editor.add_node(&mut host, "core/get-variable").unwrap();
     assert!(!editor.document.as_ref().unwrap().run_blocked);
+    assert!(
+        editor
+            .document
+            .as_ref()
+            .unwrap()
+            .problem_locations
+            .iter()
+            .all(|problem| problem.level == ProblemLevel::Draft)
+    );
     assert!(!editor.canvas.marks().nodes[&get].error);
     editor.run(&mut host);
     assert!(editor.is_running(), "{:?}", editor.problems());
@@ -702,6 +754,15 @@ fn a_disconnected_get_allows_run_and_an_exported_get_blocks_it() {
     graph["exports"] = serde_json::json!([{"id": "value", "node": get, "port": "value"}]);
     editor.open_untitled(&mut host, graph.to_string());
     assert!(editor.document.as_ref().unwrap().run_blocked);
+    assert!(
+        editor
+            .document
+            .as_ref()
+            .unwrap()
+            .problem_locations
+            .iter()
+            .any(|problem| problem.level == ProblemLevel::Blocker)
+    );
     editor.run(&mut host);
     assert!(!editor.is_running());
 }
@@ -736,4 +797,107 @@ fn a_splitter_without_audio_warns_without_blocking_a_manual_flow() {
     assert!(editor.canvas.marks().nodes[&invalid].error);
     editor.run(&mut host);
     assert!(!editor.is_running());
+}
+
+#[test]
+fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
+    let mut editor = Editor::new();
+    editor.log_events = true;
+    editor.note(NoteLevel::Info, "request sent");
+    editor.note(NoteLevel::Warning, "request will retry");
+    editor.log_search = "warning retry".to_owned();
+    let ctx = egui::Context::default();
+    icons::install(&ctx);
+    apply_theme(&ctx);
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(370.0, 340.0));
+    let frame = |editor: &mut Editor, events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                events,
+                ..Default::default()
+            },
+            |ui| editor.log_panel(ui),
+        );
+        let shapes = std::mem::take(&mut output.shapes);
+        output.drop_without_applying_deltas();
+        shapes
+    };
+    let click = |editor: &mut Editor, at| {
+        frame(editor, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            frame(
+                editor,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+    };
+    frame(&mut editor, vec![]);
+    let shapes = frame(&mut editor, vec![]);
+    let texts = text_shapes(&shapes);
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.galley.text() == "request will retry")
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text.galley.text() == "request sent")
+    );
+    let at = |label: &str| {
+        let text = texts
+            .iter()
+            .find(|text| text.galley.text() == label)
+            .unwrap();
+        let center = text.pos + text.galley.mesh_bounds.center().to_vec2();
+        assert!(viewport.contains(center), "{label}");
+        center
+    };
+    let search_clear = at(&icons::CLOSE.to_string());
+    let trace = at(t("live-trace-off"));
+    let level_filter = at(t("log-all-levels"));
+    click(&mut editor, search_clear);
+    assert!(editor.log_search.is_empty());
+    click(&mut editor, trace);
+    assert!(editor.live_trace);
+
+    click(&mut editor, level_filter);
+    let shapes = frame(&mut editor, vec![]);
+    let warning = text_shapes(&shapes)
+        .into_iter()
+        .find(|text| text.galley.text() == t("log-level-warning"))
+        .unwrap();
+    click(
+        &mut editor,
+        warning.pos + warning.galley.mesh_bounds.center().to_vec2(),
+    );
+    assert_eq!(editor.log_filter, Some(NoteLevel::Warning));
+
+    let shapes = frame(&mut editor, vec![]);
+    let texts = text_shapes(&shapes);
+    assert!(
+        !texts
+            .iter()
+            .any(|text| text.galley.text() == "request sent")
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.galley.text() == t("live-trace-on"))
+    );
+    let clear = texts
+        .iter()
+        .find(|text| text.galley.text() == t("clear-log"))
+        .unwrap();
+    click(
+        &mut editor,
+        clear.pos + clear.galley.mesh_bounds.center().to_vec2(),
+    );
+    assert!(editor.log().next().is_none());
 }

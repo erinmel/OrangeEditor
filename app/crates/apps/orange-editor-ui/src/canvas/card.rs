@@ -41,9 +41,9 @@ pub(super) enum FieldOf<'a> {
     AddPort(&'a orange_host::VariadicView),
 }
 
-impl FieldOf<'_> {
+impl<'a> FieldOf<'a> {
     /// The input this field edits, whose dot sits on the field's name line.
-    pub(super) const fn port(&self) -> Option<&PortView> {
+    pub(super) const fn port(&self) -> Option<&'a PortView> {
         match self {
             Self::Input(port) | Self::TextArea(port, ..) | Self::Path(port, _) => Some(port),
             _ => None,
@@ -81,15 +81,17 @@ pub(super) struct Row<'a> {
 }
 
 impl Row<'_> {
+    pub(super) fn input(&self) -> Option<&PortView> {
+        match self.left {
+            Some(Left::Port(port)) => Some(port),
+            Some(Left::Field { editor, .. }) => editor.port(),
+            _ => None,
+        }
+    }
+
     /// Whether input `port` sits on this row, as a port or as a field's port.
     fn holds_input(&self, port: &PortView) -> bool {
-        match self.left {
-            Some(Left::Port(left)) => std::ptr::eq(left, port),
-            Some(Left::Field { editor, .. }) => {
-                editor.port().is_some_and(|left| std::ptr::eq(left, port))
-            }
-            _ => false,
-        }
+        self.input().is_some_and(|left| std::ptr::eq(left, port))
     }
 
     /// The middle of the row's first line, where its dots are.
@@ -244,7 +246,7 @@ impl<'a> Card<'a> {
                 named: true,
             });
         }
-        for port in node.ports.iter().filter(|port| port.input && !port.exec) {
+        for port in crate::properties::input_ports(node) {
             if !port.connected
                 && let Some(kind) = crate::properties::TextInput::for_port(node, port)
             {

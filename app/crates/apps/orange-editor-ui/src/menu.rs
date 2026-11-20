@@ -27,6 +27,7 @@ pub enum MenuTarget {
 pub enum Command {
     AddNode,
     Properties,
+    Rename,
     Paste,
     SelectAll,
     Group,
@@ -36,6 +37,7 @@ pub enum Command {
     Cut,
     Duplicate,
     MakeFunction,
+    ExportFunction,
     Delete,
     InsertNode,
     DeleteWire,
@@ -142,40 +144,55 @@ impl Editor {
                 ),
                 entry(Command::Fit, t("fit-to-view"), "Home", icons::FIT, true),
             ],
-            MenuTarget::Node(_) => vec![
-                entry(
-                    Command::Properties,
-                    t("properties"),
-                    "",
-                    icons::SETTINGS,
-                    true,
-                ),
-                entry(Command::Copy, t("copy"), "Ctrl+C", icons::COPY, true),
-                entry(Command::Cut, t("cut"), "Ctrl+X", icons::CUT, true),
-                entry(
-                    Command::Duplicate,
-                    t("duplicate"),
-                    "Ctrl+D",
-                    icons::DUPLICATE,
-                    true,
-                ),
-                entry(Command::Group, t("group"), "Ctrl+G", icons::GROUP, true),
-                entry(
-                    Command::MakeFunction,
-                    t("make-function-ellipsis"),
-                    "Ctrl+E",
-                    icons::FUNCTION,
-                    true,
-                ),
-                entry(
-                    Command::Arrange,
-                    t("arrange"),
-                    "Ctrl+L",
-                    icons::ARRANGE,
-                    chosen > 1,
-                ),
-                entry(Command::Delete, t("delete"), "Del", icons::DELETE, true),
-            ],
+            MenuTarget::Node(node) => {
+                let mut entries = vec![
+                    entry(
+                        Command::Properties,
+                        t("properties"),
+                        "",
+                        icons::PROPERTIES,
+                        true,
+                    ),
+                    entry(Command::Rename, t("rename-node"), "", icons::EDIT, true),
+                    entry(Command::Copy, t("copy"), "Ctrl+C", icons::COPY, true),
+                    entry(Command::Cut, t("cut"), "Ctrl+X", icons::CUT, true),
+                    entry(
+                        Command::Duplicate,
+                        t("duplicate"),
+                        "Ctrl+D",
+                        icons::DUPLICATE,
+                        true,
+                    ),
+                    entry(Command::Group, t("group"), "Ctrl+G", icons::GROUP, true),
+                    entry(
+                        Command::MakeFunction,
+                        t("make-function-ellipsis"),
+                        "Ctrl+E",
+                        icons::FUNCTION,
+                        true,
+                    ),
+                ];
+                if self.call_function(*node).is_some() {
+                    entries.push(entry(
+                        Command::ExportFunction,
+                        t("export-function"),
+                        "",
+                        icons::PACKAGES,
+                        true,
+                    ));
+                }
+                entries.extend([
+                    entry(
+                        Command::Arrange,
+                        t("arrange"),
+                        "Ctrl+L",
+                        icons::ARRANGE,
+                        chosen > 1,
+                    ),
+                    entry(Command::Delete, t("delete"), "Del", icons::DELETE, true),
+                ]);
+                entries
+            }
             MenuTarget::Wire(_) => vec![
                 entry(Command::InsertNode, t("insert-node"), "", icons::ADD, true),
                 entry(
@@ -235,6 +252,7 @@ impl Editor {
                 self.panels.packages = false;
                 true
             }
+            (Command::Rename, MenuTarget::Node(node)) => self.begin_node_rename(*node),
             (Command::Paste, _) => match self.clip.clone() {
                 Some(clip) => !self.paste(host, &clip, menu.at).is_empty(),
                 None => {
@@ -263,6 +281,9 @@ impl Editor {
             (Command::MakeFunction, _) => {
                 self.preview_function(host);
                 true
+            }
+            (Command::ExportFunction, MenuTarget::Node(node)) => {
+                self.begin_function_export(host, *node)
             }
             (Command::Delete, _) => {
                 let selection = self.canvas.selection();
@@ -363,7 +384,10 @@ impl Editor {
                     let mut previous_group = None;
                     for entry in &entries {
                         let group = match entry.command {
-                            Command::Group | Command::MakeFunction | Command::Arrange => 1,
+                            Command::Group
+                            | Command::MakeFunction
+                            | Command::ExportFunction
+                            | Command::Arrange => 1,
                             Command::Fit | Command::SelectAll => 2,
                             Command::Delete | Command::DeleteWire | Command::Disconnect => 3,
                             _ => 0,
@@ -390,15 +414,22 @@ impl Editor {
                             || entry.shortcut.to_owned(),
                             |action| self.canvas.keys.label(action),
                         );
-                        let button = egui::Button::new((icons::text(entry.icon), entry.label))
-                            .shortcut_text(&shortcut)
-                            .min_size(egui::vec2(ui.available_width(), 28.0))
-                            .frame(false);
-                        if ui
-                            .add_enabled(entry.enabled, button)
-                            .on_hover_text(shortcut)
-                            .on_disabled_hover_text(t("select-nodes-first"))
-                            .clicked()
+                        let shortcut = if shortcut == t("unassigned") {
+                            ""
+                        } else {
+                            &shortcut
+                        };
+                        let button = egui::Button::new((icons::centered(entry.icon), entry.label))
+                            .shortcut_text(shortcut)
+                            .min_size(egui::vec2(ui.available_width(), 28.0));
+                        if controls::button(
+                            ui,
+                            Surface::Dialog,
+                            controls::Action::Menu,
+                            entry.enabled,
+                            button,
+                        )
+                        .clicked()
                         {
                             chosen = Some(entry.command);
                         }
@@ -443,6 +474,43 @@ mod tests {
     }
 
     #[test]
+    fn a_named_card_can_be_renamed_undone_and_reset() {
+        let (mut editor, mut host) = opened();
+        let node = id(2);
+        let original = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|view| view.id == node)
+            .unwrap()
+            .name
+            .clone();
+        let wires = editor.graph().unwrap().wires.clone();
+        editor.open_menu(MenuTarget::Node(node), [0.0; 2], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, Command::Rename));
+        assert_eq!(editor.renaming_node.as_ref().unwrap().0, node);
+        assert!(editor.rename_node(&mut host, node, "  New label  "));
+        assert!(editor.text().unwrap().contains("New label"));
+        assert_eq!(editor.graph().unwrap().wires, wires);
+        editor.undo(&mut host);
+        assert_eq!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|view| view.id == node)
+                .unwrap()
+                .name,
+            original
+        );
+        editor.redo(&mut host);
+        assert!(editor.rename_node(&mut host, node, "  "));
+        assert!(!editor.text().unwrap().contains("New label"));
+    }
+
+    #[test]
     fn each_target_offers_its_commands_and_canvas_and_card_entries_name_shortcuts() {
         let (mut editor, mut host) = opened();
         editor.open_menu(MenuTarget::Canvas, [0.0, 0.0], egui::Pos2::ZERO);
@@ -467,17 +535,16 @@ mod tests {
         assert_eq!(editor.canvas.selection(), [id(2)]);
         assert!(commands(&editor).starts_with(&[
             Command::Properties,
+            Command::Rename,
             Command::Copy,
             Command::Cut,
             Command::Duplicate
         ]));
         assert!(commands(&editor).contains(&Command::MakeFunction));
-        assert!(
-            editor
-                .menu_entries()
-                .iter()
-                .all(|entry| entry.command == Command::Properties || !entry.shortcut.is_empty())
-        );
+        assert!(editor.menu_entries().iter().all(|entry| matches!(
+            entry.command,
+            Command::Properties | Command::Rename
+        ) || !entry.shortcut.is_empty()));
         editor.panels.properties = false;
         editor.panels.packages = true;
         assert!(editor.run_command(&mut host, Command::Properties));

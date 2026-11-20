@@ -59,6 +59,11 @@ pub enum DocCommand {
         config_version: u32,
         config: ConfigValue,
     },
+    /// Sets or clears the node instance's display name.
+    SetNodeName {
+        node: NodeId,
+        name: Option<String>,
+    },
     SetTypeArgs {
         node: NodeId,
         args: BTreeMap<TypeParamName, TypeExpr>,
@@ -418,6 +423,15 @@ impl Journal {
             }),
             DocCommand::SetTypeArgs { node, args } => self.modify_node(document, node, |node| {
                 node.type_args = args;
+                Ok(())
+            }),
+            DocCommand::SetNodeName { node, name } => self.modify_node(document, node, |node| {
+                if let Some(name) = name {
+                    node.extensions
+                        .insert("name".to_owned(), Json::String(name));
+                } else {
+                    node.extensions.remove("name");
+                }
                 Ok(())
             }),
             DocCommand::SetTypePins { node, pins } => self.modify_node(document, node, |node| {

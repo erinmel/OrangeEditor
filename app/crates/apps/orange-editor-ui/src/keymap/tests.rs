@@ -91,6 +91,50 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
 }
 
 #[test]
+fn recording_an_inline_shortcut_keeps_all_modifiers() {
+    let mut editor = Editor::new();
+    editor.begin_shortcut_edit("save", original("save"));
+    editor.shortcut_edit.as_mut().unwrap().recording = true;
+    let context = egui::Context::default();
+    let frame = |editor: &mut Editor, events| {
+        context
+            .run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.keybindings_ui(ui, "save graph");
+                },
+            )
+            .drop_without_applying_deltas();
+    };
+    frame(&mut editor, vec![]);
+    let modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT).plus(Modifiers::ALT);
+    frame(
+        &mut editor,
+        vec![
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::Key {
+                key: Key::K,
+                physical_key: None,
+                modifiers,
+                pressed: true,
+                repeat: false,
+            },
+            egui::Event::Text("K".to_owned()),
+        ],
+    );
+    let edit = editor.shortcut_edit.as_ref().unwrap();
+    assert!(!edit.recording);
+    assert_eq!(
+        parse_shortcut(&edit.text),
+        Some(normalized(modifiers, Key::K))
+    );
+    assert_eq!(editor.canvas.keys.0["save"], original("save"));
+}
+
+#[test]
 fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
     let mut editor = Editor::new();
     editor.settings_open = true;
@@ -119,7 +163,12 @@ fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
         frame(&mut editor, vec![]);
     }
     let save = editor.canvas.keys.label("save");
-    let shapes = frame(&mut editor, vec![egui::Event::Text(save.clone())]);
+    frame(&mut editor, vec![egui::Event::Text(save.clone())]);
+    let mut shapes = Vec::new();
+    for _ in 0..8 {
+        shapes = frame(&mut editor, vec![]);
+    }
+    assert_eq!(editor.shortcut_edit.as_ref().unwrap().text, save);
     assert_eq!(editor.canvas.keys.0["save"], original("save"));
     assert_eq!(editor.canvas.keys.0["duplicate"], original("duplicate"));
     let at = shapes

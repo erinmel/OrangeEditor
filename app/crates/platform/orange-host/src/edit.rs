@@ -19,6 +19,30 @@ use serde_json::{Value as Json, json};
 /// One end of a wire: a node and the name of one of its ports.
 pub type PortEnd<'a> = (NodeId, &'a str);
 
+impl Host {
+    /// Changes a node instance's display name. A blank name restores its default label.
+    pub fn rename_node(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        name: &str,
+    ) -> Result<bool, HostError> {
+        let name = name.trim();
+        let name = (!name.is_empty()).then(|| name.to_owned());
+        let old = draft
+            .document()
+            .node(node)
+            .ok_or_else(|| refused(&"the document has no such node"))?;
+        if old.extensions.get("name").and_then(Json::as_str) == name.as_deref() {
+            return Ok(false);
+        }
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::SetNodeName { node, name }],
+        )
+    }
+}
+
 /// The text of a new, empty document with an ID of its own.
 pub fn new_document() -> Result<String, HostError> {
     // The time and the process tell one new document from another.

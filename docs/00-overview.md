@@ -44,7 +44,7 @@ the foundation.
 | Wasm packages | Pure, action and async nodes run; host service imports and resources are missing |
 | Native plugins | Load at start; not sandboxed |
 | File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
-| Releases | Packaging scripts exist; publishing is disabled until a release is qualified |
+| Releases | The release workflow and receipt checks exist. Native packaging adapters and release qualification are pending. |
 
 ## What is missing
 
@@ -56,9 +56,9 @@ These are the gaps between the vision and the repository today, most important f
 2. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
    network access are each described, but nowhere together with what an attacker could
    do and what stops it.
-3. **Plugin and embedding guides.** [04](04-expansion-plugins.md) is a contract, not a
-   walkthrough, and the public Rust API has no stability policy that says what may change
-   in a minor release.
+3. **Plugin walkthrough.** [04](04-expansion-plugins.md) is the package contract.
+   [02](02-architecture.md#embedding-surface) documents the supported Rust and UI
+   integration surface.
 4. **Flow-started subscriptions.** Event outputs on actions (11 §10.4) are specified but
    not implemented; triggers are always armed while a graph runs.
 5. **Audio tuning surface.** Band and transient detection work, but there is no spectrum
