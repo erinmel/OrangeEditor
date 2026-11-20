@@ -2611,12 +2611,12 @@ mod tests {
         let count = |groups: &[(String, Vec<PaletteItem>)]| {
             groups.iter().map(|(_, items)| items.len()).sum::<usize>()
         };
-        // Every node kind search offers, and every conversion in a category of its own.
+        // The catalogue also offers the two boolean edge presets and the conversions.
         let offered = host
             .nodes()
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
             .count();
-        assert_eq!(count(&all), offered + host.conversions().len());
+        assert_eq!(count(&all), offered + host.conversions().len() + 2);
         // Conversions are found by Spanish words too.
         assert!(
             palette(&host, "convertir entero texto")

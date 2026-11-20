@@ -366,6 +366,8 @@ impl Host {
     /// place on the canvas, bound to this host's provider for it, with the default
     /// activation if it is a trigger. Returns the new node's ID. What the node still
     /// needs (a variable to name, a type to choose) shows in the draft's problems.
+    /// The authoring IDs `preset:rising-edge` and `preset:falling-edge` create a
+    /// boolean When trigger with the corresponding transition.
     pub fn add_node(
         &self,
         draft: &mut Draft,
@@ -445,6 +447,12 @@ impl Host {
         at: [f32; 2],
         identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let watch_mode = match definition {
+            "preset:rising-edge" => Some("rising"),
+            "preset:falling-edge" => Some("falling"),
+            _ => None,
+        };
+        let definition = watch_mode.map_or(definition, |_| intrinsic::ON_WATCH);
         let version = self
             .nodes()
             .filter(|info| info.definition.definition.id.as_str() == definition)
@@ -466,7 +474,15 @@ impl Host {
             .definition(&definition)
             .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
         let entry = found.kind == NodeKind::Entry;
-        let config = new_config(found, registry)?;
+        let mut config = new_config(found, registry)?;
+        let mut type_pins = BTreeMap::new();
+        if let Some(mode) = watch_mode {
+            let _ = config.insert("mode".to_owned(), json!(mode));
+            type_pins.insert(
+                "T".parse().map_err(|error| refused(&error))?,
+                "core/bool@1".parse().map_err(|error| refused(&error))?,
+            );
+        }
         let mut commands = if definition.id.is_core() {
             vec![DocCommand::AddNode {
                 body: BodyRef::Root,
@@ -476,7 +492,7 @@ impl Host {
                     config_version: found.config_version,
                     config,
                     type_args: Default::default(),
-                    type_pins: Default::default(),
+                    type_pins,
                     provider: None::<ProviderBinding>,
                     signature: None,
                     inputs: Default::default(),

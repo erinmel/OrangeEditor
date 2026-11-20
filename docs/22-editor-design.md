@@ -74,6 +74,8 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Triggers.** A trigger shows its contents: On manual has a Fire button in the body
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
+  Rising Edge and Falling Edge in the palette and canvas search place a When
+  trigger with the corresponding transition and a boolean input.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 * **Arithmetic.** Add and other arithmetic cards use their named ports and values.
   Comparison cards may retain a comparison expression. Ordinary arithmetic has

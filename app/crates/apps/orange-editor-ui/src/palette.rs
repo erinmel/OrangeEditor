@@ -255,7 +255,7 @@ pub fn palette(host: &Host, search: &str) -> Vec<(String, Vec<PaletteItem>)> {
 pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec<PaletteItem>)> {
     let mut groups: Vec<(String, Vec<PaletteItem>)> = Vec::new();
     // Found nodes come best first, so a category's place is that of its best node.
-    for found in host.search_nodes(search, language) {
+    for found in search_with_presets(host.search_nodes(search, language), search, language) {
         let category = if matches!(
             found.definition.as_str(),
             "core/get-variable" | "core/set-variable"
@@ -315,6 +315,55 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
         }
     }
     groups
+}
+
+pub(crate) fn search_with_presets(
+    mut results: Vec<orange_host::Found>,
+    search: &str,
+    language: &str,
+) -> Vec<orange_host::Found> {
+    let Some(index) = results
+        .iter()
+        .position(|found| found.definition == "core/on-watch")
+    else {
+        return results;
+    };
+    let watch = &results[index];
+    let query = search.trim().to_lowercase();
+    let presets: Vec<_> = [
+        (
+            "preset:rising-edge",
+            "rising-edge",
+            "Rising Edge",
+            "Fires when a boolean becomes true.",
+        ),
+        (
+            "preset:falling-edge",
+            "falling-edge",
+            "Falling Edge",
+            "Fires when a boolean becomes false.",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(id, key, fallback, purpose)| {
+        let label = text_in(language, key, fallback);
+        let purpose = text_in(language, &format!("{key}-help"), purpose);
+        let terms = format!("{fallback} {label}").to_lowercase();
+        query
+            .split_whitespace()
+            .all(|word| terms.contains(word))
+            .then(|| orange_host::Found {
+                definition: id.to_owned(),
+                label,
+                package: watch.package.clone(),
+                category: watch.category.clone(),
+                purpose,
+                matched: watch.matched,
+            })
+    })
+    .collect();
+    results.splice(index..index, presets);
+    results
 }
 
 /// Other words for the two types a conversion ID names, so "whole number text" finds
@@ -423,6 +472,56 @@ fn text_in(language: &str, key: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn edge_presets_are_searchable_and_place_a_typed_watch() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        for (language, query, id, mode) in [
+            ("en", "rising edge", "preset:rising-edge", "rising"),
+            ("es", "flanco descendente", "preset:falling-edge", "falling"),
+        ] {
+            assert!(
+                palette_in(&host, query, language)
+                    .iter()
+                    .flat_map(|(_, items)| items)
+                    .any(|item| item.id == id)
+            );
+            let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+            let node = host.add_node(&mut draft, id, [0.0, 0.0]).unwrap();
+            let inserted = host.draft_view(&draft).unwrap();
+            let card = inserted.nodes.iter().find(|card| card.id == node).unwrap();
+            assert_eq!(card.definition, "core/on-watch");
+            assert_eq!(card.settings["mode"], mode);
+            assert!(card.ports.iter().any(|port| port.input
+                && port.id == "watch"
+                && port.ty.as_deref() == Some("core/bool@1")));
+            assert_eq!(
+                host.placement_preview(&draft, id).unwrap().settings["mode"],
+                mode
+            );
+        }
+        editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
+        let choice = editor
+            .quick_choices(&host, "falling edge")
+            .into_iter()
+            .find(|choice| choice.definition == "preset:falling-edge")
+            .unwrap();
+        let node = editor.pick_quick(&mut host, &choice).unwrap();
+        let graph = editor.graph().unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|card| card.id == node)
+                .unwrap()
+                .settings["mode"],
+            "falling"
+        );
+        editor.undo(&mut host);
+        assert!(editor.graph().unwrap().nodes.is_empty());
+    }
 
     #[test]
     fn declaration_dependent_kinds_have_illustrative_ports() {

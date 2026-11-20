@@ -108,7 +108,7 @@ impl Editor {
                     })
                     .collect()
             }
-            _ => found
+            _ => palette::search_with_presets(found, search, self.language())
                 .into_iter()
                 .map(|found| QuickChoice {
                     definition: found.definition,
