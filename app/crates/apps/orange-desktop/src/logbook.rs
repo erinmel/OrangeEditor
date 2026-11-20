@@ -320,7 +320,7 @@ mod tests {
             editor
                 .problems()
                 .iter()
-                .any(|problem| problem.contains("InputRequired"))
+                .any(|problem| problem.contains("Required input has no value"))
         );
     }
 

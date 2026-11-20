@@ -2699,11 +2699,11 @@ mod tests {
         assert_eq!(graph.wires.len(), 1);
         assert!(graph.wires[0].exec);
         assert_eq!(editor.problems().len(), 1);
-        assert!(editor.problems()[0].contains("(node go)"));
+        assert!(editor.problems()[0].contains("— go"));
         // The canvas marks the node the problem is about, and the list can take you there.
         let go = editor.graph().unwrap().nodes[0].id;
         let mark = editor.canvas().marks().nodes.get(&go).cloned().unwrap();
-        assert!(mark.error && mark.text.contains("(node go)"));
+        assert!(mark.error && mark.text.contains("— go"));
         editor.canvas().select(None);
         let graph = editor.graph().unwrap().clone();
         editor.canvas().focus(&graph, go);

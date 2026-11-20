@@ -150,6 +150,28 @@ pub(super) struct ProblemLocation {
     code: &'static str,
 }
 
+/// A problem as the Problems panel and the canvas marks say it: the message, then the
+/// card, port and variable it is about by their names. The code stays searchable in the
+/// panel without leading the line.
+fn problem_text(diagnostic: &orange_host::Diagnostic, names: &orange_host::Names) -> String {
+    let subject = &diagnostic.subject;
+    let mut place = Vec::new();
+    if let Some(node) = &subject.node {
+        place.push(names.node(node));
+    }
+    if let Some(port) = &subject.port {
+        place.push(crate::port_label(&port.to_string()));
+    }
+    if let Some(variable) = &subject.variable {
+        place.push(names.variable(variable));
+    }
+    if place.is_empty() {
+        diagnostic.message.clone()
+    } else {
+        format!("{} — {}", diagnostic.message, place.join(" · "))
+    }
+}
+
 fn top_node(diagnostic: &orange_host::Diagnostic) -> Option<NodeId> {
     diagnostic
         .subject
@@ -268,7 +290,7 @@ impl Document {
         };
         let error = level == ProblemLevel::Blocker;
         self.run_blocked |= error;
-        let text = describe(diagnostic, &self.names);
+        let text = problem_text(diagnostic, &self.names);
         if let Some(wire) = wire {
             canvas::Marks::add(&mut marks.wires, wire, error, text.clone());
         } else if let Some(node) = node {
