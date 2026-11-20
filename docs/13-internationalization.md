@@ -1,5 +1,11 @@
 # Internationalization and translatable text
 
+The editor's Problems panel and graph validation messages use its diagnostic
+catalogs. A core message key such as `core/graph-input-required` resolves to
+the Fluent ID `graph-input-required`, with the diagnostic's safe English
+message as the fallback. The editor labels the affected node, port or variable
+separately and refreshes existing Problems and marks when the language changes.
+
 C13 checkpoint boundary (2026-11-08): fieldless CheckpointError uses
 `core/checkpoint-invalid`, `-version`, `-limit`, `-owner`, `-selection`,
 `-incompatible`, `-unsupported-value`, `-boundary` and `-startup` (the same

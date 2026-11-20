@@ -432,8 +432,8 @@ impl Host {
     /// places, and its wires. The document does not have to be valid or bound; a node
     /// whose definition this host lacks is shown without ports.
     pub fn view(&self, json: &str) -> Result<GraphView, HostError> {
-        let mut document = orange_model::from_json(json)
-            .map_err(|error| HostError::Document(error.to_string()))?;
+        let mut document =
+            from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
         let _ = self.replace_definitions(&mut document)?;
         Ok(self.view_of(&document))
     }

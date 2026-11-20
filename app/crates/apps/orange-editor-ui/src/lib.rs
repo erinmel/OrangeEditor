@@ -52,7 +52,7 @@ use canvas::Canvas;
 use i18n::{t, tf};
 use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
-    StopMode, describe, lines,
+    StopMode, lines,
 };
 use std::collections::VecDeque;
 
@@ -496,6 +496,7 @@ pub struct Editor {
     renaming_node: Option<(NodeId, String)>,
     /// The language the node search also matches in, as a BCP 47 tag; empty is English.
     language: String,
+    refresh_problem_text: bool,
     /// The right-click menu, while it is open.
     menu: Option<menu::Menu>,
     /// What this editor copied last, for Paste from the menu.
@@ -541,6 +542,7 @@ impl Editor {
         if self.language != language {
             language.clone_into(&mut self.language);
             self.previews.invalidate();
+            self.refresh_problem_text = true;
         }
         i18n::set_language(self.language());
     }
@@ -1184,7 +1186,13 @@ impl Editor {
         match error {
             HostError::Invalid(diagnostics) => diagnostics
                 .iter()
-                .map(|diagnostic| describe(diagnostic, names))
+                .map(|diagnostic| {
+                    format!(
+                        "{}: {}",
+                        diagnostic.code,
+                        diagnostics::problem_text(diagnostic, names)
+                    )
+                })
                 .collect(),
             other => vec![other.to_string()],
         }
@@ -1192,6 +1200,7 @@ impl Editor {
 
     /// Checks the open document against the host's packages.
     pub fn check(&mut self, host: &Host) {
+        self.refresh_problem_text = false;
         let Some(document) = &mut self.document else {
             return;
         };
@@ -1505,6 +1514,9 @@ impl Editor {
         }
         self.preferred_scale = Some(ui.ctx().zoom_factor());
         self.canvas.update_help(host, &self.language);
+        if self.refresh_problem_text {
+            self.check(host);
+        }
         if let Some(clip) = self.clip_out.take() {
             ui.ctx().copy_text(clip);
         }

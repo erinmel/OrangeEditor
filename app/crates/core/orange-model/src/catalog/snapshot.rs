@@ -1788,22 +1788,20 @@ mod tests {
 
     #[test]
     fn event_inputs_are_rejected_at_publication() {
-        let event_output = PortDescriptor {
-            direction: PortDirection::Output,
+        let event_port = |direction| PortDescriptor {
+            direction,
             kind: PortKind::Event,
-            ty: Some("core/i64@1".parse().unwrap()),
             ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
         };
-        let mut valid = definition("acme/event-output", &[], vec![event_output]);
+        let mut valid = definition(
+            "acme/event-output",
+            &[],
+            vec![event_port(PortDirection::Output)],
+        );
         valid.kind = NodeKind::Action;
         assert!(build(builder().definition(valid)).is_ok());
 
-        let event_input = PortDescriptor {
-            direction: PortDirection::Input,
-            kind: PortKind::Event,
-            ty: Some("core/i64@1".parse().unwrap()),
-            ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
-        };
+        let event_input = event_port(PortDirection::Input);
         let result =
             build(builder().definition(definition("acme/event-input", &[], vec![event_input])));
         assert_eq!(

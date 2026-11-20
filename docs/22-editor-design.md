@@ -217,6 +217,10 @@ highlighted result. Dragging a result shows a placement preview under the pointe
   highlights its background, including the red Stop control. Menu and toolbar
   shortcut labels follow the current binding.
 * Problems has a search field and filters for Blockers, Warnings and Drafts.
+  Drag over diagnostic text and use the system copy shortcut to copy the
+  selection. The **Show the node** button jumps to the affected node.
+  **Copy visible problems** copies the current results with their severity,
+  diagnostic code when available, message and location.
   Search matches node names, text and diagnostic codes. Blockers appear first.
   The workspace badge counts blockers and warnings. Drafts have their own count in
   the panel.

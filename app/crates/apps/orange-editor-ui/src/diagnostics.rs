@@ -1,6 +1,7 @@
 //! Structured editor diagnostics and the runtime log.
 use super::*;
 use crate::controls::{Action, Dropdown as _, Surface};
+use orange_host::Diagnostic;
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,25 +151,40 @@ pub(super) struct ProblemLocation {
     code: &'static str,
 }
 
+impl ProblemLocation {
+    fn clipboard_line(&self, text: &str) -> String {
+        if self.code.is_empty() {
+            format!("[{}] {text}", self.level.label())
+        } else {
+            format!("[{}] {} — {text}", self.level.label(), self.code)
+        }
+    }
+}
+
 /// A problem as the Problems panel and the canvas marks say it: the message, then the
 /// card, port and variable it is about by their names. The code stays searchable in the
 /// panel without leading the line.
-fn problem_text(diagnostic: &orange_host::Diagnostic, names: &orange_host::Names) -> String {
+pub(super) fn problem_text(diagnostic: &Diagnostic, names: &Names) -> String {
     let subject = &diagnostic.subject;
     let mut place = Vec::new();
     if let Some(node) = &subject.node {
         place.push(names.node(node));
     }
     if let Some(port) = &subject.port {
-        place.push(crate::port_label(&port.to_string()));
+        place.push(port_label(&port.to_string()));
     }
     if let Some(variable) = &subject.variable {
         place.push(names.variable(variable));
     }
+    let message = diagnostic
+        .message_key
+        .strip_prefix("core/")
+        .and_then(|key| i18n::catalogs().message(&i18n::language(), key))
+        .unwrap_or_else(|| diagnostic.message.as_str().into());
     if place.is_empty() {
-        diagnostic.message.clone()
+        message.into_owned()
     } else {
-        format!("{} — {}", diagnostic.message, place.join(" · "))
+        format!("{message} — {}", place.join(" · "))
     }
 }
 
@@ -537,84 +553,242 @@ impl Editor {
             &mut self.problems_search,
             t("search-problems"),
         );
-        let levels = std::iter::once(None).chain(ProblemLevel::ALL.map(Some));
-        ui.horizontal_wrapped(|ui| {
-            for level in levels {
-                let (button, label) = match level {
-                    None => (
-                        egui::Button::new(t("filter-all")),
-                        t("filter-all").to_owned(),
-                    ),
-                    Some(level) => {
-                        let count = document
-                            .problem_locations
-                            .iter()
-                            .filter(|item| item.level == level)
-                            .count();
-                        let label = level.count_label(count);
-                        (egui::Button::new((level.icon(ui), label.clone())), label)
-                    }
-                };
-                let selected = self.problems_filter == level;
-                let response =
-                    controls::button(ui, Surface::Panel, Action::Toggle(selected), true, button);
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &label)
-                });
-                if let Some(level) = level {
-                    response.clone().on_hover_text(level.hint());
-                }
-                if response.clicked() {
-                    self.problems_filter = level;
-                }
-            }
-        });
-        ui.separator();
         let query = self.problems_search.trim().to_lowercase();
-        let mut focus = None;
-        egui::ScrollArea::vertical()
-            .id_salt("editor-problems")
-            .show(ui, |ui| {
-                let mut any = false;
+        let visible = ui
+            .horizontal_wrapped(|ui| {
+                let levels = std::iter::once(None).chain(ProblemLevel::ALL.map(Some));
+                for level in levels {
+                    let (button, label) = match level {
+                        None => (
+                            egui::Button::new(t("filter-all")),
+                            t("filter-all").to_owned(),
+                        ),
+                        Some(level) => {
+                            let count = document
+                                .problem_locations
+                                .iter()
+                                .filter(|item| item.level == level)
+                                .count();
+                            let label = level.count_label(count);
+                            (egui::Button::new((level.icon(ui), label.clone())), label)
+                        }
+                    };
+                    let selected = self.problems_filter == level;
+                    let response = controls::button(
+                        ui,
+                        Surface::Panel,
+                        Action::Toggle(selected),
+                        true,
+                        button,
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &label)
+                    });
+                    if let Some(level) = level {
+                        response.clone().on_hover_text(level.hint());
+                    }
+                    if response.clicked() {
+                        self.problems_filter = level;
+                    }
+                }
+                let mut visible = Vec::new();
                 for level in ProblemLevel::ALL {
                     if self.problems_filter.is_some_and(|wanted| level != wanted) {
                         continue;
                     }
-                    for (text, location) in
-                        document.problems.iter().zip(&document.problem_locations)
-                    {
-                        if location.level != level
-                            || !contains_query(&query, &[text, level.label(), location.code])
-                        {
-                            continue;
-                        }
-                        any = true;
-                        ui.horizontal_top(|ui| {
-                            ui.label(level.icon(ui)).on_hover_text(level.hint());
-                            if let Some(node) = location.node {
-                                if ui
-                                    .add(egui::Button::new(text).wrap().frame(false))
-                                    .on_hover_text(t("show-node"))
-                                    .clicked()
-                                {
-                                    focus = Some(node);
-                                }
-                            } else {
-                                ui.add(egui::Label::new(text).wrap());
-                            }
-                        });
-                    }
+                    visible.extend(
+                        document
+                            .problems
+                            .iter()
+                            .zip(&document.problem_locations)
+                            .filter(|(text, location)| {
+                                location.level == level
+                                    && contains_query(&query, &[text, level.label(), location.code])
+                            }),
+                    );
                 }
-                if !any {
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    Action::Menu,
+                    !visible.is_empty(),
+                    egui::Button::new(t("copy-visible-problems")),
+                )
+                .clicked()
+                {
+                    let lines: Vec<_> = visible
+                        .iter()
+                        .map(|(text, location)| location.clipboard_line(text))
+                        .collect();
+                    ui.ctx().copy_text(lines.join("\n"));
+                }
+                visible
+            })
+            .inner;
+        ui.separator();
+        let mut focus = None;
+        egui::ScrollArea::vertical()
+            .id_salt("editor-problems")
+            .show(ui, |ui| {
+                if visible.is_empty() {
                     ui.weak(t(if document.problems.is_empty() {
                         "no-problems"
                     } else {
                         "no-problem-results"
                     }));
                 }
+                for (text, location) in visible {
+                    let level = location.level;
+                    ui.horizontal_top(|ui| {
+                        ui.label(level.icon(ui)).on_hover_text(level.hint());
+                        if let Some(node) = location.node {
+                            let label = t("show-node");
+                            let response = controls::button(
+                                ui,
+                                Surface::Panel,
+                                Action::Menu,
+                                true,
+                                egui::Button::new(icons::centered(icons::FIT)),
+                            )
+                            .on_hover_text(label);
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::Role::Button, true, label)
+                            });
+                            if response.clicked() {
+                                focus = Some(node);
+                            }
+                        }
+                        ui.add(egui::Label::new(text).wrap().selectable(true));
+                    });
+                }
             });
         if let Some(node) = focus {
             self.canvas.focus(&document.graph, node);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_language_updates_existing_problems() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.set_language("en");
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        editor.add_node(&mut host, "core/set-variable").unwrap();
+        assert!(
+            editor
+                .problems()
+                .iter()
+                .any(|text| text.starts_with("Variable reference"))
+        );
+
+        editor.set_language("es");
+        egui::Context::default()
+            .run_ui(egui::RawInput::default(), |ui| editor.ui(ui, &mut host))
+            .drop_without_applying_deltas();
+        assert!(
+            editor
+                .problems()
+                .iter()
+                .any(|text| text.starts_with("Falta la referencia a la variable"))
+        );
+    }
+
+    #[test]
+    fn problem_text_can_be_selected_and_bulk_copy_respects_filters() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        editor.canvas.select(Some(node));
+        editor.panels.log = true;
+        let document = editor.document.as_mut().unwrap();
+        document.problems = ["Missing output", "Missing input", "Invalid value"]
+            .map(String::from)
+            .into();
+        document.problem_locations = [
+            (ProblemLevel::Warning, "W-OUTPUT"),
+            (ProblemLevel::Blocker, "E-INPUT"),
+            (ProblemLevel::Blocker, "E-VALUE"),
+        ]
+        .map(|(level, code)| ProblemLocation {
+            node: Some(node),
+            level,
+            code,
+        })
+        .into();
+        editor.problems_filter = Some(ProblemLevel::Blocker);
+        editor.problems_search = "missing".to_owned();
+
+        let context = egui::Context::default();
+        icons::install(&context);
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| editor.ui(ui, &mut host),
+            )
+        };
+        frame(vec![]).drop_without_applying_deltas();
+        let output = frame(vec![]);
+        let bounds = |label| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.rect.translate(text.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        };
+        let button = bounds(t("copy-visible-problems"));
+        let message = bounds("Missing input");
+        output.drop_without_applying_deltas();
+        let click = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let message = message.unwrap();
+        let start = message.left_center() + egui::vec2(0.5, 0.0);
+        let end = message.right_center() - egui::vec2(0.5, 0.0);
+        frame(vec![egui::Event::PointerMoved(start)]).drop_without_applying_deltas();
+        frame(vec![click(start, true)]).drop_without_applying_deltas();
+        frame(vec![egui::Event::PointerMoved(end)]).drop_without_applying_deltas();
+        frame(vec![click(end, false)]).drop_without_applying_deltas();
+        let output = frame(vec![egui::Event::Copy]);
+        let selected = output
+            .platform_output
+            .commands
+            .iter()
+            .rev()
+            .find_map(|command| {
+                if let egui::OutputCommand::CopyText(text) = command {
+                    Some(text == "Missing input")
+                } else {
+                    None
+                }
+            });
+        output.drop_without_applying_deltas();
+        assert_eq!(selected, Some(true));
+
+        let pos = button.unwrap().center();
+        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
+        frame(vec![click(pos, true)]).drop_without_applying_deltas();
+        let output = frame(vec![click(pos, false)]);
+        let copied = output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == "[Blocker] E-INPUT — Missing input")
+        });
+        output.drop_without_applying_deltas();
+        assert!(copied);
     }
 }

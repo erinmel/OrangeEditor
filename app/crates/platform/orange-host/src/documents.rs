@@ -113,7 +113,7 @@ pub fn recover_document(path: &Path) -> Result<Recovery, HostError> {
     })
 }
 
-/// One package a document is locked to, as [`crate::Host::requirements`] lists it.
+/// One package a document is locked to, as [`Host::requirements`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     pub package: String,

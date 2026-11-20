@@ -295,7 +295,7 @@ pub(crate) fn number_fields(
                                 ("unit", field.unit.to_string().into()),
                             ],
                         )),
-                        None => ui.weak("automatic"),
+                        None => ui.weak(t("automatic-value")),
                     }
                     .on_hover_text(field.help.as_str());
                     if ui.small_button(t("set")).clicked() {

@@ -298,10 +298,7 @@ impl Editor {
         if let Some(index) = remove.filter(|_| variants.len() > 1) {
             let _ = variants.remove(index);
         }
-        if let Some((from, to)) = moved.filter(|(from, to)| from != to) {
-            let item = variants.remove(from);
-            variants.insert(to.min(variants.len()), item);
-        }
+        apply_row_move(variants, moved);
         if add_button(ui, t("add-choice")) {
             let taken: Vec<&str> = variants.iter().map(|v| v.id.as_str()).collect();
             let name = tf("choice-name", &[("number", (variants.len() + 1).into())]);
@@ -358,10 +355,7 @@ impl Editor {
         if let Some(index) = remove {
             let _ = fields.remove(index);
         }
-        if let Some((from, to)) = moved.filter(|(from, to)| from != to) {
-            let item = fields.remove(from);
-            fields.insert(to.min(fields.len()), item);
-        }
+        apply_row_move(fields, moved);
         if add_button(ui, t("add-field")) {
             let taken: Vec<&str> = fields.iter().map(|f| f.id.as_str()).collect();
             let name = tf("field-name", &[("number", (fields.len() + 1).into())]);
@@ -377,6 +371,13 @@ impl Editor {
                 });
             }
         }
+    }
+}
+
+fn apply_row_move<T>(rows: &mut Vec<T>, moved: Option<(usize, usize)>) {
+    if let Some((from, to)) = moved.filter(|(from, to)| from != to) {
+        let row = rows.remove(from);
+        rows.insert(to.min(rows.len()), row);
     }
 }
 

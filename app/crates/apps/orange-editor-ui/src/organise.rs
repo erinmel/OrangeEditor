@@ -134,14 +134,13 @@ impl Editor {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
             ui.horizontal(|ui| {
-                let save = controls::button(
+                let save = dialog_button(
                     ui,
-                    controls::Surface::Dialog,
-                    controls::Action::Primary,
+                    Action::Primary,
                     [&export.package, &export.version, &export.node]
                         .iter()
                         .all(|field| !field.trim().is_empty()),
-                    egui::Button::new(t("function-package-save")),
+                    t("function-package-save"),
                 )
                 .clicked();
                 (save, ui.button(t("cancel")).clicked())
@@ -395,7 +394,17 @@ impl Editor {
                     ui.label(tf(
                         "function-summary",
                         &[
-                            ("kind", preview.kind.to_string().into()),
+                            (
+                                "kind",
+                                match preview.kind.as_str() {
+                                    "pure" => t("function-kind-pure"),
+                                    "volatile" => t("function-kind-volatile"),
+                                    "action" => t("function-kind-action"),
+                                    "async" => t("function-kind-async"),
+                                    other => other,
+                                }
+                                .into(),
+                            ),
                             ("count", extracting.nodes.len().into()),
                         ],
                     ));
@@ -405,7 +414,7 @@ impl Editor {
                     ] {
                         ui.strong(title);
                         if ports.is_empty() {
-                            ui.weak("none");
+                            ui.weak(t("function-package-none"));
                         }
                         for (name, ty) in ports {
                             ui.label(format!("{name}: {}", crate::type_name(ty)));
@@ -451,7 +460,7 @@ fn dialog_button(
     enabled: bool,
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
-    crate::controls::button(
+    controls::button(
         ui,
         Surface::Dialog,
         action,
@@ -470,7 +479,11 @@ fn export_error(error: &HostError) -> String {
             .find(|problem| problem.severity == orange_host::Severity::Error)
     {
         let names = orange_host::Names::default();
-        return orange_host::describe(problem, &names);
+        return format!(
+            "{}: {}",
+            problem.code,
+            crate::diagnostics::problem_text(problem, &names)
+        );
     }
     error.to_string()
 }
