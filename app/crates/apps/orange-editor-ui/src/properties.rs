@@ -653,7 +653,7 @@ impl Editor {
             let many = self.canvas.selection();
             if many.len() > 1 {
                 ui.strong(tf("nodes-selected", &[("count", many.len().into())]));
-                ui.label(t("selection-copy-hint"));
+                ui.add(egui::Label::new(t("selection-copy-hint")).wrap());
                 if ui
                     .button((icons::text(icons::FUNCTION), t("make-function-ellipsis")))
                     .clicked()

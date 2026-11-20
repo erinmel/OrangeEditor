@@ -2,6 +2,7 @@
 //! away groups, making the selection a function after a preview of its interface, and
 //! arranging the selection along its wires. Each is one edit of the draft.
 use crate::canvas::GroupEdit;
+use crate::controls::{Action, Surface};
 use crate::i18n::{t, tf};
 use crate::{Editor, FileRequest, controls};
 use orange_host::{Extraction, FunctionPackagePreview, Group, Host, HostError, NodeId, Publish};
@@ -363,10 +364,11 @@ impl Editor {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| match &extracting.preview {
                 Err(why) => {
                     ui.label(tf("not-a-function", &[("why", why.to_string().into())]));
-                    if ui.button(t("close")).clicked() {
+                    if dialog_button(ui, Action::Secondary, true, t("close")).clicked() {
                         cancel = true;
                     }
                 }
@@ -397,13 +399,10 @@ impl Editor {
                     }
                     ui.horizontal(|ui| {
                         let named = !extracting.name.trim().is_empty();
-                        if ui
-                            .add_enabled(named, egui::Button::new(t("make-function")))
-                            .clicked()
-                        {
+                        if dialog_button(ui, Action::Primary, named, t("make-function")).clicked() {
                             make = true;
                         }
-                        if ui.button(t("cancel")).clicked() {
+                        if dialog_button(ui, Action::Secondary, true, t("cancel")).clicked() {
                             cancel = true;
                         }
                     });
@@ -418,6 +417,22 @@ impl Editor {
             self.extracting = None;
         }
     }
+}
+
+/// A button of a dialog, drawn like every other dialog action.
+fn dialog_button(
+    ui: &mut egui::Ui,
+    action: Action,
+    enabled: bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    crate::controls::button(
+        ui,
+        Surface::Dialog,
+        action,
+        enabled,
+        egui::Button::new(text),
+    )
 }
 
 fn export_error(error: &HostError) -> String {
