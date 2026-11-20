@@ -466,3 +466,91 @@ fn rising_requires_bool_and_entropy_is_outside_the_executable_watch_profile() {
         Err(orange_compiler::CompileError::UnsupportedNode { .. })
     ));
 }
+
+/// Two watches, each on its own variable, whose `then` both lead to node 11.
+fn two_watches_into_one_chain(chain: Vec<Json>, extra: Vec<Json>) -> GraphDocument {
+    let (package, _) = catalog();
+    let mut nodes = vec![
+        variable_node(1, "get-variable", 100),
+        variable_node(2, "get-variable", 102),
+        watch(10, "changed", "core/u64@1"),
+        watch(20, "changed", "core/u64@1"),
+    ];
+    nodes.extend(chain);
+    let mut edges = vec![
+        edge(1, 1, "value", 10, "watch"),
+        edge(2, 2, "value", 20, "watch"),
+        edge(3, 10, "then", 11, "in"),
+        edge(4, 20, "then", 11, "in"),
+    ];
+    edges.extend(extra);
+    let variables = vec![
+        variable(100, "run", Some(0)),
+        variable(101, "run", Some(0)),
+        variable(102, "run", Some(0)),
+    ];
+    let mut saved: Json =
+        serde_json::from_str(&to_json(&graph(&package, nodes, edges, vec![])).unwrap()).unwrap();
+    saved["variables"] = json!(variables);
+    from_json(&saved.to_string()).unwrap()
+}
+
+#[test]
+fn different_triggers_run_one_shared_chain() {
+    let (doc, plan) = compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            variable_node(2, "get-variable", 102),
+            watch(10, "changed", "core/u64@1"),
+            watch(20, "changed", "core/u64@1"),
+            update_local(11, 101),
+        ],
+        vec![
+            edge(1, 1, "value", 10, "watch"),
+            edge(2, 2, "value", 20, "watch"),
+            edge(3, 10, "then", 11, "in"),
+            edge(4, 20, "then", 11, "in"),
+        ],
+        vec![
+            variable(100, "run", Some(0)),
+            variable(101, "run", Some(0)),
+            variable(102, "run", Some(0)),
+        ],
+    );
+    let mut run = run(&doc, plan);
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(0));
+    run.set_variable(id(100).parse().unwrap(), Value::U64(2))
+        .unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(1), "the first trigger runs the chain");
+    run.set_variable(id(102).parse().unwrap(), Value::U64(3))
+        .unwrap();
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(2), "the second trigger runs it too");
+}
+
+#[test]
+fn a_shared_chain_reads_only_what_every_trigger_provides() {
+    let (_, snapshot) = catalog();
+    let codes = |doc: &GraphDocument| {
+        analyze(doc, &snapshot)
+            .report()
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>()
+    };
+    // A variable is there whichever trigger fired.
+    let store = variable_node(11, "set-variable", 101);
+    let reads_variable =
+        two_watches_into_one_chain(vec![store.clone()], vec![edge(5, 2, "value", 11, "value")]);
+    assert_eq!(codes(&reads_variable), []);
+    // The first watch's payload is not, when the second one fired.
+    let reads_payload =
+        two_watches_into_one_chain(vec![store], vec![edge(5, 10, "value", 11, "value")]);
+    assert_eq!(
+        codes(&reads_payload),
+        [orange_model::validation::DiagnosticCode::CrossActivation]
+    );
+}

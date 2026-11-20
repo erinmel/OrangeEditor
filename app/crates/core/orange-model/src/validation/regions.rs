@@ -53,14 +53,18 @@ pub struct Region {
     pub nodes: BTreeSet<NodeId>,
 }
 
-/// Region ownership across all bodies. Nodes reached by several regions are omitted from
-/// `owners` and diagnosed; they never get a guessed owner.
+/// Region ownership across all bodies. A node that several top-level regions reach runs
+/// under whichever trigger reached it and is listed in `shared` (11 §7.1). A node reached
+/// by several regions otherwise is in neither map and is diagnosed: no node gets a guessed
+/// owner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegionIndex {
     /// Checked lexical ownership of pure iteration zones, independent of exec regions.
     pub zones: super::zones::ZoneIndex,
     pub regions: BTreeMap<RegionRoot, Region>,
     pub owners: BTreeMap<NodeId, RegionRoot>,
+    /// Exec nodes that several top-level regions reach, with those regions.
+    pub shared: BTreeMap<NodeId, BTreeSet<RegionRoot>>,
     /// Exec nodes that no region reaches (`W-UNREACHABLE`).
     pub unreachable: BTreeSet<NodeId>,
 }
@@ -72,6 +76,35 @@ impl RegionIndex {
             .get(self.owners.get(&node)?)?
             .enclosing_loop
             .as_ref()
+    }
+
+    /// Whether some region runs `node`: it has an owner or is shared.
+    pub fn reaches(&self, node: NodeId) -> bool {
+        self.owners.contains_key(&node) || self.shared.contains_key(&node)
+    }
+
+    /// The top-level regions whose activations can run `region`: its outermost ancestor,
+    /// or every trigger of the shared node whose child region is one of its ancestors.
+    pub fn tops(&self, region: &RegionRoot) -> Vec<RegionRoot> {
+        let mut current = region.clone();
+        loop {
+            let Some(parent) = self.regions.get(&current).and_then(|r| r.parent.clone()) else {
+                return vec![current];
+            };
+            if let Some(triggers) = self.shared.get(&current.node) {
+                return triggers.iter().cloned().collect();
+            }
+            current = parent;
+        }
+    }
+
+    /// The top-level regions whose activations can run `node`; empty when none reaches it.
+    pub fn tops_of(&self, node: NodeId) -> Vec<RegionRoot> {
+        match (self.owners.get(&node), self.shared.get(&node)) {
+            (Some(owner), _) => self.tops(owner),
+            (None, Some(triggers)) => triggers.iter().cloned().collect(),
+            (None, None) => Vec::new(),
+        }
     }
 }
 
@@ -415,6 +448,11 @@ fn check_body(
         if !frontier {
             continue;
         }
+        // Different triggers may run one chain; availability checks what it reads under
+        // each of them (11 §7.1).
+        if regions.iter().all(|&region| walks[region].parent.is_none()) {
+            continue;
+        }
         let nested = regions.iter().all(|a| {
             regions
                 .iter()
@@ -562,6 +600,9 @@ fn check_body(
         tally.add(|visits| visits.nodes += 1);
         if let [only] = set.iter().copied().collect::<Vec<_>>()[..] {
             result.index.owners.insert(*node, roots[only].clone());
+        } else if set.iter().all(|&region| walks[region].parent.is_none()) {
+            let triggers = set.iter().map(|&region| roots[region].clone()).collect();
+            result.index.shared.insert(*node, triggers);
         }
     }
 }

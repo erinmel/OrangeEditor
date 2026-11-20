@@ -123,13 +123,17 @@ diagnostics! { subject;
                 "Function entry, return and output markers do not match the declared interface.".into()
             });
     MissingReturn => ("E-MISSING-RETURN", "core/graph-missing-return", Error, "A path of this function ends without reaching a return.".into());
-    RegionAmbiguous => ("E-REGION-AMBIGUOUS", "core/graph-region-ambiguous", Error, "An execution node is reachable from more than one region.".into());
+    RegionAmbiguous => ("E-REGION-AMBIGUOUS", "core/graph-region-ambiguous", Error, {
+                "This node is reached from inside a branch, step or loop body and also from outside it. Join after the construct's completed output, or use a copy of the node on each path."
+                    .into()
+            });
     RegionEscape => ("E-REGION-ESCAPE", "core/graph-region-escape", Error, "An execution connection leaves its region.".into());
     UnavailableValue => ("E-UNAVAILABLE-VALUE", "core/graph-unavailable-value", Error, {
                 "A value is not available on every path that reaches this input.".into()
             });
     CrossActivation => ("E-CROSS-ACTIVATION", "core/graph-cross-activation", Error, {
-                "A value is read from a different activation than the one that produced it.".into()
+                "This value comes from a trigger that may not be the one running here. A chain several triggers share can read only what all of them provide, such as variables."
+                    .into()
             });
     BreakOutsideLoop => ("E-BREAK-OUTSIDE-LOOP", "core/graph-break-outside-loop", Error, {
                 "Break and continue need an enclosing loop body in the same function.".into()

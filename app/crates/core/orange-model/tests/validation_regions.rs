@@ -172,7 +172,7 @@ fn break_outside_a_loop_is_rejected() {
 }
 
 #[test]
-fn node_reachable_from_two_entries_is_ambiguous_once() {
+fn two_entries_share_one_chain() {
     let result = run(
         vec![entry(1), entry(2), action(3), action(4)],
         vec![
@@ -181,8 +181,36 @@ fn node_reachable_from_two_entries_is_ambiguous_once() {
             wire(3, 3, "then", 4),
         ],
     );
+    assert_eq!(codes(&result), []);
+    for shared in [nid(3), nid(4)] {
+        assert!(!result.index.owners.contains_key(&shared));
+        let triggers: Vec<_> = result.index.shared[&shared]
+            .iter()
+            .map(|root| root.node)
+            .collect();
+        assert_eq!(triggers, [nid(1), nid(2)]);
+    }
+}
+
+#[test]
+fn an_entry_joining_a_loop_body_is_ambiguous_once() {
+    let result = run(
+        vec![
+            entry(1),
+            looped(2, "core/count"),
+            entry(3),
+            action(4),
+            action(5),
+        ],
+        vec![
+            wire(1, 1, "then", 2),
+            wire(2, 2, "body", 4),
+            wire(3, 3, "then", 4),
+            wire(4, 4, "then", 5),
+        ],
+    );
     assert_eq!(codes(&result), [DiagnosticCode::RegionAmbiguous]);
-    assert!(!result.index.owners.contains_key(&nid(3)));
+    assert!(!result.index.reaches(nid(4)));
 }
 
 #[test]

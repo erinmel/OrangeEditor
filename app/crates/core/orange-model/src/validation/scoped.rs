@@ -1665,6 +1665,10 @@ fn recompute_flow(
     if !regions.incomplete_nodes.is_empty()
         || !control.incomplete_nodes.is_empty()
         || !control.cycle_paths.is_empty()
+        // Shared chains are checked under every trigger, which a scoped merge does not
+        // track: the whole document is checked instead.
+        || !regions.index.shared.is_empty()
+        || !report.regions.shared.is_empty()
     {
         return None;
     }

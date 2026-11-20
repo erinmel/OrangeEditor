@@ -431,18 +431,6 @@ struct Context<'a> {
     function: Option<FunctionId>,
 }
 
-fn top_of(regions: &RegionIndex, root: &RegionRoot) -> RegionRoot {
-    let mut current = root.clone();
-    while let Some(parent) = regions
-        .regions
-        .get(&current)
-        .and_then(|region| region.parent.clone())
-    {
-        current = parent;
-    }
-    current
-}
-
 /// Exec outputs of a node: declared ports, variadic instances and kind-implicit ports.
 fn exec_outputs(
     document: &GraphDocument,
@@ -570,63 +558,84 @@ fn check_body(
         if only.is_some_and(|only| !only.consumers.contains(consumer)) {
             continue;
         }
-        let Some(region) = regions.owners.get(consumer) else {
-            continue;
+        // Each trigger that can run the consumer, with the region it runs in: a shared
+        // node reads only what every one of its triggers makes available (11 §7.1).
+        let runs: Vec<(RegionRoot, RegionRoot)> = match regions.owners.get(consumer) {
+            Some(region) => regions
+                .tops(region)
+                .into_iter()
+                .map(|top| (region.clone(), top))
+                .collect(),
+            None => regions
+                .shared
+                .get(consumer)
+                .into_iter()
+                .flatten()
+                .map(|top| (top.clone(), top.clone()))
+                .collect(),
         };
-        let top = top_of(regions, region);
-        let mut visited = BTreeSet::new();
-        // Highest edge id first: a cone edge behind several inputs is reported on the
-        // highest one.
-        for item in incoming.get(consumer).into_iter().flatten().rev() {
-            let direct = item.edge;
-            let producer = direct.from.node;
-            let behind: &[&DataEdge] = if expands(context, producer) {
-                cones.entry(producer).or_insert_with(|| {
-                    let mut reached = free.is_some().then(BTreeSet::new);
-                    let mut walked = 0;
-                    let items = cone(context, &incoming, producer, reached.as_mut(), &mut walked);
-                    tally.add(|visits| visits.edges += walked);
-                    if let (Some(free), Some(reached)) = (free.as_deref_mut(), reached)
-                        && items.is_empty()
-                        && reached.iter().all(|node| !skipped.contains(node))
-                    {
-                        free.extend(reached);
-                    }
-                    items
-                })
-            } else {
-                &[]
-            };
-            for item in std::iter::once(item).chain(behind.iter().copied()) {
-                tally.add(|visits| visits.edges += 1);
-                if !visited.insert(item.edge.id) {
-                    continue;
-                }
-                let producer = item.edge.from.node;
-                let Some(requirement) = requirement(context, item, region, &top) else {
-                    continue;
+        let mut reported = Vec::new();
+        for (region, top) in &runs {
+            let mut visited = BTreeSet::new();
+            // Highest edge id first: a cone edge behind several inputs is reported on the
+            // highest one.
+            for item in incoming.get(consumer).into_iter().flatten().rev() {
+                let direct = item.edge;
+                let producer = direct.from.node;
+                let behind: &[&DataEdge] = if expands(context, producer) {
+                    cones.entry(producer).or_insert_with(|| {
+                        let mut reached = free.is_some().then(BTreeSet::new);
+                        let mut walked = 0;
+                        let items =
+                            cone(context, &incoming, producer, reached.as_mut(), &mut walked);
+                        tally.add(|visits| visits.edges += walked);
+                        if let (Some(free), Some(reached)) = (free.as_deref_mut(), reached)
+                            && items.is_empty()
+                            && reached.iter().all(|node| !skipped.contains(node))
+                        {
+                            free.extend(reached);
+                        }
+                        items
+                    })
+                } else {
+                    &[]
                 };
-                let subject = Subject::new(
-                    Some(*consumer),
-                    Some(direct.to.port.clone()),
-                    Some(direct.id),
-                );
-                let subject = match context.function {
-                    Some(function) => subject.with_function(function),
-                    None => subject,
-                };
-                match requirement {
-                    Requirement::Diagnose(code) => {
-                        result
-                            .diagnostics
-                            .push(Diagnostic::new(code, subject, context.origin))
+                for item in std::iter::once(item).chain(behind.iter().copied()) {
+                    tally.add(|visits| visits.edges += 1);
+                    if !visited.insert(item.edge.id) {
+                        continue;
                     }
-                    Requirement::Execution(outcomes) if roots.contains(&&top) => {
-                        uses.entry((top.clone(), producer, outcomes))
-                            .or_default()
-                            .insert((*consumer, subject));
+                    let producer = item.edge.from.node;
+                    let Some(requirement) = requirement(context, item, region, top) else {
+                        continue;
+                    };
+                    let subject = Subject::new(
+                        Some(*consumer),
+                        Some(direct.to.port.clone()),
+                        Some(direct.id),
+                    );
+                    let subject = match context.function {
+                        Some(function) => subject.with_function(function),
+                        None => subject,
+                    };
+                    match requirement {
+                        Requirement::Diagnose(code) => {
+                            if !reported.contains(&(code, subject.clone())) {
+                                reported.push((code, subject.clone()));
+                                result.diagnostics.push(Diagnostic::new(
+                                    code,
+                                    subject,
+                                    context.origin,
+                                ));
+                            }
+                        }
+                        Requirement::Execution(outcomes) if roots.contains(&top) => {
+                            uses.entry((top.clone(), producer, outcomes))
+                                .or_default()
+                                .insert((*consumer, subject));
+                        }
+                        Requirement::Execution(_) => {}
                     }
-                    Requirement::Execution(_) => {}
                 }
             }
         }
@@ -638,11 +647,15 @@ fn check_body(
             .map(|(_, producer, outcomes)| (*producer, outcomes)),
         tally,
     );
+    // A shared consumer may miss a value under several triggers; it is reported once.
+    let mut missing = BTreeSet::new();
     for ((top, producer, outcomes), consumers) in &uses {
         let start = Vertex::Entry(top.node, top.port.clone());
         for (consumer, subject) in consumers {
             tally.add(|visits| visits.nodes += 1);
-            if answers.unavailable(&start, *producer, outcomes, *consumer) {
+            if answers.unavailable(&start, *producer, outcomes, *consumer)
+                && missing.insert(subject)
+            {
                 result.diagnostics.push(Diagnostic::new(
                     DiagnosticCode::UnavailableValue,
                     subject.clone(),
@@ -679,7 +692,7 @@ pub(crate) fn data_edge_requires(
         Ok(port) => match port.source {
             None | Some(OutputSource::Computed | OutputSource::State) => false,
             Some(OutputSource::Iteration) => {
-                regions.owners.contains_key(&at.node)
+                regions.reaches(at.node)
                     || regions
                         .zones
                         .owner(at.node)
@@ -693,7 +706,7 @@ pub(crate) fn data_edge_requires(
         matches!(
             resolved.get(&node).map(|signature| signature.kind),
             Some(NodeKind::Pure | NodeKind::Volatile)
-        ) && !regions.owners.contains_key(&node)
+        ) && !regions.reaches(node)
     };
     if relevant(from) {
         return true;
@@ -745,7 +758,7 @@ pub(crate) fn subset_edges<'a>(
         matches!(
             resolved.get(&node).map(|signature| signature.kind),
             Some(NodeKind::Pure | NodeKind::Volatile)
-        ) && !regions.owners.contains_key(&node)
+        ) && !regions.reaches(node)
     };
     let mut ids = BTreeSet::new();
     for &node in nodes {
@@ -785,7 +798,7 @@ fn expands(context: &Context, producer: NodeId) -> bool {
             .get(&producer)
             .map(|signature| signature.kind),
         Some(NodeKind::Pure | NodeKind::Volatile)
-    ) && !context.regions.owners.contains_key(&producer)
+    ) && !context.regions.reaches(producer)
 }
 
 /// The edges behind an expanding `producer` that may carry a requirement: every input edge
@@ -838,15 +851,20 @@ fn requirement(
     match item.from.source? {
         OutputSource::Computed | OutputSource::State => None,
         OutputSource::Payload => {
-            let same = match regions.owners.get(&producer) {
-                Some(owner) => top_of(regions, owner) == *top,
-                None => top.node == producer,
+            let tops = regions.tops_of(producer);
+            let same = if tops.is_empty() {
+                top.node == producer
+            } else {
+                tops.contains(top)
             };
             (!same).then_some(Requirement::Diagnose(DiagnosticCode::CrossActivation))
         }
         OutputSource::Iteration => {
-            let owner = regions.owners.get(&producer)?;
-            if top_of(regions, owner) != *top {
+            let tops = regions.tops_of(producer);
+            if tops.is_empty() {
+                return None;
+            }
+            if !tops.contains(top) {
                 return Some(Requirement::Diagnose(DiagnosticCode::CrossActivation));
             }
             let mut current = Some(region.clone());
@@ -862,8 +880,11 @@ fn requirement(
             Some(Requirement::Diagnose(DiagnosticCode::UnavailableValue))
         }
         OutputSource::Execution => {
-            let owner = regions.owners.get(&producer)?;
-            if top_of(regions, owner) != *top {
+            let tops = regions.tops_of(producer);
+            if tops.is_empty() {
+                return None;
+            }
+            if !tops.contains(top) {
                 return Some(Requirement::Diagnose(DiagnosticCode::CrossActivation));
             }
             let outcomes: BTreeSet<PortId> = item.from.available_on.as_ref().map_or_else(
@@ -882,8 +903,10 @@ fn build_node(
     targets: &BTreeMap<(NodeId, PortKey), Vec<NodeId>>,
     id: NodeId,
 ) {
+    // A shared node runs only in top-level regions; any of them ends where it ends.
+    let shared = || context.regions.shared.get(&id)?.first();
     let (Some(region), Some(signature), Some(node)) = (
-        context.regions.owners.get(&id),
+        context.regions.owners.get(&id).or_else(shared),
         context.resolved.get(&id),
         context.document.node(id),
     ) else {
