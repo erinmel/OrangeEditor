@@ -14,6 +14,7 @@ const MAX_WAITING: usize = 256;
 const SEVERITY: &str = "org.orange.logging/severity@1";
 const LEVEL: &str = "org.orange.logging/level@1";
 const MAX_LOG_BYTES: usize = 16_384;
+const MAX_PARTS: u16 = 24;
 const LEVELS: [(&str, NoteLevel); 6] = [
     ("critical", NoteLevel::Critical),
     ("error", NoteLevel::Error),
@@ -49,14 +50,21 @@ impl LogBook {
                 json!({"type": SEVERITY, "value": {"variant": "info"}}),
             )
             .build();
-        let current = definition
+        let formatted = definition
+            .clone()
             .version(2)
             .input_default(
                 "level",
                 LEVEL,
                 json!({"type": LEVEL, "value": {"variant": "info"}}),
             )
-            .variadic_input("argument", "core/string@1", 24)
+            .variadic_input("argument", "core/string@1", MAX_PARTS)
+            .build();
+        let current = definition
+            .version(3)
+            .description("Writes to the Log. Add text or wired values as parts. Each unused part appears on a new line. Use {} or {0}, {1}, and so on to place parts inside the message. Double braces for literal braces.")
+            .input_default("level", LEVEL, json!({"type": LEVEL, "value": {"variant": "info"}}))
+            .variadic_input_default("argument", "core/string@1", MAX_PARTS, json!({"type": "core/string@1", "value": ""}))
             .build();
         ServicePackage::new(PACKAGE, "0.1.0")
             .about(
@@ -73,14 +81,21 @@ impl LogBook {
                 &legacy,
                 Write {
                     waiting: Arc::clone(&self.0),
-                    legacy: true,
+                    format: Format::Literal,
+                },
+            )?
+            .node(
+                &formatted,
+                Write {
+                    waiting: Arc::clone(&self.0),
+                    format: Format::Template,
                 },
             )?
             .node(
                 &current,
                 Write {
                     waiting: Arc::clone(&self.0),
-                    legacy: false,
+                    format: Format::Parts,
                 },
             )
     }
@@ -109,7 +124,14 @@ fn put(waiting: &Mutex<Waiting>, level: NoteLevel, text: &str) {
 #[derive(Debug)]
 struct Write {
     waiting: Arc<Mutex<Waiting>>,
-    legacy: bool,
+    format: Format,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Literal,
+    Template,
+    Parts,
 }
 
 impl ServiceNode for Write {
@@ -126,7 +148,7 @@ impl ServiceNode for Write {
                 message: "Log message needs a message and a level",
             });
         };
-        let level = if self.legacy {
+        let level = if self.format == Format::Literal {
             match tag {
                 1 => NoteLevel::Warning,
                 2 => NoteLevel::Error,
@@ -137,10 +159,10 @@ impl ServiceNode for Write {
                 .get(*tag as usize)
                 .map_or(NoteLevel::Info, |(_, level)| *level)
         };
-        if self.legacy {
+        if self.format == Format::Literal {
             put(&self.waiting, level, message.as_str());
         } else {
-            let text = format_message(message.as_str(), arguments);
+            let text = format_message(message.as_str(), arguments, self.format == Format::Parts);
             put(&self.waiting, level, &text);
         }
         Ok(Vec::new())
@@ -148,7 +170,7 @@ impl ServiceNode for Write {
 }
 
 /// Sequential or indexed text substitutions. Leave unknown placeholders visible.
-fn format_message(template: &str, arguments: &[Value]) -> String {
+fn format_message(template: &str, arguments: &[Value], append_parts: bool) -> String {
     fn push(output: &mut String, text: &str) {
         let remaining = MAX_LOG_BYTES - output.len();
         output.push_str(&text[..text.floor_char_boundary(remaining)]);
@@ -157,6 +179,7 @@ fn format_message(template: &str, arguments: &[Value]) -> String {
     let mut output = String::new();
     let mut rest = &template[..template.floor_char_boundary(MAX_LOG_BYTES)];
     let mut next = 0;
+    let mut used = [false; MAX_PARTS as usize];
     while !rest.is_empty() && output.len() < MAX_LOG_BYTES {
         let Some(open) = rest.find(['{', '}']) else {
             push(&mut output, rest);
@@ -179,14 +202,32 @@ fn format_message(template: &str, arguments: &[Value]) -> String {
                 inner[..end].parse().ok()
             };
             let placeholder = &rest[..end + 2];
-            match index.and_then(|index| arguments.get(index)) {
-                Some(Value::Str(value)) => push(&mut output, value.as_str()),
+            match index.and_then(|index| arguments.get(index).map(|value| (index, value))) {
+                Some((index, Value::Str(value))) => {
+                    if let Some(used) = used.get_mut(index) {
+                        *used = true;
+                    }
+                    push(&mut output, value.as_str());
+                }
                 _ => push(&mut output, placeholder),
             }
             rest = &rest[end + 2..];
         } else {
             push(&mut output, &rest[..1]);
             rest = &rest[1..];
+        }
+    }
+    if append_parts {
+        for (value, used) in arguments.iter().zip(used) {
+            if let Value::Str(text) = value
+                && !used
+                && !text.is_empty()
+            {
+                if !output.is_empty() && !output.ends_with('\n') {
+                    push(&mut output, "\n");
+                }
+                push(&mut output, text);
+            }
         }
     }
     output
@@ -219,12 +260,187 @@ mod tests {
         let text = |s: &str| Value::Str(Arc::new(s.into()));
         let args = [text("Erin"), text("second")];
         assert_eq!(
-            format_message("Hello {}, {1}, {{raw}}, {3}, {nonnumber}", &args),
+            format_message("Hello {}, {1}, {{raw}}, {3}, {nonnumber}", &args, false),
             "Hello Erin, second, {raw}, {3}, {nonnumber}"
+        );
+        assert_eq!(
+            format_message("Hello {1}:", &args, true),
+            "Hello second:\nErin"
+        );
+        assert_eq!(
+            format_message("Hello:", &args, true),
+            "Hello:\nErin\nsecond"
         );
     }
 
     /// A Log message node in a running graph puts its message on the book.
+    #[test]
+    fn a_log_node_with_only_argument_wires_stays_draft_until_execution_uses_it() {
+        let book = LogBook::default();
+        let (mut host, _) = orange_host::Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![book.package().unwrap()],
+        )
+        .unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let start = host
+            .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+            .unwrap();
+        let log = host
+            .add_node(&mut draft, "org.orange.logging/log-message", [300.0, 0.0])
+            .unwrap();
+        let text = host
+            .add_node(&mut draft, "core/text", [0.0, 180.0])
+            .unwrap();
+        host.set_input(&mut draft, (text, "value"), Some("threshold"))
+            .unwrap();
+        let argument = host.add_port(&mut draft, log, "argument").unwrap();
+        host.connect(&mut draft, (text, "result"), (log, &argument))
+            .unwrap();
+
+        let mut editor = orange_editor_ui::Editor::new();
+        editor.open_untitled(&mut host, draft.text().unwrap());
+        assert!(!editor.problems().is_empty());
+        editor.run(&mut host);
+        assert!(editor.is_running(), "{:?}", editor.problems());
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.to.0 == log)
+        );
+        editor.stop(&mut host);
+
+        assert!(editor.connect(&mut host, (start, "then"), (log, "in")));
+        editor.run(&mut host);
+        assert!(!editor.is_running());
+        assert!(
+            editor
+                .problems()
+                .iter()
+                .any(|problem| problem.contains("InputRequired"))
+        );
+    }
+
+    #[test]
+    fn the_log_card_orders_its_fields_and_adds_and_removes_parts() {
+        use eframe::egui;
+        let book = LogBook::default();
+        let (mut host, _) = orange_host::Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![book.package().unwrap()],
+        )
+        .unwrap();
+        let mut editor = orange_editor_ui::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let log = editor
+            .add_node_at(&mut host, "org.orange.logging/log-message", [100.0, 45.0])
+            .unwrap();
+        let context = egui::Context::default();
+        let frame = |editor: &mut orange_editor_ui::Editor,
+                     host: &mut orange_host::Host,
+                     events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(780.0, 620.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor
+                        .ui_with_layout(ui, host, |editor, ui, host| editor.canvas_panel(ui, host))
+                },
+            );
+            let shapes = std::mem::take(&mut output.shapes);
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let click = |editor: &mut orange_editor_ui::Editor, host: &mut orange_host::Host, pos| {
+            frame(editor, host, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    editor,
+                    host,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+        };
+        let position = |shapes: &[egui::epaint::ClippedShape], label: &str| {
+            shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text
+                            .galley
+                            .text()
+                            .trim_start_matches("+  ")
+                            .eq_ignore_ascii_case(label) =>
+                    {
+                        Some(text.pos + text.galley.mesh_bounds.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing card label {label}"))
+        };
+        frame(&mut editor, &mut host, vec![]);
+        let shapes = frame(&mut editor, &mut host, vec![]);
+        assert!(position(&shapes, "Enter").y < position(&shapes, "Log level").y);
+        assert!(position(&shapes, "Log level").y < position(&shapes, "message").y);
+        click(
+            &mut editor,
+            &mut host,
+            position(&shapes, "Enter the message to write to the log"),
+        );
+        frame(&mut editor, &mut host, vec![]);
+        let message = "hello this is a value:";
+        frame(
+            &mut editor,
+            &mut host,
+            vec![egui::Event::Text(message.to_owned())],
+        );
+        click(&mut editor, &mut host, position(&shapes, "Add part"));
+        let saved = editor.graph().unwrap().nodes[0]
+            .ports
+            .iter()
+            .find(|port| port.id == "message")
+            .unwrap()
+            .value
+            .as_deref()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<String>(saved).unwrap(), message);
+        assert!(
+            editor.graph().unwrap().nodes[0]
+                .ports
+                .iter()
+                .any(|port| port.id == "argument#0")
+        );
+        let shapes = frame(&mut editor, &mut host, vec![]);
+        let close = orange_editor_ui::icons::CLOSE.to_string();
+        click(&mut editor, &mut host, position(&shapes, &close));
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|node| node.id == log)
+                .unwrap()
+                .ports
+                .iter()
+                .all(|port| port.id != "argument#0")
+        );
+    }
+
     #[test]
     fn a_running_graph_logs_through_the_node() {
         let book = LogBook::default();
@@ -251,7 +467,9 @@ mod tests {
         let other = host.add_port(&mut draft, log, "argument").unwrap();
         host.set_input(&mut draft, (log, &other), Some("now"))
             .unwrap();
-        host.set_input(&mut draft, (log, "message"), Some("crossed the {} {}"))
+        // A spare slot uses its empty default. The literal and the live wire both print.
+        host.add_port(&mut draft, log, "argument").unwrap();
+        host.set_input(&mut draft, (log, "message"), Some("crossed the:"))
             .unwrap();
         host.set_input(
             &mut draft,
@@ -275,7 +493,7 @@ mod tests {
         };
         assert_eq!(
             messages,
-            [(NoteLevel::Debug, "crossed the threshold now".to_owned())]
+            [(NoteLevel::Debug, "crossed the:\nthreshold\nnow".to_owned())]
         );
         host.stop(flow, orange_host::StopMode::Graceful).unwrap();
         host.close(flow).unwrap();

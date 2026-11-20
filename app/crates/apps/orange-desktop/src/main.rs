@@ -297,6 +297,17 @@ impl Desktop {
     }
 
     fn carry_out(&mut self, request: FileRequest) {
+        if let FileRequest::ExportPackage { name, archive } = request {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter(t("desktop-package-filter"), &["orangeplug"])
+                .set_file_name(name)
+                .save_file()
+                && let Err(error) = std::fs::write(path, archive)
+            {
+                trouble(t("desktop-not-saved"), &error.to_string());
+            }
+            return;
+        }
         if request == FileRequest::ImportPackage {
             self.import_package();
             return;
@@ -353,7 +364,9 @@ impl Desktop {
                     ),
                 }
             }
-            FileRequest::ChoosePath { .. } | FileRequest::ImportPackage => {}
+            FileRequest::ChoosePath { .. }
+            | FileRequest::ImportPackage
+            | FileRequest::ExportPackage { .. } => {}
             FileRequest::SaveAs => {
                 let name = current
                     .and_then(Path::file_name)
