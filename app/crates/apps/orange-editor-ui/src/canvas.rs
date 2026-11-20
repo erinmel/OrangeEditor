@@ -398,6 +398,10 @@ pub struct Canvas {
     moving: bool,
     /// Show the whole graph at the next frame.
     fit: bool,
+    /// The zoom and origin the last fit chose. While the view is still exactly that,
+    /// a resize (the window settling, a dock opening) fits again instead of keeping
+    /// the center, so an untouched graph stays whole.
+    fitted: Option<(f32, Pos2)>,
     wiring: Option<Wiring>,
     /// The wire under the pointer at the last frame, and the selected wire.
     hover_wire: Option<WireEnds>,
@@ -459,6 +463,7 @@ impl Default for Canvas {
             text_heights: BTreeMap::new(),
             moving: false,
             fit: true,
+            fitted: None,
             wiring: None,
             hover_wire: None,
             selected_wire: None,
@@ -1356,10 +1361,12 @@ impl Canvas {
         let area = response.rect;
         let previous_size = std::mem::replace(&mut self.size, area.size());
         let colors = Palette::of(ui);
-        if self.fit {
+        let untouched = self.fitted == Some((self.zoom, self.origin));
+        if self.fit || (untouched && previous_size != self.size) {
             self.fit = false;
             if let Some(bounds) = self.bounds(graph) {
                 (self.zoom, self.origin) = Self::frame(bounds, area.size());
+                self.fitted = Some((self.zoom, self.origin));
             }
         } else {
             // Resizing the window or a dock keeps the same graph point in view.
