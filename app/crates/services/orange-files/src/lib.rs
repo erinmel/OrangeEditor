@@ -76,12 +76,15 @@ pub const MOVE_DIRECTORY: &str = "org.orange.files/move-directory";
 pub const DELETE_DIRECTORY: &str = "org.orange.files/delete-directory";
 /// Reports metadata for a file or directory. Input `path`.
 pub const FILE_INFO: &str = "org.orange.files/file-info";
-/// Entry fired when a file in the folder is created, changed or deleted, with its
-/// path as `payload`. Changes are found by comparing sizes and modification times
-/// every `poll_ms`, so several changes to one file within that time fire once.
+/// Entry fired when a file or folder in the watched folder is created, changed,
+/// deleted or renamed. Input `folder` narrows it to a subfolder (empty for the whole
+/// connection); the payload is a [`CHANGE_TYPE`] record. Changes are found by
+/// comparing sizes and modification times every `poll_ms`, so several changes to one
+/// file within that time fire once.
 pub const ON_CHANGE: &str = "org.orange.files/on-change";
-/// Entry taking a `folder` input. Reports path changes including rename pairs as JSON.
-pub const ON_PATH_CHANGE: &str = "org.orange.files/on-path-change";
+/// The payload of [`ON_CHANGE`]: `kind` (`created`, `changed`, `deleted` or
+/// `renamed`), `path`, `previous_path` (empty unless renamed) and `is_directory`.
+pub const CHANGE_TYPE: &str = "org.orange.files/change@1";
 
 /// Largest file a node reads or writes.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -594,7 +597,16 @@ pub fn package() -> ServicePackage {
             "Reads, writes, lists and watches files in folders the document names.",
         )
         .with_catalogs(CATALOGS)
-        .adapter(FOLDER_ADAPTER, FolderAdapter));
+        .adapter(FOLDER_ADAPTER, FolderAdapter)
+        .record(
+            "change",
+            &[
+                ("kind", STRING),
+                ("path", STRING),
+                ("previous_path", STRING),
+                ("is_directory", "core/bool@1"),
+            ],
+        ));
     for (name, label, description, operation, ports) in nodes {
         package = package.and_then(|package| {
             let mut definition = described(Definition::node(PACKAGE, name, label), description);
@@ -638,16 +650,10 @@ pub fn package() -> ServicePackage {
     }
     let on_change = described(
         Definition::entry(PACKAGE, "on-change", "On file change"),
-        "Fires when a file or folder is created, changed, deleted or renamed.",
-    )
-    .payload(STRING)
-    .build();
-    let on_path_change = described(
-        Definition::entry(PACKAGE, "on-path-change", "On path change"),
-        "Watches a folder and reports each change, including both paths on a rename.",
+        "Fires when a file or folder is created, changed, deleted or renamed, with what changed: its kind, its path, its previous path on a rename, and whether it is a folder. Folder narrows it to a subfolder.",
     )
     .input_default("folder", STRING, json!({"type": STRING, "value": ""}))
-    .payload("core/json@1")
+    .payload(CHANGE_TYPE)
     .build();
     let list = described(
         Definition::node(PACKAGE, "list", "List folder"),
@@ -664,8 +670,7 @@ pub fn package() -> ServicePackage {
     .output("names", "core/list@1<core/string@1>")
     .build();
     match package
-        .and_then(|package| package.source(&on_change, watch::Watch::Legacy))
-        .and_then(|package| package.source(&on_path_change, watch::Watch::Detailed))
+        .and_then(|package| package.source(&on_change, watch::Watch))
         .and_then(|package| package.node(&list, Operation::List))
     {
         Ok(package) => package,
@@ -699,7 +704,7 @@ mod tests {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
         assert_eq!(package.nodes().len(), 17);
-        assert_eq!(package.sources().len(), 2);
+        assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 1);
     }
 

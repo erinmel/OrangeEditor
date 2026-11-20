@@ -25,7 +25,7 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
         host.nodes()
             .filter(|info| info.category() == "Files")
             .count(),
-        19
+        18
     );
 
     let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
@@ -79,7 +79,7 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
     ]);
     saved["variables"] = json!([
         {"id": id(100), "name": "read", "type": STRING, "scope": "run"},
-        {"id": id(101), "name": "changed", "type": STRING, "scope": "run"}
+        {"id": id(101), "name": "changed", "type": orange_files::CHANGE_TYPE, "scope": "run"}
     ]);
     let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
     assert!(host.check(&text).unwrap().is_empty());
@@ -92,6 +92,10 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
             .unwrap()
         {
             Some(Value::Str(text)) => Some(text.as_str().to_owned()),
+            Some(Value::Record(change)) => match &change.fields[1] {
+                Some(Value::Str(path)) => Some(path.as_str().to_owned()),
+                _ => None,
+            },
             _ => None,
         }
     };
@@ -144,7 +148,7 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
     let mut new = NewNode::new(
         node(10),
         DefinitionRef {
-            id: orange_files::ON_PATH_CHANGE.parse().unwrap(),
+            id: orange_files::ON_CHANGE.parse().unwrap(),
             version: 1,
         },
     );
@@ -165,7 +169,7 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
         edge(3, 12, "value", 10, "folder"),
     ]);
     saved["variables"] = json!([
-        {"id": id(101), "name": "change", "type": "core/json@1", "scope": "run"},
+        {"id": id(101), "name": "change", "type": orange_files::CHANGE_TYPE, "scope": "run"},
         {"id": id(102), "name": "folder", "type": STRING, "scope": "run",
             "init": {"type": STRING, "value": "chosen"}},
     ]);
@@ -186,7 +190,10 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
             .inspect(flow, move |run| run.variable(variable).cloned())
             .unwrap()
         {
-            Some(Value::Json(text)) => Some(serde_json::from_str::<Json>(text.as_str()).unwrap()),
+            Some(Value::Record(change)) => match &change.fields[1] {
+                Some(Value::Str(path)) => Some(path.as_str().to_owned()),
+                _ => None,
+            },
             _ => None,
         }
     };
@@ -196,7 +203,7 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
     assert_eq!(read(&host), None);
     std::fs::write(root.join("chosen/inside.txt"), "inside").unwrap();
     until("the file change in the wired folder", || {
-        read(&host).is_some_and(|value| value["path"] == "chosen/inside.txt")
+        read(&host).as_deref() == Some("chosen/inside.txt")
     });
     host.close(flow).unwrap();
     std::fs::remove_dir_all(root).unwrap();

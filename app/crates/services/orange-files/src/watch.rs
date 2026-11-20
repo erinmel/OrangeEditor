@@ -2,10 +2,8 @@
 
 use super::{BAD_INPUT, FOLDER_ADAPTER, Folder, MAX_ENTRIES, folder, refused};
 use orange_sandbox::FsError;
-use orange_sdk::{
-    Arguments, EmitError, Emitter, JsonText, Lifecycle, ServiceSource, Session, Value,
-};
-use serde_json::{Map, Value as Json, json};
+use orange_sdk::{Arguments, EmitError, Emitter, Lifecycle, ServiceSource, Session, Value};
+use serde_json::{Map, Value as Json};
 use std::collections::BTreeMap;
 use std::fs::Metadata;
 use std::sync::Arc;
@@ -161,13 +159,10 @@ impl Drop for Watching {
     }
 }
 
+/// Watches a folder and fires once for each change, with a [`crate::CHANGE_TYPE`]
+/// record.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum Watch {
-    /// The original string payload. A rename emits both its old and new paths.
-    Legacy,
-    /// A JSON payload with the kind and previous path of a rename.
-    Detailed,
-}
+pub(super) struct Watch;
 
 impl Watch {
     fn start_thread(
@@ -249,35 +244,22 @@ impl Watch {
             }
         };
         let previous = match change {
-            Change::Renamed(path) => Some(join(path)),
-            _ => None,
+            Change::Renamed(path) => join(path),
+            _ => String::new(),
         };
-        let path = join(path);
-        match self {
-            Self::Legacy => {
-                let emit_path = |mut path: String| {
-                    if directory {
-                        path.push('/');
-                    }
-                    emitter.emit(Some(Value::Str(Arc::new(path))))
-                };
-                if let Some(previous) = previous
-                    && emit_path(previous) == Err(EmitError::Closed)
-                {
-                    return Err(EmitError::Closed);
-                }
-                emit_path(path)
-            }
-            Self::Detailed => {
-                // A JSON object serialized from typed strings and a bool always decodes.
-                let json = json!({"kind": change.name(), "path": path,
-                    "previous_path": previous, "is_directory": directory});
-                match JsonText::new(json.to_string()) {
-                    Ok(json) => emitter.emit(Some(Value::Json(Arc::new(json)))),
-                    Err(_) => Ok(()),
-                }
-            }
-        }
+        let Ok(ty) = crate::CHANGE_TYPE.parse() else {
+            return Ok(());
+        };
+        let text = |text: String| Some(Value::Str(Arc::new(text)));
+        emitter.emit(Some(Value::Record(Arc::new(orange_sdk::RecordRepr {
+            ty,
+            fields: Box::new([
+                text(change.name().to_owned()),
+                text(join(path)),
+                text(previous),
+                Some(Value::Bool(directory)),
+            ]),
+        }))))
     }
 }
 
@@ -331,8 +313,7 @@ mod tests {
         );
         let life = Arc::new(Lifecycle::new());
         let guard = Watching(life.clone());
-        let worker =
-            thread::spawn(move || Watch::Detailed.watch(&folder, "chosen", &emitter, &life, 2));
+        let worker = thread::spawn(move || Watch.watch(&folder, "chosen", &emitter, &life, 2));
         assert_eq!(
             observed.recv_timeout(Duration::from_secs(5)),
             Ok(Err(TOO_LARGE))
@@ -348,14 +329,18 @@ mod tests {
         );
         fs::remove_file(root.join("chosen/second")).unwrap();
         let firing = observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        let Ok(Some(Value::Json(text))) = firing else {
+        let Ok(Some(Value::Record(change))) = firing else {
             panic!("expected one deletion: {firing:?}");
         };
+        let text = |text: &str| Some(Value::Str(Arc::new(text.to_owned())));
         assert_eq!(
-            serde_json::from_str::<Json>(text.as_str()).unwrap(),
-            json!({
-                "kind": "deleted", "path": "chosen/second", "previous_path": null, "is_directory": false,
-            })
+            &*change.fields,
+            &[
+                text("deleted"),
+                text("chosen/second"),
+                text(""),
+                Some(Value::Bool(false))
+            ]
         );
         drop(guard);
         worker.join().unwrap();

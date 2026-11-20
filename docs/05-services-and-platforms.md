@@ -171,16 +171,16 @@ parent, and a move stays on the same filesystem. `delete-directory` cannot remov
 the connected root. Tree mutations refuse links and reparse points and tree listings
 skip them. Concurrent external mutation can interrupt an operation.
 
-`list-filtered` accepts a relative `path`, `pattern` and `recursive` switch.
+`list` accepts a relative `path`, an optional `pattern` and a `recursive` switch.
 Patterns are case-sensitive. `*` and `?` match within a path component, and a
 standalone `**` matches zero or more components. A pattern without a slash matches
 the basename. `file-info` reports `is_directory`, `bytes` (zero for a directory),
 optional `modified_unix_ms` and `read_only`.
 
-`on-path-change` accepts a wired `folder` relative to the connection. An empty
-input watches the connected folder. It publishes JSON with `kind`, `path`,
-`previous_path` and `is_directory`. The legacy `on-change` emits string paths
-and uses both old and new paths for recognized renames. Polling starts from a
+`on-change` accepts a wired `folder` relative to the connection. An empty
+input watches the connected folder. Its payload is an `org.orange.files/change@1`
+record: `kind` (`created`, `changed`, `deleted` or `renamed`), `path`,
+`previous_path` (empty unless renamed) and `is_directory`. Polling starts from a
 silent baseline and coalesces changes between polls. Renames are inferred from
 file identity on Unix and matching metadata on Windows. Ambiguous matches are
 reported as deletion and creation. Oversized snapshots report a source fault
