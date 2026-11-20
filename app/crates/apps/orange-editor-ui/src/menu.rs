@@ -745,9 +745,10 @@ mod tests {
         assert_eq!(target(&editor), Some(MenuTarget::Node(id(1))));
         let shapes = frame(&mut editor, &mut host, Vec::new());
         assert!(drawn_at(&shapes, "Duplicate").is_some());
+        let duplicate = editor.canvas.keys.label("duplicate");
         assert!(
-            drawn_at(&shapes, "Ctrl+D").is_some(),
-            "entries name their shortcut"
+            drawn_at(&shapes, &duplicate).is_some(),
+            "entries name their shortcut, {duplicate} here"
         );
         // Escape closes it; a right-click on empty canvas opens the canvas menu.
         let _ = frame(&mut editor, &mut host, vec![key(egui::Key::Escape)]);

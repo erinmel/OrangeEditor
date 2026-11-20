@@ -73,11 +73,9 @@ pub const PACKAGE: &str = "org.orange.audio";
 /// name is still accepted) or [`NULL_DEVICE`]; absent means the system default. The
 /// device opens at first use, and again at the next use after it failed or stopped.
 pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
-/// Adapter kind of an input device whose level is measured. Settings: `device` as for
-/// an output; `threshold_db` (default -30) and `release_db` (default 6 below the
-/// threshold) for [`ON_LEVEL`]; `window_ms` (5 to 1,000, default 50), the length of
-/// each measurement; `hold_ms` (0 to 60,000, default 0), how long the level must stay at
-/// the threshold or above before the entry fires, counted in whole measurements.
+/// Adapter kind of an audio input: a device, what an output plays, one application or a
+/// sound file, as [`AUDIO_SOURCE`] gives it. Settings: `device` as for an output, or
+/// `file`; `window_ms` (5 to 1,000, default 50), the length of each level measurement.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
 /// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
@@ -106,7 +104,7 @@ pub const AUDIO_OUT: &str = "org.orange.audio/audio-out";
 pub const RECORD: &str = "org.orange.audio/record";
 /// Longest recording [`RECORD`] makes.
 pub const MAX_RECORD_SECONDS: f64 = 3_600.0;
-/// How long [`AUDIO_IN`] and [`RECORD`] wait for an input device to open.
+/// How long [`AUDIO_SOURCE`] and [`RECORD`] wait for an input device to open.
 pub const OPEN_WAIT: Duration = Duration::from_secs(3);
 
 const DEFAULT_WINDOW_MS: u64 = 50;
