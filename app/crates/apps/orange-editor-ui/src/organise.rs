@@ -317,12 +317,26 @@ impl Editor {
 
     fn extract(&mut self, host: &mut Host, nodes: &[NodeId], name: &str) -> Option<NodeId> {
         let places = self.canvas.places();
-        let at = places
+        let [left, top] = places
             .iter()
             .filter(|(node, _)| nodes.contains(node))
             .fold(None, |at: Option<[f32; 2]>, (_, [x, y])| {
                 Some(at.map_or([*x, *y], |[ax, ay]| [ax.min(*x), ay.min(*y)]))
             })?;
+        // The call goes where the selection began, but after every card that feeds
+        // it, so its incoming wires run forward.
+        let graph = self.graph()?;
+        let feeding = graph
+            .wires
+            .iter()
+            .filter(|wire| nodes.contains(&wire.to.0) && !nodes.contains(&wire.from.0))
+            .filter_map(|wire| {
+                let source = graph.nodes.iter().find(|node| node.id == wire.from.0)?;
+                let [x, _] = places.iter().find(|(node, _)| *node == source.id)?.1;
+                Some(x + crate::canvas::node_size(source).x)
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        let at = [left.max(feeding + FUNCTION_GAP), top];
         let draft = self.editing()?;
         match host.extract(draft, nodes, name, at) {
             Ok(call) => {
@@ -408,6 +422,17 @@ impl Editor {
                     });
                 }
             });
+        // Enter makes the function once it has a name; Escape cancels.
+        let (enter, escape) = ctx.input(|input| {
+            (
+                input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+        if enter && extracting.preview.is_ok() && !extracting.name.trim().is_empty() {
+            make = true;
+        }
+        cancel |= escape;
         if make {
             let nodes = extracting.nodes.clone();
             let name = extracting.name.clone();
@@ -434,6 +459,9 @@ fn dialog_button(
         egui::Button::new(text),
     )
 }
+
+/// Room between the cards that feed a new function call and the call.
+const FUNCTION_GAP: f32 = 60.0;
 
 fn export_error(error: &HostError) -> String {
     if let HostError::GraphInvalid(_, problems) = error
