@@ -432,16 +432,20 @@ impl Host {
     /// places, and its wires. The document does not have to be valid or bound; a node
     /// whose definition this host lacks is shown without ports.
     pub fn view(&self, json: &str) -> Result<GraphView, HostError> {
-        Ok(self.view_of(&self.linked(json)?))
+        let mut document = orange_model::from_json(json)
+            .map_err(|error| HostError::Document(error.to_string()))?;
+        let _ = self.replace_definitions(&mut document)?;
+        Ok(self.view_of(&document))
     }
 
     /// [`Host::view`] of a draft. The cards of nodes the last edits left alone, with
     /// the same wired ports, place and name in an unchanged document context, are
     /// reused from the draft's previous view instead of being built again.
     pub fn draft_view(&self, draft: &Draft) -> Result<GraphView, HostError> {
-        let document = self.linked_document(draft.document())?;
+        // Keep package definitions and saved settings in the editor. Runtime linking
+        // replaces them with internal calls and can expand hidden implementation nodes.
         let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(self.view_with(&document, Some(&mut cache)))
+        Ok(self.view_with(draft.document(), Some(&mut cache)))
     }
 
     fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {

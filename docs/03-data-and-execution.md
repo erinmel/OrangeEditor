@@ -918,8 +918,9 @@ Runtime preparation hashes only ancestry used by actual entropy instructions, me
 
 Native effects can declare finite, eager variadic data inputs. The resolver and
 compiler bind fixed inputs in descriptor order and expand each variadic input in
-the persisted instance order. Each instance has its own demand root, literal or
-incoming wire and participates in the usual graph resource limits. Native effect
+the persisted instance order. Each instance has its own demand root and follows
+the input precedence of incoming wire, instance literal, then descriptor default.
+It participates in the usual graph resource limits. Native effect
 outputs remain fixed. The Wasm guest effect boundary retains its fixed arity.
 
 The supported control profile executes Switch for exact Core bool/i32/i64/u32/u64/string keys. Semantic validation range-checks Core integer cases; compilation defensively checks and charges every case before executable binding, sorts unique typed keys and retains original variadic instance IDs/targets. Runtime uses binary search. A matching unconnected case ends that arm; it does not take default. Missing keys take default, including when default is unconnected. Enum/nominal/custom Eq keys remain explicitly unsupported until their executable type/equality contracts exist; no package implementation is silently replaced. Core string values join existing pure/data types with UTF-8 payload charging and locale-independent exact comparison. Since 2026-11-04 package enum keys also execute: cases name variants of the locked schema, dispatch compares the variant tag only, and a non-exhaustive enum switch needs a connected default ([11 §8.4](11-graph-language.md)). Records and package-defined Eq keys remain unsupported.

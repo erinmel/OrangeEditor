@@ -521,6 +521,7 @@ pub enum DocCommand {
     SetLiteral { port: PortRef, literal: Option<Literal> },
     SetConfig { node: NodeId, config_version: u32, config: ConfigValue },
     SetTypeArgs { node: NodeId, args: BTreeMap<TypeParamName, TypeExpr> },
+    SetNodeName { node: NodeId, name: Option<String> },
     InsertVariadic { node: NodeId, port: PortId, at: usize }, RemoveVariadic { node: NodeId, port: PortKey },
     UpsertVariable(VariableDecl), RemoveVariable(VariableId),
     UpsertEvent(EventDecl), RemoveEvent(EventDeclId),

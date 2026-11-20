@@ -77,8 +77,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 pub use convert::{Connected, Conversion};
 pub use declare::{AdapterInfo, Connection, Declarations, Variable, secret_name};
 pub use documents::{
-    Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
-    discard_autosave, publish_function, recover_document, save_document,
+    Bundle, FunctionPackagePreview, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement,
+    autosave_document, discard_autosave, publish_function, recover_document, save_document,
 };
 pub use draft::{Draft, MAX_UNDO, OpenReport};
 pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
@@ -1172,19 +1172,6 @@ impl Host {
     }
 
     /// Decodes a saved document and links the graph-implemented package nodes it uses.
-    /// `document` with this host's graph-implemented nodes linked in; the document itself
-    /// when the host has no graphs.
-    fn linked_document<'a>(
-        &self,
-        document: &'a GraphDocument,
-    ) -> Result<Cow<'a, GraphDocument>, HostError> {
-        if self.graphs.is_empty() {
-            return Ok(Cow::Borrowed(document));
-        }
-        let text = to_json(document).map_err(|error| HostError::Document(error.to_string()))?;
-        Ok(Cow::Owned(self.linked(&text)?))
-    }
-
     fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
         let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
         let mut linked = if self.graphs.is_empty() {

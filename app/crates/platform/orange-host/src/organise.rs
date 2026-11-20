@@ -372,19 +372,31 @@ impl Host {
                     names.called(id)
                 ))
             })?;
-            if matches!(contract.kind, NodeKind::Entry | NodeKind::Iterator) {
-                return Err(refused(&format!(
-                    "`{}` is {}: a function cannot hold a trigger or a stream loop (11 §14)",
-                    names.called(id),
-                    if contract.kind == NodeKind::Entry {
-                        "a trigger"
-                    } else {
-                        "a stream loop"
+            let node_kind = match contract.kind {
+                NodeKind::Entry => {
+                    return Err(refused(&format!(
+                        "Keep the trigger `{}` outside the function and connect it to the call",
+                        names.called(id)
+                    )));
+                }
+                NodeKind::Iterator => {
+                    if node.provider.is_some()
+                        || !matches!(
+                            node.definition.id.as_str(),
+                            ids::COUNT | ids::WHILE | ids::FOR_EACH
+                        )
+                    {
+                        return Err(refused(&format!(
+                            "`{}` is an iterator that Make function does not support",
+                            names.called(id)
+                        )));
                     }
-                )));
-            }
-            if rank(contract.kind) > rank(kind) {
-                kind = contract.kind;
+                    NodeKind::Async
+                }
+                other => other,
+            };
+            if rank(node_kind) > rank(kind) {
+                kind = node_kind;
             }
         }
         let inside = |node: &NodeId| chosen.contains(node);

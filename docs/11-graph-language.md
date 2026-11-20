@@ -1193,6 +1193,15 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 
 ### 14.1 Saved specialized nodes and templates exposes the existing function mechanism as a user workflow: select compatible nodes → preview typed inputs/outputs, variable dependencies and inferred effects → save a named versioned callable graph → insert calls from the palette. Workspace-library and package forms retain exact dependency/provider locks, missing-node preservation and migration previews. Local edits do not silently update existing versioned users. Export/import carries the interface, body, dependency metadata and explicit asset/reference remapping; executable code is never run during import. The external library artifact schema must be specified and tested before WU-05 adopts it; this paragraph does not declare a new implemented wire format.
 
+The implemented package workflow uses the existing `orange.graph-node` archive
+entry. A concrete pure, action or async function can be exported after its
+standalone body validates. Exact provider locks and signature snapshots used by
+the body travel with the package. Archive-installed dependencies also appear in
+the package manifest. A body can use call-local variables and one connection
+parameter. The importing graph supplies that connection and owns its settings
+and credentials. Nested graph-local calls, document-scope state and asset
+bundling remain outside this export workflow.
+
 Functions keep the entry/subscription restrictions above. A selection that contains triggers/subscriptions may instead be saved as an explicitly labelled insertable graph template with remapped IDs/references. A template inserts editable nodes; it is not a callable node, does not bypass function restrictions and is not an implied stateful component language. Visual groups remain layout only. Later encapsulated event-driven components require their own language decision and tests. Source selection remains intact if extraction/export fails or is cancelled.
 
 ## 15. Live editing and preview

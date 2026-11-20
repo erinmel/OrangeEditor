@@ -25,8 +25,37 @@ Example graphs are in [app/crates/apps/orange-cli/graphs](app/crates/apps/orange
 `json-extraction.json` works offline, `connection-smoke.json` exercises JSON, feedback and
 connections, and `network-lab.json` talks to the [Docker network lab](tools/README.md).
 
+[power-with-count.json](app/crates/apps/orange-cli/graphs/power-with-count.json) shows a
+numeric `for` loop using Count. Open it in the editor, press Run, then Fire on Calculate
+power. Edit the Base or Exponent card and fire again. The Variables panel shows `result`
+(81 with the default inputs). The graph resets the accumulator to 1, multiplies it by Base
+once per iteration, then saves the result on Completed. No wire goes from the body back
+to Count. A zero exponent skips the body and leaves the result at 1.
+
+Double-click a node name in Properties or on the card to rename it. An empty name
+restores the node type's name.
+
+To make a reusable **Compute power** node, leave **Calculate power**, **Base**,
+**Exponent**, and **Save result** outside the selection. Shift-click the other cards
+and choose **Make function…**. The incoming value wires become the inputs
+`a` (base) and `count` (exponent), and the value wire going to **Save result**
+becomes the `value` output. Confirm the preview, then press **Run** and **Fire** to
+see the result in Variables. Duplicate the **Compute power** call to use the same
+function again with its own arguments and wires.
+
+For ordinary exponentiation with floating-point values, add **Power** from the
+node search. The Count example demonstrates how to carry state through a loop.
+
+To share a function between graphs, right-click its call and choose
+**Export function…**. Review its ports and dependencies, enter the package ID
+(such as `org.example.math`), and save the `.orangeplug` file. Import it from
+the Packages panel in the other graph. A function that uses a connection exposes
+that connection on the imported card so the receiving graph can choose its own.
+
 A front end embeds the core through `orange-host` alone;
 [examples/attach.rs](app/crates/platform/orange-host/examples/attach.rs) is a complete one.
+[Embedding](docs/02-architecture.md#embedding-surface) documents the supported host API
+and the editor's layout, theme, command icon and text hooks.
 A Rust plugin can be a dynamic library built on `orange-sdk`, as
 [orange-plugin-example](app/crates/dev/orange-plugin-example) shows.
 

@@ -235,6 +235,9 @@ impl Host {
                 .store
                 .remove(key)
                 .map_err(|error| HostError::Uninstall(error.to_string()))?;
+            self.graphs.retain(|(package, version, ..), _| {
+                package != key.id.as_str() || version != key.version.as_str()
+            });
         }
         if let Some(directory) = &self.options.package_dir {
             persist::forget(directory, key).map_err(HostError::Storage)?;

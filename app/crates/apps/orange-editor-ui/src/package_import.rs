@@ -1,5 +1,6 @@
 //! Install archives through the host while the editor and its flows stay open.
 use super::*;
+use crate::controls::{Action, Surface};
 use orange_host::Grants;
 
 #[derive(Debug)]
@@ -11,6 +12,63 @@ pub(super) struct PackageImport {
 }
 
 impl Editor {
+    pub(super) fn package_removal_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
+        let Some(key) = &self.pending_package_removal else {
+            return;
+        };
+        let mut remove = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::unique("orange-remove-package")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(t("remove-package"));
+            ui.label(tf(
+                "remove-package-hint",
+                &[("package", key.to_string().into())],
+            ));
+            ui.horizontal(|ui| {
+                remove = controls::button(
+                    ui,
+                    Surface::Dialog,
+                    Action::Destructive,
+                    true,
+                    egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
+                )
+                .clicked();
+                cancel = controls::button(
+                    ui,
+                    Surface::Dialog,
+                    Action::Secondary,
+                    true,
+                    egui::Button::new(t("cancel")),
+                )
+                .clicked();
+            });
+        });
+        if remove && let Some(key) = self.pending_package_removal.take() {
+            match host.uninstall(&key) {
+                Ok(()) => {
+                    self.previews.invalidate();
+                    self.check(host);
+                    self.say(tf(
+                        "package-removed",
+                        &[("package", key.to_string().into())],
+                    ));
+                }
+                Err(error) => self.say_at(
+                    NoteLevel::Error,
+                    tf(
+                        "package-remove-failed",
+                        &[("error", error.to_string().into())],
+                    ),
+                ),
+            }
+            self.panels.log = true;
+            self.log_events = true;
+        } else if cancel || modal.should_close() {
+            self.pending_package_removal = None;
+        }
+    }
+
     /// Reviews the permissions an archive requests before installing it.
     pub fn review_package(
         &mut self,
@@ -67,8 +125,22 @@ impl Editor {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                install = ui.button(t("install-package")).clicked();
-                cancel = ui.button(t("cancel")).clicked();
+                install = controls::button(
+                    ui,
+                    Surface::Dialog,
+                    Action::Primary,
+                    true,
+                    egui::Button::new(t("install-package")),
+                )
+                .clicked();
+                cancel = controls::button(
+                    ui,
+                    Surface::Dialog,
+                    Action::Secondary,
+                    true,
+                    egui::Button::new(t("cancel")),
+                )
+                .clicked();
             });
         });
         if install {
@@ -172,6 +244,59 @@ mod tests {
             host.search_nodes("remember", "en")
                 .iter()
                 .any(|node| node.definition == "org.example.tools/remember")
+        );
+        assert!(host.info(flow).is_some());
+
+        editor.pending_package_removal = host.packages().find_map(|package| {
+            (package.id == "org.example.tools").then(|| package.manifest.unwrap().key().clone())
+        });
+        let mut frame = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.package_removal_dialog(ui.ctx(), &mut host);
+                },
+            )
+        };
+        let mut button = None;
+        for _ in 0..3 {
+            let output = frame(vec![]);
+            button = output
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == t("remove-package") => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .or(button);
+            output.drop_without_applying_deltas();
+        }
+        let pos = button.expect("remove package button");
+        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                pressed,
+                button: egui::PointerButton::Primary,
+                modifiers: egui::Modifiers::NONE,
+            }])
+            .drop_without_applying_deltas();
+        }
+        assert!(editor.pending_package_removal.is_none());
+        assert!(
+            host.packages()
+                .all(|package| package.id != "org.example.tools")
+        );
+        assert!(
+            host.search_nodes("remember", "en")
+                .iter()
+                .all(|node| node.definition != "org.example.tools/remember")
         );
         assert!(host.info(flow).is_some());
         editor.stop(&mut host);

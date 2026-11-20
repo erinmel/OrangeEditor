@@ -351,6 +351,13 @@ fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
     assert!(host.check(&text).unwrap().is_empty());
 
     let flow = host.open(&text).unwrap();
+    host.uninstall(&key).unwrap();
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    assert!(
+        host.search_nodes("remember", "en")
+            .iter()
+            .all(|node| node.definition != REMEMBER)
+    );
     host.trigger(flow, node(1), None).unwrap();
     until("the graph node's result", || {
         read_total(&host, flow) == Some(Value::I64(5))
@@ -1477,7 +1484,25 @@ fn a_function_of_a_document_is_published_as_a_node_other_documents_use() {
         node: "keep-value",
         label: None,
     };
-    let archive = orange_host::publish_function(&authored, "Keep value", &publish).unwrap();
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let preview = host
+        .function_package_preview(&authored, "Keep value")
+        .unwrap();
+    assert_eq!(preview.kind, "action");
+    assert_eq!(preview.inputs, [("value".into(), I64.into())]);
+    assert_eq!(preview.outputs, [("result".into(), I64.into())]);
+    let archive = host
+        .export_function_package(&authored, "Keep value", &publish)
+        .unwrap();
+    let mut incomplete: Json = serde_json::from_str(&authored).unwrap();
+    incomplete["functions"][0]["edges"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(matches!(
+        host.export_function_package(&incomplete.to_string(), "Keep value", &publish),
+        Err(HostError::GraphInvalid(_, _))
+    ));
     // By ID too; a function that does not exist, or a bad node name, is refused.
     assert!(orange_host::publish_function(&authored, &id(200), &publish).is_ok());
     assert!(orange_host::publish_function(&authored, "nothing", &publish).is_err());
@@ -1495,7 +1520,6 @@ fn a_function_of_a_document_is_published_as_a_node_other_documents_use() {
     assert!(orange_host::publish_function(&reaching, "Keep value", &publish).is_err());
 
     // Someone else installs the package and uses the node with no trace of the graph.
-    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     let key = host.install(&archive, Grants::default()).unwrap();
     assert_eq!(
         (key.id.as_str(), key.version.as_str()),

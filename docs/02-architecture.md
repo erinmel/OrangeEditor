@@ -1,5 +1,34 @@
 # Architecture
 
+## Embedding surface
+
+Use `orange-host` as the Rust application boundary. Create a `Host` with
+`HostOptions` and register application services with `Host::with_services`.
+Use `Draft` and the host's authoring operations for edits, `GraphView` for
+rendering, and `Diagnostic` for validation. For running graphs, hold the returned
+`FlowId`, consume `Events`, and use the host for triggers, inspection and stop.
+The [headless example](../app/crates/platform/orange-host/examples/attach.rs)
+exercises this lifecycle. Use `orange-sdk` to provide node and connection services.
+
+These are the supported integration entry points. Pin the same OrangeEditor
+revision for all its Rust crates during the `0.x` series. Source compatibility
+is a goal for this surface, and planned breaking changes need a migration note.
+Internal compiler and runtime APIs, implementation crate re-exports, and Rust
+dynamic-library ABI are outside that promise. Versioned graph and package formats
+follow [12](12-graph-data-structures.md) and [04](04-expansion-plugins.md).
+
+For an egui UI, pass `Editor::ui_with_layout` your containers. Compose
+`toolbar`, `workspace_bar`, `nodes_panel`, `right_panel`, `log_panel` and
+`canvas_panel` as needed. Use the application egui theme, or apply the optional
+desktop defaults with `apply_theme`. Install a context-local toolbar and menu
+command painter with `icons::set_command_painter`. It receives the icon constant,
+the allotted rectangle and the current foreground color, with the stock icon
+used when the painter returns `false`. To override editor text, register Fluent
+messages with `i18n::add_application_catalogs` before any editor text is read.
+Packages can supply their own node text and the host owns file dialogs through
+`Editor::take_request`. The [embedding test](../app/crates/apps/orange-editor-ui/tests/embedding.rs)
+exercises the public layout, theme, icon and text hooks.
+
 ## Layers
 
 ```text

@@ -108,6 +108,14 @@ fn concepts_group_nodes_by_purpose() {
     assert!(!has("compare", "org.orange.math/add"));
     assert!(has("math", "org.orange.math/add"));
     assert!(has("loop", "core/for-each"));
+    assert_eq!(
+        ids(&host.search_nodes("for loop", "en")).first(),
+        Some(&"core/count")
+    );
+    assert_eq!(
+        ids(&host.search_nodes("bucle for", "es")).first(),
+        Some(&"core/count")
+    );
     assert!(has("loop", "core/while"));
     assert!(has("variable", "core/set-variable"));
     assert!(has("variable", "core/on-variable-changed"));

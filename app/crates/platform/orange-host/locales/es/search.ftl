@@ -108,3 +108,5 @@ purpose-org-orange-json-as-string = Da un texto JSON como texto, o nada para otr
 purpose-org-orange-json-as-i64 = Da un número JSON como entero, o nada para otro tipo; falla con decimales o si es demasiado grande.
 purpose-org-orange-json-as-u64 = Da un número JSON como entero de cero o más, o nada para otro tipo; falla con decimales, negativos o si es demasiado grande.
 purpose-org-orange-json-as-f64 = Da un número JSON como decimal, o nada para otro tipo.
+alias-core-count = bucle for, bucle contado, repetir n veces, repetir veces
+purpose-core-count = Ejecuta el cuerpo el número indicado de veces. El índice empieza en cero y la salida de finalización se activa al terminar.

@@ -848,6 +848,16 @@ impl Definition {
         self
     }
 
+    /// Adds variadic input slots that each use `default` while unwired and empty.
+    #[must_use]
+    pub fn variadic_input_default(mut self, name: &str, ty: &str, max: u16, default: Json) -> Self {
+        self.ports.push(serde_json::json!({
+            "port_id": name, "direction": "input", "kind": "data", "type": ty,
+            "variadic": {"min": 0, "max": max}, "default": default
+        }));
+        self
+    }
+
     /// A data input like [`input`](Self::input) that takes `default`, a literal such as
     /// `{"type": "core/u64@1", "value": "0"}`, when nothing is written or wired to it.
     #[must_use]

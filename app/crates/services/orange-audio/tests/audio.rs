@@ -183,6 +183,68 @@ fn document(host: &Host, path: &Path, device: &str, play: &str) -> String {
 }
 
 #[test]
+fn an_exported_playback_node_uses_the_importing_graphs_audio_output() {
+    let mut host = host();
+    let path = tone("package-playback.wav", 100);
+    let source = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
+    let mut author: Json = serde_json::from_str(&source).unwrap();
+    author["connections"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|connection| connection["id"] == OUTPUT)
+        .unwrap()["settings"]["device"] = json!("author-only-device");
+    author["edges"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|wire| wire["from"]["node"] != id(3) || wire["from"]["port"] != "failed");
+    let mut author = host.draft(&author.to_string()).unwrap();
+    host.extract(&mut author, &[node(3)], "Play sample", [0.0, 0.0])
+        .unwrap();
+    let text = author.text().unwrap();
+    let preview = host.function_package_preview(&text, "Play sample").unwrap();
+    assert_eq!(
+        preview.connection_adapter.as_deref(),
+        Some(orange_audio::OUTPUT_ADAPTER)
+    );
+    let package = host
+        .export_function_package(
+            &text,
+            "Play sample",
+            &orange_host::Publish {
+                package: "org.example.player",
+                version: "1.0.0",
+                node: "play-sample",
+                label: None,
+            },
+        )
+        .unwrap();
+    host.install(&package, orange_host::Grants::default())
+        .unwrap();
+    let mut consumer = host.draft(&source).unwrap();
+    host.remove_nodes(&mut consumer, &[node(3)]).unwrap();
+    let play = host
+        .add_node(&mut consumer, "org.example.player/play-sample", [0.0, 0.0])
+        .unwrap();
+    assert!(
+        host.connect(&mut consumer, (node(1), "then"), (play, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut consumer, (play, "then"), (node(4), "in"))
+            .unwrap()
+    );
+    let flow = host.open(&consumer.text().unwrap()).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until(
+        "the imported function plays through the consumer's output",
+        || read(&host, flow, 100) == Some(Value::I64(1)),
+    );
+    host.close(flow).unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn a_graph_plays_a_file_and_continues_when_it_has_ended() {
     let mut host = host();
     let path = tone("short.wav", 60);

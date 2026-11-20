@@ -36,7 +36,7 @@ usage:
   orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--signed-only] [--grant-log] --store <dir>
-  orange publish <graph.json> <function> <package-id> <version> <node-name> <out.orangeplug>
+  orange publish <graph.json> <function> <package-id> <version> <node-name> <out.orangeplug> [--package <file.orangeplug>]... [--store <dir>]
   orange export <graph.json> <out.orangegraph> --store <dir>
   orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
   orange devices
@@ -266,14 +266,13 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
     };
     // Commands that need no host.
     match name {
-        "publish" => return publish(rest).map(|()| ExitCode::SUCCESS),
         "oauth" => return oauth(rest).map(|()| ExitCode::SUCCESS),
         "pack" => return pack(rest).map(|()| ExitCode::SUCCESS),
         "devices" => return devices().map(|()| ExitCode::SUCCESS),
         "feed" => return Ok(feed_command(rest)),
         "secret" => return Ok(secret(rest)),
         "check" | "run" | "nodes" | "packages" | "remove" | "updates" | "enable" | "disable"
-        | "bind" | "export" | "import" | "preview" => {}
+        | "bind" | "export" | "import" | "preview" | "publish" => {}
         _ => return Err(Stop::Usage(format!("unknown command `{name}`"))),
     }
     let arguments = arguments().map_err(Stop::Usage)?;
@@ -284,6 +283,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "nodes" => nodes(host),
         "bind" => bind(host, &arguments.graphs)?,
         "preview" => preview(host, &arguments.graphs)?,
+        "publish" => publish(host, &arguments.graphs)?,
         "export" => export(host, &arguments.graphs)?,
         "import" => import(host, &arguments)?,
         "enable" | "disable" => switch(host, &arguments)?,

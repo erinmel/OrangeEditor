@@ -1,10 +1,21 @@
 //! Organising the canvas from the editor: grouping the selection, changing and taking
 //! away groups, making the selection a function after a preview of its interface, and
 //! arranging the selection along its wires. Each is one edit of the draft.
-use crate::Editor;
 use crate::canvas::GroupEdit;
 use crate::i18n::{t, tf};
-use orange_host::{Extraction, Group, Host, NodeId};
+use crate::{Editor, FileRequest, controls};
+use orange_host::{Extraction, FunctionPackagePreview, Group, Host, HostError, NodeId, Publish};
+
+#[derive(Debug)]
+pub(crate) struct FunctionExport {
+    function: String,
+    label: String,
+    package: String,
+    version: String,
+    node: String,
+    preview: Result<FunctionPackagePreview, String>,
+    error: Option<String>,
+}
 
 /// A function being made of the selected nodes: their preview and the name typed.
 #[derive(Debug)]
@@ -15,6 +26,217 @@ pub(crate) struct Extracting {
 }
 
 impl Editor {
+    pub(crate) fn call_function(&self, node: NodeId) -> Option<&str> {
+        let document = self.document.as_ref()?.draft.document();
+        let instance = document.root().nodes.get(&node)?;
+        if instance.definition.id.as_str() == "core/call" {
+            instance.config.get("function")?.as_str()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn begin_function_export(&mut self, host: &Host, node: NodeId) -> bool {
+        let Some(function) = self.call_function(node).map(str::to_owned) else {
+            return false;
+        };
+        let Some(label) = self.graph().and_then(|graph| {
+            graph
+                .nodes
+                .iter()
+                .find(|view| view.id == node)
+                .map(|view| view.name.clone())
+        }) else {
+            return false;
+        };
+        let Some(text) = self.text() else {
+            return false;
+        };
+        let slug = label
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+            .to_ascii_lowercase();
+        let preview = host
+            .function_package_preview(&text, &function)
+            .map_err(|error| export_error(&error));
+        self.function_export = Some(FunctionExport {
+            function,
+            label,
+            package: String::new(),
+            version: "0.1.0".to_owned(),
+            node: slug,
+            preview,
+            error: None,
+        });
+        true
+    }
+
+    pub(crate) fn function_export_dialog(&mut self, ctx: &egui::Context, host: &Host) {
+        let Some(export) = &mut self.function_export else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::unique("function-export")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(t("export-function-title"));
+            ui.strong(&export.label);
+            let Ok(preview) = &export.preview else {
+                if let Err(error) = &export.preview {
+                    ui.label(error);
+                }
+                return (false, ui.button(t("close")).clicked());
+            };
+            egui::Grid::new("function-package-fields")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    for (label, field) in [
+                        (t("function-package-id"), &mut export.package),
+                        (t("function-package-version"), &mut export.version),
+                        (t("function-package-node"), &mut export.node),
+                    ] {
+                        let label = ui.label(label);
+                        ui.text_edit_singleline(field).labelled_by(label.id);
+                        ui.end_row();
+                    }
+                });
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for (heading, ports) in [
+                        (t("inputs"), &preview.inputs),
+                        (t("outputs"), &preview.outputs),
+                    ] {
+                        ui.strong(heading);
+                        if ports.is_empty() {
+                            ui.weak(t("function-package-none"));
+                        }
+                        for (name, ty) in ports {
+                            ui.label(format!("{name}: {}", crate::type_name(ty)));
+                        }
+                    }
+                    ui.strong(t("function-package-dependencies"));
+                    if preview.dependencies.is_empty() {
+                        ui.weak(t("function-package-none"));
+                    }
+                    for (id, version) in &preview.dependencies {
+                        ui.label(format!("{id} {version}"));
+                    }
+                    if let Some(adapter) = &preview.connection_adapter {
+                        ui.label(tf(
+                            "function-package-connection",
+                            &[("adapter", adapter.as_str().into())],
+                        ));
+                    }
+                });
+            if let Some(error) = &export.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.horizontal(|ui| {
+                let save = controls::button(
+                    ui,
+                    controls::Surface::Dialog,
+                    controls::Action::Primary,
+                    [&export.package, &export.version, &export.node]
+                        .iter()
+                        .all(|field| !field.trim().is_empty()),
+                    egui::Button::new(t("function-package-save")),
+                )
+                .clicked();
+                (save, ui.button(t("cancel")).clicked())
+            })
+            .inner
+        });
+        let (save, cancel) = modal.inner;
+        if cancel || modal.should_close() {
+            self.function_export = None;
+        } else if save {
+            let text = self.text();
+            let Some(export) = &mut self.function_export else {
+                return;
+            };
+            let Some(text) = text else { return };
+            let publish = Publish {
+                package: export.package.trim(),
+                version: export.version.trim(),
+                node: export.node.trim(),
+                label: Some(&export.label),
+            };
+            match host.export_function_package(&text, &export.function, &publish) {
+                Ok(archive) => {
+                    self.request = Some(FileRequest::ExportPackage {
+                        name: format!("{}-{}.orangeplug", publish.package, publish.version),
+                        archive,
+                    });
+                    self.function_export = None;
+                }
+                Err(error) => export.error = Some(export_error(&error)),
+            }
+        }
+    }
+
+    /// Renames a node for this graph. A blank name restores its default label.
+    pub fn rename_node(&mut self, host: &mut Host, node: NodeId, name: &str) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let changed = host.rename_node(draft, node, name);
+        self.edited(host, changed)
+    }
+
+    pub(crate) fn begin_node_rename(&mut self, node: NodeId) -> bool {
+        let Some(view) = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+        else {
+            return false;
+        };
+        self.renaming_node = Some((node, view.name.clone()));
+        true
+    }
+
+    pub(crate) fn node_rename_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
+        let Some((node, name)) = &mut self.renaming_node else {
+            return;
+        };
+        let id = egui::Id::unique(("rename-node", *node));
+        let modal = egui::Modal::new(id).show(ctx, |ui| {
+            ui.heading(t("rename-node"));
+            let mut field = egui::TextEdit::singleline(name)
+                .hint_text(t("rename-node-default"))
+                .show(ui);
+            if ui
+                .ctx()
+                .data_mut(|data| !data.get_temp::<bool>(id).unwrap_or(false))
+            {
+                use egui::text::{CCursor, CCursorRange};
+                field.response.request_focus();
+                field.state.cursor.set_char_range(Some(CCursorRange::two(
+                    CCursor::new(0),
+                    CCursor::new(name.chars().count()),
+                )));
+                field.state.store(ui.ctx(), field.response.id);
+                ui.ctx().data_mut(|data| data.insert_temp(id, true));
+            }
+            ui.horizontal(|ui| {
+                let save = ui.button(t("rename-apply")).clicked()
+                    || (field.response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                (save, ui.button(t("cancel")).clicked())
+            })
+            .inner
+        });
+        let (save, cancel) = modal.inner;
+        if save || cancel || modal.should_close() {
+            ctx.data_mut(|data| data.remove::<bool>(id));
+            if let Some((node, name)) = self.renaming_node.take()
+                && save
+            {
+                self.rename_node(host, node, &name);
+            }
+        }
+    }
+
     /// Groups the selected nodes under `name`, as one edit. Returns the group's ID.
     pub fn group_selection(&mut self, host: &mut Host, name: &str) -> Option<String> {
         let selection = self.canvas.selection();
@@ -73,7 +295,10 @@ impl Editor {
         let nodes = self.canvas.selection();
         let preview = host
             .extraction(&document.draft, &nodes)
-            .map_err(|error| error.to_string());
+            .map_err(|error| match error {
+                HostError::Document(reason) => reason,
+                other => other.to_string(),
+            });
         let count = document.draft.document().functions().len();
         self.extracting = Some(Extracting {
             nodes,
@@ -146,6 +371,7 @@ impl Editor {
                     }
                 }
                 Ok(preview) => {
+                    ui.label(t("make-function-help"));
                     ui.horizontal(|ui| {
                         ui.label(t("name"));
                         let _ = ui.text_edit_singleline(&mut extracting.name);
@@ -192,6 +418,18 @@ impl Editor {
             self.extracting = None;
         }
     }
+}
+
+fn export_error(error: &HostError) -> String {
+    if let HostError::GraphInvalid(_, problems) = error
+        && let Some(problem) = problems
+            .iter()
+            .find(|problem| problem.severity == orange_host::Severity::Error)
+    {
+        let names = orange_host::Names::default();
+        return orange_host::describe(problem, &names);
+    }
+    error.to_string()
 }
 
 #[cfg(test)]
@@ -295,6 +533,71 @@ mod tests {
         assert_eq!(
             (place(&mut editor, number), place(&mut editor, set)),
             before
+        );
+    }
+
+    #[test]
+    fn the_export_menu_reviews_ports_and_hands_an_archive_to_the_application() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let (mut editor, number, _) = opened(&mut host);
+        editor.canvas().select(Some(number));
+        let call = editor.extract_selection(&mut host, "Nine").unwrap();
+        editor.open_menu(crate::MenuTarget::Node(call), [0.0; 2], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, crate::Command::ExportFunction));
+        let export = editor.function_export.as_mut().unwrap();
+        assert_eq!(
+            export.preview.as_ref().unwrap().outputs,
+            [("result".into(), "core/i64@1".into())]
+        );
+        export.package = "org.example.numbers".into();
+
+        let ctx = egui::Context::default();
+        let frame = |editor: &mut Editor, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.function_export_dialog(ui.ctx(), &host);
+                },
+            )
+        };
+        frame(&mut editor, vec![]).drop_without_applying_deltas();
+        let output = frame(&mut editor, vec![]);
+        let save = output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == t("function-package-save")
+                {
+                    return Some(text.pos + text.galley.rect.center().to_vec2());
+                }
+                None
+            })
+            .unwrap();
+        output.drop_without_applying_deltas();
+        frame(&mut editor, vec![egui::Event::PointerMoved(save)]).drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(
+                &mut editor,
+                vec![egui::Event::PointerButton {
+                    pos: save,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            )
+            .drop_without_applying_deltas();
+        }
+        let Some(FileRequest::ExportPackage { name, archive }) = editor.take_request() else {
+            panic!("the application did not receive the archive");
+        };
+        assert_eq!(name, "org.example.numbers-0.1.0.orangeplug");
+        assert!(
+            host.install(&archive, orange_host::Grants::default())
+                .is_ok()
         );
     }
 

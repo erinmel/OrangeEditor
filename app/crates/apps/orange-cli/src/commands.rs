@@ -43,7 +43,7 @@ pub(crate) struct Started {
     pub plugin_files: Vec<(String, PathBuf)>,
 }
 
-pub(crate) fn publish(words: &[String]) -> Done {
+pub(crate) fn publish(host: &Host, words: &[String]) -> Done {
     let [graph, function, package, version, node, output] = words else {
         return usage(
             "publish needs a graph file, a function, a package ID, a version, a node name and an output file",
@@ -55,7 +55,8 @@ pub(crate) fn publish(words: &[String]) -> Done {
         node,
         label: None,
     };
-    let archive = orange_host::publish_function(&text(graph)?, function, &publish)
+    let archive = host
+        .export_function_package(&text(graph)?, function, &publish)
         .map_err(|error| format!("{graph}: {error}"))?;
     write(output, archive)?;
     println!("{output}: node {package}/{node} {version}");

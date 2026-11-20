@@ -161,10 +161,9 @@ fn graph_of(node: &Json, graphs: &Graphs) -> Option<Arc<GraphNode>> {
     graphs.get(&key).cloned()
 }
 
-/// A stable ID for `id` as used with `connection`: the same pair always gives the same
-/// ID, and different connections never share one.
-fn derived(id: &str, connection: &str) -> String {
-    let hash = Sha256::digest(format!("orange.graph-node\n{id}\n{connection}").as_bytes());
+/// The stable ID for a graph-local ID and its package, use site or connection.
+pub(crate) fn derived(id: &str, namespace: &str) -> String {
+    let hash = Sha256::digest(format!("orange.graph-node\n{id}\n{namespace}").as_bytes());
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash[..16]);
     // A random-form (version 4) UUID, which is the only form document IDs take.

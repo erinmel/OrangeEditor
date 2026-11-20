@@ -46,6 +46,8 @@ alias-core-wait = delay, sleep, pause
 alias-core-set-variable = assign, store, write
 alias-core-get-variable = read, load
 alias-core-branch = if, else, condition
+alias-core-count = for loop, counted loop, repeat n times, repeat times
+purpose-core-count = Runs Body once per count, with an index starting at zero. Completed runs when the loop ends.
 alias-org-orange-audio-play = sound, audio, speaker, music
 
 purpose-core-on-manual = Starts when you press Run.

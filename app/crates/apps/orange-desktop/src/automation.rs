@@ -13,6 +13,352 @@ fn desktop_host() -> (Host, orange_host::Events) {
 }
 
 #[test]
+fn the_power_example_can_extract_a_two_node_function() {
+    let (mut host, _) = desktop_host();
+    let mut editor = Editor::new();
+    editor.open_untitled(
+        &mut host,
+        include_str!("../../orange-cli/graphs/power-with-count.json").to_owned(),
+    );
+    let selected: Vec<_> = editor
+        .graph()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.name.as_str(), "Base" | "Multiply by base"))
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(selected.len(), 2);
+    editor.canvas().select_many(&selected);
+    let call = editor
+        .extract_selection(&mut host, "Scale by base")
+        .unwrap();
+    let graph = editor.graph().unwrap();
+    let card = graph.nodes.iter().find(|node| node.id == call).unwrap();
+    assert_eq!(card.name, "Scale by base");
+    assert_eq!(card.ports.iter().filter(|port| port.input).count(), 1);
+    assert_eq!(card.ports.iter().filter(|port| !port.input).count(), 1);
+    assert!(host.check(&editor.text().unwrap()).unwrap().is_empty());
+
+    let source = editor.text().unwrap();
+    let preview = host
+        .function_package_preview(&source, "Scale by base")
+        .unwrap();
+    assert_eq!(preview.kind, "pure");
+    assert_eq!(preview.inputs, [("b".into(), "core/i64@1".into())]);
+    assert_eq!(preview.outputs, [("product".into(), "core/i64@1".into())]);
+    assert!(
+        preview
+            .dependencies
+            .iter()
+            .any(|(id, _)| id == "org.orange.math")
+    );
+    let package = host
+        .export_function_package(
+            &source,
+            "Scale by base",
+            &orange_host::Publish {
+                package: "org.example.scaling",
+                version: "1.0.0",
+                node: "scale-by-base",
+                label: None,
+            },
+        )
+        .unwrap();
+    let (mut consumer, _) = desktop_host();
+    let key = consumer
+        .install(&package, orange_host::Grants::default())
+        .unwrap();
+    editor.open_untitled(&mut consumer, orange_host::new_document().unwrap());
+    let call = editor
+        .add_node(&mut consumer, "org.example.scaling/scale-by-base")
+        .unwrap();
+    assert!(editor.set_input(&mut consumer, (call, "b"), Some("7")));
+    let text = editor.text().unwrap();
+    let wanted = [(call, "product".parse().unwrap())];
+    let value = consumer.preview(&text, &wanted).unwrap().remove(0).value;
+    assert_eq!(value.unwrap(), orange_host::Value::I64(21));
+    editor.open_untitled(&mut consumer, text.clone());
+    assert!(consumer.check(&editor.text().unwrap()).unwrap().is_empty());
+    consumer.uninstall(&key).unwrap();
+    assert!(
+        consumer
+            .check(&text)
+            .unwrap()
+            .iter()
+            .any(|problem| problem.severity == orange_host::Severity::Error)
+    );
+}
+
+#[test]
+fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
+    let folder = std::env::temp_dir().join(format!("orange-file-package-{}", std::process::id()));
+    let author_folder = folder.join("author");
+    let consumer_folder = folder.join("consumer");
+    std::fs::create_dir_all(&author_folder).unwrap();
+    std::fs::create_dir_all(&consumer_folder).unwrap();
+    let (mut author, _) = desktop_host();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut author, orange_host::new_document().unwrap());
+    let connection = |path: &std::path::Path| Connection {
+        id: None,
+        name: "Work".into(),
+        adapter: orange_files::FOLDER_ADAPTER.into(),
+        scope: ConnectionScope::Graph,
+        settings: json!({"path": path}),
+    };
+    let author_connection = editor
+        .declare_connection(&mut author, &connection(&author_folder))
+        .unwrap();
+    let entry = editor.add_node(&mut author, "core/on-manual").unwrap();
+    let write = editor
+        .add_node(&mut author, orange_files::WRITE_TEXT)
+        .unwrap();
+    assert!(editor.set_input(&mut author, (write, "path"), Some("hello.txt")));
+    assert!(editor.set_input(&mut author, (write, "text"), Some("from package")));
+    assert!(editor.connect(&mut author, (entry, "then"), (write, "in")));
+    editor.canvas().select(Some(write));
+    editor
+        .extract_selection(&mut author, "Write hello")
+        .unwrap();
+    let source = editor.text().unwrap();
+    let preview = author
+        .function_package_preview(&source, "Write hello")
+        .unwrap();
+    assert_eq!(
+        preview.connection_adapter.as_deref(),
+        Some(orange_files::FOLDER_ADAPTER)
+    );
+    let package = author
+        .export_function_package(
+            &source,
+            "Write hello",
+            &orange_host::Publish {
+                package: "org.example.writer",
+                version: "1.0.0",
+                node: "write-hello",
+                label: None,
+            },
+        )
+        .unwrap();
+
+    let (mut consumer, _) = desktop_host();
+    consumer
+        .install(&package, orange_host::Grants::default())
+        .unwrap();
+    editor.open_untitled(&mut consumer, orange_host::new_document().unwrap());
+    let consumer_connection = editor
+        .declare_connection(&mut consumer, &connection(&consumer_folder))
+        .unwrap();
+    assert_ne!(author_connection, consumer_connection);
+    let entry = editor.add_node(&mut consumer, "core/on-manual").unwrap();
+    let write = editor
+        .add_node(&mut consumer, "org.example.writer/write-hello")
+        .unwrap();
+    let write_view = editor
+        .graph()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|node| node.id == write)
+        .unwrap();
+    assert_eq!(write_view.settings["connection"], consumer_connection);
+    assert!(editor.connect(&mut consumer, (entry, "then"), (write, "in")));
+    let saved = folder.join("graph.json");
+    editor.save_as(saved.to_string_lossy()).unwrap();
+    let text = std::fs::read_to_string(saved).unwrap();
+    editor.open_untitled(&mut consumer, text);
+    editor.run(&mut consumer);
+    editor.trigger(&consumer, entry);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let result = consumer_folder.join("hello.txt");
+    while std::fs::read_to_string(&result).as_deref().ok() != Some("from package") {
+        assert!(
+            Instant::now() < deadline,
+            "the installed function did not write its file"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!author_folder.join("hello.txt").exists());
+    editor.stop(&mut consumer);
+    std::fs::remove_file(result).unwrap();
+}
+
+#[test]
+fn the_power_example_can_extract_and_run_the_whole_count_loop() {
+    let (mut host, _) = desktop_host();
+    let mut editor = Editor::new();
+    editor.open_untitled(
+        &mut host,
+        include_str!("../../orange-cli/graphs/power-with-count.json").to_owned(),
+    );
+    let graph = editor.graph().unwrap();
+    let trigger = graph.nodes.iter().find(|node| node.entry).unwrap().id;
+    let selected: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.id != trigger)
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(selected.len(), 9);
+
+    editor.canvas().select_many(&selected);
+    let call = editor
+        .extract_selection(&mut host, "Compute power")
+        .unwrap();
+    let graph = editor.graph().unwrap();
+    assert_eq!(graph.nodes.len(), 2);
+    assert!(
+        graph
+            .wires
+            .iter()
+            .any(|wire| wire.from.0 == trigger && wire.to.0 == call)
+    );
+    assert!(host.check(&editor.text().unwrap()).unwrap().is_empty());
+
+    editor.run(&mut host);
+    let flow = host.flows().next().unwrap();
+    let result = "70000000-0000-4000-8000-000000000002".parse().unwrap();
+    editor.trigger(&host, trigger);
+    wait_for_power_result(&host, flow, result, 81);
+    editor.stop(&mut host);
+}
+
+#[test]
+fn the_power_loop_can_be_reused_with_two_arguments_and_a_result() {
+    let (mut host, _) = desktop_host();
+    let mut editor = Editor::new();
+    editor.open_untitled(
+        &mut host,
+        include_str!("../../orange-cli/graphs/power-with-count.json").to_owned(),
+    );
+    let graph = editor.graph().unwrap();
+    let trigger = graph.nodes.iter().find(|node| node.entry).unwrap().id;
+    let save = graph
+        .nodes
+        .iter()
+        .find(|node| node.name == "Save result")
+        .unwrap()
+        .id;
+    let selected: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            !node.entry && !matches!(node.name.as_str(), "Base" | "Exponent" | "Save result")
+        })
+        .map(|node| node.id)
+        .collect();
+    editor.canvas().select_many(&selected);
+    let call = editor
+        .extract_selection(&mut host, "Compute power")
+        .unwrap();
+    let graph = editor.graph().unwrap();
+    let card = graph.nodes.iter().find(|node| node.id == call).unwrap();
+    let mut inputs: Vec<_> = card
+        .ports
+        .iter()
+        .filter(|port| port.input && !port.exec)
+        .map(|port| port.id.as_str())
+        .collect();
+    inputs.sort_unstable();
+    assert_eq!(inputs, ["a", "count"]);
+    let outputs: Vec<_> = card
+        .ports
+        .iter()
+        .filter(|port| !port.input && !port.exec)
+        .map(|port| port.id.as_str())
+        .collect();
+    assert_eq!(outputs, ["value"]);
+    assert!(
+        graph
+            .wires
+            .iter()
+            .any(|wire| wire.from == (call, "value".into()) && wire.to == (save, "value".into()))
+    );
+
+    assert!(editor.duplicate(&mut host));
+    let second_call = editor.canvas().selection()[0];
+    assert_ne!(second_call, call);
+    assert!(editor.set_input(&mut host, (second_call, "a"), Some("2")));
+    assert!(editor.set_input(&mut host, (second_call, "count"), Some("5")));
+    editor.canvas().select(Some(save));
+    assert!(editor.duplicate(&mut host));
+    let second_save = editor.canvas().selection()[0];
+    let second_trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+    assert!(editor.connect(&mut host, (second_trigger, "then"), (second_call, "in")));
+    assert!(editor.connect(&mut host, (second_call, "then"), (second_save, "in")));
+    assert!(editor.connect(&mut host, (second_call, "value"), (second_save, "value")));
+    let text = editor.text().unwrap();
+    assert_eq!(host.draft(&text).unwrap().document().functions().len(), 1);
+    assert!(host.check(&text).unwrap().is_empty());
+
+    editor.run(&mut host);
+    let flow = host.flows().next().unwrap();
+    let result = "70000000-0000-4000-8000-000000000002".parse().unwrap();
+    for (entry, expected) in [(trigger, 81), (second_trigger, 32)] {
+        editor.trigger(&host, entry);
+        wait_for_power_result(&host, flow, result, expected);
+    }
+    editor.stop(&mut host);
+}
+
+#[test]
+fn the_power_example_repeats_multiplication_and_resets_on_every_fire() {
+    let (mut host, _) = desktop_host();
+    let text = include_str!("../../orange-cli/graphs/power-with-count.json");
+    assert!(host.check(text).unwrap().is_empty());
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, text.to_owned());
+    let node = |name| {
+        editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.name == name)
+            .unwrap()
+            .id
+    };
+    let (calculate, base, exponent) = (node("Calculate power"), node("Base"), node("Exponent"));
+    let result = "70000000-0000-4000-8000-000000000002".parse().unwrap();
+    editor.run(&mut host);
+    let flow = host.flows().next().unwrap();
+    for (inputs, expected) in [(None, 81), (Some(("3", "0")), 1), (Some(("-2", "3")), -8)] {
+        if let Some((base_value, exponent_value)) = inputs {
+            if base_value != "3" {
+                assert!(editor.set_input(&mut host, (base, "value"), Some(base_value)));
+            }
+            assert!(editor.set_input(&mut host, (exponent, "value"), Some(exponent_value)));
+        }
+        editor.trigger(&host, calculate);
+        wait_for_power_result(&host, flow, result, expected);
+    }
+    editor.stop(&mut host);
+}
+
+fn wait_for_power_result(
+    host: &Host,
+    flow: orange_host::FlowId,
+    result: orange_host::VariableId,
+    expected: i64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let value = host
+            .inspect(flow, move |run| run.variable(result).cloned())
+            .unwrap();
+        if value == Some(orange_host::Value::I64(expected)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected}, got {value:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let (mut host, _) = desktop_host();
     let template = typed_template();
@@ -35,6 +381,7 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
         );
     }
     let mut rejected = Vec::new();
+    let mut blocking_cards = Vec::new();
     let mut editor = Editor::new();
     let context = egui::Context::default();
     for found in &nodes {
@@ -43,6 +390,15 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
             Ok(node) => {
                 let saved = check_round_trip(&host, &draft, &found.definition);
                 editor.open_untitled(&mut host, saved);
+                if editor
+                    .canvas()
+                    .marks()
+                    .nodes
+                    .get(&node)
+                    .is_some_and(|mark| mark.error)
+                {
+                    blocking_cards.push((found.definition.clone(), editor.problems().to_vec()));
+                }
                 let graph = editor.graph().unwrap().clone();
                 assert_eq!(
                     graph.nodes[0].id, node,
@@ -68,6 +424,17 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let visible = output.shapes.iter().any(|shape| {
                     matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&prefix))
                 });
+                if matches!(
+                    found.definition.as_str(),
+                    orange_audio::NOISE_LEVEL
+                        | orange_audio::MULTIBAND_SPECTRUM
+                        | orange_net::HTTP_REQUEST
+                ) {
+                    let draft = orange_editor_ui::icons::EDIT.to_string();
+                    assert!(output.shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == draft)
+                    }), "{} needs the Draft icon", found.definition);
+                }
                 output.drop_without_applying_deltas();
                 assert!(visible, "the canvas did not paint {}", found.definition);
             }
@@ -78,6 +445,10 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
         rejected.is_empty(),
         "palette nodes that could not be added:\n{}",
         rejected.join("\n")
+    );
+    assert!(
+        blocking_cards.is_empty(),
+        "New cards classified as blockers: {blocking_cards:#?}"
     );
 
     let conversions = host.conversions();

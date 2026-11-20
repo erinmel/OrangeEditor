@@ -4,9 +4,11 @@
 //!
 //! None of this opens, checks or runs a graph. Saving refuses text that is not a
 //! document; everything else treats a document as text.
-use crate::HostError;
+use crate::{Host, HostError, graphs};
 use orange_model::from_json;
+use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Largest document or bundle these functions read.
 pub const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
@@ -203,12 +205,84 @@ pub struct Publish<'a> {
     pub label: Option<&'a str>,
 }
 
+/// The interface and requirements shown before exporting an archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionPackagePreview {
+    pub kind: String,
+    pub inputs: Vec<(String, String)>,
+    pub outputs: Vec<(String, String)>,
+    /// Exact provider package IDs and versions used by the body.
+    pub dependencies: Vec<(String, String)>,
+    /// The adapter for the connection that each importing graph supplies, if any.
+    pub connection_adapter: Option<String>,
+}
+
+struct Publication {
+    definition: Json,
+    graph: Json,
+    preview: FunctionPackagePreview,
+}
+
+impl Host {
+    /// Validates a standalone function body against this host's registry and reports its interface.
+    pub fn function_package_preview(
+        &self,
+        json: &str,
+        function: &str,
+    ) -> Result<FunctionPackagePreview, HostError> {
+        let publish = Publish {
+            package: "org.orange.preview",
+            version: "0.0.0",
+            node: "preview",
+            label: None,
+        };
+        let publication = publication(json, function, &publish)?;
+        self.check_publication(&publication)?;
+        Ok(publication.preview)
+    }
+
+    /// Produces an archive only after validating its standalone function body.
+    pub fn export_function_package(
+        &self,
+        json: &str,
+        function: &str,
+        publish: &Publish<'_>,
+    ) -> Result<Vec<u8>, HostError> {
+        let publication = publication(json, function, publish)?;
+        self.check_publication(&publication)?;
+        let dependencies = publication.graph["package_lock"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|lock| {
+                self.packages().any(|package| {
+                    package.kind == crate::PackageKind::Installed
+                        && lock["id"] == package.id
+                        && lock["version"] == package.version
+                })
+            })
+            .cloned()
+            .collect();
+        pack_publication(publication, publish, dependencies)
+    }
+
+    fn check_publication(&self, publication: &Publication) -> Result<(), HostError> {
+        let definition = publication.definition.to_string();
+        let name = publication.definition["definition_id"]
+            .as_str()
+            .unwrap_or_default();
+        let graph = graphs::GraphNode::decode(&publication.graph.to_string(), &definition)
+            .map_err(|reason| HostError::Graph(name.to_owned(), reason))?;
+        self.check_graphs(name, &[Arc::new(graph)], &self.graphs, self.registry())
+    }
+}
+
 /// Turns a function of a document into a package holding one node made of that
 /// function: logic built once in a graph becomes a typed node that any document can
 /// use, locked and versioned like a coded one. `function` is the function's ID or its
 /// name. The result is a `.orangeplug` archive; installing it checks the body.
 ///
-/// The function must be an action or async function without type parameters. Its
+/// The function must be pure, action or async without type parameters. Its
 /// body may use only its own local variables, and at most one connection, which each
 /// use of the node then names. Package nodes inside the body keep their exact
 /// providers, so whoever installs the result needs those packages too.
@@ -217,22 +291,33 @@ pub fn publish_function(
     function: &str,
     publish: &Publish<'_>,
 ) -> Result<Vec<u8>, HostError> {
-    use serde_json::{Value as Json, json};
+    pack_publication(publication(json, function, publish)?, publish, Vec::new())
+}
+
+fn publication(
+    json: &str,
+    function: &str,
+    publish: &Publish<'_>,
+) -> Result<Publication, HostError> {
     let refused = |reason: &str| HostError::Document(reason.to_owned());
     if !is_document(json) {
         return Err(refused("the text is not a document"));
     }
     let document: Json = serde_json::from_str(json).map_err(|_| refused("not JSON"))?;
     let list = |value: &Json| value.as_array().cloned().unwrap_or_default();
-    let found = list(&document["functions"])
+    let mut found = list(&document["functions"])
         .into_iter()
         .find(|candidate| candidate["id"] == function || candidate["name"] == function)
         .ok_or_else(|| refused("the document has no such function"))?;
     let kind = found["kind"].as_str().unwrap_or_default().to_owned();
     let suspends = match kind.as_str() {
-        "action" => "never",
+        "pure" | "action" => "never",
         "async" => "maybe",
-        _ => return Err(refused("only an action or async function can be published")),
+        _ => {
+            return Err(refused(
+                "only a pure, action or async function can be published",
+            ));
+        }
     };
     if !list(&found["type_params"]).is_empty() {
         return Err(refused(
@@ -277,12 +362,13 @@ pub fn publish_function(
             connection = Some(id.to_owned());
         }
         if let Some(provider) = node.get("provider") {
-            let lock = list(&document["package_lock"]).into_iter().find(|entry| {
-                entry["id"] == provider["package"] && entry["version"] == provider["version"]
-            });
-            if let Some(lock) = lock
-                && !locks.contains(&lock)
-            {
+            let lock = list(&document["package_lock"])
+                .into_iter()
+                .find(|entry| {
+                    entry["id"] == provider["package"] && entry["version"] == provider["version"]
+                })
+                .ok_or_else(|| refused("the function has an unlocked provider dependency"))?;
+            if !locks.contains(&lock) {
                 locks.push(lock);
             }
         }
@@ -297,20 +383,67 @@ pub fn publish_function(
     let label = publish
         .label
         .or_else(|| found["name"].as_str())
-        .unwrap_or(publish.node);
+        .unwrap_or(publish.node)
+        .to_owned();
+    let describe_ports = |key| {
+        list(&found[key])
+            .iter()
+            .filter_map(|port| {
+                Some((
+                    port["port_id"].as_str()?.to_owned(),
+                    port["type"].as_str()?.to_owned(),
+                ))
+            })
+            .collect()
+    };
+    let mut dependencies: Vec<_> = locks
+        .iter()
+        .filter_map(|lock| {
+            Some((
+                lock["id"].as_str()?.to_owned(),
+                lock["version"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    dependencies.sort_unstable();
+    let connection_adapter = connection
+        .as_ref()
+        .map(|id| {
+            list(&document["connections"])
+                .iter()
+                .find(|declaration| declaration["id"] == id.as_str())
+                .and_then(|declaration| declaration["adapter"].as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| refused("the function's connection is not declared"))
+        })
+        .transpose()?;
+    let preview = FunctionPackagePreview {
+        kind: kind.clone(),
+        inputs: describe_ports("inputs"),
+        outputs: describe_ports("outputs"),
+        dependencies,
+        connection_adapter,
+    };
     let mut ports = list(&found["inputs"]);
     for mut output in list(&found["outputs"]) {
         if output["kind"] == "data" {
-            output["source"] = json!("execution");
-            output["available_on"] = json!(["then"]);
+            if kind == "pure" {
+                output["source"] = json!("computed");
+            } else {
+                output["source"] = json!("execution");
+                output["available_on"] = json!(["then"]);
+            }
         }
         ports.push(output);
     }
+    let namespace = format!("{id}@{}", publish.version);
+    namespace_function(&mut found, &mut variables, &namespace);
     let mut definition = json!({
         "definition_id": id,
         "label": {"key": format!("{id}-label"), "fallback": label},
         "definition_version": 1, "config_version": 1,
-        "kind": kind, "suspends": suspends, "determinism": "external",
+        "kind": kind, "suspends": suspends,
+        "determinism": if kind == "pure" { "deterministic" } else { "external" },
         "ports": ports
     });
     let mut graph = json!({
@@ -320,16 +453,56 @@ pub fn publish_function(
     });
     if let Some(connection) = connection {
         definition["connection"] = json!(true);
+        definition["editor"] = json!({"connection_adapter": preview.connection_adapter});
         graph["connection"] = json!(connection);
     }
+    Ok(Publication {
+        definition,
+        graph,
+        preview,
+    })
+}
+
+fn namespace_function(function: &mut Json, variables: &mut [Json], namespace: &str) {
+    let rename = |value: &mut Json| {
+        if let Some(id) = value.as_str() {
+            *value = json!(graphs::derived(id, namespace));
+        }
+    };
+    rename(&mut function["id"]);
+    for node in function["nodes"].as_array_mut().into_iter().flatten() {
+        rename(&mut node["id"]);
+        if let Some(variable) = node["config"].get_mut("variable") {
+            rename(variable);
+        }
+    }
+    for edge in function["edges"].as_array_mut().into_iter().flatten() {
+        rename(&mut edge["id"]);
+        rename(&mut edge["from"]["node"]);
+        rename(&mut edge["to"]["node"]);
+    }
+    for variable in variables {
+        rename(&mut variable["id"]);
+    }
+}
+
+fn pack_publication(
+    publication: Publication,
+    publish: &Publish<'_>,
+    dependencies: Vec<Json>,
+) -> Result<Vec<u8>, HostError> {
+    let Publication {
+        definition, graph, ..
+    } = publication;
+    let id = format!("{}/{}", publish.package, publish.node);
     let publisher: Vec<&str> = publish.package.split('.').take(2).collect();
     let manifest = json!({
         "format": "orange.plugin", "format_version": 1,
         "id": publish.package, "version": publish.version,
         "publisher": publisher.join("."),
-        "about": {"name": label},
+        "about": {"name": definition["label"]["fallback"]},
         "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
-        "dependencies": [],
+        "dependencies": dependencies,
         "contributions": {
             "nodes": [id],
             "providers": [{"slot": format!("node:{id}@1"), "id": crate::GRAPH_PROVIDER}]
