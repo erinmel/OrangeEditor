@@ -24,6 +24,13 @@ cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/set-on
 Example graphs are in [app/crates/apps/orange-cli/graphs](app/crates/apps/orange-cli/graphs):
 `json-extraction.json` works offline, `connection-smoke.json` exercises JSON, feedback and
 connections, and `network-lab.json` talks to the [Docker network lab](tools/README.md).
+`remember-on-trigger.json` uses a node from a package in
+[packages/remember](app/crates/apps/orange-cli/packages/remember): pack it, then pass it in.
+
+```sh
+cargo run -p orange-cli --locked -- pack app/crates/apps/orange-cli/packages/remember remember.orangeplug
+cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/remember-on-trigger.json --package remember.orangeplug
+```
 
 [power-with-count.json](app/crates/apps/orange-cli/graphs/power-with-count.json) shows a
 numeric `for` loop using Count. Open it in the editor, press Run, then Fire on Calculate
