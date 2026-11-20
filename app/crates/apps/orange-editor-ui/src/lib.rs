@@ -393,6 +393,8 @@ pub enum FileRequest {
     ImportPackage,
     /// Choose where to write a validated expansion package archive.
     ExportPackage { name: String, archive: Vec<u8> },
+    /// Choose the root directory for the open folder connection form.
+    ChooseConnectionFolder { current: String },
     /// Choose a file or folder for a node's text input that holds a path, such as the
     /// sound file of Play sound, and hand it to [`Editor::choose_path`].
     ChoosePath {
@@ -757,16 +759,29 @@ impl Editor {
         let draft = self.editing()?;
         let result = if definition.starts_with(palette::CONVERSION) {
             match palette::conversion_named(host, definition) {
-                Some(conversion) => host.add_conversion(draft, &conversion, at),
+                Some(conversion) => host
+                    .add_conversion(draft, &conversion, at)
+                    .map(|node| (node, None)),
                 None => Err(HostError::Document(format!("no conversion `{definition}`"))),
             }
         } else {
-            host.add_node(draft, definition, at)
+            let end = [at[0] + canvas::NODE_WIDTH + 120.0, at[1]];
+            host.place_loop(draft, definition, at, end)
+                .and_then(|pair| match pair {
+                    Some([begin, end]) => Ok((begin, Some(end))),
+                    None => host
+                        .add_node(draft, definition, at)
+                        .map(|node| (node, None)),
+                })
         };
         match result {
-            Ok(node) => {
+            Ok((node, companion)) => {
                 let _ = self.edited(host, Ok(true));
-                self.canvas.select(Some(node));
+                if let Some(companion) = companion {
+                    self.canvas.select_many(&[node, companion]);
+                } else {
+                    self.canvas.select(Some(node));
+                }
                 Some(node)
             }
             Err(error) => {
@@ -3183,11 +3198,21 @@ mod tests {
             match editor.add_node(&mut host, kind) {
                 Some(node) => {
                     let graph = editor.graph().unwrap();
+                    let expected = if matches!(
+                        kind,
+                        "core/repeat-begin"
+                            | "core/map-begin"
+                            | "core/filter-begin"
+                            | "core/fold-begin"
+                    ) {
+                        2
+                    } else {
+                        1
+                    };
                     assert_eq!(
                         graph.nodes.len(),
-                        node_count + 1,
-                        "adding {} must create exactly one node",
-                        kind
+                        node_count + expected,
+                        "adding {kind} must create {expected} nodes",
                     );
                     let view = graph.nodes.iter().find(|found| found.id == node).unwrap();
                     // A node shows each port once.

@@ -100,6 +100,20 @@ fn list_operations_have_known_answers() {
         Ok(ints(&[3, 1, 4, 1, 5, 2]))
     );
     assert_eq!(eval(Op::ListReverse, &[]), Ok(ints(&[5, 1, 4, 1, 3])));
+    assert_eq!(eval(Op::ListDistinct, &[]), Ok(ints(&[3, 1, 4, 5])));
+    assert_eq!(eval(Op::ListSort, &[]), Ok(ints(&[1, 1, 3, 4, 5])));
+    assert_eq!(
+        eval(Op::ListSetAt, &[Value::U64(2), Value::I64(8)]),
+        Ok(ints(&[3, 1, 8, 1, 5]))
+    );
+    assert_eq!(
+        eval(Op::ListRemoveAt, &[Value::U64(2)]),
+        Ok(ints(&[3, 1, 1, 5]))
+    );
+    assert_eq!(
+        eval(Op::ListRemoveAt, &[Value::U64(5)]),
+        Err(KernelError::OutOfRange)
+    );
     assert_eq!(
         eval(Op::ListContains, &[Value::I64(4)]),
         Ok(Value::Bool(true))
@@ -293,7 +307,8 @@ fn binding_checks_provider_container_shape_and_eq_capability() {
     let (package, snapshot) = catalog();
     for op in Op::ALL {
         let container = match op {
-            Op::OptionIsSome => "core/option@1<core/i64@1>",
+            Op::OptionIsSome | Op::OptionSome | Op::OptionNone => "core/option@1<core/i64@1>",
+            Op::BuildMap => MAP_STR_I64,
             op if op.definition_id().contains("/map-") => MAP_STR_I64,
             _ => LIST_I64,
         };
@@ -363,6 +378,35 @@ fn binding_checks_provider_container_shape_and_eq_capability() {
         "org.orange.collections"
     );
     assert_eq!(collection_definitions().unwrap().len(), Op::ALL.len());
+}
+
+#[test]
+fn collection_builders_keep_input_order_and_reject_ambiguous_maps() {
+    let list = bind(Op::BuildList, LIST_I64);
+    assert_eq!(list.evaluate(&[]), Ok(ints(&[])));
+    assert_eq!(
+        list.evaluate(&[Value::I64(2), Value::I64(1)]),
+        Ok(ints(&[2, 1]))
+    );
+    let builder = bind(Op::BuildMap, MAP_STR_I64);
+    assert_eq!(
+        builder.evaluate(&[strings(&["z", "a"]), ints(&[7, 4])]),
+        Ok(map(&[("z", 7), ("a", 4)]))
+    );
+    assert_eq!(
+        builder.evaluate(&[strings(&["z", "z"]), ints(&[7, 4])]),
+        Err(KernelError::Domain)
+    );
+    assert_eq!(
+        builder.evaluate(&[strings(&["z"]), ints(&[7, 4])]),
+        Err(KernelError::Domain)
+    );
+    let nested = "core/option@1<core/option@1<core/i64@1>>";
+    assert_eq!(bind(Op::OptionNone, nested).evaluate(&[]), Ok(Value::None));
+    assert_eq!(
+        bind(Op::OptionSome, nested).evaluate(&[Value::None]),
+        Ok(Value::Some(Arc::new(Value::None)))
+    );
 }
 
 proptest! {

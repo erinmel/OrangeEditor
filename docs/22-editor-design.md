@@ -33,7 +33,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
 | Wires | Execution ports are diamonds, stream ports are squares, and other data ports are circles. Execution wires are thicker. Connector hues are adjusted for contrast against the canvas and card surfaces. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
 | Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect outputs even without outgoing wires. |
-| Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires are marked in the same colour. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent search, filters and scroll positions. |
+| Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires use the same diagnostic colour. A port outline shares the connector centre and follows its diamond, square or circle at every zoom. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent search, filters and scroll positions. |
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
@@ -51,7 +51,7 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   result consumers outside the selection to expose those ports. Confirming puts a
   call node in their place and stores the selected body in the graph. A duplicated
   call uses the same function with its own wires and inputs. A selection containing
-  Count, While or For each makes an async function. Triggers stay on the main
+  Count, For Range, While or For each makes an async function. Triggers stay on the main
   graph and can be wired to the call.
   To share a function between graphs, **Export function…** on its call shows its
   public ports and exact provider package versions before saving an archive.
@@ -63,6 +63,14 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Expressions.** Operators show what they compute in a dedicated body row with their inputs'
   names or values: Greater shows `a > b`, or `12 > 7` when both are known. Comparison,
   arithmetic and logic nodes get this from their definition's `formula` presentation hint.
+* **Loops.** For Range exposes Start, End and Step as wireable inputs with defaults
+  of zero for Start and one for Step. While exposes Condition on the card.
+  Body runs each iteration and Done runs after completion.
+  The iteration limit is in Properties under Advanced.
+  Placing Repeat with State, Map, Filter or Reduce from the palette creates
+  both loop boundaries and a passthrough wire in one undoable edit.
+  Replace that wire with the body you want to run for each item or step.
+  Duplicating the pair creates an independent loop with the copied wiring.
 * **Triggers.** A trigger shows its contents: On manual has a Fire button in the body
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
@@ -73,6 +81,10 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Configuration templates.** Scalar controls are drawn from each definition's
   schema. Network connection references are dropdowns of compatible saved
   profiles and display the selected name. Profile editing lives in Connections.
+  The default picker order is HTTP/HTTPS, WebSocket, AMQP, MQTT, Folder, Audio Source
+  and Audio Output, followed by other adapters. The desktop Folder form opens the
+  native picker for its root. File nodes using that profile store paths relative
+  to the chosen root. Embeddings without a dialog handler show a text field.
   Device nodes have an inline device selector. Fields preserve their JSON types.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.

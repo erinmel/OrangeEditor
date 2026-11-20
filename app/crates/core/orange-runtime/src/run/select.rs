@@ -1,4 +1,4 @@
-//! Branch, Switch and Match Result route on one consumed value. They write
+//! Branch, Switch and the Match nodes route on one consumed value. They write
 //! only the activation's execution outputs; run cells and scheduling are untouched.
 use super::*;
 
@@ -30,6 +30,29 @@ impl Run {
                     ),
                     Err(_) => (*default, ControlOutcome::Default, None),
                 }
+            }
+            (
+                ControlOperation::MatchOption {
+                    boxed,
+                    present,
+                    missing,
+                    ..
+                },
+                Some(value),
+            ) => {
+                let value = match (boxed, value) {
+                    (_, Value::None) => None,
+                    (true, Value::Some(value)) => Some(value.as_ref().clone()),
+                    (false, value) => Some(value),
+                    _ => return Err(contract.into()),
+                };
+                let selected = if value.is_some() {
+                    (*present, ControlOutcome::MatchedPresent, None)
+                } else {
+                    (*missing, ControlOutcome::MatchedMissing, None)
+                };
+                Self::publish_match_value(plan, layout, shared, ix, value, limit)?;
+                selected
             }
             (ControlOperation::MatchResult { err, .. }, Some(Value::Err(error))) => {
                 Self::publish_projections(

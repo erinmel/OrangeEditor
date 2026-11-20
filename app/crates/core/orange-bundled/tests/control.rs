@@ -598,6 +598,147 @@ fn count(n: u32, times: i64) -> Json {
 }
 
 #[test]
+fn match_option_separates_missing_from_a_present_empty_option() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for (literal, outcome) in [
+        (json!({"none": true}), ControlOutcome::MatchedMissing),
+        (
+            json!({"some": {"none": true}}),
+            ControlOutcome::MatchedPresent,
+        ),
+        (
+            json!({"some": {"some": "7"}}),
+            ControlOutcome::MatchedPresent,
+        ),
+    ] {
+        let mut node = core(2, "match-option");
+        node["inputs"] = json!({"option": {
+            "type": "core/option@1<core/option@1<core/i64@1>>",
+            "value": literal
+        }});
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                node,
+                var_node(3, "set-variable", 100),
+                branch(4, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "present", 3, "in"),
+                edge(3, 2, "value", 3, "value"),
+                edge(4, 2, "missing", 4, "in"),
+            ],
+            vec![variable(100, "run", "core/option@1<core/i64@1>", None)],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(1).unwrap().ready {}
+        assert_eq!(
+            run.trace()
+                .iter()
+                .find(|event| event.node.to_string() == id(2))
+                .unwrap()
+                .outcome,
+            outcome
+        );
+        let expected = match literal.get("some") {
+            None => None,
+            Some(value) if value.get("none").is_some() => Some(orange_model::Value::None),
+            Some(_) => Some(orange_model::Value::I64(7)),
+        };
+        assert_eq!(run.variable(id(100).parse().unwrap()).cloned(), expected);
+    }
+}
+
+#[test]
+fn for_range_is_exclusive_bounded_and_supports_extreme_signed_steps() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+
+    let cases = [
+        ((0, 6, 2, 3), 3, Some(4), None),
+        ((10, 0, -2, 5), 5, Some(2), None),
+        ((1, 3, -1, 3), 0, None, None),
+        ((0, 1, 0, 1), 0, None, Some("core/ZeroRangeStep")),
+        ((0, 9, 2, 4), 0, None, Some("core/LoopBudgetExceeded")),
+        ((i64::MAX, i64::MIN, i64::MIN, 2), 2, Some(-1), None),
+    ];
+    for ((start, end, step, limit), iterations, last, fault) in cases {
+        let mut range = core(2, "for-range");
+        range["config"] = json!({"max_iterations": limit});
+        range["inputs"] = json!({
+            "start": {"type": "core/i64@1", "value": start.to_string()},
+            "end": {"type": "core/i64@1", "value": end.to_string()},
+            "step": {"type": "core/i64@1", "value": step.to_string()}
+        });
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                range,
+                var_node(3, "set-variable", 100),
+                branch(4, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "body", 3, "in"),
+                edge(3, 2, "index", 3, "value"),
+                edge(4, 2, "completed", 4, "in"),
+                edge(5, 2, "failed", 4, "in"),
+            ],
+            vec![variable(100, "run", "core/i64@1", None)],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(1).unwrap().ready {}
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()).cloned(),
+            last.map(orange_model::Value::I64)
+        );
+        let range_events: Vec<_> = run
+            .trace()
+            .iter()
+            .filter(|event| event.node.to_string() == id(2))
+            .collect();
+        assert_eq!(
+            range_events
+                .iter()
+                .filter(|event| event.outcome == ControlOutcome::Body)
+                .count(),
+            iterations
+        );
+        let final_event = range_events.last().unwrap();
+        assert_eq!(
+            final_event
+                .fault
+                .as_ref()
+                .map(|fault| fault.fault.code.to_string()),
+            fault.map(str::to_owned)
+        );
+        assert_eq!(
+            final_event.outcome,
+            if fault.is_some() {
+                ControlOutcome::Failed
+            } else {
+                ControlOutcome::Completed
+            }
+        );
+        assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::True);
+    }
+}
+
+#[test]
 fn count_captures_count_and_publishes_fresh_indices_with_zero_and_negative_cases() {
     use orange_runtime::{ControlOutcome, Run, RunOptions};
     for times in [-1, 0, 1, 3] {

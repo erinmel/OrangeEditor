@@ -114,7 +114,7 @@ C11a/C09a boundary messages (2026-11-06): fieldless `EffectError` exposes
 `core/stream-contract`, `core/stream-limit` and `core/stream-not-running`.
 Their static English `Display` strings are fallback text; hosts present the
 namespaced `message_key` with no arguments. Error/debug envelopes contain no
-input/result/config/producer/host-context data. Rising Watch type errors reuse
+input/result/config/producer/host-context data. Boolean edge Watch type errors reuse
 `E-TYPE-MISMATCH`/`core/graph-type-mismatch`; malformed config uses the existing
 config-schema diagnostic. Watch faults retain the original typed producer and safe
 kernel envelope. Route IDs, operation/demand/resource identities, Watch mode, Eq,

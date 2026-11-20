@@ -60,6 +60,24 @@ impl CompileOptions<'_> {
 pub(crate) fn key(port: &PortDescriptor) -> PortKey {
     PortKey::new(port.port_id.clone(), None)
 }
+
+pub(crate) fn keys<'a>(
+    node: &'a orange_model::document::NodeInstance,
+    port: &'a PortDescriptor,
+) -> impl DoubleEndedIterator<Item = PortKey> + 'a {
+    port.variadic
+        .is_none()
+        .then(|| key(port))
+        .into_iter()
+        .chain(
+            node.variadic
+                .get(&port.port_id)
+                .filter(|_| port.variadic.is_some())
+                .map_or(&[][..], |state| &state.order)
+                .iter()
+                .map(|&id| PortKey::new(port.port_id.clone(), Some(id))),
+        )
+}
 /// The executable shape of a port's resolved type; nominal enums resolve through the
 /// snapshot's locked schemas.
 pub(crate) fn port_type(
@@ -102,7 +120,9 @@ pub(crate) fn admit_data_ports(
         if port.kind != PortKind::Data
             || (port.is_lazy() && !lazy)
             || port.is_optional()
-            || port.variadic.is_some()
+            || port.variadic.is_some_and(|bounds| {
+                port.direction != PortDirection::Input || bounds.max.is_none()
+            })
             || (port.direction == PortDirection::Output && port.source != Some(source))
         {
             return Err(CompileError::UnsupportedPort {
@@ -143,13 +163,14 @@ pub(crate) fn value_bytes(ty: &ValueShape, value: &Value) -> Result<usize, Compi
 pub(crate) fn matches_abi(
     inputs: &[PortKey],
     outputs: &[PortKey],
+    node: &orange_model::document::NodeInstance,
     expected_inputs: &[&PortDescriptor],
     expected_outputs: &[&PortDescriptor],
 ) -> bool {
     inputs
         .iter()
         .cloned()
-        .eq(expected_inputs.iter().map(|p| key(p)))
+        .eq(expected_inputs.iter().flat_map(|p| keys(node, p)))
         && outputs
             .iter()
             .cloned()
@@ -312,8 +333,18 @@ impl InputContext<'_> {
         outputs: &OutputSlots,
         bytes: &mut usize,
     ) -> Result<InputSource, CompileError> {
+        self.source_at(node, (port, key(port)), plan, outputs, bytes)
+    }
+
+    fn source_at(
+        &self,
+        node: NodeId,
+        (port, port_key): (&PortDescriptor, PortKey),
+        plan: &mut PurePlan,
+        outputs: &OutputSlots,
+        bytes: &mut usize,
+    ) -> Result<InputSource, CompileError> {
         self.options.checkpoint()?;
-        let port_key = key(port);
         let (slot, edge) = if let Some(edge) = self.incoming.get(&(node, port_key.clone())) {
             let slot = outputs
                 .get(&(edge.from.node, edge.from.port.clone()))
@@ -684,13 +715,17 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                                 decision: None,
                             },
                         ));
-                        for port in signature
+                        let instance = document
+                            .node(node)
+                            .ok_or(CompileError::ValidationIncomplete)?;
+                        for key in signature
                             .ports
                             .iter()
                             .rev()
                             .filter(|p| p.direction == PortDirection::Input)
+                            .flat_map(|port| keys(instance, port).rev())
                         {
-                            if let Some(edge) = incoming.get(&(node, key(port))) {
+                            if let Some(edge) = incoming.get(&(node, key)) {
                                 work.push((scope, Work::Enter(edge.from.node)));
                             }
                         }
@@ -833,6 +868,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             if !matches_abi(
                 &binding.inputs,
                 &binding.outputs,
+                node,
                 &input_ports,
                 &output_ports,
             ) {
@@ -843,11 +879,19 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 let prepared = decision
                     .as_ref()
                     .filter(|choice| choice.selector.port.port() == &port.port_id);
-                inputs.push(if let Some(choice) = prepared {
-                    choice.selector.clone()
+                if let Some(choice) = prepared {
+                    inputs.push(choice.selector.clone());
                 } else {
-                    context.source(node_id, port, plan, outputs, bytes)?
-                });
+                    for key in keys(node, port) {
+                        inputs.push(context.source_at(
+                            node_id,
+                            (port, key),
+                            plan,
+                            outputs,
+                            bytes,
+                        )?);
+                    }
+                }
             }
             let inherited = first_fault(plan, inputs.iter().map(|input| input.slot));
             input_values.clear();
@@ -1094,12 +1138,14 @@ fn admit_preview<'a>(
         if sig.kind != NodeKind::Pure {
             return Err(CompileError::UnsupportedNode { node });
         }
-        for port in sig
+        let instance = &document.root().nodes[&node];
+        for key in sig
             .ports
             .iter()
             .filter(|p| p.direction == PortDirection::Input)
+            .flat_map(|port| keys(instance, port))
         {
-            if let Some(edge) = incoming.get(&(node, key(port))) {
+            if let Some(edge) = incoming.get(&(node, key)) {
                 work.push(edge.from.node);
             }
         }
@@ -1158,6 +1204,7 @@ pub(crate) fn admit_roots<'a>(
     let mut projections = BTreeMap::new();
     for node in body.nodes.keys() {
         options.checkpoint()?;
+        let instance = &body.nodes[node];
         let sig = analysis
             .report()
             .resolved
@@ -1218,7 +1265,13 @@ pub(crate) fn admit_roots<'a>(
         } else {
             OutputSource::Computed
         };
-        charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
+        for port in &sig.ports {
+            charge(
+                &mut ports,
+                keys(instance, port).count().max(1),
+                options.limits.max_graph_items,
+            )?;
+        }
         admit_data_ports(
             snapshot,
             *node,
@@ -1267,13 +1320,15 @@ pub(crate) fn admit_roots<'a>(
                 .resolved
                 .get(&node)
                 .ok_or(CompileError::UnsupportedNode { node })?;
-            for port in sig
+            let instance = &body.nodes[&node];
+            for key in sig
                 .ports
                 .iter()
                 .rev()
                 .filter(|p| p.direction == PortDirection::Input)
+                .flat_map(|port| keys(instance, port).rev())
             {
-                if let Some(edge) = incoming.get(&(node, key(port))) {
+                if let Some(edge) = incoming.get(&(node, key)) {
                     stack.push((edge.from.node, false));
                 }
             }
@@ -1284,14 +1339,15 @@ pub(crate) fn admit_roots<'a>(
     for node in &order {
         options.checkpoint()?;
         for port in &analysis.report().resolved[node].ports {
-            if port.direction == PortDirection::Output
-                || !incoming.contains_key(&(*node, key(port)))
-            {
-                charge(
-                    &mut slots,
-                    1,
-                    options.limits.max_slots.min(u32::MAX as usize),
-                )?;
+            for key in keys(&body.nodes[node], port) {
+                if port.direction == PortDirection::Output || !incoming.contains_key(&(*node, key))
+                {
+                    charge(
+                        &mut slots,
+                        1,
+                        options.limits.max_slots.min(u32::MAX as usize),
+                    )?;
+                }
             }
         }
     }

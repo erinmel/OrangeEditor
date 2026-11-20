@@ -815,6 +815,19 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 | `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
 | `split` | `text`, `separator: string` | `core/list@1<core/string@1>` | empty |
 | `join` | `items: core/list@1<core/string@1>`, `separator: string` | string | empty |
+| `format` | `template: string`, `arguments: list<json>` | string | empty |
+| `inspect-error` | `fault: core/error@1` | string | empty |
+| `encode-base64`, `encode-hex` | `bytes: core/bytes@1` | string | empty |
+| `decode-base64`, `decode-hex` | `text: string` | bytes | empty |
+
+Format Text reads zero-based placeholders such as `{0}`. Double braces write
+literal braces. A placeholder such as `{1:.2}` formats a number to two decimal
+places, with a maximum precision of 16. Integer number text stays exact. Other
+numeric values use finite binary64 for precision formatting. A missing argument
+fails with `org.orange.text/MissingFormatArgument`. Inspect Error returns the
+stable error code from a captured fault. Base64 uses the standard padded form.
+Hex encodes lowercase and accepts either letter case on decode. Invalid encoded
+text fails with `core/Domain`.
 
 `unit` defaults to scalar. `TextOperation`, `ResolvedText`, `TextUnit` and
 `MathPackage::resolve_text` expose the same contracts to embedders; the math
@@ -865,6 +878,15 @@ admission and credits only its replaced value; a new key adds its checked key an
 value charges. The model's map-entry minimum is a preflight, not an extra charge.
 Checked arithmetic and admission precede result construction; inputs stay immutable.
 
+Build List accepts up to 256 addable elements in their persisted port order.
+Build Map pairs two equal-length typed lists by index, keeps that order and fails
+with `core/Domain` on duplicate keys or unequal lengths. Set List Item and
+Remove List Item use zero-based indices and fail outside the list. Distinct
+requires equality and hashing and retains the first occurrence of each item.
+Stable Sort uses ascending Core order and preserves the order of equal items.
+Some and None construct options explicitly. Some preserves a present inner None
+when the type is a nested option.
+
 ### 4.6 Bundled record and enum definitions
 
 L04b (2026-11-08) adds four `org.orange.collections` definitions with
@@ -904,6 +926,18 @@ Semantics: [11 §5.10](11-graph-language.md).
 | `at` | `value`, `index: core/u64@1` | `core/option@1<core/json@1>` |
 | `length` | `value` | `core/u64@1` |
 | `as-bool`, `as-string`, `as-i64`, `as-u64`, `as-f64` | `value` | `core/option@1<T>` of that type |
+| `build-object` | `fields: map<string,json>` | json |
+| `build-array` | `items: list<json>` | json |
+| `set-field` | `object: json`, `key: string`, `value: json` | json |
+| `remove-field` | `object: json`, `key: string` | json |
+| `from-bool`, `from-string`, `from-i64`, `from-u64`, `from-f64` | The named scalar type | json |
+| `null` | None | json |
+
+Builders retain input order and exact JSON number text. Set Field collapses
+matching keys to one entry at the last match, or appends a new entry. Remove Field
+removes every occurrence of the key. Both fail with `core/Domain` on a non-object.
+`from-f64` fails with `core/Domain` for NaN and infinity. Construction obeys the
+JSON size and nesting budgets and reports `core/OutOfRange` when it exceeds either.
 
 `JsonOperation`, `ResolvedJson` and `MathPackage::resolve_json` expose the same
 contracts to embedders.

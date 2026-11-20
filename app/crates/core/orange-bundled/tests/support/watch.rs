@@ -187,6 +187,37 @@ fn equal_result_is_silent_and_rising_fires_only_false_to_true() {
     pump_until_idle(&mut run);
     assert_eq!(seen(&run, 101), Some(1));
 }
+
+#[test]
+fn falling_fires_once_per_true_to_false_transition() {
+    let mut trigger = watch(10, "falling", "core/bool@1");
+    trigger["config_version"] = json!(2);
+    let initial = json!({
+        "id": id(100), "name": "flag", "type": "core/bool@1", "scope": "run",
+        "init": {"type": "core/bool@1", "value": true}
+    });
+    let (doc, plan) = compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            trigger,
+            update_local(11, 101),
+        ],
+        vec![
+            edge(1, 1, "value", 10, "watch"),
+            edge(2, 10, "then", 11, "in"),
+        ],
+        vec![initial, variable(101, "run", Some(0))],
+    );
+    let mut run = run(&doc, plan);
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 101), Some(0));
+    for (value, count) in [(false, 1), (false, 1), (true, 1), (false, 2)] {
+        run.set_variable(id(100).parse().unwrap(), Value::Bool(value))
+            .unwrap();
+        pump_until_idle(&mut run);
+        assert_eq!(seen(&run, 101), Some(count));
+    }
+}
 #[test]
 fn watch_feedback_stops_at_causal_depth_without_faulting_run() {
     let nodes = vec![

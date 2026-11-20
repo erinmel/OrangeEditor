@@ -383,7 +383,7 @@ impl Host {
                     if node.provider.is_some()
                         || !matches!(
                             node.definition.id.as_str(),
-                            ids::COUNT | ids::WHILE | ids::FOR_EACH
+                            ids::COUNT | ids::FOR_RANGE | ids::WHILE | ids::FOR_EACH
                         )
                     {
                         return Err(refused(&format!(

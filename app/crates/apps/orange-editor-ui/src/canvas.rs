@@ -1913,10 +1913,11 @@ impl Canvas {
                 .port(*node, port, true)
                 .or_else(|| geometry.port(*node, port, false));
             if let Some(found) = found {
-                port_marks
-                    .entry(*node)
-                    .or_default()
-                    .push((found.offset, self.mark_level(*node, mark)));
+                port_marks.entry(*node).or_default().push((
+                    found.offset,
+                    (found.exec, card::stream_type(found.ty)),
+                    self.mark_level(*node, mark),
+                ));
             }
         }
         for node in node_order(graph, front) {
@@ -2253,10 +2254,13 @@ impl Canvas {
                 }
             }
             let node = node.id;
-            for &(offset, level) in port_marks.get(&node).into_iter().flatten() {
-                painter.circle_stroke(
+            for &(offset, shape, level) in port_marks.get(&node).into_iter().flatten() {
+                draw_port_shape(
+                    &painter,
                     rect.min + offset * zoom,
                     (PORT_RADIUS + 2.5) * zoom,
+                    shape,
+                    Color32::TRANSPARENT,
                     Stroke::new(1.5 * zoom.max(0.6), colors.problem_level(level)),
                 );
             }
@@ -2952,7 +2956,25 @@ fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, color
     } else {
         Stroke::new(1.5 * zoom.max(0.6), color)
     };
-    if port.exec {
+    draw_port_shape(
+        painter,
+        at,
+        radius,
+        (port.exec, card::stream_type(port.ty.as_deref())),
+        fill,
+        outline,
+    );
+}
+
+fn draw_port_shape(
+    painter: &egui::Painter,
+    at: Pos2,
+    radius: f32,
+    (exec, stream): (bool, bool),
+    fill: Color32,
+    outline: Stroke,
+) {
+    if exec {
         let corner = radius * 1.2;
         painter.add(egui::Shape::convex_polygon(
             vec![
@@ -2964,7 +2986,7 @@ fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, color
             fill,
             outline,
         ));
-    } else if card::stream_type(port.ty.as_deref()) {
+    } else if stream {
         painter.rect(
             Rect::from_center_size(at, Vec2::splat(radius * 1.8)),
             0.0,
@@ -3112,6 +3134,43 @@ mod tests {
     use super::*;
     use orange_host::WireView;
     use std::sync::Arc;
+
+    #[test]
+    fn diagnostic_shapes_share_the_connector_center() {
+        let context = egui::Context::default();
+        let center = Pos2::new(51.0, 73.0);
+        let outline = Color32::from_rgb(231, 19, 127);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            for geometry in [(false, false), (false, true), (true, false)] {
+                draw_port_shape(
+                    ui.painter(),
+                    center,
+                    7.0,
+                    geometry,
+                    Color32::TRANSPARENT,
+                    Stroke::new(1.0, outline),
+                );
+            }
+        });
+        let outlines: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(shape) if shape.stroke.color == outline => {
+                    Some((0, shape.center))
+                }
+                egui::Shape::Rect(shape) if shape.stroke.color == outline => {
+                    Some((1, shape.rect.center()))
+                }
+                egui::Shape::Path(shape) if shape.closed && shape.points.len() == 4 => {
+                    Some((2, Rect::from_points(&shape.points).center()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outlines, [(0, center), (1, center), (2, center)]);
+        output.drop_without_applying_deltas();
+    }
 
     #[test]
     fn connector_colors_contrast_on_the_default_light_and_dark_surfaces() {

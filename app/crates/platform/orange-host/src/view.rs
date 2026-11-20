@@ -117,8 +117,10 @@ pub struct TypeChoice {
 fn core_schema(definition: &str) -> Option<Json> {
     let time = json!({"type": "string", "format": "duration-ns", "pattern": "^(0|[1-9][0-9]*)$"});
     match definition {
-        "core/while" => Some(json!({"type": "object", "required": ["max_iterations"],
-            "properties": {"max_iterations": {"type": "integer", "minimum": 1}}})),
+        "core/while" | "core/for-range" => {
+            Some(json!({"type": "object", "required": ["max_iterations"],
+            "properties": {"max_iterations": {"type": "integer", "minimum": 1}}}))
+        }
         "core/for-each" => Some(json!({"type": "object",
             "properties": {"mode": {"type": "string", "enum": ["list", "map"]}}})),
         "core/on-timer" => Some(json!({"type": "object", "required": ["interval"],

@@ -14,7 +14,7 @@ fn ids(found: &[orange_host::Found]) -> Vec<&str> {
 }
 
 #[test]
-fn results_rank_name_then_word_then_alias_then_concept_then_description_then_typo() {
+fn results_rank_exact_names_and_aliases_above_prefixes_and_concepts() {
     let host = host();
     let first = |search: &str| host.search_nodes(search, "en")[0].clone();
     assert_eq!(first("wait").matched, Some(Match::Exact));
@@ -22,7 +22,7 @@ fn results_rank_name_then_word_then_alias_then_concept_then_description_then_typ
     assert_eq!(first("on ma").definition, "core/on-manual");
     assert_eq!(first("on ma").matched, Some(Match::NameStart));
     assert_eq!(first("integer").definition, "core/whole-number");
-    assert_eq!(first("integer").matched, Some(Match::Alias));
+    assert_eq!(first("integer").matched, Some(Match::AliasExact));
     // "timer" is a word of On timer's name, before nodes that are only about time.
     let timer = host.search_nodes("timer", "en");
     assert_eq!(timer[0].definition, "core/on-timer");
@@ -174,5 +174,8 @@ fn node_category_and_port_names_follow_the_language_and_fall_back_to_english() {
     assert!(ids(&host.search_nodes("datos", "es")).contains(&"org.orange.json/get"));
     let ports = host.port_names("es");
     assert!(ports.contains(&("result".to_owned(), "resultado".to_owned())));
-    assert!(host.port_names("en").is_empty());
+    assert!(
+        host.port_names("en")
+            .contains(&("completed".to_owned(), "Done".to_owned()))
+    );
 }

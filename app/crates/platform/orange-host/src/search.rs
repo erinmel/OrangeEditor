@@ -72,6 +72,8 @@ impl Catalogs {
 pub enum Match {
     /// Its name is the search.
     Exact,
+    /// One of its aliases is the whole search.
+    AliasExact,
     /// Its name starts with the search.
     NameStart,
     /// A word of its name starts with the search.
@@ -289,6 +291,8 @@ impl Host {
         // The whole search against the name and aliases, as a phrase.
         let phrase = if label == search {
             Some(Match::Exact)
+        } else if aliases.iter().any(|alias| alias == search) {
+            Some(Match::AliasExact)
         } else if label.starts_with(search) {
             Some(Match::NameStart)
         } else if starts_a_word(&label, search) {

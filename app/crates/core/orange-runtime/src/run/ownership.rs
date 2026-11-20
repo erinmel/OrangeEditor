@@ -548,7 +548,7 @@ impl Run {
             }
             if let Some(cursor) = r.retired_cursor.as_deref() {
                 let owner = match cursor {
-                    Cursor::Count { owner, .. } | Cursor::While { owner, .. } => Some(*owner),
+                    Cursor::Indexed { owner, .. } | Cursor::While { owner, .. } => Some(*owner),
                     _ => None,
                 };
                 if let Some(owner) = owner {
@@ -929,6 +929,7 @@ impl Run {
             .operation()
             {
                 ControlOperation::Count { completed, .. }
+                | ControlOperation::ForRange { completed, .. }
                 | ControlOperation::While { completed, .. }
                 | ControlOperation::ForEach { completed, .. } => *completed,
                 ControlOperation::ForEachItem { completed, .. } => *completed,

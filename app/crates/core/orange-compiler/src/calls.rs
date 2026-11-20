@@ -1,6 +1,6 @@
 //! Iterative call admission. Immutable specialized bodies are shared; invocation
 //! output maps and memoization remain separate in the folder.
-use crate::compile::{CompileOptions, Incoming, admit_data_ports, charge, key};
+use crate::compile::{CompileOptions, Incoming, admit_data_ports, charge, keys};
 use crate::{CompileError, PureCallSite};
 use orange_model::GraphDocument;
 use orange_model::catalog::intrinsic_id as ids;
@@ -294,14 +294,16 @@ impl<'a> Calls<'a> {
                 }
                 for port in &sig.ports {
                     options.checkpoint()?;
-                    if port.direction == orange_model::document::PortDirection::Output
-                        || !connected.contains(&(node.id, key(port)))
-                    {
-                        charge(
-                            &mut slots,
-                            1,
-                            options.limits.max_slots.min(u32::MAX as usize),
-                        )?;
+                    for key in keys(node, port) {
+                        if port.direction == orange_model::document::PortDirection::Output
+                            || !connected.contains(&(node.id, key))
+                        {
+                            charge(
+                                &mut slots,
+                                1,
+                                options.limits.max_slots.min(u32::MAX as usize),
+                            )?;
+                        }
                     }
                 }
                 if node.definition.id.as_str() != ids::CALL {

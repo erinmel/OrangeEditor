@@ -118,6 +118,8 @@ pub enum ControlOutcome {
     Default,
     MatchedOk,
     MatchedErr,
+    MatchedPresent,
+    MatchedMissing,
     Forked,
     Then,
     True,
@@ -586,10 +588,11 @@ enum Cursor {
         owner: ControlIx,
         next: usize,
     },
-    Count {
+    Indexed {
         owner: ControlIx,
-        next: i64,
-        count: i64,
+        next: Option<i64>,
+        end: i64,
+        step: i64,
     },
 }
 
@@ -617,6 +620,7 @@ fn cleanup_safe(operation: &ControlOperation) -> bool {
             | ControlOperation::Branch { .. }
             | ControlOperation::Switch { .. }
             | ControlOperation::MatchResult { .. }
+            | ControlOperation::MatchOption { .. }
             | ControlOperation::Sequence { .. }
             | ControlOperation::Set { .. }
             | ControlOperation::Gate { .. }
@@ -637,6 +641,7 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         }
         | ControlOperation::Switch { key: root, .. }
         | ControlOperation::MatchResult { result: root, .. }
+        | ControlOperation::MatchOption { option: root, .. }
         | ControlOperation::ForEach { items: root, .. }
         | ControlOperation::While {
             condition: root, ..
@@ -2083,7 +2088,10 @@ impl Run {
                 None => return Ok(()),
                 Some(FoldedValue::Value(value)) => Some(value),
                 Some(FoldedValue::Fault(fault)) => {
-                    if let ControlOperation::MatchResult { .. } = operation {
+                    if matches!(
+                        operation,
+                        ControlOperation::MatchResult { .. } | ControlOperation::MatchOption { .. }
+                    ) {
                         // A failed match clears its value outputs.
                         Self::publish_match_value(
                             plan,
@@ -2226,6 +2234,12 @@ impl Run {
                     None => return Ok(()),
                 }
             }
+            ControlOperation::ForRange { .. } => {
+                match self.execute_range(plan, activation, shared, ix, budget)? {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
             ControlOperation::Gate { .. }
             | ControlOperation::DoOnce { .. }
             | ControlOperation::FlipFlop { .. }
@@ -2236,6 +2250,7 @@ impl Run {
             }
             ControlOperation::Branch { .. }
             | ControlOperation::Switch { .. }
+            | ControlOperation::MatchOption { .. }
             | ControlOperation::MatchResult { .. } => Self::select(
                 plan,
                 (&self.layout, self.options.limits.max_state_bytes),

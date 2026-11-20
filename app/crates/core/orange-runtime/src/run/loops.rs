@@ -10,6 +10,22 @@ const LOOP_BUDGET_EXCEEDED: KernelFault = KernelFault {
     message: "The loop iteration budget is exhausted.",
 };
 
+const ZERO_RANGE_STEP: KernelFault = KernelFault {
+    code: orange_compiler::FaultText::Static("core/ZeroRangeStep"),
+    message_key: orange_compiler::FaultText::Static("core/zero-range-step"),
+    message: "The range step must be nonzero.",
+};
+
+fn in_range(index: i64, end: i64, step: i64) -> bool {
+    if step > 0 { index < end } else { index > end }
+}
+
+fn next_index(index: i64, end: i64, step: i64) -> Option<i64> {
+    index
+        .checked_add(step)
+        .filter(|&next| in_range(next, end, step))
+}
+
 /// What loop and sequence steps may touch: the layout, limits and region tree to read and
 /// the trace to append to. Scheduling, cells, frames, timers and activations stay out of
 /// reach.
@@ -28,10 +44,79 @@ impl Run {
             trace: &mut self.trace,
         }
     }
+
+    pub(super) fn execute_range(
+        &mut self,
+        plan: &ControlPlan,
+        strand: &mut Strand,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        budget: &mut usize,
+    ) -> Result<Option<Step>, RunError> {
+        let node = &plan.nodes()[owner.index()];
+        let ControlOperation::ForRange {
+            demand,
+            body,
+            completed,
+            max_iterations,
+        } = node.operation()
+        else {
+            return Err(RunError::InvalidState);
+        };
+        while let Some(&root) = demand.roots().get(strand.pull.call_values.len()) {
+            let Some(result) =
+                self.cells()
+                    .consume_inputs(plan, strand, shared, root, demand.inputs(), budget)?
+            else {
+                return Ok(None);
+            };
+            match result {
+                FoldedValue::Value(value) => strand.pull.call_values.push(value),
+                FoldedValue::Fault(fault) => return Ok(Some(failed(node, fault))),
+            }
+            if let Some(&root) = demand.roots().get(strand.pull.call_values.len()) {
+                strand.pull.active = Some(PendingPull { root, input: None });
+            }
+        }
+        let [Value::I64(start), Value::I64(end), Value::I64(step)] = strand.pull.call_values[..]
+        else {
+            return Err(DataError::KernelContract { node: node.node() }.into());
+        };
+        if step == 0 {
+            return Ok(Some(failure(node, ZERO_RANGE_STEP)));
+        }
+        if !in_range(start, end, step) {
+            return Ok(Some((*completed, ControlOutcome::Completed, None)));
+        }
+        if start.abs_diff(end).div_ceil(step.unsigned_abs()) > *max_iterations {
+            return Ok(Some(failure(node, LOOP_BUDGET_EXCEEDED)));
+        }
+        self.loops()
+            .begin_indexed(plan, strand, shared, owner, (start, end, step))?;
+        Ok(Some((*body, ControlOutcome::Body, None)))
+    }
 }
 impl Loops<'_> {
     pub(super) fn record(&mut self, event: RunEvent) {
         self.trace.record(event, self.limits.max_trace);
+    }
+    fn begin_indexed(
+        &self,
+        plan: &ControlPlan,
+        strand: &mut Strand,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        (start, end, step): (i64, i64, i64),
+    ) -> Result<(), RunError> {
+        self.admit_cursor(strand)?;
+        strand.transfer = Transfer::EnterBody(Some(owner));
+        strand.stack.push(Cursor::Indexed {
+            owner,
+            next: next_index(start, end, step),
+            end,
+            step,
+        });
+        Run::publish_index(plan, self.layout, shared, owner, Some(start))
     }
     pub(super) fn loop_step(
         &self,
@@ -101,14 +186,7 @@ impl Loops<'_> {
                 Value::I64(count) if count < 0 => failure(node, KernelFault::NEGATIVE_COUNT),
                 Value::I64(0) => (*completed, ControlOutcome::Completed, None),
                 Value::I64(count) => {
-                    self.admit_cursor(activation)?;
-                    activation.transfer = Transfer::EnterBody(Some(ix));
-                    activation.stack.push(Cursor::Count {
-                        owner: ix,
-                        next: 1,
-                        count,
-                    });
-                    Run::publish_index(plan, self.layout, shared, ix, Some(0))?;
+                    self.begin_indexed(plan, activation, shared, ix, (0, count, 1))?;
                     (*body, ControlOutcome::Body, None)
                 }
                 _ => return Err(contract.into()),
@@ -181,23 +259,32 @@ impl Loops<'_> {
                 activation.reenter = Some((owner, iterations));
                 activation.yielded = true;
             }
-            Cursor::Count { owner, next, count } => {
+            Cursor::Indexed {
+                owner,
+                next,
+                end,
+                step,
+            } => {
                 let node = &plan.nodes()[owner.index()];
-                let ControlOperation::Count {
-                    body, completed, ..
-                } = node.operation()
-                else {
-                    return Err(RunError::InvalidState);
+                let (body, completed) = match node.operation() {
+                    ControlOperation::Count {
+                        body, completed, ..
+                    }
+                    | ControlOperation::ForRange {
+                        body, completed, ..
+                    } => (*body, *completed),
+                    _ => return Err(RunError::InvalidState),
                 };
-                if next < count {
+                if let Some(index) = next {
                     activation.transfer = Transfer::EnterBody(Some(owner));
-                    activation.stack.push(Cursor::Count {
+                    activation.stack.push(Cursor::Indexed {
                         owner,
-                        next: next + 1,
-                        count,
+                        next: next_index(index, end, step),
+                        end,
+                        step,
                     });
-                    Run::publish_index(plan, self.layout, shared, owner, Some(next))?;
-                    activation.pc = *body;
+                    Run::publish_index(plan, self.layout, shared, owner, Some(index))?;
+                    activation.pc = body;
                     activation.yielded = true;
                     self.record(RunEvent {
                         route: None,
@@ -208,7 +295,7 @@ impl Loops<'_> {
                     });
                 } else {
                     Run::publish_index(plan, self.layout, shared, owner, None)?;
-                    activation.pc = *completed;
+                    activation.pc = completed;
                     self.record(RunEvent {
                         route: None,
                         activation: activation.sequence,

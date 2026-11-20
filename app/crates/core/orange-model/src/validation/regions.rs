@@ -490,7 +490,7 @@ fn check_body(
     // Structured boundaries and loop bounds.
     for node in nodes_of(body, only, tally) {
         let definition = node.definition.id.as_str();
-        if definition == ids::WHILE
+        if matches!(definition, ids::WHILE | ids::FOR_RANGE)
             && !node
                 .config
                 .get("max_iterations")

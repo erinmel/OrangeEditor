@@ -13,6 +13,30 @@ use std::collections::BTreeMap;
 
 mod network;
 pub(crate) use network::HTTP;
+const FOLDER_ADAPTER: &str = "org.orange.files/folder";
+
+fn adapter_rank(id: &str) -> usize {
+    [
+        HTTP,
+        "org.orange.net/websocket",
+        "org.orange.net/amqp",
+        "org.orange.net/mqtt",
+        FOLDER_ADAPTER,
+        "org.orange.audio/input",
+        "org.orange.audio/output",
+    ]
+    .iter()
+    .position(|known| *known == id)
+    .unwrap_or(usize::MAX)
+}
+
+fn adapter_label(adapter: &AdapterInfo) -> &str {
+    match adapter.id.as_str() {
+        "org.orange.audio/input" => t("connection-audio-source"),
+        "org.orange.audio/output" => t("connection-audio-output"),
+        _ => &adapter.label,
+    }
+}
 
 /// What a variable dragged from the Variables list carries, before its ID. Let go on
 /// the canvas, it becomes a Get node, or a Set node with Alt held.
@@ -1096,13 +1120,37 @@ impl Editor {
         false
     }
 
+    /// Applies a chosen root to the open connection draft. Apply saves the connection.
+    pub fn choose_connection_folder(&mut self, path: &str) -> bool {
+        let form = &mut self.forms.connection;
+        if !self.forms.open_connection
+            || form.adapter != FOLDER_ADAPTER
+            || form.scope != ConnectionScope::Graph
+            || path.is_empty()
+        {
+            return false;
+        }
+        let Ok(mut settings) = serde_json::from_str::<Json>(&form.settings) else {
+            return false;
+        };
+        set_text(&mut settings, "path", Some(Json::String(path.to_owned())));
+        form.settings = serde_json::to_string_pretty(&settings).unwrap_or_default();
+        form.tested = None;
+        form.saved = false;
+        true
+    }
+
     fn connections_section(&mut self, ui: &mut egui::Ui, host: &mut Host, declared: &Declarations) {
-        let adapters = host.adapter_list();
+        let mut adapters = host.adapter_list();
+        adapters.sort_by_key(|adapter| adapter_rank(&adapter.id));
         let label_of = |adapter: &str| {
             adapters
                 .iter()
                 .find(|known| known.id == adapter)
-                .map_or_else(|| adapter.to_owned(), |known| known.label.clone())
+                .map_or_else(
+                    || adapter.to_owned(),
+                    |known| adapter_label(known).to_owned(),
+                )
         };
         if section_heading(ui, t("connections"), t("add-connection")) {
             self.forms.connection = ConnectionForm::default();
@@ -1120,7 +1168,12 @@ impl Editor {
         let adapter = self.forms.connection.adapter.clone();
         let choices = self.adapter_choices(host, &adapter, false);
         let fields = host.adapter_fields(&adapter);
-        let texts = host.adapter_texts(&adapter);
+        let mut texts = host.adapter_texts(&adapter);
+        let folder_picker = self.file_dialogs && adapter == FOLDER_ADAPTER;
+        if folder_picker {
+            texts.retain(|field| field.setting != "path");
+        }
+        let mut pick_folder = None;
         let toggles = host.adapter_toggles(&adapter);
         let probes = host.adapter_probes(&adapter);
         let mut refresh = false;
@@ -1164,6 +1217,19 @@ impl Editor {
                 }
                 if let Ok(mut current) = serde_json::from_str::<Json>(&form.settings) {
                     let before = current.clone();
+                    if folder_picker {
+                        let path = current["path"].as_str().unwrap_or_default();
+                        ui.small(t("connection-folder-root"));
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button(t("choose-folder")).clicked() {
+                                pick_folder = Some(path.to_owned());
+                            }
+                            if !path.is_empty() {
+                                ui.add(egui::Label::new(path).truncate())
+                                    .on_hover_text(path);
+                            }
+                        });
+                    }
                     let fields_changed = network::fields(
                         ui,
                         &adapter,
@@ -1220,7 +1286,12 @@ impl Editor {
                 });
                 egui::CollapsingHeader::new(t("all-settings-json"))
                     .id_salt("orange-connection-json")
-                    .default_open(texts.is_empty() && choices.is_empty() && fields.is_empty())
+                    .default_open(
+                        !folder_picker
+                            && texts.is_empty()
+                            && choices.is_empty()
+                            && fields.is_empty(),
+                    )
                     .show(ui, |ui| {
                         let changed = ui
                             .add(
@@ -1256,6 +1327,9 @@ impl Editor {
                     }
                 });
             });
+        }
+        if let Some(current) = pick_folder {
+            self.ask(FileRequest::ChooseConnectionFolder { current });
         }
         // A closed form shows no level, and the device it listened to is let go.
         if !open || declare || cancel {
@@ -1382,7 +1456,7 @@ fn choice_list(
 /// The list of adapters to make a connection of, by name, with each one's purpose.
 fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut ConnectionForm) {
     let current = adapters.iter().find(|known| known.id == form.adapter);
-    let shown = current.map_or(form.adapter.as_str(), |known| known.label.as_str());
+    let shown = current.map_or(form.adapter.as_str(), adapter_label);
     if form.changing.is_some() {
         ui.label(shown);
         return;
@@ -1402,7 +1476,7 @@ fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut Connec
                     .selectable_value(
                         &mut form.adapter,
                         adapter.id.clone(),
-                        adapter.label.as_str(),
+                        adapter_label(adapter),
                     )
                     .on_hover_text(hover);
             }
@@ -1842,6 +1916,30 @@ mod tests {
         assert!(form.settings.contains("credential://"));
         assert!(!form.settings.contains("new-test-secret"));
         assert_eq!(editor.declarations().unwrap().connections.len(), 1);
+    }
+
+    #[test]
+    fn choosing_a_folder_updates_only_the_open_folder_draft() {
+        let mut editor = Editor::new();
+        let path = r"C:\Users\editor\Media";
+        assert!(!editor.choose_connection_folder(path));
+        editor.forms.open_connection = true;
+        editor.forms.connection.adapter = FOLDER_ADAPTER.to_owned();
+        editor.forms.connection.scope = ConnectionScope::Graph;
+        editor.forms.connection.settings = json!({"path": "old", "mode": "read-only"}).to_string();
+        editor.forms.connection.saved = true;
+
+        assert!(editor.choose_connection_folder(path));
+        let settings: Json = serde_json::from_str(&editor.forms.connection.settings).unwrap();
+        assert_eq!(settings, json!({"path": path, "mode": "read-only"}));
+        assert!(!editor.forms.connection.saved);
+
+        editor.forms.connection.adapter = HTTP.to_owned();
+        assert!(!editor.choose_connection_folder("ignored"));
+        assert_eq!(
+            serde_json::from_str::<Json>(&editor.forms.connection.settings).unwrap(),
+            settings
+        );
     }
 
     #[test]

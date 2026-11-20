@@ -4,6 +4,7 @@
 use super::language::intrinsic_reference;
 use super::{ContractError, EventAccess, NodeContract, NodeDefinition, Ports, VariableAccess};
 use crate::catalog::intrinsic_id as ids;
+use crate::document::literal::Literal;
 use crate::document::{
     DefinitionRef, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, TypeParam,
 };
@@ -573,6 +574,25 @@ fn result_definitions() -> Vec<NodeDefinition> {
         ),
         generic(
             definition(
+                ids::MATCH_OPTION,
+                NodeKind::Action,
+                None,
+                vec![
+                    PortDescriptor::exec_in("in"),
+                    PortDescriptor::data_in("option", ty("core/option@1<$T>")),
+                    PortDescriptor::exec_out("present"),
+                    PortDescriptor::exec_out("missing"),
+                    on(
+                        PortDescriptor::data_out("value", ty("$T"), OutputSource::Execution),
+                        &["present"],
+                    ),
+                ],
+            ),
+            "T",
+            &[],
+        ),
+        generic(
+            definition(
                 ids::MATCH_RESULT,
                 NodeKind::Action,
                 None,
@@ -659,6 +679,20 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
             vec![
                 exec_in(),
                 PortDescriptor::data_in("count", ty("core/i64@1")),
+                PortDescriptor::data_out("index", ty("core/i64@1"), OutputSource::Iteration),
+            ],
+        ),
+        definition(
+            ids::FOR_RANGE,
+            Iterator,
+            Some(Suspends::Maybe),
+            vec![
+                exec_in(),
+                PortDescriptor::data_in("start", ty("core/i64@1"))
+                    .with_default(Literal::value(ty("core/i64@1"), "0".into())),
+                PortDescriptor::data_in("end", ty("core/i64@1")),
+                PortDescriptor::data_in("step", ty("core/i64@1"))
+                    .with_default(Literal::value(ty("core/i64@1"), "1".into())),
                 PortDescriptor::data_out("index", ty("core/i64@1"), OutputSource::Iteration),
             ],
         ),

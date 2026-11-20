@@ -200,6 +200,12 @@ pub enum ControlOperation {
         ok: Option<ExecTarget>,
         err: Option<ExecTarget>,
     },
+    MatchOption {
+        option: usize,
+        boxed: bool,
+        present: Option<ExecTarget>,
+        missing: Option<ExecTarget>,
+    },
     Entry,
     Fork {
         branches: Box<[Option<ExecTarget>]>,
@@ -216,6 +222,12 @@ pub enum ControlOperation {
         count: usize,
         body: Option<ExecTarget>,
         completed: Option<ExecTarget>,
+    },
+    ForRange {
+        demand: UpdateDemand,
+        body: Option<ExecTarget>,
+        completed: Option<ExecTarget>,
+        max_iterations: u64,
     },
     Break,
     Continue,
@@ -1326,6 +1338,7 @@ fn compile_control_inner(
         if let ControlOperation::Update { demand, .. }
         | ControlOperation::Call { demand, .. }
         | ControlOperation::Return { demand }
+        | ControlOperation::ForRange { demand, .. }
         | ControlOperation::Effect { demand, .. } = &mut node.operation
         // Effect operands use one strict consumption epoch, like call arguments.
         {
@@ -1491,6 +1504,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::REGISTER
                     | ids::SWITCH
                     | ids::MATCH_RESULT
+                    | ids::MATCH_OPTION
                     | ids::ON_START
                     | ids::ON_STOP
                     | ids::ON_MANUAL
@@ -1517,6 +1531,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::YIELD
                     | ids::WAIT
                     | ids::COUNT
+                    | ids::FOR_RANGE
                     | ids::FOR_EACH
                     | ids::BREAK
                     | ids::CONTINUE
@@ -2469,6 +2484,18 @@ impl NodeLowering<'_, '_> {
                     timed_out: self.target(key, "timed_out"),
                 }
             }
+            ids::MATCH_OPTION => {
+                let port = cx.port(key, "option")?;
+                let ValueShape::Option(inner) = port_type(cx.snapshot, id, port)? else {
+                    return Err(CompileError::ValidationIncomplete);
+                };
+                ControlOperation::MatchOption {
+                    option: self.input(key, orange_model::port_id!("option")),
+                    boxed: inner.unboxed_none(),
+                    present: self.target(key, "present"),
+                    missing: self.target(key, "missing"),
+                }
+            }
             ids::MATCH_RESULT => {
                 let port = cx.port(key, "result")?;
                 let ValueShape::Result(inner) = port_type(cx.snapshot, id, port)? else {
@@ -2536,14 +2563,25 @@ impl NodeLowering<'_, '_> {
                 body: self.target(key, "body"),
                 completed: self.target(key, "completed"),
             },
+            ids::FOR_RANGE => ControlOperation::ForRange {
+                demand: UpdateDemand {
+                    roots: [
+                        orange_model::port_id!("start"),
+                        orange_model::port_id!("end"),
+                        orange_model::port_id!("step"),
+                    ]
+                    .into_iter()
+                    .map(|port| self.input(key, port))
+                    .collect(),
+                    inputs: Arc::from([]),
+                },
+                body: self.target(key, "body"),
+                completed: self.target(key, "completed"),
+                max_iterations: loop_limit(node)?,
+            },
             ids::WHILE => {
                 let condition = self.input(key, orange_model::port_id!("condition"));
-                let max_iterations = node
-                    .config
-                    .get("max_iterations")
-                    .and_then(|v| v.as_u64())
-                    .filter(|n| *n > 0)
-                    .ok_or(CompileError::ValidationIncomplete)?;
+                let max_iterations = loop_limit(node)?;
                 ControlOperation::While {
                     condition,
                     body: self.target(key, "body"),
@@ -2791,10 +2829,20 @@ fn host_source(
         }
         (_, "error") => Ok(HostSource::Error(owner)),
         (ControlOperation::ForEach { .. } | ControlOperation::Update { .. }, _) => Err(unsupported),
-        (ControlOperation::MatchResult { .. }, "value") => Ok(HostSource::Value(owner)),
+        (ControlOperation::MatchResult { .. } | ControlOperation::MatchOption { .. }, "value") => {
+            Ok(HostSource::Value(owner))
+        }
         (_, "index") => Ok(HostSource::Index(owner)),
         _ => Err(unsupported),
     }
+}
+
+fn loop_limit(node: &orange_model::document::NodeInstance) -> Result<u64, CompileError> {
+    node.config
+        .get("max_iterations")
+        .and_then(|value| value.as_u64())
+        .filter(|limit| *limit > 0)
+        .ok_or(CompileError::ValidationIncomplete)
 }
 
 fn input_root(

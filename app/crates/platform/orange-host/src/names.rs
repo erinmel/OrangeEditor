@@ -213,6 +213,8 @@ pub fn said(outcome: ControlOutcome) -> String {
         O::Default => "took the default case",
         O::MatchedOk => "took the ok path",
         O::MatchedErr => "took the error path",
+        O::MatchedPresent => "took the present path",
+        O::MatchedMissing => "took the missing path",
         O::FlipA => "took A",
         O::FlipB => "took B",
         O::Case(case) => return format!("took case {}", u32::from(case) + 1),

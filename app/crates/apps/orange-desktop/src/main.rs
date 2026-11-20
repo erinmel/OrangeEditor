@@ -312,6 +312,18 @@ impl Desktop {
             self.import_package();
             return;
         }
+        if let FileRequest::ChooseConnectionFolder { current } = &request {
+            let mut dialog = rfd::FileDialog::new().set_title(t("desktop-choose-folder"));
+            if Path::new(current).is_dir() {
+                dialog = dialog.set_directory(current);
+            }
+            if let Some(path) = dialog.pick_folder() {
+                let _ = self
+                    .editor
+                    .choose_connection_folder(&path.to_string_lossy());
+            }
+            return;
+        }
         if let FileRequest::ChoosePath {
             node,
             port,
@@ -365,6 +377,7 @@ impl Desktop {
                 }
             }
             FileRequest::ChoosePath { .. }
+            | FileRequest::ChooseConnectionFolder { .. }
             | FileRequest::ImportPackage
             | FileRequest::ExportPackage { .. } => {}
             FileRequest::SaveAs => {

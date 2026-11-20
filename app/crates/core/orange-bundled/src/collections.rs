@@ -1,7 +1,7 @@
 //! `org.orange.collections` list, map and option vocabulary. Bind once against the
 //! concrete container type; evaluation checks inputs against it and reads no registry.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use orange_model::Value;
 use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
@@ -13,11 +13,13 @@ use orange_model::value::shape::{VALUE_CHARGE, ValueCheckError, ValueShape};
 use orange_model::value::{ListBuilder, MapRepr};
 use serde_json::json;
 
+use crate::comparison::{host_ord, total_order};
 use crate::{BindingError, CatalogError, KernelError, MathPackage};
 
 /// Largest nominal value charge (11 §5.2 byte accounting) a collection node produces.
 /// Growing results that would exceed it fail with `core/LimitExceeded`.
 pub const MAX_COLLECTION_BYTES: usize = 16 * 1024 * 1024;
+const MAX_BUILD_LIST_ITEMS: u16 = 256;
 
 /// Pure generic collection operations. Lists and options are generic over `T`; maps
 /// over `K: eq + hash` and `V`. Results are new values; inputs are never mutated.
@@ -39,6 +41,14 @@ pub enum CollectionOperation {
     MapKeys,
     MapValues,
     OptionIsSome,
+    BuildList,
+    BuildMap,
+    ListSetAt,
+    ListRemoveAt,
+    ListDistinct,
+    ListSort,
+    OptionSome,
+    OptionNone,
 }
 
 const LIST: &str = "core/list@1<$T>";
@@ -47,7 +57,7 @@ const U64: &str = "core/u64@1";
 const BOOL: &str = "core/bool@1";
 
 impl CollectionOperation {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 24] = [
         Self::ListLength,
         Self::ListGet,
         Self::ListSlice,
@@ -64,6 +74,14 @@ impl CollectionOperation {
         Self::MapKeys,
         Self::MapValues,
         Self::OptionIsSome,
+        Self::BuildList,
+        Self::BuildMap,
+        Self::ListSetAt,
+        Self::ListRemoveAt,
+        Self::ListDistinct,
+        Self::ListSort,
+        Self::OptionSome,
+        Self::OptionNone,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -84,6 +102,14 @@ impl CollectionOperation {
             Self::MapKeys => "org.orange.collections/map-keys",
             Self::MapValues => "org.orange.collections/map-values",
             Self::OptionIsSome => "org.orange.collections/option-is-some",
+            Self::BuildList => "org.orange.collections/build-list",
+            Self::BuildMap => "org.orange.collections/build-map",
+            Self::ListSetAt => "org.orange.collections/list-set-at",
+            Self::ListRemoveAt => "org.orange.collections/list-remove-at",
+            Self::ListDistinct => "org.orange.collections/list-distinct",
+            Self::ListSort => "org.orange.collections/list-sort",
+            Self::OptionSome => "org.orange.collections/option-some",
+            Self::OptionNone => "org.orange.collections/option-none",
         }
     }
 
@@ -95,7 +121,11 @@ impl CollectionOperation {
     /// container whose concrete type binds the node.
     pub const fn inputs(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::ListLength | Self::ListReverse => &[("items", LIST)],
+            Self::ListLength | Self::ListReverse | Self::ListSort | Self::ListDistinct => {
+                &[("items", LIST)]
+            }
+            Self::ListSetAt => &[("items", LIST), ("index", U64), ("item", "$T")],
+            Self::ListRemoveAt => &[("items", LIST), ("index", U64)],
             Self::ListGet => &[("items", LIST), ("index", U64)],
             Self::ListSlice => &[("items", LIST), ("start", U64), ("length", U64)],
             Self::ListConcat => &[("a", LIST), ("b", LIST)],
@@ -105,6 +135,10 @@ impl CollectionOperation {
             Self::MapGet | Self::MapContainsKey | Self::MapRemove => &[("map", MAP), ("key", "$K")],
             Self::MapInsert => &[("map", MAP), ("key", "$K"), ("value", "$V")],
             Self::OptionIsSome => &[("value", "core/option@1<$T>")],
+            Self::BuildList => &[("item", "$T")],
+            Self::BuildMap => &[("keys", "core/list@1<$K>"), ("values", "core/list@1<$V>")],
+            Self::OptionSome => &[("value", "$T")],
+            Self::OptionNone => &[],
         }
     }
 
@@ -118,11 +152,20 @@ impl CollectionOperation {
             Self::ListContains | Self::MapContainsKey | Self::OptionIsSome => BOOL,
             Self::ListGet => "core/option@1<$T>",
             Self::ListIndexOf => "core/option@1<core/u64@1>",
-            Self::ListSlice | Self::ListConcat | Self::ListAppend | Self::ListReverse => LIST,
+            Self::ListSlice
+            | Self::ListConcat
+            | Self::ListAppend
+            | Self::ListReverse
+            | Self::ListSetAt
+            | Self::ListRemoveAt
+            | Self::ListDistinct
+            | Self::ListSort
+            | Self::BuildList => LIST,
             Self::MapGet => "core/option@1<$V>",
-            Self::MapInsert | Self::MapRemove => MAP,
+            Self::MapInsert | Self::MapRemove | Self::BuildMap => MAP,
             Self::MapKeys => "core/list@1<$K>",
             Self::MapValues => "core/list@1<$V>",
+            Self::OptionSome | Self::OptionNone => "core/option@1<$T>",
         }
     }
 
@@ -136,6 +179,7 @@ impl CollectionOperation {
                 | Self::MapRemove
                 | Self::MapKeys
                 | Self::MapValues
+                | Self::BuildMap
         )
     }
 
@@ -149,6 +193,10 @@ impl CollectionOperation {
             vec![param("K", &["eq", "hash"]), param("V", &[])]
         } else if matches!(self, Self::ListContains | Self::ListIndexOf) {
             vec![param("T", &["eq"])]
+        } else if self == Self::ListDistinct {
+            vec![param("T", &["eq", "hash"])]
+        } else if self == Self::ListSort {
+            vec![param("T", &["ord"])]
         } else {
             vec![param("T", &[])]
         }
@@ -166,6 +214,9 @@ pub fn collection_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 .iter()
                 .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
                 .collect::<Result<Vec<_>, CatalogError>>()?;
+            if operation == CollectionOperation::BuildList {
+                ports[0] = ports[0].clone().variadic(0, Some(MAX_BUILD_LIST_ITEMS));
+            }
             ports.push(PortDescriptor::data_out(
                 operation.output_port(),
                 operation.output_type().parse::<TypeExpr>()?,
@@ -245,6 +296,33 @@ fn map_from(entries: Vec<(Value, Value)>) -> Result<Value, KernelError> {
     )))
 }
 
+fn build_map(
+    key_shape: &ValueShape,
+    value_shape: &ValueShape,
+    inputs: &[Value],
+) -> Result<Value, KernelError> {
+    let [Value::List(keys), Value::List(values)] = inputs else {
+        return Err(KernelError::InputContract);
+    };
+    if keys.len() != values.len() {
+        return Err(KernelError::Domain);
+    }
+    let mut charge = VALUE_CHARGE;
+    let mut entries = Vec::new();
+    for index in 0..keys.len() {
+        let key = keys.get(index).ok_or(KernelError::InputContract)?;
+        let value = values.get(index).ok_or(KernelError::InputContract)?;
+        charge = charge
+            .saturating_add(check(key_shape, &key)?)
+            .saturating_add(check(value_shape, &value)?);
+        admit_result_charge(Some(charge))?;
+        entries.push((key, value));
+    }
+    Ok(Value::Map(Arc::new(
+        MapRepr::new(entries).map_err(|_| KernelError::Domain)?,
+    )))
+}
+
 impl ResolvedCollection {
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
         &self.snapshot
@@ -262,10 +340,33 @@ impl ResolvedCollection {
     pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
         use CollectionOperation::*;
         let operation = self.operation;
-        if inputs.len() != operation.inputs().len() {
+        if operation != BuildList && inputs.len() != operation.inputs().len() {
             return Err(KernelError::InputContract);
         }
         let container = &self.container;
+        match (operation, container) {
+            (BuildList, ValueShape::List(element)) => {
+                if inputs.len() > usize::from(MAX_BUILD_LIST_ITEMS) {
+                    return Err(KernelError::LimitExceeded);
+                }
+                let mut charge = VALUE_CHARGE;
+                for item in inputs {
+                    charge = charge.saturating_add(check(element, item)?);
+                    admit_result_charge(Some(charge))?;
+                }
+                return list_from(element, inputs.len(), inputs.iter().cloned());
+            }
+            (BuildMap, ValueShape::Map(key, value)) => return build_map(key, value, inputs),
+            (OptionNone, ValueShape::Option(_)) => return Ok(Value::None),
+            (OptionSome, ValueShape::Option(inner)) => {
+                let charge = check(inner, &inputs[0])?;
+                if inner.unboxed_none() {
+                    admit_result_charge(charge.checked_add(VALUE_CHARGE))?;
+                }
+                return Ok(some(inner, inputs[0].clone()));
+            }
+            _ => {}
+        }
         let charged = check(container, &inputs[0])?;
         match (container, &inputs[0]) {
             (ValueShape::Option(_), value) => Ok(Value::Bool(!matches!(value, Value::None))),
@@ -300,6 +401,59 @@ impl ResolvedCollection {
                     ListReverse => {
                         let len = items.len();
                         list_from(element, len, (0..len).rev().filter_map(|i| items.get(i)))?
+                    }
+                    ListSetAt | ListRemoveAt => {
+                        let index =
+                            usize::try_from(u64_at(1)?).map_err(|_| KernelError::OutOfRange)?;
+                        let previous = items.get(index).ok_or(KernelError::OutOfRange)?;
+                        let replacement = inputs.get(2);
+                        if let Some(item) = replacement {
+                            let previous_charge = check(element, &previous)?;
+                            let item_charge = check(element, item)?;
+                            admit_result_charge(
+                                charged
+                                    .checked_sub(previous_charge)
+                                    .and_then(|charge| charge.checked_add(item_charge)),
+                            )?;
+                        }
+                        let len = items.len() - usize::from(replacement.is_none());
+                        list_from(
+                            element,
+                            len,
+                            (0..items.len()).filter_map(|at| {
+                                if at == index {
+                                    replacement.cloned()
+                                } else {
+                                    items.get(at)
+                                }
+                            }),
+                        )?
+                    }
+                    ListDistinct => {
+                        #[expect(
+                            clippy::mutable_key_type,
+                            reason = "map validation memos are excluded from value equality and hashing"
+                        )]
+                        let mut seen = HashSet::new();
+                        let values = (0..items.len())
+                            .filter_map(|at| items.get(at))
+                            .filter(|item| seen.insert(item.clone()));
+                        list_from(element, 0, values)?
+                    }
+                    ListSort => {
+                        let mut values: Vec<_> =
+                            (0..items.len()).filter_map(|at| items.get(at)).collect();
+                        let mut invalid = false;
+                        values.sort_by(|a, b| {
+                            total_order(element, a, b).unwrap_or_else(|| {
+                                invalid = true;
+                                std::cmp::Ordering::Equal
+                            })
+                        });
+                        if invalid {
+                            return Err(KernelError::InputContract);
+                        }
+                        list_from(element, values.len(), values.into_iter())?
                     }
                     ListConcat => {
                         let other = check(container, &inputs[1])?;
@@ -445,12 +599,25 @@ impl MathPackage {
         let shape = ValueShape::of_in(container, snapshot.types().as_ref())
             .ok_or(BindingError::UnsupportedType)?;
         let supported = match (&shape, operation) {
-            (ValueShape::Option(_), CollectionOperation::OptionIsSome) => true,
+            (
+                ValueShape::Option(_),
+                CollectionOperation::OptionIsSome
+                | CollectionOperation::OptionSome
+                | CollectionOperation::OptionNone,
+            ) => true,
             (ValueShape::Map(..), operation) => operation.is_map(),
             (ValueShape::List(element), CollectionOperation::ListContains)
             | (ValueShape::List(element), CollectionOperation::ListIndexOf) => element.host_eq(),
+            (ValueShape::List(element), CollectionOperation::ListDistinct) => element.host_eq(),
+            (ValueShape::List(element), CollectionOperation::ListSort) => host_ord(element),
             (ValueShape::List(_), operation) => {
-                !operation.is_map() && operation != CollectionOperation::OptionIsSome
+                !operation.is_map()
+                    && !matches!(
+                        operation,
+                        CollectionOperation::OptionIsSome
+                            | CollectionOperation::OptionSome
+                            | CollectionOperation::OptionNone
+                    )
             }
             _ => false,
         };

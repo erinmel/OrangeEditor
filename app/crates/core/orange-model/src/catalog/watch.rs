@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 pub enum WatchCondition {
     Changed,
     Rising,
+    Falling,
     Numeric {
         test: NumericWatch,
         hold_ns: u64,
@@ -70,7 +71,7 @@ enum Mode {
 #[derive(Debug, Clone, Copy)]
 enum Test<'a> {
     Changed,
-    Rising,
+    Edge(bool),
     Numeric(Mode, &'a Number, &'a Number),
 }
 
@@ -87,13 +88,15 @@ impl<'a> WatchConfig<'a> {
     pub fn from_node(node: &'a NodeInstance) -> Option<Self> {
         let config = &node.config;
         let mode = config.get("mode")?.as_str()?;
-        if matches!(node.config_version, 1 | 2) && matches!(mode, "changed" | "rising") {
+        let change = match (node.config_version, mode) {
+            (1 | 2, "changed") => Some(Test::Changed),
+            (1 | 2, "rising") => Some(Test::Edge(true)),
+            (2, "falling") => Some(Test::Edge(false)),
+            _ => None,
+        };
+        if let Some(test) = change {
             return (config.len() == 1).then_some(Self {
-                test: if mode == "changed" {
-                    Test::Changed
-                } else {
-                    Test::Rising
-                },
+                test,
                 hold_ns: 0,
                 cooldown_ns: 0,
             });
@@ -147,7 +150,7 @@ impl<'a> WatchConfig<'a> {
     pub fn accepts_type(self, shape: &ValueShape) -> bool {
         match self.test {
             Test::Changed => shape.host_eq(),
-            Test::Rising => shape == &ValueShape::Bool,
+            Test::Edge(_) => shape == &ValueShape::Bool,
             Test::Numeric(..) => matches!(
                 shape,
                 ValueShape::I32
@@ -167,7 +170,8 @@ impl<'a> WatchConfig<'a> {
         }
         match self.test {
             Test::Changed => Some(WatchCondition::Changed),
-            Test::Rising => Some(WatchCondition::Rising),
+            Test::Edge(true) => Some(WatchCondition::Rising),
+            Test::Edge(false) => Some(WatchCondition::Falling),
             Test::Numeric(mode, first, second) => {
                 let first = bound(first, shape)?;
                 let second = bound(second, shape)?;
@@ -208,7 +212,7 @@ pub(super) fn schema() -> Json {
         "type": "object",
         "required": ["mode"],
         "properties": {
-            "mode": {"type": "string", "enum": ["changed", "rising", "above", "below", "inside", "outside"]},
+            "mode": {"type": "string", "enum": ["changed", "rising", "falling", "above", "below", "inside", "outside"]},
             "threshold": {"type": "number"},
             "release": {"type": "number"},
             "low": {"type": "number"},

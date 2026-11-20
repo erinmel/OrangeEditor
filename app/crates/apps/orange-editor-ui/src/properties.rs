@@ -438,6 +438,7 @@ pub(crate) fn watch_label(name: &str) -> &'static str {
     match name {
         "changed" => t("when-changed"),
         "rising" => t("when-rising"),
+        "falling" => t("when-falling"),
         "above" => t("when-above"),
         "below" => t("when-below"),
         "inside" => t("when-inside"),
@@ -891,6 +892,8 @@ impl Editor {
                 name == "window_ms" && node.definition.starts_with("org.orange.audio/");
             let label = if watch {
                 watch_label(name).to_owned()
+            } else if name == "max_iterations" {
+                t("max-iterations").to_owned()
             } else if let Some(label) = noise_gate_label(node, name) {
                 if matches!(field, Field::Time) {
                     tf("in-milliseconds", &[("name", label.into())])
@@ -907,6 +910,8 @@ impl Editor {
             let hover = Some(
                 if measurement_time {
                     t("audio-setting-window-help")
+                } else if name == "max_iterations" {
+                    t("max-iterations-help")
                 } else if needed {
                     t("required")
                 } else {

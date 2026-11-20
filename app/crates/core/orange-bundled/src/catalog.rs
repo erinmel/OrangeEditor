@@ -89,7 +89,7 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
 ///
 /// One native build provides four ordinary packages: `org.orange.math` (numeric and
 /// boolean vocabulary), `org.orange.text` (strings), `org.orange.collections`
-/// (lists, maps, options, records, enums) and `org.orange.json` (JSON reads). Each
+/// (lists, maps, options, records, enums) and `org.orange.json` (JSON construction and reads). Each
 /// has its own exact provider key; a graph locks whichever packages its nodes use.
 #[derive(Debug, Clone)]
 pub struct MathPackage {

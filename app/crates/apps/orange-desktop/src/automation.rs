@@ -225,13 +225,30 @@ fn the_power_example_can_extract_and_run_the_whole_count_loop() {
 }
 
 #[test]
-fn the_power_loop_can_be_reused_with_two_arguments_and_a_result() {
+fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result() {
     let (mut host, _) = desktop_host();
     let mut editor = Editor::new();
-    editor.open_untitled(
-        &mut host,
-        include_str!("../../orange-cli/graphs/power-with-count.json").to_owned(),
-    );
+    let mut source: Json = serde_json::from_str(include_str!(
+        "../../orange-cli/graphs/power-with-count.json"
+    ))
+    .unwrap();
+    let range = source["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["definition_id"] == "core/count")
+        .unwrap();
+    range["definition_id"] = json!("core/for-range");
+    range["config"] = json!({"max_iterations": 1000});
+    let owner = range["id"].clone();
+    let exponent = source["edges"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|edge| edge["to"]["node"] == owner && edge["to"]["port"] == "count")
+        .unwrap();
+    exponent["to"]["port"] = json!("end");
+    editor.open_untitled(&mut host, source.to_string());
     let graph = editor.graph().unwrap();
     let trigger = graph.nodes.iter().find(|node| node.entry).unwrap().id;
     let save = graph
@@ -261,7 +278,7 @@ fn the_power_loop_can_be_reused_with_two_arguments_and_a_result() {
         .map(|port| port.id.as_str())
         .collect();
     inputs.sort_unstable();
-    assert_eq!(inputs, ["a", "count"]);
+    assert_eq!(inputs, ["a", "end"]);
     let outputs: Vec<_> = card
         .ports
         .iter()
@@ -280,7 +297,7 @@ fn the_power_loop_can_be_reused_with_two_arguments_and_a_result() {
     let second_call = editor.canvas().selection()[0];
     assert_ne!(second_call, call);
     assert!(editor.set_input(&mut host, (second_call, "a"), Some("2")));
-    assert!(editor.set_input(&mut host, (second_call, "count"), Some("5")));
+    assert!(editor.set_input(&mut host, (second_call, "end"), Some("5")));
     editor.canvas().select(Some(save));
     assert!(editor.duplicate(&mut host));
     let second_save = editor.canvas().selection()[0];
@@ -862,7 +879,16 @@ fn compute(host: &mut Host, template: &str, definition: &str, ty: &str, variant:
         if port.value.is_some() || port.default.is_some() {
             continue;
         }
-        if let Some(literal) = port.ty.as_deref().and_then(|ty| sample(ty, variant)) {
+        let literal = match (definition, port.id.as_str()) {
+            ("org.orange.text/decode-base64", "text") => {
+                Some(json!({"type": "core/string@1", "value": "AP8="}))
+            }
+            ("org.orange.text/decode-hex", "text") => {
+                Some(json!({"type": "core/string@1", "value": "00ff"}))
+            }
+            _ => port.ty.as_deref().and_then(|ty| sample(ty, variant)),
+        };
+        if let Some(literal) = literal {
             let _ = host.set_input(
                 &mut draft,
                 (node, port.id.as_str()),
@@ -911,6 +937,11 @@ fn every_pure_catalogue_node_computes_its_outputs_from_sample_inputs() {
         let has_outputs = card.ports.iter().any(|port| !port.input && !port.exec);
         if card.entry || card.ports.iter().any(|port| port.exec) || !has_outputs {
             flows += 1;
+            continue;
+        }
+        if found.definition == "org.orange.text/inspect-error" {
+            // Error has no literal form. The bundled control tests exercise this
+            // node through a captured fault.
             continue;
         }
         let mut last = None;
@@ -967,4 +998,95 @@ fn every_pure_catalogue_node_computes_its_outputs_from_sample_inputs() {
         "nodes that fault on sample inputs:\n{}",
         faults.join("\n")
     );
+}
+
+#[test]
+fn list_builder_previews_wired_and_inline_items_in_card_order() {
+    let (mut host, _) = desktop_host();
+    let mut draft = host.draft(&typed_template()).unwrap();
+    let builder = host
+        .add_node(&mut draft, "org.orange.collections/build-list", [0.0, 0.0])
+        .unwrap();
+    let value = host
+        .add_node(&mut draft, "core/whole-number", [300.0, 0.0])
+        .unwrap();
+    let first = host.add_port(&mut draft, builder, "item").unwrap();
+    let removed = host.add_port(&mut draft, builder, "item").unwrap();
+    let last = host.add_port(&mut draft, builder, "item").unwrap();
+    host.remove_port(&mut draft, (builder, &removed)).unwrap();
+    host.set_input(
+        &mut draft,
+        (value, "value"),
+        Some(r#"{"type": "core/i64@1", "value": "7"}"#),
+    )
+    .unwrap();
+    host.connect(&mut draft, (value, "result"), (builder, &first))
+        .unwrap();
+    host.set_input(
+        &mut draft,
+        (builder, &last),
+        Some(r#"{"type": "core/i64@1", "value": "3"}"#),
+    )
+    .unwrap();
+    let outputs = host
+        .preview(
+            &draft.text().unwrap(),
+            &[(builder, "result".parse().unwrap())],
+        )
+        .unwrap();
+    let orange_host::Value::List(items) = outputs[0].value.as_ref().unwrap() else {
+        panic!("the builder must produce a list");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(items.get(0), Some(orange_host::Value::I64(7)));
+    assert_eq!(items.get(1), Some(orange_host::Value::I64(3)));
+}
+
+#[test]
+fn placing_a_loop_creates_a_wired_pair_in_one_undoable_edit() {
+    let (mut host, _) = desktop_host();
+    for (start, finish, from, to) in [
+        ("repeat", "repeat", "carried", "next"),
+        ("map", "map", "element", "item"),
+        ("filter", "filter", "element", "item"),
+        ("fold", "fold", "accumulator", "next"),
+    ] {
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, typed_template());
+        let begin = editor
+            .add_node_at(&mut host, &format!("core/{start}-begin"), [0.0, 0.0])
+            .unwrap();
+        let graph = editor.graph().unwrap();
+        let end = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == format!("core/{finish}-end"))
+            .unwrap();
+        let begin = graph.nodes.iter().find(|node| node.id == begin).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(begin.settings["zone"], end.settings["zone"]);
+        assert!(begin.settings["zone"].is_string());
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from == (begin.id, from.into()) && wire.to == (end.id, to.into()))
+        );
+        let original_zone = begin.settings["zone"].clone();
+        assert!(editor.duplicate(&mut host));
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        let copied_zones: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|node| node.settings["zone"] != original_zone)
+            .map(|node| &node.settings["zone"])
+            .collect();
+        assert_eq!(copied_zones.len(), 2);
+        assert_eq!(copied_zones[0], copied_zones[1]);
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+        editor.undo(&mut host);
+        assert!(editor.graph().unwrap().nodes.is_empty());
+    }
 }

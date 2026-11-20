@@ -37,7 +37,10 @@ fn all_fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Va
 
 /// Tuning settings: in Properties under Advanced, never on the card (22 §3.1).
 pub(crate) fn advanced(name: &str) -> bool {
-    matches!(name, "int_overflow" | "float_policy" | "window_ms")
+    matches!(
+        name,
+        "int_overflow" | "float_policy" | "window_ms" | "max_iterations"
+    )
 }
 
 /// The settings a card shows, in order: When's in the order its mode needs, others as

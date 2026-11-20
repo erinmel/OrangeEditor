@@ -7,7 +7,7 @@
 //! and Error distinct by construction. Result successes box only when their
 //! payload can itself carry the Err tag. Secrets are never values.
 
-mod base64;
+pub mod base64;
 mod handle;
 pub use handle::HandleValue;
 pub mod literal_codec;

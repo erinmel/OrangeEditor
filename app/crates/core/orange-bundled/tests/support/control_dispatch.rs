@@ -74,6 +74,73 @@ fn run_all(run: &mut Run, budget: usize) {
 }
 
 #[test]
+fn inspect_error_reports_the_code_of_a_captured_fault() {
+    let (package, snapshot) = catalog();
+    let base = graph(
+        &package,
+        vec![
+            core(1, "on-start"),
+            math(2, "divide", 8, 0),
+            attempt(3, "core/u64@1"),
+            matcher(4, "core/u64@1"),
+            var_node(5, "set-variable", 100),
+        ],
+        vec![
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 2, "quotient", 3, "value"),
+            edge(3, 3, "result", 4, "result"),
+            edge(4, 4, "err", 5, "in"),
+            edge(5, 4, "error", 6, "fault"),
+            edge(6, 6, "result", 5, "value"),
+        ],
+        vec![],
+    );
+    let mut raw: Json = serde_json::from_str(&to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([variable(100, "run", "core/string@1", None)]);
+    let key = package.text_provider_key();
+    raw["package_lock"].as_array_mut().unwrap().push(json!({
+        "id": key.package, "version": key.version, "content_digest": key.content_digest
+    }));
+    let definition = orange_bundled::text_definitions()
+        .unwrap()
+        .into_iter()
+        .find(|definition| definition.definition.id.as_str() == "org.orange.text/inspect-error")
+        .unwrap();
+    let orange_model::catalog::Ports::Declared(ports) = definition.ports else {
+        unreachable!()
+    };
+    raw["signatures"]["inspect"] = serde_json::to_value(orange_model::signature::project(
+        definition.kind,
+        ports,
+        &Default::default(),
+    ))
+    .unwrap();
+    raw["nodes"].as_array_mut().unwrap().push(json!({
+        "id": id(6), "definition_id": "org.orange.text/inspect-error",
+        "definition_version": 1, "config_version": 1, "signature": "inspect",
+        "provider": {"package": key.package, "version": key.version, "id": key.id}
+    }));
+    let doc = from_json(&raw.to_string()).unwrap();
+    let analysis = analyze(&doc, &snapshot);
+    let plan = Arc::new(
+        compile_control(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &package,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    let mut run = Run::start(plan, &doc, &snapshot, 1, RunOptions::default()).unwrap();
+    run_all(&mut run, 1);
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&Value::Str(Arc::new("core/DivideByZero".to_owned())))
+    );
+}
+
+#[test]
 fn switch_matches_source_cases_preserving_sparse_instances_and_unconnected_arms() {
     let groups = [
         (

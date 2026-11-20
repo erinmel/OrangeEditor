@@ -6,8 +6,8 @@ use orange_model::Value;
 use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
 use orange_model::document::{ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
 use orange_model::id::TypeExpr;
-use orange_model::value::ListRepr;
 use orange_model::value::shape::VALUE_CHARGE;
+use orange_model::value::{ListRepr, base64};
 use serde_json::json;
 
 use crate::{BindingError, CatalogError, KernelError, MAX_COLLECTION_BYTES, MathPackage};
@@ -34,6 +34,12 @@ pub enum TextOperation {
     ToLowercase,
     Split,
     Join,
+    Format,
+    InspectError,
+    EncodeBase64,
+    DecodeBase64,
+    EncodeHex,
+    DecodeHex,
 }
 
 /// Which ends of the text `trim` takes whitespace from.
@@ -58,7 +64,7 @@ const OPTION_U64: &str = "core/option@1<core/u64@1>";
 const LIST: &str = "core/list@1<core/string@1>";
 
 impl TextOperation {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 20] = [
         Self::ByteLength,
         Self::ScalarLength,
         Self::Concat,
@@ -73,6 +79,12 @@ impl TextOperation {
         Self::ToLowercase,
         Self::Split,
         Self::Join,
+        Self::Format,
+        Self::InspectError,
+        Self::EncodeBase64,
+        Self::DecodeBase64,
+        Self::EncodeHex,
+        Self::DecodeHex,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -91,6 +103,12 @@ impl TextOperation {
             Self::ToLowercase => "org.orange.text/to-lowercase",
             Self::Split => "org.orange.text/split",
             Self::Join => "org.orange.text/join",
+            Self::Format => "org.orange.text/format",
+            Self::InspectError => "org.orange.text/inspect-error",
+            Self::EncodeBase64 => "org.orange.text/encode-base64",
+            Self::DecodeBase64 => "org.orange.text/decode-base64",
+            Self::EncodeHex => "org.orange.text/encode-hex",
+            Self::DecodeHex => "org.orange.text/decode-hex",
         }
     }
 
@@ -118,6 +136,13 @@ impl TextOperation {
             ],
             Self::Split => &[("text", STRING), ("separator", STRING)],
             Self::Join => &[("items", LIST), ("separator", STRING)],
+            Self::Format => &[
+                ("template", STRING),
+                ("arguments", "core/list@1<core/json@1>"),
+            ],
+            Self::InspectError => &[("fault", "core/error@1")],
+            Self::EncodeBase64 | Self::EncodeHex => &[("bytes", "core/bytes@1")],
+            Self::DecodeBase64 | Self::DecodeHex => &[("text", STRING)],
         }
     }
 
@@ -131,6 +156,7 @@ impl TextOperation {
             Self::Contains | Self::StartsWith | Self::EndsWith => BOOL,
             Self::Find => OPTION_U64,
             Self::Split => LIST,
+            Self::DecodeBase64 | Self::DecodeHex => "core/bytes@1",
             _ => STRING,
         }
     }
@@ -225,6 +251,107 @@ fn limit(bytes: usize) -> Result<(), KernelError> {
     } else {
         Ok(())
     }
+}
+
+fn append(out: &mut String, text: &str) -> Result<(), KernelError> {
+    limit(out.len().saturating_add(text.len()))?;
+    out.push_str(text);
+    Ok(())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    let (pairs, remainder) = text.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
+        .map(|&[high, low]| {
+            let high = char::from(high).to_digit(16)?;
+            let low = char::from(low).to_digit(16)?;
+            Some((high * 16 + low) as u8)
+        })
+        .collect()
+}
+
+fn format_text(mut template: &str, arguments: &ListRepr) -> Result<String, KernelError> {
+    limit(template.len())?;
+    let mut output = String::new();
+    while let Some(brace) = template.find(['{', '}']) {
+        let (plain, control) = template.split_at(brace);
+        append(&mut output, plain)?;
+        if control.starts_with("{{") || control.starts_with("}}") {
+            append(&mut output, &control[..1])?;
+            template = &control[2..];
+            continue;
+        }
+        let (placeholder, next) = control
+            .strip_prefix('{')
+            .and_then(|text| text.split_once('}'))
+            .ok_or(KernelError::Domain)?;
+        let (index, precision) = match placeholder.split_once(":.") {
+            Some((index, precision)) => {
+                let precision = decimal(precision)
+                    .filter(|&digits| digits <= 16)
+                    .ok_or(KernelError::Domain)?;
+                (index, Some(precision))
+            }
+            None => (placeholder, None),
+        };
+        let index = decimal(index).ok_or(KernelError::Domain)?;
+        let Value::Json(value) = arguments.get(index).ok_or(KernelError::OutOfRange)? else {
+            return Err(KernelError::InputContract);
+        };
+        let value = value.as_str().trim();
+        if let Some(precision) = precision {
+            append_decimal(&mut output, value, precision)?;
+        } else if value.starts_with('"') {
+            let value: String =
+                serde_json::from_str(value).map_err(|_| KernelError::InputContract)?;
+            append(&mut output, &value)?;
+        } else {
+            append(&mut output, value)?;
+        }
+        template = next;
+    }
+    append(&mut output, template)?;
+    Ok(output)
+}
+
+fn decimal(text: &str) -> Option<usize> {
+    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
+    }
+}
+
+fn append_decimal(output: &mut String, value: &str, precision: usize) -> Result<(), KernelError> {
+    let magnitude = value.strip_prefix('-').unwrap_or(value);
+    if !magnitude.is_empty() && magnitude.bytes().all(|byte| byte.is_ascii_digit()) {
+        append(output, value)?;
+        if precision > 0 {
+            append(output, ".")?;
+            append(output, &"0000000000000000"[..precision])?;
+        }
+    } else {
+        let number: f64 = value.parse().map_err(|_| KernelError::Domain)?;
+        if !number.is_finite() {
+            return Err(KernelError::NonFinite);
+        }
+        append(output, &format!("{number:.precision$}"))?;
+    }
+    Ok(())
 }
 /// Byte offset of scalar index `index`, or the length for `index == count`.
 fn scalar_offset(text: &str, index: u64) -> Option<usize> {
@@ -412,6 +539,40 @@ impl ResolvedText {
                     }
                 }
                 text(joined)
+            }
+            Format => {
+                let Value::List(arguments) = &inputs[1] else {
+                    return Err(KernelError::InputContract);
+                };
+                text(format_text(first()?, arguments)?)
+            }
+            InspectError => {
+                let Value::Err(error) = &inputs[0] else {
+                    return Err(KernelError::InputContract);
+                };
+                text(error.code.clone())
+            }
+            EncodeBase64 | EncodeHex => {
+                let Value::Bytes(bytes) = &inputs[0] else {
+                    return Err(KernelError::InputContract);
+                };
+                if self.operation == EncodeBase64 {
+                    limit(bytes.len().div_ceil(3).saturating_mul(4))?;
+                    text(base64::encode(bytes))
+                } else {
+                    limit(bytes.len().saturating_mul(2))?;
+                    text(encode_hex(bytes))
+                }
+            }
+            DecodeBase64 | DecodeHex => {
+                let encoded = first()?;
+                limit(encoded.len())?;
+                let decoded = if self.operation == DecodeBase64 {
+                    base64::decode(encoded)
+                } else {
+                    decode_hex(encoded)
+                };
+                Value::Bytes(Arc::new(decoded.ok_or(KernelError::Domain)?))
             }
         })
     }

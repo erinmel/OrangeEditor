@@ -139,7 +139,7 @@ diagnostics! { subject;
                 "Break and continue need an enclosing loop body in the same function.".into()
             });
     CycleSyncControl => ("E-CYCLE-SYNC-CONTROL", "core/graph-cycle-sync-control", Error, "A control cycle needs a node that always suspends.".into());
-    LoopUnbounded => ("E-LOOP-UNBOUNDED", "core/graph-loop-unbounded", Error, "A while loop requires a finite positive max_iterations.".into());
+    LoopUnbounded => ("E-LOOP-UNBOUNDED", "core/graph-loop-unbounded", Error, "The loop requires a positive maximum iteration count.".into());
     ZoneStructure => ("E-ZONE-STRUCTURE", "core/graph-zone-structure", Error, {
                 "A zone needs a matching begin and end, a pure body and no values leaving it except through the end."
                     .into()

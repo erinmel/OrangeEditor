@@ -756,7 +756,13 @@ Test families V01/V02/V03/V05/V08 and the G-suite in [11 §18](11-graph-language
 
 ### Implemented pure-export compiler slice (E1a)
 
-compile_pure accepts a GraphDocument, Arc registry, unforgeable ValidationAnalysis, trusted resolver and CompileOptions. It rejects stale document state or registry generation before callbacks and requires is_ready_for_lowering. Every root node must be pure with eager, nonvariadic, nonoptional data ports, computed outputs and one of bool/i32/i64/u32/u64/f32/f64/JSON. Unsupported root semantics fail even without an export. Only export-reachable nodes bind and fold. Input selection is incoming edge, instance literal, then fresh descriptor default; shadowed literals are never decoded. Iterative DFS follows persisted export order and declared input order, visiting shared dependencies once. No recursive graph traversal or input-by-output dependency expansion is used in this lowering pass.
+compile_pure accepts a GraphDocument, Arc registry, unforgeable ValidationAnalysis, trusted resolver and CompileOptions. It rejects stale document state or registry generation before callbacks and requires is_ready_for_lowering. Every root node must be pure with supported data types, nonoptional data ports and computed outputs. Language-owned projections declare the lazy inputs they demand. Unsupported root semantics fail even without an export. Only export-reachable nodes bind and fold. Inputs resolve in order from the incoming edge, instance literal or fresh descriptor default. Iterative DFS follows persisted export order and declared input order, visiting shared dependencies once.
+
+Bounded eager variadic data inputs are admitted for pure kernel bindings.
+The compiler expands each variadic descriptor into concrete input keys in saved
+instance order, charges them against graph and slot limits, and checks that the
+kernel uses that exact order. This applies in pure preview, runtime data pulls,
+and graph-local function bodies.
 
 Each successful binding must declare exactly the fresh input/output port order. Fold outputs are type checked. The first input fault propagates without calling the dependent operation, retaining producer provenance. Each directly failing folded operation emits W-CONST-ERROR once. Pure dependency callbacks may still fold even when another input fault will determine the consumer result; callbacks must be deterministic and effect free. This is constant evaluation, not runtime pull scheduling.
 

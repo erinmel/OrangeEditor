@@ -11,7 +11,7 @@ use orange_compiler::{CompileOptions, FoldedValue, compile_pure};
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::conversion::{ConverterConfig, ConverterKey, ConverterProvider};
 use orange_model::document::DefinitionRef;
-use orange_model::value::JsonText;
+use orange_model::value::{JsonText, ListRepr, MAX_JSON_TEXT_BYTES, MapRepr};
 use orange_model::{GraphDocument, Value, analyze, from_json};
 use proptest::prelude::*;
 use serde_json::{Value as Json, json};
@@ -49,6 +49,53 @@ fn text_of(value: Result<Value, KernelError>) -> String {
         Ok(Value::Json(text)) => text.as_str().to_owned(),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn json_builders_preserve_order_number_text_and_explicit_null() {
+    let number = "1.0000000000000000000002e-10";
+    let fields = MapRepr::new(vec![(s("quoted\""), j(number)), (s("z"), j("null"))]).unwrap();
+    let object = eval(Op::BuildObject, &[Value::Map(Arc::new(fields))]).unwrap();
+    assert_eq!(
+        text_of(Ok(object.clone())),
+        format!(r#"{{"quoted\"":{number},"z":null}}"#)
+    );
+    let items = ListRepr::Values(vec![object, j("true"), j("null")].into_boxed_slice());
+    assert_eq!(
+        text_of(eval(Op::BuildArray, &[Value::List(Arc::new(items))])),
+        format!(r#"[{{"quoted\"":{number},"z":null}},true,null]"#)
+    );
+    assert_eq!(text_of(eval(Op::Null, &[])), "null");
+    assert_eq!(
+        text_of(eval(Op::FromU64, &[Value::U64(u64::MAX)])),
+        u64::MAX.to_string()
+    );
+    assert_eq!(text_of(eval(Op::FromString, &[s("a\n\"")])), r#""a\n\"""#);
+    assert_eq!(
+        eval(Op::FromF64, &[Value::F64(f64::NAN)]),
+        Err(KernelError::Domain)
+    );
+}
+
+#[test]
+fn json_field_edits_replace_duplicates_and_enforce_output_budget() {
+    let object = j(r#"{"name":1,"keep":0.000000000000000000002,"\u006eame":3}"#);
+    let updated = eval(Op::SetField, &[object, s("name"), j("null")]).unwrap();
+    assert_eq!(
+        text_of(Ok(updated.clone())),
+        r#"{"keep":0.000000000000000000002,"name":null}"#
+    );
+    assert_eq!(eval(Op::Get, &[updated.clone(), s("name")]), Ok(j("null")));
+    let removed = eval(Op::RemoveField, &[updated, s("name")]).unwrap();
+    assert_eq!(eval(Op::Get, &[removed, s("name")]), Ok(Value::None));
+    assert_eq!(
+        eval(Op::RemoveField, &[j("[]"), s("name")]),
+        Err(KernelError::Domain)
+    );
+    assert_eq!(
+        eval(Op::FromString, &[s(&"\n".repeat(MAX_JSON_TEXT_BYTES / 2))]),
+        Err(KernelError::OutOfRange)
+    );
 }
 
 #[test]

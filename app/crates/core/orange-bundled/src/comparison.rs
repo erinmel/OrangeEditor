@@ -237,7 +237,7 @@ impl MathPackage {
 /// The Core total orders of 11 §5.4: integers numerically, bool with false before true,
 /// strings by code point (equal to UTF-8 byte order), duration and timestamp by signed
 /// nanoseconds. Floats have no Core order; enum orders are never derived.
-fn host_ord(shape: &ValueShape) -> bool {
+pub(crate) fn host_ord(shape: &ValueShape) -> bool {
     matches!(
         shape,
         ValueShape::Bool
@@ -265,7 +265,7 @@ fn ieee_order(shape: &ValueShape, a: &Value, b: &Value) -> Result<Option<Orderin
     }
 }
 
-fn total_order(shape: &ValueShape, a: &Value, b: &Value) -> Option<Ordering> {
+pub(crate) fn total_order(shape: &ValueShape, a: &Value, b: &Value) -> Option<Ordering> {
     Some(match (shape, a, b) {
         (ValueShape::Bool, Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (ValueShape::I32, Value::I32(a), Value::I32(b)) => a.cmp(b),

@@ -34,8 +34,9 @@ separate gates; a cancellation signal cannot undo a remote side effect.
 **Runtime Watch.** `core/on-watch@1` (When) is a generic host Entry with required
 `watch: T` input, payload-sourced `value: T` output and the ordinary saved activation
 policy. Config versions 1 and 2 share `changed` (host-supported exact Eq) and
-`rising` (false to true on `core/bool@1`). Version 2 also supports the numeric
-conditions in §10.5. The input can read literals, pure nodes, initialized run
+`rising` (false to true on `core/bool@1`). Version 2 also supports `falling`
+(true to false on `core/bool@1`) and the numeric conditions in §10.5.
+The input can read literals, pure nodes, initialized run
 variables and live values. The cold baseline is computed
 under pump fuel before ordinary strands and does not fire. A failed evaluation
 suppresses delivery, preserves the previous successful baseline and exposes the
@@ -694,7 +695,7 @@ A run is reproducible when its plan hash, seed, virtual clock, ingestion log (ev
 | Data cycle with no state boundary | `a → add → a` | **No**: `E-CYCLE-DATA` with the cycle path | — |
 | Data feedback through state | Register `current → add → next`; Get V → … → Set V | **Yes** | `state` and `execution` sources declare no dependency on inputs, so the dependency graph stays acyclic |
 | Pure iteration | Repeat, Map, Fold or Filter zone | **Yes** | Implicit back link between begin and end; bounded by count or list length; yields at iteration boundaries |
-| Structured control loop | Count, For Each, While, iterators | **Yes** | Implicit back edge; While requires finite `max_iterations`; every iteration is a yield point |
+| Structured control loop | Count, For Range, For Each, While, iterators | **Yes** | Implicit back edge. While and For Range require a positive `max_iterations`. Every iteration is a yield point. |
 | Control cycle through a suspension point | `Wait 1 s → do work → back to Wait` | **Yes** | Every cycle contains a node with `suspends: always`; it is cancellable |
 | Control cycle through only Yield | Busy loop | Yes, with `W-BUSY-LOOP` | Yield suspends with zero delay; it is fair but burns CPU |
 | Synchronous control cycle | Action A → B → back to A, no suspension | **No**: `E-CYCLE-SYNC-CONTROL` | Use a loop node or add a suspension |
@@ -718,6 +719,7 @@ Current control-cycle validation (V9) is `validate_control_cycles`: it builds C 
 ### 8.3 Loop semantics
 
 - The collection for `for-each` is the immutable value at loop entry. `count < 0` fails with `core/OutOfRange`. The While `condition` is pulled in a new epoch before each iteration.
+- For Range captures `start`, `end` and `step` in one demand epoch. It publishes the current signed integer as `index` in Body and excludes End. Start defaults to zero and Step defaults to one. A step pointing away from End completes with no iterations. A zero step fails with `core/ZeroRangeStep`. The node checks the iteration count before entering Body and fails with `core/LoopBudgetExceeded` if the range exceeds `max_iterations`.
 - An iteration ends when the body region instance completes. Async work in the body is awaited.
 - **Break** cancels the remaining strands of the current body instance, including Fork branches, then fires `completed`. **Continue** cancels them and starts the next iteration. Both target the innermost enclosing loop. They may sit inside nested Sequence/Fork/Branch regions, but never across a function boundary (`E-BREAK-OUTSIDE-LOOP`).
 - Exceeding `max_iterations` fires `failed` with `core/LoopBudgetExceeded`.
@@ -737,6 +739,7 @@ Collection snapshots and current iteration values reserve nominal activation byt
 | `core/fork` | in; `branch#k` regions; `completed`; config `join` | O3 |
 | `core/for-each` | in; `items: list<$T>` or `map<$K,$V>`; `body`; `completed`; `element`/`key`/`value`, `index: i64` (iteration) | §8.3 |
 | `core/count` | in; `count: i64`; `body`; `completed`; `index` | §8.3 |
+| `core/for-range` | in, start/end/step as i64, body, completed, failed, iteration index as i64 | §8.3 |
 | `core/while` | in; `condition: bool`; `body`; `completed`; config `max_iterations` (required, editor default 10,000) | §8.3 |
 | `core/break`, `core/continue` | in | Terminators |
 | `core/gate` | `enter`, `open`, `close`, `toggle`; `then`; `is_open` (state); config `start_open` | Run-scoped node state |
@@ -749,6 +752,7 @@ Collection snapshots and current iteration values reserve nominal activation byt
 | `core/select`, `core/and`, `core/or`, `core/coalesce` | lazy data inputs | Pure; evaluate only the selected inputs |
 | `core/try` | lazy `value: $T` → `result: result<$T>` | Captures evaluation errors of its input cone only |
 | `core/match-result` | in; `result`; `ok`, `err`; `value` (on ok), `error` (on err) | Control |
+| `core/match-option` | in, `option`, `present`, `missing`, `value` (on present) | Control |
 | zones `core/repeat`, `core/map`, `core/fold`, `core/filter` (`-begin`/`-end` pairs) | typed carried items | Body is pure or entropy-volatile only; edges into the body are loop-invariant captures; values leave only through the end node; `E-ZONE-STRUCTURE` otherwise |
 | `core/number`, `core/whole-number`, `core/text`, `core/true-or-false`, `core/value` | `value` → `result` | Pure value nodes: publish the literal typed on `value` (below) |
 
@@ -849,7 +853,7 @@ Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-sto
 | `core/on-timer` | Interval or once (`core/on-timeout`); monotonic; scheduled against a base time, so no cumulative drift; config `first: immediate/after-interval`, missed-tick `skip`/`coalesce` (default)/`catch-up(max)` | `scheduled_at`, `missed: u64` |
 | `core/on-event` | Matching custom emit | Event payload type |
 | `core/on-variable-changed` | Segment end, if the value changed (`eq`) | `value`, `previous` |
-| `core/on-watch` | A watched value changes, becomes true or qualifies under its numeric condition (§10.5) | `value` |
+| `core/on-watch` | A watched value changes, becomes true or false, or qualifies under its numeric condition (§10.5) | `value` |
 | Package entries | Event-source contract with root data inputs (§10.5) | Declared type |
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
@@ -1167,6 +1171,7 @@ deferred, not inferred from these correctness bounds.
 
 - A pure error propagates along data edges to the consumption site. The consuming exec node does not execute: its implicit `failed` fires with `error`. If `failed` is unconnected, the strand faults (§9.3).
 - `core/try` turns errors in its input cone into `result<T>` values. `core/match-result` branches on them. This is the only way an error becomes ordinary data, which preserves the distinction between None, missing, JSON null and Error.
+- `core/match-option` consumes `option<T>`. It takes Missing for an absent value and Present for a value, publishing the unpacked T only on Present. An upstream fault takes Failed. Present values can carry an inner None or a JSON null.
 - Errors from a preview or export are shown on the node and in diagnostics. They never fault a run.
 - Bundled native kernels MUST NOT panic on any input (property and fuzz tests). Containment limits are those of [04](04-expansion-plugins.md).
 

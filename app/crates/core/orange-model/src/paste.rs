@@ -2,7 +2,7 @@
 //!
 //! Every pasted node, edge and declaration gets a fresh ID, so pasted content never aliases
 //! the original. Config references are discovered and rewritten only at the fields registered
-//! definitions declare. Other config values are data.
+//! definitions declare. Pasted loop boundaries also get fresh body-local pairing keys.
 //!
 //! Declarations referenced by copied nodes travel with the fragment, transitively through
 //! function bodies. On paste, a declaration the target already has (same ID) is reused, so
@@ -35,6 +35,7 @@ use crate::edit::{DeclId, DocCommand};
 use crate::error::{IdError, PasteError};
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, VariableId};
 use crate::signature::semantic_key;
+use crate::validation::ZoneKind;
 
 /// Copied content, independent of the source document.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -263,7 +264,30 @@ impl Fragment {
                 ..decl.clone()
             });
         }
-        let nodes = remap.nodes(&self.nodes, &mut new_id)?;
+        let mut nodes = remap.nodes(&self.nodes, &mut new_id)?;
+        let mut zones: HashSet<String> = target
+            .body(body)
+            .into_iter()
+            .flat_map(|body| body.nodes.values())
+            .filter_map(|node| zone_key(node).map(|(_, key)| key.to_owned()))
+            .collect();
+        let mut copied_zones = BTreeMap::new();
+        for node in &mut nodes {
+            if let Some((kind, key)) = zone_key(node) {
+                let fresh = copied_zones
+                    .entry((kind, key.to_owned()))
+                    .or_insert_with(|| {
+                        let mut fresh = node.id.to_string();
+                        while !zones.insert(fresh.clone()) {
+                            fresh.push('_');
+                        }
+                        fresh
+                    });
+                let _ = node
+                    .config
+                    .insert("zone".to_owned(), Json::String(fresh.clone()));
+            }
+        }
         // Fields are public, so a hand-built fragment may hold edges to nodes it lacks,
         // including nodes of its own function bodies.
         let members: HashSet<NodeId> = self.nodes.iter().map(|node| node.id).collect();
@@ -344,6 +368,16 @@ impl Fragment {
             nodes: node_map,
         })
     }
+}
+
+fn zone_key(node: &NodeInstance) -> Option<(ZoneKind, &str)> {
+    let (kind, _) = ZoneKind::marker(node.definition.id.as_str())?;
+    let key = node
+        .config
+        .get("zone")?
+        .as_str()
+        .filter(|key| !key.is_empty())?;
+    Some((kind, key))
 }
 
 /// Typed declaration IDs are remapped separately so equal UUID text in different namespaces

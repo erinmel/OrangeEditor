@@ -51,6 +51,44 @@ fn unit(op: Op, unit: &str, inputs: &[Value]) -> Result<Value, KernelError> {
 }
 
 #[test]
+fn format_preserves_exact_integers_and_formats_decimal_precision() {
+    let arguments = Value::List(Arc::new(ListRepr::Values(
+        [r#""hello\nworld""#, "18446744073709551615", "3.14159265"]
+            .map(|text| {
+                Value::Json(Arc::new(
+                    orange_model::value::JsonText::try_from(text).unwrap(),
+                ))
+            })
+            .into(),
+    )));
+    assert_eq!(
+        eval(Op::Format, &[s("{{{0}}} {1:.2} {2:.3}"), arguments.clone()]),
+        Ok(s("{hello\nworld} 18446744073709551615.00 3.142"))
+    );
+    assert_eq!(
+        eval(Op::Format, &[s("{3}"), arguments.clone()]),
+        Err(KernelError::OutOfRange)
+    );
+    assert_eq!(
+        eval(Op::Format, &[s("}"), arguments]),
+        Err(KernelError::Domain)
+    );
+}
+
+#[test]
+fn byte_encodings_round_trip_and_reject_invalid_input() {
+    let bytes = Value::Bytes(Arc::new(vec![0, 255, 10]));
+    for (encode, decode, encoded, bad) in [
+        (Op::EncodeHex, Op::DecodeHex, "00ff0a", "f"),
+        (Op::EncodeBase64, Op::DecodeBase64, "AP8K", "Zh=="),
+    ] {
+        assert_eq!(eval(encode, std::slice::from_ref(&bytes)), Ok(s(encoded)));
+        assert_eq!(eval(decode, &[s(encoded)]), Ok(bytes.clone()));
+        assert_eq!(eval(decode, &[s(bad)]), Err(KernelError::Domain));
+    }
+}
+
+#[test]
 fn all_sixteen_operations_have_known_answers() {
     for (op, inputs, expected) in [
         (

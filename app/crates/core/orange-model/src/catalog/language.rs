@@ -198,7 +198,7 @@ const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
 const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
-const INTRINSICS: [Intrinsic; 60] = [
+const INTRINSICS: [Intrinsic; 62] = [
     rule(ids::ON_START, ENTRY, None),
     rule(ids::ON_STOP, ENTRY, None),
     rule(ids::ON_MANUAL, ENTRY, None),
@@ -242,6 +242,7 @@ const INTRINSICS: [Intrinsic; 60] = [
     rule(ids::FORK, ACTION, None),
     rule(ids::FOR_EACH, ITERATOR, None),
     rule(ids::COUNT, ITERATOR, None),
+    rule(ids::FOR_RANGE, ITERATOR, None),
     rule(ids::WHILE, ITERATOR, None),
     terminator(ids::BREAK),
     terminator(ids::CONTINUE),
@@ -258,6 +259,7 @@ const INTRINSICS: [Intrinsic; 60] = [
     rule(ids::COALESCE, PURE, None),
     rule(ids::TRY, PURE, None),
     rule(ids::MATCH_RESULT, ACTION, None),
+    rule(ids::MATCH_OPTION, ACTION, None),
     rule(ids::REPEAT_BEGIN, PURE, None),
     rule(ids::REPEAT_END, PURE, None),
     rule(ids::MAP_BEGIN, PURE, None),

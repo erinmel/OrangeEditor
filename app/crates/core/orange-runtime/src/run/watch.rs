@@ -518,9 +518,11 @@ impl Run {
                 .as_ref()
                 .is_some_and(|old| watch.ty().equal_values(old, &value) == Some(false))
                 .then_some(cause),
-            WatchCondition::Rising => (previous == &Some(Value::Bool(false))
-                && value == Value::Bool(true))
-            .then_some(cause),
+            condition @ (WatchCondition::Rising | WatchCondition::Falling) => {
+                let target = matches!(condition, WatchCondition::Rising);
+                (previous == &Some(Value::Bool(!target)) && value == Value::Bool(target))
+                    .then_some(cause)
+            }
             WatchCondition::Numeric {
                 test,
                 hold_ns,

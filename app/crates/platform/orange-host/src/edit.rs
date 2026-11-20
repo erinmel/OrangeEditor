@@ -7,6 +7,7 @@
 use super::*;
 use draft::refused;
 use orange_model::binding::{NewNode, new_node_edit};
+use orange_model::catalog::intrinsic_id as intrinsic;
 use orange_model::catalog::{NominalAccess, Ports, RegistrySnapshot};
 use orange_model::document::ConfigValue;
 use orange_model::document::{
@@ -86,7 +87,10 @@ fn new_config(
     registry: &RegistrySnapshot,
 ) -> Result<ConfigValue, HostError> {
     let mut config = ConfigValue::new();
-    if found.definition.id.as_str() == "core/while" {
+    if matches!(
+        found.definition.id.as_str(),
+        "core/while" | "core/for-range"
+    ) {
         let _ = config.insert("max_iterations".to_owned(), json!(NEW_WHILE_BOUND));
     }
     if found.definition.id.as_str() == "core/on-watch" {
@@ -380,6 +384,58 @@ impl Host {
         at: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         self.node_commands(draft, definition, at, "node")
+    }
+
+    /// Places both halves of a collection or state loop with a passthrough body.
+    /// Returns `None` for definitions that can be placed on their own.
+    pub fn place_loop(
+        &self,
+        draft: &mut Draft,
+        definition: &str,
+        start: [f32; 2],
+        finish: [f32; 2],
+    ) -> Result<Option<[NodeId; 2]>, HostError> {
+        let (end, from, to) = match definition {
+            intrinsic::REPEAT_BEGIN => (intrinsic::REPEAT_END, "carried", "next"),
+            intrinsic::FOLD_BEGIN => (intrinsic::FOLD_END, "accumulator", "next"),
+            intrinsic::MAP_BEGIN => (intrinsic::MAP_END, "element", "item"),
+            intrinsic::FILTER_BEGIN => (intrinsic::FILTER_END, "element", "item"),
+            _ => return Ok(None),
+        };
+        let (begin, mut commands) = self.node_commands(draft, definition, start, "loop-start")?;
+        let (end, finish_commands) = self.node_commands(draft, end, finish, "loop-finish")?;
+        commands.extend(finish_commands);
+        let zone = draft.fresh_id("loop-zone");
+        for node in [begin, end] {
+            commands.push(DocCommand::SetConfig {
+                node,
+                config_version: 1,
+                config: [("zone".to_owned(), json!(zone))].into_iter().collect(),
+            });
+        }
+        commands.push(DocCommand::Connect {
+            edge: Edge {
+                id: draft
+                    .fresh_id("loop-wire")
+                    .parse()
+                    .map_err(|error| refused(&error))?,
+                from: port_ref((begin, from))?,
+                to: port_ref((end, to))?,
+                extensions: Default::default(),
+            },
+        });
+        if definition == intrinsic::FILTER_BEGIN {
+            let ty = "core/bool@1".parse().map_err(|error| refused(&error))?;
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((end, "keep"))?,
+                literal: Some(orange_model::document::literal::Literal::value(
+                    ty,
+                    json!(true),
+                )),
+            });
+        }
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(Some([begin, end]))
     }
 
     fn node_commands(

@@ -131,8 +131,14 @@ impl PureKernelResolver for MathPackage {
             });
         }
         if let Some(operation) = CollectionOperation::from_definition_id(definition.id.as_str()) {
-            let first = operation.inputs()[0].0;
-            let container = port_type(request, first)?;
+            let container_port = match operation {
+                CollectionOperation::BuildList
+                | CollectionOperation::BuildMap
+                | CollectionOperation::OptionSome
+                | CollectionOperation::OptionNone => operation.output_port(),
+                _ => operation.inputs()[0].0,
+            };
+            let container = port_type(request, container_port)?;
             let kernel = self
                 .resolve_collection(
                     request.snapshot().clone(),
@@ -143,9 +149,15 @@ impl PureKernelResolver for MathPackage {
                     request.config(),
                 )
                 .map_err(unbound)?;
-            let inputs: Vec<&str> = operation.inputs().iter().map(|(name, _)| *name).collect();
+            let inputs = request
+                .signature()
+                .ports
+                .iter()
+                .filter(|port| port.direction == orange_model::document::PortDirection::Input)
+                .flat_map(|port| request.port_keys(port))
+                .collect();
             return Ok(KernelBinding {
-                inputs: ports(&inputs)?,
+                inputs,
                 outputs: ports(&[operation.output_port()])?,
                 kernel: Arc::new(Native::Collection(kernel)),
             });
@@ -292,14 +304,24 @@ impl PureKernel for Native {
         let [output] = outputs else {
             return Err(CONTRACT);
         };
-        *output = evaluated.map_err(|error| KernelFault {
-            code: error.code().into(),
-            message_key: error.message_key().into(),
-            message: match (self, error) {
-                // Math names the broken contract the way every bundled kernel does.
-                (Self::Math(_), crate::KernelError::InputContract) => CONTRACT.message,
-                (_, other) => other.message(),
-            },
+        *output = evaluated.map_err(|error| {
+            if matches!(self, Self::Text(kernel) if kernel.operation() == TextOperation::Format)
+                && error == crate::KernelError::OutOfRange
+            {
+                return KernelFault {
+                    code: "org.orange.text/MissingFormatArgument".into(),
+                    message_key: "org.orange.text/missing-format-argument".into(),
+                    message: "The template refers to an argument that is missing.",
+                };
+            }
+            KernelFault {
+                code: error.code().into(),
+                message_key: error.message_key().into(),
+                message: match (self, error) {
+                    (Self::Math(_), crate::KernelError::InputContract) => CONTRACT.message,
+                    (_, other) => other.message(),
+                },
+            }
         })?;
         Ok(())
     }

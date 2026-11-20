@@ -1,4 +1,4 @@
-//! `org.orange.json` parsing and reads over validated `core/json@1` text. Navigation works
+//! `org.orange.json` operations over validated `core/json@1` text. Navigation works
 //! on the text itself, so extracted values keep their exact number text (03).
 
 use std::{borrow::Cow, sync::Arc};
@@ -6,13 +6,14 @@ use std::{borrow::Cow, sync::Arc};
 use orange_model::Value;
 use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
 use orange_model::document::{ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+use orange_model::error::JsonTextError;
 use orange_model::id::TypeExpr;
-use orange_model::value::JsonText;
+use orange_model::value::{JsonText, MAX_JSON_TEXT_BYTES};
 use serde_json::json;
 
 use crate::{BindingError, CatalogError, KernelError, MathPackage};
 
-/// Pure JSON reads. Inputs are strict; results never invent null or missing values.
+/// Pure JSON operations with separate representations for null and missing values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonOperation {
     Parse,
@@ -27,12 +28,22 @@ pub enum JsonOperation {
     AsI64,
     AsU64,
     AsF64,
+    BuildObject,
+    BuildArray,
+    SetField,
+    RemoveField,
+    FromBool,
+    FromString,
+    FromI64,
+    FromU64,
+    FromF64,
+    Null,
 }
 
 const JSON: &str = "core/json@1";
 
 impl JsonOperation {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 22] = [
         Self::Parse,
         Self::Kind,
         Self::IsNull,
@@ -45,6 +56,16 @@ impl JsonOperation {
         Self::AsI64,
         Self::AsU64,
         Self::AsF64,
+        Self::BuildObject,
+        Self::BuildArray,
+        Self::SetField,
+        Self::RemoveField,
+        Self::FromBool,
+        Self::FromString,
+        Self::FromI64,
+        Self::FromU64,
+        Self::FromF64,
+        Self::Null,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -61,6 +82,16 @@ impl JsonOperation {
             Self::AsI64 => "org.orange.json/as-i64",
             Self::AsU64 => "org.orange.json/as-u64",
             Self::AsF64 => "org.orange.json/as-f64",
+            Self::BuildObject => "org.orange.json/build-object",
+            Self::BuildArray => "org.orange.json/build-array",
+            Self::SetField => "org.orange.json/set-field",
+            Self::RemoveField => "org.orange.json/remove-field",
+            Self::FromBool => "org.orange.json/from-bool",
+            Self::FromString => "org.orange.json/from-string",
+            Self::FromI64 => "org.orange.json/from-i64",
+            Self::FromU64 => "org.orange.json/from-u64",
+            Self::FromF64 => "org.orange.json/from-f64",
+            Self::Null => "org.orange.json/null",
         }
     }
 
@@ -74,13 +105,33 @@ impl JsonOperation {
             Self::Get => &[("value", JSON), ("key", "core/string@1")],
             Self::GetPath => &[("value", JSON), ("path", "core/string@1")],
             Self::At => &[("value", JSON), ("index", "core/u64@1")],
+            Self::SetField => &[("object", JSON), ("key", "core/string@1"), ("value", JSON)],
+            Self::RemoveField => &[("object", JSON), ("key", "core/string@1")],
+            Self::Null => &[],
+            Self::BuildObject => &[("fields", "core/map@1<core/string@1,core/json@1>")],
+            Self::BuildArray => &[("items", "core/list@1<core/json@1>")],
+            Self::FromBool => &[("value", "core/bool@1")],
+            Self::FromString => &[("value", "core/string@1")],
+            Self::FromI64 => &[("value", "core/i64@1")],
+            Self::FromU64 => &[("value", "core/u64@1")],
+            Self::FromF64 => &[("value", "core/f64@1")],
             _ => &[("value", JSON)],
         }
     }
 
     pub const fn output_type(self) -> &'static str {
         match self {
-            Self::Parse => JSON,
+            Self::Parse
+            | Self::BuildObject
+            | Self::BuildArray
+            | Self::SetField
+            | Self::RemoveField
+            | Self::FromBool
+            | Self::FromString
+            | Self::FromI64
+            | Self::FromU64
+            | Self::FromF64
+            | Self::Null => JSON,
             Self::Kind => "core/string@1",
             Self::IsNull => "core/bool@1",
             Self::Get | Self::GetPath | Self::At => "core/option@1<core/json@1>",
@@ -368,6 +419,135 @@ fn members<'a>(scan: &mut Scan<'a>) -> Result<Members<'a>, KernelError> {
     }
 }
 
+#[derive(Default)]
+struct JsonOutput(Vec<u8>);
+
+impl std::io::Write for JsonOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_JSON_TEXT_BYTES - self.0.len() {
+            return Err(std::io::Error::other("JSON output exceeds the size limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl JsonOutput {
+    fn raw(&mut self, text: &str) -> Result<(), KernelError> {
+        use std::io::Write;
+        self.write_all(text.as_bytes())
+            .map_err(|_| KernelError::OutOfRange)
+    }
+
+    fn scalar(&mut self, value: impl Into<serde_json::Value>) -> Result<(), KernelError> {
+        serde_json::to_writer(self, &value.into()).map_err(|_| KernelError::OutOfRange)
+    }
+
+    fn string(&mut self, value: &str) -> Result<(), KernelError> {
+        if value.len() > MAX_JSON_TEXT_BYTES - self.0.len() {
+            return Err(KernelError::OutOfRange);
+        }
+        self.scalar(value)
+    }
+
+    fn field(&mut self, key: &str, value: &str) -> Result<(), KernelError> {
+        if self.0.len() > 1 {
+            self.raw(",")?;
+        }
+        self.string(key)?;
+        self.raw(":")?;
+        self.raw(value)
+    }
+
+    fn finish(self) -> Result<Value, KernelError> {
+        let text = String::from_utf8(self.0).map_err(|_| KernelError::InputContract)?;
+        let json = JsonText::new(text).map_err(|error| match error {
+            JsonTextError::TooLarge { .. } | JsonTextError::TooDeep => KernelError::OutOfRange,
+            _ => KernelError::InputContract,
+        })?;
+        Ok(Value::Json(Arc::new(json)))
+    }
+}
+
+fn update_object(
+    output: &mut JsonOutput,
+    text: &str,
+    key: &str,
+    replacement: Option<&str>,
+) -> Result<(), KernelError> {
+    let mut scan = Scan::new(text);
+    if scan.peek() != Some(b'{') {
+        return Err(KernelError::Domain);
+    }
+    let fields = members(&mut scan)?;
+    let last = fields.iter().rposition(|(name, _)| name == key);
+    output.raw("{")?;
+    for (index, (name, span)) in fields.into_iter().enumerate() {
+        if name != key {
+            output.field(&name, scan.slice(span))?;
+        } else if Some(index) == last
+            && let Some(value) = replacement
+        {
+            output.field(key, value)?;
+        }
+    }
+    if last.is_none()
+        && let Some(value) = replacement
+    {
+        output.field(key, value)?;
+    }
+    output.raw("}")
+}
+
+fn construct(op: JsonOperation, inputs: &[Value]) -> Result<Value, KernelError> {
+    use JsonOperation as Op;
+    let mut output = JsonOutput::default();
+    match (op, inputs) {
+        (Op::BuildObject, [Value::Map(fields)]) => {
+            output.raw("{")?;
+            for (key, value) in fields.entries() {
+                let (Value::Str(key), Value::Json(value)) = (key, value) else {
+                    return Err(KernelError::InputContract);
+                };
+                output.field(key, value.as_str())?;
+            }
+            output.raw("}")?;
+        }
+        (Op::BuildArray, [Value::List(items)]) => {
+            output.raw("[")?;
+            for index in 0..items.len() {
+                let Some(Value::Json(value)) = items.get(index) else {
+                    return Err(KernelError::InputContract);
+                };
+                if index > 0 {
+                    output.raw(",")?;
+                }
+                output.raw(value.as_str())?;
+            }
+            output.raw("]")?;
+        }
+        (Op::SetField, [Value::Json(object), Value::Str(key), Value::Json(value)]) => {
+            update_object(&mut output, object.as_str(), key, Some(value.as_str()))?;
+        }
+        (Op::RemoveField, [Value::Json(object), Value::Str(key)]) => {
+            update_object(&mut output, object.as_str(), key, None)?;
+        }
+        (Op::FromBool, [Value::Bool(value)]) => output.scalar(*value)?,
+        (Op::FromString, [Value::Str(value)]) => output.string(value)?,
+        (Op::FromI64, [Value::I64(value)]) => output.scalar(*value)?,
+        (Op::FromU64, [Value::U64(value)]) => output.scalar(*value)?,
+        (Op::FromF64, [Value::F64(value)]) if value.is_finite() => output.scalar(*value)?,
+        (Op::FromF64, [Value::F64(_)]) => return Err(KernelError::Domain),
+        (Op::Null, []) => output.raw("null")?,
+        _ => return Err(KernelError::InputContract),
+    }
+    output.finish()
+}
+
 /// A pinned exact provider binding; JSON nodes have no config.
 #[derive(Debug, Clone)]
 pub struct ResolvedJson {
@@ -395,6 +575,21 @@ impl ResolvedJson {
         if inputs.len() != self.operation.inputs().len() {
             return Err(KernelError::InputContract);
         }
+        match self.operation {
+            Op::BuildObject
+            | Op::BuildArray
+            | Op::SetField
+            | Op::RemoveField
+            | Op::FromBool
+            | Op::FromString
+            | Op::FromI64
+            | Op::FromU64
+            | Op::FromF64
+            | Op::Null => {
+                return construct(self.operation, inputs);
+            }
+            _ => {}
+        }
         if self.operation == Op::Parse {
             let Value::Str(text) = &inputs[0] else {
                 return Err(KernelError::InputContract);
@@ -408,7 +603,17 @@ impl ResolvedJson {
         let mut scan = Scan::new(text.as_str());
         let first = scan.peek().ok_or(KernelError::InputContract)?;
         Ok(match self.operation {
-            Op::Parse => return Err(KernelError::InputContract),
+            Op::Parse
+            | Op::BuildObject
+            | Op::BuildArray
+            | Op::SetField
+            | Op::RemoveField
+            | Op::FromBool
+            | Op::FromString
+            | Op::FromI64
+            | Op::FromU64
+            | Op::FromF64
+            | Op::Null => return Err(KernelError::InputContract),
             Op::Kind => Value::Str(Arc::new(
                 match first {
                     b'n' => "null",

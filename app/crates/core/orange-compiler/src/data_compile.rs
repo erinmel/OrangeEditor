@@ -1,6 +1,6 @@
 use crate::compile::{
     Admission, ConstantFolder, Incoming, admit, binding_error, charge, decode, fault_bytes,
-    is_host_read, key, matches_abi, port_type, value_bytes,
+    is_host_read, key, keys, matches_abi, port_type, value_bytes,
 };
 use crate::projection::Projection;
 use crate::*;
@@ -264,13 +264,14 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             },
         ));
         let sig = self.calls.signature(self.analysis, self.scope, node);
+        let instance = &self.calls.body(self.document, self.scope).nodes[&node];
         self.dependencies(
             node,
             sig.ports
                 .iter()
                 .rev()
                 .filter(|p| p.direction == PortDirection::Input)
-                .map(key),
+                .flat_map(|port| keys(instance, port).rev()),
             work,
         );
     }
@@ -490,17 +491,18 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             }
         }
         let prefix = inputs.len();
+        let node = &calls.body(document, scope).nodes[&node_id];
         for port in &inputs_ports {
-            inputs.push(
-                if let Some(selection) = selection
-                    .as_ref()
-                    .filter(|s| s.selector.source.port.port() == &port.port_id)
-                {
-                    selection.selector.clone()
-                } else {
-                    self.input(node_id, port)?
-                },
-            );
+            if let Some(selection) = selection
+                .as_ref()
+                .filter(|s| s.selector.source.port.port() == &port.port_id)
+            {
+                inputs.push(selection.selector.clone());
+            } else {
+                for key in keys(node, port) {
+                    inputs.push(self.input_at(node_id, port, key)?);
+                }
+            }
         }
         let child = calls.scopes[scope].calls.get(&node_id).copied();
         let constant = sig.kind == NodeKind::Pure
@@ -512,7 +514,6 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         if !constant && let Some(child) = child {
             return self.expand_call(node_id, child, inputs, work);
         }
-        let node = &calls.body(document, scope).nodes[&node_id];
         let operation = if let Some(zone) = zone_end {
             DataOperation::Zone { zone, prefix }
         } else if constant {
@@ -548,7 +549,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             DataOperation::Input
         } else {
             let abi = |inputs: &[PortKey], outputs: &[PortKey]| {
-                matches_abi(inputs, outputs, &inputs_ports, &output_ports)
+                matches_abi(inputs, outputs, node, &inputs_ports, &output_ports)
                     .then_some(())
                     .ok_or(CompileError::KernelContract { node: node_id })
             };

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub(super) struct PortGeometry<'a> {
     pub offset: Vec2,
     pub ty: Option<&'a str>,
+    pub exec: bool,
 }
 
 pub(super) struct Geometry<'a> {
@@ -42,6 +43,7 @@ impl<'a> Geometry<'a> {
                     .or_insert(PortGeometry {
                         offset,
                         ty: port.ty.as_deref(),
+                        exec: port.exec,
                     });
             }
             let _ = cards.insert(node.id, layout);
