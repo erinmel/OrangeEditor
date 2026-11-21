@@ -39,7 +39,7 @@ org-orange-audio-transient-label = Transitorio
 org-orange-audio-transient-description = Se dispara con cada golpe en la banda de una señal, como un bombo.
 org-orange-audio-transient-keywords = bombo, golpe, ritmo, tambor, pulso
 org-orange-audio-source-finished-label = Fuente terminada
-org-orange-audio-source-finished-description = Se dispara cuando el archivo de sonido conectado termina de reproducirse.
+org-orange-audio-source-finished-description = Se dispara cuando termina el archivo de sonido o la fuente de audio HTTP conectada. Para una captura en directo, usa el Disparador de nivel de audio.
 org-orange-audio-source-finished-keywords = fin, terminado, pista
 org-orange-audio-source-control-label = Control de fuente
 org-orange-audio-source-control-description = Reproduce, pausa, reanuda, detiene o cambia la posición del archivo de sonido conectado.
@@ -71,3 +71,5 @@ org-orange-audio-gain-keywords = volumen, más fuerte, más bajo, amplificar, at
 org-orange-audio-filter-label = Filtro
 org-orange-audio-filter-description = Deja pasar las frecuencias graves (paso bajo), agudas (paso alto) o medias (paso banda) de una señal alrededor del corte.
 org-orange-audio-filter-keywords = ecualizador, eq, paso bajo, paso alto, paso banda, graves, agudos, frecuencia, efecto de audio
+
+org-orange-audio-loop-description = Repite el archivo de sonido hasta que Control de sonido envía Detener a la misma salida. El paso siguiente se ejecuta al detener el bucle.

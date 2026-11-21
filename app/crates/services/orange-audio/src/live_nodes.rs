@@ -495,7 +495,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     let finished = entry(
         "source-finished",
         "Source finished",
-        "Fires when the wired sound file plays to its end.",
+        "Fires when a wired sound file or HTTP audio source reaches the end. Use Audio Level Trigger for a live capture device.",
     )
     .keywords("end, done, track over");
     let transport = stream_input(action(

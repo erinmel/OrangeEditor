@@ -169,7 +169,19 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
 
 #[test]
 fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
-    let root = std::env::temp_dir().join(format!("orange-files-wired-{}", std::process::id()));
+    watched_folder_appearance(false);
+}
+
+#[test]
+fn a_watcher_can_wait_for_its_folder_without_reporting_a_fault() {
+    watched_folder_appearance(true);
+}
+
+fn watched_folder_appearance(wait_for_folder: bool) {
+    let root = std::env::temp_dir().join(format!(
+        "orange-files-wired-{}-{wait_for_folder}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir(&root).unwrap();
     let (mut host, events) =
@@ -194,6 +206,8 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
     let _ = document.apply(edit.commands).unwrap();
     let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
     saved["nodes"][0]["activation"] = activation();
+    saved["nodes"][0]["inputs"]["wait_for_folder"] =
+        json!({"type": "core/bool@1", "value": wait_for_folder});
     let mut get = core(12, "get-variable");
     get["config"] = json!({"variable": id(102)});
     saved["nodes"]
@@ -214,13 +228,19 @@ fn a_wired_folder_scopes_a_watcher_and_reports_an_unavailable_path() {
     let diagnostics = host.check(&text).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let flow = host.open(&text).unwrap();
-    until("the missing watched folder to be reported", || {
+    let missing_folder = || {
         events.try_iter().any(|event| {
             matches!(event.kind,
             FlowEvent::SourceFault { node: entry, fault } if entry == node(10)
                 && fault.code.as_str() == "org.orange.files/NotFound")
         })
-    });
+    };
+    if wait_for_folder {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(!missing_folder());
+    } else {
+        until("the missing watched folder to be reported", missing_folder);
+    }
     let read = |host: &Host| {
         let variable: VariableId = id(101).parse().unwrap();
         match host

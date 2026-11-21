@@ -54,8 +54,8 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 use analysis::{BandMeter, Listening, Onsets};
 use device::{Ended, Levels, Output};
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
-    Listeners, Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, KernelFault, Lifecycle, Listeners,
+    Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -117,59 +117,52 @@ const DEVICE_CHECK: Duration = Duration::from_millis(100);
 const FIRST_RETRY: Duration = Duration::from_millis(500);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 
-const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
-    KernelFault {
-        code: FaultText::Static(code),
-        message_key: FaultText::Static(key),
-        message,
-    }
-}
-const NO_SESSION: KernelFault = fault(
+const NO_SESSION: KernelFault = KernelFault::from_static(
     "org.orange.audio/Connection",
     "org.orange.audio/connection-kind",
     "The node needs an audio connection of the right kind.",
 );
-const DEVICE: KernelFault = fault(
+const DEVICE: KernelFault = KernelFault::from_static(
     "org.orange.audio/Device",
     "org.orange.audio/device-unavailable",
     "The audio device could not be opened or has stopped.",
 );
-const BAD_INPUT: KernelFault = fault(
+const BAD_INPUT: KernelFault = KernelFault::from_static(
     "org.orange.audio/Input",
     "org.orange.audio/input-invalid",
     "The path, gain or position is not valid.",
 );
-const FILE: KernelFault = fault(
+const FILE: KernelFault = KernelFault::from_static(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
     "The sound file is missing or uses an unsupported audio format.",
 );
-const TOO_LARGE: KernelFault = fault(
+const TOO_LARGE: KernelFault = KernelFault::from_static(
     "org.orange.audio/TooLarge",
     "org.orange.audio/file-too-large",
     "The sound file is too large or too long.",
 );
-const EMPTY: KernelFault = fault(
+const EMPTY: KernelFault = KernelFault::from_static(
     "org.orange.audio/Empty",
     "org.orange.audio/folder-empty",
     "The folder has no sound files.",
 );
-const BUSY: KernelFault = fault(
+const BUSY: KernelFault = KernelFault::from_static(
     "org.orange.audio/Busy",
     "org.orange.audio/too-many-sounds",
     "Too many sounds are already playing on the device.",
 );
-const NOT_FILE: KernelFault = fault(
+const NOT_FILE: KernelFault = KernelFault::from_static(
     "org.orange.audio/NotFile",
     "org.orange.audio/source-not-file",
     "The node controls a sound file source, and this source is a device.",
 );
-const ENDED: KernelFault = fault(
+const ENDED: KernelFault = KernelFault::from_static(
     "org.orange.audio/Ended",
     "org.orange.audio/stream-ended",
     "The audio stream's input is closed.",
 );
-const WRITE: KernelFault = fault(
+const WRITE: KernelFault = KernelFault::from_static(
     "org.orange.audio/Write",
     "org.orange.audio/file-unwritable",
     "The recording could not be written to the file.",
@@ -1001,7 +994,9 @@ impl SourceControl {
 
 fn when_finished(shared: Arc<InputShared>, emitter: Emitter) -> Result<Box<dyn Send>, String> {
     if shared.file.is_none() {
-        return Err("Source finished needs a sound file source".into());
+        return Err(
+            "Connect Source finished to a Sound source set to a file or an HTTP audio URL.".into(),
+        );
     }
     Ok(Listeners::listen(
         shared,
@@ -1172,7 +1167,7 @@ fn play_from_definition() -> String {
 
 fn loop_definition() -> String {
     Definition::node(PACKAGE, "loop", "Loop sound")
-        .description("Plays a sound file again and again on an output device until it is stopped.")
+        .description("Repeats the sound file until Sound control sends Stop to the same output. The next step runs after the loop stops.")
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")

@@ -21,7 +21,7 @@ org-orange-files-move-label = Mover archivo
 org-orange-files-move-directory-label = Mover carpeta
 org-orange-files-move-directory-description = Mueve una carpeta y su contenido a una ruta nueva.
 org-orange-files-on-change-label = Al cambiar un archivo
-org-orange-files-on-change-description = Se dispara al crear, cambiar, borrar o renombrar un archivo o carpeta, con lo que cambió: el tipo de cambio, la ruta, la ruta anterior al renombrar y si es una carpeta. Carpeta limita el aviso a una subcarpeta.
+org-orange-files-on-change-description = Se dispara al crear, cambiar, borrar o renombrar un archivo o carpeta, con lo que cambió: el tipo de cambio, la ruta, la ruta anterior al renombrar y si es una carpeta. Carpeta limita el aviso a una subcarpeta. Activa Esperar la carpeta si se creará después de iniciar el grafo.
 org-orange-files-read-bytes-label = Leer archivo
 org-orange-files-read-range-label = Leer parte del archivo
 org-orange-files-read-text-label = Leer archivo de texto
@@ -42,3 +42,5 @@ port-read-only = solo lectura
 org-orange-files-glob-invalid = El patrón debe contener componentes de ruta válidos y tener como máximo 128 bytes.
 org-orange-files-operation-cancelled = Se canceló la operación de carpeta.
 org-orange-files-tree-changed = La carpeta cambió mientras se leía.
+
+port-wait-for-folder = esperar la carpeta

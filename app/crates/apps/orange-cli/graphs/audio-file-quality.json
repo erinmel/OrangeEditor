@@ -2,7 +2,7 @@
   "format": "orange.graph",
   "format_version": 1,
   "graph_id": "cb86e33c-9865-4a91-b53e-2cc0e08c86dc",
-  "revision": 52,
+  "revision": 53,
   "package_lock": [
     {
       "id": "org.orange.audio",
@@ -341,6 +341,15 @@
         "base_url": "http://127.0.0.1:18765",
         "timeout_ms": 3000
       }
+    },
+    {
+      "id": "378ab732-8794-4adf-9418-918453fa604d",
+      "name": "QA loop output · silent test device",
+      "adapter": "org.orange.audio/output",
+      "scope": "graph",
+      "settings": {
+        "device": "null"
+      }
     }
   ],
   "signatures": {
@@ -427,6 +436,38 @@
             "type": "core/f64@1",
             "bits": "0000000000000000"
           }
+        }
+      ]
+    },
+    "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "wait_for_folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": false
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.files/change@1",
+          "source": "payload"
         }
       ]
     },
@@ -950,28 +991,6 @@
         }
       ]
     },
-    "sha256:7f7f43c47d36584b07b0821d740b9b7dbc46b1df60fc4b39fc141e782a0b2c05": {
-      "kind": "entry",
-      "ports": [
-        {
-          "port_id": "folder",
-          "direction": "input",
-          "kind": "data",
-          "type": "core/string@1",
-          "default": {
-            "type": "core/string@1",
-            "value": ""
-          }
-        },
-        {
-          "port_id": "payload",
-          "direction": "output",
-          "kind": "data",
-          "type": "org.orange.files/change@1",
-          "source": "payload"
-        }
-      ]
-    },
     "sha256:84c581b767a4c239f0732bb9f605cf75d824a6014efd510133e3a3befe63ab57": {
       "kind": "volatile",
       "ports": [
@@ -1279,7 +1298,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Start loop"
+      "name": "Start Opus loop"
     },
     {
       "id": "29b1d23d-43b7-4be8-8845-a82e5d9fdbaa",
@@ -1311,7 +1330,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Output pause"
+      "name": "Loop · pause"
     },
     {
       "id": "8099b936-122e-4c1c-843a-cdd3998acc93",
@@ -1326,7 +1345,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Output resume"
+      "name": "Loop · resume"
     },
     {
       "id": "25c5a657-bb7f-4bfc-9e73-3e5f59240501",
@@ -1341,7 +1360,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Output jump"
+      "name": "Loop · jump"
     },
     {
       "id": "a53106c2-12d4-458a-a08f-e448eb12f399",
@@ -1356,7 +1375,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Output volume"
+      "name": "Loop · volume"
     },
     {
       "id": "e51a35d2-1143-43a3-a6ee-765d75afe06f",
@@ -1371,7 +1390,7 @@
         "on_fault": "continue",
         "order": 0
       },
-      "name": "Output stop"
+      "name": "Loop · stop"
     },
     {
       "id": "fe24d186-e621-4d57-bbcb-0165001ffa4d",
@@ -1961,7 +1980,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -1983,7 +2002,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -2007,7 +2026,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -2031,7 +2050,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -2059,7 +2078,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -2087,7 +2106,7 @@
       "definition_version": 1,
       "config_version": 1,
       "config": {
-        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
       },
       "provider": {
         "package": "org.orange.audio",
@@ -2743,35 +2762,6 @@
       "name": "Check the QA copy is gone"
     },
     {
-      "id": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
-      "definition_id": "org.orange.files/on-change",
-      "definition_version": 1,
-      "config_version": 1,
-      "config": {
-        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
-      },
-      "provider": {
-        "package": "org.orange.files",
-        "version": "0.0.0",
-        "id": "native"
-      },
-      "signature": "sha256:7f7f43c47d36584b07b0821d740b9b7dbc46b1df60fc4b39fc141e782a0b2c05",
-      "inputs": {
-        "folder": {
-          "type": "core/string@1",
-          "value": "orange-audio-qa-86dc"
-        }
-      },
-      "activation": {
-        "mode": "queue",
-        "capacity": 32,
-        "overflow": "fault",
-        "on_fault": "continue",
-        "order": 0
-      },
-      "name": "Watch the QA folder"
-    },
-    {
       "id": "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
       "definition_id": "org.orange.files/write-text",
       "definition_version": 1,
@@ -2932,6 +2922,39 @@
         }
       },
       "name": "GET the served audio file"
+    },
+    {
+      "id": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
+      "definition_id": "org.orange.files/on-change",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3",
+      "inputs": {
+        "folder": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc"
+        },
+        "wait_for_folder": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Watch the QA folder"
     }
   ],
   "edges": [
@@ -3893,17 +3916,6 @@
       }
     },
     {
-      "id": "c37bf460-aa5b-45f5-9146-d603978e687b",
-      "from": {
-        "node": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
-        "port": "then"
-      },
-      "to": {
-        "node": "07e8e5dd-5695-4e2a-89b7-059e909fa6de",
-        "port": "in"
-      }
-    },
-    {
       "id": "f05a6237-1c23-4a32-930f-c40745ddcae5",
       "from": {
         "node": "3aa73b85-1e2f-499e-9cde-6695503648d4",
@@ -4076,6 +4088,17 @@
       },
       "to": {
         "node": "4d1c9428-5476-47eb-8ced-6a0f5ff4984c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c37bf460-aa5b-45f5-9146-d603978e687b",
+      "from": {
+        "node": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
+        "port": "then"
+      },
+      "to": {
+        "node": "07e8e5dd-5695-4e2a-89b7-059e909fa6de",
         "port": "in"
       }
     }

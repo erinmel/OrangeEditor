@@ -51,6 +51,29 @@ Properties. Connect its execution output to **HTTP JSON Request**, and wire a
 JSON object into Body. The HTTP node uses its own HTTP connection. Wire its
 optional JSON result to **Match Option** to handle absent or non-JSON responses.
 
+[audio-file-quality.json](app/crates/apps/orange-cli/graphs/audio-file-quality.json)
+is a grouped QA graph for seven playback formats, audio triggers, loop controls,
+recording, files and HTTP. Launch the editor from the repository root so the
+relative fixture paths resolve. The file suite creates `orange-audio-qa-86dc`
+under the launch directory. Fire **Run file and folder suite** and then edit a
+file in that scratch folder to exercise the watcher.
+
+The two output connections default to the silent test device. For listening tests,
+choose a playback device for **QA output** and **QA loop output**. **Start Opus
+loop** repeats until **Loop · stop** fires. **Loop stopped** counts completed
+stops. **On local source finished** uses the supplied WebM file connection.
+**Read-only write rejected** and **Parent path rejected** deliberately log
+errors and should each increment their rejection counter.
+
+For the HTTP group, serve the fixtures before pressing Run. One local option is
+
+```sh
+python -m http.server 18765 --bind 127.0.0.1 --directory app/crates/services/orange-audio/tests/fixtures
+```
+
+Fire **Play remote audio** and **Check fixture server**. Expect one completed
+remote clip and status 200. The other groups can be exercised without the server.
+
 Double-click a node name in Properties or on the card to rename it. An empty name
 restores the node type's name.
 

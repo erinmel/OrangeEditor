@@ -175,7 +175,11 @@ Files (2026-11-12; `orange-files`, package `org.orange.files`). A
 `move`, `copy`, `make-directory`, `remove-directory` (empty directories only),
 `size` (output `bytes`), `read-range` (`offset`, `length`; fewer bytes at the end of
 the file, none past it), `append-bytes`
-and the entry `on-change` (payload: the changed file's path). Paths are relative to
+and the entry `on-change` (payload: the change kind, relative path, previous path
+for a rename and directory flag). A watcher takes a baseline of the selected tree
+before emitting changes. With `wait_for_folder` enabled, a missing subfolder at
+startup is polled until it appears. Its first snapshot becomes the baseline.
+Paths are relative to
 the folder with `/` between plain names; `..`, absolute and drive forms, device names
 and links leading out of the folder are refused. A write goes to a temporary file in
 the same directory, is flushed and renamed over the target. A read or write of a
