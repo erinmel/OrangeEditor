@@ -1,0 +1,37 @@
+name: orange-network-lab
+services:
+  web:
+    build: ./web
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18081:8081"
+    healthcheck:
+      test: ["CMD", "orange-network-web", "--check"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  mqtt:
+    image: eclipse-mosquitto:2.0.22
+    ports:
+      - "127.0.0.1:11883:1883"
+      - "127.0.0.1:11884:1884"
+    volumes:
+      - ./mosquitto.conf:/lab/mosquitto.conf:ro
+    command: ["/bin/sh", "-ec", "mosquitto_passwd -b -c /tmp/lab-passwd lab lab-mqtt-only && chmod 644 /tmp/lab-passwd && exec mosquitto -c /lab/mosquitto.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t orange/lab/health -m ready && mosquitto_pub -h 127.0.0.1 -p 1884 -u lab -P lab-mqtt-only -t orange/lab/health -m ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  amqp:
+    image: rabbitmq:4.1.8
+    ports:
+      - "127.0.0.1:15673:5672"
+    volumes:
+      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/90-lab.conf:ro
+      - ./rabbitmq-definitions.json:/etc/rabbitmq/lab-definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      timeout: 5s
+      retries: 20

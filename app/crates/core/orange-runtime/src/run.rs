@@ -1,0 +1,2732 @@
+//! A host-driven logical actor. No worker thread, OS clock or editor dependency.
+use crate::budget::{Budget, Tally};
+use crate::data::{CleanupScope, HostPoll, PreparedData};
+use crate::{DataActivation, DataError, DataOptions};
+use orange_compiler::{
+    ConstantFault, ControlIx, ControlNode, ControlOperation, ControlPlan, ExecInput, ExecTarget,
+    FoldedValue, ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, TickProjection,
+    UpdateDemand, UpdateOperation, UpdateProjection,
+};
+use orange_model::catalog::RegistrySnapshot;
+use orange_model::document::{FaultPolicy, VarScope};
+use orange_model::id::{NodeId, VariableId};
+use orange_model::{GraphDocument, Value};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use thiserror::Error;
+
+mod cells;
+mod changes;
+mod function;
+mod host_write;
+mod iteration;
+mod loops;
+mod watch;
+use loops::Loops;
+pub use watch::SourceArguments;
+mod retained;
+mod select;
+use cells::SegmentWrites;
+use function::{Frames, FunctionFrame, FunctionReturn, FunctionStep, PendingCall, call_returned};
+mod ownership;
+use iteration::{ForEachCursor, IterationFrame};
+mod activations;
+mod checkpoint;
+mod effects;
+mod shared;
+mod workspace_events;
+pub use shared::{SharedError, SharedReceipt, SharedRefused, SharedRequest};
+mod events;
+pub use effects::{EffectError, EffectId, EffectLease, EffectRequest};
+mod ids;
+use activations::Activations;
+pub use events::{EventMetadata, PausedSource, RunEventStats, SourceOptions};
+pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
+mod ready;
+mod replay;
+pub use replay::{
+    RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog, ReplayOptions,
+    ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun,
+};
+mod regions;
+mod resources;
+mod streams;
+pub use resources::{
+    AcquireRefused, CloseReason, EffectResourceRefused, ResourceError, ResourceHandle, RunResource,
+};
+pub use streams::{
+    EffectStreamRefused, PullStream, PushAdmission, PushStream, PushStreamSource,
+    StreamBranchStats, StreamBridge, StreamBridgeStats, StreamBufferOptions, StreamCollectPoll,
+    StreamConsumer, StreamDemand, StreamError, StreamHandle, StreamNextId, StreamOverflow,
+    StreamRead, StreamRefused, StreamStep, TeeStreams,
+};
+mod ticks;
+mod timers;
+mod trace;
+mod update;
+use ids::{FrameId, RegionId, StrandId};
+use ownership::{IdSet, Region, RegionKind};
+use ready::ReadyQueue;
+use regions::Regions;
+use timers::TimerTarget;
+use timers::{TimerKey, Timers};
+use trace::Trace;
+pub(crate) use update::workspace_update;
+
+static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
+fn run_identity() -> Result<u64, RunError> {
+    let mut old = NEXT_RUN.load(Ordering::Relaxed);
+    loop {
+        let next = old.checked_add(1).ok_or(RunError::IdentityExhausted)?;
+        match NEXT_RUN.compare_exchange_weak(old, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(old),
+            Err(current) => old = current,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RunState {
+    Created,
+    Starting,
+    Running,
+    /// Held by the host: no graph work runs and the virtual clock does not move.
+    /// Input and results of work already issued are still admitted.
+    Paused,
+    Draining,
+    Cancelling,
+    Faulted,
+    Stopped,
+    Disposed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopMode {
+    Graceful,
+    Immediate,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlOutcome {
+    Suppressed,
+    StateChanged,
+    FlipA,
+    FlipB,
+    Case(u16),
+    Default,
+    MatchedOk,
+    MatchedErr,
+    MatchedPresent,
+    MatchedMissing,
+    Forked,
+    Then,
+    True,
+    False,
+    Failed,
+    Step(usize),
+    Suspended,
+    Yielded,
+    Body,
+    Completed,
+    Break,
+    Continue,
+    Cancelled,
+    TimedOut,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEvent {
+    pub activation: u64,
+    pub node: NodeId,
+    pub outcome: ControlOutcome,
+    pub fault: Option<ConstantFault>,
+    /// Explicit execution port fired by a package entry, if any.
+    pub route: Option<orange_model::id::PortKey>,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct RunLimits {
+    pub max_activations: usize,
+    /// Live strands, including suspended region continuations and stop reserve.
+    pub max_strands: usize,
+    /// Live runtime region instances, including stop reserve.
+    pub max_regions: usize,
+    /// Separately reserved On Stop frames, admitted and allocated at startup.
+    pub max_stop_activations: usize,
+    /// Work items in one burst: from the run last having nothing runnable until it
+    /// next has nothing runnable. Exceeding it faults the run as a runaway. It is
+    /// not a lifetime total, so a long-lived event-driven run is unaffected.
+    pub max_operations: usize,
+    pub max_trace: usize,
+    pub max_state_bytes: usize,
+    pub max_region_depth: usize,
+    pub max_timers: usize,
+    /// Aggregate nominal storage that all start and On Stop frames reserve at
+    /// startup: data cells, memo stamps, work/scratch capacity, entropy counters
+    /// and run-owned frame cells, multiplied by the frame count. Values are
+    /// shared clones charged by `max_state_bytes`, not by this limit.
+    pub max_frame_storage_bytes: usize,
+    /// Pending handler deliveries, separate from activation-owned payloads.
+    pub max_pending_events: usize,
+    pub max_pending_event_bytes: usize,
+    /// Nominal event-payload charge across queues and live handler roots together.
+    pub max_live_event_payload_bytes: usize,
+    /// Active, run-local registered host event sources.
+    pub max_host_sources: usize,
+    /// Live resources owned by the run or one of its graph regions.
+    pub max_resources: usize,
+    /// Live asynchronous commands, including accepted unpublished completions.
+    pub max_pending_effects: usize,
+    /// Aggregate nominal input/result bytes retained by asynchronous commands.
+    pub max_effect_bytes: usize,
+    /// Maximum nominal bytes of one pulled item or buffered completion.
+    pub max_stream_item_bytes: usize,
+    /// Upper bound on an explicit collection's requested item limit.
+    pub max_stream_collect_items: usize,
+    /// Partial collection bytes, separately from one pending pull result.
+    pub max_stream_collect_bytes: usize,
+    /// Maximum queued items and nominal bytes in each tee/push branch. The
+    /// separately bounded C09a pending pull result is outside these queue limits.
+    pub max_stream_bridge_items: usize,
+    pub max_stream_bridge_bytes: usize,
+    /// Aggregate nominal reservation budget for the whole run, distinct from the
+    /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
+    /// frame storage and event ingress. Every activation (roots, On Stop frames,
+    /// event handlers) reserves from it for its whole life:
+    ///
+    /// - its dynamic data-cache charge (published slot values and live zone machines);
+    /// - its local and local-state cell charge, including the initial copy;
+    /// - its retained outputs (event payloads, update projections, call results);
+    /// - its function-frame and iteration holds (arguments, locals, collections).
+    /// - shared issued-handle metadata, until the final alias drops (even if the
+    ///   host retains an invalidated alias after Run disposal).
+    ///
+    /// Charges are nominal and per holder: a payload shared by several activations
+    /// through `Arc` is charged by each one that retains it, matching the
+    /// per-activation counters. Immutable plan constants and the data plan's initial
+    /// slot charge are shared by every activation and are not charged; neither are the
+    /// event template's initial cells or run-scope cells, which keep their single
+    /// `max_state_bytes` counter. Exceeding the budget refuses the whole publication
+    /// with `RunError::AggregateLimit` (`DataError::AggregateLimit` during data
+    /// evaluation) and leaves values and counters unchanged. It is a nominal counter,
+    /// not an allocator or resident-set measurement.
+    ///
+    /// The default exceeds the default per-activation limits together, so a single
+    /// activation is unaffected, but is far below `max_activations` times them.
+    pub max_run_retained_bytes: usize,
+}
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self {
+            max_activations: 256,
+            max_strands: 4096,
+            max_regions: 8192,
+            max_stop_activations: 256,
+            max_operations: 10_000_000,
+            max_trace: 1024,
+            max_state_bytes: 16 * 1024 * 1024,
+            max_region_depth: 1024,
+            max_timers: 1024,
+            max_frame_storage_bytes: 64 * 1024 * 1024,
+            max_pending_events: 1024,
+            max_pending_event_bytes: 16 * 1024 * 1024,
+            max_live_event_payload_bytes: 16 * 1024 * 1024,
+            max_host_sources: 64,
+            max_resources: 256,
+            max_pending_effects: 256,
+            max_effect_bytes: 16 * 1024 * 1024,
+            max_stream_item_bytes: 1024 * 1024,
+            max_stream_collect_items: 4096,
+            max_stream_collect_bytes: 16 * 1024 * 1024,
+            max_stream_bridge_items: 1024,
+            max_stream_bridge_bytes: 16 * 1024 * 1024,
+            max_run_retained_bytes: 512 * 1024 * 1024,
+        }
+    }
+}
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    pub limits: RunLimits,
+    pub data: DataOptions,
+    pub drain_timeout_ns: u64,
+    pub cleanup_timeout_ns: u64,
+    pub max_cleanup_operations: usize,
+    pub max_cause_depth: u16,
+}
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            limits: RunLimits::default(),
+            data: DataOptions::default(),
+            drain_timeout_ns: 2_000_000_000,
+            cleanup_timeout_ns: 500_000_000,
+            max_cleanup_operations: 1024,
+            max_cause_depth: 64,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunProgress {
+    pub operations: usize,
+    pub ready: bool,
+    pub next_wakeup: Option<u64>,
+}
+/// Nominal aggregate reservation of a run against `RunLimits::max_run_retained_bytes`.
+/// These are the same byte charges as the per-activation counters, not resident memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunRetention {
+    pub reserved_bytes: usize,
+    pub limit_bytes: usize,
+}
+/// Retained owner counts, including reserved On Stop frames. No graph values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunOwnership {
+    pub activations: usize,
+    pub strands: usize,
+    pub regions: usize,
+    pub timers: usize,
+    /// Strands parked on an event and still observing future emissions.
+    pub event_waiters: usize,
+    /// Active registered host event sources.
+    pub host_sources: usize,
+    /// Live host resources the run owns and will close.
+    pub resources: usize,
+    /// Owned asynchronous commands, including accepted unpublished completions.
+    pub effects: usize,
+    /// Parked graph stream consumers, including resumable collection work.
+    pub stream_reads: usize,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum RunError {
+    #[error("{0}")]
+    Checkpoint(#[from] crate::CheckpointError),
+    #[error("{0}")]
+    WorkspaceBus(#[from] crate::WorkspaceBusError),
+    #[error("{0}")]
+    Shared(#[from] SharedError),
+    #[error("Run recording or replay could not continue safely.")]
+    ReplayFailed,
+    #[error("{0}")]
+    Data(#[from] DataError),
+    #[error("The run operation is invalid in its current state.")]
+    InvalidState,
+    #[error("The run exceeds a host resource limit.")]
+    ResourceLimit,
+    #[error("The run exceeds its aggregate retained-value budget.")]
+    AggregateLimit,
+    #[error("The process run identity space is exhausted.")]
+    IdentityExhausted,
+    #[error("Virtual monotonic time cannot move backwards.")]
+    ClockWentBackwards,
+    #[error("A provider callback panicked during a pump; stop the run.")]
+    Interrupted,
+    #[error("The run is paused and does not observe time.")]
+    Paused,
+}
+impl RunError {
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::Checkpoint(e) => e.message_key(),
+            Self::WorkspaceBus(e) => e.message_key(),
+            Self::Shared(e) => e.message_key(),
+            Self::ReplayFailed => "core/replay-failed",
+            Self::Data(e) => e.message_key(),
+            Self::InvalidState => "core/run-invalid-state",
+            Self::ResourceLimit => "core/run-resource-limit",
+            Self::AggregateLimit => "core/run-aggregate-limit",
+            Self::IdentityExhausted => "core/run-identity-exhausted",
+            Self::ClockWentBackwards => "core/run-clock-went-backwards",
+            Self::Interrupted => "core/run-interrupted",
+            Self::Paused => "core/run-paused",
+        }
+    }
+}
+/// Dense storage follows ownership, while plan variable/source identities stay stable.
+#[derive(Default)]
+struct StateLayout {
+    variables: Box<[usize]>,
+    states: Box<[usize]>,
+    state_sources: Box<[usize]>,
+    outputs: Box<[Option<usize>]>,
+    output_count: usize,
+}
+impl StateLayout {
+    fn new(plan: &ControlPlan) -> Self {
+        fn indices<Id: Copy>(cells: &[orange_compiler::ControlCell<Id>]) -> Box<[usize]> {
+            let (mut local, mut run) = (0, 0);
+            cells
+                .iter()
+                .map(|cell| {
+                    if cell.scope() == VarScope::Workspace {
+                        return usize::MAX;
+                    }
+                    let next = if cell.scope() == VarScope::Local {
+                        &mut local
+                    } else {
+                        &mut run
+                    };
+                    let index = *next;
+                    *next += 1;
+                    index
+                })
+                .collect()
+        }
+        let variables = indices(plan.variables());
+        let states = indices(plan.states());
+        let mut sources = BTreeMap::new();
+        let state_sources = plan
+            .states()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| *sources.entry(cell.id()).or_insert(index))
+            .collect();
+        let mut output_count = 0;
+        let outputs = plan
+            .host_sources()
+            .iter()
+            .map(|source| {
+                if matches!(
+                    source,
+                    HostSource::Variable(_)
+                        | HostSource::FrameLocal { .. }
+                        | HostSource::Argument { .. }
+                        | HostSource::CallLocal(_)
+                        | HostSource::State(_)
+                        | HostSource::Clock
+                        | HostSource::Iteration(_, _)
+                ) {
+                    None
+                } else {
+                    let index = output_count;
+                    output_count += 1;
+                    Some(index)
+                }
+            })
+            .collect();
+        Self {
+            variables,
+            states,
+            state_sources,
+            outputs,
+            output_count,
+        }
+    }
+    /// Nominal bytes one start or On Stop frame reserves at startup: its data
+    /// activation (sized by the data module that owns that layout) plus the run's
+    /// own local cells, output cells and frame headers.
+    fn frame_storage(&self, plan: &ControlPlan, local_cells: usize) -> Option<usize> {
+        use std::mem::size_of;
+        let header = size_of::<ActivationState>()
+            + size_of::<Strand>()
+            + size_of::<Region>()
+            + size_of::<Option<Box<ActivationState>>>();
+        [
+            (local_cells, size_of::<Option<Value>>()),
+            (self.output_count, size_of::<Option<FoldedValue>>()),
+            (1, header),
+        ]
+        .into_iter()
+        .try_fold(
+            crate::data::activation_storage(plan.data())?,
+            |sum, (count, bytes)| count.checked_mul(bytes)?.checked_add(sum),
+        )
+    }
+    /// The state cell `index`: activation-local cells live in `shared`.
+    fn state<'a>(
+        &self,
+        plan: &ControlPlan,
+        run: &'a [Option<Value>],
+        shared: &'a ActivationState,
+        index: usize,
+    ) -> Option<&'a Value> {
+        let cell = self.states[index];
+        if plan.states()[index].scope() == VarScope::Local {
+            shared.states[cell].as_ref()
+        } else {
+            run[cell].as_ref()
+        }
+    }
+}
+
+#[derive(Default)]
+struct PullState {
+    active: Option<PendingPull>,
+    inputs: Vec<Option<FoldedValue>>,
+    completed: [Option<Value>; 2],
+    completed_len: usize,
+    call_values: Vec<Value>,
+}
+struct PendingPull {
+    root: usize,
+    input: Option<usize>,
+}
+impl PullState {
+    fn begin(&mut self, root: usize) {
+        self.reset();
+        self.active = Some(PendingPull { root, input: None });
+    }
+    fn reset(&mut self) {
+        self.active = None;
+        self.inputs.clear();
+        self.completed = [None, None];
+        self.completed_len = 0;
+        self.call_values.clear();
+    }
+    /// Lend idle scratch capacity to a structured child (body or call) that runs
+    /// while this strand waits as its continuation. An active pull stays put.
+    fn lend(&mut self) -> Self {
+        if self.active.is_some() {
+            return Self::default();
+        }
+        let mut lent = std::mem::take(self);
+        lent.reset();
+        lent
+    }
+    /// Take back scratch capacity from a finished child. Buffers hold no state
+    /// while idle: every new pull begins with `reset`.
+    fn recycle(&mut self, mut child: Self) {
+        child.reset();
+        self.keep_values(child.call_values);
+        if self.active.is_none() && child.inputs.capacity() > self.inputs.capacity() {
+            self.inputs = child.inputs;
+        }
+    }
+    fn keep_values(&mut self, mut values: Vec<Value>) {
+        if self.active.is_none() && values.capacity() > self.call_values.capacity() {
+            values.clear();
+            self.call_values = values;
+        }
+    }
+}
+
+/// The one ownership transfer a step requests from the actor. A node
+/// completion or cursor resume (including a callee completing the caller's
+/// Call) sets it, and `pump` takes it after that strand's step, so the former
+/// call/return/fault/fork/unwind/body/wait flags cannot coexist.
+#[derive(Default)]
+enum Transfer {
+    Stream(streams::PreparedRead),
+    Effect(effects::PreparedEffect),
+    #[default]
+    None,
+    /// An unhandled fault outside a function retires the activation tree.
+    Fault,
+    /// Returned values, or an unhandled fault, leave the current function.
+    Return(FunctionReturn),
+    Call(PendingCall),
+    Fork(ControlIx),
+    Unwind {
+        region: RegionId,
+        is_break: bool,
+    },
+    /// Enter a structured body region; `Some` names its loop owner.
+    EnterBody(Option<ControlIx>),
+    Wait {
+        at: u64,
+        owner: ControlIx,
+    },
+    Await {
+        event: usize,
+        owner: ControlIx,
+        at: Option<u64>,
+    },
+}
+struct Strand {
+    function: Option<FrameId>,
+    transfer: Transfer,
+    cleanup_deadline: Option<u64>,
+    iteration_context: Option<Arc<IterationFrame>>,
+    id: StrandId,
+    region: RegionId,
+    sequence: u64,
+    entry: ControlIx,
+    cause_depth: u16,
+    pc: Option<ExecTarget>,
+    pull: PullState,
+    stack: Vec<Cursor>,
+    /// Release the actor segment and rotate behind other ready strands at the
+    /// next transfer-free step. Independent of `transfer`: a loop resume sets
+    /// both, and the body entry leaves the flag on the waiting continuation.
+    yielded: bool,
+    reenter: Option<(ControlIx, u64)>,
+    cleanup: bool,
+    cleanup_remaining: usize,
+}
+/// One activation tree's evaluator, local cells and execution outputs. `pump`
+/// checks it out of `Run::activations` for one strand step and restores it
+/// before any error or transfer is handled, so ownership code never sees a gap.
+/// `retained_bytes`, `local_bytes` and `owned_bytes` share `max_state_bytes`. The
+/// first two are tallies that also reserve from the run's aggregate budget and holds
+/// reserve their own bytes there; dropping this state releases all of it.
+struct ActivationState {
+    budget: Arc<Budget>,
+    retained_bytes: Tally,
+    owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    cleanup_scope: Option<CleanupScope>,
+    cleanup_remaining: usize,
+    pull_owner: Option<StrandId>,
+    data: DataActivation,
+    locals: Vec<Option<Value>>,
+    states: Vec<Option<Value>>,
+    local_bytes: Tally,
+    outputs: Vec<Option<FoldedValue>>,
+}
+struct Timer {
+    run: u64,
+    owner: ControlIx,
+    activation: Strand,
+}
+enum Cursor {
+    Stream(Box<streams::StreamCursor>),
+    ForEach(Box<ForEachCursor>),
+    While {
+        owner: ControlIx,
+        iterations: u64,
+    },
+    Sequence {
+        owner: ControlIx,
+        next: usize,
+    },
+    Indexed {
+        owner: ControlIx,
+        next: Option<i64>,
+        end: i64,
+        step: i64,
+    },
+}
+
+/// A finished node step: its next target, trace outcome and published fault.
+type Step = (Option<ExecTarget>, ControlOutcome, Option<ConstantFault>);
+/// A demanded value's graph fault takes the node's Failed edge with its source.
+fn failed(node: &ControlNode, fault: ConstantFault) -> Step {
+    (node.failed(), ControlOutcome::Failed, Some(fault))
+}
+/// A fault the node raises itself.
+fn failure(node: &ControlNode, fault: KernelFault) -> Step {
+    failed(
+        node,
+        ConstantFault {
+            source: node.node(),
+            fault,
+        },
+    )
+}
+/// Nodes cleanup may run: they neither start work nor publish ordinary results.
+fn cleanup_safe(operation: &ControlOperation) -> bool {
+    matches!(
+        operation,
+        ControlOperation::Entry
+            | ControlOperation::Branch { .. }
+            | ControlOperation::Switch { .. }
+            | ControlOperation::MatchResult { .. }
+            | ControlOperation::MatchOption { .. }
+            | ControlOperation::Sequence { .. }
+            | ControlOperation::Set { .. }
+            | ControlOperation::Gate { .. }
+            | ControlOperation::DoOnce { .. }
+            | ControlOperation::FlipFlop { .. }
+            | ControlOperation::Register { .. }
+            | ControlOperation::Update { .. }
+            | ControlOperation::CloseHandle { .. }
+            | ControlOperation::CloseStream { .. }
+    )
+}
+/// The one data root an operation consumes before it acts. Call, Return and
+/// Update consume ordered multi-root demand themselves.
+fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> {
+    match operation {
+        ControlOperation::Branch {
+            condition: root, ..
+        }
+        | ControlOperation::Switch { key: root, .. }
+        | ControlOperation::MatchResult { result: root, .. }
+        | ControlOperation::MatchOption { option: root, .. }
+        | ControlOperation::ForEach { items: root, .. }
+        | ControlOperation::While {
+            condition: root, ..
+        }
+        | ControlOperation::Count { count: root, .. }
+        | ControlOperation::Wait { duration: root }
+        | ControlOperation::Set { value: root, .. }
+        | ControlOperation::Emit { payload: root, .. } => Some(*root),
+        ControlOperation::CloseHandle { handle } => Some(*handle),
+        ControlOperation::NextItem { stream, .. }
+        | ControlOperation::Tee { stream, .. }
+        | ControlOperation::Collect { stream, .. }
+        | ControlOperation::ForEachItem { stream, .. }
+        | ControlOperation::CloseStream { stream } => Some(*stream),
+        ControlOperation::AwaitEvent {
+            timeout: Some(root),
+            ..
+        } => Some(*root),
+        ControlOperation::Register { next, .. } if input != ExecInput::Reset => Some(*next),
+        _ => None,
+    }
+}
+/// Fork, Entry, Yield and Wait request a strand transfer or simply continue.
+fn schedule(
+    now: u64,
+    node: &ControlNode,
+    ix: ControlIx,
+    activation: &mut Strand,
+    value: Option<Value>,
+) -> Result<Step, RunError> {
+    Ok(match (node.operation(), value) {
+        (ControlOperation::Fork { .. }, None) => {
+            activation.transfer = Transfer::Fork(ix);
+            (None, ControlOutcome::Forked, None)
+        }
+        (ControlOperation::Entry, None) => (node.then(), ControlOutcome::Then, None),
+        (ControlOperation::Yield, None) => {
+            activation.yielded = true;
+            (node.then(), ControlOutcome::Yielded, None)
+        }
+        (ControlOperation::Wait { .. }, Some(Value::Duration(duration))) => {
+            match u64::try_from(duration)
+                .ok()
+                .and_then(|d| now.checked_add(d))
+            {
+                Some(at) => {
+                    activation.transfer = Transfer::Wait { at, owner: ix };
+                    (node.then(), ControlOutcome::Suspended, None)
+                }
+                None => failure(
+                    node,
+                    KernelFault {
+                        code: orange_compiler::FaultText::Static("core/OutOfRange"),
+                        message_key: orange_compiler::FaultText::Static("core/wait-out-of-range"),
+                        message: "Wait duration is outside the clock range.",
+                    },
+                ),
+            }
+        }
+        (ControlOperation::Wait { .. }, Some(_)) => {
+            return Err(DataError::KernelContract { node: node.node() }.into());
+        }
+        (ControlOperation::AwaitEvent { event, .. }, None | Some(Value::None)) => {
+            activation.transfer = Transfer::Await {
+                event: *event,
+                owner: ix,
+                at: None,
+            };
+            (None, ControlOutcome::Suspended, None)
+        }
+        (ControlOperation::AwaitEvent { event, .. }, Some(Value::Duration(duration))) => {
+            match u64::try_from(duration)
+                .ok()
+                .and_then(|d| now.checked_add(d))
+            {
+                Some(at) => {
+                    activation.transfer = Transfer::Await {
+                        event: *event,
+                        owner: ix,
+                        at: Some(at),
+                    };
+                    (None, ControlOutcome::Suspended, None)
+                }
+                None => failure(
+                    node,
+                    KernelFault {
+                        code: orange_compiler::FaultText::Static("core/OutOfRange"),
+                        message_key: orange_compiler::FaultText::Static(
+                            "core/await-event-out-of-range",
+                        ),
+                        message: "Await Event timeout is outside the clock range.",
+                    },
+                ),
+            }
+        }
+        (ControlOperation::AwaitEvent { .. }, Some(_)) => {
+            return Err(DataError::KernelContract { node: node.node() }.into());
+        }
+        _ => return Err(RunError::InvalidState),
+    })
+}
+
+/// Checked control execution. Inspection is explicit; Debug never formats values.
+///
+/// ```compile_fail
+/// let run = orange_runtime::Run::default();
+/// ```
+pub struct Run {
+    workspace_bus: Option<crate::workspace::BusLease>,
+    workspace: Option<shared::Attachment>,
+    frames: Frames,
+    id: u64,
+    plan: Option<Arc<ControlPlan>>,
+    options: RunOptions,
+    state: RunState,
+    ready: ReadyQueue<Strand>,
+    activations: Activations,
+    events: events::Events,
+    event_template: Option<events::ActivationTemplate>,
+    seed: u64,
+    regions: Regions,
+    trace: Trace,
+    operations: usize,
+    variables: Vec<Option<Value>>,
+    states: Vec<Option<Value>>,
+    budget: Arc<Budget>,
+    layout: StateLayout,
+    state_bytes: usize,
+    versions: Vec<u64>,
+    now: u64,
+    timers: Timers,
+    transitions: Vec<RunState>,
+    deadline: Option<u64>,
+    last_error: Option<RunError>,
+    cancel_observed: bool,
+    cleanup_truncated: u64,
+    stop_ready: VecDeque<Strand>,
+    segment_owner: Option<StrandId>,
+    last_segment: Option<u64>,
+    segment: SegmentWrites,
+    /// Reused cancellation traversal buffers; empty between calls.
+    cancel_regions: Vec<RegionId>,
+    cancel_timers: Vec<TimerKey>,
+    /// Temporary Fork children, drained before any child can execute.
+    fork_children: Vec<Strand>,
+    /// Set while `pump` runs. Still set on the next call only if a trusted callback
+    /// panicked through a pump, which can leave work taken out of the run's stores.
+    pump_open: bool,
+    resources: resources::Resources,
+    changes: changes::Changes,
+    effects: effects::Effects,
+    graph_streams: streams::GraphStreams,
+    bridges: streams::Bridges,
+    replay: Option<replay::Session>,
+    watches: watch::Watches,
+    /// Published values and the coalesced ingress waiting for an epoch boundary.
+    lives: Vec<Option<Value>>,
+    pending_lives: BTreeMap<usize, Option<Value>>,
+    live_bytes: Tally,
+    /// The last value seen on each output port, while the host asks for them.
+    port_values: Option<PortValues>,
+}
+/// Output port values by node and port.
+pub type PortValues = BTreeMap<(NodeId, orange_model::id::PortKey), Value>;
+fn record_port(
+    seen: &mut PortValues,
+    node: NodeId,
+    port: &orange_model::id::PortKey,
+    value: &Value,
+) {
+    match seen.get_mut(&(node, port.clone())) {
+        Some(held) => {
+            if held != value {
+                *held = value.clone();
+            }
+        }
+        None => {
+            let _ = seen.insert((node, port.clone()), value.clone());
+        }
+    }
+}
+impl std::fmt::Debug for Run {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .field("ready", &self.ready.len())
+            .field("operations", &self.operations)
+            .finish_non_exhaustive()
+    }
+}
+impl Run {
+    pub fn start(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+    ) -> Result<Self, RunError> {
+        Self::start_workspace(plan, document, registry, seed, options, None, None)
+    }
+    /// Start with run variables that already hold values, as a host does when it
+    /// replaces an edited graph without losing its state. Each entry must name a
+    /// run-scoped variable of `plan` and hold a value of its declared type (or `None`
+    /// for unset); variables not listed start from their declared initial value.
+    pub fn start_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(plan, document, registry, seed, options, None, Some(values))
+    }
+    /// [`Run::start_in_workspace`] and [`Run::start_with_variables`] together: a run
+    /// attached to a host workspace whose run variables start from `values`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_in_workspace_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: &crate::WorkspaceSnapshot,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        snapshot
+            .check_schema(document, registry)
+            .map_err(|_| SharedError::Contract)?;
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(
+            plan,
+            document,
+            registry,
+            seed,
+            options,
+            Some(snapshot),
+            Some(values),
+        )
+    }
+    /// Start with an exact compatible host snapshot. The host explicitly delivers
+    /// later publications; no background thread or shared mutable store is read.
+    pub fn start_in_workspace(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: &crate::WorkspaceSnapshot,
+    ) -> Result<Self, RunError> {
+        snapshot
+            .check_schema(document, registry)
+            .map_err(|_| SharedError::Contract)?;
+        Self::start_workspace(
+            plan,
+            document,
+            registry,
+            seed,
+            options,
+            Some(snapshot),
+            None,
+        )
+    }
+    fn start_workspace(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: Option<&crate::WorkspaceSnapshot>,
+        restored: Option<&crate::checkpoint::Values>,
+    ) -> Result<Self, RunError> {
+        if snapshot.is_none()
+            && (plan
+                .variables()
+                .iter()
+                .any(|v| v.scope() == VarScope::Workspace)
+                || plan
+                    .events()
+                    .iter()
+                    .any(|e| e.scope() == orange_model::document::EventScope::Workspace))
+        {
+            return Err(SharedError::WrongWorkspace.into());
+        }
+        if options
+            .data
+            .cancel
+            .as_ref()
+            .is_some_and(crate::CancelToken::is_cancelled)
+        {
+            return Err(DataError::Cancelled.into());
+        }
+        if !plan.data().is_current(document, plan.data().snapshot()) {
+            return Err(DataError::StaleDocument.into());
+        }
+        if registry.generation() != plan.data().snapshot().generation() {
+            return Err(DataError::StaleRegistry.into());
+        }
+        if plan.starts().len() > options.limits.max_activations
+            || plan.stops().len() > options.limits.max_stop_activations
+        {
+            return Err(RunError::ResourceLimit);
+        }
+        let capacity = plan
+            .starts()
+            .len()
+            .checked_add(plan.stops().len())
+            .ok_or(RunError::ResourceLimit)?;
+        if capacity > options.limits.max_strands || capacity > options.limits.max_regions {
+            return Err(RunError::ResourceLimit);
+        }
+        let mut regions = Regions::after_roots(capacity as u64);
+        let mut ready = ReadyQueue::with_capacity(capacity);
+        let mut activations = Vec::with_capacity(capacity);
+        let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
+        let layout = StateLayout::new(&plan);
+        let budget = Budget::new(options.limits.max_run_retained_bytes);
+        let workspace = snapshot
+            .map(|s| shared::Attachment::prepare(&plan, s, &budget, options.limits.max_state_bytes))
+            .transpose()?;
+        let mut state_bytes = 0usize;
+        let mut local_bytes = 0usize;
+        struct InitialCells {
+            run: Vec<Option<Value>>,
+            local: Vec<Option<Value>>,
+        }
+        fn initialize<Id: Copy + Ord>(
+            cells: &[orange_compiler::ControlCell<Id>],
+            run_bytes: &mut usize,
+            local_bytes: &mut usize,
+            limit: usize,
+            restored: Option<&BTreeMap<Id, Option<Value>>>,
+        ) -> Result<InitialCells, RunError> {
+            let (mut run, mut local) = (Vec::new(), Vec::new());
+            for cell in cells {
+                if cell.scope() == VarScope::Workspace {
+                    continue;
+                }
+                let value = match restored.and_then(|r| r.get(&cell.id())) {
+                    Some(value) => value.as_ref(),
+                    None => cell.initial(),
+                };
+                let bytes = match value {
+                    Some(value) => cell
+                        .checked_charge(value, limit)
+                        .map_err(|_| RunError::ResourceLimit)?,
+                    None => 16,
+                };
+                let (store, total) = if cell.scope() == VarScope::Local {
+                    (&mut local, &mut *local_bytes)
+                } else {
+                    (&mut run, &mut *run_bytes)
+                };
+                *total = total
+                    .checked_add(bytes)
+                    .filter(|n| *n <= limit)
+                    .ok_or(RunError::ResourceLimit)?;
+                store.push(value.cloned());
+            }
+            Ok(InitialCells { run, local })
+        }
+        let InitialCells {
+            run: variables,
+            local: locals,
+        } = initialize(
+            plan.variables(),
+            &mut state_bytes,
+            &mut local_bytes,
+            options.limits.max_state_bytes,
+            restored,
+        )?;
+        let InitialCells {
+            run: states,
+            local: local_states,
+        } = initialize(
+            plan.states(),
+            &mut state_bytes,
+            &mut local_bytes,
+            options.limits.max_state_bytes,
+            None,
+        )?;
+        // Every start and On Stop frame reserves its storage now, so admit the
+        // aggregate before constructing any of them.
+        let watch_storage = if plan.watches().is_empty() && plan.sources().is_empty() {
+            0
+        } else {
+            crate::data::activation_storage(plan.data())
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        (plan.watches().len() + plan.sources().len())
+                            .checked_mul(size_of::<Option<Value>>() + size_of::<u64>())?,
+                    )
+                })
+                .ok_or(RunError::ResourceLimit)?
+        };
+        layout
+            .frame_storage(&plan, locals.len() + local_states.len())
+            .and_then(|bytes| bytes.checked_mul(capacity))
+            .and_then(|bytes| bytes.checked_add(watch_storage))
+            .filter(|total| *total <= options.limits.max_frame_storage_bytes)
+            .ok_or(RunError::ResourceLimit)?;
+        let has_events = plan
+            .events()
+            .iter()
+            .any(|event| !event.handlers().is_empty())
+            || !plan.manuals().is_empty()
+            || !plan.timers().is_empty()
+            || !plan.changes().is_empty()
+            || !plan.watches().is_empty()
+            || !plan.sources().is_empty()
+            || plan
+                .nodes()
+                .iter()
+                .any(|node| matches!(node.operation(), ControlOperation::AwaitEvent { .. }));
+        let prepared = if capacity > 0 || has_events {
+            Some(PreparedData::new(plan.data().clone(), options.data.limits)?)
+        } else {
+            None
+        };
+        for (sequence, entry) in plan
+            .starts()
+            .iter()
+            .chain(plan.stops())
+            .copied()
+            .enumerate()
+        {
+            let mut local = Tally::new(Some(budget.clone()), 0);
+            if !local.try_set(local_bytes) {
+                return Err(RunError::AggregateLimit);
+            }
+            activations.push(Some(Box::new(ActivationState {
+                budget: budget.clone(),
+                retained_bytes: Tally::new(Some(budget.clone()), 0),
+                owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                cleanup_scope: None,
+                cleanup_remaining: options.max_cleanup_operations,
+                pull_owner: None,
+                data: DataActivation::from_prepared(
+                    prepared.as_ref().ok_or(RunError::InvalidState)?.clone(),
+                    document.revision(),
+                    seed,
+                    sequence as u64,
+                    options.data.clone(),
+                    Some(budget.clone()),
+                )?,
+                locals: locals.clone(),
+                states: local_states.clone(),
+                local_bytes: local,
+                outputs: vec![None; layout.output_count],
+            })));
+            regions.open(
+                RegionId::root(sequence as u64),
+                Region {
+                    frames: None,
+                    retired_cursor: None,
+                    parent: None,
+                    activation: sequence as u64,
+                    depth: 0,
+                    max_cause_depth: 0,
+                    live: IdSet::one(StrandId::root(sequence as u64)),
+                    children: IdSet::default(),
+                    continuation: None,
+                    kind: RegionKind::Root,
+                },
+            )?;
+            let strand = Strand {
+                function: None,
+                transfer: Transfer::None,
+                cleanup_deadline: None,
+                iteration_context: None,
+                id: StrandId::root(sequence as u64),
+                region: RegionId::root(sequence as u64),
+                sequence: sequence as u64,
+                entry,
+                cause_depth: 0,
+                pc: Some(entry.into()),
+                pull: PullState::default(),
+                stack: vec![],
+                yielded: false,
+                reenter: None,
+                cleanup: false,
+                cleanup_remaining: 0,
+            };
+            if sequence < plan.starts().len() {
+                ready.push_back(strand.id, strand);
+            } else {
+                stop_ready.push_back(strand);
+            }
+        }
+        let variable_count = plan.variables().len();
+        let state_count = plan.states().len();
+        let event_template = if has_events {
+            let frame_storage = layout
+                .frame_storage(&plan, locals.len() + local_states.len())
+                .ok_or(RunError::ResourceLimit)?;
+            let template_storage = local_bytes
+                .checked_add(
+                    (locals.len() + local_states.len())
+                        .checked_mul(size_of::<Option<Value>>())
+                        .ok_or(RunError::ResourceLimit)?,
+                )
+                .and_then(|n| n.checked_add(watch_storage))
+                .ok_or(RunError::ResourceLimit)?;
+            let minimum = (plan.stops().len() + 1).max(capacity);
+            frame_storage
+                .checked_mul(minimum)
+                .and_then(|n| n.checked_add(template_storage))
+                .filter(|n| *n <= options.limits.max_frame_storage_bytes)
+                .ok_or(RunError::ResourceLimit)?;
+            Some(events::ActivationTemplate {
+                prepared: prepared.ok_or(RunError::InvalidState)?,
+                locals,
+                states: local_states,
+                local_bytes,
+                frame_storage,
+                template_storage,
+                source_revision: document.revision(),
+            })
+        } else {
+            None
+        };
+        let events = events::Events::new(&plan);
+        let changes = changes::Changes::new(&plan);
+        let plan_lives = plan.lives().len();
+        let live_bytes = Tally::new(Some(budget.clone()), 0);
+        let watches = watch::Watches::new(
+            &plan,
+            event_template.as_ref().map(|t| t.prepared.clone()),
+            document.revision(),
+            seed,
+            options.data.clone(),
+            budget.clone(),
+        )?;
+        let mut run = Self {
+            workspace_bus: None,
+            workspace,
+            frames: Frames::default(),
+            id: run_identity()?,
+            plan: Some(plan),
+            options,
+            state: RunState::Running,
+            ready,
+            activations: Activations::new(activations),
+            events,
+            event_template,
+            seed,
+            regions,
+            trace: Trace::new(budget.clone()),
+            operations: 0,
+            versions: vec![0; variable_count],
+            budget,
+            layout,
+            variables,
+            states,
+            state_bytes,
+            now: 0,
+            timers: Timers::default(),
+            transitions: vec![RunState::Created, RunState::Starting, RunState::Running],
+            deadline: None,
+            last_error: None,
+            cancel_observed: false,
+            cleanup_truncated: 0,
+            stop_ready,
+            segment_owner: None,
+            last_segment: None,
+            segment: SegmentWrites::new(variable_count, state_count),
+            cancel_regions: vec![],
+            cancel_timers: vec![],
+            fork_children: vec![],
+            pump_open: false,
+            resources: resources::Resources::default(),
+            effects: effects::Effects::default(),
+            graph_streams: streams::GraphStreams::default(),
+            bridges: streams::Bridges::default(),
+            replay: None,
+            changes,
+            watches,
+            lives: vec![None; plan_lives],
+            pending_lives: BTreeMap::new(),
+            live_bytes,
+            port_values: None,
+        };
+        run.arm_timer_entries()?;
+        Ok(run)
+    }
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    /// `Faulted` after a pump that unwound, until the host stops the run.
+    pub fn state(&self) -> RunState {
+        if self.pump_open {
+            RunState::Faulted
+        } else {
+            self.state
+        }
+    }
+    pub fn transitions(&self) -> &[RunState] {
+        &self.transitions
+    }
+    pub fn last_error(&self) -> Option<RunError> {
+        if self.pump_open {
+            Some(RunError::Interrupted)
+        } else {
+            self.last_error
+        }
+    }
+    pub fn cleanup_truncated(&self) -> u64 {
+        self.cleanup_truncated
+    }
+    pub fn pending_continuations(&self) -> usize {
+        self.timers.len() - self.timers.entry_count()
+    }
+    /// Aggregate nominal reservations, including shared snapshot projections and
+    /// host-held shared commands. A detached command keeps its lease through
+    /// cancellation/disposal until the host drops or consumes it.
+    pub fn retention(&self) -> RunRetention {
+        RunRetention {
+            reserved_bytes: self.budget.used(),
+            limit_bytes: self.budget.limit(),
+        }
+    }
+    pub fn ownership(&self) -> RunOwnership {
+        RunOwnership {
+            activations: self.activations.len(),
+            strands: self.regions.live_strands(),
+            regions: self.regions.len(),
+            timers: self.timers.len(),
+            event_waiters: self.waiter_count(),
+            host_sources: self.host_source_count(),
+            resources: self.resources.len(),
+            effects: self.effects.len(),
+            stream_reads: self.graph_streams.len(),
+        }
+    }
+    /// IDs written by the last/current segment, once each. No equality comparison,
+    /// change notification or Watch delivery is implied by this inspection seam.
+    pub fn segment_writes(&self) -> Option<(u64, &[VariableId])> {
+        self.last_segment
+            .map(|owner| (owner, self.segment.variables()))
+    }
+    fn transition(&mut self, state: RunState) {
+        if self.state != state {
+            // A paused run keeps its endpoint: deliveries wait under the bus's own bounds.
+            if !matches!(state, RunState::Running | RunState::Paused)
+                && let Some(lease) = &self.workspace_bus
+            {
+                lease.close();
+            }
+            self.effects.set_paused(state == RunState::Paused);
+            if state != RunState::Paused {
+                self.resources.forget_pause();
+            }
+            self.state = state;
+            self.transitions.push(state);
+        }
+    }
+    /// State cells written by the last actor segment; these are write intents,
+    /// not Eq-based change notifications. Activation identifies local cell owners.
+    pub fn segment_state_writes(&self) -> Option<(u64, &[NodeId])> {
+        self.last_segment
+            .map(|owner| (owner, self.segment.states()))
+    }
+    /// Starts or stops keeping the last value of each output port for
+    /// [`Run::port_values`]. Stopping forgets what was kept.
+    pub fn keep_port_values(&mut self, on: bool) {
+        if on && self.port_values.is_none() {
+            self.port_values = Some(PortValues::new());
+        } else if !on {
+            self.port_values = None;
+        }
+    }
+    /// The last value each output port carried, for a front end to show on a graph.
+    /// `None` unless [`Run::keep_port_values`] is on.
+    ///
+    /// Computed values appear after a pull. Successful effect outputs also appear
+    /// without a consumer. Folded constants, faults and unwired resource handles
+    /// are absent.
+    /// Nodes inside a function report under the function's own node IDs, whichever
+    /// call ran last. The table is bounded by the plan's port count, and keeping it
+    /// costs one pass over an activation's ports when it ends and on each call here.
+    pub fn port_values(&mut self) -> Option<&PortValues> {
+        let seen = self.port_values.as_mut()?;
+        for frame in self.activations.frames() {
+            frame
+                .data
+                .held_values(|node, port, value| record_port(seen, node, port, value));
+        }
+        self.port_values.as_ref()
+    }
+    pub fn now(&self) -> u64 {
+        self.now
+    }
+    /// Advancing time enqueues no inline graph execution; pump resumes due waits.
+    pub fn advance_to(&mut self, now: u64) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state == RunState::Paused {
+            return Err(RunError::Paused);
+        }
+        if !matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Cancelling
+        ) {
+            return Err(RunError::InvalidState);
+        }
+        if now < self.now {
+            return Err(RunError::ClockWentBackwards);
+        }
+        self.now = now;
+        self.events.advance_deliveries(now);
+        Ok(())
+    }
+    pub fn trace(&self) -> &VecDeque<RunEvent> {
+        self.trace.events()
+    }
+    pub fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+    /// Unambiguous run-owned source state; repeated call sites require `control_state`.
+    pub fn node_state(&self, id: NodeId) -> Option<&Value> {
+        let plan = self.plan.as_ref()?;
+        let mut cells = plan
+            .states()
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.id() == id);
+        let (index, _) = cells.next()?;
+        if cells.next().is_some() {
+            return None;
+        }
+        if plan.states()[index].scope() == VarScope::Local {
+            return None;
+        }
+        self.states[self.layout.states[index]].as_ref()
+    }
+    /// Run-owned state at an exact control index in this run's pinned plan.
+    pub fn control_state(&self, owner: ControlIx) -> Option<&Value> {
+        let plan = self.plan.as_ref()?;
+        let index = match plan.nodes().get(owner.index())?.operation() {
+            ControlOperation::Gate { state }
+            | ControlOperation::DoOnce { state }
+            | ControlOperation::FlipFlop { state, .. }
+            | ControlOperation::Register { state, .. } => *state,
+            _ => return None,
+        };
+        if plan.states()[index].scope() == VarScope::Local {
+            return None;
+        }
+        self.states[self.layout.states[index]].as_ref()
+    }
+    /// Explicit run-state inspection; activation-local cells are not shared.
+    pub fn variable(&self, id: VariableId) -> Option<&Value> {
+        let index = self
+            .plan
+            .as_ref()?
+            .variables()
+            .iter()
+            .position(|v| v.id() == id && v.scope() == VarScope::Run)?;
+        self.variables[self.layout.variables[index]].as_ref()
+    }
+    fn record(&mut self, event: RunEvent) {
+        self.trace.record(event, self.options.limits.max_trace);
+    }
+    /// Drive at most `budget` control/data/timer work items. Idle Running is live.
+    /// Native callbacks are trusted; this is not a wall-time preemption guarantee.
+    /// Runs up to `budget` work items. If a trusted provider callback panics, the panic
+    /// propagates and the run is left faulted: every later call reports
+    /// `RunError::Interrupted` until the host stops it, which cancels its remaining work.
+    pub fn pump(&mut self, budget: usize) -> Result<RunProgress, RunError> {
+        self.pump_bus(budget, None)
+    }
+    /// Exclusively borrow the bounded native workspace bus for synchronous Emit
+    /// admission. Other runs' handlers never execute inside this call.
+    pub fn pump_with_workspace_bus(
+        &mut self,
+        bus: &mut crate::WorkspaceBus,
+        budget: usize,
+    ) -> Result<RunProgress, RunError> {
+        self.pump_bus(budget, Some(bus))
+    }
+    fn pump_bus(
+        &mut self,
+        budget: usize,
+        bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<RunProgress, RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state == RunState::Paused {
+            // Whole-run cancellation still reaches a paused run; nothing else does.
+            self.observe_cancellation()?;
+            // The cancellation may also finish at once, leaving nothing to pump.
+            if matches!(self.state, RunState::Paused | RunState::Stopped) {
+                return Ok(RunProgress {
+                    operations: 0,
+                    ready: false,
+                    next_wakeup: None,
+                });
+            }
+        }
+        if self.state == RunState::Running
+            && self.plan.as_ref().is_some_and(|p| {
+                p.events()
+                    .iter()
+                    .any(|e| e.scope() == orange_model::document::EventScope::Workspace)
+            })
+        {
+            let supplied = bus
+                .as_deref()
+                .ok_or(crate::WorkspaceBusError::NotAttached)?;
+            if !self
+                .workspace_bus
+                .as_ref()
+                .is_some_and(|l| l.matches(supplied))
+            {
+                return Err(crate::WorkspaceBusError::WrongOwner.into());
+            }
+        }
+        self.pump_open = true;
+        let progress = self.pump_open_run(budget, bus);
+        self.pump_open = false;
+        progress
+    }
+
+    /// Records a pump that unwound: the run faults with `Interrupted` and refuses ordinary
+    /// work, so lost activations cannot pass for completed ones. True when one did.
+    fn settle_interruption(&mut self) -> bool {
+        if !self.pump_open {
+            return false;
+        }
+        self.pump_open = false;
+        self.last_error = Some(RunError::Interrupted);
+        self.transition(RunState::Faulted);
+        self.close_host_sources();
+        true
+    }
+
+    fn pump_open_run(
+        &mut self,
+        budget: usize,
+        mut bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<RunProgress, RunError> {
+        if !matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Cancelling
+        ) {
+            return Err(RunError::InvalidState);
+        }
+        self.observe_cancellation()?;
+        if self.deadline.is_some_and(|deadline| self.now >= deadline) {
+            if self.state == RunState::Draining {
+                self.request_stop(StopMode::Immediate)?;
+            } else if self.state == RunState::Cancelling {
+                self.abort_cleanup();
+            }
+        }
+        let available = if self.state == RunState::Cancelling {
+            usize::MAX
+        } else {
+            self.options
+                .limits
+                .max_operations
+                .saturating_sub(self.operations)
+        };
+        // Work done outside a pump, such as a host stop, is not charged to this one.
+        let _ = self.regions.take_work();
+        let mut remaining = budget.min(available);
+        let initial = remaining;
+        let mut last = None;
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        while remaining > 0
+            && matches!(
+                self.state,
+                RunState::Running | RunState::Draining | RunState::Cancelling
+            )
+        {
+            self.observe_cancellation()?;
+            if self.state == RunState::Running
+                && self.can_apply_live()
+                && !self
+                    .ready
+                    .front()
+                    .is_some_and(|a| Some(a.id) == self.segment_owner)
+            {
+                self.end_segment(&plan);
+                remaining -= 1;
+                if let Err(error) = self.apply_live(&plan) {
+                    return self.fail(error);
+                }
+                continue;
+            }
+            if self.watches.has_pending() && self.state == RunState::Running {
+                if let Err(error) = self.evaluate_watch(&plan, &mut remaining) {
+                    return self.fail(error);
+                }
+                continue;
+            }
+            if self.state == RunState::Stopped {
+                break;
+            }
+            // Host-side Replace admission records intent only. Drain it at the
+            // next actor boundary, ahead of timers and all dispatch/node work.
+            if self.has_replace_cancellation() {
+                if let Err(error) = self.cancel_replaced_roots() {
+                    return self.fail(error);
+                }
+                let charged = self.regions.take_work().saturating_add(1);
+                remaining = remaining.saturating_sub(charged);
+                continue;
+            }
+            if let Some((key, timer)) = self.timers.pop_due(self.now) {
+                match timer {
+                    TimerTarget::Wait(timer) => {
+                        remaining -= 1;
+                        if timer.run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        self.record(RunEvent {
+                            route: None,
+                            activation: timer.activation.sequence,
+                            node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
+                                [timer.owner.index()]
+                            .node(),
+                            outcome: ControlOutcome::Then,
+                            fault: None,
+                        });
+                        self.ready.push_back(timer.activation.id, timer.activation);
+                    }
+                    TimerTarget::Await { run, token } => {
+                        remaining -= 1;
+                        if run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        if let Err(error) = self.complete_waiter_timeout(token) {
+                            return self.fail(error);
+                        }
+                    }
+                    TimerTarget::Watch(index) => {
+                        remaining -= 1;
+                        self.watches.schedule_deadline(index);
+                    }
+                    TimerTarget::Entry { run, timer, at } => {
+                        if run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        match self.fire_timer_entry(timer, at, key) {
+                            Ok(work) => remaining = remaining.saturating_sub(work),
+                            Err(error) => return self.fail(error),
+                        }
+                    }
+                }
+                continue;
+            }
+            if self.effects.has_ready() {
+                if let Err(error) = self.resume_effect(&plan) {
+                    return self.fail(error);
+                }
+                remaining -= 1;
+                continue;
+            }
+            if matches!(self.state, RunState::Running | RunState::Draining)
+                && self.bridges.has_ready()
+            {
+                if let Err(error) = self.pump_stream_bridge() {
+                    return self.fail(error);
+                }
+                remaining = remaining.saturating_sub(1);
+                continue;
+            }
+            if self.graph_streams.has_ready() {
+                if let Err(error) = self.resume_stream_read(&plan) {
+                    return self.fail(error);
+                }
+                remaining = remaining.saturating_sub(1 + self.regions.take_work());
+                continue;
+            }
+            // A matched Await completion is actor work of its own. Publish one per
+            // pump operation, after due timers and before queued handler dispatch.
+            if self.pending_await_completions() {
+                if let Err(error) = self.resume_awaiters(&plan) {
+                    return self.fail(error);
+                }
+                remaining -= 1;
+                continue;
+            }
+            match self.dispatch_event(&plan) {
+                Ok(true) => {
+                    remaining -= 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => return self.fail(error),
+            }
+            // One pending consumption owns the shared activation evaluator.
+            // Other activations can interleave; sibling strands cannot open a
+            // replacement epoch or reset activation entropy/fuel under it.
+            let pull_owner = self.ready.front().and_then(|front| {
+                self.activations
+                    .get(front.sequence)
+                    .and_then(Option::as_ref)
+                    .and_then(|a| a.pull_owner)
+                    .filter(|owner| *owner != front.id)
+            });
+            let next = if let Some(owner) = pull_owner {
+                Some(self.ready.remove(owner).ok_or(RunError::InvalidState)?)
+            } else {
+                self.ready.pop_front()
+            };
+            let Some(mut activation) = next else {
+                break;
+            };
+            last = Some(activation.id);
+            let mut quantum = if activation.cleanup {
+                remaining.min(activation.cleanup_remaining).min(
+                    self.activations
+                        .get(activation.sequence)
+                        .ok_or(RunError::InvalidState)?
+                        .as_ref()
+                        .ok_or(RunError::InvalidState)?
+                        .cleanup_remaining,
+                )
+            } else {
+                remaining
+            };
+            if quantum == 0
+                || (activation.cleanup
+                    && activation
+                        .cleanup_deadline
+                        .is_some_and(|deadline| self.now >= deadline))
+            {
+                self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
+                remaining -= 1;
+                let shared = self
+                    .activations
+                    .get_mut(activation.sequence)
+                    .and_then(Option::as_mut)
+                    .ok_or(RunError::InvalidState)?;
+                if let Some(scope) = shared.cleanup_scope.take() {
+                    shared.data.finish_cleanup(scope);
+                }
+                shared.pull_owner = None;
+                self.retire_strand(activation)?;
+                continue;
+            }
+            let before = quantum;
+            if self.segment_owner != Some(activation.id) {
+                self.end_segment(&plan);
+                if self.watches.has_pending() {
+                    self.ready.push_front(activation.id, activation);
+                    continue;
+                }
+                self.segment.open();
+                self.changes
+                    .open((activation.sequence, activation.cause_depth));
+                self.segment_owner = Some(activation.id);
+                self.last_segment = Some(activation.sequence);
+            }
+            let mut shared = self
+                .activations
+                .get_mut(activation.sequence)
+                .and_then(Option::take)
+                .ok_or(RunError::InvalidState)?;
+            // Entry failure must follow the same restoration/retirement path as execution
+            // failure: the activation has already been checked out of its owner store.
+            let result = (|| {
+                if activation.cleanup && shared.cleanup_scope.is_none() {
+                    shared.cleanup_scope =
+                        Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
+                }
+                self.execute(
+                    &plan,
+                    &mut activation,
+                    &mut shared,
+                    &mut quantum,
+                    bus.as_deref_mut(),
+                )
+            })();
+            let used = before - quantum;
+            remaining -= used;
+            // Fuel bounds work done without giving control back. A strand that parks on
+            // time, an event or the host has given it back; cleanup keeps its own budget.
+            if result.is_ok()
+                && !activation.cleanup
+                && shared.cleanup_scope.is_none()
+                && matches!(
+                    activation.transfer,
+                    Transfer::Wait { .. }
+                        | Transfer::Await { .. }
+                        | Transfer::Effect(_)
+                        | Transfer::Stream(_)
+                )
+            {
+                shared.data.refuel();
+            }
+            if activation.cleanup {
+                activation.cleanup_remaining -= used;
+                shared.cleanup_remaining -= used;
+            }
+            if activation.cleanup && (activation.pull.active.is_none() || result.is_err()) {
+                if let Some(scope) = shared.cleanup_scope.take() {
+                    shared.data.finish_cleanup(scope);
+                }
+                shared.pull_owner = None;
+            }
+            *self
+                .activations
+                .get_mut(activation.sequence)
+                .ok_or(RunError::InvalidState)? = Some(shared);
+            if let Err(error) = result {
+                if activation.cleanup {
+                    self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
+                    self.retire_strand(activation)?;
+                    self.finish_if_idle();
+                    continue;
+                }
+                self.operations = self.operations.saturating_add(initial - remaining);
+                return self.fail(error);
+            }
+            if self.state == RunState::Faulted {
+                self.cancel_owned()?;
+                break;
+            }
+            match std::mem::take(&mut activation.transfer) {
+                Transfer::Stream(work) => {
+                    self.segment_owner = None;
+                    if let Err(error) = self.park_stream_read(activation, work) {
+                        return self.fail(error);
+                    }
+                }
+                Transfer::Effect(prepared) => {
+                    self.segment_owner = None;
+                    if let Err(error) = self.park_effect(activation, prepared) {
+                        return self.fail(error);
+                    }
+                }
+                Transfer::Return(result) => {
+                    if let Err(error) = self.leave_function(activation, result) {
+                        return self.fail(error);
+                    }
+                }
+                Transfer::Call(call) => {
+                    if let Err(error) = self.enter_function(activation, call) {
+                        return self.fail(error);
+                    }
+                }
+                // A function fault always carries its source to the caller.
+                Transfer::Fault if activation.function.is_some() => {
+                    return Err(RunError::InvalidState);
+                }
+                Transfer::Fault => self.retire_failed(activation)?,
+                Transfer::Fork(owner) => self.spawn_fork(activation, owner)?,
+                Transfer::Unwind { region, is_break } => {
+                    self.unwind_loop(activation, region, is_break)?;
+                }
+                Transfer::EnterBody(loop_owner) => self.enter_body(activation, loop_owner)?,
+                Transfer::Wait { at, owner } => {
+                    self.segment_owner = None;
+                    let timer = Timer {
+                        run: self.id,
+                        owner,
+                        activation,
+                    };
+                    let max = self.options.limits.max_timers;
+                    if self.timers.schedule(at, timer, max).is_err() {
+                        return self.fail(RunError::ResourceLimit);
+                    }
+                }
+                Transfer::Await { event, owner, at } => {
+                    self.segment_owner = None;
+                    let token = match self.next_waiter_token() {
+                        Ok(token) => token,
+                        Err(_) => return self.fail(RunError::ResourceLimit),
+                    };
+                    let timer = match at {
+                        Some(at) => match self.timers.schedule_await(
+                            at,
+                            self.id,
+                            token,
+                            self.options.limits.max_timers,
+                        ) {
+                            Ok(key) => Some(key),
+                            Err(_) => return self.fail(RunError::ResourceLimit),
+                        },
+                        None => None,
+                    };
+                    if let Err(error) = self.register_waiter(token, event, owner, activation, timer)
+                    {
+                        return self.fail(error);
+                    }
+                }
+                Transfer::None if activation.pc.is_some() || !activation.stack.is_empty() => {
+                    if activation.yielded {
+                        self.segment_owner = None;
+                        activation.yielded = false;
+                        self.ready.push_back(activation.id, activation);
+                    } else {
+                        self.ready.push_front(activation.id, activation);
+                    }
+                }
+                Transfer::None => self.retire_strand(activation)?,
+            }
+            // Emit may request replacement of this very activation. Its strand and frame
+            // are owned by the actor again only after the transfer/requeue above, so the
+            // targeted walk can now find every ready/timed descendant before another node
+            // or newly eligible handler executes.
+            if let Err(error) = self.cancel_replaced_roots() {
+                return self.fail(error);
+            }
+            remaining = remaining.saturating_sub(self.regions.take_work());
+        }
+        // A segment whose strand suspended, retired or rotated away has ended; one that
+        // keeps the ready head continues in the next pump, so host slices never split it.
+        if !self
+            .ready
+            .front()
+            .is_some_and(|a| Some(a.id) == self.segment_owner)
+        {
+            self.end_segment(&plan);
+        }
+        if self.state == RunState::Faulted {
+            self.cancel_owned()?;
+        }
+        // A pending mutation owns its read/compute/write segment across host slices.
+        // Explicit suspension still releases ownership; read-only pulls may rotate.
+        let control = self.plan.as_deref().ok_or(RunError::InvalidState)?;
+        if remaining == 0
+            && self.ready.front().is_some_and(|a| {
+                Some(a.id) == last
+                    && !(a.function.is_some()
+                        || (a.pull.active.is_some()
+                            && a.pc.is_some_and(|pc| {
+                                matches!(
+                                    control.nodes()[pc.index()].operation(),
+                                    ControlOperation::Set { .. }
+                                        | ControlOperation::Call { .. }
+                                        | ControlOperation::Return { .. }
+                                        | ControlOperation::Register { .. }
+                                        | ControlOperation::Update { .. }
+                                        | ControlOperation::Effect { .. }
+                                )
+                            })))
+            })
+            && let Some(activation) = self.ready.pop_front()
+        {
+            self.ready.push_back(activation.id, activation);
+        }
+        // A host budget boundary does not itself suspend the logical strand.
+        // Explicit suspension or selecting a different strand opens a new segment.
+        let count = initial - remaining;
+        self.operations = self.operations.saturating_add(count);
+        // The limit is a runaway guard, not a lifetime: a run with nothing left to do
+        // until its host supplies time or input starts its next burst from zero.
+        if self.state == RunState::Running && !self.has_runnable() {
+            self.operations = 0;
+        }
+        if budget > 0
+            && self.state != RunState::Cancelling
+            && self.state != RunState::Stopped
+            && self.operations == self.options.limits.max_operations
+            && (!self.ready.is_empty()
+                || !self.timers.is_empty()
+                || self.events.pending() > 0
+                || self.pending_await_completions()
+                || self.effects.has_ready()
+                || self.graph_streams.has_ready()
+                || self.bridges.has_ready()
+                || self.watches.has_pending()
+                || self.has_replace_cancellation())
+        {
+            return self.fail(RunError::ResourceLimit);
+        }
+        // A capacity-blocked delivery may sleep behind a live timer. Without
+        // any runnable owner or future wakeup it must fail, not masquerade as idle.
+        if self.events.pending() > 0
+            && self.ready.is_empty()
+            && self.timers.is_empty()
+            && self.events.next_timed_delivery().is_none()
+            && self.event_waiter_count() == 0
+            && self.effects.len() == 0
+            && self.graph_streams.len() == 0
+            && !self.pending_await_completions()
+            && !self.event_dispatchable()
+        {
+            return self.fail(RunError::ResourceLimit);
+        }
+        self.finish_if_idle();
+        let next_wakeup = [
+            self.timers.next_at(),
+            self.deadline,
+            self.events.next_timed_delivery(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        Ok(RunProgress {
+            operations: count,
+            ready: self.has_runnable(),
+            next_wakeup,
+        })
+    }
+    /// Work a further pump could do now, without new time or host input.
+    fn has_runnable(&self) -> bool {
+        !self.ready.is_empty()
+            || self.watches.has_pending()
+            || (self.state == RunState::Running && self.can_apply_live())
+            || self.timers.is_due(self.now)
+            || self.pending_await_completions()
+            || self.effects.has_ready()
+            || self.graph_streams.has_ready()
+            || (matches!(self.state, RunState::Running | RunState::Draining)
+                && self.bridges.has_ready())
+            || self.has_replace_cancellation()
+            || self.event_dispatchable()
+    }
+    fn observe_cancellation(&mut self) -> Result<(), RunError> {
+        let cancelled = self
+            .options
+            .data
+            .cancel
+            .as_ref()
+            .is_some_and(crate::CancelToken::is_cancelled);
+        if cancelled && !self.cancel_observed {
+            self.request_stop(StopMode::Immediate)?;
+        }
+        self.cancel_observed = cancelled;
+        Ok(())
+    }
+    fn fail<T>(&mut self, error: RunError) -> Result<T, RunError> {
+        self.last_error = Some(error);
+        self.transition(RunState::Faulted);
+        self.close_host_sources();
+        if self.cancel_owned().is_err() {
+            self.abort_cleanup();
+        }
+        Err(error)
+    }
+    fn finish_if_idle(&mut self) {
+        if matches!(self.state, RunState::Draining | RunState::Cancelling)
+            && self.ready.is_empty()
+            && self.timers.is_empty()
+            && self.event_waiter_count() == 0
+            && self.effects.len() == 0
+            && self.graph_streams.len() == 0
+            && !self.pending_await_completions()
+            && self.events.pending() == 0
+        {
+            self.deadline = None;
+            self.transition(RunState::Stopped);
+            self.close_host_sources();
+            self.close_resources();
+        }
+    }
+    fn abort_cleanup(&mut self) {
+        self.cleanup_truncated = self
+            .cleanup_truncated
+            .saturating_add(self.ready.len() as u64);
+        self.stop_ready.clear();
+        self.ready.clear();
+        self.timers.clear();
+        self.events.clear_tick_windows();
+        self.effects.clear();
+        self.graph_streams.clear();
+        self.watches.clear();
+        self.regions.clear();
+        self.frames.clear();
+        self.activations.clear();
+        self.events.abort();
+        self.close_host_sources();
+        self.deadline = None;
+        self.transition(RunState::Stopped);
+        self.close_resources();
+    }
+    /// One node step. Single-root demand is consumed here, once: pending keeps
+    /// the pull for the next quantum, and a graph fault takes the node's Failed
+    /// edge. Family handlers then act on the value with only the state they own.
+    fn execute(
+        &mut self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        budget: &mut usize,
+        bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<(), RunError> {
+        let Some(target) = activation.pc else {
+            *budget -= 1;
+            return self.loops().resume_cursor(plan, activation, shared);
+        };
+        let ix = target.node();
+        let node = &plan.nodes()[ix.index()];
+        if activation.pull.active.is_none() {
+            *budget -= 1;
+        }
+        let operation = node.operation();
+        if activation.cleanup && !cleanup_safe(operation) {
+            self.refuse_in_cleanup(plan, activation, shared, ix)?;
+            return Ok(());
+        }
+        if activation.pull.active.is_none()
+            && matches!(
+                operation,
+                ControlOperation::Tee { .. }
+                    | ControlOperation::AwaitEvent { .. }
+                    | ControlOperation::NextItem { .. }
+                    | ControlOperation::Collect { .. }
+            )
+        {
+            Self::publish_match_value(
+                plan,
+                &self.layout,
+                shared,
+                ix,
+                None,
+                self.options.limits.max_state_bytes,
+            )?;
+        }
+        let value = match demand_root(operation, target.input()) {
+            None => None,
+            Some(root) => match self
+                .cells()
+                .consume(plan, activation, shared, root, budget)?
+            {
+                None => return Ok(()),
+                Some(FoldedValue::Value(value)) => Some(value),
+                Some(FoldedValue::Fault(fault)) => {
+                    if matches!(
+                        operation,
+                        ControlOperation::MatchResult { .. } | ControlOperation::MatchOption { .. }
+                    ) {
+                        // A failed match clears its value outputs.
+                        Self::publish_match_value(
+                            plan,
+                            &self.layout,
+                            shared,
+                            ix,
+                            None,
+                            self.options.limits.max_state_bytes,
+                        )?;
+                    }
+                    self.complete(plan, activation, shared, ix, failed(node, fault))?;
+                    return Ok(());
+                }
+            },
+        };
+        let step = match operation {
+            ControlOperation::Tee {
+                capacity,
+                max_bytes,
+                overflow,
+                ..
+            } => self.execute_stream_tee(
+                plan,
+                activation,
+                shared,
+                ix,
+                value.ok_or(RunError::InvalidState)?,
+                StreamBufferOptions {
+                    capacity: *capacity,
+                    max_bytes: *max_bytes,
+                    overflow: *overflow,
+                },
+            )?,
+            ControlOperation::CloseStream { .. } => {
+                match self.close_graph_resource(
+                    value.as_ref().ok_or(RunError::InvalidState)?,
+                    activation.region,
+                ) {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(error) => failure(node, resources::resource_fault(error)),
+                }
+            }
+            ControlOperation::NextItem { .. }
+            | ControlOperation::Collect { .. }
+            | ControlOperation::ForEachItem { .. } => {
+                let mode = match operation {
+                    ControlOperation::NextItem { boxed, .. } => {
+                        streams::ReadMode::Next { boxed: *boxed }
+                    }
+                    ControlOperation::Collect { max_items, .. } => {
+                        streams::ReadMode::Collect { max: *max_items }
+                    }
+                    _ => streams::ReadMode::Iterate {
+                        index: 0,
+                        parent: activation.iteration_context.clone(),
+                    },
+                };
+                activation.transfer = Transfer::Stream(streams::PreparedRead::new(
+                    ix,
+                    value.ok_or(RunError::InvalidState)?,
+                    mode,
+                    shared,
+                    self.options.limits.max_state_bytes,
+                )?);
+                (node.then(), ControlOutcome::Suspended, None)
+            }
+            ControlOperation::CloseHandle { .. } => {
+                match self.close_graph_resource(
+                    value.as_ref().ok_or(RunError::InvalidState)?,
+                    activation.region,
+                ) {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(error) => failure(node, resources::resource_fault(error)),
+                }
+            }
+            ControlOperation::Effect { .. } => {
+                match self.execute_effect(plan, activation, shared, ix, budget)? {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
+            ControlOperation::Emit { event, .. } => {
+                let payload = value.ok_or(RunError::InvalidState)?;
+                let result = if plan.events()[*event].scope()
+                    == orange_model::document::EventScope::Workspace
+                {
+                    self.emit_workspace(plan, activation, ix, *event, &payload, bus)
+                } else {
+                    self.emit_event(plan, activation, ix, *event, payload)
+                };
+                match result {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(fault) => failure(node, fault),
+                }
+            }
+            ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
+                let function_step = self
+                    .cells()
+                    .execute_function(plan, activation, shared, ix, budget)?;
+                let values = match &activation.transfer {
+                    Transfer::Call(call) => call.arguments(),
+                    Transfer::Return(FunctionReturn::Values { values, .. }) => values,
+                    _ => &[],
+                };
+                if let Some(error) = values
+                    .iter()
+                    .find_map(|value| self.check_graph_resource(value, activation.region).err())
+                {
+                    activation.transfer = Transfer::None;
+                    self.complete(
+                        plan,
+                        activation,
+                        shared,
+                        ix,
+                        failure(node, resources::resource_fault(error)),
+                    )?;
+                    return Ok(());
+                }
+                match function_step {
+                    FunctionStep::Failed(step) => step,
+                    FunctionStep::Returned => {
+                        self.record(RunEvent {
+                            route: None,
+                            activation: activation.sequence,
+                            node: node.node(),
+                            outcome: ControlOutcome::Then,
+                            fault: None,
+                        });
+                        return Ok(());
+                    }
+                    FunctionStep::Pending | FunctionStep::Called => return Ok(()),
+                }
+            }
+            ControlOperation::Update { .. } => {
+                match self
+                    .cells()
+                    .execute_update(plan, activation, shared, ix, budget)?
+                {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
+            ControlOperation::ForRange { .. } => {
+                match self.execute_range(plan, activation, shared, ix, budget)? {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
+            ControlOperation::Gate { .. }
+            | ControlOperation::DoOnce { .. }
+            | ControlOperation::FlipFlop { .. }
+            | ControlOperation::Register { .. }
+            | ControlOperation::Set { .. } => {
+                let function = activation.function;
+                self.cells().step(plan, target, shared, function, value)?
+            }
+            ControlOperation::Branch { .. }
+            | ControlOperation::Switch { .. }
+            | ControlOperation::MatchOption { .. }
+            | ControlOperation::MatchResult { .. } => Self::select(
+                plan,
+                (&self.layout, self.options.limits.max_state_bytes),
+                ix,
+                shared,
+                value,
+            )?,
+            ControlOperation::ForEach { .. }
+            | ControlOperation::While { .. }
+            | ControlOperation::Count { .. }
+            | ControlOperation::Sequence { .. }
+            | ControlOperation::Break
+            | ControlOperation::Continue => self
+                .loops()
+                .loop_step(plan, ix, activation, shared, value)?,
+            ControlOperation::Fork { .. }
+            | ControlOperation::Entry
+            | ControlOperation::Yield
+            | ControlOperation::Wait { .. } => schedule(self.now, node, ix, activation, value)?,
+            ControlOperation::AwaitEvent { .. } => schedule(self.now, node, ix, activation, value)?,
+        };
+        self.complete(plan, activation, shared, ix, step)
+    }
+    /// Cleanup never publishes ordinary results or revives a held caller: Return
+    /// is cancelled, and any other unsafe node fails at itself.
+    fn refuse_in_cleanup(
+        &mut self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        ix: ControlIx,
+    ) -> Result<(), RunError> {
+        let node = &plan.nodes()[ix.index()];
+        if matches!(node.operation(), ControlOperation::Return { .. }) {
+            activation.pc = None;
+            activation.stack.clear();
+            activation.pull.reset();
+            shared.pull_owner = None;
+            self.record(RunEvent {
+                route: None,
+                activation: activation.sequence,
+                node: node.node(),
+                outcome: ControlOutcome::Cancelled,
+                fault: None,
+            });
+            return Ok(());
+        }
+        let fault = ConstantFault {
+            source: node.node(),
+            fault: KernelFault {
+                code: orange_compiler::FaultText::Static("core/Cancelled"),
+                message_key: orange_compiler::FaultText::Static("core/cleanup-unsafe-node"),
+                message: "This operation is not permitted during cancellation cleanup.",
+            },
+        };
+        Self::publish_error(
+            plan,
+            &self.layout,
+            shared,
+            ix,
+            &fault,
+            self.options.limits.max_state_bytes,
+        )?;
+        self.record(RunEvent {
+            route: None,
+            activation: activation.sequence,
+            node: node.node(),
+            outcome: ControlOutcome::Failed,
+            fault: Some(fault),
+        });
+        activation.pc = node.failed();
+        activation.pull.reset();
+        if activation.pc.is_none() {
+            activation.stack.clear();
+        }
+        Ok(())
+    }
+    fn complete(
+        &mut self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        ix: ControlIx,
+        (next, outcome, fault): (Option<ExecTarget>, ControlOutcome, Option<ConstantFault>),
+    ) -> Result<(), RunError> {
+        let node = &plan.nodes()[ix.index()];
+        shared.pull_owner = None;
+        activation.pull.reset();
+        activation.reenter = None;
+        if let Some(fault) = &fault {
+            Self::publish_error(
+                plan,
+                &self.layout,
+                shared,
+                ix,
+                fault,
+                self.options.limits.max_state_bytes,
+            )?;
+        }
+        if outcome == ControlOutcome::Failed && next.is_none() {
+            activation.stack.clear();
+            // Cleanup faults only end their own strand.
+            if !activation.cleanup {
+                activation.transfer = match (activation.function, &fault) {
+                    (Some(_), Some(fault)) => {
+                        Transfer::Return(FunctionReturn::Fault(fault.clone()))
+                    }
+                    _ => Transfer::Fault,
+                };
+            }
+        }
+        self.record(RunEvent {
+            route: node.entry_port().cloned(),
+            activation: activation.sequence,
+            node: node.node(),
+            outcome,
+            fault,
+        });
+        if outcome == ControlOutcome::Failed
+            && next.is_none()
+            && !activation.cleanup
+            && activation.function.is_none()
+            && plan.nodes()[activation.entry.index()].fault_policy() == FaultPolicy::StopRun
+        {
+            self.transition(RunState::Faulted);
+        }
+        activation.pc = next;
+        Ok(())
+    }
+    /// Publish matched/expired waiters only after the current strand has restored
+    /// its shared activation frame and replacement cancellation has run.
+    fn resume_awaiters(&mut self, plan: &ControlPlan) -> Result<(), RunError> {
+        if let Some(mut waiter) = self.pop_completed_waiter() {
+            let completion = waiter.completion.take().ok_or(RunError::InvalidState)?;
+            let shared = self
+                .activations
+                .get_mut(waiter.strand.sequence)
+                .and_then(Option::as_deref_mut)
+                .ok_or(RunError::InvalidState)?;
+            if let Err(error) = Self::publish_match_value(
+                plan,
+                &self.layout,
+                shared,
+                waiter.owner,
+                completion.payload.clone(),
+                self.options.limits.max_state_bytes,
+            ) {
+                self.dropped_await_delivery(&completion);
+                return Err(error);
+            }
+            if let Some(metadata) = completion.metadata {
+                waiter.strand.cause_depth = waiter.strand.cause_depth.max(metadata.cause_depth);
+            }
+            let node = &plan.nodes()[waiter.owner.index()];
+            let timed_out = completion.timed_out;
+            waiter.strand.pc = if timed_out {
+                match node.operation() {
+                    ControlOperation::AwaitEvent { timed_out, .. } => *timed_out,
+                    _ => return Err(RunError::InvalidState),
+                }
+            } else {
+                node.then()
+            };
+            self.published_await_delivery(&completion);
+            self.record(RunEvent {
+                route: None,
+                activation: waiter.strand.sequence,
+                node: node.node(),
+                outcome: if timed_out {
+                    ControlOutcome::TimedOut
+                } else {
+                    ControlOutcome::Then
+                },
+                fault: None,
+            });
+            self.ready.push_back(waiter.strand.id, waiter.strand);
+        }
+        Ok(())
+    }
+    fn publish_match_value(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        value: Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        Self::publish_values(plan, layout, shared, owner, |_| value.clone(), limit)
+    }
+    /// Publishes a delivered timer tick on its entry's `scheduled_at`/`missed` outputs.
+    fn publish_tick(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        tick: ticks::Tick,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        let value = |source: HostSource| match source {
+            HostSource::Tick(_, TickProjection::ScheduledAt) => {
+                Some(Value::Duration(tick.scheduled_at))
+            }
+            HostSource::Tick(_, TickProjection::Missed) => Some(Value::U64(tick.missed)),
+            _ => None,
+        };
+        Self::publish_values(plan, layout, shared, owner, value, limit)
+    }
+    /// Publishes `value(source)` on each value target of `owner` within the frame limit.
+    fn publish_values(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        value: impl Fn(HostSource) -> Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.value_targets(owner).iter().copied(),
+            value,
+            limit,
+        )
+    }
+    /// Admits replacement of all selected projections together before mutation.
+    fn publish_projections(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        targets: impl Iterator<Item = usize> + Clone,
+        value: impl Fn(HostSource) -> Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        let mut old = 0usize;
+        let mut new = 0usize;
+        for i in targets.clone() {
+            let slot = plan.data().nodes()[plan.data().host_inputs()[i].index()].outputs()[0];
+            let cell = layout.outputs[i].ok_or(RunError::InvalidState)?;
+            let charge = |value: &Value| {
+                plan.data()
+                    .value_charge(slot, value)
+                    .ok_or(DataError::KernelContract {
+                        node: plan.nodes()[owner.index()].node(),
+                    })
+            };
+            if let Some(FoldedValue::Value(value)) = &shared.outputs[cell] {
+                old = old
+                    .checked_add(charge(value)?)
+                    .ok_or(RunError::ResourceLimit)?;
+            }
+            if let Some(value) = &value(plan.host_sources()[i]) {
+                new = new
+                    .checked_add(charge(value)?)
+                    .ok_or(RunError::ResourceLimit)?;
+            }
+        }
+        let retained = shared
+            .retained_bytes
+            .get()
+            .checked_sub(old)
+            .and_then(|n| n.checked_add(new))
+            .filter(|n| {
+                n.checked_add(shared.local_bytes.get())
+                    .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
+                    .is_some_and(|total| total <= limit)
+            })
+            .ok_or(RunError::ResourceLimit)?;
+        shared.retained(retained)?;
+        for i in targets {
+            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
+                value(plan.host_sources()[i]).map(FoldedValue::Value);
+        }
+        Ok(())
+    }
+    fn publish_index(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        index: Option<i64>,
+    ) -> Result<(), RunError> {
+        for &i in plan.index_targets(owner) {
+            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
+                index.map(|i| FoldedValue::Value(Value::I64(i)));
+        }
+        Ok(())
+    }
+    fn publish_error(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        fault: &ConstantFault,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        if plan.error_targets(owner).is_empty() {
+            return Ok(());
+        }
+        let error = Value::Err(Arc::new(orange_model::value::NodeError {
+            code: fault.fault.code.to_string(),
+            node: Some(fault.source),
+        }));
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.error_targets(owner).iter().copied(),
+            |_| Some(error.clone()),
+            limit,
+        )
+    }
+    /// Hold a running run. Takes effect at once: the run is one actor, so unfinished
+    /// work simply stays owned. While paused `pump` does no graph work, `advance_to`
+    /// is refused with `RunError::Paused`, timers and deadlines do not elapse, and no
+    /// new effect is handed out. Events, pushed stream items and results of work
+    /// already issued are still admitted under their ordinary bounded policies.
+    pub fn pause(&mut self) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state != RunState::Running {
+            return Err(RunError::InvalidState);
+        }
+        self.transition(RunState::Paused);
+        self.resources.set_paused(true);
+        Ok(())
+    }
+    /// Continue a paused run from the virtual time at which it was paused. A host
+    /// that wants the gap to count advances the clock afterwards.
+    pub fn resume(&mut self) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state != RunState::Paused {
+            return Err(RunError::InvalidState);
+        }
+        self.transition(RunState::Running);
+        self.resources.set_paused(false);
+        Ok(())
+    }
+    /// Running or paused: new host input is admitted.
+    fn accepts_input(&self) -> bool {
+        matches!(self.state, RunState::Running | RunState::Paused)
+    }
+    /// Results of work the run already issued are admitted, including while paused.
+    fn accepts_results(&self) -> bool {
+        matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Paused
+        )
+    }
+    pub fn stop(&mut self) -> Result<(), RunError> {
+        self.request_stop(StopMode::Immediate)
+    }
+    /// Graceful stop starts On Stop once and drains accepted work. Immediate stop
+    /// cancels owned waits; a second stop aborts bounded cancellation cleanup.
+    pub fn request_stop(&mut self, mode: StopMode) -> Result<(), RunError> {
+        self.settle_interruption();
+        match (self.state, mode) {
+            (
+                RunState::Stopped | RunState::Disposed | RunState::Created | RunState::Starting,
+                _,
+            ) => Err(RunError::InvalidState),
+            (RunState::Cancelling, _) => {
+                self.abort_cleanup();
+                Ok(())
+            }
+            (RunState::Draining, StopMode::Graceful) => Err(RunError::InvalidState),
+            (RunState::Running | RunState::Paused, StopMode::Graceful) => {
+                let held = self.state == RunState::Paused;
+                let deadline = self
+                    .now
+                    .checked_add(self.options.drain_timeout_ns)
+                    .ok_or(RunError::ResourceLimit)?;
+                self.transition(RunState::Draining);
+                // On Stop work may use resources the pause had held.
+                if held {
+                    self.resources.set_paused(false);
+                }
+                self.watches.clear();
+                self.close_host_sources();
+                self.timers.remove_entries();
+                self.events.clear_tick_windows();
+                self.events.discard_delayed_deliveries(self.now);
+                self.deadline = Some(deadline);
+                while let Some(strand) = self.stop_ready.pop_front() {
+                    self.ready.push_back(strand.id, strand);
+                }
+                self.finish_if_idle();
+                Ok(())
+            }
+            _ => self.cancel_owned(),
+        }
+    }
+    fn cancel_owned(&mut self) -> Result<(), RunError> {
+        self.watches.clear();
+        // Cancellation must remain possible at the end of the virtual clock range.
+        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+        self.transition(RunState::Cancelling);
+        self.events.clear();
+        self.timers.remove_entries();
+        self.events.clear_tick_windows();
+        self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+        self.stop_ready.clear();
+        let roots = self.regions.roots();
+        for root in roots {
+            self.cancel_region(root)?;
+            self.complete_regions(root)?;
+        }
+        self.finish_if_idle();
+        if self.deadline.is_some_and(|d| self.now >= d) {
+            self.abort_cleanup();
+        }
+        Ok(())
+    }
+    pub fn dispose(&mut self) -> Result<(), RunError> {
+        if self.state != RunState::Stopped {
+            return Err(RunError::InvalidState);
+        }
+        // Disposal releases the run's storage, pooled frame buffers and reusable traversal
+        // buffers included. Replacing each container frees its capacity, which clearing
+        // would keep. Only the terminal summary stays: identity, options, state history,
+        // last error, counters and the virtual clock.
+        self.plan = None;
+        self.workspace_bus = None;
+        self.workspace = None;
+        self.frames.release();
+        self.ready = ReadyQueue::with_capacity(0);
+        self.events.release(self.activations.high_water());
+        self.activations = Activations::default();
+        self.event_template = None;
+        self.regions.release();
+        self.variables = Vec::new();
+        self.states = Vec::new();
+        self.layout = StateLayout::default();
+        self.versions = Vec::new();
+        self.state_bytes = 0;
+        self.timers.release();
+        self.stop_ready = VecDeque::new();
+        self.segment = SegmentWrites::default();
+        self.segment_owner = None;
+        self.last_segment = None;
+        self.trace.release();
+        self.cancel_regions = Vec::new();
+        self.cancel_timers = Vec::new();
+        self.fork_children = Vec::new();
+        self.resources = resources::Resources::default();
+        self.changes.release();
+        self.effects = effects::Effects::default();
+        self.graph_streams = streams::GraphStreams::default();
+        self.bridges = streams::Bridges::default();
+        self.watches.clear();
+        self.lives = Vec::new();
+        self.pending_lives = BTreeMap::new();
+        let _ = self.live_bytes.try_set(0);
+        self.transition(RunState::Disposed);
+        Ok(())
+    }
+}
+impl ActivationState {
+    /// Change the retained-output tally after the per-activation limit admitted it.
+    /// Refuses, changing nothing, when the run budget cannot hold the growth.
+    fn retained(&mut self, bytes: usize) -> Result<(), RunError> {
+        if self.retained_bytes.try_set(bytes) {
+            Ok(())
+        } else {
+            Err(RunError::AggregateLimit)
+        }
+    }
+}

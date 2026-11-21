@@ -1,6 +1,6 @@
 // Independent reference encoder for the canonical .orangeplug archive and content digest
 // (docs/04 "Package format and SDK"). It shares no code with the Rust reader in
-// orange-packages; both must reproduce app/crates/orange-packages/tests/fixtures/archive-v1.json.
+// orange-packages; both must reproduce app/crates/platform/orange-packages/tests/fixtures/archive-v1.json.
 //
 //   node tools/package-archive.mjs   prints the vector set as JSON
 import {createHash} from 'node:crypto';

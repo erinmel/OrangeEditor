@@ -113,5 +113,5 @@ The example vector uses the displayed graph/variable IDs, one selected workspace
 nodes. An independent .NET SHA256 framing calculation agrees with the Rust test.
 
 Executed behavior/environment and remaining qualification gates are recorded in
-[10](10-tooling-and-sources.md). No disk crash-recovery or full external embedding
+[10](10-development.md). No disk crash-recovery or full external embedding
 qualification is implied by the public API integration regression.
