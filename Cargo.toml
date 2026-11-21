@@ -62,7 +62,7 @@ tungstenite = { version = "=0.30.0", default-features = false, features = ["hand
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 uuid = { version = "=1.29.0", features = ["serde"] }
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
-webpki-roots = "=1.0.11"
+webpki-roots = "=1.0.12"
 wasmtime = { version = "=50.0.2", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 [workspace.lints.rust]
