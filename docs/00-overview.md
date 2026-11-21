@@ -40,11 +40,11 @@ the foundation.
 | Host: drafts, flows, effects, previews, packages | Working; an edit on a 5,000-node graph takes about 25 ms ([10](10-development.md#performance)) |
 | Editor and desktop application | Working on Windows; Linux and macOS build in CI but are not used day to day |
 | Network, files, credentials | Working, with a Docker lab for HTTP, WebSocket, MQTT and AMQP |
-| Audio | Working on Windows; Linux per-application capture needs PipeWire and is not verified on hardware; macOS per-application capture is not implemented |
+| Audio | File sources and stream processors are exercised in automated tests. Output routing and capture need release qualification on each advertised platform. Linux per-application capture requires PipeWire. macOS per-application capture is still open. |
 | Wasm packages | Pure, action and async nodes run; host service imports and resources are missing |
 | Native plugins | Load at start; not sandboxed |
 | File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
-| Releases | The release workflow and receipt checks exist. Native packaging adapters and release qualification are pending. |
+| Releases | The release workflow and receipt checks exist. Native packaging adapters and clean-install qualification are pending. See the [desktop release contract](../tools/release/README.md). |
 
 ## What is missing
 
@@ -61,8 +61,8 @@ These are the gaps between the vision and the repository today, most important f
    integration surface.
 4. **Flow-started subscriptions.** Event outputs on actions (11 §10.4) are specified but
    not implemented; triggers are always armed while a graph runs.
-5. **Audio tuning surface.** Band and transient detection work, but there is no spectrum
-   view with hit markers for tuning them, and When thresholds cannot be wired.
+5. **Audio tuning surface.** Frequency Splitter offers a live spectrum and editable
+   bands. Transient hit markers on the chart and wireable When thresholds are still open.
 6. **Platform qualification.** Frame time, memory and latency targets are measured on
    one Windows machine only; macOS and Linux audio, input and capture need real runs.
 7. **Wasm guest services.** Installed Wasm packages cannot yet call host services or own
