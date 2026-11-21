@@ -671,8 +671,7 @@ fn a_reopened_editor_graph_executes_a_connection_and_reports_success_and_failure
 }
 
 #[test]
-#[ignore = "requires permission to connect to IPv4 loopback"]
-fn desktop_http_request_reports_the_actual_socket_response() {
+fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response() {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
 
@@ -700,7 +699,10 @@ fn desktop_http_request_reports_the_actual_socket_response() {
         let mut reader = BufReader::new(socket);
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
-        assert_eq!(line.trim_end(), "POST /automation?case=desktop HTTP/1.1");
+        assert_eq!(
+            line.trim_end(),
+            "POST /automation?case=desktop%20%26%20caf%C3%A9 HTTP/1.1"
+        );
         let mut length = 0;
         let mut saw_header = false;
         loop {
@@ -719,34 +721,90 @@ fn desktop_http_request_reports_the_actual_socket_response() {
         reader.read_exact(&mut body).unwrap();
         assert_eq!(body, br#"{"input":42}"#);
         assert!(saw_header);
-        reader.get_mut().write_all(b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"answer\":42}").unwrap();
+        reader.get_mut().write_all(b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Orange-Result: first\r\nX-Orange-Result: second\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"answer\":42}").unwrap();
     });
 
-    let (mut host, events) = desktop_host();
+    let book = LogBook::default();
+    let services = built_in_services(&Keyboard::default(), &book).unwrap();
+    let (mut host, events) = Host::with_services(HostOptions::default(), services).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
     let trigger = editor
         .add_node_at(&mut host, "core/on-manual", [0.0, 0.0])
         .unwrap();
     let request = editor
-        .add_node_at(&mut host, orange_net::HTTP_REQUEST, [260.0, 0.0])
+        .add_node_at(&mut host, orange_net::HTTP_REQUEST_JSON, [260.0, 0.0])
         .unwrap();
     assert!(editor.connect(&mut host, (trigger, "then"), (request, "in")));
-    for (port, value) in [
-        ("method", "POST"),
-        ("path", "/automation?case=desktop"),
-        ("content_type", "application/json"),
-        ("headers", "X-Orange-Case: desktop"),
-        ("content", r#"{"input":42}"#),
+    const TEXT_MAP: &str = "core/map@1<core/string@1,core/string@1>";
+    for (port, ty, value) in [
+        ("path", "core/string@1", json!("/automation")),
+        ("query", TEXT_MAP, json!([["case", "desktop & café"]])),
+        (
+            "header_fields",
+            TEXT_MAP,
+            json!([["X-Orange-Case", "desktop"]]),
+        ),
     ] {
-        let literal = json!({"type": "core/string@1", "value": value}).to_string();
+        let literal = json!({"type": ty, "value": value}).to_string();
         assert!(editor.set_input(&mut host, (request, port), Some(&literal)));
     }
     let mut connection = editor.declarations().unwrap().connections[0].clone();
     connection.settings = json!({"base_url": format!("http://{address}"), "timeout_ms": 3000});
     editor.declare_connection(&mut host, &connection).unwrap();
     let saved = editor.text().unwrap();
-    editor.open_untitled(&mut host, saved);
+    let mut draft = host.draft(&saved).unwrap();
+    let number = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 140.0])
+        .unwrap();
+    let json_number = host
+        .add_node(&mut draft, "org.orange.json/from-i64", [210.0, 140.0])
+        .unwrap();
+    let object = host
+        .add_node(&mut draft, "org.orange.json/set-field", [510.0, 140.0])
+        .unwrap();
+    let match_response = host
+        .add_node(&mut draft, "core/match-option", [530.0, 0.0])
+        .unwrap();
+    let lookup = host
+        .add_node(&mut draft, "org.orange.json/get", [790.0, 150.0])
+        .unwrap();
+    let match_lookup = host
+        .add_node(&mut draft, "core/match-option", [1050.0, 0.0])
+        .unwrap();
+    let log = host
+        .add_node(&mut draft, "org.orange.logging/log-message", [1320.0, 0.0])
+        .unwrap();
+    for (node, port, ty, value) in [
+        (number, "value", "core/i64@1", "42"),
+        (object, "object", "core/json@1", "{}"),
+        (object, "key", "core/string@1", "input"),
+        (lookup, "key", "core/string@1", "absent"),
+        (
+            log,
+            "message",
+            "core/string@1",
+            "HTTP response field is missing",
+        ),
+    ] {
+        let literal = json!({"type":ty,"value":value}).to_string();
+        host.set_input(&mut draft, (node, port), Some(&literal))
+            .unwrap();
+    }
+    for (from, to) in [
+        ((number, "result"), (json_number, "value")),
+        ((json_number, "result"), (object, "value")),
+        ((object, "result"), (request, "content")),
+        ((request, "then"), (match_response, "in")),
+        ((request, "json"), (match_response, "option")),
+        ((match_response, "present"), (match_lookup, "in")),
+        ((match_response, "value"), (lookup, "value")),
+        ((lookup, "result"), (match_lookup, "option")),
+        ((match_lookup, "missing"), (log, "in")),
+    ] {
+        host.connect(&mut draft, from, to).unwrap();
+    }
+    editor.open_untitled(&mut host, draft.text().unwrap());
     editor.run(&mut host);
     assert_eq!(host.flows().count(), 1);
     editor.trigger(&host, trigger);
@@ -759,21 +817,42 @@ fn desktop_http_request_reports_the_actual_socket_response() {
             "{:?}",
             editor.canvas().failure(request)
         );
-        if let Some(body) = editor
-            .canvas()
-            .port_value(&graph, request, "response", false)
+        if book
+            .take()
+            .0
+            .into_iter()
+            .any(|(_, line)| line.contains("HTTP response field is missing"))
         {
+            let body = editor
+                .canvas()
+                .port_value(&graph, request, "response", false)
+                .unwrap();
             assert_eq!(body.full, r#"{"answer":42}"#);
             assert_eq!(editor.canvas().shown_value(request, "status"), Some("201"));
             assert_eq!(
                 editor.canvas().shown_value(request, "success"),
                 Some("true")
             );
+            assert!(editor.canvas().shown_value(match_lookup, "value").is_none());
+            let headers = editor
+                .canvas()
+                .port_value(&graph, request, "response_headers", false)
+                .unwrap();
+            assert!(
+                headers.full.contains("x-orange-result")
+                    && headers.full.contains("first")
+                    && headers.full.contains("second"),
+                "{}",
+                headers.full
+            );
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "desktop did not report the HTTP response"
+            "desktop did not finish the HTTP response graph: {:?}",
+            host.flows()
+                .next()
+                .and_then(|flow| host.inspect(flow, |run| run.trace().clone()).ok())
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -812,6 +891,9 @@ fn sample_value(ty: &str, n: u32) -> Option<Json> {
         // 64-bit integers are stored as text, smaller ones as numbers.
         "core/i64@1" | "core/u64@1" => json!((n + 1).to_string()),
         "core/i32@1" | "core/u32@1" => json!(n + 1),
+        "core/duration@1" => json!("1000000"),
+        "core/timestamp@1" => json!("1700000000123456789"),
+        orange_host::RGBA_TYPE => json!({"red":32,"green":96,"blue":224,"alpha":160}),
         // Valid JSON text, so Parse JSON and JSON paths have something to read.
         "core/string@1" => json!(if n == 0 { "[1]" } else { "b" }),
         "core/bool@1" => json!(true),
@@ -895,6 +977,12 @@ fn compute(host: &mut Host, template: &str, definition: &str, ty: &str, variant:
             ("org.orange.text/decode-hex", "text") => {
                 Some(json!({"type": "core/string@1", "value": "00ff"}))
             }
+            ("org.orange.color/parse-hex", "text") => {
+                Some(json!({"type": "core/string@1", "value": "#2060E0A0"}))
+            }
+            ("org.orange.time/parse-timestamp", "text") => Some(
+                json!({"type": "core/string@1", "value": "2026-11-20T12:34:56.123456789-06:00"}),
+            ),
             _ => port.ty.as_deref().and_then(|ty| sample(ty, variant)),
         };
         if let Some(literal) = literal {

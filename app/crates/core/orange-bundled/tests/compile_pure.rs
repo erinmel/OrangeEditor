@@ -859,6 +859,48 @@ fn and_or_short_circuit_without_resolving_faulty_right_hand_side() {
 }
 
 #[test]
+fn condition_groups_fold_in_saved_order_without_evaluating_unused_operands() {
+    let (package, snapshot) = catalog();
+    for (intrinsic, decisive) in [
+        ("core/all-conditions", false),
+        ("core/any-conditions", true),
+    ] {
+        for second in [decisive, !decisive] {
+            let boolean = |value| json!({"type":"core/bool@1","value":value});
+            let group = json!({"id":id(2),"definition_id":intrinsic,"definition_version":1,"config_version":1,
+                "config":{},"inputs":{"condition#8":boolean(!decisive),"condition#3":boolean(second)},
+                "variadic":{"condition":{"order":[8,3,5],"next":9}}});
+            let doc = graph(
+                &package,
+                vec![group, not_node(1, true)],
+                vec![edge(1, 1, "result", 2, "condition#5")],
+                vec![export(2, "result")],
+            );
+            let resolver = GuardResolver {
+                package: package.clone(),
+                trap: id(1).parse().unwrap(),
+                reject: false,
+                calls: AtomicUsize::new(0),
+            };
+            let plan = compile(&doc, snapshot.clone(), &resolver);
+            let evaluation = plan
+                .evaluate(&doc, &snapshot, EvaluationOptions::default())
+                .unwrap();
+            let outcome = evaluation.export(0).unwrap().unwrap().outcome;
+            if second == decisive {
+                assert_eq!(outcome, Ok(&Value::Bool(decisive)));
+            } else {
+                assert_eq!(outcome.unwrap_err().source, id(1).parse().unwrap());
+            }
+            assert_eq!(
+                resolver.calls.load(Ordering::Relaxed),
+                usize::from(second != decisive)
+            );
+        }
+    }
+}
+
+#[test]
 fn unselected_json_literal_does_not_consume_decode_or_constant_budget() {
     let (package, snapshot) = catalog();
     for selected_small in [true, false] {

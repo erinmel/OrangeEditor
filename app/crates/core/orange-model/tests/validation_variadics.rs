@@ -45,6 +45,7 @@ fn port_subject() -> Subject {
         Some("items".parse().unwrap()),
         None,
     )
+    .with_port_direction(crate::document::PortDirection::Input)
 }
 
 #[test]

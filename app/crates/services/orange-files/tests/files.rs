@@ -2,7 +2,7 @@
 //! change in it.
 use orange_testkit::{activation, core, edge, id, node, set, until};
 
-use orange_host::{FlowEvent, Host, HostOptions, Value, VariableId};
+use orange_host::{EventTiming, FlowEvent, Host, HostOptions, RunState, Value, VariableId};
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
 use orange_model::{DocCommand, GraphDocument, from_json, to_json};
@@ -82,6 +82,18 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
         {"id": id(101), "name": "changed", "type": orange_files::CHANGE_TYPE, "scope": "run"}
     ]);
     let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    let mut draft = host.draft(&text).unwrap();
+    assert!(
+        host.set_entry_timing(
+            &mut draft,
+            node(10),
+            Some(EventTiming::Debounce {
+                interval_ms: 150.try_into().unwrap()
+            }),
+        )
+        .unwrap()
+    );
+    let text = draft.text().unwrap();
     assert!(host.check(&text).unwrap().is_empty());
 
     let flow = host.open(&text).unwrap();
@@ -101,14 +113,18 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
     };
     // The first scan establishes a baseline. Probe with a changing file to know the
     // watcher is active before checking the graph's own write.
+    let stats = || host.inspect(flow, |run| run.event_stats()).unwrap();
     let mut probe = 0;
     until("the watcher to establish its baseline", || {
-        if read(101).as_deref() == Some("baseline.txt") {
+        if stats().accepted > 0 {
             return true;
         }
         probe += 1;
         std::fs::write(root.join("baseline.txt"), probe.to_string()).unwrap();
         false
+    });
+    until("the baseline change to settle", || {
+        read(101).as_deref() == Some("baseline.txt")
     });
     host.trigger(flow, node(1), None).unwrap();
     until("the file to be read back", || read(100).is_some());
@@ -126,6 +142,27 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
     until("the outside change", || {
         read(101).as_deref() == Some("other.txt")
     });
+    host.pause(flow).unwrap();
+    until("the flow to pause", || {
+        host.state(flow) == Some(RunState::Paused)
+    });
+    let before = stats();
+    std::fs::write(root.join("first.txt"), "earlier").unwrap();
+    until("the first file change to arrive", || {
+        stats().accepted > before.accepted
+    });
+    let first = stats().accepted;
+    std::fs::write(root.join("last.txt"), "newest").unwrap();
+    until("the last file change to arrive", || {
+        stats().accepted > first
+    });
+    assert_eq!(stats().pending, 1);
+    assert_eq!(stats().delivered, before.delivered);
+    host.resume(flow).unwrap();
+    until("the newest file change to fire", || {
+        read(101).as_deref() == Some("last.txt")
+    });
+    assert_eq!(stats().delivered, before.delivered + 1);
     host.close(flow).unwrap();
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

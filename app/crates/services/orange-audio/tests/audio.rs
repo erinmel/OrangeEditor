@@ -1245,7 +1245,7 @@ fn every_stream_processor_changes_the_level_it_should() {
         (
             orange_audio::COMPRESSOR,
             "compressed_stream",
-            json!({"threshold_db": -20, "ratio": 10, "attack_ms": 1}),
+            json!({"threshold_db": -20, "ratio": 10}),
         ),
         (
             orange_audio::FILTER,
@@ -1260,6 +1260,26 @@ fn every_stream_processor_changes_the_level_it_should() {
     ] {
         let processor = add(&mut draft, kind);
         host.set_config(&mut draft, processor, &settings).unwrap();
+        if kind == orange_audio::COMPRESSOR {
+            let seconds = add(&mut draft, "core/number");
+            host.set_input(&mut draft, (seconds, "value"), Some("0.001"))
+                .unwrap();
+            let from = (seconds, "result");
+            let to = (processor, "attack");
+            let orange_host::Connected::Choose(choices) =
+                host.connect_through(&mut draft, from, to, None).unwrap()
+            else {
+                panic!("a decimal wired to Attack must ask for its unit");
+            };
+            let seconds = choices
+                .iter()
+                .find(|choice| choice.options["unit"] == "seconds");
+            assert!(seconds.is_some());
+            assert!(matches!(
+                host.connect_through(&mut draft, from, to, seconds).unwrap(),
+                orange_host::Connected::Converted(_)
+            ));
+        }
         let meter = add(&mut draft, orange_audio::LIVE_LEVEL);
         host.connect(&mut draft, (source, "stream"), (processor, "stream"))
             .unwrap();

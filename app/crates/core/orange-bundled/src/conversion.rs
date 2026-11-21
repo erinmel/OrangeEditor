@@ -78,6 +78,68 @@ struct Cast {
 enum Conversion {
     Cast(Cast),
     Text(TextConversion),
+    Time(TimeConversion, i64),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TimeConversion {
+    ToDuration,
+    FromDuration,
+    ToTimestamp,
+    FromTimestamp,
+}
+
+impl TimeConversion {
+    fn for_id(id: &str) -> Option<Self> {
+        match id {
+            "core/f64-to-duration" => Some(Self::ToDuration),
+            "core/duration-to-f64" => Some(Self::FromDuration),
+            "core/i64-to-timestamp" => Some(Self::ToTimestamp),
+            "core/timestamp-to-i64" => Some(Self::FromTimestamp),
+            _ => None,
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "decimal time conversion is explicitly lossy"
+    )]
+    fn evaluate(self, input: &Value, unit: i64) -> Result<(Value, bool), ConversionError> {
+        let to_nanos = |value: f64| {
+            if !value.is_finite() {
+                return Err(ConversionError::NonFinite);
+            }
+            let scaled = value * unit as f64;
+            if !scaled.is_finite() {
+                return Err(ConversionError::OutOfRange);
+            }
+            i64::try_from(round(scaled, Rounding::NearestEven)?)
+                .map_err(|_| ConversionError::OutOfRange)
+        };
+        Ok(match (self, input) {
+            (Self::ToDuration, Value::F64(amount)) => {
+                let nanos = to_nanos(*amount)?;
+                let lost = (nanos as f64 / unit as f64).to_bits() != amount.to_bits();
+                (Value::Duration(nanos), lost)
+            }
+            (Self::FromDuration, Value::Duration(nanos)) => {
+                let amount = *nanos as f64 / unit as f64;
+                (Value::F64(amount), to_nanos(amount) != Ok(*nanos))
+            }
+            (Self::ToTimestamp, Value::I64(amount)) => (
+                Value::Timestamp(
+                    amount
+                        .checked_mul(unit)
+                        .ok_or(ConversionError::OutOfRange)?,
+                ),
+                false,
+            ),
+            (Self::FromTimestamp, Value::Timestamp(nanos)) => {
+                (Value::I64(nanos / unit), nanos % unit != 0)
+            }
+            _ => return Err(ConversionError::InputContract),
+        })
+    }
 }
 
 /// Result ports of one explicit conversion. Only a lossy entry supplies `loss`.
@@ -120,6 +182,10 @@ impl ResolvedConversion {
             Conversion::Cast(cast) => cast,
             Conversion::Text(text) => {
                 let (result, lost) = text.evaluate(input)?;
+                return Ok(self.output(result, lost));
+            }
+            Conversion::Time(time, unit) => {
+                let (result, lost) = time.evaluate(input, unit)?;
                 return Ok(self.output(result, lost));
             }
         };
@@ -194,6 +260,23 @@ pub fn resolve_core_conversion(
             None
         })
     };
+    if let Some(time) = TimeConversion::for_id(config.entry.id.as_str()) {
+        let unit = config
+            .options
+            .get("unit")
+            .ok_or(BindingError::InvalidConfig)?;
+        let scale = orange_model::conversion::TIME_UNITS
+            .iter()
+            .find_map(|&(name, scale)| (name == unit).then_some(scale))
+            .ok_or(BindingError::InvalidConfig)?;
+        let loss_flags = loss(definition.class == ConversionClass::Lossy)?;
+        return Ok(ResolvedConversion {
+            snapshot,
+            entry: config.entry.clone(),
+            operation: Conversion::Time(time, scale),
+            loss_flags,
+        });
+    }
     if let Some((text, lossy)) =
         crate::text_conversion::bind(config.entry.id.as_str(), definition, |name| {
             config.options.get(name).cloned()
@@ -336,4 +419,50 @@ fn narrow_float(value: f64) -> Result<f32, ConversionError> {
         return Err(ConversionError::OutOfRange);
     }
     Ok(value as f32)
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::*;
+
+    #[test]
+    fn decimal_durations_round_and_report_precision_loss() {
+        assert_eq!(
+            TimeConversion::ToDuration.evaluate(&Value::F64(0.125), 1_000_000_000),
+            Ok((Value::Duration(125_000_000), false))
+        );
+        assert_eq!(
+            TimeConversion::ToDuration.evaluate(&Value::F64(2.5), 1),
+            Ok((Value::Duration(2), true))
+        );
+        assert_eq!(
+            TimeConversion::FromDuration.evaluate(&Value::Duration(125_000_000), 1_000_000),
+            Ok((Value::F64(125.0), false))
+        );
+        assert_eq!(
+            TimeConversion::ToDuration.evaluate(&Value::F64(f64::MAX), 1_000_000),
+            Err(ConversionError::OutOfRange)
+        );
+        assert_eq!(
+            TimeConversion::ToDuration.evaluate(&Value::F64(f64::NAN), 1),
+            Err(ConversionError::NonFinite)
+        );
+    }
+
+    #[test]
+    fn epoch_numbers_check_overflow_and_truncate_negative_fractions_toward_zero() {
+        assert_eq!(
+            TimeConversion::ToTimestamp.evaluate(&Value::I64(-1250), 1_000_000),
+            Ok((Value::Timestamp(-1_250_000_000), false))
+        );
+        assert_eq!(
+            TimeConversion::FromTimestamp
+                .evaluate(&Value::Timestamp(-1_250_000_000), 1_000_000_000),
+            Ok((Value::I64(-1), true))
+        );
+        assert_eq!(
+            TimeConversion::ToTimestamp.evaluate(&Value::I64(i64::MAX), 1_000_000),
+            Err(ConversionError::OutOfRange)
+        );
+    }
 }

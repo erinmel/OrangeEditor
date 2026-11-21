@@ -242,30 +242,23 @@ impl Armed {
     }
 
     /// Passes each live port's latest value to `run`, at most one per
-    /// [`LIVE_INTERVAL`]. Returns how long until a value held back may go.
-    pub(crate) fn flush(&mut self, run: &mut Run) -> Option<Duration> {
+    /// [`LIVE_INTERVAL`]. Returns the earliest deadline for a value held back.
+    pub(crate) fn flush(&mut self, run: &mut Run) -> Option<Instant> {
         let now = Instant::now();
-        let mut wait: Option<Duration> = None;
+        let mut deadline: Option<Instant> = None;
         for (node, slots) in &mut self.slots {
             for (port, output) in slots {
                 let slot = &output.pending;
                 if !slot.fresh.load(Ordering::Acquire) {
                     continue;
                 }
-                if let Some(since) = output.published.map(|at| now - at)
-                    && since < LIVE_INTERVAL
+                if let Some(at) = output.published.map(|at| at + LIVE_INTERVAL)
+                    && at > now
                 {
-                    let left = LIVE_INTERVAL - since;
-                    wait = Some(wait.map_or(left, |w| w.min(left)));
+                    deadline = Some(deadline.map_or(at, |earliest| earliest.min(at)));
                     continue;
                 }
-                slot.fresh.store(false, Ordering::Release);
-                let value = slot
-                    .latest
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-                if let Some(value) = value {
+                if let Some(value) = slot.take() {
                     // A value of the wrong type or past the run's limits is not taken; the
                     // provider's next one may be.
                     let _ = run.publish_live_port(*node, port, value);
@@ -273,7 +266,7 @@ impl Armed {
                 }
             }
         }
-        wait
+        deadline
     }
 
     /// Stops every provider.
@@ -293,9 +286,45 @@ impl Slot {
         if !active.load(Ordering::Acquire) {
             return Err(EmitError::Closed);
         }
-        *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
-        self.fresh.store(true, Ordering::Release);
-        flow.unpark();
+        if self.stage(value) {
+            flow.unpark();
+        }
         Ok(())
+    }
+
+    /// The first pending sample wakes the flow. Replacements share its wakeup.
+    fn stage(&self, value: Option<Value>) -> bool {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let wake = latest.is_none();
+        *latest = Some(value);
+        self.fresh.store(true, Ordering::Release);
+        wake
+    }
+
+    fn take(&self) -> Option<Option<Value>> {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        self.fresh.store(false, Ordering::Release);
+        latest.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_updates_share_a_wakeup_until_the_latest_sample_is_taken() {
+        let slot = Slot::default();
+        assert!(slot.stage(Some(Value::I64(1))));
+        assert!(!slot.stage(Some(Value::I64(2))));
+        assert_eq!(slot.take(), Some(Some(Value::I64(2))));
+        assert!(!slot.fresh.load(Ordering::Acquire));
+
+        assert!(slot.stage(None));
+        assert!(!slot.stage(None));
+        assert!(slot.fresh.load(Ordering::Acquire));
+        assert_eq!(slot.take(), Some(None));
+        assert_eq!(slot.take(), None);
+        assert!(slot.stage(Some(Value::I64(3))));
     }
 }

@@ -1,6 +1,122 @@
 use super::*;
 
 #[test]
+fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    ctx.set_theme(egui::Theme::Dark);
+    let mut editor = Editor::new();
+    let colors = [egui::Theme::Light, egui::Theme::Dark].map(|mode| {
+        let style = ctx.style_of(mode);
+        (style.visuals.window_fill, style.visuals.extreme_bg_color)
+    });
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        editor.appearance_picker(ui, &ctx);
+    });
+    let shapes = std::mem::take(&mut output.shapes);
+    output.drop_without_applying_deltas();
+    for (window, field) in colors {
+        let has_fill = |color| {
+            shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == color))
+        };
+        assert!(has_fill(window) && has_fill(field));
+    }
+    assert_eq!(ctx.theme(), egui::Theme::Dark);
+    assert_eq!(editor.preferred_theme, None);
+}
+
+#[test]
+fn settings_rows_align_controls_and_stack_when_the_column_would_not_fit() {
+    for (width, stacked) in [(340.0, true), (580.0, false)] {
+        let ctx = egui::Context::default();
+        let mut rows = Vec::new();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_max_width(width);
+            for title in ["Size", "A longer preference"] {
+                setting_row(ui, title, |ui, label| {
+                    rows.push((label.rect, ui.available_rect_before_wrap().min));
+                    ui.label("Control");
+                });
+            }
+        });
+        output.drop_without_applying_deltas();
+        assert!((rows[0].1.x - rows[1].1.x).abs() < 1.0);
+        for (label, control) in rows {
+            if stacked {
+                assert!(control.y >= label.bottom());
+            } else {
+                assert!(control.x > label.right());
+                assert!(control.y < label.bottom());
+            }
+        }
+    }
+}
+
+#[test]
+fn done_is_centered_under_left_navigation_at_compact_and_wide_sizes() {
+    for width in [380.0, 960.0] {
+        let mut editor = Editor::new();
+        editor.settings_open = true;
+        editor.settings_tab = Section::Display;
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        icons::install(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 510.0));
+        let mut seen = false;
+        for _ in 0..3 {
+            let mut window = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    window = editor.settings_window(ui.ctx()).unwrap();
+                },
+            );
+            let shapes = std::mem::take(&mut output.shapes);
+            output.drop_without_applying_deltas();
+            let done = shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == t("settings-done") => Some((
+                    text.galley.mesh_bounds.translate(text.pos.to_vec2()),
+                    shape.clip_rect,
+                )),
+                _ => None,
+            });
+            if let Some((ink, clip)) = done {
+                let candidates = shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect) if rect.rect.contains_rect(ink) => Some(rect.rect),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let button = *candidates
+                    .iter()
+                    .find(|rect| rect.width() > 80.0 && rect.height() < 35.0)
+                    .unwrap_or_else(|| {
+                        panic!("width {width}, Done at {ink:?}, surrounding shapes {candidates:?}")
+                    });
+                assert!(clip.contains_rect(ink), "{width}: {clip:?}, {ink:?}");
+                assert!(
+                    (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0).contains(&(button.left() - window.left()))
+                );
+                assert!(window.bottom() - button.bottom() >= SPACE_MEDIUM);
+                assert!(
+                    button.center().distance(ink.center()) < 3.0,
+                    "{width}: {button:?}, {ink:?}"
+                );
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "Done was missing at width {width}");
+    }
+}
+
+#[test]
 fn appearance_switches_and_persists_including_system() {
     use egui::{Theme, ThemePreference};
     let ctx = egui::Context::default();

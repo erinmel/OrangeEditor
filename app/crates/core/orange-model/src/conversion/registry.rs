@@ -62,6 +62,43 @@ impl ConverterRegistryBuilder {
             builder
                 .register_core_entry(core_definition(&id, &from, &to, class, policies, errors)?)?;
         }
+        let units = &super::TIME_UNIT_NAMES[..];
+        for (from, to, class, units, errors) in [
+            (
+                "f64",
+                "duration",
+                ConversionClass::Lossy,
+                units,
+                vec![
+                    ConverterErrorCode::new("core/NonFinite")?,
+                    ConverterErrorCode::new("core/OutOfRange")?,
+                ],
+            ),
+            ("duration", "f64", ConversionClass::Lossy, units, vec![]),
+            (
+                "i64",
+                "timestamp",
+                ConversionClass::CheckedPartial,
+                &units[..4],
+                vec![ConverterErrorCode::new("core/OutOfRange")?],
+            ),
+            (
+                "timestamp",
+                "i64",
+                ConversionClass::Lossy,
+                &units[..4],
+                vec![],
+            ),
+        ] {
+            builder.register_core_entry(core_definition(
+                &format!("core/{from}-to-{to}"),
+                &format!("core/{from}@1"),
+                &format!("core/{to}@1"),
+                class,
+                vec![policy("unit", units, "seconds")],
+                errors,
+            )?)?;
+        }
         Ok(builder)
     }
 

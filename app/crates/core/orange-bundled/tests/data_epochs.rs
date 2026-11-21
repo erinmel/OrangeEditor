@@ -1380,6 +1380,88 @@ fn activation_fuel_spans_epochs_and_exhaustion_is_sticky() {
 }
 
 #[test]
+fn condition_groups_pull_only_the_dynamic_prefix_needed_in_each_epoch() {
+    let (package, snapshot) = catalog();
+    for (definition, decisive) in [
+        ("core/all-conditions", false),
+        ("core/any-conditions", true),
+    ] {
+        let get = |n, variable| json!({"id":id(n),"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":id(variable)}});
+        let group = json!({"id":id(4),"definition_id":definition,"definition_version":1,"config_version":1,
+            "config":{},"variadic":{"condition":{"order":[8,3,5],"next":9}}});
+        let base = graph(
+            &package,
+            vec![get(1, 20), get(2, 21), get(3, 22), group],
+            vec![
+                edge(1, 1, "value", 4, "condition#8"),
+                edge(2, 2, "value", 4, "condition#3"),
+                edge(3, 3, "value", 4, "condition#5"),
+            ],
+            vec![export(4, "result")],
+        );
+        let mut raw: serde_json::Value = serde_json::from_str(&to_json(&base).unwrap()).unwrap();
+        raw["variables"] = json!([
+            {"id":id(20),"name":"first","type":"core/bool@1","scope":"run"},
+            {"id":id(21),"name":"second","type":"core/bool@1","scope":"run"},
+            {"id":id(22),"name":"third","type":"core/bool@1","scope":"run"}
+        ]);
+        let doc = from_json(&raw.to_string()).unwrap();
+        let resolver = Counting::new(package.clone());
+        let plan = Arc::new(compile(&doc, snapshot.clone(), &resolver));
+        let host_input = |n: u32| {
+            plan.host_inputs()
+                .iter()
+                .position(|ix| plan.nodes()[ix.index()].node() == id(n).parse().unwrap())
+                .unwrap()
+        };
+        let (first, second, third) = (host_input(1), host_input(2), host_input(3));
+        let mut frame = start(plan, &doc, &snapshot, 0, 0, DataOptions::default());
+        for (supplied, expected) in [
+            (vec![(first, decisive)], decisive),
+            (vec![(first, !decisive), (second, decisive)], decisive),
+            (
+                vec![(first, !decisive), (second, !decisive), (third, !decisive)],
+                !decisive,
+            ),
+        ] {
+            frame.begin_epoch().unwrap();
+            for (input, value) in supplied {
+                frame.set_input(input, Value::Bool(value)).unwrap();
+            }
+            assert_eq!(
+                frame.export(0).unwrap().unwrap().outcome,
+                Ok(&Value::Bool(expected))
+            );
+        }
+        frame.begin_epoch().unwrap();
+        frame.set_input(first, Value::Bool(!decisive)).unwrap();
+        frame.set_input(second, Value::Bool(!decisive)).unwrap();
+        assert!(
+            matches!(frame.export(0), Err(DataError::MissingInput { node }) if node == id(3).parse().unwrap())
+        );
+
+        // A decisive constant after a dynamic condition bounds the plan itself.
+        let nodes = raw["nodes"].as_array_mut().unwrap();
+        let group = nodes.iter_mut().find(|node| node["id"] == id(4)).unwrap();
+        group["inputs"] = json!({"condition#3":{"type":"core/bool@1","value":decisive}});
+        raw["edges"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|edge| edge["to"]["port"] != "condition#3");
+        let doc = from_json(&raw.to_string()).unwrap();
+        let trimmed = Arc::new(compile(&doc, snapshot.clone(), &resolver));
+        assert_eq!(trimmed.host_inputs().len(), 1);
+        let mut frame = start(trimmed, &doc, &snapshot, 0, 0, DataOptions::default());
+        frame.begin_epoch().unwrap();
+        frame.set_input(0, Value::Bool(!decisive)).unwrap();
+        assert_eq!(
+            frame.export(0).unwrap().unwrap().outcome,
+            Ok(&Value::Bool(decisive))
+        );
+    }
+}
+
+#[test]
 fn state_reads_are_host_inputs_supplied_once_per_epoch_and_only_when_demanded() {
     let (package, snapshot) = catalog();
     let get = |n, variable| json!({"id":id(n),"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":id(variable)}});

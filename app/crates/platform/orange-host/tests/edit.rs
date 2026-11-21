@@ -834,6 +834,25 @@ fn every_suggested_kind_takes_the_wire_on_the_input_it_names() {
             .any(|taker| taker.definition == "org.orange.text/concat")
     );
     assert!(text.iter().all(|taker| taker.definition != "core/sequence"));
+    assert!(text.iter().all(|taker| taker.definition != "core/for-each"));
+    let mut trial = host.draft(&empty()).unwrap();
+    let boolean = host
+        .add_node(&mut trial, "core/true-or-false", [0.0, 0.0])
+        .unwrap();
+    let value = output(&host, &trial, boolean);
+    let takers = host.takers(&trial, (boolean, &value));
+    for definition in ["core/all-conditions", "core/any-conditions"] {
+        let suggestion = takers
+            .iter()
+            .find(|candidate| candidate.definition == definition)
+            .unwrap();
+        let node = host.add_node(&mut trial, definition, [300.0, 0.0]).unwrap();
+        assert_eq!(suggestion.input, "condition#0");
+        assert!(
+            host.connect(&mut trial, (boolean, &value), (node, &suggestion.input))
+                .unwrap()
+        );
+    }
     let steps = host.takers(&draft, (trigger, "then"));
     assert!(
         steps
@@ -1118,4 +1137,81 @@ fn a_draft_view_after_each_edit_is_the_view_of_its_text() {
     same(&draft);
     assert!(host.remove_nodes(&mut draft, &[trigger]).unwrap());
     same(&draft);
+}
+
+#[test]
+fn for_each_follows_a_wired_map_or_list() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut doc: Json = serde_json::from_str(&empty()).unwrap();
+    doc["variables"] = json!([
+        {"id": id(101), "name": "scores", "type": "core/map@1<core/string@1,core/i64@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"},
+        {"id": id(102), "name": "names", "type": "core/list@1<core/string@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"}]);
+    let mut draft = host.draft(&doc.to_string()).unwrap();
+    let read = |draft: &mut Draft, variable| {
+        let node = host
+            .add_node(draft, "core/get-variable", [0.0, 0.0])
+            .unwrap();
+        assert!(
+            host.set_config(draft, node, &json!({"variable": id(variable)}))
+                .unwrap()
+        );
+        node
+    };
+    let (scores, names) = (read(&mut draft, 101), read(&mut draft, 102));
+    let each = host
+        .add_node(&mut draft, "core/for-each", [320.0, 0.0])
+        .unwrap();
+    let ports = |draft: &Draft| {
+        let view = host.draft_view(draft).unwrap();
+        let node = view.nodes.iter().find(|found| found.id == each).unwrap();
+        let mut ids: Vec<_> = node
+            .ports
+            .iter()
+            .filter(|port| !port.input && !port.exec)
+            .map(|port| port.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ports(&draft), ["element", "index"]);
+    let value = output(&host, &draft, scores);
+    assert!(
+        host.takers(&draft, (scores, &value))
+            .iter()
+            .any(|item| item.definition == "core/for-each" && item.input == "items")
+    );
+    assert!(matches!(
+        host.connect_through(&mut draft, (scores, &value), (each, "items"), None)
+            .unwrap(),
+        orange_host::Connected::Wired
+    ));
+    assert_eq!(ports(&draft), ["index", "key", "value"]);
+    let key = host
+        .add_node(&mut draft, "core/text", [640.0, 0.0])
+        .unwrap();
+    assert!(
+        host.connect(&mut draft, (each, "key"), (key, "value"))
+            .unwrap()
+    );
+    let value = output(&host, &draft, names);
+    assert!(matches!(
+        host.connect_through(&mut draft, (names, &value), (each, "items"), None)
+            .unwrap(),
+        orange_host::Connected::Wired
+    ));
+    assert_eq!(ports(&draft), ["element", "index"]);
+    assert_eq!(host.draft_view(&draft).unwrap().wires.len(), 1);
+    assert!(draft.undo());
+    assert_eq!(ports(&draft), ["index", "key", "value"], "one undo step");
+    assert!(
+        host.set_config(&mut draft, each, &json!({"mode":"list"}))
+            .unwrap()
+    );
+    assert_eq!(ports(&draft), ["element", "index"]);
+    assert!(host.draft_view(&draft).unwrap().wires.is_empty());
+    assert!(draft.undo());
+    assert_eq!(ports(&draft), ["index", "key", "value"]);
+    assert_eq!(host.draft_view(&draft).unwrap().wires.len(), 2);
 }

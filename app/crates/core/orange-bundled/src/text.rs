@@ -15,6 +15,11 @@ use crate::{BindingError, CatalogError, KernelError, MAX_COLLECTION_BYTES, MathP
 /// Largest string, in UTF-8 bytes, that a text node produces. Larger results fail
 /// with `core/LimitExceeded` before the result is built.
 pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REGEX_PATTERN_BYTES: usize = 4 * 1024;
+const MAX_REGEX_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_REGEX_COMPILED_BYTES: usize = 1024 * 1024;
+const MAX_CSV_BYTES: usize = 1024 * 1024;
+const MAX_CSV_FIELDS: usize = 16_384;
 
 /// Pure string operations. Inputs are strict; every operation is deterministic for a
 /// given toolchain (case mapping and White_Space use its Unicode tables).
@@ -40,6 +45,10 @@ pub enum TextOperation {
     DecodeBase64,
     EncodeHex,
     DecodeHex,
+    RegexMatch,
+    RegexExtract,
+    ParseCsv,
+    WriteCsv,
 }
 
 /// Which ends of the text `trim` takes whitespace from.
@@ -62,9 +71,10 @@ const U64: &str = "core/u64@1";
 const BOOL: &str = "core/bool@1";
 const OPTION_U64: &str = "core/option@1<core/u64@1>";
 const LIST: &str = "core/list@1<core/string@1>";
+const CSV_ROWS: &str = "core/list@1<core/list@1<core/string@1>>";
 
 impl TextOperation {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 24] = [
         Self::ByteLength,
         Self::ScalarLength,
         Self::Concat,
@@ -85,6 +95,10 @@ impl TextOperation {
         Self::DecodeBase64,
         Self::EncodeHex,
         Self::DecodeHex,
+        Self::RegexMatch,
+        Self::RegexExtract,
+        Self::ParseCsv,
+        Self::WriteCsv,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -109,6 +123,10 @@ impl TextOperation {
             Self::DecodeBase64 => "org.orange.text/decode-base64",
             Self::EncodeHex => "org.orange.text/encode-hex",
             Self::DecodeHex => "org.orange.text/decode-hex",
+            Self::RegexMatch => "org.orange.text/regex-match",
+            Self::RegexExtract => "org.orange.text/regex-extract",
+            Self::ParseCsv => "org.orange.text/parse-csv",
+            Self::WriteCsv => "org.orange.text/write-csv",
         }
     }
 
@@ -125,9 +143,12 @@ impl TextOperation {
             | Self::ToUppercase
             | Self::ToLowercase => &[("value", STRING)],
             Self::Concat => &[("a", STRING), ("b", STRING)],
-            Self::Contains | Self::StartsWith | Self::EndsWith | Self::Find => {
-                &[("text", STRING), ("pattern", STRING)]
-            }
+            Self::Contains
+            | Self::StartsWith
+            | Self::EndsWith
+            | Self::Find
+            | Self::RegexMatch
+            | Self::RegexExtract => &[("text", STRING), ("pattern", STRING)],
             Self::Substring => &[("text", STRING), ("start", U64), ("length", U64)],
             Self::Replace => &[
                 ("text", STRING),
@@ -142,7 +163,8 @@ impl TextOperation {
             ],
             Self::InspectError => &[("fault", "core/error@1")],
             Self::EncodeBase64 | Self::EncodeHex => &[("bytes", "core/bytes@1")],
-            Self::DecodeBase64 | Self::DecodeHex => &[("text", STRING)],
+            Self::DecodeBase64 | Self::DecodeHex | Self::ParseCsv => &[("text", STRING)],
+            Self::WriteCsv => &[("rows", CSV_ROWS)],
         }
     }
 
@@ -153,7 +175,9 @@ impl TextOperation {
     pub const fn output_type(self) -> &'static str {
         match self {
             Self::ByteLength | Self::ScalarLength => U64,
-            Self::Contains | Self::StartsWith | Self::EndsWith => BOOL,
+            Self::Contains | Self::StartsWith | Self::EndsWith | Self::RegexMatch => BOOL,
+            Self::RegexExtract => "core/option@1<core/string@1>",
+            Self::ParseCsv => CSV_ROWS,
             Self::Find => OPTION_U64,
             Self::Split => LIST,
             Self::DecodeBase64 | Self::DecodeHex => "core/bytes@1",
@@ -228,6 +252,110 @@ pub struct ResolvedText {
     operation: TextOperation,
     unit: TextUnit,
     ends: TrimEnds,
+}
+
+/// A field and the unconsumed delimiter (or end of input).
+fn csv_field(input: &str) -> Result<(String, &str), KernelError> {
+    let Some(mut quoted) = input.strip_prefix('"') else {
+        let end = input.find([',', '\r', '\n', '"']).unwrap_or(input.len());
+        return Ok((input[..end].to_owned(), &input[end..]));
+    };
+    let mut field = String::new();
+    loop {
+        let (part, tail) = quoted.split_once('"').ok_or(KernelError::Domain)?;
+        field.push_str(part);
+        let Some(escaped) = tail.strip_prefix('"') else {
+            return Ok((field, tail));
+        };
+        field.push('"');
+        quoted = escaped;
+    }
+}
+
+fn parse_csv(mut input: &str) -> Result<Value, KernelError> {
+    if input.len() > MAX_CSV_BYTES {
+        return Err(KernelError::LimitExceeded);
+    }
+    let mut rows = Vec::new();
+    let mut total_fields = 0;
+    while !input.is_empty() {
+        let mut row = Vec::new();
+        loop {
+            if total_fields == MAX_CSV_FIELDS {
+                return Err(KernelError::LimitExceeded);
+            }
+            let (field, tail) = csv_field(input)?;
+            row.push(Arc::new(field));
+            total_fields += 1;
+            if let Some(rest) = tail.strip_prefix(',') {
+                input = rest;
+            } else {
+                input = if tail.is_empty() {
+                    tail
+                } else {
+                    tail.strip_prefix("\r\n")
+                        .or_else(|| tail.strip_prefix('\n'))
+                        .ok_or(KernelError::Domain)?
+                };
+                break;
+            }
+        }
+        rows.push(Value::List(Arc::new(ListRepr::Str(row.into()))));
+    }
+    Ok(Value::List(Arc::new(ListRepr::Values(rows.into()))))
+}
+
+fn write_csv(value: &Value) -> Result<String, KernelError> {
+    let Value::List(rows) = value else {
+        return Err(KernelError::InputContract);
+    };
+    let mut csv = String::new();
+    let mut total_fields = 0;
+    for row in rows.iter() {
+        let Value::List(fields) = row else {
+            return Err(KernelError::InputContract);
+        };
+        if fields.is_empty() {
+            return Err(KernelError::Domain);
+        }
+        total_fields += fields.len();
+        if total_fields > MAX_CSV_FIELDS {
+            return Err(KernelError::LimitExceeded);
+        }
+        for (index, field) in fields.iter().enumerate() {
+            let field = string(&field)?;
+            if field.len() > MAX_CSV_BYTES.saturating_sub(csv.len()) {
+                return Err(KernelError::LimitExceeded);
+            }
+            let quoted = field.contains([',', '\r', '\n', '"']);
+            let extra = if quoted {
+                2 + field.bytes().filter(|&byte| byte == b'"').count()
+            } else {
+                0
+            };
+            let delimiters = usize::from(index > 0) + usize::from(index + 1 == fields.len());
+            if csv.len() + field.len() + extra + delimiters > MAX_CSV_BYTES {
+                return Err(KernelError::LimitExceeded);
+            }
+            if index > 0 {
+                csv.push(',');
+            }
+            if quoted {
+                csv.push('"');
+                for (index, part) in field.split('"').enumerate() {
+                    if index != 0 {
+                        csv.push_str("\"\"");
+                    }
+                    csv.push_str(part);
+                }
+                csv.push('"');
+            } else {
+                csv.push_str(field);
+            }
+        }
+        csv.push('\n');
+    }
+    Ok(csv)
 }
 
 fn string(value: &Value) -> Result<&str, KernelError> {
@@ -399,6 +527,30 @@ impl ResolvedText {
             Contains => Value::Bool(first()?.contains(string(&inputs[1])?)),
             StartsWith => Value::Bool(first()?.starts_with(string(&inputs[1])?)),
             EndsWith => Value::Bool(first()?.ends_with(string(&inputs[1])?)),
+            RegexMatch | RegexExtract => {
+                let (source, pattern) = (first()?, string(&inputs[1])?);
+                if source.len() > MAX_REGEX_TEXT_BYTES || pattern.len() > MAX_REGEX_PATTERN_BYTES {
+                    return Err(KernelError::LimitExceeded);
+                }
+                let regex = regex::RegexBuilder::new(pattern)
+                    .size_limit(MAX_REGEX_COMPILED_BYTES)
+                    .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
+                    .nest_limit(32)
+                    .build()
+                    .map_err(|error| match error {
+                        regex::Error::CompiledTooBig(_) => KernelError::LimitExceeded,
+                        _ => KernelError::Domain,
+                    })?;
+                if self.operation == RegexMatch {
+                    Value::Bool(regex.is_match(source))
+                } else {
+                    regex
+                        .find(source)
+                        .map_or(Value::None, |found| text(found.as_str().to_owned()))
+                }
+            }
+            ParseCsv => parse_csv(first()?)?,
+            WriteCsv => text(write_csv(&inputs[0])?),
             Find => {
                 let (haystack, pattern) = (first()?, string(&inputs[1])?);
                 match haystack.find(pattern) {

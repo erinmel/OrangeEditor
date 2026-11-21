@@ -4,16 +4,23 @@ use crate::{
     MAX_STREAM_LINE_BYTES, auth_headers, fault, oauth,
 };
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, KernelFault, Listeners, Renew,
-    ServiceNode, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, JsonText, KernelFault, ListRepr,
+    Listeners, MapRepr, Renew, ServiceNode, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 use ureq::Agent;
-use ureq::http::{Method, Request};
+use ureq::http::{HeaderMap, HeaderName, HeaderValue, Method, Request};
+
+const STRING_MAP: &str = "core/map@1<core/string@1,core/string@1>";
+const RESPONSE_HEADERS: &str = "core/map@1<core/string@1,core/list@1<core/string@1>>";
+const MAX_QUERY_PAIRS: usize = 64;
+const MAX_REQUEST_TARGET_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
 
 const NO_SESSION: KernelFault = fault(
     "org.orange.net/Connection",
@@ -23,7 +30,7 @@ const NO_SESSION: KernelFault = fault(
 const BAD_REQUEST: KernelFault = fault(
     "org.orange.net/Request",
     "org.orange.net/request-invalid",
-    "The method or path is not a valid HTTP request.",
+    "Check the HTTP method, path, query parameters, and request headers.",
 );
 const TRANSPORT: KernelFault = fault(
     "org.orange.net/Transport",
@@ -62,15 +69,15 @@ impl std::fmt::Debug for HttpSession {
     }
 }
 impl HttpSession {
-    /// Sends one request with the connection's headers, then `extra`, each a
-    /// `Name: value` line. With OAuth the request carries the current access token;
+    /// Sends one request with the connection's headers and the validated extras.
+    /// With OAuth the request carries the current access token;
     /// if the server answers 401 the token is replaced and the request sent once more.
     fn send(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
-        extra: &[&str],
+        extra: &[(HeaderName, HeaderValue)],
         body: Vec<u8>,
         streamed: bool,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
@@ -108,7 +115,7 @@ impl HttpSession {
         method: &str,
         path: &str,
         content_type: &str,
-        extra: &[&str],
+        extra: &[(HeaderName, HeaderValue)],
         body: Vec<u8>,
         streamed: bool,
         token: Option<&str>,
@@ -127,15 +134,24 @@ impl HttpSession {
         method: &str,
         path: &str,
         content_type: &str,
-        extra: &[&str],
+        extra: &[(HeaderName, HeaderValue)],
         body: Vec<u8>,
         token: Option<&str>,
     ) -> Result<Request<Vec<u8>>, KernelFault> {
-        if extra.len() > MAX_HEADERS || content_type.chars().any(char::is_control) {
+        let header_bytes = extra
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.len())
+            .sum::<usize>();
+        if header_bytes.saturating_add(content_type.len()) > MAX_REQUEST_HEADER_BYTES
+            || content_type.chars().any(char::is_control)
+        {
             return Err(BAD_REQUEST);
         }
         let method = Method::from_bytes(method.as_bytes()).map_err(|_| BAD_REQUEST)?;
-        if !path.is_empty() && !path.starts_with('/') {
+        if (!path.is_empty() && !matches!(path.as_bytes()[0], b'/' | b'?'))
+            || path.contains('#')
+            || path.len() > MAX_REQUEST_TARGET_BYTES
+        {
             return Err(BAD_REQUEST);
         }
         let mut request = Request::builder()
@@ -150,18 +166,16 @@ impl HttpSession {
         if !content_type.is_empty() {
             request = request.header("Content-Type", content_type);
         }
-        for line in extra {
-            let (name, value) = line.split_once(':').ok_or(BAD_REQUEST)?;
-            let (name, value) = (name.trim(), value.trim());
-            let valid = !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-                && !value.chars().any(char::is_control);
-            if !valid {
+        for (name, value) in extra {
+            if (!content_type.is_empty() && *name == ureq::http::header::CONTENT_TYPE)
+                || self
+                    .headers
+                    .iter()
+                    .any(|(part, _)| part.eq_ignore_ascii_case(name.as_str()))
+            {
                 return Err(BAD_REQUEST);
             }
-            request = request.header(name, value);
+            request = request.header(name, value.clone());
         }
         request.body(body).map_err(|_| BAD_REQUEST)
     }
@@ -242,15 +256,11 @@ impl ConnectionAdapter for HttpAdapter {
                 .ok_or("`timeout_ms` must be a positive integer")?,
         };
         let headers = auth_headers(settings)?;
-        // Profile headers can contain credentials under application-defined names.
-        // An authenticated request returns the redirect status to the graph.
+        // Request and profile headers can carry credentials under any application name.
         let configure = || {
-            let config = Agent::config_builder().http_status_as_error(false);
-            if headers.is_empty() && !settings.contains_key("oauth") {
-                config
-            } else {
-                config.max_redirects(0)
-            }
+            Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
         };
         // Opening only builds the client; nothing is sent until a node runs.
         let agent = configure()
@@ -333,36 +343,185 @@ impl ServiceNode for HttpRequest {
             Value::Str(body),
             Value::Str(content_type),
             Value::Str(headers),
+            Value::Map(header_fields),
+            Value::Map(query),
         ] = call.inputs
         else {
             return Err(BAD_REQUEST);
         };
-        let headers: Vec<_> = headers
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .take(MAX_HEADERS + 1)
-            .collect();
-        let mut response = session.send(
+        let mut headers = parse_header_lines(headers.lines())?;
+        append_header_fields(&mut headers, header_fields)?;
+        let response = session.send(
             method,
-            path,
+            &request_path(path, query)?,
             content_type,
             &headers,
             body.as_bytes().to_vec(),
             false,
         )?;
-        let status = response.status().as_u16();
-        let text = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_RESPONSE_BYTES)
-            .read_to_string()
-            .map_err(|_| RESPONSE)?;
-        Ok(vec![
-            Value::I64(i64::from(status)),
-            Value::Bool(success(status)),
-            Value::Str(Arc::new(text)),
-        ])
+        text_response(response, false)
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct HttpRequestJson;
+impl ServiceNode for HttpRequestJson {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let session = http_session(call)?;
+        let [
+            Value::Str(method),
+            Value::Str(path),
+            Value::Json(body),
+            Value::Map(fields),
+            Value::Map(query),
+        ] = call.inputs
+        else {
+            return Err(BAD_REQUEST);
+        };
+        let mut headers = Vec::new();
+        append_header_fields(&mut headers, fields)?;
+        let response = session.send(
+            method,
+            &request_path(path, query)?,
+            "application/json",
+            &headers,
+            body.as_str().as_bytes().to_vec(),
+            false,
+        )?;
+        text_response(response, true)
+    }
+}
+
+fn text_response(
+    mut response: ureq::http::Response<ureq::Body>,
+    parse_json: bool,
+) -> Result<Vec<Value>, KernelFault> {
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
+        .read_to_string()
+        .map_err(|_| RESPONSE)?;
+    let json = parse_json.then(|| {
+        JsonText::try_from(text.as_str()).map_or(Value::None, |text| Value::Json(Arc::new(text)))
+    });
+    let mut outputs = vec![
+        Value::I64(i64::from(status)),
+        Value::Bool(success(status)),
+        Value::Str(Arc::new(text)),
+        response_headers(response.headers())?,
+    ];
+    outputs.extend(json);
+    Ok(outputs)
+}
+
+fn append_header_fields(
+    headers: &mut Vec<(HeaderName, HeaderValue)>,
+    fields: &MapRepr,
+) -> Result<(), KernelFault> {
+    for (name, value) in fields.entries() {
+        let (Value::Str(name), Value::Str(value)) = (name, value) else {
+            return Err(BAD_REQUEST);
+        };
+        add_header(headers, name, value)?;
+    }
+    Ok(())
+}
+
+fn parse_header_lines<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<(HeaderName, HeaderValue)>, KernelFault> {
+    let mut headers = Vec::new();
+    for line in lines.into_iter().filter(|line| !line.trim().is_empty()) {
+        let (name, value) = line.split_once(':').ok_or(BAD_REQUEST)?;
+        add_header(&mut headers, name.trim(), value.trim())?;
+    }
+    Ok(headers)
+}
+
+fn add_header(
+    headers: &mut Vec<(HeaderName, HeaderValue)>,
+    name: &str,
+    value: &str,
+) -> Result<(), KernelFault> {
+    let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| BAD_REQUEST)?;
+    if headers.len() >= MAX_HEADERS
+        || matches!(
+            name.as_str(),
+            "authorization"
+                | "proxy-authorization"
+                | "host"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "upgrade"
+                | "trailer"
+        )
+        || headers.iter().any(|(existing, _)| *existing == name)
+    {
+        return Err(BAD_REQUEST);
+    }
+    let value = HeaderValue::from_str(value).map_err(|_| BAD_REQUEST)?;
+    headers.push((name, value));
+    Ok(())
+}
+
+fn request_path(path: &str, query: &MapRepr) -> Result<String, KernelFault> {
+    if query.entries().len() > MAX_QUERY_PAIRS || path.len() > MAX_REQUEST_TARGET_BYTES {
+        return Err(BAD_REQUEST);
+    }
+    let mut target = path.to_owned();
+    let mut separator = if path.contains('?') { '&' } else { '?' };
+    for (key, value) in query.entries() {
+        let (Value::Str(key), Value::Str(value)) = (key, value) else {
+            return Err(BAD_REQUEST);
+        };
+        target.push(separator);
+        separator = '&';
+        encode_query(key, &mut target)?;
+        target.push('=');
+        encode_query(value, &mut target)?;
+    }
+    Ok(target)
+}
+
+fn encode_query(text: &str, target: &mut String) -> Result<(), KernelFault> {
+    const HEX: &[u8] = b"0123456789ABCDEF";
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            target.push(char::from(byte));
+        } else {
+            target.push('%');
+            target.push(char::from(HEX[usize::from(byte >> 4)]));
+            target.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        if target.len() > MAX_REQUEST_TARGET_BYTES {
+            return Err(BAD_REQUEST);
+        }
+    }
+    Ok(())
+}
+
+fn response_headers(headers: &HeaderMap) -> Result<Value, KernelFault> {
+    let mut grouped = BTreeMap::<&str, Vec<Arc<String>>>::new();
+    for (name, value) in headers {
+        grouped.entry(name.as_str()).or_default().push(Arc::new(
+            String::from_utf8_lossy(value.as_bytes()).into_owned(),
+        ));
+    }
+    let entries: Vec<_> = grouped
+        .into_iter()
+        .map(|(name, values)| {
+            (
+                Value::Str(Arc::new(name.to_owned())),
+                Value::List(Arc::new(ListRepr::Str(values.into()))),
+            )
+        })
+        .collect();
+    MapRepr::new(entries)
+        .map(|map| Value::Map(Arc::new(map)))
+        .map_err(|_| RESPONSE)
 }
 
 /// The HTTP session a request node is bound to.
@@ -392,11 +551,7 @@ fn send_binary(
     let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
         return Err(BAD_REQUEST);
     };
-    let headers: Vec<_> = headers
-        .iter()
-        .take(MAX_HEADERS + 1)
-        .map(|line| line.as_str())
-        .collect();
+    let headers = parse_header_lines(headers.iter().map(|line| line.as_str()))?;
     session.send(
         method,
         path,
@@ -599,10 +754,36 @@ pub(crate) fn http_request_definition() -> String {
         .input_default("content", "core/string@1", no_text())
         .input_default("content_type", "core/string@1", no_text())
         .input_default("headers", "core/string@1", no_text())
+        .input_default("header_fields", STRING_MAP, empty_map())
+        .input_default("query", STRING_MAP, empty_map())
         .output("status", "core/i64@1")
         .output("success", "core/bool@1")
         .output("response", "core/string@1")
+        .output("response_headers", RESPONSE_HEADERS)
         .build()
+}
+
+pub(crate) fn http_request_json_definition() -> String {
+    Definition::node(crate::PACKAGE, "http-request-json", "HTTP JSON Request")
+        .description("Sends a JSON body and returns the HTTP status, response headers, response text, and an optional JSON result.")
+        .category("network", "Network")
+        .keywords("http, https, rest, api, post, json, payload")
+        .uses(crate::HTTP_ADAPTER)
+        .input_default("method", "core/string@1", serde_json::json!({"type": "core/string@1", "value": "POST"}))
+        .input_default("path", "core/string@1", no_text())
+        .input_default("content", "core/json@1", serde_json::json!({"type": "core/json@1", "value": "null"}))
+        .input_default("header_fields", STRING_MAP, empty_map())
+        .input_default("query", STRING_MAP, empty_map())
+        .output("status", "core/i64@1")
+        .output("success", "core/bool@1")
+        .output("response", "core/string@1")
+        .output("response_headers", RESPONSE_HEADERS)
+        .output("json", "core/option@1<core/json@1>")
+        .build()
+}
+
+fn empty_map() -> Json {
+    serde_json::json!({"type": STRING_MAP, "value": []})
 }
 
 #[cfg(test)]
@@ -712,7 +893,7 @@ mod tests {
                 "POST",
                 "/anything?test=1",
                 "application/json",
-                &["Accept: application/json", "X-Trace: sample"],
+                &parse_header_lines(["Accept: application/json", "X-Trace: sample"]).unwrap(),
                 json_body.to_vec(),
                 false,
             )
@@ -779,7 +960,7 @@ mod tests {
                     }));
                 }
             }
-            results.len() == 3
+            results.len() == 4
         });
         assert_eq!(results["status"], Value::I64(201));
         assert_eq!(results["success"], Value::Bool(true));
@@ -794,5 +975,25 @@ mod tests {
     fn only_2xx_is_success_and_every_status_is_an_answer() {
         assert!(success(200) && success(204) && success(299));
         assert!(!success(199) && !success(301) && !success(404) && !success(500));
+    }
+
+    #[test]
+    fn request_headers_cannot_override_framing_or_profile_credentials() {
+        assert!(parse_header_lines(["Host: other.example"]).is_err());
+        assert!(parse_header_lines(["Transfer-Encoding: chunked"]).is_err());
+        assert!(parse_header_lines(["Content-Length: 1"]).is_err());
+        assert!(parse_header_lines(["X-Test: 1", "x-test: 2"]).is_err());
+        assert!(add_header(&mut Vec::new(), "X-Test", "value\r\nOther: 1").is_err());
+
+        let session = MockApi(Arc::default()).session(
+            "http://127.0.0.1",
+            vec![("X-Profile-Key".into(), "fixture".into())],
+        );
+        let headers = parse_header_lines(["x-profile-key: replacement"]).unwrap();
+        assert!(
+            session
+                .build_request("GET", "/", "", &headers, Vec::new(), None)
+                .is_err()
+        );
     }
 }

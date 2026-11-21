@@ -20,5 +20,26 @@ pub use provider::*;
 pub use registry::*;
 pub use selection::*;
 
+/// Unit choices used by the Core time converters, in nanoseconds per unit.
+pub const TIME_UNITS: [(&str, i64); 6] = [
+    ("seconds", 1_000_000_000),
+    ("milliseconds", 1_000_000),
+    ("microseconds", 1_000),
+    ("nanoseconds", 1),
+    ("minutes", 60_000_000_000),
+    ("hours", 3_600_000_000_000),
+];
+
+/// Stable policy values. The first four are also valid Unix timestamp units.
+pub const TIME_UNIT_NAMES: [&str; TIME_UNITS.len()] = {
+    let mut names = [""; TIME_UNITS.len()];
+    let mut index = 0;
+    while index < TIME_UNITS.len() {
+        names[index] = TIME_UNITS[index].0;
+        index += 1;
+    }
+    names
+};
+
 #[cfg(test)]
 mod tests;

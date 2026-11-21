@@ -21,6 +21,7 @@ mod integer;
 mod json;
 mod kernel;
 mod nominal;
+mod presentation_values;
 mod text;
 mod text_conversion;
 

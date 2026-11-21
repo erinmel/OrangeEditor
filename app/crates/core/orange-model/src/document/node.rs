@@ -99,8 +99,26 @@ pub struct ActivationPolicy {
     /// What the entry keeps of input that arrives while its run is paused.
     #[serde(default, skip_serializing_if = "PausedPolicy::is_buffer")]
     pub while_paused: PausedPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<EventTiming>,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+/// Admission timing for one event-driven entry, on the run clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum EventTiming {
+    Debounce { interval_ms: std::num::NonZeroU32 },
+    Throttle { interval_ms: std::num::NonZeroU32 },
+}
+
+impl EventTiming {
+    pub const fn interval_ms(self) -> std::num::NonZeroU32 {
+        match self {
+            Self::Debounce { interval_ms } | Self::Throttle { interval_ms } => interval_ms,
+        }
+    }
 }
 
 /// 11 §10.1. Input admitted to an entry while its run is paused. The default keeps the

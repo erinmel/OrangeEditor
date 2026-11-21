@@ -236,6 +236,8 @@ pub fn type_name(ty: &str) -> String {
         "core/f64@1" | "core/f32@1" => t("type-float").to_owned(),
         "core/bytes@1" => t("type-bytes").to_owned(),
         "core/duration@1" => t("type-duration").to_owned(),
+        "core/timestamp@1" => t("type-timestamp").to_owned(),
+        orange_host::RGBA_TYPE => t("type-rgba").to_owned(),
         // A package's own type reads as its package and name:
         // `org.orange.audio/stream@1` is "Audio stream".
         other if !other.starts_with("core/") && !other.contains(['<', '$']) => {
@@ -892,37 +894,57 @@ impl Editor {
         let at = *waiting
             .at
             .get_or_insert_with(|| ctx.pointer_latest_pos().unwrap_or_default());
-        let choices = waiting.choices.clone();
+        let choices = &waiting.choices;
         let mut chosen = None;
         let mut close = false;
         let shown = egui::Area::new(egui::Id::unique("orange-conversion-choice"))
             .order(egui::Order::Foreground)
+            .constrain(true)
             .fixed_pos(at)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(320.0);
-                    ui.strong(t("choose-conversion"));
-                    ui.weak(t("choose-conversion-hint"));
-                    ui.separator();
-                    for choice in &choices {
-                        let detail = if choice.lossy {
-                            t("conversion-lossy")
-                        } else if choice.checked {
-                            t("conversion-checked")
-                        } else {
-                            t("conversion-exact")
-                        };
-                        if ui
-                            .button(palette::conversion_label(choice))
-                            .on_hover_text(detail)
-                            .clicked()
-                        {
-                            chosen = Some(choice.clone());
-                        }
-                    }
-                    ui.separator();
-                    close = ui.button(t("cancel")).clicked();
-                });
+                let theme = orange_ui_controls::Theme::of(ui);
+                egui::Frame::popup(ui.style())
+                    .fill(theme.dialog)
+                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .inner_margin(orange_ui_controls::SPACE_LARGE)
+                    .show(ui, |ui| {
+                        ui.set_width((ctx.content_rect().width() - 26.0).clamp(1.0, 312.0));
+                        ui.strong(t("choose-conversion"));
+                        ui.weak(t("choose-conversion-hint"));
+                        ui.add_space(orange_ui_controls::SPACE_SMALL);
+                        egui::ScrollArea::vertical()
+                            .max_height((ctx.content_rect().height() * 0.45).min(320.0))
+                            .show(ui, |ui| {
+                                for choice in choices {
+                                    let button =
+                                        egui::Button::new(palette::conversion_label(choice))
+                                            .min_size(egui::vec2(ui.available_width(), 0.0));
+                                    if controls::button(
+                                        ui,
+                                        Surface::Dialog,
+                                        controls::Action::Outline,
+                                        true,
+                                        button,
+                                    )
+                                    .clicked()
+                                    {
+                                        chosen = Some(choice.clone());
+                                    }
+                                    ui.weak(palette::conversion_detail(choice));
+                                    ui.add_space(orange_ui_controls::SPACE_SMALL);
+                                }
+                            });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = controls::button(
+                                ui,
+                                Surface::Dialog,
+                                controls::Action::Outline,
+                                true,
+                                egui::Button::new(t("cancel")),
+                            )
+                            .clicked();
+                        });
+                    });
             })
             .response;
         if shown.clicked_elsewhere() || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -1352,11 +1374,36 @@ impl Editor {
                 }
                 _ => true,
             };
-            let said = if logged {
+            let mut said = if logged {
                 lines(&event, &document.names)
             } else {
                 Vec::new()
             };
+            let file_fault = match &event.kind {
+                FlowEvent::Node(step) => step
+                    .fault
+                    .as_ref()
+                    .map(|fault| (fault.source, fault.fault.code.as_str())),
+                FlowEvent::SourceFault { node, fault } => Some((*node, fault.code.as_str())),
+                _ => None,
+            };
+            if let Some((
+                node,
+                code @ ("org.orange.files/Path"
+                | "org.orange.files/NotFound"
+                | "org.orange.files/ReadOnly"),
+            )) = file_fault
+                && let Some(view) = document.graph.nodes.iter().find(|view| view.id == node)
+                && let Some(folder) =
+                    properties::connection_named(view, &document.declared.connections)
+            {
+                let key = match code {
+                    "org.orange.files/Path" => "folder-invalid-path",
+                    "org.orange.files/NotFound" => "folder-missing-path",
+                    _ => "folder-read-only",
+                };
+                said.push(tf(key, &[("folder", folder.name.as_str().into())]));
+            }
             // The canvas follows the run: a step can pulse along an execution wire, and the
             // latest value on an output shows beside it.
             match &event.kind {
@@ -3322,6 +3369,41 @@ mod tests {
     }
 
     #[test]
+    fn condition_groups_open_with_two_inputs_and_allow_more() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        for definition in ["core/all-conditions", "core/any-conditions"] {
+            let id = editor.add_node(&mut host, definition).unwrap();
+            let conditions = |editor: &Editor| {
+                let node = editor
+                    .graph()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == id)
+                    .unwrap();
+                node.ports
+                    .iter()
+                    .filter(|port| port.input)
+                    .map(|port| port.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(conditions(&editor), ["condition#0", "condition#1"]);
+            assert_eq!(
+                editor.add_port(&mut host, id, "condition").as_deref(),
+                Some("condition#2")
+            );
+            assert_eq!(
+                conditions(&editor),
+                ["condition#0", "condition#1", "condition#2"]
+            );
+            assert!(editor.remove_port(&mut host, (id, "condition#2")));
+            assert!(!editor.remove_port(&mut host, (id, "condition#1")));
+        }
+    }
+
+    #[test]
     fn branches_are_added_and_taken_off_from_the_editor() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
@@ -3386,6 +3468,42 @@ mod tests {
 mod quick_add_tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn numeric_wire_search_offers_comparisons_and_unit_converters() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let number = editor
+            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .unwrap();
+        editor.open_quick_add(
+            Some((number, "result".into())),
+            [300.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(editor.quick_choices(&host, "equal").iter().any(|choice| {
+            choice.definition == "org.orange.math/equal" && choice.input.as_deref() == Some("a")
+        }));
+        let choices = editor.quick_choices(&host, "duration milliseconds");
+        let conversion = choices
+            .iter()
+            .find(|choice| choice.definition == "convert:core/f64-to-duration?unit=milliseconds")
+            .unwrap();
+        let node = editor.pick_quick(&mut host, conversion).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| { wire.from.0 == number && wire.to.0 == node && wire.to.1 == "value" })
+        );
+    }
 
     #[test]
     fn a_wire_let_go_on_the_canvas_offers_the_kinds_that_take_it_and_wires_the_choice() {

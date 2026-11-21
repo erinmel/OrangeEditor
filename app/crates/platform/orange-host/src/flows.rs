@@ -534,6 +534,7 @@ impl Host {
         let (answer, result) = channel();
         let query: Query = Box::new(move |run| {
             let _ = answer.send(read(&*run));
+            false
         });
         flow.shared
             .queries

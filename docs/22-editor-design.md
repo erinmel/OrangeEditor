@@ -67,9 +67,17 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 * **Expressions.** Operators show what they compute in a dedicated body row with their inputs'
   names or values: Greater shows `a > b`, or `12 > 7` when both are known. Comparison,
   arithmetic and logic nodes get this from their definition's `formula` presentation hint.
+  All Conditions and Any Conditions start with two boolean inputs. Add a condition
+  on the card to check more values in the displayed order.
 * **Loops.** For Range exposes Start, End and Step as wireable inputs with defaults
   of zero for Start and one for Step. While exposes Condition on the card.
   Body runs each iteration and Done runs after completion.
+  For Each displays its default List items mode on the card and in Properties.
+  Choose Map entries to work with key and value ports. Wiring a list or map
+  sets the matching mode. Switching modes clears the old collection
+  literal and the wires for ports that disappear. Choosing a mode manually also
+  disconnects the old collection input. Undo restores the mode, values, and wires
+  together.
   The iteration limit is in Properties under Advanced.
   Placing Repeat with State, Map, Filter or Reduce from the palette creates
   both loop boundaries and a passthrough wire in one undoable edit.
@@ -141,9 +149,10 @@ other code places anything on a card.
   reports values, the latest value in a pill before the name. A stream output shows
   no value. An input that has no field (wired, or a type nobody types, such as a
   stream) shares the first free output row on its left.
-* **Every editable value is a field block**: its name on one line, the control on the
-  next, full width. The input's dot sits on the name line. This holds for inputs and
-  for settings alike, so a person never needs to know which is which.
+* **Every editable value is a field block**: its name on one line, the full-width
+  control on the next. An input connector sits halfway across the height of the
+  name and control, excluding the trailing gap. Resizing a multiline field
+  recenters the connector, wire anchor, hit target and diagnostic outline together.
 * **One control per kind, always the same look:** true or false is a No | Yes switch;
   a choice (enum, device, variable, key) is a dropdown; a number is a field dragged to
   step and clicked to type, with its unit; text is a field clicked to type, elided with
@@ -155,9 +164,9 @@ other code places anything on a card.
   it reaches its most; removing one is in Properties.
 * **A wired input keeps its name line only**, with the value it received in a pill
   at the right while a run reports it. Unwiring brings its field back.
-* **No menus on cards.** Everything a card shows is edited on the card; there is no
-  ⋯ menu or popover. Tuning settings (numeric policies, analysis window) are not on
-  the card at all: they live in Properties under Advanced.
+* **Edit card values in place.** Controls such as the color picker can open an
+  anchored popup. Tuning settings such as the analysis window live in Properties
+  under Advanced.
 * **No redundant words.** No type labels (hover shows the type); a field's name is
   left out when it only repeats the card's title (Audio source's device list, Get
   variable's variable).
@@ -189,9 +198,9 @@ other code places anything on a card.
 
 #### Review gallery
 
-`orange-desktop` has an ignored test that writes one graph per package with every
-searchable node (`ORANGE_GALLERY_DIR=<folder> cargo test -p orange-desktop
-package_galleries -- --ignored`); open each with `--canvas-only --screenshot` and
+`orange-desktop` builds and reopens gallery graphs with every searchable node.
+Set `ORANGE_GALLERY_DIR` and run `cargo test -p orange-desktop package_galleries`
+to save a copy. Open each with `--canvas-only --screenshot` and
 check every card against these rules after a rendering change.
 * **Audio charts.** Frequency Splitter reserves a collapsible plot above its port
   rows. Audio Level Trigger places its meter beside its outputs and settings.
@@ -237,15 +246,20 @@ Names only on the left and Node cards on the right.
   and the unsaved indicator remain in the status bar.
 * Settings uses a centered, resizable dialog with a search field above the text
   navigation in the left sidebar, an independently scrolling content pane, and a
-  fixed Done button. General groups Language
+  fixed Done button below the left navigation. On compact windows it stays at the
+  bottom left below the content. On wide windows the settings page scrolls to
+  the bottom of the window alongside the sidebar action. General groups Language
   and Node search. Node search displays either names or read-only canvas cards with
   their ports and charts directly in the results. The same choice applies to the node
   tree and canvas quick-add. Search and the section selector share a single strip in
   compact windows. Search finds settings sections, shortcut
   actions and key combinations. Display and canvas groups controls by interface,
   including the persisted System, Light, and Dark appearance choices,
-  panels and canvas. Interface scale applies when a percentage is chosen in
-  its dropdown. At large scales or narrow widths, the editing commands can scroll
+  panels and canvas. Light and Dark theme samples show the window, navigation,
+  input, and selection colors before changing the active theme. Choice labels align
+  in a column when space permits and stack above their controls in compact windows.
+  Interface scale applies when a percentage is chosen in its dropdown. At large
+  scales or narrow widths, the editing commands can scroll
   horizontally so Settings and the run controls stay visible.
   The Keyboard shortcuts page displays grouped, left-aligned action labels and
   single-line bindings. Select a binding to replace its cell with an inline field
@@ -320,10 +334,31 @@ derived from that surface and the active theme. Canvas controls retain the card'
 zoom-scaled dimensions.
 
 Use the shared 4, 8, and 12 point spacing increments for gaps, control insets, and
-separation between layout regions. Standard controls use a 28 point minimum
-height and a 6 point radius. Settings uses the panel layer for its sidebar and
-footer and the dialog layer for its content. Light and Dark provide the same
+separation between layout regions. Control presets use minimum heights of 24
+points (compact), 28 points (standard), and 36 points (comfortable), with a
+shared 6 point radius. Settings uses compact controls for shortcut editing and
+standard controls for forms. Its content uses the dialog layer. Its sidebar and
+padded sidebar action area use the panel layer. Light and Dark provide the same
 semantic roles.
+
+The shared `orange_ui_controls::color_picker` popup uses a saturation and
+brightness square, vertical hue and alpha bars, and editable 8-bit RGB or
+RGBA channels. The alpha bar and swatches composite the selected color over
+theme-aware checkers with 3-point tiles. The channel controls have equal widths
+and the action buttons share a baseline. A selectable text field accepts Hex
+and CSS RGB or RGBA.
+The format switch chooses which representation to copy. The caller supplies
+translated text and owns the color.
+Only Apply returns a value. The eight most recently applied colors are shared
+across pickers in the current editor session. Color inputs use the same
+control on the canvas and in Properties.
+
+The private controls crate registers the bundled Material Symbols font and SVG
+loader once per egui context. Use its 16 point icon slot for controls and center
+the visible glyph within it. Boolean settings use compact checkboxes with
+plain labels. The editor maps graph commands to their own icons and can
+override the shared painter. Standard text and monospace use egui's bundled
+default fonts across platforms.
 
 | Control | Rule |
 | --- | --- |

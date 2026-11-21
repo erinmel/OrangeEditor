@@ -20,7 +20,89 @@ use serde_json::{Value as Json, json};
 /// One end of a wire: a node and the name of one of its ports.
 pub type PortEnd<'a> = (NodeId, &'a str);
 
+pub(crate) fn collection_mode(ty: &str) -> Option<&'static str> {
+    if ty.starts_with("core/list@1<") {
+        Some("list")
+    } else if ty.starts_with("core/map@1<") {
+        Some("map")
+    } else {
+        None
+    }
+}
+
+fn loop_mode(config: &ConfigValue) -> Option<&str> {
+    config.get("mode").map_or(Some("list"), Json::as_str)
+}
+
+fn reconfigure_for_each(
+    draft: &Draft,
+    instance: &NodeInstance,
+    wanted: &str,
+    disconnect_items: bool,
+) -> Result<Vec<DocCommand>, HostError> {
+    let stale: &[&str] = if wanted == "map" {
+        &["element"]
+    } else {
+        &["key", "value"]
+    };
+    let node = instance.id;
+    let items = port_ref((node, "items"))?;
+    let mut edits = draft
+        .document()
+        .root()
+        .edges
+        .values()
+        .filter(|edge| {
+            (disconnect_items && edge.to == items)
+                || (edge.from.node == node && stale.contains(&edge.from.port.port().as_str()))
+        })
+        .map(|edge| DocCommand::Disconnect { edge: edge.id })
+        .collect::<Vec<_>>();
+    if instance.inputs.contains_key(&items.port) {
+        edits.push(DocCommand::SetLiteral {
+            port: items,
+            literal: None,
+        });
+    }
+    if !instance.type_pins.is_empty() {
+        edits.push(DocCommand::SetTypePins {
+            node,
+            pins: Default::default(),
+        });
+    }
+    Ok(edits)
+}
+
 impl Host {
+    /// The timing policy of a root event entry. The outer option identifies a trigger
+    /// that can be timed, and the inner option is its current timing policy.
+    pub fn entry_timing(&self, draft: &Draft, node: NodeId) -> Option<Option<crate::EventTiming>> {
+        event_entry(draft, node).map(|policy| policy.timing)
+    }
+
+    /// Changes event timing as an undoable document edit.
+    pub fn set_entry_timing(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        timing: Option<crate::EventTiming>,
+    ) -> Result<bool, HostError> {
+        let mut policy = event_entry(draft, node)
+            .cloned()
+            .ok_or_else(|| HostError::Document("This node has no event timing.".into()))?;
+        if policy.timing == timing {
+            return Ok(false);
+        }
+        policy.timing = timing;
+        draft.commit(
+            &self.registry_for(draft.document()),
+            [DocCommand::SetActivation {
+                node,
+                policy: Some(policy),
+            }],
+        )
+    }
+
     /// Changes a node instance's display name. A blank name restores its default label.
     pub fn rename_node(
         &self,
@@ -42,6 +124,17 @@ impl Host {
             [DocCommand::SetNodeName { node, name }],
         )
     }
+}
+
+fn event_entry(draft: &Draft, node: NodeId) -> Option<&ActivationPolicy> {
+    let instance = draft.document().node(node)?;
+    if matches!(
+        instance.definition.id.as_str(),
+        "core/on-start" | "core/on-stop"
+    ) {
+        return None;
+    }
+    instance.activation.as_ref()
 }
 
 /// The text of a new, empty document with an ID of its own.
@@ -694,6 +787,17 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
+        if let Some(wanted) = self.for_each_wire_mode(draft, from, to) {
+            let instance = &draft.document().root().nodes[&to.0];
+            commands.extend(reconfigure_for_each(draft, instance, wanted, false)?);
+            let mut config = instance.config.clone();
+            let _ = config.insert("mode".to_owned(), json!(wanted));
+            commands.push(DocCommand::SetConfig {
+                node: to.0,
+                config_version: instance.config_version,
+                config,
+            });
+        }
         let id = draft.fresh_id("edge");
         let edge: Edge = serde_json::from_value(json!({"id": id,
             "from": {"node": from.0.to_string(), "port": from.1},
@@ -716,6 +820,28 @@ impl Host {
             draft.withdraw(redo);
             Err(HostError::Invalid(against))
         }
+    }
+
+    /// A For Each follows what is wired into its `items`: a map switches it to map mode
+    /// and a list to list mode, dropping the wires of the item ports the other mode had.
+    pub(crate) fn for_each_wire_mode(
+        &self,
+        draft: &Draft,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Option<&'static str> {
+        let document = draft.document();
+        let instance =
+            document.root().nodes.get(&to.0).filter(|node| {
+                node.definition.id.as_str() == intrinsic::FOR_EACH && to.1 == "items"
+            })?;
+        let source = self
+            .node_view(document, from.0)?
+            .ports
+            .into_iter()
+            .find(|port| !port.input && port.id == from.1)?
+            .ty?;
+        collection_mode(&source).filter(|wanted| Some(*wanted) != loop_mode(&instance.config))
     }
 
     /// Removes the wires at one port: those into an input, or those out of an output.
@@ -762,15 +888,22 @@ impl Host {
                 }
             })
             .ok_or_else(|| HostError::Document("the document has no such node".into()))?;
-        let config = serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
-        draft.commit(
-            &self.registry_for(draft.document()),
-            [DocCommand::SetConfig {
-                node,
-                config_version,
-                config,
-            }],
-        )
+        let config: ConfigValue =
+            serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
+        let mut commands = Vec::new();
+        if let Some(instance) = draft.document().root().nodes.get(&node)
+            && instance.definition.id.as_str() == intrinsic::FOR_EACH
+            && let Some(wanted @ ("list" | "map")) = loop_mode(&config)
+            && Some(wanted) != loop_mode(&instance.config)
+        {
+            commands = reconfigure_for_each(draft, instance, wanted, true)?;
+        }
+        commands.push(DocCommand::SetConfig {
+            node,
+            config_version,
+            config,
+        });
+        draft.commit(&self.registry_for(draft.document()), commands)
     }
 
     /// Writes a value on an input, typed plainly (`7`, `0.5`, `true`, `some text`) for

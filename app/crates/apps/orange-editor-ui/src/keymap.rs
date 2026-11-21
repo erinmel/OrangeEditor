@@ -5,7 +5,7 @@ use crate::controls::{self, Action as ButtonRole, Surface};
 use crate::i18n::{t, tf};
 use crate::icons;
 use egui::{Key, KeyboardShortcut, Modifiers};
-use orange_ui_controls::{CONTROL_HEIGHT, SPACE_SMALL, Theme};
+use orange_ui_controls::{CONTROL_HEIGHT, ControlSize, SPACE_SMALL, Theme};
 use std::collections::BTreeMap;
 
 type Action = (&'static str, &'static str, Key, Modifiers);
@@ -416,8 +416,12 @@ impl crate::Editor {
     pub(crate) fn keybindings_ui(&mut self, ui: &mut egui::Ui, query: &str) {
         let reset_requested = ui
             .horizontal(|ui| {
-                ui.strong(t("shortcuts-heading"))
-                    .on_hover_text(t("settings-shortcuts-help"));
+                ui.label(
+                    egui::RichText::new(t("shortcuts-heading"))
+                        .size(16.0)
+                        .strong(),
+                )
+                .on_hover_text(t("settings-shortcuts-help"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     controls::button(
                         ui,
@@ -498,8 +502,6 @@ impl crate::Editor {
     ) {
         let (row, [action_cell, binding_cell]) = shortcut_row(ui, width, CONTROL_HEIGHT + 2.0);
         let theme = Theme::of(ui);
-        let divider = egui::Stroke::new(1.0, theme.border.gamma_multiply(0.6));
-        ui.painter().hline(row.x_range(), row.bottom(), divider);
         let action_label = put_left(
             ui,
             action_cell,
@@ -615,9 +617,8 @@ impl crate::Editor {
             );
             let ui = &mut editor_ui;
             ui.spacing_mut().item_spacing.x = 2.0;
+            ControlSize::Compact.apply(ui.spacing_mut());
             ui.spacing_mut().button_padding.x = 2.0;
-            ui.spacing_mut().button_padding.y = 2.0;
-            ui.spacing_mut().interact_size.y = 22.0;
             let shown = if edit.recording {
                 &mut recording_label
             } else {
@@ -627,7 +628,7 @@ impl crate::Editor {
                 .id(ui.make_persistent_id(("shortcut-entry", edit.action)))
                 .font(egui::TextStyle::Monospace)
                 .align(egui::Align2::LEFT_CENTER)
-                .min_size(egui::vec2(0.0, 24.0))
+                .min_size(egui::vec2(0.0, ControlSize::Compact.height()))
                 .desired_width((cell.width() - 94.0).max(12.0))
                 .margin(egui::Margin::symmetric(3, 1))
                 .interactive(!edit.recording)

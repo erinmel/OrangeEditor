@@ -39,6 +39,18 @@ power. Edit the Base or Exponent card and fire again. The Variables panel shows 
 once per iteration, then saves the result on Completed. No wire goes from the body back
 to Count. A zero exponent skips the body and leaves the result at 1.
 
+[power-with-repeat.json](app/crates/apps/orange-cli/graphs/power-with-repeat.json)
+uses Repeat with State and Multiply. It starts with 1 and multiplies by 3 four
+times. [running-total-with-reduce.json](app/crates/apps/orange-cli/graphs/running-total-with-reduce.json)
+uses Reduce and Add to sum 2, 3, and 5. Press Run and look for `result` in the
+Variables panel. The default results are 81 and 10, respectively.
+
+To send one JSON request after a burst of file changes, add **On file change**
+with a Folder connection and select **Debounce** under **Event timing** in
+Properties. Connect its execution output to **HTTP JSON Request**, and wire a
+JSON object into Body. The HTTP node uses its own HTTP connection. Wire its
+optional JSON result to **Match Option** to handle absent or non-JSON responses.
+
 Double-click a node name in Properties or on the card to rename it. An empty name
 restores the node type's name.
 
@@ -58,6 +70,12 @@ To share a function between graphs, right-click its call and choose
 (such as `org.example.math`), and save the `.orangeplug` file. Import it from
 the Packages panel in the other graph. A function that uses a connection exposes
 that connection on the imported card so the receiving graph can choose its own.
+
+For scripted packaging, use the same graph and function from the CLI.
+
+```sh
+orange publish graph.json "Compute power" org.example.math 0.1.0 power power.orangeplug
+```
 
 A front end embeds the core through `orange-host` alone;
 [examples/attach.rs](app/crates/platform/orange-host/examples/attach.rs) is a complete one.

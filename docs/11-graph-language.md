@@ -163,7 +163,7 @@ Registry publication also checks suspension metadata against the declared kind: 
 | `default` | Data-input-only literal used when unconnected and the instance has no literal. Registry publication rejects defaults on output/exec/event ports. For a known concrete declared type, publication requires an exactly matching literal type and a canonical payload accepted by the current core codec and registered record/enum schema. Types without literal representations (including handle, stream, result and error) reject defaults. Generic, malformed and unresolved declared types defer this check until type resolution; publication does not certify their defaults. A `secret-ref` literal is only a reference, never secret material. |
 | `optional` | True only on a data input whose type is exactly the `core/option@1<…>` constructor with one argument (including a declared type parameter). Registry publication checks placement and a well-formed outer wrapper; false or absent is inert. Malformed type syntax and inner name resolution remain type-validation responsibilities. An unconnected port with no literal or default receives `None`. |
 | `variadic` | `{min, max}` with `max: null` unbounded and `min ≤ max` when finite; registry publication rejects inverted bounds with a typed error naming the definition, port and bounds. Instance ports are `port_id#k` (§4.5). |
-| `lazy` | A true lazy flag is permitted only on host-registered intrinsics in v1 (`select`, `and`, `or`, `coalesce`, `try`). Missing or false means non-lazy; package definitions cannot select the host intrinsic registration path. |
+| `lazy` | A true lazy flag is permitted only on host-registered intrinsics in v1 (`select`, `and`, `or`, `all-conditions`, `any-conditions`, `coalesce`, `try`). Missing or false means non-lazy; package definitions cannot select the host intrinsic registration path. |
 | `group`, `label`, `description`, `editor` | Presentation only; `label`/`description` use TextRef ([13 §2](13-internationalization.md)); never semantic. |
 | `sensitivity` | `normal` / `sensitive`; drives redaction in traces ([05](05-services-and-platforms.md)). |
 
@@ -374,7 +374,7 @@ intrinsics, both operands are always evaluated, since both decide the result.
 
 ### 5.7 Text vocabulary (L03b, 2026-11-08)
 
-[12 §4.4](12-graph-data-structures.md) lists sixteen ordinary pure `org.orange.text`
+[12 §4.4](12-graph-data-structures.md) lists the ordinary pure `org.orange.text`
 definitions. Strings are UTF-8 `core/string@1` values; inputs are strict and nothing
 reads a machine or UI locale.
 
@@ -391,6 +391,20 @@ reads a machine or UI locale.
   `core/Domain`. `split` returns every piece, empty ones included (`""` gives
   `[""]`); an empty separator is `core/Domain`. `join` inserts the separator
   between items of a `list<string>`.
+- **Regular expressions.** `regex-match` tests for any match. `regex-extract`
+  returns the first whole match as `option<string>`, including a present empty
+  string for a zero-length match. Both use the pinned Rust regex syntax with
+  Unicode support. Text is limited to 1 MiB and patterns to 4 KiB. Compiled
+  size, DFA cache and nesting are also bounded. Invalid patterns produce
+  `core/Domain` without exposing their text, and oversized inputs or compiled
+  expressions produce `core/LimitExceeded`.
+- **CSV.** `parse-csv` reads comma-separated text into lists of fields and
+  `write-csv` writes those rows as text. The parser accepts LF and CRLF, and
+  the writer uses LF, including a final newline for each record. Quoted fields
+  can contain commas, quotes (written twice) and newlines. Empty input is zero
+  rows. A blank record has one empty field. Rows can have different lengths,
+  and the writer rejects zero-field rows. The byte and field limits are 1 MiB
+  and 16,384 fields. Invalid quoting produces `core/Domain`.
 - **Unicode rules.** `trim` removes Unicode White_Space from both ends, the start or the end, as its `ends` setting says (`both` by default).
   `to-uppercase`/`to-lowercase` use Unicode default full case mapping (`ß` → `SS`,
   final sigma), never a locale's tailoring (no Turkish dotless i). The Unicode data
@@ -494,6 +508,25 @@ Core converters `core/string-to-json` (checked: `core/Parse`, or
 `core/json-to-string` (lossless-total, the stored text verbatim) join 11 §6.
 Building or editing JSON values is not part of this slice.
 
+### 5.11 Colors and timestamps
+
+Bundled color operations share the nominal `org.orange.color/rgba@1` record.
+Its required red, green, blue and alpha channels are whole numbers from 0 to
+255. Color forwards a chosen or wired color. Make RGBA defaults to opaque
+black. Split RGBA exposes every channel. Parse Hex Color accepts six or eight
+hexadecimal digits with an optional leading hash and defaults alpha to 255
+for RGB. Format Hex Color writes uppercase `#RRGGBBAA` and preserves RGB even
+when alpha is zero.
+
+Parse Timestamp and Format Timestamp support RFC 3339 and Unix seconds,
+milliseconds, microseconds or nanoseconds. The first three Unix formats
+preserve fractions exactly up to nanosecond precision. Unix nanoseconds are
+signed integers.
+RFC 3339 formatting defaults to UTC and accepts a fixed offset in minutes.
+Timestamp arithmetic and duration creation are checked on signed nanoseconds.
+Duration in Units rounds toward zero. UTC Timestamp reads the host wall
+clock on an execution edge. Wait and timer scheduling use monotonic run time.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.
@@ -553,6 +586,20 @@ machine or UI locale.
 | `core/string-to-bytes` | lossless-total | none | none |
 | `core/bytes-to-string` | checked-partial | none | `core/InvalidUtf8` |
 | `core/bytes-to-string-lossy` | lossy | `invalid`: replace | none |
+
+Core time converters store an explicit `unit` policy. Decimal-to-Duration
+scales the amount to nanoseconds and rounds to the nearest integer, ties
+to even. It rejects non-finite values and overflow. Duration-to-decimal
+returns the amount in the chosen unit. Their loss port reports whether
+converting back reproduces the original value. The supported units are
+seconds, milliseconds, microseconds, nanoseconds, minutes and hours.
+The whole-number Timestamp converters use Unix epoch units from seconds
+through nanoseconds. Construction checks multiplication for overflow.
+Extraction truncates toward zero and reports whether a remainder was dropped.
+The editor offers these entries as explicit choices on mismatched wires.
+The bundled **Convert Time Units** node rescales decimal quantities using
+independent input and output units, so an already numeric wire can express
+its unit change visibly.
 
 Bool text is `true`/`false`. Integer text is ASCII decimal: an optional `+` or
 `-`, then one or more digits (leading zeros allowed, no whitespace, separators or
@@ -750,11 +797,17 @@ Collection snapshots and current iteration values reserve nominal activation byt
 | `core/await-event` | in; `timeout: option<duration>`; config `event`; `then`, `timed_out`; `payload` | Resumes on the next matching emit after the wait starts; does not start an activation |
 | `core/register` | `store`, `reset`; `next: $T`; `then`; `current: $T` (state); config `initial`, `scope` | Anonymous typed state cell for feedback |
 | `core/select`, `core/and`, `core/or`, `core/coalesce` | lazy data inputs | Pure; evaluate only the selected inputs |
+| `core/all-conditions`, `core/any-conditions` | 2–64 required variadic `condition: bool` inputs, `result: bool` | Pure; evaluate in persisted port order and stop at the first false for All or the first true for Any. |
 | `core/try` | lazy `value: $T` → `result: result<$T>` | Captures evaluation errors of its input cone only |
 | `core/match-result` | in; `result`; `ok`, `err`; `value` (on ok), `error` (on err) | Control |
 | `core/match-option` | in, `option`, `present`, `missing`, `value` (on present) | Control |
 | zones `core/repeat`, `core/map`, `core/fold`, `core/filter` (`-begin`/`-end` pairs) | typed carried items | Body is pure or entropy-volatile only; edges into the body are loop-invariant captures; values leave only through the end node; `E-ZONE-STRUCTURE` otherwise |
 | `core/number`, `core/whole-number`, `core/text`, `core/true-or-false`, `core/value` | `value` → `result` | Pure value nodes: publish the literal typed on `value` (below) |
+
+All Conditions returns true when all inputs are true. Any Conditions returns false
+when all inputs are false. The first fault in a demanded input propagates with its
+source. Inputs after a decisive value or fault are skipped in both pure previews
+and runtime pulls.
 
 **Registered contracts (V5).** Beyond the original control, variable and event intrinsics, the core registers: `core/switch` (action; `in`, `key: $K` with `eq`, variadic exec `case` with at least one instance, `default`; the case and default outs replace `then` and stay in the parent region); `core/gate` (action; exec inputs `enter`, `open`, `close`, `toggle`, implicit `then`, `is_open: bool` with source `state`); `core/do-once` (action; `in`, `reset`, implicit `then`); `core/flip-flop` (action; `in`, outcomes `a` and `b`, `is_a: bool` with source `state`); `core/register` (action; exec inputs `store` and `reset`, `next: $T`, `current: $T` with source `state`, implicit `then`); `core/try` (pure; lazy `value: $T`, `result: core/result@1<$T>`); `core/match-result` (action; `in`, `result: core/result@1<$T>`, outcomes `ok` and `err`, `value: $T` available on `ok`, `error: core/error@1` available on `err`); and the pure `core/select` (`condition: bool`, lazy `if_true`/`if_false: $T`, `result`), `core/and`/`core/or` (`a`, lazy `b`, `result: bool`) and `core/coalesce` (`value: option<$T>`, lazy `fallback: $T`, `result: $T`). Switch case validation, including enum exhaustiveness, is described in V5b below; `gate.start_open` is an optional boolean (absent means closed); register configuration validation is described in V10. Run-time behavior (closed gate, spent do-once) is an execution concern, not validated here.
 
@@ -826,6 +879,21 @@ Every entry has an `activation` policy ([12 §6](12-graph-data-structures.md)):
 | `on_fault` | `continue` / `stop-run` |
 | `order` | Handler order (O8) |
 | `while_paused` | `buffer` (default) / `latest` / `drop`: what the entry keeps of input admitted while its run is paused |
+| `timing` | Omit for immediate delivery, or use an object with `mode` (`debounce` or `throttle`) and positive integer `interval_ms`. |
+
+Set Event timing in a trigger's Properties. Debounce keeps one pending delivery
+and resets its deadline to the end of a quiet interval on each accepted event.
+Throttle admits the first event and drops subsequent events until its interval
+expires. It has no trailing delivery. An event exactly at the elapsed throttle
+boundary can start the next window. Both modes use virtual run time and freeze
+while paused. Input dropped by the pause policy never updates timing. Debounce
+honors Drop while the root is owned and allows a pending delivery to be
+superseded before dispatch. Replace still cancels the active root on admission.
+Timed losses count as drops. Pending debounce payloads use normal admission
+quotas. Immediate stop discards them, and graceful stop discards those still
+waiting for the quiet interval. Start and Stop are lifecycle
+entries, so their dispatch has no event timing. Await Event observes event
+admission independently of each entry's timing.
 
 **Input while paused (2026-11-10; [03](03-data-and-execution.md) host pause).** `while_paused` chooses what an entry keeps of deliveries admitted while its run is Paused; it has no effect on a running entry. `buffer` (default) is the ordinary queue with its capacity and overflow policy. `latest` keeps only the newest pending delivery, evicting earlier pending ones. `drop` discards the delivery. `drop` takes precedence over every reentrancy mode, so a `replace` entry does not cancel its running root for input it was told to ignore. `latest` applies where reentrancy would otherwise queue: a busy `drop`-mode entry still skips, and `replace` already keeps the latest. Losses chosen by this policy increment `dropped` and `paused_dropped`, never `overflows`, and the delivery is still accepted: its ingestion and source sequences advance. Await waiters behave as `buffer`. The field is optional, omitted when `buffer`, and valid on any entry; packages cannot add values. Whether a sender may instead be told "not now" is a property of its source (§10.3).
 

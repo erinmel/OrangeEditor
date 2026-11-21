@@ -5,7 +5,7 @@ use crate::{
     Analyzing, Cursor, Definition, EmitError, InputShared, Lifecycle, Map, SILENCE_DB, Value,
     analysis::number, number_setting, stream::Ring, stream_value,
 };
-use orange_sdk::Publisher;
+use orange_sdk::{Arguments, Publisher};
 use serde_json::{Value as Json, json};
 use std::{
     f64::consts::TAU,
@@ -40,6 +40,38 @@ impl Setting {
             return Err(format!("`{key}` is outside its range"));
         }
         Ok(value)
+    }
+}
+
+/// A wireable duration with a default and bounds expressed in milliseconds.
+struct Timing(&'static str, i32, i32, i32);
+
+impl Timing {
+    fn add(&self, definition: Definition) -> Definition {
+        let nanos = i64::from(self.3) * 1_000_000;
+        let ty = "core/duration@1";
+        definition.input_default(self.0, ty, json!({"type": ty, "value": nanos.to_string()}))
+    }
+
+    fn millis(&self, arguments: &Arguments) -> Result<f64, String> {
+        let Some(value) = arguments.get(self.0) else {
+            return Ok(f64::from(self.3));
+        };
+        let Value::Duration(nanos) = value else {
+            return Err(format!("`{}` needs a duration", self.0));
+        };
+        let bounds = i64::from(self.1) * 1_000_000..=i64::from(self.2) * 1_000_000;
+        if !bounds.contains(nanos) {
+            return Err(format!(
+                "`{}` must be between {}ms and {}ms",
+                self.0, self.1, self.2
+            ));
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "bounded audio timings fit exactly in binary64 nanoseconds"
+        )]
+        Ok(*nanos as f64 / 1_000_000.0)
     }
 }
 
@@ -88,20 +120,15 @@ fn scale(frame: &mut [f32], gain: f64) {
 
 const GATE_THRESHOLD: Setting = Setting("threshold_db", SILENCE_DB, 0.0, -40.0);
 const GATE_RESET: Setting = Setting("reset_db", 0.0, 24.0, 4.0);
-const GATE_ATTACK: Setting = Setting("attack_ms", 0.0, 250.0, 5.0);
-const GATE_HOLD: Setting = Setting("hold_ms", 0.0, 2_000.0, 100.0);
-const GATE_RELEASE: Setting = Setting("release_ms", 0.0, 2_000.0, 80.0);
+const GATE_ATTACK: Timing = Timing("attack", 0, 250, 5);
+const GATE_HOLD: Timing = Timing("hold", 0, 2_000, 100);
+const GATE_RELEASE: Timing = Timing("release", 0, 2_000, 80);
 
 pub(crate) fn gate_settings(definition: Definition) -> Definition {
-    [
-        GATE_THRESHOLD,
-        GATE_RESET,
-        GATE_ATTACK,
-        GATE_HOLD,
-        GATE_RELEASE,
-    ]
-    .into_iter()
-    .fold(definition, |definition, setting| setting.add(definition))
+    let definition = GATE_RESET.add(GATE_THRESHOLD.add(definition));
+    [GATE_ATTACK, GATE_HOLD, GATE_RELEASE]
+        .into_iter()
+        .fold(definition, |definition, setting| setting.add(definition))
 }
 
 /// Mutes the stream while it is quieter than the threshold. Every channel gets the same
@@ -119,11 +146,12 @@ struct Gate {
     down: f64,
 }
 
-pub(crate) fn gate(config: &Map<String, Json>) -> Result<Make, String> {
+pub(crate) fn gate(config: &Map<String, Json>, arguments: &Arguments) -> Result<Make, String> {
     let threshold = GATE_THRESHOLD.read(config)?;
     let margin = GATE_RESET.read(config)?;
-    let [attack, hold, release] = [GATE_ATTACK, GATE_HOLD, GATE_RELEASE].map(|s| s.read(config));
-    let (attack, hold, release) = (attack?, hold?, release?);
+    let attack = GATE_ATTACK.millis(arguments)?;
+    let hold = GATE_HOLD.millis(arguments)?;
+    let release = GATE_RELEASE.millis(arguments)?;
     Ok(Box::new(move |rate, _| {
         let frames = |ms: f64| ms * f64::from(rate) / 1_000.0;
         let step = |ms| 1.0 / frames(ms).max(1.0);
@@ -169,20 +197,13 @@ impl Process for Gate {
 
 const COMP_THRESHOLD: Setting = Setting("threshold_db", -60.0, 0.0, -18.0);
 const COMP_RATIO: Setting = Setting("ratio", 1.0, 20.0, 4.0);
-const COMP_ATTACK: Setting = Setting("attack_ms", 0.0, 250.0, 10.0);
-const COMP_RELEASE: Setting = Setting("release_ms", 1.0, 2_000.0, 120.0);
+const COMP_ATTACK: Timing = Timing("attack", 0, 250, 10);
+const COMP_RELEASE: Timing = Timing("release", 1, 2_000, 120);
 const COMP_MAKEUP: Setting = Setting("makeup_db", 0.0, 24.0, 0.0);
 
 pub(crate) fn compressor_settings(definition: Definition) -> Definition {
-    [
-        COMP_THRESHOLD,
-        COMP_RATIO,
-        COMP_ATTACK,
-        COMP_RELEASE,
-        COMP_MAKEUP,
-    ]
-    .into_iter()
-    .fold(definition, |definition, setting| setting.add(definition))
+    let definition = COMP_MAKEUP.add(COMP_RATIO.add(COMP_THRESHOLD.add(definition)));
+    COMP_RELEASE.add(COMP_ATTACK.add(definition))
 }
 
 /// Turns the level above the threshold down by the ratio: at 4:1, 8 dB over becomes
@@ -199,11 +220,14 @@ struct Compressor {
     reduction: f64,
 }
 
-pub(crate) fn compressor(config: &Map<String, Json>) -> Result<Make, String> {
+pub(crate) fn compressor(
+    config: &Map<String, Json>,
+    arguments: &Arguments,
+) -> Result<Make, String> {
     let threshold = COMP_THRESHOLD.read(config)?;
     let ratio = COMP_RATIO.read(config)?;
-    let attack = COMP_ATTACK.read(config)?;
-    let release = COMP_RELEASE.read(config)?;
+    let attack = COMP_ATTACK.millis(arguments)?;
+    let release = COMP_RELEASE.millis(arguments)?;
     let makeup = COMP_MAKEUP.read(config)?;
     Ok(Box::new(move |rate, _| {
         Box::new(Compressor {
@@ -244,12 +268,10 @@ impl Process for Compressor {
 // --- Limiter ----------------------------------------------------------------------
 
 const LIMIT_CEILING: Setting = Setting("ceiling_db", -24.0, 0.0, -1.0);
-const LIMIT_RELEASE: Setting = Setting("release_ms", 1.0, 1_000.0, 50.0);
+const LIMIT_RELEASE: Timing = Timing("release", 1, 1_000, 50);
 
 pub(crate) fn limiter_settings(definition: Definition) -> Definition {
-    [LIMIT_CEILING, LIMIT_RELEASE]
-        .into_iter()
-        .fold(definition, |definition, setting| setting.add(definition))
+    LIMIT_RELEASE.add(LIMIT_CEILING.add(definition))
 }
 
 /// Keeps every sample at or under the ceiling: a peak above it turns the gain down at
@@ -260,9 +282,9 @@ struct Limiter {
     gain: f64,
 }
 
-pub(crate) fn limiter(config: &Map<String, Json>) -> Result<Make, String> {
+pub(crate) fn limiter(config: &Map<String, Json>, arguments: &Arguments) -> Result<Make, String> {
     let ceiling = factor_of(LIMIT_CEILING.read(config)?);
-    let release = LIMIT_RELEASE.read(config)?;
+    let release = LIMIT_RELEASE.millis(arguments)?;
     Ok(Box::new(move |rate, _| {
         Box::new(Limiter {
             ceiling,
@@ -504,7 +526,7 @@ mod tests {
 
     #[test]
     fn the_gate_mutes_quiet_pcm_and_uses_the_same_gain_for_both_channels() {
-        let mut gate = gate(&Map::new()).unwrap()(1_000, 2);
+        let mut gate = gate(&Map::new(), &Arguments::default()).unwrap()(1_000, 2);
         let mut quiet = [0.001; 80];
         gate.process(&mut quiet, 2);
         assert_eq!(quiet, [0.0; 80]);
@@ -535,10 +557,11 @@ mod tests {
     #[test]
     fn the_compressor_turns_loud_audio_down_by_its_ratio_and_leaves_quiet_audio() {
         let rate = 8_000;
-        let make = compressor(&config(json!({
-            "threshold_db": -20, "ratio": 4, "attack_ms": 1, "release_ms": 50
-        })))
-        .unwrap();
+        let timing = Arguments::new(vec![
+            ("attack".into(), Value::Duration(1_000_000)),
+            ("release".into(), Value::Duration(50_000_000)),
+        ]);
+        let make = compressor(&config(json!({"threshold_db": -20, "ratio": 4})), &timing).unwrap();
         // A sine at -6 dBFS peak is about -9 dB RMS: 11 dB over, 8.25 dB taken off.
         let mut loud = sine(200.0, 0.5, rate, 0.5);
         make(rate, 1).process(&mut loud, 1);
@@ -551,7 +574,7 @@ mod tests {
         make(rate, 1).process(&mut processed, 1);
         assert_eq!(processed, quiet);
         // Makeup gain raises everything.
-        let raised = compressor(&config(json!({"makeup_db": 6}))).unwrap();
+        let raised = compressor(&config(json!({"makeup_db": 6})), &Arguments::default()).unwrap();
         let mut processed = quiet.clone();
         raised(rate, 1).process(&mut processed, 1);
         assert!((peak(&processed) / peak(&quiet) - 2.0).abs() < 0.01);
@@ -560,7 +583,8 @@ mod tests {
     #[test]
     fn the_limiter_keeps_every_sample_under_the_ceiling_and_recovers() {
         let rate = 8_000;
-        let make = limiter(&config(json!({"ceiling_db": -6, "release_ms": 10}))).unwrap();
+        let timing = Arguments::new(vec![("release".into(), Value::Duration(10_000_000))]);
+        let make = limiter(&config(json!({"ceiling_db": -6})), &timing).unwrap();
         let mut limiter = make(rate, 2);
         let ceiling = factor_of(-6.0) as f32;
         let mut loud: Vec<f32> = sine(300.0, 1.0, rate, 0.2)

@@ -1,7 +1,7 @@
 //! Run-scoped event fan-out, bounded reentrancy and FIFO delivery ownership.
 //! No handler executes in Emit.
 use super::*;
-use orange_model::document::{OverflowPolicy, PausedPolicy, ReentrancyMode};
+use orange_model::document::{EventTiming, OverflowPolicy, PausedPolicy, ReentrancyMode};
 use orange_model::id::EventDeclId;
 use orange_model::value::shape::ValueShape;
 use std::collections::BTreeSet;
@@ -235,6 +235,7 @@ struct Envelope {
     payload: Value,
     tick: Option<Tick>,
     charge: usize,
+    ready_at: u64,
 }
 struct Handler {
     entry: ControlIx,
@@ -243,6 +244,9 @@ struct Handler {
     mode: ReentrancyMode,
     max_parallel: usize,
     while_paused: PausedPolicy,
+    timing: Option<EventTiming>,
+    /// Earliest virtual time the next leading throttle admission may occur.
+    throttle_until: u64,
     pending: VecDeque<Envelope>,
     /// Root identities remain owned through descendant/cleanup retirement. The existing
     /// singleton set keeps serial handlers allocation-free and can identify a Replace
@@ -404,7 +408,9 @@ impl Handler {
     }
     fn drops_busy(&self) -> bool {
         self.mode == ReentrancyMode::Drop
-            && (!self.pending.is_empty() || !self.active_roots.is_empty())
+            && (!self.active_roots.is_empty()
+                || (!matches!(self.timing, Some(EventTiming::Debounce { .. }))
+                    && !self.pending.is_empty()))
     }
     fn replacement_target(&self) -> Option<u64> {
         if self.mode != ReentrancyMode::Replace {
@@ -456,6 +462,8 @@ pub(super) struct Events {
     handlers: Vec<Handler>,
     /// Only handlers with an available root slot and pending deliveries are ready.
     ready: BTreeSet<(u64, usize)>,
+    /// Front debounce deadlines for handlers with an available root slot.
+    deferred: BTreeSet<(u64, usize)>,
     /// Reservation ownership is independent of a temporarily checked-out frame.
     active: BTreeMap<u64, (usize, usize)>,
     /// Successful Replace admissions, in emission/handler order. Each root is queued
@@ -490,6 +498,8 @@ impl Events {
                 mode: handler.mode(),
                 max_parallel: handler.max_parallel(),
                 while_paused: handler.while_paused(),
+                timing: handler.timing(),
+                throttle_until: 0,
                 pending: VecDeque::new(),
                 active_roots: IdSet::default(),
                 cancel_requested: None,
@@ -520,6 +530,7 @@ impl Events {
         Self {
             handlers,
             ready: BTreeSet::new(),
+            deferred: BTreeSet::new(),
             active: BTreeMap::new(),
             cancel_pending: VecDeque::new(),
             by_event,
@@ -544,17 +555,52 @@ impl Events {
     fn remove_ready(&mut self, handler: usize) {
         if let Some(front) = self.handlers[handler].pending.front() {
             self.ready.remove(&(front.metadata.ingestion_seq, handler));
+            if front.ready_at != 0 {
+                self.deferred.remove(&(front.ready_at, handler));
+            }
         }
     }
-    fn make_ready(&mut self, handler: usize) {
+    fn make_ready(&mut self, handler: usize, now: u64) {
         let queue = &self.handlers[handler];
         if queue.has_slot()
             && let Some(front) = queue.pending.front()
         {
-            self.ready.insert((front.metadata.ingestion_seq, handler));
+            if front.ready_at > now {
+                self.deferred.insert((front.ready_at, handler));
+            } else {
+                self.ready.insert((front.metadata.ingestion_seq, handler));
+            }
         }
     }
-    fn finish(&mut self, activation: u64) -> Result<(), RunError> {
+    pub(super) fn next_timed_delivery(&self) -> Option<u64> {
+        self.deferred.first().map(|&(at, _)| at)
+    }
+    pub(super) fn advance_deliveries(&mut self, now: u64) {
+        while let Some(&(at, handler)) = self.deferred.first() {
+            if at > now {
+                break;
+            }
+            self.deferred.pop_first();
+            self.make_ready(handler, now);
+        }
+    }
+    pub(super) fn discard_delayed_deliveries(&mut self, now: u64) {
+        self.deferred.clear();
+        for handler in &mut self.handlers {
+            if let Some(front) = handler.pending.front()
+                && front.ready_at > now
+            {
+                // Only Debounce puts a deadline on an envelope, and it retains one.
+                let charge = front.charge;
+                handler.pending.pop_front();
+                self.stats.pending -= 1;
+                self.stats.pending_bytes -= charge;
+                self.stats.live_payload_bytes -= charge;
+                self.stats.dropped = self.stats.dropped.saturating_add(1);
+            }
+        }
+    }
+    fn finish(&mut self, activation: u64, now: u64) -> Result<(), RunError> {
         if let Some((handler, charge)) = self.active.remove(&activation) {
             if !self.handlers[handler].active_roots.remove(&activation) {
                 return Err(RunError::InvalidState);
@@ -567,7 +613,7 @@ impl Events {
                 .live_payload_bytes
                 .checked_sub(charge)
                 .ok_or(RunError::InvalidState)?;
-            self.make_ready(handler);
+            self.make_ready(handler, now);
         }
         Ok(())
     }
@@ -622,6 +668,7 @@ impl Events {
         self.stats.pending = 0;
         self.stats.pending_bytes = 0;
         self.ready.clear();
+        self.deferred.clear();
         // Whole-run cancellation will visit every root itself. Do not cancel cleanup
         // a second time by replaying a targeted Replace request afterward.
         self.cancel_pending.clear();
@@ -645,6 +692,7 @@ impl Events {
         self.stats.activation_high_water = self.stats.activation_high_water.max(high_water);
         self.handlers = Vec::new();
         self.ready = BTreeSet::new();
+        self.deferred = BTreeSet::new();
         self.by_event = Vec::new();
         self.waiters.release();
         self.source_sequences = Vec::new();
@@ -664,6 +712,8 @@ struct Disposition {
     cancel: Option<u64>,
     /// The loss was chosen by the entry's `while_paused` policy.
     paused: bool,
+    ready_at: u64,
+    throttle_until: Option<u64>,
 }
 impl Run {
     pub(super) fn host_source_count(&self) -> usize {
@@ -1064,6 +1114,8 @@ impl Run {
             // Type/causal checks above still apply, but no payload is retained for it.
             let drops_busy = queue.drops_busy();
             let replaces = queue.mode == ReentrancyMode::Replace;
+            let debounce = matches!(queue.timing, Some(EventTiming::Debounce { .. }));
+            let throttled = self.now < queue.throttle_until;
             // An entry's paused policy is a deliberate choice too. Drop ignores the
             // input whatever the reentrancy mode, so it never requests a replacement;
             // Latest applies where reentrancy would otherwise queue.
@@ -1071,20 +1123,20 @@ impl Run {
             let paused_latest =
                 held && queue.while_paused == PausedPolicy::Latest && !replaces && !drops_busy;
             let overflow = !replaces
+                && !debounce
+                && !throttled
                 && !drops_busy
                 && !paused_drop
                 && !paused_latest
                 && queue.pending.len() >= queue.capacity;
-            let (remove, skip) = if paused_drop {
+            let (remove, skip) = if paused_drop || throttled || drops_busy {
                 (0, true)
-            } else if paused_latest {
+            } else if paused_latest || debounce {
                 (queue.pending.len(), false)
             } else if replaces {
                 // Replace always retains only the latest pending envelope. Its intrinsic
                 // coalescing supersedes the configured capacity overflow selector.
                 (queue.pending.len(), false)
-            } else if drops_busy {
-                (0, true)
             } else if overflow {
                 match queue.overflow {
                     OverflowPolicy::DropNewest => (0, true),
@@ -1126,6 +1178,10 @@ impl Run {
                     return Err(LIMIT);
                 }
             }
+            let until = queue.timing.map_or(0, |timing| {
+                self.now
+                    .saturating_add(u64::from(timing.interval_ms().get()) * 1_000_000)
+            });
             changes.push(Disposition {
                 handler,
                 remove,
@@ -1137,7 +1193,11 @@ impl Run {
                 } else {
                     queue.replacement_target()
                 },
-                paused: paused_drop || paused_latest,
+                paused: paused_drop || (paused_latest && !skip),
+                ready_at: if debounce { until } else { 0 },
+                throttle_until: (!skip
+                    && matches!(queue.timing, Some(EventTiming::Throttle { .. })))
+                .then_some(until),
             });
         }
         if pending > self.options.limits.max_pending_events
@@ -1191,14 +1251,18 @@ impl Run {
                     payload: payload.clone(),
                     tick,
                     charge: change.charge,
+                    ready_at: change.ready_at,
                 });
                 self.events.stats.accepted = self.events.stats.accepted.saturating_add(1);
+            }
+            if let Some(until) = change.throttle_until {
+                queue.throttle_until = until;
             }
             if let Some(root) = change.cancel {
                 queue.cancel_requested = Some(root);
                 self.events.cancel_pending.push_back(root);
             }
-            self.events.make_ready(change.handler);
+            self.events.make_ready(change.handler, self.now);
         }
         for (token, delivery_charge) in waiter_charges {
             let timer_key = self.timers.detach_await(token);
@@ -1383,7 +1447,7 @@ impl Run {
         self.ready.push_back(strand_id, strand);
         // Parallel may admit another pending root before the first one retires. Only
         // the queue head participates, preserving global ingestion/handler ordering.
-        self.events.make_ready(handler);
+        self.events.make_ready(handler, self.now);
         Ok(true)
     }
     pub(super) fn retire_activation(&mut self, id: u64) -> Result<(), RunError> {
@@ -1396,7 +1460,7 @@ impl Run {
         if frame.is_none() && self.last_error != Some(RunError::Interrupted) {
             return Err(RunError::InvalidState);
         }
-        self.events.finish(id)?;
+        self.events.finish(id, self.now)?;
         if id >= self.events.static_starts && id < self.events.static_roots {
             self.events.live_stop_frames = self
                 .events

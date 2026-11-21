@@ -586,7 +586,8 @@ fn a_shared_pure_cone_reports_each_consumers_own_requirement_and_edge() {
         let port = PortKey::new(pid(port), None);
         Diagnostic::new(
             code,
-            Subject::new(Some(nid(node)), Some(port), Some(edge)),
+            Subject::new(Some(nid(node)), Some(port), Some(edge))
+                .with_port_direction(crate::document::PortDirection::Input),
             &origin,
         )
     })

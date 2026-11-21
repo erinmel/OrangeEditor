@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::document::PortDirection;
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, TypeDeclId, VariableId};
 
 /// One declaration owns wire identity, localization, severity and fallback text.
@@ -219,6 +220,8 @@ pub struct Subject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<PortKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_direction: Option<PortDirection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<EdgeId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variable: Option<VariableId>,
@@ -234,11 +237,17 @@ impl Subject {
             function: None,
             node,
             port,
+            port_direction: None,
             edge,
             variable: None,
             event: None,
             local_type: None,
         }
+    }
+
+    pub const fn with_port_direction(mut self, direction: PortDirection) -> Self {
+        self.port_direction = Some(direction);
+        self
     }
 
     /// Adds the declared variable this diagnostic is about.

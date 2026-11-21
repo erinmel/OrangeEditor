@@ -314,7 +314,7 @@ impl Document {
             if let Some(port) = &diagnostic.subject.port {
                 canvas::Marks::add(
                     &mut marks.ports,
-                    (node, port.to_string()),
+                    (node, port.to_string(), diagnostic.subject.port_direction),
                     error,
                     text.clone(),
                 );

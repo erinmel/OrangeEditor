@@ -20,7 +20,7 @@ pub fn search(ui: &mut egui::Ui, salt: &str, query: &mut String, hint: &str) -> 
         salt,
         query,
         hint,
-        icons::text(icons::SEARCH),
+        icons::centered(icons::SEARCH),
         icons::centered(icons::CLOSE),
         t("clear-search"),
     )

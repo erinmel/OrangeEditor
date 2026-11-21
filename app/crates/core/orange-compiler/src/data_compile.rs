@@ -4,11 +4,11 @@ use crate::compile::{
 };
 use crate::projection::Projection;
 use crate::*;
-use orange_model::GraphDocument;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{NodeKind, PortDescriptor, PortDirection, PortKind};
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::ValidationAnalysis;
+use orange_model::{GraphDocument, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -38,6 +38,10 @@ enum Task {
     },
     Enter(NodeId),
     Choose(NodeId),
+    Condition {
+        node: NodeId,
+        inputs: Vec<DataInput>,
+    },
     Finish {
         node: NodeId,
         selection: Option<Selection>,
@@ -207,7 +211,10 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 } => self.return_call(node, child, inputs)?,
                 Task::Enter(node) => self.enter(node, &mut work)?,
                 Task::Choose(node) => self.choose(node, &mut work)?,
-                Task::Finish { node, selection } => self.finish(node, selection, &mut work)?,
+                Task::Condition { node, inputs } => self.condition(node, inputs, &mut work)?,
+                Task::Finish { node, selection } => {
+                    self.finish(node, selection, None, &mut work)?
+                }
             }
         }
         self.work = work;
@@ -399,6 +406,22 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     .map(key),
                 work,
             );
+        } else if matches!(
+            calls.projection(self.projections, scope, node),
+            Some(Projection::Conditions { .. })
+        ) {
+            let instance = &calls.body(self.document, scope).nodes[&node];
+            let first = keys(instance, &sig.ports[0])
+                .next()
+                .ok_or(CompileError::KernelContract { node })?;
+            work.push((
+                scope,
+                Task::Condition {
+                    node,
+                    inputs: Vec::new(),
+                },
+            ));
+            self.dependencies(node, [first], work);
         } else if calls.projection(self.projections, scope, node).is_some() {
             work.push((scope, Task::Choose(node)));
             self.dependencies(node, [key(&sig.ports[0])], work);
@@ -406,6 +429,38 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             self.demand_inputs(node, work);
         }
         Ok(())
+    }
+
+    fn condition(
+        &mut self,
+        node: NodeId,
+        mut inputs: Vec<DataInput>,
+        work: &mut Vec<(usize, Task)>,
+    ) -> Result<(), CompileError> {
+        let calls = self.calls.clone();
+        let scope = self.scope;
+        let sig = calls.signature(self.analysis, scope, node);
+        let instance = &calls.body(self.document, scope).nodes[&node];
+        let bad = || CompileError::KernelContract { node };
+        let Some(Projection::Conditions { stop }) = calls.projection(self.projections, scope, node)
+        else {
+            return Err(bad());
+        };
+        let mut operands = keys(instance, &sig.ports[0]).skip(inputs.len());
+        let input = self.input_at(node, &sig.ports[0], operands.next().ok_or_else(bad)?)?;
+        let decided = match &self.plan.initial[input.source.slot.index()] {
+            Some(FoldedValue::Value(Value::Bool(flag))) => *flag == stop,
+            Some(FoldedValue::Fault(_)) => true,
+            Some(_) => return Err(bad()),
+            None => false,
+        };
+        inputs.push(input);
+        if !decided && let Some(next) = operands.next() {
+            work.push((scope, Task::Condition { node, inputs }));
+            self.dependencies(node, [next], work);
+            return Ok(());
+        }
+        self.finish(node, None, Some(inputs), work)
     }
 
     /// After a lazy node's selector is lowered, demand only the alternatives it can take.
@@ -449,6 +504,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         &mut self,
         node_id: NodeId,
         selection: Option<Selection>,
+        conditions: Option<Vec<DataInput>>,
         work: &mut Vec<(usize, Task)>,
     ) -> Result<(), CompileError> {
         let (analysis, calls, scope) = (self.analysis, self.calls.clone(), self.scope);
@@ -492,15 +548,19 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         }
         let prefix = inputs.len();
         let node = &calls.body(document, scope).nodes[&node_id];
-        for port in &inputs_ports {
-            if let Some(selection) = selection
-                .as_ref()
-                .filter(|s| s.selector.source.port.port() == &port.port_id)
-            {
-                inputs.push(selection.selector.clone());
-            } else {
-                for key in keys(node, port) {
-                    inputs.push(self.input_at(node_id, port, key)?);
+        if let Some(conditions) = conditions {
+            inputs = conditions;
+        } else {
+            for port in &inputs_ports {
+                if let Some(selection) = selection
+                    .as_ref()
+                    .filter(|s| s.selector.source.port.port() == &port.port_id)
+                {
+                    inputs.push(selection.selector.clone());
+                } else {
+                    for key in keys(node, port) {
+                        inputs.push(self.input_at(node_id, port, key)?);
+                    }
                 }
             }
         }
@@ -532,6 +592,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 }
                 Projection::And => DataOperation::And,
                 Projection::Or => DataOperation::Or,
+                Projection::Conditions { stop } => DataOperation::Conditions { stop },
                 Projection::Coalesce => DataOperation::Coalesce {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                 },

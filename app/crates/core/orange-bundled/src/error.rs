@@ -9,13 +9,15 @@ pub enum CatalogError {
     InvalidBuildDigest,
     #[error("Bundled kernel metadata is invalid.")]
     Metadata(#[from] IdError),
+    #[error("Bundled type metadata is invalid.")]
+    TypeMetadata(#[from] orange_model::types::TypeRegistrationError),
 }
 
 impl CatalogError {
     pub const fn message_key(&self) -> &'static str {
         match self {
             Self::InvalidBuildDigest => "core/kernel-build-identity-invalid",
-            Self::Metadata(_) => "core/kernel-metadata-invalid",
+            Self::Metadata(_) | Self::TypeMetadata(_) => "core/kernel-metadata-invalid",
         }
     }
 }

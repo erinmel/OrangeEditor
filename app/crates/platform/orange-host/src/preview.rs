@@ -113,6 +113,77 @@ mod tests {
     }
 
     #[test]
+    fn color_and_timestamp_nodes_wire_and_preview_as_typed_values() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+        let mut add = |name| host.add_node(&mut draft, name, [0.0, 0.0]).unwrap();
+        let color = add("org.orange.color/color");
+        let split = add("org.orange.color/split-rgba");
+        let hex = add("org.orange.color/format-hex");
+        let parse = add("org.orange.time/parse-timestamp");
+        let format = add("org.orange.time/format-timestamp");
+        let duration = add("org.orange.time/make-duration");
+        let shift = add("org.orange.time/add-duration");
+
+        assert!(
+            host.set_input(&mut draft, (color, "color"), Some("#12345600"))
+                .unwrap()
+        );
+        host.set_input(
+            &mut draft,
+            (parse, "text"),
+            Some("1969-12-31T23:59:59.999999999Z"),
+        )
+        .unwrap();
+        host.set_input(&mut draft, (duration, "amount"), Some("1"))
+            .unwrap();
+        host.set_config(&mut draft, format, &json!({"format":"unix-seconds"}))
+            .unwrap();
+        for (from, to) in [
+            ((color, "result"), (split, "color")),
+            ((color, "result"), (hex, "color")),
+            ((parse, "result"), (shift, "timestamp")),
+            ((duration, "result"), (shift, "duration")),
+            ((shift, "result"), (format, "timestamp")),
+        ] {
+            host.connect(&mut draft, from, to).unwrap();
+        }
+        let view = host.draft_view(&draft).unwrap();
+        let color_view = view.nodes.iter().find(|node| node.id == color).unwrap();
+        assert_eq!(
+            color_view
+                .ports
+                .iter()
+                .find(|port| port.input)
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("#12345600")
+        );
+        let output = host
+            .preview(
+                &draft.text().unwrap(),
+                &[
+                    (split, "red".parse().unwrap()),
+                    (split, "alpha".parse().unwrap()),
+                    (hex, "result".parse().unwrap()),
+                    (format, "result".parse().unwrap()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(output[0].value, Ok(Value::U32(0x12)));
+        assert_eq!(output[1].value, Ok(Value::U32(0)));
+        assert_eq!(
+            output[2].value,
+            Ok(Value::Str(Arc::new("#12345600".into())))
+        );
+        assert_eq!(
+            output[3].value,
+            Ok(Value::Str(Arc::new("0.000999999".into())))
+        );
+    }
+
+    #[test]
     fn pure_outputs_are_computed_without_running_and_a_fault_is_one_outputs_result() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let math = |n: u32, name: &str, inputs: Json| {

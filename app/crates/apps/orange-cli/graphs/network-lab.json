@@ -204,7 +204,7 @@
         }
       ]
     },
-    "sha256:1729f2b00305e8714258d0d765a19c36852a5149b2b50d052b914fbbf120e684": {
+    "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8": {
       "kind": "async",
       "suspends": "always",
       "ports": [
@@ -259,6 +259,26 @@
           }
         },
         {
+          "port_id": "header_fields",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "query",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
           "port_id": "status",
           "direction": "output",
           "kind": "data",
@@ -283,6 +303,16 @@
           "direction": "output",
           "kind": "data",
           "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response_headers",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/list@1<core/string@1>>",
           "source": "execution",
           "available_on": [
             "then"
@@ -935,7 +965,7 @@
         "version": "0.0.0",
         "id": "native"
       },
-      "signature": "sha256:1729f2b00305e8714258d0d765a19c36852a5149b2b50d052b914fbbf120e684",
+      "signature": "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8",
       "inputs": {
         "path": {
           "type": "core/string@1",

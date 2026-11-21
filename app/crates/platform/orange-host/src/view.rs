@@ -122,7 +122,7 @@ fn core_schema(definition: &str) -> Option<Json> {
             "properties": {"max_iterations": {"type": "integer", "minimum": 1}}}))
         }
         "core/for-each" => Some(json!({"type": "object",
-            "properties": {"mode": {"type": "string", "enum": ["list", "map"]}}})),
+            "properties": {"mode": {"type": "string", "enum": ["list", "map"], "default": "list"}}})),
         "core/on-timer" => Some(json!({"type": "object", "required": ["interval"],
             "properties": {"interval": time,
                 "first": {"type": "string", "enum": ["after-interval", "immediate"]},

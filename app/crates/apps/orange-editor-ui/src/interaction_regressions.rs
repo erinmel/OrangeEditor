@@ -387,7 +387,14 @@ fn a_wired_audio_trigger_blocks_run_until_its_input_is_supplied() {
     let document = editor.document.as_ref().unwrap();
     assert!(document.run_blocked);
     assert!(!document.run_omitted.contains(&meter));
-    assert!(editor.canvas.marks().ports[&(meter, "stream".to_owned())].error);
+    assert!(
+        editor.canvas.marks().ports[&(
+            meter,
+            "stream".to_owned(),
+            Some(orange_host::PortDirection::Input),
+        )]
+            .error
+    );
     editor.run(&mut host);
     assert!(!editor.is_running());
 }

@@ -404,6 +404,10 @@ struct Decision {
 enum Work {
     Enter(NodeId),
     Choose(NodeId),
+    Condition {
+        node: NodeId,
+        index: usize,
+    },
     Finish {
         node: NodeId,
         decision: Option<Decision>,
@@ -702,7 +706,21 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     if signature.kind != NodeKind::Pure {
                         return Err(CompileError::UnsupportedNode { node });
                     }
-                    if calls.projection(projections, scope, node).is_some() {
+                    if matches!(
+                        calls.projection(projections, scope, node),
+                        Some(projection::Projection::Conditions { .. })
+                    ) {
+                        let instance = document
+                            .node(node)
+                            .ok_or(CompileError::ValidationIncomplete)?;
+                        let first = keys(instance, &signature.ports[0])
+                            .next()
+                            .ok_or(CompileError::KernelContract { node })?;
+                        work.push((scope, Work::Condition { node, index: 0 }));
+                        if let Some(edge) = incoming.get(&(node, first)) {
+                            work.push((scope, Work::Enter(edge.from.node)));
+                        }
+                    } else if calls.projection(projections, scope, node).is_some() {
                         work.push((scope, Work::Choose(node)));
                         if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
                             work.push((scope, Work::Enter(edge.from.node)));
@@ -730,6 +748,65 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                             }
                         }
                     }
+                    continue;
+                }
+                Work::Condition { node, index } => {
+                    let signature = calls.signature(analysis, scope, node);
+                    let instance = document
+                        .node(node)
+                        .ok_or(CompileError::ValidationIncomplete)?;
+                    let mut operands = keys(instance, &signature.ports[0]).skip(index);
+                    let bad = || CompileError::KernelContract { node };
+                    let port = operands.next().ok_or_else(bad)?;
+                    let source = context.source_at(
+                        node,
+                        (&signature.ports[0], port),
+                        plan,
+                        outputs,
+                        bytes,
+                    )?;
+                    let Some(projection::Projection::Conditions { stop }) =
+                        calls.projection(projections, scope, node)
+                    else {
+                        return Err(bad());
+                    };
+                    let outcome = &plan.constants[source.slot.index()];
+                    if let FoldedValue::Value(value) = outcome {
+                        let Value::Bool(flag) = value else {
+                            return Err(bad());
+                        };
+                        if *flag != stop
+                            && let Some(next) = operands.next()
+                        {
+                            work.push((
+                                scope,
+                                Work::Condition {
+                                    node,
+                                    index: index + 1,
+                                },
+                            ));
+                            if let Some(edge) = incoming.get(&(node, next)) {
+                                work.push((scope, Work::Enter(edge.from.node)));
+                            }
+                            continue;
+                        }
+                    }
+                    let port = &signature.ports[1];
+                    let output = key(port);
+                    let slot = push_slot(
+                        plan,
+                        port_type(snapshot, node, port)?,
+                        SlotSource {
+                            node,
+                            port: output.clone(),
+                        },
+                        outcome.clone(),
+                        scope.checked_sub(1),
+                        *options,
+                        bytes,
+                    )?;
+                    outputs.insert((node, output), slot);
+                    completed.insert(node);
                     continue;
                 }
                 Work::Choose(node) => {

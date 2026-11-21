@@ -1,4 +1,4 @@
-use super::{CONTROL_RADIUS, SPACE_SMALL, Surface, Theme, motion};
+use super::{CONTROL_RADIUS, ControlSize, SPACE_SMALL, Surface, Theme, motion};
 use egui::{Button, Key, Rect, Response, Slider, Stroke, StrokeKind, Ui, pos2, vec2};
 use std::num::NonZeroU16;
 use std::ops::RangeInclusive;
@@ -15,6 +15,11 @@ pub fn segmented<T: Copy + PartialEq>(
     let theme = Theme::of(ui);
     let spacing = 2.0;
     let width = ui.available_width();
+    let height = ui
+        .spacing()
+        .interact_size
+        .y
+        .max(ControlSize::Compact.height());
     let font = egui::TextStyle::Button.resolve(ui.style());
     let natural = options.iter().fold(0.0_f32, |width, (_, text)| {
         width.max(
@@ -60,7 +65,7 @@ pub fn segmented<T: Copy + PartialEq>(
                                             } else {
                                                 body_width
                                             },
-                                            24.0,
+                                            height,
                                         )),
                                 )
                                 .labelled_by(label.id);

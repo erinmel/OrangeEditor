@@ -1,6 +1,8 @@
 //! Shared control roles. Colors follow the host theme and the surrounding surface.
 use egui::{Button, ComboBox, InnerResponse, Response, Stroke, Ui};
 
+pub mod color_picker;
+pub mod icons;
 mod selection;
 pub use selection::{StepLabels, continuous_slider, segmented, stepped_slider};
 
@@ -9,6 +11,34 @@ pub const SPACE_MEDIUM: f32 = 8.0;
 pub const SPACE_LARGE: f32 = 12.0;
 pub const CONTROL_HEIGHT: f32 = 28.0;
 pub const CONTROL_RADIUS: u8 = 6;
+
+/// Density presets shared by text, icon, and segmented controls.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ControlSize {
+    Compact,
+    #[default]
+    Standard,
+    Comfortable,
+}
+
+impl ControlSize {
+    pub const fn height(self) -> f32 {
+        match self {
+            Self::Compact => 24.0,
+            Self::Standard => CONTROL_HEIGHT,
+            Self::Comfortable => 36.0,
+        }
+    }
+
+    pub fn apply(self, spacing: &mut egui::Spacing) {
+        spacing.interact_size.y = self.height();
+        spacing.button_padding = match self {
+            Self::Compact => egui::vec2(SPACE_SMALL, 2.0),
+            Self::Standard => egui::vec2(SPACE_MEDIUM, SPACE_SMALL),
+            Self::Comfortable => egui::vec2(SPACE_LARGE, 6.0),
+        };
+    }
+}
 
 /// Semantic colors supplied by the host. Setting a theme also affects shared
 /// controls drawn inside popups using the same egui context.
@@ -312,24 +342,12 @@ fn role_colors(
     }
 }
 
-/// A labeled Boolean control using the same palette as selected command buttons.
+/// A Boolean option with a compact checkbox and quiet label.
 pub fn toggle(ui: &mut Ui, surface: Surface, value: &mut bool, label: &str) -> Response {
-    let mut response = button(
-        ui,
-        surface,
-        Action::Toggle(*value),
-        true,
-        Button::new((if *value { "✓" } else { "○" }, label))
-            .min_size(egui::vec2(0.0, CONTROL_HEIGHT)),
-    );
-    if response.clicked() {
-        *value = !*value;
-        response.mark_changed();
-    }
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::CheckBox, response.enabled(), *value, label)
-    });
-    response
+    with_style(ui, surface, Action::Outline, |ui| {
+        ControlSize::Compact.apply(ui.spacing_mut());
+        ui.checkbox(value, label)
+    })
 }
 
 /// Draws dialog actions in a recessed footer. Returns Cancel and Confirm in that order.
@@ -341,27 +359,34 @@ pub fn dialog_actions(
     enabled: bool,
 ) -> (Response, Response) {
     let theme = Theme::of(ui);
-    ui.add_space(4.0);
+    ui.add_space(SPACE_SMALL);
+    footer(ui, theme.dialog.lerp_to_gamma(theme.inset, 0.5), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let cancel = button(
+                ui,
+                Surface::Dialog,
+                Action::Outline,
+                true,
+                Button::new(cancel),
+            );
+            let confirm = button(ui, Surface::Dialog, role, enabled, confirm);
+            (cancel, confirm)
+        })
+        .inner
+    })
+}
+
+/// A full-width action area with the same border and insets in windows and dialogs.
+pub fn footer<R>(ui: &mut Ui, fill: egui::Color32, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let theme = Theme::of(ui);
     egui::Frame::new()
-        .fill(theme.dialog.lerp_to_gamma(theme.inset, 0.5))
+        .fill(fill)
         .stroke(Stroke::new(1.0, theme.border))
-        .corner_radius(6)
-        .inner_margin(6)
+        .corner_radius(CONTROL_RADIUS)
+        .inner_margin(SPACE_MEDIUM)
         .show(ui, |ui| {
-            let width = ui.available_width();
-            ui.horizontal_wrapped(|ui| {
-                ui.set_min_width(width);
-                let cancel = button(
-                    ui,
-                    Surface::Dialog,
-                    Action::Outline,
-                    true,
-                    Button::new(cancel),
-                );
-                let confirm = button(ui, Surface::Dialog, role, enabled, confirm);
-                (cancel, confirm)
-            })
-            .inner
+            ui.set_min_width(ui.available_width());
+            contents(ui)
         })
         .inner
 }
@@ -435,7 +460,7 @@ pub fn search(
     salt: &str,
     query: &mut String,
     hint: &str,
-    search_icon: egui::RichText,
+    search_icon: egui::Atom<'static>,
     clear_icon: egui::Atom<'_>,
     clear_label: &str,
 ) -> Response {
@@ -451,7 +476,7 @@ pub fn search(
             .min_size(egui::vec2(0.0, CONTROL_HEIGHT))
             .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
-            .prefix(search_icon.color(theme.muted_text))
+            .prefix(search_icon)
             .margin(egui::Margin::symmetric(8, 3))
             .desired_width(f32::INFINITY);
         if show_clear {
@@ -515,16 +540,10 @@ pub fn icon_button(
             egui::Stroke::NONE
         };
         let painter = ui.painter();
-        painter.rect(
-            rect,
-            visuals.corner_radius,
-            fill,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
+        painter.rect(rect, CONTROL_RADIUS, fill, stroke, egui::StrokeKind::Inside);
 
         let color = icon_color.unwrap_or(visuals.fg_stroke.color);
-        let icon_size = rect.width().min(rect.height()).min(16.0);
+        let icon_size = rect.width().min(rect.height()).min(icons::SIZE);
         paint(
             ui,
             egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(icon_size)),
@@ -563,7 +582,7 @@ mod tests {
                         "search",
                         &mut query,
                         "Search",
-                        egui::RichText::new("?"),
+                        egui::Atom::paint(egui::Vec2::splat(16.0), |_, _| {}),
                         egui::Atom::paint(egui::Vec2::splat(16.0), |_, _| {}),
                         "Clear search",
                     );
@@ -592,7 +611,7 @@ mod tests {
                         "centered",
                         &mut query,
                         "Find",
-                        egui::RichText::new("?"),
+                        egui::Atom::paint(egui::Vec2::splat(16.0), |_, _| {}),
                         egui::Atom::paint(egui::vec2(16.0, 16.0), |ui, args| {
                             ui.painter().circle_filled(
                                 args.rect.center(),

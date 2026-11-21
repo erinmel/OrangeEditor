@@ -382,6 +382,12 @@ and collection advances one read per item before publishing its whole typed list
 Partial collection and buffered results retain the existing separate stream quotas
 and aggregate leases. Iterator item/index frames reserve activation/aggregate
 storage and stay immutable while descendants or cancellation cleanup retain them.
+
+The host schedules another turn when a service stream completes after the
+pump, including when it has no other input. Cancelling a stream does not wait for
+an in-flight worker pull. The worker retains the producer until that pull returns,
+and the run rejects any late completion for the closed demand.
+
 No next pull occurs while the current body owns any work. Break/Return/Race/stop
 close unfinished consumers/cursors, even when acquisition belonged to an ancestor;
 Continue retains the cursor until body cleanup completes. Host revocation cancels
@@ -671,6 +677,11 @@ A variable declaration stores a stable ID, type, scope, initialization policy, p
 Persistent variables checkpoint only on explicit command or clean stop policy; never store secrets in generic state. Runtime state is distinct from editor undo. Checkpoint restoration is opt-in at run start, validated against type/schema/package versions; no replay of prior effects. Host external writes enter the same sequenced command queue and are recorded in the run trace.
 
 Events create activations through entry nodes. Reentrancy per entry is `queue` (default: serial FIFO by source-local sequence), `drop`, `replace` or bounded `parallel` ([11 §10](11-graph-language.md)). Custom events are declared per graph. Emit only enqueues, so a handler never runs inside the emitter. Event-chain loops are bounded by causal depth (proposed 64). No global ordering promise across unrelated remote sources; host assigns a monotonic ingestion sequence for inspection. Default event queue proposal: 256 events per subscription, 1 MiB aggregate metadata/payload references, with per-profile configurable bounds. Backpressure is used when the protocol permits it; otherwise user chooses drop-oldest, drop-newest, coalesce-latest or fault, with counters. Broker acknowledgement/flow control remains protocol-specific. Timer missed-tick policy is explicit skip/coalesce/catch-up-with-bound; default coalesce, monotonic clock.
+
+The host subtracts time spent in the current turn before sleeping for a run
+deadline, using the remaining virtual duration so paused time stays excluded.
+Live ports use absolute host deadlines for their sampling interval. Updates to
+the same port share a wakeup until the latest pending sample is consumed.
 
 ### Run-scope Await Event (C03 contract, 2026-11-06)
 

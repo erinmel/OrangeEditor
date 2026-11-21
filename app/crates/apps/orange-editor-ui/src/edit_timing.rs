@@ -1,5 +1,5 @@
 //! Where one edit's time goes on a large graph (docs/10, "Performance"). Run with
-//! `cargo test --release -p orange-editor-ui edit_timing -- --ignored --nocapture`.
+//! `ORANGE_EDIT_TIMING_PAIRS=2500 cargo test --release -p orange-editor-ui edit_timing -- --nocapture`.
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -34,10 +34,14 @@ macro_rules! time {
 }
 
 #[test]
-#[ignore = "timing, run on demand"]
 fn edit_timing() {
     let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
-    let text = large(&mut host, 2_500);
+    let pairs = std::env::var("ORANGE_EDIT_TIMING_PAIRS").map_or(64, |value| {
+        let pairs = value.parse().unwrap();
+        assert!(pairs > 0);
+        pairs
+    });
+    let text = large(&mut host, pairs);
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, text);
     let target = editor.graph().unwrap().nodes[0].id;

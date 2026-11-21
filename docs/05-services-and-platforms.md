@@ -38,8 +38,9 @@ credentials and refresh token. MQTT offers None and Username and password,
 with an optional password. AMQP offers Username and password or the broker's
 default guest credentials. The API key is stored as a credential reference in
 `api_key.token`, and `api_key.header` defaults to `X-API-Key`. Standard and
-custom HTTP profile headers are sent to the configured origin. A redirect for
-a request with profile headers or OAuth is returned as a status for the graph.
+custom HTTP profile headers are sent to the configured origin. Request nodes
+return a redirect as an HTTP status, so a graph must choose explicitly whether
+to request a different address.
 
 Check settings validates and opens a profile without firing a Request node.
 Create and edit network profiles in Connections. The node's dropdown lists
@@ -58,6 +59,22 @@ response text. The failed route is for an invalid request, transport failure,
 or unreadable response. Existing saved version 1 nodes are upgraded to
 version 2 with the same ports, literals and wires, and empty defaults for the
 new inputs. Binary and streamed request variants retain their payload types.
+
+HTTP Request and HTTP JSON Request accept optional wireable text maps for
+`header_fields` and `query`. Query names and values are UTF-8 percent-encoded
+and appended to any query supplied in the path. Requests accept at most 64 query
+pairs, a 16 KiB relative request target, and 32 additional headers bounded to
+32 KiB including the node's content type. Header names are case-insensitive.
+Graph headers cannot override profile headers or set authorization or HTTP
+framing headers. Response header names are lowercase and each maps to a list
+of values in response order. Invalid UTF-8 in header values is replaced.
+
+HTTP JSON Request defaults to POST with a `core/json@1` body and
+`application/json` content type. It returns status, success, response text and
+headers, plus an optional JSON value. Non-JSON or empty response text produces
+None, and the JSON text `null` produces a present value. Any HTTP status can
+carry a JSON body, including error responses. Invalid requests, transport
+errors and unreadable response bodies use Failed.
 
 Credentials, authorization and binary payloads (2026-11-12; `orange-sdk`,
 `orange-vault`, `orange-host`, `orange-net`). A setting value that is exactly
@@ -543,6 +560,12 @@ publishes a stream of the same type, rate and channels (`compressed_stream`,
 | Limiter | Ceiling -1 dBFS, Release 50 ms. A peak over the ceiling lowers the gain at once |
 | Gain | -60 to +24 dB, default 0 |
 | Filter | Low-pass, high-pass or band-pass biquad; Cutoff 1 kHz (kept under 0.45 × rate), Q 0.707 |
+
+Attack, Hold and Release are Duration inputs on processors that expose them.
+Enter a duration such as `5ms`, wire a Duration directly, or wire a decimal
+and select its unit in the conversion menu. The processor checks its bounds
+when the stream starts or its inputs change. The processing runs on the existing
+workers outside the audio callbacks.
 
 ### Application playback and virtual cables
 

@@ -37,7 +37,8 @@ const WATCH: Duration = Duration::from_millis(5);
 /// Wall time a closing flow gets to finish its stop before its thread leaves anyway.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
-pub(crate) type Query = Box<dyn FnOnce(&mut Run) + Send>;
+/// Work applied between turns. Returns whether it may have scheduled graph work.
+pub(crate) type Query = Box<dyn FnOnce(&mut Run) -> bool + Send>;
 
 /// State a flow's thread shares with the host handle.
 pub(crate) struct Shared {
@@ -508,8 +509,10 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         let observed = cx.shared.observed.load(Ordering::Relaxed);
         driver.run_mut().keep_port_values(observed);
         // Live values published since the last turn, at most one each per interval.
-        let live_wait = cx.armed.flush(driver.run_mut());
-        let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let live_deadline = cx.armed.flush(driver.run_mut());
+        let turn_started = Instant::now();
+        let now =
+            u64::try_from(turn_started.duration_since(cx.clock).as_nanos()).unwrap_or(u64::MAX);
         let mut refused = |refusal: Refused| {
             cx.sink.send(cx.id, FlowEvent::Refused(refusal.reason));
         };
@@ -731,8 +734,9 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             .unwrap_or_else(PoisonError::into_inner)
             .as_mut()
             .map(std::mem::take);
+        let mut scheduled = false;
         for query in queries.into_iter().flatten() {
-            query(driver.run_mut());
+            scheduled |= query(driver.run_mut());
         }
         let run = driver.run();
         if let Some(keep) = &cx.keep {
@@ -781,19 +785,22 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             }
             Ok(turn) => {
                 errors = 0;
-                if turn.progress.ready || turn.inbox_pending || issued {
+                // Stream completions and host writes can make work ready after the pump.
+                if turn.progress.ready || turn.inbox_pending || issued || scheduled {
                     continue;
                 }
-                let mut wait = turn.progress.next_wakeup.map_or(IDLE, |at| {
-                    Duration::from_nanos(at.saturating_sub(driver.run().now())).min(IDLE)
-                });
-                if !guest_work.is_empty() || closing_since.is_some() {
-                    wait = wait.min(WATCH);
+                let wait = turn_wait(
+                    turn_started,
+                    Instant::now(),
+                    turn.progress
+                        .next_wakeup
+                        .map(|at| Duration::from_nanos(at.saturating_sub(driver.run().now()))),
+                    live_deadline,
+                    !guest_work.is_empty() || closing_since.is_some(),
+                );
+                if !wait.is_zero() {
+                    thread::park_timeout(wait);
                 }
-                if let Some(live) = live_wait {
-                    wait = wait.min(live);
-                }
-                thread::park_timeout(wait);
             }
         }
     }
@@ -826,9 +833,48 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     cx.sink.send(cx.id, FlowEvent::Finished);
 }
 
+// Sample the clock after the turn so work already done counts toward its deadlines.
+fn turn_wait(
+    turn_started: Instant,
+    now: Instant,
+    run_delay_at_start: Option<Duration>,
+    live_deadline: Option<Instant>,
+    watching: bool,
+) -> Duration {
+    let mut wait = if watching { WATCH } else { IDLE };
+    if let Some(delay) = run_delay_at_start {
+        wait = wait.min(delay.saturating_sub(now.duration_since(turn_started)));
+    }
+    if let Some(at) = live_deadline {
+        wait = wait.min(at.saturating_duration_since(now));
+    }
+    wait
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_spent_in_the_turn_counts_toward_run_and_live_deadlines() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let live = Some(start + ms(30));
+        let run = Some(ms(25));
+
+        assert_eq!(turn_wait(start, start + ms(17), run, live, false), ms(8));
+        assert_eq!(turn_wait(start, start + ms(17), None, live, false), ms(13));
+        assert_eq!(
+            turn_wait(start, start + ms(26), run, live, false),
+            Duration::ZERO
+        );
+        assert_eq!(
+            turn_wait(start, start + ms(31), None, live, false),
+            Duration::ZERO
+        );
+        assert_eq!(turn_wait(start, start, run, live, true), WATCH);
+        assert_eq!(turn_wait(start, start, None, None, false), IDLE);
+    }
 
     /// A full queue loses telemetry but never the end of a flow: it waits beside the
     /// queue and is read once the queue is empty.

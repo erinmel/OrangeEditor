@@ -1,12 +1,13 @@
 //! Streams a service package's node produces and a graph consumes.
 use orange_host::{
-    Call, Host, HostOptions, Items, KernelFault, ServicePackage, ServiceStream, Value,
+    Call, FlowEvent, Host, HostOptions, Items, KernelFault, ServicePackage, ServiceStream, Value,
 };
 use orange_sdk::{Definition, FaultText};
 use orange_testkit::{id, node, until};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const PACKAGE: &str = "org.example.feed";
 const BAD: KernelFault = KernelFault {
@@ -64,7 +65,7 @@ impl ServiceStream for Numbers {
     }
 }
 
-fn host(seen: &Arc<Seen>) -> Host {
+fn host(seen: &Arc<Seen>) -> (Host, orange_host::Events) {
     let definition = Definition::node(PACKAGE, "numbers", "Numbers")
         .input("count", "core/i64@1")
         .output("items", "core/stream@1<core/i64@1>")
@@ -72,9 +73,7 @@ fn host(seen: &Arc<Seen>) -> Host {
     let package = ServicePackage::new(PACKAGE, "1.0.0")
         .stream(&definition, Numbers(Arc::clone(seen)))
         .unwrap();
-    Host::with_services(HostOptions::default(), vec![package])
-        .unwrap()
-        .0
+    Host::with_services(HostOptions::default(), vec![package]).unwrap()
 }
 
 /// A manual trigger opens the stream of `count` numbers, collects at most `max_items`
@@ -141,14 +140,39 @@ fn numbers(value: Option<Value>) -> Vec<i64> {
 #[test]
 fn a_graph_collects_the_stream_a_package_node_produces() {
     let seen = Arc::new(Seen::default());
-    let mut host = host(&seen);
-    let flow = host.open(&document(&host, 5, 100)).unwrap();
+    let (mut host, events) = host(&seen);
+    let flow = host.open(&document(&host, 12, 100)).unwrap();
+    host.observe(flow, true).unwrap();
     host.trigger(flow, node(1), None).unwrap();
-    until("the collected items", || read(&host, flow, 101).is_some());
-    assert_eq!(read(&host, flow, 101), Some(Value::I64(1)));
-    assert_eq!(numbers(read(&host, flow, 100)), [0, 1, 2, 3, 4]);
-    // Five items and the end were asked for, one at a time, and the producer is gone.
-    assert_eq!(seen.pulled.load(Ordering::SeqCst), 6);
+    // Inspecting the run would wake it, hiding reliance on the idle watchdog.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let done = id(101).parse().unwrap();
+    let collected = id(100).parse().unwrap();
+    let mut items = None;
+    let mut finished = false;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let event = events
+            .recv_timeout(left)
+            .expect("stream makes progress unaided");
+        if event.flow == flow
+            && let FlowEvent::Variables(values) = event.kind
+        {
+            for (id, value) in values {
+                if id == collected && value.is_some() {
+                    items = value;
+                } else if id == done && value.is_some() {
+                    assert_eq!(value, Some(Value::I64(1)));
+                    finished = true;
+                }
+            }
+            if finished {
+                break;
+            }
+        }
+    }
+    assert_eq!(numbers(items), (0..12).collect::<Vec<_>>());
+    assert_eq!(seen.pulled.load(Ordering::SeqCst), 13);
     until("the producer to be dropped", || {
         seen.dropped.load(Ordering::SeqCst)
     });
@@ -157,7 +181,7 @@ fn a_graph_collects_the_stream_a_package_node_produces() {
 #[test]
 fn an_endless_stream_is_read_only_as_far_as_the_graph_asks() {
     let seen = Arc::new(Seen::default());
-    let mut host = host(&seen);
+    let (mut host, _events) = host(&seen);
     // A stream longer than the collection allows fails the collection (11 §9); the
     // producer is not run ahead of the graph, and it is dropped when the stream closes.
     let flow = host.open(&document(&host, -1, 3)).unwrap();
@@ -176,7 +200,7 @@ fn an_endless_stream_is_read_only_as_far_as_the_graph_asks() {
 #[test]
 fn a_stream_that_does_not_open_takes_the_failed_route() {
     let seen = Arc::new(Seen::default());
-    let mut host = host(&seen);
+    let (mut host, _events) = host(&seen);
     let flow = host.open(&document(&host, 13, 3)).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the failed route", || read(&host, flow, 101).is_some());

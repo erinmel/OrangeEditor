@@ -230,6 +230,7 @@ pub fn plain(value: &Value) -> String {
         Value::I32(v) => v.to_string(),
         Value::U32(v) => v.to_string(),
         Value::I64(v) => v.to_string(),
+        Value::Timestamp(v) | Value::Duration(v) => v.to_string(),
         Value::U64(v) => v.to_string(),
         Value::F32(v) => v.to_string(),
         Value::F64(v) => v.to_string(),
@@ -241,6 +242,9 @@ pub fn plain(value: &Value) -> String {
             format!("{shown:?}")
         }
         Value::Bytes(bytes) => format!("<{} bytes>", bytes.len()),
+        Value::Record(record) if record.ty.as_str() == crate::RGBA_TYPE => record
+            .rgba_channels()
+            .map_or_else(|| "—".to_owned(), orange_model::value::rgba_hex),
         other => bounded_text(format_args!("{other:?}"), 120, "…"),
     }
 }
@@ -255,11 +259,26 @@ pub fn literal(ty: &str, typed: &str) -> Result<String, String> {
     let number = |what: &str| format!("`{typed}` is not {what}");
     let value = match ty {
         "core/string@1" => serde_json::json!({"type": ty, "value": typed}),
+        crate::RGBA_TYPE => {
+            let [r, g, b, a] = crate::parse_rgba_hex(typed)
+                .ok_or_else(|| "Enter six or eight hexadecimal color digits.".to_owned())?;
+            serde_json::json!({"type": ty, "value": {"red":r, "green":g, "blue":b, "alpha":a}})
+        }
         "core/bool@1" => {
             let value: bool = typed.parse().map_err(|_| number("true or false"))?;
             serde_json::json!({"type": ty, "value": value})
         }
-        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => {
+        "core/i32@1" => {
+            let value: i32 = typed.parse().map_err(|_| number("a 32-bit whole number"))?;
+            serde_json::json!({"type": ty, "value": value})
+        }
+        "core/u32@1" => {
+            let value: u32 = typed
+                .parse()
+                .map_err(|_| number("an unsigned 32-bit whole number"))?;
+            serde_json::json!({"type": ty, "value": value})
+        }
+        "core/i64@1" | "core/u64@1" | "core/timestamp@1" | "core/duration@1" => {
             let _: i128 = typed.parse().map_err(|_| number("a whole number"))?;
             serde_json::json!({"type": ty, "value": typed})
         }

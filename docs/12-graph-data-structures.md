@@ -382,6 +382,7 @@ pub struct ActivationPolicy {
     pub capacity: u32, pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy, pub order: u32,
     pub while_paused: PausedPolicy,          // Buffer (default, omitted) | Latest | Drop; 11 §10.1
+    pub timing: Option<EventTiming>,        // Optional { mode, interval_ms }; 11 §10.1
 }
 ```
 
@@ -809,6 +810,10 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 | `concat` | `a`, `b: string` | string | empty |
 | `contains`, `starts-with`, `ends-with` | `text`, `pattern: string` | `core/bool@1` | empty |
 | `find` | `text`, `pattern: string` | `core/option@1<core/u64@1>` | `unit`: scalar/byte |
+| `regex-match` | `text`, `pattern: string` | `core/bool@1` | empty |
+| `regex-extract` | `text`, `pattern: string` | `core/option@1<core/string@1>` | empty |
+| `parse-csv` | `text: string` | `list<list<string>>` | empty |
+| `write-csv` | `rows: list<list<string>>` | string | empty |
 | `substring` | `text: string`, `start`, `length: core/u64@1` | string | `unit`: scalar/byte |
 | `replace` | `text`, `pattern`, `replacement: string` | string | empty |
 | `trim` | `value: string` | string | `ends`: `both` (default), `start` or `end` |
@@ -839,6 +844,12 @@ nominal `list<string>` charge using the model's `VALUE_CHARGE` before allocation
 under `MAX_COLLECTION_BYTES`. The input is scanned without owned pieces; only an
 admitted count reserves storage. Empty pieces cost a value slot even with no UTF-8
 payload. The existing `core/LimitExceeded` fault covers refusal.
+
+The bundled Color type `org.orange.color/rgba@1` uses the nominal record
+encoding. Its fields are `red`, `green`, `blue` and `alpha` in that order.
+Each is a `core/u32@1` integer encoded as a JSON number. The color kernels
+enforce the channel range 0–255. A literal for an opaque blue is
+`{"type":"org.orange.color/rgba@1","value":{"red":0,"green":0,"blue":255,"alpha":255}}`.
 
 ### 4.5 Bundled collection definitions
 
@@ -1154,6 +1165,10 @@ The angle-bracket strings describe field constraints, not literal example values
 `args` maps declared names to restricted tagged literals from §6.1. Allowed descriptor types and wire forms are `string` → `{"type":"core/string@1","value":"safe text"}`, `i64`/`u64` → canonical TypeExpr with decimal-string `value`, `f64` → `{"type":"core/f64@1","bits":"<16 hex digits>"}` (finite only), and `timestamp`/`duration` → canonical TypeExpr with nanosecond decimal-string `value`. No nested containers, bytes, secret references, handles, nonfinite values or arbitrary graph values are allowed. Integer/time ranges are their core type ranges in [11 §5.2](11-graph-language.md). A formatter cannot silently round an integer or timestamp; an unsupported conversion takes the bounded safe-fallback path. WU-03 publishes equivalent WIT/binary vectors over these same types before G2.
 
 `NodeError` and compiler diagnostics flatten these fields: `origin` → `message_origin`, `key` → `message_key`, `args` → `message_args`, `fallback` → `message`. Locale-specific rendering is separate non-authoritative view data. This adds no new graph-error codes or severity changes; G-39 covers invariant structured fields and L-03/L-08 cover formatting/redaction.
+
+A diagnostic subject can include `port_direction` (`input` or `output`)
+alongside its port key. When a diagnostic lacks a direction and the card has
+both an input and an output with that key, the editor marks the card header.
 
 `editor.category_id` is a stable namespaced category identity; `editor.category` is its TextRef caption. Optional configuration captions use `editor.config_labels` (JSON Pointer into `config_schema.properties` → TextRef) and `editor.option_labels` (the same pointer → option-token → TextRef). They never alter schema property names, defaults or enum tokens. Declarative control/action/accessibility captions use the same TextRef/MessageRef contract. These presentation maps are excluded from semantic signature projection.
 

@@ -3,7 +3,7 @@
 //! invalidation obligations. Positions are read separately so dragging is immediate.
 use super::card::Card;
 use egui::{Pos2, Rect, Vec2};
-use orange_host::{GraphView, NodeId};
+use orange_host::{GraphView, NodeId, PortDirection};
 use std::collections::HashMap;
 
 pub(super) struct PortGeometry<'a> {
@@ -89,6 +89,22 @@ impl<'a> Geometry<'a> {
         input: bool,
     ) -> Option<&'b PortGeometry<'b>> {
         self.ports.get(&(node, input, port))
+    }
+
+    pub fn diagnostic_port<'b>(
+        &'b self,
+        node: NodeId,
+        port: &'b str,
+        direction: Option<PortDirection>,
+    ) -> Option<&'b PortGeometry<'b>> {
+        match direction {
+            Some(PortDirection::Input) => self.port(node, port, true),
+            Some(PortDirection::Output) => self.port(node, port, false),
+            None => match (self.port(node, port, true), self.port(node, port, false)) {
+                (Some(port), None) | (None, Some(port)) => Some(port),
+                _ => None,
+            },
+        }
     }
 }
 

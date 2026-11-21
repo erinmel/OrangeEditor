@@ -270,22 +270,7 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
         }
     }
     // Conversions are search results too, in a category of their own.
-    let wanted = search.to_lowercase();
-    let converts: Vec<PaletteItem> = host
-        .conversions()
-        .iter()
-        .map(|conversion| conversion_item(conversion, language))
-        .filter(|item| {
-            let terms = format!(
-                "{} {} convert conversion convertir conversión{}",
-                item.label,
-                item.purpose,
-                conversion_words(&item.id)
-            )
-            .to_lowercase();
-            wanted.split_whitespace().all(|word| terms.contains(word))
-        })
-        .collect();
+    let converts = conversion_items(host, search, language, None);
     if !converts.is_empty() {
         groups.push((text_in(language, "conversions", "Conversions"), converts));
     }
@@ -309,6 +294,30 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
         }
     }
     groups
+}
+
+pub(crate) fn conversion_items(
+    host: &Host,
+    search: &str,
+    language: &str,
+    from: Option<&str>,
+) -> Vec<PaletteItem> {
+    let wanted = search.to_lowercase();
+    host.conversions()
+        .iter()
+        .filter(|conversion| from.is_none_or(|ty| conversion.from == ty))
+        .map(|conversion| conversion_item(conversion, language))
+        .filter(|item| {
+            let terms = format!(
+                "{} {} convert conversion convertir conversión {}",
+                item.label,
+                item.purpose,
+                conversion_words(&item.id)
+            )
+            .to_lowercase();
+            wanted.split_whitespace().all(|word| terms.contains(word))
+        })
+        .collect()
 }
 
 pub(crate) fn search_with_presets(
@@ -424,10 +433,37 @@ pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
     }
     let mut label = crate::conversion_name(&conversion.from, &conversion.to);
     if !conversion.options.is_empty() {
-        let choices: Vec<&str> = conversion.options.values().map(String::as_str).collect();
+        let choices: Vec<&str> = conversion
+            .options
+            .values()
+            .map(|value| match value.as_str() {
+                "seconds" => t("conversion-unit-seconds"),
+                "milliseconds" => t("conversion-unit-milliseconds"),
+                "microseconds" => t("conversion-unit-microseconds"),
+                "nanoseconds" => t("conversion-unit-nanoseconds"),
+                "minutes" => t("conversion-unit-minutes"),
+                "hours" => t("conversion-unit-hours"),
+                "truncate" => t("conversion-round-truncate"),
+                "floor" => t("conversion-round-floor"),
+                "ceiling" => t("conversion-round-ceiling"),
+                "nearest-even" => t("conversion-round-nearest"),
+                "reject" => t("conversion-overflow-reject"),
+                other => other,
+            })
+            .collect();
         label.push_str(&format!(" ({})", choices.join(", ")));
     }
     label
+}
+
+pub(crate) fn conversion_detail(conversion: &orange_host::Conversion) -> &'static str {
+    match conversion.id() {
+        "core/f64-to-duration" => t("conversion-duration-round"),
+        "core/timestamp-to-i64" => t("conversion-timestamp-truncate"),
+        _ if conversion.lossy => t("conversion-lossy"),
+        _ if conversion.checked => t("conversion-checked"),
+        _ => t("conversion-exact"),
+    }
 }
 
 pub(crate) fn utf8_label(converter: &str) -> Option<&'static str> {

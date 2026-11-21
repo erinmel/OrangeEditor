@@ -2,7 +2,7 @@
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
-use orange_host::{Connection, NodeView, ReferenceKind};
+use orange_host::{Connection, EventTiming, NodeView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
 const HTTP_METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -32,6 +32,7 @@ pub(crate) fn http_request_variant(node: &NodeView) -> bool {
         node.definition.as_str(),
         "org.orange.net/http-request"
             | "org.orange.net/http-request-bytes"
+            | "org.orange.net/http-request-json"
             | "org.orange.net/http-stream"
     )
 }
@@ -76,6 +77,11 @@ impl TextInput {
         if node.paths.iter().any(|path| path.port == port.id)
             || is_folder_path(node, &port.id)
             || (http_request_variant(node) && port.id == "method")
+            || (port.id == "text"
+                && matches!(
+                    node.definition.as_str(),
+                    "org.orange.color/parse-hex" | "org.orange.time/parse-timestamp"
+                ))
         {
             return None;
         }
@@ -233,6 +239,43 @@ pub(crate) fn input_label(node: &NodeView, port: &str) -> Option<&'static str> {
         .then(|| t("log-level"))
 }
 
+pub(crate) fn input_color(port: &orange_host::PortView) -> [u8; 4] {
+    port.value
+        .as_deref()
+        .or(port.default.as_deref())
+        .and_then(orange_host::parse_rgba_hex)
+        .unwrap_or([0, 0, 0, 255])
+}
+
+pub(crate) fn pick_color(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    color: [u8; 4],
+) -> Option<String> {
+    let picked = orange_ui_controls::color_picker::popup(
+        ui,
+        response,
+        color,
+        true,
+        orange_ui_controls::color_picker::Labels {
+            channels: [
+                t("color-red"),
+                t("color-green"),
+                t("color-blue"),
+                t("color-alpha"),
+            ],
+            hue: t("color-hue"),
+            saturation_value: t("color-saturation-value"),
+            recent: t("color-recent"),
+            value: t("color-value"),
+            invalid_value: t("color-value-invalid"),
+            apply: t("color-apply"),
+            cancel: t("cancel"),
+        },
+    )?;
+    Some(orange_host::rgba_hex(picked))
+}
+
 pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {
     Some(t(match port {
         "method" => "http-method",
@@ -240,6 +283,8 @@ pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {
         "path" => "http-path",
         "content_type" => "http-content-type",
         "headers" => "http-headers",
+        "header_fields" => "http-typed-headers",
+        "query" => "http-query-parameters",
         _ => return None,
     }))
 }
@@ -469,6 +514,20 @@ pub(crate) fn is_folder_path(node: &NodeView, port: &str) -> bool {
         && (matches!(port, "path" | "to") || node.paths.iter().any(|path| path.port == port))
 }
 
+pub(crate) fn connection_named<'a>(
+    node: &NodeView,
+    connections: &'a [Connection],
+) -> Option<&'a Connection> {
+    let id = node
+        .references
+        .iter()
+        .filter(|(_, kind)| *kind == ReferenceKind::Connection)
+        .find_map(|(pointer, _)| node.settings.pointer(pointer)?.as_str())?;
+    connections
+        .iter()
+        .find(|connection| connection.id.as_deref() == Some(id))
+}
+
 impl Editor {
     /// The configured root for a folder-scoped file node's path picker.
     pub fn file_picker_root(&self, node: NodeId) -> Option<Option<String>> {
@@ -558,15 +617,7 @@ impl Editor {
 
     /// The declared connection `node` names, if it names one.
     fn named_connection(&self, node: &NodeView) -> Option<&Connection> {
-        let id = node
-            .references
-            .iter()
-            .filter(|(_, kind)| *kind == ReferenceKind::Connection)
-            .find_map(|(pointer, _)| node.settings.pointer(pointer)?.as_str())?;
-        self.declarations()?
-            .connections
-            .iter()
-            .find(|connection| connection.id.as_deref() == Some(id))
+        connection_named(node, &self.declarations()?.connections)
     }
 
     pub(crate) fn node_config_window(&mut self, ctx: &egui::Context, host: &mut Host) {
@@ -817,6 +868,14 @@ impl Editor {
                 if !http {
                     self.values_section(ui, &node);
                 }
+                if let Some(current) = self
+                    .document
+                    .as_ref()
+                    .and_then(|doc| host.entry_timing(&doc.draft, node.id))
+                    && let Some(timing) = event_timing_fields(ui, node.id, current)
+                {
+                    change = Some(Change::EventTiming(timing));
+                }
                 ui.add_space(10.0);
                 if ui.button(t("delete-node")).clicked() {
                     change = Some(Change::Delete);
@@ -843,6 +902,12 @@ impl Editor {
             }
             Change::Delete => {
                 let _ = self.remove_node(host, node.id);
+            }
+            Change::EventTiming(timing) => {
+                if let Some(draft) = self.editing() {
+                    let result = host.set_entry_timing(draft, node.id, timing);
+                    let _ = self.edited(host, result);
+                }
             }
         }
     }
@@ -977,14 +1042,15 @@ impl Editor {
             let mut said = None;
             row(ui, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
-                    let shown = current.as_str().map_or(t("not-set"), |mode| {
-                        if watch { watch_label(mode) } else { mode }
-                    });
+                    let selected = current.as_str().or_else(|| schema["default"].as_str());
+                    let shown = selected
+                        .map_or(t("not-set"), |choice| setting_choice_caption(node, choice));
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
                         .show_select(ui, Surface::Panel, |ui| {
-                            if !needed
+                            if node.definition != "core/for-each"
+                                && !needed
                                 && ui
                                     .selectable_label(current.is_null(), t("not-set"))
                                     .clicked()
@@ -993,8 +1059,8 @@ impl Editor {
                                 changed = Some(Change::Setting(pointer.clone(), None));
                             }
                             for option in options {
-                                let on = current.as_str() == Some(*option);
-                                let label = if watch { watch_label(option) } else { *option };
+                                let on = selected == Some(*option);
+                                let label = setting_choice_caption(node, option);
                                 if ui.selectable_label(on, label).clicked() && !on {
                                     changed =
                                         Some(Change::Setting(pointer.clone(), Some(json!(option))));
@@ -1171,6 +1237,19 @@ impl Editor {
                     ui.weak(t("from-a-wire"));
                     return;
                 }
+                if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
+                    let color = input_color(port);
+                    ui.horizontal(|ui| {
+                        let (chip, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(17.0), egui::Sense::hover());
+                        orange_ui_controls::color_picker::swatch(ui, chip, color);
+                        let response = ui.button(orange_host::rgba_hex(color));
+                        if let Some(text) = pick_color(ui, &response, color) {
+                            write = Some(Change::Input(port.id.clone(), Some(text)));
+                        }
+                    });
+                    return;
+                }
                 if http_request_variant(node) && port.id == "method" {
                     let shown = port
                         .value
@@ -1332,6 +1411,59 @@ impl Editor {
     }
 }
 
+fn event_timing_fields(
+    ui: &mut egui::Ui,
+    node: NodeId,
+    current: Option<EventTiming>,
+) -> Option<Option<EventTiming>> {
+    use std::num::NonZeroU32;
+    section(ui, t("event-timing"));
+    let mut mode = match current {
+        None => 0,
+        Some(EventTiming::Debounce { .. }) => 1,
+        Some(EventTiming::Throttle { .. }) => 2,
+    };
+    let labels = [
+        t("event-immediate"),
+        t("event-debounce"),
+        t("event-throttle"),
+    ];
+    egui::ComboBox::from_id_salt(("event-timing", node))
+        .selected_text(labels[mode])
+        .show_select(ui, Surface::Panel, |ui| {
+            for (index, label) in labels.into_iter().enumerate() {
+                ui.selectable_value(&mut mode, index, label);
+            }
+        });
+    let mut interval = current.map_or(250, |timing| timing.interval_ms().get());
+    if mode != 0 {
+        ui.horizontal(|ui| {
+            ui.label(t("event-interval"));
+            ui.add(
+                egui::DragValue::new(&mut interval)
+                    .range(1..=u32::MAX)
+                    .suffix(" ms")
+                    .update_while_editing(false),
+            );
+        });
+        ui.add(
+            egui::Label::new(t(if mode == 1 {
+                "event-debounce-help"
+            } else {
+                "event-throttle-help"
+            }))
+            .wrap(),
+        );
+    }
+    let interval_ms = NonZeroU32::new(interval).unwrap_or(NonZeroU32::MIN);
+    let selected = match mode {
+        1 => Some(EventTiming::Debounce { interval_ms }),
+        2 => Some(EventTiming::Throttle { interval_ms }),
+        _ => None,
+    };
+    (current != selected).then_some(selected)
+}
+
 /// What a person asked for in the properties panel.
 enum Change {
     Setting(String, Option<Json>),
@@ -1339,6 +1471,7 @@ enum Change {
     Input(String, Option<String>),
     AddPort(String),
     RemovePort(String),
+    EventTiming(Option<EventTiming>),
     /// Declare a variable and name it at the setting.
     Delete,
 }
@@ -1460,6 +1593,34 @@ pub fn port_label(id: &str) -> String {
             Err(_) => id.to_owned(),
         },
         None => name(id),
+    }
+}
+
+pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
+    match (node.definition.as_str(), choice) {
+        ("core/on-watch", _) => watch_label(choice),
+        ("core/for-each", "list") => t("for-each-list"),
+        ("core/for-each", "map") => t("for-each-map"),
+        ("org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp", "rfc3339") => {
+            t("timestamp-rfc3339")
+        }
+        (
+            "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
+            "unix-seconds",
+        ) => t("timestamp-unix-seconds"),
+        (
+            "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
+            "unix-milliseconds",
+        ) => t("timestamp-unix-milliseconds"),
+        (
+            "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
+            "unix-microseconds",
+        ) => t("timestamp-unix-microseconds"),
+        (
+            "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
+            "unix-nanoseconds",
+        ) => t("timestamp-unix-nanoseconds"),
+        _ => choice,
     }
 }
 

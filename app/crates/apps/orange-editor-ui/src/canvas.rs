@@ -309,8 +309,9 @@ pub struct Marks {
     pub nodes: std::collections::HashMap<NodeId, Mark>,
     /// By the wire's two ends, output first.
     pub wires: std::collections::HashMap<WireEnds, Mark>,
-    /// By node and port name: the port a problem is about is ringed.
-    pub ports: std::collections::HashMap<(NodeId, String), Mark>,
+    /// By node, port name and known direction.
+    pub ports:
+        std::collections::HashMap<(NodeId, String, Option<orange_host::PortDirection>), Mark>,
 }
 
 impl Marks {
@@ -1934,11 +1935,8 @@ impl Canvas {
 
         // Each card owns its marks. A card in front covers the card and its marks.
         let mut port_marks = BTreeMap::<_, Vec<_>>::new();
-        for ((node, port), mark) in &self.marks.ports {
-            let found = geometry
-                .port(*node, port, true)
-                .or_else(|| geometry.port(*node, port, false));
-            if let Some(found) = found {
+        for ((node, port, direction), mark) in &self.marks.ports {
+            if let Some(found) = geometry.diagnostic_port(*node, port, *direction) {
                 port_marks.entry(*node).or_default().push((
                     found.offset,
                     (found.exec, card::stream_type(found.ty)),
@@ -2958,7 +2956,8 @@ fn draw_node<'a>(
             }
             Some(card::Left::Field { editor, named }) => {
                 if let Some(port) = editor.port() {
-                    draw_dot(painter, port, Pos2::new(rect.left(), y), zoom, colors);
+                    let at = Pos2::new(rect.left(), rect.top() + row.input_anchor() * zoom);
+                    draw_dot(painter, port, at, zoom, colors);
                 }
                 if !readable {
                     continue;
@@ -3371,7 +3370,7 @@ mod tests {
         );
         assert_eq!(
             port_offset(third, "b", true),
-            Some(Vec2::new(0.0, layout.rows[2].anchor()))
+            Some(Vec2::new(0.0, layout.rows[2].input_anchor()))
         );
         assert_eq!(
             port_offset(&graph.nodes[1], "then", false),

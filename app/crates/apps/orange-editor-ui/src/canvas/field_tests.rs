@@ -5,6 +5,30 @@ fn id(n: u32) -> NodeId {
     format!("20000000-0000-4000-8000-{n:012x}").parse().unwrap()
 }
 
+#[test]
+fn for_each_shows_its_default_list_mode_and_the_map_choice() {
+    let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    host.add_node(&mut draft, "core/for-each", [0.0, 0.0])
+        .unwrap();
+    let graph = host.draft_view(&draft).unwrap();
+    let node = &graph.nodes[0];
+    let schema = &node.schema.as_ref().unwrap()["properties"]["mode"];
+    assert_eq!(
+        fields::shown(node, card::FieldOf::Setting("mode", schema)).0,
+        t("for-each-list")
+    );
+    assert_eq!(
+        crate::properties::setting_choice_caption(node, "map"),
+        t("for-each-map")
+    );
+    assert!(
+        node.ports
+            .iter()
+            .any(|port| port.id == "element" && !port.input)
+    );
+}
+
 fn port(name: &str, input: bool, exec: bool, ty: &str) -> PortView {
     PortView {
         id: name.into(),
@@ -42,6 +66,37 @@ fn a_file_path_label_identifies_its_folder_connection() {
         crate::properties::folder_path_label(&node, "path".into(), Some("Speakers")),
         "path"
     );
+}
+
+#[test]
+fn diagnostic_marks_use_the_requested_connector_when_port_names_match() {
+    use orange_host::PortDirection::{Input, Output};
+    let mut session = Session::new();
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
+    node.ports.push(port("shared", true, false, "core/i64@1"));
+    node.ports
+        .push(port("shared", false, false, "core/stream@1<core/i64@1>"));
+    let geometry = geometry::Geometry::new(&session.graph);
+    let input = geometry
+        .diagnostic_port(id(1), "shared", Some(Input))
+        .unwrap();
+    let output = geometry
+        .diagnostic_port(id(1), "shared", Some(Output))
+        .unwrap();
+    assert!(geometry.diagnostic_port(id(1), "shared", None).is_none());
+    assert!(input.offset.x < output.offset.x);
+    for zoom in [0.35, 1.0, 2.0] {
+        assert_eq!(
+            input.offset * zoom,
+            geometry.port(id(1), "shared", true).unwrap().offset * zoom
+        );
+        assert_eq!(
+            output.offset * zoom,
+            geometry.port(id(1), "shared", false).unwrap().offset * zoom
+        );
+    }
+    assert!(card::stream_type(output.ty));
+    assert!(!card::stream_type(input.ty));
 }
 
 /// A branch-like node: a way in, two ways out, a true-or-false input, a number and
@@ -321,7 +376,7 @@ fn request_body_is_edited_on_the_card_from_the_complete_stored_text() {
 }
 
 #[test]
-fn dragging_a_text_grip_resizes_the_card_and_preserves_its_input_anchor() {
+fn dragging_a_text_grip_resizes_the_card_and_recenters_its_input_anchor() {
     let mut session = Session::new();
     session.request_inputs = Some(BTreeMap::new());
     let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
@@ -349,7 +404,10 @@ fn dragging_a_text_grip_resizes_the_card_and_preserves_its_input_anchor() {
     let _ = session.frame(vec![event(after, false)]);
     let changed = session.canvas.card(&session.graph.nodes[0]);
     assert!(changed.size.y > height);
-    assert_eq!(changed.offset(&session.graph.nodes[0].ports[0]), dot);
+    assert_eq!(
+        changed.offset(&session.graph.nodes[0].ports[0]),
+        dot.map(|dot| dot + Vec2::new(0.0, (changed.size.y - height) / 2.0))
+    );
 }
 
 #[test]

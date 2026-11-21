@@ -62,6 +62,7 @@ pub fn activation() -> impl Strategy<Value = ActivationPolicy> {
         on_fault: FaultPolicy::StopRun,
         order,
         while_paused: Default::default(),
+        timing: None,
         extensions: Default::default(),
     })
 }

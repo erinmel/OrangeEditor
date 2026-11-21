@@ -33,7 +33,10 @@ impl Host {
         let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
         let (answer, result) = channel();
         let query: Query = Box::new(move |run| {
-            let _ = answer.send(run.set_variable(id, value));
+            let outcome = run.set_variable(id, value);
+            let applied = outcome.is_ok();
+            let _ = answer.send(outcome);
+            applied
         });
         flow.shared
             .queries

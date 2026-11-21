@@ -23,6 +23,7 @@ mod edit;
 mod effects;
 mod flow;
 pub use flow::Events;
+pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
 mod flows;
 mod graphs;
 pub mod i18n;
@@ -51,7 +52,7 @@ use orange_kernel::{
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::ConnectionDecl;
-pub use orange_model::document::{ConnectionScope, VarScope};
+pub use orange_model::document::{ConnectionScope, EventTiming, PortDirection, VarScope};
 use orange_model::replace::{Replaced, Replacements, replace_definitions};
 use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
@@ -829,8 +830,26 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 }
 
 fn wall_ns() -> Option<i64> {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(elapsed.as_nanos()).ok()
+    let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => i128::try_from(elapsed.as_nanos()).ok()?,
+        Err(before) => -i128::try_from(before.duration().as_nanos()).ok()?,
+    };
+    i64::try_from(nanos).ok()
+}
+
+#[derive(Debug)]
+struct UtcTimestamp;
+
+impl orange_sdk::ServiceNode for UtcTimestamp {
+    fn run(&self, _call: &orange_sdk::Call<'_>) -> Result<Vec<Value>, orange_sdk::KernelFault> {
+        wall_ns()
+            .map(|now| vec![Value::Timestamp(now)])
+            .ok_or(orange_sdk::KernelFault {
+                code: "org.orange.clock/OutOfRange".into(),
+                message_key: "core/kernel-out-of-range".into(),
+                message: "The host clock is outside the timestamp range.",
+            })
+    }
 }
 
 impl Host {
@@ -848,9 +867,22 @@ impl Host {
     /// [`Host::packages`] and otherwise left out.
     pub fn with_services(
         options: HostOptions,
-        packages: Vec<ServicePackage>,
+        mut packages: Vec<ServicePackage>,
     ) -> Result<(Self, Events), HostError> {
         let start = |error: &dyn std::fmt::Display| HostError::Start(error.to_string());
+        if options.base_nodes {
+            let definition =
+                orange_sdk::Definition::node("org.orange.clock", "utc-timestamp", "UTC Timestamp")
+                    .category("time", "Time")
+                    .description("Reads the host clock and returns the current UTC timestamp.")
+                    .output("timestamp", "core/timestamp@1")
+                    .build();
+            packages.push(
+                ServicePackage::new("org.orange.clock", env!("CARGO_PKG_VERSION"))
+                    .node(&definition, UtcTimestamp)
+                    .map_err(|error| start(&error))?,
+            );
+        }
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
             .map_err(|e| start(&e))?;
@@ -878,7 +910,8 @@ impl Host {
             active: base_nodes,
             name: Some("Base nodes".to_owned()),
             description: Some(
-                "Arithmetic, comparison, text, collection and JSON operations.".to_owned(),
+                "Arithmetic, comparison, text, collection, JSON, color and time operations."
+                    .to_owned(),
             ),
             update: None,
         }];

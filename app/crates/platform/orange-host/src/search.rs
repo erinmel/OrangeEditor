@@ -417,6 +417,8 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
                     "gate",
                     "flip-flop",
                     "coalesce",
+                    "all-conditions",
+                    "any-conditions",
                     "true-or-false",
                 ]
                 .contains(&slug),
@@ -429,10 +431,12 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
     add("text", namespace == "org.orange.text" || id == "core/text");
     add(
         "time",
-        ["timer", "timeout", "wait", "now", "time", "delay"]
-            .iter()
-            .any(|part| has(part)),
+        namespace == "org.orange.time"
+            || ["timer", "timeout", "wait", "now", "time", "delay"]
+                .iter()
+                .any(|part| has(part)),
     );
+    add("color", namespace == "org.orange.color");
     add(
         "network",
         ["http", "mqtt", "websocket"]

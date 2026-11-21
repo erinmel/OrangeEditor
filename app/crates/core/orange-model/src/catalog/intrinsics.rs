@@ -512,6 +512,17 @@ fn lazy_pure_definitions() -> Vec<NodeDefinition> {
             ],
         )
     };
+    let conditions = |id| {
+        pure(
+            id,
+            vec![
+                PortDescriptor::data_in("condition", boolean())
+                    .lazy()
+                    .variadic(2, Some(64)),
+                PortDescriptor::data_out("result", boolean(), OutputSource::Computed),
+            ],
+        )
+    };
     vec![
         generic(
             pure(
@@ -528,6 +539,8 @@ fn lazy_pure_definitions() -> Vec<NodeDefinition> {
         ),
         logic(ids::AND),
         logic(ids::OR),
+        conditions(ids::ALL_CONDITIONS),
+        conditions(ids::ANY_CONDITIONS),
         generic(
             pure(
                 ids::COALESCE,

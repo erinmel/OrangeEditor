@@ -23,6 +23,16 @@ pub struct Suggestion {
 /// The input of a kind a wire fits, if any: `exec` for a step, else a value of type `ty`.
 fn fitting_input(definition: &NodeDefinition, exec: bool, ty: Option<&str>) -> Option<String> {
     let id = definition.definition.id.as_str();
+    if !exec
+        && ty == Some("core/bool@1")
+        && matches!(
+            id,
+            orange_model::catalog::intrinsic_id::ALL_CONDITIONS
+                | orange_model::catalog::intrinsic_id::ANY_CONDITIONS
+        )
+    {
+        return Some("condition#0".to_owned());
+    }
     match &definition.ports {
         Ports::Declared(ports) => {
             let inputs = ports
@@ -57,7 +67,13 @@ fn fitting_input(definition: &NodeDefinition, exec: bool, ty: Option<&str>) -> O
             && !matches!(access, VariableAccess::Read | VariableAccess::Changed))
         .then(|| "in".to_owned()),
         // A for-each loop takes its list or map on `items` and starts from a step.
-        Ports::ForEach => Some(if exec { "in" } else { "items" }.to_owned()),
+        Ports::ForEach => {
+            if exec {
+                Some("in".to_owned())
+            } else {
+                super::edit::collection_mode(ty?).map(|_| "items".to_owned())
+            }
+        }
         Ports::Event(_) => (exec && definition.kind != NodeKind::Entry).then(|| "in".to_owned()),
         // Triggers take no wire; record and enum nodes are reached through their fields.
         Ports::Manual | Ports::Timer | Ports::Nominal(_) => None,

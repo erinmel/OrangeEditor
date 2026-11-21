@@ -101,10 +101,8 @@ impl LiveSource for AudioSource {
 }
 
 /// A stream processor: its worker's name and how its settings build it.
-struct Processor(
-    &'static str,
-    fn(&Map<String, Json>) -> Result<crate::processors::Make, String>,
-);
+type MakeProcessor = fn(&Map<String, Json>, &Arguments) -> Result<crate::processors::Make, String>;
+struct Processor(&'static str, MakeProcessor);
 impl LiveSource for Processor {
     fn start(
         &self,
@@ -114,7 +112,12 @@ impl LiveSource for Processor {
         publisher: Publisher,
     ) -> Result<Box<dyn Send>, String> {
         let Self(name, make) = self;
-        crate::processors::start(name, input_stream(arguments)?, make(settings)?, publisher)
+        crate::processors::start(
+            name,
+            input_stream(arguments)?,
+            make(settings, arguments)?,
+            publisher,
+        )
     }
 }
 
@@ -531,10 +534,13 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
             &limiter.build(),
             Processor("limiter", crate::processors::limiter),
         )?
-        .live(&gain.build(), Processor("gain", crate::processors::gain))?
+        .live(
+            &gain.build(),
+            Processor("gain", |settings, _| crate::processors::gain(settings)),
+        )?
         .live(
             &filter.build(),
-            Processor("filter", crate::processors::filter),
+            Processor("filter", |settings, _| crate::processors::filter(settings)),
         )?
         .source(&audio_out.build(), LiveAudioOut)?
         .live(&audio_format.build(), AudioFormat)?

@@ -653,7 +653,7 @@ enum Work {
     ZoneBody { node: NodeIx, next: usize },
     ZoneNext(NodeIx),
     Gather { node: NodeIx, next: usize },
-    Choose(NodeIx),
+    Choose { node: NodeIx, input: usize },
     Copy { node: NodeIx, input: usize },
 }
 /// Nominal bytes one activation of `plan` reserves before publishing any value: its
@@ -987,8 +987,8 @@ impl Frame {
         self.outputs.clear();
         publication
     }
-    fn choose(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
-        let value = match self.outcome(node, 0)? {
+    fn choose(&mut self, plan: &DataPlan, node: &DataNode, input: usize) -> Result<(), DataError> {
+        let value = match self.outcome(node, input)? {
             Err(fault) => {
                 if matches!(node.operation(), DataOperation::Try { .. }) {
                     let value = Value::Err(Arc::new(orange_model::value::NodeError {
@@ -1002,6 +1002,17 @@ impl Frame {
             Ok(value) => value,
         };
         let selected = match (node.operation(), value) {
+            (DataOperation::Conditions { stop }, Value::Bool(flag)) => {
+                let next = input + 1;
+                if flag == stop || next == node.inputs().len() {
+                    return self.publish_value(plan, node, Value::Bool(*flag));
+                }
+                self.push(Work::Choose {
+                    node: node.index(),
+                    input: next,
+                })?;
+                return self.pull_input(node, next);
+            }
             (
                 DataOperation::Select {
                     when_true,
@@ -1101,7 +1112,10 @@ impl Frame {
                             return Err(DataError::KernelContract { node: node.node() });
                         }
                         _ => {
-                            self.push(Work::Choose(index))?;
+                            self.push(Work::Choose {
+                                node: index,
+                                input: 0,
+                            })?;
                             self.pull_input(node, 0)?;
                         }
                     }
@@ -1125,7 +1139,9 @@ impl Frame {
                 Work::ZonePrefix { node, next } => self.zone_prefix(plan, node, next)?,
                 Work::ZoneNext(node) => self.zone_next(plan, node)?,
                 Work::ZoneBody { node, next } => self.zone_body(plan, node, next)?,
-                Work::Choose(index) => self.choose(plan, &plan.nodes()[index.index()])?,
+                Work::Choose { node, input } => {
+                    self.choose(plan, &plan.nodes()[node.index()], input)?
+                }
                 Work::Copy { node: index, input } => {
                     let node = &plan.nodes()[index.index()];
                     match self.outcome(node, input)? {

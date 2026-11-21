@@ -164,6 +164,9 @@ impl Host {
         if exec {
             return self.connect(draft, from, to).map(|_| Connected::Wired);
         }
+        if through.is_none() && self.for_each_wire_mode(draft, from, to).is_some() {
+            return self.connect(draft, from, to).map(|_| Connected::Wired);
+        }
         let registry = self.registry_for(draft.document());
         let request = ConnectionRequest {
             from: port_ref(from)?,

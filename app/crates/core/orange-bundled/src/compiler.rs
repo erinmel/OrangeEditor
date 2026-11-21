@@ -69,6 +69,9 @@ impl PureKernelResolver for MathPackage {
                 kernel: Arc::new(Native::Conversion(conversion)),
             });
         }
+        if let Some(binding) = crate::presentation_values::bind(self, request) {
+            return binding;
+        }
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
         // A shared operation (Negate, Absolute, Minimum, Maximum, Clamp) binds decimals
         // to its float kernel below and whole numbers here.

@@ -120,6 +120,8 @@ fn web_adapters_refuse_malformed_endpoints_before_network_io() {
 /// is a result, not a failure: the node fails only when the request cannot be completed
 /// (no connection, a timeout, an unreadable body).
 pub const HTTP_REQUEST: &str = "org.orange.net/http-request";
+/// Sends typed JSON and exposes the response as text and optional typed JSON.
+pub const HTTP_REQUEST_JSON: &str = "org.orange.net/http-request-json";
 
 /// Sends one request with a binary body on an HTTP connection and returns the response
 /// as bytes, whatever it holds: protobuf, an encrypted payload, an image. Inputs
@@ -360,6 +362,9 @@ pub fn package() -> ServicePackage {
         .record("amqp-text-delivery", &amqp::TEXT_FIELDS)
         .record("amqp-binary-delivery", &amqp::BYTES_FIELDS)
         .node(&http::http_request_definition(), http::HttpRequest)
+        .and_then(|package| {
+            package.node(&http::http_request_json_definition(), http::HttpRequestJson)
+        })
         .and_then(|package| {
             package.node(
                 &http::http_request_bytes_definition(),

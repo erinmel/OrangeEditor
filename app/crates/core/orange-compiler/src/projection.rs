@@ -11,6 +11,9 @@ pub(crate) enum Projection {
     Select,
     And,
     Or,
+    Conditions {
+        stop: bool,
+    },
     Coalesce,
     Try,
     /// A value node (11 §8.4): its `value` input is published unchanged on `result`.
@@ -25,6 +28,8 @@ impl Projection {
             ids::SELECT => Self::Select,
             ids::AND => Self::And,
             ids::OR => Self::Or,
+            ids::ALL_CONDITIONS => Self::Conditions { stop: false },
+            ids::ANY_CONDITIONS => Self::Conditions { stop: true },
             ids::COALESCE => Self::Coalesce,
             ids::TRY => Self::Try,
             ids::NUMBER | ids::WHOLE_NUMBER | ids::TEXT | ids::TRUE_OR_FALSE | ids::VALUE => {
@@ -44,6 +49,7 @@ impl Projection {
                 ("result", false),
             ],
             Self::And | Self::Or => &[("a", false), ("b", true), ("result", false)],
+            Self::Conditions { .. } => &[("condition", true), ("result", false)],
             Self::Coalesce => &[("value", false), ("fallback", true), ("result", false)],
             Self::Try => &[("value", true), ("result", false)],
             Self::Value => &[("value", false), ("result", false)],
@@ -70,6 +76,11 @@ impl Projection {
             return Err(bad());
         }
         match kind {
+            Self::Conditions { .. }
+                if sig.ports[0].variadic.is_none() || sig.ports[1].ty != sig.ports[0].ty =>
+            {
+                return Err(bad());
+            }
             Self::Select if sig.ports[1..].iter().any(|p| p.ty != sig.ports[1].ty) => {
                 return Err(bad());
             }

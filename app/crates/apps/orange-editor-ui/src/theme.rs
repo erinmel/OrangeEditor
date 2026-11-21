@@ -1,12 +1,12 @@
 //! Optional desktop styling. Embedding hosts retain control of their own theme.
-use orange_ui_controls::{CONTROL_HEIGHT, CONTROL_RADIUS, SPACE_MEDIUM, SPACE_SMALL};
+use orange_ui_controls::{CONTROL_RADIUS, ControlSize, SPACE_MEDIUM, SPACE_SMALL};
 
 pub fn apply(ctx: &egui::Context) {
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         let mut style = (*ctx.style_of(theme)).clone();
-        style.spacing.button_padding = egui::vec2(SPACE_MEDIUM, SPACE_SMALL);
+        ControlSize::Standard.apply(&mut style.spacing);
         style.spacing.item_spacing = egui::vec2(SPACE_MEDIUM, SPACE_SMALL);
-        style.spacing.interact_size = egui::vec2(32.0, CONTROL_HEIGHT);
+        style.spacing.interact_size.x = orange_ui_controls::icons::WIDTH;
         let rgb = egui::Color32::from_rgb;
         let [
             panel,

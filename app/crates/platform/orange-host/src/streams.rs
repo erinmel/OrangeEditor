@@ -15,16 +15,21 @@ pub(crate) fn ask(shared: &Shared, flow: &Thread, work: impl FnOnce(&mut Run) + 
         .unwrap_or_else(PoisonError::into_inner)
         .as_mut()
     {
-        queries.push_back(Box::new(work));
+        let wake = queries.is_empty();
+        queries.push_back(Box::new(move |run| {
+            work(run);
+            true
+        }));
+        if wake {
+            flow.unpark();
+        }
     }
-    flow.unpark();
 }
 
 /// The producer the run owns for a service node's stream.
 pub(crate) struct Pulled {
-    /// `None` once the stream is closed. A worker holds the lock while it waits for an
-    /// item, so the run's thread never takes it.
-    items: Arc<Mutex<Option<Box<dyn Items>>>>,
+    /// A worker owns a reference throughout a pull, so closing never waits on its lock.
+    items: Arc<Mutex<Box<dyn Items>>>,
     pool: Pool,
     shared: Arc<Shared>,
     flow: Thread,
@@ -37,7 +42,7 @@ impl Pulled {
         flow: Thread,
     ) -> Self {
         Self {
-            items: Arc::new(Mutex::new(Some(items))),
+            items: Arc::new(Mutex::new(items)),
             pool,
             shared,
             flow,
@@ -55,15 +60,11 @@ impl PullStream for Pulled {
             if demand.is_closed() {
                 return;
             }
-            let pulled = items
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .map(|items| items.next());
+            let pulled = items.lock().unwrap_or_else(PoisonError::into_inner).next();
             // A stream closed while this waited has no one to give the item to.
-            let Some(pulled) = pulled else {
+            if demand.is_closed() {
                 return;
-            };
+            }
             let id = demand.id;
             ask(&shared, &flow, move |run| {
                 let _ = match pulled {
@@ -79,16 +80,65 @@ impl PullStream for Pulled {
     }
 
     fn close(self: Box<Self>, _reason: CloseReason) {
-        // The items are dropped on a worker: a producer waiting for its next item
-        // would otherwise hold up the flow's thread.
-        let items = Arc::clone(&self.items);
-        let drop_items = move || {
-            let _ = items.lock().unwrap_or_else(PoisonError::into_inner).take();
-        };
-        // With every worker's queue full, they are dropped here instead.
-        let kept = Arc::clone(&self.items);
-        if self.pool.submit(drop_items).is_err() {
-            let _ = kept.lock().unwrap_or_else(PoisonError::into_inner).take();
-        }
+        // If cleanup cannot be queued, the rejected job releases its reference
+        // here. Any outstanding pull keeps the producer alive until it returns.
+        let items = self.items;
+        let _ = self.pool.submit(move || drop(items));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_runtime::RunState;
+    use std::sync::mpsc::channel;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn a_full_worker_queue_does_not_make_close_wait_for_a_pull() {
+        let pool = Pool::new(1, 1, 1).unwrap();
+        let shared = Arc::new(Shared {
+            state: Mutex::new(RunState::Running),
+            queries: Mutex::new(Some(Default::default())),
+            closing: Default::default(),
+            observed: Default::default(),
+            swap: Mutex::new(None),
+        });
+        let stream = Box::new(Pulled::new(
+            Box::new(std::iter::empty()),
+            pool.clone(),
+            shared,
+            thread::current(),
+        ));
+        let items = Arc::clone(&stream.items);
+        let (started, pulling) = channel();
+        let (release, blocked) = channel::<()>();
+        let (dropped, gone) = channel();
+        pool.submit(move || {
+            {
+                let _pull = items.lock().unwrap();
+                started.send(()).unwrap();
+                let _ = blocked.recv();
+            }
+            assert_eq!(Arc::strong_count(&items), 1);
+            drop(items);
+            dropped.send(()).unwrap();
+        })
+        .unwrap();
+        let timeout = Duration::from_secs(4);
+        pulling.recv_timeout(timeout).unwrap();
+        pool.submit(|| {}).unwrap();
+
+        let (closed, done) = channel();
+        let close = thread::spawn(move || {
+            stream.close(CloseReason::Closed);
+            let _ = closed.send(());
+        });
+        let result = done.recv_timeout(timeout);
+        let _ = release.send(());
+        close.join().unwrap();
+        result.expect("close returns before the in-flight pull");
+        gone.recv_timeout(timeout).unwrap();
     }
 }

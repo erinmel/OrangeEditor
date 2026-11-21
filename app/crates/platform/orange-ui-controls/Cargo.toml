@@ -8,6 +8,9 @@ publish = false
 
 [dependencies]
 egui.workspace = true
+egui-lucide.workspace = true
+egui_extras.workspace = true
+egui_material_icons.workspace = true
 
 [lints]
 workspace = true

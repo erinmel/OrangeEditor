@@ -18,6 +18,44 @@ const I64: &str = "core/i64@1";
 const ACCUMULATE: &str = "org.example.probe/accumulate";
 const TOTAL: u32 = 100;
 
+#[test]
+fn a_running_graph_can_read_the_utc_clock() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let clock = host
+        .add_node(&mut draft, "org.orange.clock/utc-timestamp", [200.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (clock, "in"))
+        .unwrap();
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.observe(flow, true).unwrap();
+    let now = || std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
+    let before = now();
+    host.trigger(flow, trigger, None).unwrap();
+    let mut read = None;
+    until("UTC timestamp output", || {
+        read = events.try_iter().find_map(|event| {
+            if event.flow == flow
+                && let FlowEvent::Ports(values) = event.kind
+            {
+                return values.into_iter().find_map(|(node, port, value)| {
+                    (node == clock && port.to_string() == "timestamp").then_some(value)
+                });
+            }
+            None
+        });
+        read.is_some()
+    });
+    let Some(Value::Timestamp(read)) = read else {
+        panic!("UTC timestamp output has the wrong type")
+    };
+    assert!((before..=now()).contains(&u128::try_from(read).unwrap()));
+    host.close(flow).unwrap();
+}
+
 fn total() -> VariableId {
     id(TOTAL).parse().unwrap()
 }
@@ -719,6 +757,12 @@ fn a_disabled_package_is_listed_and_left_out_from_the_next_start() {
                 enabled,
             ),
             (
+                "org.orange.clock".to_owned(),
+                PackageKind::Native,
+                active,
+                enabled,
+            ),
+            (
                 "org.example.tools".to_owned(),
                 PackageKind::Installed,
                 active,
@@ -775,7 +819,7 @@ fn a_disabled_package_is_listed_and_left_out_from_the_next_start() {
 
     // An application can also leave packages out without a directory.
     let options = HostOptions {
-        disabled_packages: [BASE_PACKAGE.to_owned()].into(),
+        disabled_packages: [BASE_PACKAGE.to_owned(), "org.orange.clock".to_owned()].into(),
         ..HostOptions::default()
     };
     let (host, _events) = Host::new(options).unwrap();

@@ -217,6 +217,17 @@ fn lazy_pure_nodes_decide_eagerly_and_evaluate_alternatives_lazily() {
         assert_eq!(logic.kind, NodeKind::Pure, "{definition}");
         assert_eq!(lazy_inputs(&logic), ["b"], "{definition}");
     }
+    for definition in ["core/all-conditions", "core/any-conditions"] {
+        let logic = resolve(definition, json!({}), json!({}));
+        assert_eq!(logic.kind, NodeKind::Pure);
+        assert_eq!(lazy_inputs(&logic), ["condition"]);
+        let input = &logic.ports[0];
+        let bounds = input.variadic.as_ref().unwrap();
+        assert_eq!((bounds.min, bounds.max), (2, Some(64)));
+        assert!(!input.is_optional());
+        assert_eq!(input.ty.as_ref().unwrap().as_str(), "core/bool@1");
+        assert_eq!(output(&logic, "result").0, "core/bool@1");
+    }
     let coalesce = resolve("core/coalesce", pins, json!({}));
     assert_eq!(lazy_inputs(&coalesce), ["fallback"]);
     assert_eq!(

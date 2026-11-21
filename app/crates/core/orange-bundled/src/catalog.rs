@@ -87,9 +87,10 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
 /// A bundled build identity authenticated by the host. This API validates digest syntax;
 /// it does not hash executable bytes or authenticate the caller's build assertion.
 ///
-/// One native build provides four ordinary packages: `org.orange.math` (numeric and
+/// One native build provides ordinary packages: `org.orange.math` (numeric and
 /// boolean vocabulary), `org.orange.text` (strings), `org.orange.collections`
-/// (lists, maps, options, records, enums) and `org.orange.json` (JSON construction and reads). Each
+/// (lists, maps, options, records, enums), `org.orange.json` (JSON construction and reads),
+/// `org.orange.color` and `org.orange.time`. Each
 /// has its own exact provider key; a graph locks whichever packages its nodes use.
 #[derive(Debug, Clone)]
 pub struct MathPackage {
@@ -97,6 +98,8 @@ pub struct MathPackage {
     text: ProviderKey,
     collections: ProviderKey,
     json: ProviderKey,
+    pub(crate) color: ProviderKey,
+    pub(crate) time: ProviderKey,
 }
 
 impl MathPackage {
@@ -111,7 +114,15 @@ impl MathPackage {
         if !valid {
             return Err(CatalogError::InvalidBuildDigest);
         }
+        let key = |package: &str| ProviderKey {
+            package: package.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            content_digest: content_digest.clone(),
+            id: "native-v1".into(),
+        };
         Ok(Self {
+            color: key("org.orange.color"),
+            time: key("org.orange.time"),
             key: ProviderKey {
                 package: "org.orange.math".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -267,11 +278,14 @@ impl MathPackage {
                 .insert(definition.definition.clone(), vec![TypeArgs::new()]);
             builder = builder.definition(definition);
         }
-        Ok(builder
-            .provider(provider)
-            .provider(text)
-            .provider(collections)
-            .provider(json))
+        crate::presentation_values::register(
+            self,
+            builder
+                .provider(provider)
+                .provider(text)
+                .provider(collections)
+                .provider(json),
+        )
     }
 
     /// Resolves an exact native binding once, before execution. The caller supplies fresh

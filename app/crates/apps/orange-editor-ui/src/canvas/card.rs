@@ -42,7 +42,7 @@ pub(super) enum FieldOf<'a> {
 }
 
 impl<'a> FieldOf<'a> {
-    /// The input this field edits, whose dot sits on the field's name line.
+    /// The input this field edits.
     pub(super) const fn port(&self) -> Option<&'a PortView> {
         match self {
             Self::Input(port) | Self::TextArea(port, ..) | Self::Path(port, _) => Some(port),
@@ -94,12 +94,22 @@ impl Row<'_> {
         self.input().is_some_and(|left| std::ptr::eq(left, port))
     }
 
-    /// The middle of the row's first line, where its dots are.
+    /// The middle of the row's first line, for labels and output ports.
     pub(super) fn anchor(&self) -> f32 {
         match self.left {
             Some(Left::Field { named: true, .. }) => self.top + NAME / 2.0,
             Some(Left::Field { named: false, .. }) => self.top + CONTROL / 2.0,
             _ => self.top + LINE / 2.0,
+        }
+    }
+
+    /// Center an editable input between its label and the bottom of its control.
+    pub(super) fn input_anchor(&self) -> f32 {
+        match self.left {
+            Some(Left::Field { editor, named }) => {
+                self.top + (editor.control_height() + if named { NAME } else { 0.0 }) / 2.0
+            }
+            _ => self.anchor(),
         }
     }
 
@@ -401,7 +411,13 @@ impl<'a> Card<'a> {
             } else {
                 row.right.is_some_and(|right| std::ptr::eq(right, port))
             };
-            here.then(|| Vec2::new(if port.input { 0.0 } else { self.size.x }, row.anchor()))
+            here.then(|| {
+                if port.input {
+                    Vec2::new(0.0, row.input_anchor())
+                } else {
+                    Vec2::new(self.size.x, row.anchor())
+                }
+            })
         })
     }
 
@@ -460,6 +476,18 @@ mod tests {
                 assert_eq!(card.size.y, y + END);
             });
         }
+    }
+
+    #[test]
+    fn editable_input_is_centered_across_label_and_control() {
+        card_of("org.orange.color/color", |node, card| {
+            let input = node.ports.iter().find(|port| port.input).unwrap();
+            let row = card.row_of(input).unwrap();
+            let control = row.control(card.size.x).unwrap();
+            let center = (row.top + control.bottom()) / 2.0;
+            assert_eq!(card.offset(input).unwrap().y, center);
+            assert_ne!(row.anchor(), center);
+        });
     }
 
     /// Fields span the card's inner width; Enter and the first Exit share a row.

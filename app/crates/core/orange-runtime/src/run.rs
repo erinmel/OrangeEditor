@@ -1378,6 +1378,7 @@ impl Run {
             return Err(RunError::ClockWentBackwards);
         }
         self.now = now;
+        self.events.advance_deliveries(now);
         Ok(())
     }
     pub fn trace(&self) -> &VecDeque<RunEvent> {
@@ -1944,6 +1945,7 @@ impl Run {
         if self.events.pending() > 0
             && self.ready.is_empty()
             && self.timers.is_empty()
+            && self.events.next_timed_delivery().is_none()
             && self.event_waiter_count() == 0
             && self.effects.len() == 0
             && self.graph_streams.len() == 0
@@ -1953,11 +1955,14 @@ impl Run {
             return self.fail(RunError::ResourceLimit);
         }
         self.finish_if_idle();
-        let timer = self.timers.next_at();
-        let next_wakeup = match (timer, self.deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let next_wakeup = [
+            self.timers.next_at(),
+            self.deadline,
+            self.events.next_timed_delivery(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         Ok(RunProgress {
             operations: count,
             ready: self.has_runnable(),
@@ -2638,6 +2643,7 @@ impl Run {
                 self.close_host_sources();
                 self.timers.remove_entries();
                 self.events.clear_tick_windows();
+                self.events.discard_delayed_deliveries(self.now);
                 self.deadline = Some(deadline);
                 while let Some(strand) = self.stop_ready.pop_front() {
                     self.ready.push_back(strand.id, strand);

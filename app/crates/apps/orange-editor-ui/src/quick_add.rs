@@ -88,7 +88,7 @@ impl Editor {
             return Vec::new();
         };
         let found = host.search_nodes(search, self.language());
-        match (&quick.from, &self.document) {
+        let mut choices: Vec<_> = match (&quick.from, &self.document) {
             (Some(from), Some(document)) => {
                 let takers = host.takers(&document.draft, (from.0, &from.1));
                 // The search's order, keeping the kinds that take the wire.
@@ -118,7 +118,36 @@ impl Editor {
                     purpose: found.purpose,
                 })
                 .collect(),
+        };
+        if quick.into.is_some() {
+            return choices;
         }
+        let from_type = quick.from.as_ref().and_then(|(id, port)| {
+            let graph = self.graph()?;
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == *id)?
+                .ports
+                .iter()
+                .find(|output| !output.input && output.id == *port)?
+                .ty
+                .as_deref()
+        });
+        if quick.from.is_none() || from_type.is_some() {
+            choices.extend(
+                palette::conversion_items(host, search, self.language(), from_type)
+                    .into_iter()
+                    .map(|item| QuickChoice {
+                        definition: item.id,
+                        label: item.label,
+                        input: from_type.map(|_| "value".to_owned()),
+                        category: t("conversions").to_owned(),
+                        purpose: item.purpose,
+                    }),
+            );
+        }
+        choices
     }
 
     /// Adds the chosen kind where the search was opened and, when a wire was let go,

@@ -574,6 +574,7 @@ fn activation_policies_are_set_cleared_and_undone() {
         on_fault: FaultPolicy::Continue,
         order: 0,
         while_paused: Default::default(),
+        timing: None,
         extensions: Default::default(),
     };
 

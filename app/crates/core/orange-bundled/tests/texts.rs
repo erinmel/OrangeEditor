@@ -89,6 +89,64 @@ fn byte_encodings_round_trip_and_reject_invalid_input() {
 }
 
 #[test]
+fn regex_nodes_match_and_extract_unicode_without_exceeding_input_limits() {
+    assert_eq!(
+        eval(Op::RegexMatch, &[s("total: 42"), s(r"\d+")]),
+        Ok(Value::Bool(true))
+    );
+    assert_eq!(
+        eval(Op::RegexExtract, &[s("✅ café 42"), s(r"\p{L}+")]),
+        Ok(s("café"))
+    );
+    assert_eq!(
+        eval(Op::RegexExtract, &[s("abc"), s(r"\d+")]),
+        Ok(Value::None)
+    );
+    assert_eq!(
+        eval(Op::RegexExtract, &[s("abc"), s("(")]),
+        Err(KernelError::Domain)
+    );
+    assert_eq!(
+        eval(Op::RegexMatch, &[s("abc"), s(&"x".repeat(4097))]),
+        Err(KernelError::LimitExceeded)
+    );
+    assert_eq!(
+        eval(Op::RegexMatch, &[s(&"x".repeat(1_048_577)), s("x")]),
+        Err(KernelError::LimitExceeded)
+    );
+}
+
+#[test]
+fn csv_round_trips_quoted_fields_and_enforces_syntax_and_limits() {
+    let source = "café,\"a,b\",\"line 1\r\nline 2\",\"say \"\"hi\"\"\"\r\n,empty,\r\n\r\n";
+    let rows = eval(Op::ParseCsv, &[s(source)]).unwrap();
+    assert_eq!(
+        rows,
+        Value::List(Arc::new(ListRepr::Values(Box::new([
+            list(&["café", "a,b", "line 1\r\nline 2", "say \"hi\""]),
+            list(&["", "empty", ""]),
+            list(&[""]),
+        ]))))
+    );
+    let encoded = eval(Op::WriteCsv, std::slice::from_ref(&rows)).unwrap();
+    assert_eq!(eval(Op::ParseCsv, &[encoded]), Ok(rows));
+    for bad in ["a\"b", "\"missing", "\"field\"tail", "bare\rreturn"] {
+        assert_eq!(eval(Op::ParseCsv, &[s(bad)]), Err(KernelError::Domain));
+    }
+    assert_eq!(
+        eval(Op::ParseCsv, &[s(&",".repeat(16_384))]),
+        Err(KernelError::LimitExceeded)
+    );
+    let over = "x".repeat(1_048_574);
+    let row = list(&["x", &over]);
+    let table = Value::List(Arc::new(ListRepr::Values(Box::new([row]))));
+    assert_eq!(
+        eval(Op::WriteCsv, &[table]),
+        Err(KernelError::LimitExceeded)
+    );
+}
+
+#[test]
 fn all_sixteen_operations_have_known_answers() {
     for (op, inputs, expected) in [
         (

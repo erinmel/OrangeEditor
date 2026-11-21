@@ -98,12 +98,10 @@ fn pointer_of(name: &str) -> String {
 
 /// A choice as a person reads it: When's modes in words, others as declared.
 fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
-    if node.definition == "core/on-watch" {
-        watch_label(choice)
-    } else if name == "direction" && spectrum::is_noise(node) {
+    if name == "direction" && spectrum::is_noise(node) {
         spectrum::direction(choice)
     } else {
-        choice
+        crate::properties::setting_choice_caption(node, choice)
     }
 }
 
@@ -372,6 +370,7 @@ impl Canvas {
                             id,
                             &preview,
                             dim,
+                            zoom,
                             port.value.as_deref().map(field_text),
                         )
                         .map(|text| FieldEdit::Input(port.id.clone(), text));
@@ -466,6 +465,33 @@ impl Canvas {
             }
             FieldOf::Input(port) => {
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
+                if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
+                    let color = crate::properties::input_color(port);
+                    let response = ui
+                        .interact(slot, id, Sense::click())
+                        .on_hover_text(t("color-picker"));
+                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    let chip = slot.shrink(4.0 * zoom);
+                    let side = chip.height().min(18.0 * zoom);
+                    let chip = Rect::from_center_size(
+                        Pos2::new(chip.left() + side * 0.5, chip.center().y),
+                        Vec2::splat(side),
+                    );
+                    orange_ui_controls::color_picker::swatch(ui, chip, color);
+                    let label = Rect::from_min_max(
+                        Pos2::new(chip.right() + 2.0 * zoom, slot.top()),
+                        slot.max,
+                    );
+                    let _ = field_text_in(
+                        ui.painter(),
+                        label,
+                        zoom,
+                        &orange_host::rgba_hex(color),
+                        colors.text,
+                        None,
+                    );
+                    return crate::properties::pick_color(ui, &response, color).and_then(input);
+                }
                 if http_request_variant(node) && port.id == "method" {
                     let (text, _) = shown(node, field);
                     let mut chosen = None;
@@ -519,8 +545,17 @@ impl Canvas {
                     Kind::Text => {
                         let current = port.value.as_deref().map(field_text);
                         let (text, dim) = shown(node, field);
-                        self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, current)
-                            .and_then(input)
+                        self.text_control(
+                            ui,
+                            (node.id, &port.id),
+                            slot,
+                            id,
+                            &text,
+                            dim,
+                            zoom,
+                            current,
+                        )
+                        .and_then(input)
                     }
                 }
             }
@@ -550,7 +585,7 @@ impl Canvas {
             FieldOf::Path(port, _) => {
                 let current = port.value.as_deref().map(field_text);
                 let (text, dim) = shown(node, field);
-                self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, current)
+                self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, zoom, current)
                     .map(|text| FieldEdit::Input(port.id.clone(), text))
             }
             FieldOf::Setting(name, schema) => {
@@ -604,7 +639,7 @@ impl Canvas {
                         let current = value.as_str().map(str::to_owned);
                         let (text, dim) = shown(node, field);
                         let key = pointer_of(name);
-                        self.text_control(ui, (node.id, &key), slot, id, &text, dim, current)
+                        self.text_control(ui, (node.id, &key), slot, id, &text, dim, zoom, current)
                             .and_then(|text| set(text.into()))
                     }
                 }
@@ -825,6 +860,7 @@ impl Canvas {
         id: egui::Id,
         text: &str,
         dim: bool,
+        zoom: f32,
         current: Option<String>,
     ) -> Option<String> {
         let typing = self
@@ -833,7 +869,6 @@ impl Canvas {
             .filter(|(at, name, _, _)| *at == node && name == key);
         let Some((_, _, typed, focused)) = typing else {
             let colors = Palette::of(ui);
-            let zoom = slot.height() / card::CONTROL;
             let touched = ui.interact(slot, id, Sense::click());
             frame(ui.painter(), slot, zoom, &colors, touched.hovered());
             let cut = field_text_in(
@@ -857,7 +892,7 @@ impl Canvas {
             }
             return None;
         };
-        let edited = typing_field(ui, slot, id, typed, false);
+        let edited = typing_field(ui, slot, id, typed, false, zoom);
         if !*focused {
             edited.request_focus();
             *focused = true;
@@ -887,7 +922,7 @@ impl Canvas {
             .as_mut()
             .filter(|(at, name, _, _)| *at == node && name == key);
         if let Some((_, _, typed, focused)) = typing {
-            let edited = typing_field(ui, slot, id, typed, true);
+            let edited = typing_field(ui, slot, id, typed, true, slot.height() / card::CONTROL);
             if !*focused {
                 edited.request_focus();
                 *focused = true;
@@ -975,8 +1010,8 @@ fn typing_field(
     id: egui::Id,
     typed: &mut String,
     monospace: bool,
+    zoom: f32,
 ) -> egui::Response {
-    let zoom = slot.height() / card::CONTROL;
     ui.scope_builder(UiBuilder::new().max_rect(slot).id_salt(id), |ui| {
         styled(ui, zoom);
         let font = if monospace {

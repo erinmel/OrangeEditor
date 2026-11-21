@@ -65,8 +65,9 @@ guards.
 
 - `orange-measure` reports allocations, peak bytes and per-pump wall time for core
   workloads: `cargo run --release -p orange-measure --locked -- --help`.
-- `cargo test --release -p orange-editor-ui edit_timing -- --ignored --nocapture` times
-  each step of one edit on a 5,000-node graph.
+- Set `ORANGE_EDIT_TIMING_PAIRS=2500` and run
+  `cargo test --release -p orange-editor-ui edit_timing -- --nocapture` to time each
+  step of an edit on a 5,000-node graph. The default test uses 64 pairs.
 - Compare a baseline and a candidate built with the same compiler and lockfile, run
   serially, in at least three paired processes with the order reversed.
 

@@ -329,6 +329,20 @@ impl RegistryBuilder {
         self
     }
 
+    /// Publishes one package record while keeping the current types and converters.
+    pub fn record_type(
+        mut self,
+        package: &str,
+        ty: &crate::id::TypeExpr,
+        schema: crate::value::literal_codec::RecordSchema,
+    ) -> Result<Self, crate::types::TypeRegistrationError> {
+        let mut types = self.types.extended();
+        types.ensure_record(package, ty, schema)?;
+        self.types = Arc::new(types.build()?);
+        self.converters = self.converters.over(Arc::clone(&self.types));
+        Ok(self)
+    }
+
     /// Replaces the converters and adopts the type registry they are bound to.
     pub fn converters(mut self, converters: Arc<ConverterRegistry>) -> Self {
         self.types = Arc::clone(converters.type_registry());

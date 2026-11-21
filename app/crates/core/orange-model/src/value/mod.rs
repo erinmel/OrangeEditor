@@ -341,6 +341,50 @@ pub struct RecordRepr {
     pub fields: Box<[Option<Value>]>,
 }
 
+/// The bundled straight-alpha sRGB record used by color nodes and editors.
+pub const RGBA_TYPE: &str = "org.orange.color/rgba@1";
+
+/// Decodes RGB or RGBA hexadecimal text, with an optional leading hash.
+pub fn parse_rgba_hex(text: &str) -> Option<[u8; 4]> {
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|n| n.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut channels = [255; 4];
+    for (index, channel) in channels.iter_mut().take(hex.len() / 2).enumerate() {
+        *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(channels)
+}
+
+/// The canonical hexadecimal representation, including alpha.
+pub fn rgba_hex([r, g, b, a]: [u8; 4]) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+}
+
+impl RecordRepr {
+    pub fn rgba_channels(&self) -> Option<[u8; 4]> {
+        if self.ty.as_str() != RGBA_TYPE {
+            return None;
+        }
+        let [
+            Some(Value::U32(r)),
+            Some(Value::U32(g)),
+            Some(Value::U32(b)),
+            Some(Value::U32(a)),
+        ] = self.fields.as_ref()
+        else {
+            return None;
+        };
+        Some([
+            u8::try_from(*r).ok()?,
+            u8::try_from(*g).ok()?,
+            u8::try_from(*b).ok()?,
+            u8::try_from(*a).ok()?,
+        ])
+    }
+}
+
 /// Valid JSON text kept verbatim, so exact number text and JSON null survive (03). The
 /// structured tree for JSON nodes arrives with them (05d).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -9,6 +9,89 @@ fn event_id() -> EventDeclId {
     EVENT.parse().unwrap()
 }
 
+fn timed_handler(mode: &str) -> Run {
+    let mut entry = on_event(1, 0, 2, "fault");
+    entry["activation"]["timing"] = json!({"mode": mode, "interval_ms": 10});
+    let (doc, plan) = compile_with_event(
+        vec![entry, variable_node(2, "set-variable", 100)],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "payload", 2, "value"),
+        ],
+        vec![variable(100, "run", None)],
+        json!({"id": EVENT, "name": "pulse", "payload": "core/u64@1", "scope": "run"}),
+    )
+    .unwrap();
+    run(&doc, plan)
+}
+
+#[test]
+fn debounce_restarts_one_deadline_with_the_newest_payload_and_freezes_on_pause() {
+    let mut run = timed_handler("debounce");
+    let source = run.register_event_source(event_id()).unwrap();
+    let target = id(100).parse().unwrap();
+    run.ingest_event(&source, 1, &Value::U64(10), None).unwrap();
+    let first = run.pump(100).unwrap();
+    assert!(!first.ready);
+    assert_eq!(first.next_wakeup, Some(10_000_000));
+    run.advance_to(5_000_000).unwrap();
+    run.pause().unwrap();
+    run.ingest_event(&source, 2, &Value::U64(20), None).unwrap();
+    assert_eq!(run.pump(100).unwrap().next_wakeup, None);
+    assert_eq!(
+        run.advance_to(30_000_000),
+        Err(orange_runtime::RunError::Paused)
+    );
+    run.resume().unwrap();
+    run.advance_to(14_999_999).unwrap();
+    assert_eq!(run.pump(100).unwrap().next_wakeup, Some(15_000_000));
+    assert_eq!(run.variable(target), None);
+    assert_eq!(run.event_stats().pending, 1);
+    run.advance_to(15_000_000).unwrap();
+    assert_eq!(run.pump(100).unwrap().next_wakeup, None);
+    assert_eq!(run.variable(target), Some(&Value::U64(20)));
+    assert_eq!(run.event_stats().dropped, 1);
+    assert_eq!(run.event_stats().overflows, 0);
+}
+
+#[test]
+fn throttle_uses_the_leading_payload_and_reopens_at_the_interval_boundary() {
+    let mut run = timed_handler("throttle");
+    let source = run.register_event_source(event_id()).unwrap();
+    let target = id(100).parse().unwrap();
+    run.ingest_event(&source, 1, &Value::U64(1), None).unwrap();
+    run.advance_to(9_999_999).unwrap();
+    run.ingest_event(&source, 2, &Value::U64(2), None).unwrap();
+    assert_eq!(run.pump(100).unwrap().next_wakeup, None);
+    assert_eq!(run.variable(target), Some(&Value::U64(1)));
+    run.advance_to(10_000_000).unwrap();
+    run.ingest_event(&source, 3, &Value::U64(3), None).unwrap();
+    run.pump(100).unwrap();
+    assert_eq!(run.variable(target), Some(&Value::U64(3)));
+    assert_eq!(run.event_stats().dropped, 1);
+    assert_eq!(run.event_stats().overflows, 0);
+}
+
+#[test]
+fn stopping_clears_deferred_debounce_payloads_and_deadlines() {
+    for mode in [
+        orange_runtime::StopMode::Immediate,
+        orange_runtime::StopMode::Graceful,
+    ] {
+        let mut run = timed_handler("debounce");
+        let source = run.register_event_source(event_id()).unwrap();
+        run.ingest_event(&source, 1, &Value::U64(1), None).unwrap();
+        assert_eq!(run.pump(100).unwrap().next_wakeup, Some(10_000_000));
+        run.request_stop(mode).unwrap();
+        if run.state() != RunState::Stopped {
+            assert_eq!(run.pump(100).unwrap().next_wakeup, None);
+        }
+        assert_eq!(run.state(), RunState::Stopped);
+        assert_eq!(run.variable(id(100).parse().unwrap()), None);
+        assert_eq!(run.event_stats().pending, 0);
+    }
+}
+
 fn await_event(n: u32, event: &str, timeout: Option<i64>) -> Json {
     let mut node = core(n, "await-event");
     node["config"] = json!({"event": event});

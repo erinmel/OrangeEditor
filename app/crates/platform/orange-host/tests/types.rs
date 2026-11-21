@@ -293,22 +293,20 @@ fn an_installed_package_brings_its_types_and_a_refused_one_leaves_none() {
 }
 
 #[test]
-fn record_and_enum_nodes_start_with_a_registered_type_or_say_none_is_declared() {
+fn record_and_enum_nodes_start_with_a_registered_type() {
     let blank = json!({"format": "orange.graph", "format_version": 1,
         "graph_id": "20000000-0000-4000-8000-0000000000a8", "revision": 1,
         "package_lock": [], "type_lock": [], "events": [], "connections": [],
         "signatures": {}, "functions": [], "exports": [], "editor": {},
         "variables": [], "nodes": [], "edges": []})
     .to_string();
-    // Without a package that declares one, there is no type to name.
+    // The native Color record is available before any additional package is loaded.
     let (bare, _events) = Host::new(HostOptions::default()).unwrap();
     let mut draft = bare.draft(&blank).unwrap();
-    let refused = bare.add_node(&mut draft, "org.orange.collections/make-record", [0.0, 0.0]);
-    assert!(
-        matches!(&refused, Err(HostError::Document(why)) if why.contains("declare one in the Types tab")),
-        "{refused:?}"
-    );
-    assert!(!draft.can_undo().0);
+    bare.add_node(&mut draft, "org.orange.collections/make-record", [0.0, 0.0])
+        .unwrap();
+    let view = bare.draft_view(&draft).unwrap();
+    assert_eq!(view.nodes[0].settings["type"], orange_host::RGBA_TYPE);
 
     let (host, _events) = Host::with_services(HostOptions::default(), vec![package()]).unwrap();
     let mut draft = host.draft(&blank).unwrap();
@@ -330,7 +328,10 @@ fn record_and_enum_nodes_start_with_a_registered_type_or_say_none_is_declared() 
     assert_eq!(node(payload).settings["variant"], "at");
     // The settings offer the registered types and the members of the chosen one.
     let schema = node(get).schema.clone().unwrap();
-    assert_eq!(schema["properties"]["type"]["enum"], json!([POINT]));
+    assert_eq!(
+        schema["properties"]["type"]["enum"],
+        json!([POINT, orange_host::RGBA_TYPE])
+    );
     assert_eq!(schema["properties"]["field"]["enum"], json!(["x", "y"]));
     assert!(node(get).ports.iter().any(|port| !port.input && !port.exec));
 }

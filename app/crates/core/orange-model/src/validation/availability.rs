@@ -613,7 +613,8 @@ fn check_body(
                         Some(*consumer),
                         Some(direct.to.port.clone()),
                         Some(direct.id),
-                    );
+                    )
+                    .with_port_direction(crate::document::PortDirection::Input);
                     let subject = match context.function {
                         Some(function) => subject.with_function(function),
                         None => subject,

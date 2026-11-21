@@ -26,7 +26,7 @@ pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, T
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::id::PortKey;
 pub use orange_model::replace::Replacement;
-pub use orange_model::value::{JsonText, ListRepr, RecordRepr};
+pub use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
 pub use orange_runtime::EffectLease;
 use serde_json::{Map, Value as Json};
 use std::any::Any;
