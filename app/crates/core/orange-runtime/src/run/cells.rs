@@ -401,19 +401,7 @@ impl Cells<'_> {
                         };
                         Some(match cell {
                             Some(value) => FoldedValue::Value(value.clone()),
-                            None => FoldedValue::Fault(ConstantFault {
-                                source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
-                                    .node(),
-                                fault: KernelFault {
-                                    code: orange_compiler::FaultText::Static(
-                                        "core/UninitializedVariable",
-                                    ),
-                                    message_key: orange_compiler::FaultText::Static(
-                                        "core/uninitialized-variable",
-                                    ),
-                                    message: "The variable has not been initialized.",
-                                },
-                            }),
+                            None => FunctionFrame::uninitialized(plan, i),
                         })
                     }
                     HostSource::Live(live) => Some(match &self.lives[*live] {

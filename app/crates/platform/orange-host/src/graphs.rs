@@ -201,12 +201,16 @@ fn function_for(graph: &GraphNode, connection: Option<&str>) -> Json {
             node["config"]["connection"] = json!(actual);
         }
     }
+    rename_edges(&mut function, rename);
+    function
+}
+
+pub(crate) fn rename_edges(function: &mut Json, rename: impl Fn(&mut Json)) {
     for edge in function["edges"].as_array_mut().into_iter().flatten() {
         rename(&mut edge["id"]);
         rename(&mut edge["from"]["node"]);
         rename(&mut edge["to"]["node"]);
     }
-    function
 }
 
 /// Turns the node into a call of `function`. Its ID, literals, type arguments and

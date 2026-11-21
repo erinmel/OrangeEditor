@@ -438,7 +438,7 @@ fn deliver(inbox: &RunInbox, input: HostInput, flow: &Thread) {
     flow.unpark();
 }
 
-fn start_sources(cx: &mut Context, thread: &thread::Thread) {
+fn start_sources(cx: &mut Context, thread: &Thread) {
     for (node, reason) in cx.armed.start(&cx.inbox, thread, (&cx.sink, cx.id)) {
         cx.sink
             .send(cx.id, FlowEvent::SourceRefused { node, reason });

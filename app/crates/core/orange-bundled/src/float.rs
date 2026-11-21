@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use orange_model::Value;
-use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot, TypeArgs};
+use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
 use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
@@ -410,14 +410,7 @@ impl MathPackage {
         {
             return Err(BindingError::Unavailable);
         }
-        let args = TypeArgs::from([("T".into(), ty.clone())]);
-        if snapshot
-            .provider(provider)
-            .and_then(|p| p.specializations.get(definition))
-            .is_none_or(|list| !list.contains(&args))
-        {
-            return Err(BindingError::UnsupportedType);
-        }
+        crate::catalog::require_specialization(&snapshot, provider, definition, ty)?;
         let scalar = match ty.as_str() {
             "core/f32@1" => Scalar::F32,
             "core/f64@1" => Scalar::F64,

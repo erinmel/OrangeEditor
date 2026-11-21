@@ -140,6 +140,13 @@ fn pump_percentile(sorted: &[Duration], percent: usize) -> Duration {
     }
 }
 
+/// Nearest-rank percentile without requiring the caller to sort its samples.
+pub(crate) fn sample_percentile(values: &[Duration], percent: usize) -> Duration {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    percentile(&sorted, percent)
+}
+
 /// Nearest-rank percentile of a sorted, non-empty sample.
 fn percentile(sorted: &[Duration], percent: usize) -> Duration {
     let rank = (sorted.len() * percent).div_ceil(100).max(1);

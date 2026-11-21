@@ -9,15 +9,13 @@ use orange_runtime::{ControlOutcome, Run, RunOptions};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn core(n: u32, name: &str) -> Value {
-    json!({"id":id(n),"definition_id":format!("core/{name}"),"definition_version":1,"config_version":1,"config":{}})
-}
+mod support;
+use support::{core, id};
+
 fn edge(n: u32, from: u32, port: &str, to: u32) -> Value {
-    json!({"id":format!("30000000-0000-4000-8000-{n:012x}"),"from":{"node":id(from),"port":port},"to":{"node":id(to),"port":"in"}})
+    support::edge(n, from, port, to, "in")
 }
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Illustrative host identity; no package executable is needed by these graphs.
     let digest = format!("sha256:{}", "e".repeat(64));

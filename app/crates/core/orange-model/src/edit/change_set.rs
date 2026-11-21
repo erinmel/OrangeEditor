@@ -11,6 +11,24 @@ use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 
 pub use crate::id::DeclId;
 
+// An entry touched in place, or added and removed again, needs a full check.
+fn removed_entries<K: Copy + Ord, V: Clone>(
+    entries: &BTreeMap<K, Option<V>>,
+    exists: impl Fn(K) -> bool,
+) -> Option<BTreeMap<K, V>> {
+    let mut removed = BTreeMap::new();
+    for (&id, before) in entries {
+        match (before, exists(id)) {
+            (None, true) => {}
+            (Some(before), false) => {
+                removed.insert(id, before.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(removed)
+}
+
 /// Net effect on one ID space. An ID added and removed in the same transaction is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delta<K: Ord> {
@@ -319,30 +337,9 @@ impl Tracker {
         if !self.semantic || self.global_dirty || nodes.is_empty() && edges.is_empty() {
             return None;
         }
-        let mut removed_nodes = BTreeMap::new();
-        for (id, before) in nodes {
-            match (before, document.locate_node(*id)) {
-                (None, Some(_)) => {}
-                (Some(before), None) => {
-                    removed_nodes.insert(*id, before.clone());
-                }
-                // Replaced in place, or added and removed again.
-                _ => return None,
-            }
-        }
-        let mut removed_edges = BTreeMap::new();
-        for (id, before) in edges {
-            match (before, document.locate_edge(*id)) {
-                (None, Some(_)) => {}
-                (Some(before), None) => {
-                    removed_edges.insert(*id, before.clone());
-                }
-                _ => return None,
-            }
-        }
         Some(StructureEdit {
-            removed_nodes,
-            removed_edges,
+            removed_nodes: removed_entries(nodes, |id| document.locate_node(id).is_some())?,
+            removed_edges: removed_entries(edges, |id| document.locate_edge(id).is_some())?,
         })
     }
 

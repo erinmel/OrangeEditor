@@ -952,6 +952,17 @@ impl Host {
     }
 }
 
+fn disconnect_commands(draft: &Draft, from: &PortRef, to: &PortRef) -> Vec<DocCommand> {
+    draft
+        .document()
+        .root()
+        .edges
+        .values()
+        .filter(|edge| &edge.from == from && &edge.to == to)
+        .map(|edge| DocCommand::Disconnect { edge: edge.id })
+        .collect()
+}
+
 impl Host {
     /// Removes the one wire from `from` to `to`. Returns whether there was one.
     pub fn disconnect_wire(
@@ -961,14 +972,7 @@ impl Host {
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
         let (from, to) = (port_ref(from)?, port_ref(to)?);
-        let edges: Vec<DocCommand> = draft
-            .document()
-            .root()
-            .edges
-            .values()
-            .filter(|edge| edge.from == from && edge.to == to)
-            .map(|edge| DocCommand::Disconnect { edge: edge.id })
-            .collect();
+        let edges: Vec<DocCommand> = disconnect_commands(draft, &from, &to);
         draft.commit(&self.registry_for(draft.document()), edges)
     }
 
@@ -1075,14 +1079,7 @@ impl Host {
             .find(|port| !port.input && fits(port, &target))
             .ok_or_else(|| refused(&"the node has no output to go on with"))?;
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
-        let mut commands: Vec<DocCommand> = draft
-            .document()
-            .root()
-            .edges
-            .values()
-            .filter(|edge| edge.from == from_ref && edge.to == to_ref)
-            .map(|edge| DocCommand::Disconnect { edge: edge.id })
-            .collect();
+        let mut commands: Vec<DocCommand> = disconnect_commands(draft, &from_ref, &to_ref);
         if commands.is_empty() {
             return Err(refused(&"there is no such wire"));
         }

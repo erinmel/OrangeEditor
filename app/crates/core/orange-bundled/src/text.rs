@@ -206,11 +206,7 @@ pub fn text_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     TextOperation::ALL
         .into_iter()
         .map(|operation| {
-            let mut ports = operation
-                .inputs()
-                .iter()
-                .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
-                .collect::<Result<Vec<_>, CatalogError>>()?;
+            let mut ports = crate::catalog::input_ports(operation.inputs())?;
             ports.push(PortDescriptor::data_out(
                 operation.output_port(),
                 operation.output_type().parse::<TypeExpr>()?,

@@ -66,7 +66,12 @@ impl<'de> Deserialize<'de> for HostOrigin {
 
 /// Checks the canonical SHA-256 form used in catalogue and package identities.
 pub fn is_sha256(value: &str) -> bool {
-    value.strip_prefix("sha256:").is_some_and(|hex| {
+    has_hex_digest(value, "sha256:")
+}
+
+/// Checks a prefixed 32-byte digest encoded as lowercase hexadecimal.
+pub fn has_hex_digest(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|hex| {
         hex.len() == 64
             && hex
                 .bytes()

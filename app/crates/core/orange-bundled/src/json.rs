@@ -150,11 +150,7 @@ pub fn json_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     JsonOperation::ALL
         .into_iter()
         .map(|operation| {
-            let mut ports = operation
-                .inputs()
-                .iter()
-                .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
-                .collect::<Result<Vec<_>, CatalogError>>()?;
+            let mut ports = crate::catalog::input_ports(operation.inputs())?;
             ports.push(PortDescriptor::data_out(
                 "result",
                 operation.output_type().parse::<TypeExpr>()?,

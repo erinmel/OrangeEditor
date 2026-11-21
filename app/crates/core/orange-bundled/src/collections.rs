@@ -209,11 +209,7 @@ pub fn collection_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     CollectionOperation::ALL
         .into_iter()
         .map(|operation| {
-            let mut ports = operation
-                .inputs()
-                .iter()
-                .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
-                .collect::<Result<Vec<_>, CatalogError>>()?;
+            let mut ports = crate::catalog::input_ports(operation.inputs())?;
             if operation == CollectionOperation::BuildList {
                 ports[0] = ports[0].clone().variadic(0, Some(MAX_BUILD_LIST_ITEMS));
             }

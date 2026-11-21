@@ -127,12 +127,7 @@ pub(crate) struct WireUpdate {
 
 /// `ed25519:` and 64 lowercase hexadecimal digits.
 pub(crate) fn is_signing_key(value: &str) -> bool {
-    value.strip_prefix("ed25519:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    orange_model::origin::has_hex_digest(value, "ed25519:")
 }
 
 fn refused(field: &'static str) -> ManifestError {

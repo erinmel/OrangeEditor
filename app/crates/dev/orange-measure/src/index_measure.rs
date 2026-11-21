@@ -202,12 +202,6 @@ fn samples(config: Config, mut fixture: Fixture, edit_case: EditCase) -> Vec<Dur
     times
 }
 
-fn percentile(values: &[Duration], percent: usize) -> Duration {
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    sorted[(sorted.len() * percent).div_ceil(100).saturating_sub(1)]
-}
-
 fn report(name: &str, fixture: Fixture, config: Config, edit_case: EditCase) {
     let memory = index_memory(&fixture.document);
     let times = samples(config, fixture, edit_case);
@@ -217,8 +211,8 @@ fn report(name: &str, fixture: Fixture, config: Config, edit_case: EditCase) {
     println!(
         "index {name}: samples={} p50={:.3}us p95={:.3}us min={:.3}us max={:.3}us; retained={}B peak={}B drop_released={}B DocIndex_inline={}B",
         times.len(),
-        us(percentile(&times, 50)),
-        us(percentile(&times, 95)),
+        us(crate::harness::sample_percentile(&times, 50)),
+        us(crate::harness::sample_percentile(&times, 95)),
         us(min),
         us(max),
         memory.retained,

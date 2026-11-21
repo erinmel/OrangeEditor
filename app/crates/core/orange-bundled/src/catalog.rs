@@ -10,10 +10,36 @@ use orange_model::catalog::{
 use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
+use orange_model::id::TypeExpr;
 use serde_json::json;
 
 use crate::kernel::{FloatPolicy, Overflow, Scalar};
 use crate::{BindingError, CatalogError, Operation, ResolvedKernel};
+
+pub(crate) fn input_ports(inputs: &[(&str, &str)]) -> Result<Vec<PortDescriptor>, CatalogError> {
+    inputs
+        .iter()
+        .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
+        .collect()
+}
+
+pub(crate) fn require_specialization(
+    snapshot: &RegistrySnapshot,
+    provider: &ProviderKey,
+    definition: &DefinitionRef,
+    ty: &TypeExpr,
+) -> Result<(), BindingError> {
+    let args = TypeArgs::from([("T".into(), ty.clone())]);
+    if snapshot
+        .provider(provider)
+        .and_then(|p| p.specializations.get(definition))
+        .is_some_and(|list| list.contains(&args))
+    {
+        Ok(())
+    } else {
+        Err(BindingError::UnsupportedType)
+    }
+}
 
 const NUMERIC_TYPES: [&str; 6] = [
     "core/i32@1",

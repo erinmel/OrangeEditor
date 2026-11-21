@@ -476,11 +476,7 @@ fn namespace_function(function: &mut Json, variables: &mut [Json], namespace: &s
             rename(variable);
         }
     }
-    for edge in function["edges"].as_array_mut().into_iter().flatten() {
-        rename(&mut edge["id"]);
-        rename(&mut edge["from"]["node"]);
-        rename(&mut edge["to"]["node"]);
-    }
+    graphs::rename_edges(function, rename);
     for variable in variables {
         rename(&mut variable["id"]);
     }

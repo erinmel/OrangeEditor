@@ -6,19 +6,13 @@ use orange_model::catalog::{Ports, RegistryBuilder};
 use orange_model::validation::HostOrigin;
 use orange_model::{analyze, from_json};
 use orange_runtime::{Run, RunOptions, RunState, StopMode};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn core(n: u32, name: &str) -> Value {
-    json!({"id":id(n),"definition_id":format!("core/{name}"),"definition_version":1,"config_version":1,"config":{}})
-}
-fn edge(n: u32, from: u32, output: &str, to: u32, input: &str) -> Value {
-    json!({"id":format!("30000000-0000-4000-8000-{n:012x}"),"from":{"node":id(from),"port":output},"to":{"node":id(to),"port":input}})
-}
+mod support;
+use support::{core, edge, id};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Illustrative build identity. A production host authenticates actual provider bytes.
     let digest = format!("sha256:{}", "e".repeat(64));

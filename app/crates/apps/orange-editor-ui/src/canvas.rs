@@ -3250,7 +3250,7 @@ mod tests {
         );
         let id = node.id;
         let graph = GraphView {
-            nodes: vec![std::sync::Arc::new(node)],
+            nodes: vec![Arc::new(node)],
             ..GraphView::default()
         };
         let geometry = Geometry::new(&graph);
