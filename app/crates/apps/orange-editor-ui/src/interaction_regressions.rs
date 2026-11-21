@@ -192,19 +192,9 @@ fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
             .all(|text| text.galley.text() != t("grid-spacing"))
     );
     let click_at = |editor: &mut Editor, host: &mut Host, pos| {
-        frame(editor, host, vec![egui::Event::PointerMoved(pos)]);
-        for pressed in [true, false] {
-            frame(
-                editor,
-                host,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-            );
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(editor, host, events);
+        });
     };
     let click = |editor: &mut Editor, host: &mut Host, label: &str| {
         let position = at(&frame(editor, host, vec![]), label);
@@ -270,10 +260,7 @@ fn toolbar_hover_fills_the_button_around_its_centered_icon() {
                 center.distance(rect.center()) < 0.01,
                 "{icon} {center:?} vs {rect:?}"
             );
-            let fill = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
-                _ => None,
-            });
+            let fill = orange_testkit::ui::rect_fill(&output.shapes, rect);
             let stop_red = egui::Color32::from_rgb(180, 40, 57);
             let expected = match (index, hovered == Some(index)) {
                 (2, true) => stop_red.gamma_multiply(1.18),

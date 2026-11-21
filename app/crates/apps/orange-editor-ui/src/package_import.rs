@@ -204,16 +204,9 @@ mod tests {
             output.drop_without_applying_deltas();
         }
         let pos = install.expect("install button");
-        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(vec![egui::Event::PointerButton {
-                pos,
-                pressed,
-                button: egui::PointerButton::Primary,
-                modifiers: egui::Modifiers::NONE,
-            }])
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
         assert!(editor.pending_package.is_none());
         assert!(
             host.search_nodes("remember", "en")
@@ -253,16 +246,9 @@ mod tests {
             output.drop_without_applying_deltas();
         }
         let pos = button.expect("remove package button");
-        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(vec![egui::Event::PointerButton {
-                pos,
-                pressed,
-                button: egui::PointerButton::Primary,
-                modifiers: egui::Modifiers::NONE,
-            }])
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
         assert!(editor.pending_package_removal.is_none());
         assert!(
             host.packages()

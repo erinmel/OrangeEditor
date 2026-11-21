@@ -3319,6 +3319,7 @@ dependencies = [
  "orange-host",
  "orange-net",
  "orange-sdk",
+ "orange-testkit",
  "orange-vault",
  "rfd",
  "serde_json",
@@ -3333,6 +3334,7 @@ dependencies = [
  "orange-audio",
  "orange-host",
  "orange-net",
+ "orange-testkit",
  "orange-ui-controls",
  "serde_json",
 ]
@@ -3496,6 +3498,7 @@ dependencies = [
 name = "orange-testkit"
 version = "0.0.0"
 dependencies = [
+ "egui",
  "orange-model",
  "serde_json",
 ]
@@ -3508,6 +3511,7 @@ dependencies = [
  "egui-lucide",
  "egui_extras",
  "egui_material_icons",
+ "orange-testkit",
 ]
 
 [[package]]

@@ -201,12 +201,10 @@ impl Editor {
                         t("add-a-node")
                     });
                     // The arrows move the choice, not the caret.
-                    let (up, down) = ui.input_mut(|input| {
-                        (
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                        )
-                    });
+                    let [up, down] = crate::controls::consume_plain_keys(
+                        ui,
+                        [egui::Key::ArrowUp, egui::Key::ArrowDown],
+                    );
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut search)
                             .hint_text(if wired {

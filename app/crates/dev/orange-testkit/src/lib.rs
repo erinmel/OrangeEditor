@@ -6,6 +6,9 @@
 //! panic on failure, as test code does.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::missing_panics_doc)]
 
+#[cfg(feature = "ui")]
+pub mod ui;
+
 use orange_model::id::{NodeId, VariableId};
 use serde_json::{Value as Json, json};
 use std::time::{Duration, Instant};

@@ -560,29 +560,12 @@ mod tests {
             modifiers,
         };
         let button_center = |output: &egui::FullOutput, label: &str| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == label => {
-                        Some(text.pos + text.galley.mesh_bounds.center().to_vec2())
-                    }
-                    _ => None,
-                })
-                .expect(label)
+            orange_testkit::ui::text_center(&output.shapes, label).expect(label)
         };
         frame(vec![], None).0.drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(
-                vec![
-                    egui::Event::PointerMoved(at),
-                    pointer(at, egui::PointerButton::Secondary, pressed),
-                ],
-                None,
-            )
-            .0
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(at, egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
         frame(vec![], None).0.drop_without_applying_deltas();
         frame(
             vec![
@@ -599,17 +582,9 @@ mod tests {
         assert_eq!(changed, Some(GroupEdit::Change(group.clone())));
 
         frame(vec![], Some(&group)).0.drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(
-                vec![
-                    egui::Event::PointerMoved(at),
-                    pointer(at, egui::PointerButton::Secondary, pressed),
-                ],
-                None,
-            )
-            .0
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(at, egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
         let (output, _) = frame(vec![], None);
         let custom = button_center(&output, t("group-custom-color"));
         output.drop_without_applying_deltas();

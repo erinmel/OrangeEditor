@@ -14,3 +14,6 @@ egui_material_icons.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0", features = ["ui"] }

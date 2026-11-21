@@ -249,15 +249,7 @@ fn interface_scale_changes_only_after_selecting_a_dropdown_option() {
         shapes
     };
     let at = |shapes: &[egui::epaint::ClippedShape], label: &str| {
-        shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == label => {
-                    Some(text.pos + text.galley.mesh_bounds.center().to_vec2())
-                }
-                _ => None,
-            })
-            .unwrap()
+        orange_testkit::ui::text_center(shapes, label).unwrap()
     };
     let mouse = |pos, pressed| egui::Event::PointerButton {
         pos,

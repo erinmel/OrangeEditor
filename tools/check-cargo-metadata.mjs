@@ -43,11 +43,11 @@ const policy = {
   // Example native plugin library, loaded by orange-native's tests.
   'orange-plugin-example': {core: false, normal: ['orange-sdk']},
   // Theme-aware egui controls, free of graph and host types.
-  'orange-ui-controls': {core: false, normal: []},
+  'orange-ui-controls': {core: false, normal: [], dev: ['orange-testkit']},
   // The editor reaches services through the host. UI tests install real bundled adapters.
-  'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net']},
+  'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net', 'orange-testkit']},
   // Desktop application: the window, the editor interface and the built-in service packages.
-  'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault']},
+  'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault'], dev: ['orange-testkit']},
   // Base audio service package: the only crate with an audio device library. Built on
   // the plugin SDK and reuses the network package for HTTP file sources.
   'orange-audio': {core: false, normal: ['orange-sdk', 'orange-net'], dev: ['orange-host', 'orange-model', 'orange-testkit']},

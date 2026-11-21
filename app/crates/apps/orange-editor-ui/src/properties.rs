@@ -1727,20 +1727,10 @@ mod width_tests {
         let at = title.pos + title.galley.rect.center().to_vec2();
         let baseline = title.pos.y;
         output.drop_without_applying_deltas();
-        frame(&mut editor, vec![egui::Event::PointerMoved(at)]).drop_without_applying_deltas();
         for expected in [None, Some((node, "Sample amount".to_owned()))] {
-            for pressed in [true, false] {
-                frame(
-                    &mut editor,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                )
-                .drop_without_applying_deltas();
-            }
+            orange_testkit::ui::click(at, egui::PointerButton::Primary, |events| {
+                frame(&mut editor, events).drop_without_applying_deltas();
+            });
             assert_eq!(
                 editor
                     .renaming_node

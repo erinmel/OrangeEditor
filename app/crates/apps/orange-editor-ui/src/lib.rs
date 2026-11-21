@@ -735,6 +735,19 @@ impl Editor {
         }
     }
 
+    fn edited_value<T>(&mut self, host: &mut Host, result: Result<T, HostError>) -> Option<T> {
+        match result {
+            Ok(value) => {
+                self.refresh(host);
+                Some(value)
+            }
+            Err(error) => {
+                let _ = self.edited(host, Err(error));
+                None
+            }
+        }
+    }
+
     /// The draft an edit changes, with the canvas's layout written into it first.
     fn editing(&mut self) -> Option<&mut Draft> {
         self.keep_layout();

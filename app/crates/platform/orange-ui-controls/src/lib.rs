@@ -792,14 +792,7 @@ mod tests {
                     .rect;
                 },
             );
-            let fill = output
-                .shapes
-                .iter()
-                .find_map(|item| match &item.shape {
-                    egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
-                    _ => None,
-                })
-                .unwrap();
+            let fill = orange_testkit::ui::rect_fill(&output.shapes, rect).unwrap();
             output.drop_without_applying_deltas();
             (rect, fill)
         };

@@ -30,15 +30,10 @@ impl NodeRename {
         font: impl Into<egui::FontSelection>,
     ) -> Option<bool> {
         let id = ui.make_persistent_id(("rename-node", self.node));
-        let (save, cancel) = if ui.memory(|memory| memory.has_focus(id)) {
-            ui.input_mut(|input| {
-                (
-                    input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
-                    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                )
-            })
+        let [save, cancel] = if ui.memory(|memory| memory.has_focus(id)) {
+            crate::controls::consume_plain_keys(ui, [egui::Key::Enter, egui::Key::Escape])
         } else {
-            (false, false)
+            [false, false]
         };
         let mut field = egui::TextEdit::singleline(&mut self.name)
             .id(id)
@@ -177,18 +172,7 @@ impl Editor {
             egui::ScrollArea::vertical()
                 .max_height(200.0)
                 .show(ui, |ui| {
-                    for (heading, ports) in [
-                        (t("inputs"), &preview.inputs),
-                        (t("outputs"), &preview.outputs),
-                    ] {
-                        ui.strong(heading);
-                        if ports.is_empty() {
-                            ui.weak(t("function-package-none"));
-                        }
-                        for (name, ty) in ports {
-                            ui.label(format!("{name}: {}", crate::type_name(ty)));
-                        }
-                    }
+                    preview_ports(ui, &preview.inputs, &preview.outputs);
                     ui.strong(t("function-package-dependencies"));
                     if preview.dependencies.is_empty() {
                         ui.weak(t("function-package-none"));
@@ -273,16 +257,8 @@ impl Editor {
     pub fn group_selection(&mut self, host: &mut Host, name: &str) -> Option<String> {
         let selection = self.canvas.selection();
         let draft = self.editing()?;
-        match draft.group(&selection, name) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = draft.group(&selection, name);
+        self.edited_value(host, result)
     }
 
     /// Renames, recolours, collapses or opens a group, as one edit.
@@ -448,18 +424,7 @@ impl Editor {
                             ("count", extracting.nodes.len().into()),
                         ],
                     ));
-                    for (title, ports) in [
-                        (t("inputs"), &preview.inputs),
-                        (t("outputs"), &preview.outputs),
-                    ] {
-                        ui.strong(title);
-                        if ports.is_empty() {
-                            ui.weak(t("function-package-none"));
-                        }
-                        for (name, ty) in ports {
-                            ui.label(format!("{name}: {}", crate::type_name(ty)));
-                        }
-                    }
+                    preview_ports(ui, &preview.inputs, &preview.outputs);
                     let (dismiss, confirm) = controls::dialog_actions(
                         ui,
                         Action::Primary,
@@ -509,6 +474,18 @@ fn export_error(error: &HostError) -> String {
         );
     }
     error.to_string()
+}
+
+fn preview_ports(ui: &mut egui::Ui, inputs: &[(String, String)], outputs: &[(String, String)]) {
+    for (heading, ports) in [(t("inputs"), inputs), (t("outputs"), outputs)] {
+        ui.strong(heading);
+        if ports.is_empty() {
+            ui.weak(t("function-package-none"));
+        }
+        for (name, ty) in ports {
+            ui.label(format!("{name}: {}", crate::type_name(ty)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -657,19 +634,9 @@ mod tests {
             })
             .unwrap();
         output.drop_without_applying_deltas();
-        frame(&mut editor, vec![egui::Event::PointerMoved(save)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(
-                &mut editor,
-                vec![egui::Event::PointerButton {
-                    pos: save,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-            )
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(save, egui::PointerButton::Primary, |events| {
+            frame(&mut editor, events).drop_without_applying_deltas();
+        });
         let Some(FileRequest::ExportPackage { name, archive }) = editor.take_request() else {
             panic!("the application did not receive the archive");
         };

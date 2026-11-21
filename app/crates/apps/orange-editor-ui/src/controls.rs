@@ -25,3 +25,8 @@ pub fn search(ui: &mut egui::Ui, salt: &str, query: &mut String, hint: &str) -> 
         t("clear-search"),
     )
 }
+
+/// Consumes unmodified keys reserved by the focused control.
+pub(crate) fn consume_plain_keys<const N: usize>(ui: &egui::Ui, keys: [egui::Key; N]) -> [bool; N] {
+    ui.input_mut(|input| keys.map(|key| input.consume_key(egui::Modifiers::NONE, key)))
+}

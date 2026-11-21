@@ -507,16 +507,8 @@ impl Editor {
     /// Declares a variable, or changes the one with `variable.id`. Returns its ID.
     pub fn declare_variable(&mut self, host: &mut Host, variable: &Variable) -> Option<String> {
         let draft = self.editing()?;
-        match host.declare_variable(draft, variable) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = host.declare_variable(draft, variable);
+        self.edited_value(host, result)
     }
 
     /// Declares a variable and makes `node` name it at the setting `pointer` (such as
@@ -556,16 +548,8 @@ impl Editor {
         connection: &Connection,
     ) -> Option<String> {
         let draft = self.editing()?;
-        match host.declare_connection(draft, connection) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = host.declare_connection(draft, connection);
+        self.edited_value(host, result)
     }
 
     /// The setting choices of `adapter`, listed the first time they are asked for and
@@ -1045,16 +1029,7 @@ impl Editor {
     ) -> Option<String> {
         let draft = self.editing()?;
         let result = host.declare_connection_with_secrets(draft, connection, secrets);
-        match result {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        self.edited_value(host, result)
     }
 
     /// The nodes that use connection `id`, by what they are called.
