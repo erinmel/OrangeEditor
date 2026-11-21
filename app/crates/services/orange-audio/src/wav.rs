@@ -1,4 +1,4 @@
-//! Reads a WAV, FLAC, MP3, Ogg Vorbis or M4A file into samples in an output's rate and
+//! Reads a WAV, AIFF, FLAC, MP3, Ogg Vorbis or M4A file into samples in an output's rate and
 //! channel layout. The format is told from the file's content, not from its name.
 use hound::{SampleFormat, WavReader};
 use std::io::Read;
@@ -34,7 +34,7 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
         return flac(path, rate, channels);
     }
     if &magic != b"RIFF" {
-        return compressed(path, rate, channels);
+        return decode_with_symphonia(path, rate, channels);
     }
     let mut reader = WavReader::open(path).map_err(|_| WavError::Unreadable)?;
     let spec = reader.spec();
@@ -59,8 +59,8 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
     convert(&samples, spec.channels, spec.sample_rate, channels, rate)
 }
 
-/// Probes MP3, Ogg Vorbis and M4A (AAC-LC or ALAC) by file contents.
-fn compressed(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
+/// Probes AIFF, MP3, Ogg Vorbis and M4A by file contents.
+fn decode_with_symphonia(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::errors::Error;
     use symphonia::core::formats::TrackType;
@@ -332,14 +332,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FFmpeg 7.1 encoded these 250 ms, 24 kHz stereo tones as AAC-LC and ALAC.
+    /// FFmpeg 7.1 encoded these 250 ms, 24 kHz stereo tones as AAC-LC, ALAC and AIFF PCM.
     #[test]
-    fn m4a_preserves_duration_and_stereo_channels() {
+    fn m4a_and_aiff_preserve_duration_and_stereo_channels() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        for name in ["stereo-aac.m4a", "stereo-alac.m4a"] {
+        for name in ["stereo-aac.m4a", "stereo-alac.m4a", "stereo-pcm.aiff"] {
             let samples = load(&fixtures.join(name), 24_000, 2).unwrap();
             let (frames, incomplete) = samples.as_chunks::<2>();
             assert!(incomplete.is_empty(), "{name}");
+            if name == "stereo-pcm.aiff" {
+                assert_eq!(frames.len(), 6_000);
+            }
             assert!(
                 (5_760..7_920).contains(&frames.len()),
                 "{name}: {} frames",

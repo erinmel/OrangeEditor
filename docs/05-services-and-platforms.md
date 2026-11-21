@@ -337,8 +337,8 @@ not allocate, lock, log or read files. The capture callback only sums squares an
 steps the threshold; a session thread turns crossings into entry firings.
 
 Playback controls and formats (2026-11-12): `play`, `loop` and file-backed audio
-sources read WAV, FLAC, MP3, Ogg Vorbis and M4A (AAC-LC or ALAC). Files are
-identified by content. MP3, Ogg and M4A use Symphonia 0.6.1.
+sources read WAV, AIFF (PCM), FLAC, MP3, Ogg Vorbis and M4A (AAC-LC or ALAC).
+Files are identified by content. AIFF, MP3, Ogg and M4A use Symphonia 0.6.1.
 `loop` starts the sound again each time it ends and continues
 only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
 `set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
@@ -349,8 +349,9 @@ however long its sound is paused or repeats, and reports a stalled device when t
 device has asked for no samples for two seconds. The callback rules are unchanged.
 
 Folder playback (2026-11-13): `play-from` (inputs `folder`, `pick`, `gain`;
-output `file`) plays the sound file a number chooses among the folder's WAV, FLAC, MP3,
-Ogg and M4A files in name order, counting round; a counter makes a playlist and a seeded
+output `file`) plays the sound file a number chooses among the folder's WAV, AIFF,
+FLAC, MP3, Ogg and M4A files in name order, counting round; a counter makes a
+playlist and a seeded
 random number a repeatable shuffle, so the node itself draws no randomness. A folder
 without sound files is the fault `org.orange.audio/Empty`.
 
