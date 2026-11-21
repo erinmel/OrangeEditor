@@ -478,19 +478,11 @@ impl Run {
             self.watches.evaluations = self.watches.evaluations.saturating_add(1);
             self.watches.active = true;
         }
-        let outcome = loop {
-            match data.poll_host_export(watch.root(), budget)? {
-                HostPoll::Pending => return Ok(()),
-                HostPoll::Input(input) => {
-                    let value =
-                        root_value(plan, &self.variables, &self.layout, &self.lives, input)?;
-                    data.set_input_outcome(input, value)?;
-                }
-                HostPoll::Ready(Some(export)) => {
-                    break export.outcome.cloned().map_err(Clone::clone);
-                }
-                HostPoll::Ready(None) => return Err(RunError::InvalidState),
-            }
+        let Some(outcome) = poll_root(data, watch.root(), budget, |input| {
+            root_value(plan, &self.variables, &self.layout, &self.lives, input)
+        })?
+        else {
+            return Ok(());
         };
         self.watches.active = false;
         self.watches.pending.pop_front();
@@ -599,6 +591,26 @@ impl Run {
     }
 }
 
+type RootOutcome = Result<Value, ConstantFault>;
+
+fn poll_root(
+    data: &mut DataActivation,
+    root: usize,
+    budget: &mut usize,
+    mut read_input: impl FnMut(usize) -> Result<FoldedValue, RunError>,
+) -> Result<Option<RootOutcome>, RunError> {
+    loop {
+        match data.poll_host_export(root, budget)? {
+            HostPoll::Pending => return Ok(None),
+            HostPoll::Input(input) => data.set_input_outcome(input, read_input(input)?)?,
+            HostPoll::Ready(Some(export)) => {
+                return Ok(Some(export.outcome.cloned().map_err(Clone::clone)));
+            }
+            HostPoll::Ready(None) => return Err(RunError::InvalidState),
+        }
+    }
+}
+
 /// A host input read at the root: a run variable, or a live value, which faults until
 /// its provider has published one.
 fn root_value(
@@ -652,19 +664,11 @@ impl Run {
         }
         while self.watches.partial.len() < source.roots().len() {
             let root = source.roots()[self.watches.partial.len()];
-            let outcome = loop {
-                match data.poll_host_export(root, budget)? {
-                    HostPoll::Pending => return Ok(()),
-                    HostPoll::Input(input) => {
-                        let value =
-                            root_value(plan, &self.variables, &self.layout, &self.lives, input)?;
-                        data.set_input_outcome(input, value)?;
-                    }
-                    HostPoll::Ready(Some(export)) => {
-                        break export.outcome.cloned().map_err(Clone::clone);
-                    }
-                    HostPoll::Ready(None) => return Err(RunError::InvalidState),
-                }
+            let Some(outcome) = poll_root(data, root, budget, |input| {
+                root_value(plan, &self.variables, &self.layout, &self.lives, input)
+            })?
+            else {
+                return Ok(());
             };
             match outcome {
                 Ok(value) => self.watches.partial.push(value),

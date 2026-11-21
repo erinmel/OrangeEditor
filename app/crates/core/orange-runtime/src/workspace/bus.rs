@@ -657,15 +657,7 @@ mod tests {
     use super::*;
     #[test]
     fn exhausted_bus_sequence_refuses_without_wrapping_or_reserving_messages() {
-        let registry = orange_model::catalog::RegistryBuilder::core(
-            orange_model::validation::HostOrigin::new(
-                "0.0.0",
-                format!("sha256:{}", "a".repeat(64)),
-            )
-            .unwrap(),
-        )
-        .build()
-        .unwrap();
+        let registry = super::super::test_registry();
         let event: EventDeclId = "40000000-0000-4000-8000-000000000001".parse().unwrap();
         let meter = WorkspaceBusMeter {
             bytes: Budget::new(4096),

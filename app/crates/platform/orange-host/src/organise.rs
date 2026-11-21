@@ -408,7 +408,8 @@ impl Host {
         let mut step_out: Option<(PortRef, PortRef)> = None;
         let type_of = |end: &PortRef| self.port_type(document, end);
         for edge in root.edges.values() {
-            match (inside(&edge.from.node), inside(&edge.to.node)) {
+            let from_inside = inside(&edge.from.node);
+            match (from_inside, inside(&edge.to.node)) {
                 (true, true) => inner.push(edge.id),
                 (false, false) => {}
                 (false, true) if self.is_step(document, &edge.to, true) => match &mut step_in {
@@ -432,41 +433,24 @@ impl Host {
                     }
                     step_out = Some((edge.from.clone(), edge.to.clone()));
                 }
-                (false, true) => {
-                    if let Some(crossing) = inputs.iter_mut().find(|c| c.source == edge.from) {
+                (false, true) | (true, false) => {
+                    let (crossings, inner, outer, direction) = if !from_inside {
+                        (&mut inputs, &edge.to, &edge.from, "going into")
+                    } else {
+                        (&mut outputs, &edge.from, &edge.to, "coming out of")
+                    };
+                    if let Some(crossing) = crossings.iter_mut().find(|c| c.source == edge.from) {
                         crossing.targets.push(edge.to.clone());
                         continue;
                     }
-                    let ty = type_of(&edge.to)
-                        .or_else(|| type_of(&edge.from))
-                        .ok_or_else(|| {
-                            refused(&format!(
-                                "the type going into `{}` is not settled yet; choose it first",
-                                names.called(&edge.to.node)
-                            ))
-                        })?;
-                    inputs.push(Crossing {
-                        name: unique_name(edge.to.port.port().as_str(), &mut used)?,
-                        ty,
-                        source: edge.from.clone(),
-                        targets: vec![edge.to.clone()],
-                    });
-                }
-                (true, false) => {
-                    if let Some(crossing) = outputs.iter_mut().find(|c| c.source == edge.from) {
-                        crossing.targets.push(edge.to.clone());
-                        continue;
-                    }
-                    let ty = type_of(&edge.from)
-                        .or_else(|| type_of(&edge.to))
-                        .ok_or_else(|| {
-                            refused(&format!(
-                                "the type coming out of `{}` is not settled yet; choose it first",
-                                names.called(&edge.from.node)
-                            ))
-                        })?;
-                    outputs.push(Crossing {
-                        name: unique_name(edge.from.port.port().as_str(), &mut used)?,
+                    let ty = type_of(inner).or_else(|| type_of(outer)).ok_or_else(|| {
+                        refused(&format!(
+                            "the type {direction} `{}` is not settled yet; choose it first",
+                            names.called(&inner.node)
+                        ))
+                    })?;
+                    crossings.push(Crossing {
+                        name: unique_name(inner.port.port().as_str(), &mut used)?,
                         ty,
                         source: edge.from.clone(),
                         targets: vec![edge.to.clone()],

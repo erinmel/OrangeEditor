@@ -56,7 +56,7 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     let mut definitions = Vec::with_capacity(Operation::ALL.len());
     for operation in Operation::ALL {
         let boolean = !operation.is_numeric();
-        let ty: orange_model::id::TypeExpr = if boolean { "core/bool@1" } else { "$T" }.parse()?;
+        let ty: TypeExpr = if boolean { "core/bool@1" } else { "$T" }.parse()?;
         let mut ports: Vec<_> = operation
             .input_ports()
             .iter()

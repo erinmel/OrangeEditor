@@ -85,11 +85,7 @@ impl Host {
     /// outputs) can go into, with the input it would take, sorted by what they are
     /// called. Empty when the output is not found.
     pub fn takers(&self, draft: &Draft, from: (NodeId, &str)) -> Vec<Suggestion> {
-        let Some(port) = self.node_view(draft.document(), from.0).and_then(|node| {
-            node.ports
-                .into_iter()
-                .find(|port| !port.input && port.id == from.1)
-        }) else {
+        let Some(port) = self.output_view(draft.document(), from) else {
             return Vec::new();
         };
         let mut found: Vec<Suggestion> = self

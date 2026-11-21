@@ -482,6 +482,18 @@ impl Host {
         }
     }
 
+    /// One output on a top-level node, with the same projected type as the canvas.
+    pub(crate) fn output_view(
+        &self,
+        document: &GraphDocument,
+        from: (NodeId, &str),
+    ) -> Option<PortView> {
+        self.node_view(document, from.0)?
+            .ports
+            .into_iter()
+            .find(|port| !port.input && port.id == from.1)
+    }
+
     /// One top-level node as the canvas draws it; `None` when the document has no such node.
     pub(crate) fn node_view(&self, document: &GraphDocument, node: NodeId) -> Option<NodeView> {
         let context = self.view_context(document);

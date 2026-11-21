@@ -363,6 +363,21 @@ mod tests {
     use crate::{DocCommand, GraphDocument};
     use serde_json::{Value, json};
 
+    fn layout_edit() -> DocCommand {
+        DocCommand::Layout(crate::LayoutCommand::Set {
+            path: vec!["x".into()],
+            value: Some(json!(1)),
+        })
+    }
+
+    fn enable_node() -> DocCommand {
+        DocCommand::SetConfig {
+            node: id(1).parse().unwrap(),
+            config_version: 1,
+            config: serde_json::from_value(json!({"enabled": true})).unwrap(),
+        }
+    }
+
     fn id(n: u8) -> String {
         format!("10000000-0000-4000-8000-{n:012}")
     }
@@ -542,19 +557,8 @@ mod tests {
         let mut cache = LocalValidation::default();
         cache.refresh(&document, &registry, None);
         // Skip the semantic edit and present only its following layout edit.
-        let _ = document
-            .apply([DocCommand::SetConfig {
-                node: id(1).parse().unwrap(),
-                config_version: 1,
-                config: serde_json::from_value(json!({"enabled":true})).unwrap(),
-            }])
-            .unwrap();
-        let change = document
-            .apply([DocCommand::Layout(crate::LayoutCommand::Set {
-                path: vec!["x".into()],
-                value: Some(json!(1)),
-            })])
-            .unwrap();
+        let _ = document.apply([enable_node()]).unwrap();
+        let change = document.apply([layout_edit()]).unwrap();
         let work = cache.refresh(&document, &registry, Some(&change.change_set));
         assert_eq!((work.config_computed, work.config_hits), (1, 0));
         assert_equivalent(&cache, &document, &registry);
@@ -592,20 +596,9 @@ mod tests {
             .unwrap();
         let mut cache = LocalValidation::default();
         cache.refresh(&document, &registry, None);
-        let change = document
-            .apply([DocCommand::Layout(crate::LayoutCommand::Set {
-                path: vec!["x".into()],
-                value: Some(json!(1)),
-            })])
-            .unwrap();
+        let change = document.apply([layout_edit()]).unwrap();
         assert!(cache.advance_layout(&document, &change.change_set));
-        let change = document
-            .apply([DocCommand::SetConfig {
-                node: id(1).parse().unwrap(),
-                config_version: 1,
-                config: serde_json::from_value(json!({"enabled":true})).unwrap(),
-            }])
-            .unwrap();
+        let change = document.apply([enable_node()]).unwrap();
         let work = cache.refresh(&document, &registry, Some(&change.change_set));
         assert_eq!((work.config_computed, work.config_hits), (1, 0));
         assert_equivalent(&cache, &document, &registry);

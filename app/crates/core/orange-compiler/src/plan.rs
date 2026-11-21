@@ -147,7 +147,7 @@ impl PurePlan {
         self.revision
     }
     pub fn is_current(&self, doc: &GraphDocument, snapshot: &RegistrySnapshot) -> bool {
-        self.state == doc.semantic_state_id() && self.snapshot.generation() == snapshot.generation()
+        crate::plan_inputs_current(self.state, &self.snapshot, doc, snapshot)
     }
     pub fn steps(&self) -> &[PureStep] {
         &self.steps

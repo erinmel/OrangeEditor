@@ -169,8 +169,7 @@ impl DataPlan {
         self.revision
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        self.state == document.semantic_state_id()
-            && self.snapshot.generation() == registry.generation()
+        crate::plan_inputs_current(self.state, &self.snapshot, document, registry)
     }
     pub fn nodes(&self) -> &[DataNode] {
         &self.nodes

@@ -154,12 +154,7 @@ impl Host {
         through: Option<&Conversion>,
     ) -> Result<Connected, HostError> {
         let exec = self
-            .node_view(draft.document(), from.0)
-            .and_then(|node| {
-                node.ports
-                    .into_iter()
-                    .find(|port| !port.input && port.id == from.1)
-            })
+            .output_view(draft.document(), from)
             .is_some_and(|port| port.exec);
         if exec {
             return self.connect(draft, from, to).map(|_| Connected::Wired);
