@@ -10,7 +10,9 @@ use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
 
-use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
+use super::diagnostic::{
+    Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
+};
 use super::ports::{PortLookupError, PortResolver};
 use super::scope::Scope;
 
@@ -20,6 +22,16 @@ pub(crate) struct ConnectionValidation {
     pub diagnostics: Vec<Diagnostic>,
     /// Nodes whose signatures or unresolved generic types prevented a complete check.
     pub incomplete_nodes: BTreeSet<NodeId>,
+}
+
+impl ConnectionValidation {
+    pub(crate) fn error_edges(&self) -> BTreeSet<EdgeId> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .filter_map(|diagnostic| diagnostic.subject.edge)
+            .collect()
+    }
 }
 
 /// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.

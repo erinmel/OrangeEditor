@@ -548,7 +548,7 @@ fn send_binary(
     else {
         return Err(BAD_REQUEST);
     };
-    let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
+    let ListRepr::Str(headers) = headers.as_ref() else {
         return Err(BAD_REQUEST);
     };
     let headers = parse_header_lines(headers.iter().map(|line| line.as_str()))?;
@@ -949,7 +949,7 @@ mod tests {
         let flow = host.open(&draft.text().unwrap()).unwrap();
         host.observe(flow, true).unwrap();
         host.trigger(flow, trigger, None).unwrap();
-        let mut results = std::collections::BTreeMap::new();
+        let mut results = BTreeMap::new();
         orange_testkit::until("the unwired response", || {
             while let Ok(event) = events.try_recv() {
                 if event.flow == flow

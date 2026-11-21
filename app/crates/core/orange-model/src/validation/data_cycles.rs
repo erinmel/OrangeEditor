@@ -142,12 +142,7 @@ pub(crate) fn validate_data_cycles_in(
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
         .filter_map(|diagnostic| diagnostic.subject.node)
         .collect();
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     for node in &connections.incomplete_nodes {
         if diagnosed_nodes.insert(*node) {
             result.diagnostics.push(Diagnostic::new(

@@ -910,7 +910,7 @@ pub(crate) fn is_namespace(text: &str) -> bool {
 }
 
 /// Decimal digits without a leading zero, fitting `u32`.
-fn is_number(text: &str) -> bool {
+pub(crate) fn is_number(text: &str) -> bool {
     !text.is_empty()
         && text.bytes().all(|byte| byte.is_ascii_digit())
         && (text == "0" || !text.starts_with('0'))

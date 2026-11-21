@@ -71,7 +71,7 @@ fn fitting_input(definition: &NodeDefinition, exec: bool, ty: Option<&str>) -> O
             if exec {
                 Some("in".to_owned())
             } else {
-                super::edit::collection_mode(ty?).map(|_| "items".to_owned())
+                edit::collection_mode(ty?).map(|_| "items".to_owned())
             }
         }
         Ports::Event(_) => (exec && definition.kind != NodeKind::Entry).then(|| "in".to_owned()),

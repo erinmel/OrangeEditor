@@ -76,7 +76,7 @@ fn diagnostic_marks_use_the_requested_connector_when_port_names_match() {
     node.ports.push(port("shared", true, false, "core/i64@1"));
     node.ports
         .push(port("shared", false, false, "core/stream@1<core/i64@1>"));
-    let geometry = geometry::Geometry::new(&session.graph);
+    let geometry = Geometry::new(&session.graph);
     let input = geometry
         .diagnostic_port(id(1), "shared", Some(Input))
         .unwrap();

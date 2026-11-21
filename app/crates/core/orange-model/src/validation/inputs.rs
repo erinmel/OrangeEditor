@@ -429,8 +429,8 @@ fn diagnostic(
     port: PortKey,
     origin: &HostOrigin,
 ) -> Diagnostic {
-    let subject = Subject::new(Some(node), Some(port), None)
-        .with_port_direction(crate::document::PortDirection::Input);
+    let subject =
+        Subject::new(Some(node), Some(port), None).with_port_direction(PortDirection::Input);
     let mut diagnostic = Diagnostic::new(code, subject, origin);
     diagnostic.severity = severity;
     diagnostic

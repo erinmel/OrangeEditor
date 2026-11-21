@@ -88,18 +88,27 @@ impl<T> ReadyQueue<T> {
         }
         slot
     }
+    /// Keeps the first strand inline and promotes it when a second strand arrives.
+    fn prepare_insert(&mut self, id: StrandId, value: T) -> Option<T> {
+        if self.indexed {
+            return Some(value);
+        }
+        if let Some((old_id, old)) = self.single.take() {
+            assert_ne!(old_id, id, "a strand is queued at most once");
+            self.indexed = true;
+            self.push_back(old_id, old);
+            Some(value)
+        } else {
+            self.single = Some((id, value));
+            None
+        }
+    }
+
     #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
     pub(crate) fn push_front(&mut self, id: StrandId, value: T) {
-        if !self.indexed {
-            if let Some((old_id, old)) = self.single.take() {
-                assert_ne!(old_id, id, "a strand is queued at most once");
-                self.indexed = true;
-                self.push_back(old_id, old);
-            } else {
-                self.single = Some((id, value));
-                return;
-            }
-        }
+        let Some(value) = self.prepare_insert(id, value) else {
+            return;
+        };
 
         let slot = self.insert(id, value, None, self.first);
         if let Some(first) = self.first {
@@ -111,16 +120,9 @@ impl<T> ReadyQueue<T> {
     }
     #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
     pub(crate) fn push_back(&mut self, id: StrandId, value: T) {
-        if !self.indexed {
-            if let Some((old_id, old)) = self.single.take() {
-                assert_ne!(old_id, id, "a strand is queued at most once");
-                self.indexed = true;
-                self.push_back(old_id, old);
-            } else {
-                self.single = Some((id, value));
-                return;
-            }
-        }
+        let Some(value) = self.prepare_insert(id, value) else {
+            return;
+        };
 
         let slot = self.insert(id, value, self.last, None);
         if let Some(last) = self.last {

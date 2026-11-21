@@ -513,12 +513,12 @@ pub fn search(
 
 /// Draws a compact icon button and gives the painter a centered square.
 pub fn icon_button(
-    ui: &mut egui::Ui,
+    ui: &mut Ui,
     width: f32,
     icon_color: Option<egui::Color32>,
     idle_fill: Option<egui::Color32>,
-    paint: impl FnOnce(&egui::Ui, egui::Rect, egui::Color32),
-) -> egui::Response {
+    paint: impl FnOnce(&Ui, egui::Rect, egui::Color32),
+) -> Response {
     let size = egui::vec2(width, ui.spacing().interact_size.y);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
@@ -537,7 +537,7 @@ pub fn icon_button(
         let stroke = if response.has_focus() {
             ui.visuals().selection.stroke
         } else {
-            egui::Stroke::NONE
+            Stroke::NONE
         };
         let painter = ui.painter();
         painter.rect(rect, CONTROL_RADIUS, fill, stroke, egui::StrokeKind::Inside);

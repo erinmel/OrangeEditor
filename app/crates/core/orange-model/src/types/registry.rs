@@ -450,20 +450,17 @@ impl TypeRegistry {
     /// Unlike [`Self::owner`], this accepts structural terms that were never interned,
     /// such as a converter endpoint inspected after registry publication.
     pub fn owner_of(&self, term: &TypeTerm) -> Result<&TypeOwner, TypeResolveError> {
-        self.validate(term)?;
-        let named = match term {
-            TypeTerm::Named(named) => named,
-            TypeTerm::Param(name) => {
-                return Err(TypeResolveError::UnresolvedParameter { name: name.clone() });
-            }
-        };
-        self.definition(named)
+        self.outer_definition(term)
             .map(|definition| &definition.owner)
-            .ok_or_else(|| unknown_type(named))
     }
 
     /// Returns the kind of a validated term's outer named constructor without interning it.
     pub fn kind_of(&self, term: &TypeTerm) -> Result<TypeKind, TypeResolveError> {
+        self.outer_definition(term)
+            .map(|definition| definition.data.kind())
+    }
+
+    fn outer_definition(&self, term: &TypeTerm) -> Result<&RegisteredType, TypeResolveError> {
         self.validate(term)?;
         let named = match term {
             TypeTerm::Named(named) => named,
@@ -471,9 +468,7 @@ impl TypeRegistry {
                 return Err(TypeResolveError::UnresolvedParameter { name: name.clone() });
             }
         };
-        self.definition(named)
-            .map(|definition| definition.data.kind())
-            .ok_or_else(|| unknown_type(named))
+        self.definition(named).ok_or_else(|| unknown_type(named))
     }
 
     /// The registered record and enum types without type parameters, which record and

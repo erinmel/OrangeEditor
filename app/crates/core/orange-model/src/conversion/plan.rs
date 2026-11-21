@@ -231,14 +231,7 @@ pub fn plan_connection_indexed(
             let node = NodeId::from_uuid(new_id())?;
             let (instance, snapshot) = convert_node(node, &resolved, definition);
             let key = semantic_key(&snapshot);
-            if let ConverterProvider::Package(package) = &resolved.provider {
-                edit.push(DocCommand::PutPackageLock(PackageLockEntry {
-                    id: package.package.clone(),
-                    version: package.version.clone(),
-                    content_digest: package.content_digest.clone(),
-                    extensions: Extensions::new(),
-                }));
-            }
+            edit.extend(converter_package_lock(&resolved.provider));
             edit.push(DocCommand::PutSignature {
                 key: key.clone(),
                 snapshot,
@@ -308,14 +301,7 @@ pub fn converter_node_commands(
     let (instance, snapshot) = convert_node(node, &resolved, definition);
     let key = semantic_key(&snapshot);
     let mut commands = Vec::new();
-    if let ConverterProvider::Package(package) = &resolved.provider {
-        commands.push(DocCommand::PutPackageLock(PackageLockEntry {
-            id: package.package.clone(),
-            version: package.version.clone(),
-            content_digest: package.content_digest.clone(),
-            extensions: Extensions::new(),
-        }));
-    }
+    commands.extend(converter_package_lock(&resolved.provider));
     commands.push(DocCommand::PutSignature {
         key: key.clone(),
         snapshot,
@@ -328,6 +314,18 @@ pub fn converter_node_commands(
         },
     });
     Ok(commands)
+}
+
+fn converter_package_lock(provider: &ConverterProvider) -> Option<DocCommand> {
+    let ConverterProvider::Package(package) = provider else {
+        return None;
+    };
+    Some(DocCommand::PutPackageLock(PackageLockEntry {
+        id: package.package.clone(),
+        version: package.version.clone(),
+        content_digest: package.content_digest.clone(),
+        extensions: Extensions::new(),
+    }))
 }
 
 /// How the endpoints are joined.

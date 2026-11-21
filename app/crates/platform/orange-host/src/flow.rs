@@ -438,6 +438,13 @@ fn deliver(inbox: &RunInbox, input: HostInput, flow: &Thread) {
     flow.unpark();
 }
 
+fn start_sources(cx: &mut Context, thread: &thread::Thread) {
+    for (node, reason) in cx.armed.start(&cx.inbox, thread, (&cx.sink, cx.id)) {
+        cx.sink
+            .send(cx.id, FlowEvent::SourceRefused { node, reason });
+    }
+}
+
 pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let me = thread::current();
     let mut recorded = 0u64;
@@ -456,10 +463,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut shared_dirty = false;
     // The value of each output port as last reported to the observer.
     let mut ports: PortValues = PortValues::new();
-    for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
-        cx.sink
-            .send(cx.id, FlowEvent::SourceRefused { node, reason });
-    }
+    start_sources(&mut cx, &me);
     loop {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
@@ -483,10 +487,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 last_state = None;
                 reported.clear();
                 ports.clear();
-                for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
-                    cx.sink
-                        .send(cx.id, FlowEvent::SourceRefused { node, reason });
-                }
+                start_sources(&mut cx, &me);
                 cx.sink.send(
                     cx.id,
                     FlowEvent::Updated {

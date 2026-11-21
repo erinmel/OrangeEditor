@@ -126,15 +126,6 @@ fn is_channel(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-fn is_digest(text: &str) -> bool {
-    text.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
-}
-
 /// A parsed update feed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateFeed {
@@ -167,7 +158,7 @@ impl UpdateFeed {
             if !is_https_url(&release.archive) {
                 return Err(bad("archive"));
             }
-            if !is_digest(&release.content_digest) {
+            if !orange_model::origin::is_sha256(&release.content_digest) {
                 return Err(bad("content_digest"));
             }
             if release

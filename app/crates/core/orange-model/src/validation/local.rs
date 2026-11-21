@@ -110,6 +110,20 @@ impl LocalValidation {
         }
     }
 
+    fn accepts_change(
+        &self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        change: &ChangeSet,
+    ) -> bool {
+        change.is_committed()
+            && !change.global_dirty()
+            && self.state == Some(change.from_state())
+            && change.to_state() == document.state_id()
+            && change.to_semantic_state() == document.semantic_state_id()
+            && self.registry_generation == Some(registry.generation())
+    }
+
     /// Moves the binding past a node or edge edit the session already checked. A node edit
     /// forgets the edited nodes' input, edge and component results, and the configuration
     /// result of a node whose configuration changed; declaration types read none of them.
@@ -121,25 +135,13 @@ impl LocalValidation {
         registry: &RegistrySnapshot,
         change: &ChangeSet,
     ) {
-        let bound = change.is_committed()
-            && !change.global_dirty()
-            && self.state == Some(change.from_state())
-            && change.to_state() == document.state_id()
-            && change.to_semantic_state() == document.semantic_state_id()
-            && self.registry_generation == Some(registry.generation());
+        let bound = self.accepts_change(document, registry, change);
         if bound && change.structure_edit().is_some() {
             self.invalidate(document, change);
             self.state = Some(document.state_id());
             return;
         }
-        let Some(edit) = change.node_edit().filter(|_| {
-            change.is_committed()
-                && !change.global_dirty()
-                && self.state == Some(change.from_state())
-                && change.to_state() == document.state_id()
-                && change.to_semantic_state() == document.semantic_state_id()
-                && self.registry_generation == Some(registry.generation())
-        }) else {
+        let Some(edit) = change.node_edit().filter(|_| bound) else {
             *self = Self::default();
             return;
         };
@@ -172,14 +174,7 @@ impl LocalValidation {
         registry: &RegistrySnapshot,
         change: Option<&ChangeSet>,
     ) -> LocalWork {
-        let incremental = change.filter(|change| {
-            change.is_committed()
-                && !change.global_dirty()
-                && self.state == Some(change.from_state())
-                && change.to_state() == document.state_id()
-                && change.to_semantic_state() == document.semantic_state_id()
-                && self.registry_generation == Some(registry.generation())
-        });
+        let incremental = change.filter(|change| self.accepts_change(document, registry, change));
         match incremental {
             Some(change) => self.invalidate(document, change),
             None => {

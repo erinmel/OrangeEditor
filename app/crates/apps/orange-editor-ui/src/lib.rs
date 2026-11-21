@@ -2083,7 +2083,7 @@ impl Editor {
                 let mut zoom = self.canvas.zoom();
                 if orange_ui_controls::continuous_slider(
                     ui,
-                    controls::Surface::Dialog,
+                    Surface::Dialog,
                     &mut zoom,
                     canvas::ZOOM_RANGE,
                 )
@@ -2245,7 +2245,7 @@ impl Editor {
             for (category, items) in found {
                 orange_ui_controls::tree_section(
                     ui,
-                    controls::Surface::Panel,
+                    Surface::Panel,
                     egui::CollapsingHeader::new(category.as_str())
                         .id_salt((category.as_str(), searching))
                         .default_open(searching),

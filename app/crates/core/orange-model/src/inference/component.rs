@@ -167,14 +167,7 @@ pub(crate) fn infer_components_except(
         edges: RefCell::default(),
         counted: std::cell::Cell::default(),
     };
-    let mut seeds = BTreeSet::new();
-    for node in touched {
-        if graph.generic(node).is_some() {
-            seeds.insert(node);
-        } else {
-            seeds.extend(graph.generic_neighbours(node));
-        }
-    }
+    let mut seeds = graph.component_seeds(touched);
     seeds.retain(|seed| !known.contains(seed));
     let mut visited = BTreeSet::new();
     let mut components = Vec::new();
@@ -207,14 +200,7 @@ pub(crate) fn component_nodes(
         edges: RefCell::default(),
         counted: std::cell::Cell::default(),
     };
-    let mut seeds = BTreeSet::new();
-    for node in touched {
-        if graph.generic(node).is_some() {
-            seeds.insert(node);
-        } else {
-            seeds.extend(graph.generic_neighbours(node));
-        }
-    }
+    let seeds = graph.component_seeds(touched);
     let mut visited = BTreeSet::new();
     let mut components = Vec::new();
     for seed in seeds {
@@ -372,6 +358,18 @@ struct DataEdge {
 }
 
 impl Graph<'_> {
+    fn component_seeds(&self, touched: impl IntoIterator<Item = NodeId>) -> BTreeSet<NodeId> {
+        let mut seeds = BTreeSet::new();
+        for node in touched {
+            if self.generic(node).is_some() {
+                seeds.insert(node);
+            } else {
+                seeds.extend(self.generic_neighbours(node));
+            }
+        }
+        seeds
+    }
+
     /// Charges `visits` with the nodes and edges this search resolved, each exactly once
     /// into its cache, and with what equation building and argument checks iterated.
     fn charge(&self, visits: &mut crate::validation::VisitCounts) {

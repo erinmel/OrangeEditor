@@ -138,7 +138,7 @@ fn recording_an_inline_shortcut_keeps_all_modifiers() {
 fn inline_shortcut_edit_preserves_row_spacing() {
     let mut editor = Editor::new();
     let context = egui::Context::default();
-    crate::icons::install(&context);
+    icons::install(&context);
     let frame = |editor: &mut Editor| {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(330.0);

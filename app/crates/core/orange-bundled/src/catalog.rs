@@ -105,13 +105,7 @@ pub struct MathPackage {
 impl MathPackage {
     pub fn new(content_digest: impl Into<String>) -> Result<Self, CatalogError> {
         let content_digest = content_digest.into();
-        let valid = content_digest.strip_prefix("sha256:").is_some_and(|hex| {
-            hex.len() == 64
-                && hex
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        });
-        if !valid {
+        if !orange_model::origin::is_sha256(&content_digest) {
             return Err(CatalogError::InvalidBuildDigest);
         }
         let key = |package: &str| ProviderKey {

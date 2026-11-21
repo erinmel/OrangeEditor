@@ -17,9 +17,7 @@ use crate::document::{
 use crate::id::{EdgeId, FunctionId, NodeId, PortId, PortKey};
 
 use super::connections::ConnectionValidation;
-use super::diagnostic::{
-    Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
-};
+use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
 use super::dominators::DomTree;
 use super::ports::PortResolver;
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
@@ -387,12 +385,7 @@ fn availability_among(
     mut free: Option<&mut BTreeSet<NodeId>>,
     tally: Tally<'_>,
 ) -> AvailabilityValidation {
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     let mut result = AvailabilityValidation::default();
     for (body_ref, body) in document.bodies_with_refs() {
         let function = match body_ref {
@@ -582,7 +575,7 @@ fn check_body(
             for item in incoming.get(consumer).into_iter().flatten().rev() {
                 let direct = item.edge;
                 let producer = direct.from.node;
-                let behind: &[&DataEdge] = if expands(context, producer) {
+                let behind: &[&DataEdge] = if expands(context.resolved, context.regions, producer) {
                     cones.entry(producer).or_insert_with(|| {
                         let mut reached = free.is_some().then(BTreeSet::new);
                         let mut walked = 0;
@@ -614,7 +607,7 @@ fn check_body(
                         Some(direct.to.port.clone()),
                         Some(direct.id),
                     )
-                    .with_port_direction(crate::document::PortDirection::Input);
+                    .with_port_direction(PortDirection::Input);
                     let subject = match context.function {
                         Some(function) => subject.with_function(function),
                         None => subject,
@@ -703,19 +696,13 @@ pub(crate) fn data_edge_requires(
         },
         Err(_) => true,
     };
-    let expanding = |node: NodeId| {
-        matches!(
-            resolved.get(&node).map(|signature| signature.kind),
-            Some(NodeKind::Pure | NodeKind::Volatile)
-        ) && !regions.reaches(node)
-    };
     if relevant(from) {
         return true;
     }
     let mut visited = BTreeSet::new();
     let mut stack = vec![from.node];
     while let Some(node) = stack.pop() {
-        if free.contains(&node) || !expanding(node) || !visited.insert(node) {
+        if free.contains(&node) || !expands(resolved, regions, node) || !visited.insert(node) {
             continue;
         }
         visits.nodes += 1;
@@ -755,12 +742,6 @@ pub(crate) fn subset_edges<'a>(
     consumers: &BTreeSet<NodeId>,
     visits: &mut super::visits::VisitCounts,
 ) -> Vec<&'a Edge> {
-    let expanding = |node: NodeId| {
-        matches!(
-            resolved.get(&node).map(|signature| signature.kind),
-            Some(NodeKind::Pure | NodeKind::Volatile)
-        ) && !regions.reaches(node)
-    };
     let mut ids = BTreeSet::new();
     for &node in nodes {
         visits.nodes += 1;
@@ -782,7 +763,7 @@ pub(crate) fn subset_edges<'a>(
             };
             if edge.to.node == node {
                 ids.insert(id);
-                if expanding(edge.from.node) && needed.insert(edge.from.node) {
+                if expands(resolved, regions, edge.from.node) && needed.insert(edge.from.node) {
                     stack.push(edge.from.node);
                 }
             }
@@ -792,14 +773,11 @@ pub(crate) fn subset_edges<'a>(
 }
 
 /// True for an unowned pure or volatile producer, whose inputs its consumers read lazily.
-fn expands(context: &Context, producer: NodeId) -> bool {
+fn expands(resolved: &PortResolver<'_>, regions: &RegionIndex, producer: NodeId) -> bool {
     matches!(
-        context
-            .resolved
-            .get(&producer)
-            .map(|signature| signature.kind),
+        resolved.get(&producer).map(|signature| signature.kind),
         Some(NodeKind::Pure | NodeKind::Volatile)
-    ) && !context.regions.reaches(producer)
+    ) && !regions.reaches(producer)
 }
 
 /// The edges behind an expanding `producer` that may carry a requirement: every input edge
@@ -825,7 +803,7 @@ fn cone<'e, 'a>(
         }
         *walked += 1;
         let upstream = item.edge.from.node;
-        if expands(context, upstream) {
+        if expands(context.resolved, context.regions, upstream) {
             if let Some(reached) = reached.as_deref_mut() {
                 reached.insert(upstream);
             }

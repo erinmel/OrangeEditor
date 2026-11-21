@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn color_and_timestamp_nodes_wire_and_preview_as_typed_values() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
-        let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+        let mut draft = host.draft(&new_document().unwrap()).unwrap();
         let mut add = |name| host.add_node(&mut draft, name, [0.0, 0.0]).unwrap();
         let color = add("org.orange.color/color");
         let split = add("org.orange.color/split-rgba");

@@ -298,14 +298,11 @@ impl<'a, S: Schemas> Codec<'a, S> {
             return Err(LiteralError::TooDeep);
         }
         self.charge(VALUE_CHARGE, term)?;
-        let named = match term {
-            TypeTerm::Param(_) => {
-                return Err(LiteralError::UnresolvedParameter {
-                    ty: term.to_string(),
-                });
-            }
-            TypeTerm::Named(named) => named,
-        };
+        let named = term
+            .named()
+            .ok_or_else(|| LiteralError::UnresolvedParameter {
+                ty: term.to_string(),
+            })?;
         if named.namespace != "core" || named.major != 1 {
             return self.decode_schema(json, term, named, depth);
         }
@@ -493,14 +490,11 @@ impl<'a, S: Schemas> Codec<'a, S> {
         if depth > MAX_NESTING {
             return Err(LiteralError::TooDeep);
         }
-        let named = match term {
-            TypeTerm::Param(_) => {
-                return Err(LiteralError::UnresolvedParameter {
-                    ty: term.to_string(),
-                });
-            }
-            TypeTerm::Named(named) => named,
-        };
+        let named = term
+            .named()
+            .ok_or_else(|| LiteralError::UnresolvedParameter {
+                ty: term.to_string(),
+            })?;
         if named.namespace != "core" || named.major != 1 {
             return self.encode_schema(value, term, named, depth);
         }

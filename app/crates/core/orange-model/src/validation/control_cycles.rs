@@ -8,7 +8,7 @@ use crate::document::{BodyRef, GraphDocument, PortDirection, PortKind, Suspends}
 use crate::id::NodeId;
 
 use super::connections::ConnectionValidation;
-use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
+use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
 use super::scope::{NodeSubset, Scope, Tally};
 
@@ -79,12 +79,7 @@ fn control_cycles_among(
         incomplete_nodes: connections.incomplete_nodes.clone(),
         ..ControlCycleValidation::default()
     };
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     let certified = |node: NodeId| {
         resolved
             .get(&node)

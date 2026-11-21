@@ -215,21 +215,9 @@ impl Cells<'_> {
             })?,
             None => 16,
         };
-        let bytes = retained
-            .checked_sub(old)
-            .and_then(|b| b.checked_add(new))
-            .filter(|b| {
-                b.checked_add(if metadata.scope() == VarScope::Local {
-                    shared
-                        .retained_bytes
-                        .get()
-                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                } else {
-                    0
-                })
-                .is_some_and(|total| total <= self.limit)
-            })
-            .ok_or(RunError::ResourceLimit)?;
+        let bytes = cell_replacement_bytes(retained, old, new, self.limit, || {
+            additional_cell_bytes(&shared.retained_bytes, &shared.owned_bytes, local)
+        })?;
         Self::reserve(local, &mut *self.bytes, &mut shared.local_bytes, bytes)?;
         store[cell] = value;
         self.segment
@@ -270,21 +258,9 @@ impl Cells<'_> {
         let new = var
             .charge(&value)
             .ok_or(DataError::KernelContract { node: node.node() })?;
-        let bytes = retained
-            .checked_sub(old)
-            .and_then(|b| b.checked_add(new))
-            .filter(|b| {
-                b.checked_add(if var.scope() == VarScope::Local {
-                    shared
-                        .retained_bytes
-                        .get()
-                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                } else {
-                    0
-                })
-                .is_some_and(|total| total <= self.limit)
-            })
-            .ok_or(RunError::ResourceLimit)?;
+        let bytes = cell_replacement_bytes(retained, old, new, self.limit, || {
+            additional_cell_bytes(&shared.retained_bytes, &shared.owned_bytes, local)
+        })?;
         let version = self.versions[variable]
             .checked_add(1)
             .ok_or(RunError::ResourceLimit)?;
@@ -297,6 +273,36 @@ impl Cells<'_> {
         self.segment.variable(variable, var.id());
         Ok(())
     }
+}
+
+fn additional_cell_bytes(
+    retained: &Tally,
+    owned: &std::sync::atomic::AtomicUsize,
+    local: bool,
+) -> usize {
+    if local {
+        retained.get().saturating_add(owned.load(Ordering::Relaxed))
+    } else {
+        0
+    }
+}
+
+fn cell_replacement_bytes(
+    retained: usize,
+    old: usize,
+    new: usize,
+    limit: usize,
+    additional: impl FnOnce() -> usize,
+) -> Result<usize, RunError> {
+    retained
+        .checked_sub(old)
+        .and_then(|bytes| bytes.checked_add(new))
+        .filter(|bytes| {
+            bytes
+                .checked_add(additional())
+                .is_some_and(|total| total <= limit)
+        })
+        .ok_or(RunError::ResourceLimit)
 }
 
 /// Data consumption reads only cells, frames and the layout, so it runs on `Cells`.

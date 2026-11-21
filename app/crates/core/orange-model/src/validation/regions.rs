@@ -200,12 +200,7 @@ fn regions_among(
         incomplete_nodes: connections.incomplete_nodes.clone(),
         ..RegionValidation::default()
     };
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     for (body_ref, body) in scope.bodies(document) {
         let function = match body_ref {
             BodyRef::Root => None,

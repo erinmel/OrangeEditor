@@ -564,7 +564,7 @@ impl NodeInfo<'_> {
         ports.iter().map(|port| {
             (
                 port.port_id.as_str(),
-                port.direction == orange_model::document::PortDirection::Input,
+                port.direction == PortDirection::Input,
             )
         })
     }
@@ -840,11 +840,11 @@ fn wall_ns() -> Option<i64> {
 #[derive(Debug)]
 struct UtcTimestamp;
 
-impl orange_sdk::ServiceNode for UtcTimestamp {
-    fn run(&self, _call: &orange_sdk::Call<'_>) -> Result<Vec<Value>, orange_sdk::KernelFault> {
+impl ServiceNode for UtcTimestamp {
+    fn run(&self, _call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         wall_ns()
             .map(|now| vec![Value::Timestamp(now)])
-            .ok_or(orange_sdk::KernelFault {
+            .ok_or(KernelFault {
                 code: "org.orange.clock/OutOfRange".into(),
                 message_key: "core/kernel-out-of-range".into(),
                 message: "The host clock is outside the timestamp range.",

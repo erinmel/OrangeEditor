@@ -64,7 +64,8 @@ impl<'de> Deserialize<'de> for HostOrigin {
     }
 }
 
-fn is_sha256(value: &str) -> bool {
+/// Checks the canonical SHA-256 form used in catalogue and package identities.
+pub fn is_sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
             && hex

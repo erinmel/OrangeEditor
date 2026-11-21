@@ -111,6 +111,14 @@ pub struct ResolvedNominal {
     inputs: Box<[String]>,
 }
 
+fn record_storage(field: &ValueShape, optional: bool, value: &Value) -> Option<Value> {
+    match (optional, value) {
+        (true, Value::None) => None,
+        (true, Value::Some(inner)) if field.unboxed_none() => Some(inner.as_ref().clone()),
+        (_, value) => Some(value.clone()),
+    }
+}
+
 impl ResolvedNominal {
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
         &self.snapshot
@@ -139,14 +147,7 @@ impl ResolvedNominal {
                 for (index, input) in inputs.iter().enumerate() {
                     let (field, optional) =
                         record.field(index).ok_or(KernelError::InputContract)?;
-                    fields.push(match (optional, input) {
-                        (false, value) => Some(value.clone()),
-                        (true, Value::None) => None,
-                        (true, Value::Some(inner)) if field.unboxed_none() => {
-                            Some(inner.as_ref().clone())
-                        }
-                        (true, value) => Some(value.clone()),
-                    });
+                    fields.push(record_storage(field, optional, input));
                 }
                 let value = Value::Record(Arc::new(RecordRepr {
                     ty: record.ty().clone(),
@@ -179,14 +180,7 @@ impl ResolvedNominal {
                 };
                 let mut fields = value.fields.to_vec();
                 let slot = fields.get_mut(member).ok_or(KernelError::InputContract)?;
-                *slot = match (optional, &inputs[1]) {
-                    (false, new) => Some(new.clone()),
-                    (true, Value::None) => None,
-                    (true, Value::Some(inner)) if field.unboxed_none() => {
-                        Some(inner.as_ref().clone())
-                    }
-                    (true, new) => Some(new.clone()),
-                };
+                *slot = record_storage(field, optional, &inputs[1]);
                 let updated = Value::Record(Arc::new(RecordRepr {
                     ty: value.ty.clone(),
                     fields: fields.into(),

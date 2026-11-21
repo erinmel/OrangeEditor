@@ -76,7 +76,7 @@ fn reconfigure_for_each(
 impl Host {
     /// The timing policy of a root event entry. The outer option identifies a trigger
     /// that can be timed, and the inner option is its current timing policy.
-    pub fn entry_timing(&self, draft: &Draft, node: NodeId) -> Option<Option<crate::EventTiming>> {
+    pub fn entry_timing(&self, draft: &Draft, node: NodeId) -> Option<Option<EventTiming>> {
         event_entry(draft, node).map(|policy| policy.timing)
     }
 
@@ -85,7 +85,7 @@ impl Host {
         &self,
         draft: &mut Draft,
         node: NodeId,
-        timing: Option<crate::EventTiming>,
+        timing: Option<EventTiming>,
     ) -> Result<bool, HostError> {
         let mut policy = event_entry(draft, node)
             .cloned()
@@ -524,10 +524,7 @@ impl Host {
             let ty = "core/bool@1".parse().map_err(|error| refused(&error))?;
             commands.push(DocCommand::SetLiteral {
                 port: port_ref((end, "keep"))?,
-                literal: Some(orange_model::document::literal::Literal::value(
-                    ty,
-                    json!(true),
-                )),
+                literal: Some(Literal::value(ty, json!(true))),
             });
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;

@@ -78,6 +78,19 @@ pub struct KernelFault {
     pub message: &'static str,
 }
 impl KernelFault {
+    /// Constructs a redacted fault with static identifiers and fallback text.
+    pub const fn from_static(
+        code: &'static str,
+        message_key: &'static str,
+        message: &'static str,
+    ) -> Self {
+        Self {
+            code: FaultText::Static(code),
+            message_key: FaultText::Static(message_key),
+            message,
+        }
+    }
+
     /// Whether this redacted envelope satisfies the shared bounded ABI.
     pub fn is_valid(&self) -> bool {
         use orange_model::value::shape::is_error_code;

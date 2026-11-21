@@ -397,10 +397,7 @@ mod tests {
 
     fn input(width: f32, events: Vec<egui::Event>) -> egui::RawInput {
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                vec2(width, 240.0),
-            )),
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 240.0))),
             events,
             ..Default::default()
         }
@@ -456,7 +453,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut selected = 0;
         let mut frame = |width, events| {
-            let mut rect = egui::Rect::NOTHING;
+            let mut rect = Rect::NOTHING;
             let mut focus = egui::Color32::TRANSPARENT;
             let output = ctx.run_ui(input(width, events), |ui| {
                 focus = Theme::of(ui).focus;
@@ -517,7 +514,7 @@ mod tests {
         let mut continuous = 4.0;
         let mut stepped = 4;
         let mut frame = |events| {
-            let mut rect = egui::Rect::NOTHING;
+            let mut rect = Rect::NOTHING;
             ctx.run_ui(input(240.0, events), |ui| {
                 rect = continuous_slider(ui, Surface::Panel, &mut continuous, 4.0..=16.0).rect;
                 let _ = stepped_slider(
