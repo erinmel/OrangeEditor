@@ -252,28 +252,27 @@ pub(crate) fn pick_color(
     response: &egui::Response,
     color: [u8; 4],
 ) -> Option<String> {
-    let picked = orange_ui_controls::color_picker::popup(
-        ui,
-        response,
-        color,
-        true,
-        orange_ui_controls::color_picker::Labels {
-            channels: [
-                t("color-red"),
-                t("color-green"),
-                t("color-blue"),
-                t("color-alpha"),
-            ],
-            hue: t("color-hue"),
-            saturation_value: t("color-saturation-value"),
-            recent: t("color-recent"),
-            value: t("color-value"),
-            invalid_value: t("color-value-invalid"),
-            apply: t("color-apply"),
-            cancel: t("cancel"),
-        },
-    )?;
+    let picked =
+        orange_ui_controls::color_picker::popup(ui, response, color, true, color_picker_labels())?;
     Some(orange_host::rgba_hex(picked))
+}
+
+pub(crate) fn color_picker_labels() -> orange_ui_controls::color_picker::Labels<'static> {
+    orange_ui_controls::color_picker::Labels {
+        channels: [
+            t("color-red"),
+            t("color-green"),
+            t("color-blue"),
+            t("color-alpha"),
+        ],
+        hue: t("color-hue"),
+        saturation_value: t("color-saturation-value"),
+        recent: t("color-recent"),
+        value: t("color-value"),
+        invalid_value: t("color-value-invalid"),
+        apply: t("color-apply"),
+        cancel: t("cancel"),
+    }
 }
 
 pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {

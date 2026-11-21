@@ -69,6 +69,7 @@ name = Nombre
 expand = Expandir
 collapse = Contraer
 group-select-nodes = Seleccionar sus nodos
+group-custom-color = Color personalizado…
 group-apply-name = Aplicar nombre del grupo
 group-color-blue = Azul
 group-color-green = Verde
