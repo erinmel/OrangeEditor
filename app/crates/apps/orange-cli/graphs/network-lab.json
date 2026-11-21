@@ -1,0 +1,1952 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "4e657477-6f72-4000-8000-000000000001",
+  "revision": 16,
+  "package_lock": [
+    {
+      "id": "org.orange.net",
+      "version": "0.0.0",
+      "content_digest": "sha256:f264fc68eb4ef10354ff58109a95740e364b438b95d21ce98dc3dca121efbfb3"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "4e657477-6f72-4000-8000-00000000012d",
+      "name": "http_status",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000012e",
+      "name": "http_body",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000012f",
+      "name": "http_bytes",
+      "type": "core/bytes@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000130",
+      "name": "stream_lines",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000131",
+      "name": "latest_stream_line",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000132",
+      "name": "ws_text",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000133",
+      "name": "ws_bytes",
+      "type": "core/bytes@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000134",
+      "name": "mqtt_text",
+      "type": "core/list@1<core/string@1>",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000135",
+      "name": "mqtt_bytes",
+      "type": "core/bytes@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000138",
+      "name": "amqp_text_confirmed",
+      "type": "core/bool@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000136",
+      "name": "amqp_text",
+      "type": "org.orange.net/amqp-text-delivery@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000139",
+      "name": "amqp_bytes_confirmed",
+      "type": "core/bool@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000137",
+      "name": "amqp_bytes",
+      "type": "org.orange.net/amqp-binary-delivery@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [
+    {
+      "id": "4e657477-6f72-4000-8000-0000000003e9",
+      "name": "HTTP",
+      "adapter": "org.orange.net/http",
+      "scope": "graph",
+      "settings": {
+        "base_url": "http://127.0.0.1:18080",
+        "timeout_ms": 2000,
+        "stream_timeout_ms": 5000
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000003ec",
+      "name": "WebSocket",
+      "adapter": "org.orange.net/websocket",
+      "scope": "graph",
+      "settings": {
+        "url": "ws://127.0.0.1:18081/echo"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000003ed",
+      "name": "MQTT",
+      "adapter": "org.orange.net/mqtt",
+      "scope": "graph",
+      "settings": {
+        "url": "mqtt://127.0.0.1:11883",
+        "qos": 1
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000003ee",
+      "name": "AMQP",
+      "adapter": "org.orange.net/amqp",
+      "scope": "graph",
+      "settings": {
+        "url": "amqp://127.0.0.1:15673"
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:10595c774cfe1287cd9c381067f1b5e324eecc7e4225e8573b4a02af463f1776": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "topic",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:1390e3935a789bb6cf8dee7818b6efae444225cad21aab2bcce7fb18658de042": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "queue",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.net/amqp-binary-delivery@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content_type",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "headers",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "header_fields",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "query",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/string@1>",
+          "default": {
+            "type": "core/map@1<core/string@1,core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response_headers",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/map@1<core/string@1,core/list@1<core/string@1>>",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:1e2f380a602f5db2e5d2bd9550f3d8ac0be2d8fdb97c34b462479ff2b837d3f3": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "queue",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.net/amqp-text-delivery@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:2c624b6a2462af0624ea831d15b7f2c5f7684b2177acfc7fe3767af27a52eaea": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content_type",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "headers",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/list@1<core/string@1>",
+          "default": {
+            "type": "core/list@1<core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "default": {
+            "type": "core/bytes@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response_type",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:3f9eb2aeba42e5497e658970ae3dec1632bb131d6a130f74e360a13aed7e8fea": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "data",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1"
+        }
+      ]
+    },
+    "sha256:40e00a1dd7ce0b5967866530b37fafa1bca4cfe2dfce97ceca18a3fdeae0fbac": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content_type",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "headers",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/list@1<core/string@1>",
+          "default": {
+            "type": "core/list@1<core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "default": {
+            "type": "core/bytes@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "lines",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:4edd8a4e739bc459b4b3a8c9f086d83b11013c2e75cfc253389c523b5063ff68": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:5d21767b2201beabebe55063d6baa7f74885e69b048d90e44aeb8a1e993dba4b": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "topic",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "retain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1"
+        }
+      ]
+    },
+    "sha256:8db1dd1def71724a8bf36a76c6114b43cfd4d90f58e098706e607a6dca0d28d5": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "topic",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/list@1<core/string@1>",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:9230d40a5a508a554295c0d51b3c084cdf19df27b9acd7c2b30fd792ec3660b9": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "topic",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "data",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1"
+        },
+        {
+          "port_id": "retain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1"
+        }
+      ]
+    },
+    "sha256:cb67ba791936b4bace05cdf20565fd49ed10122c464fd026cc01219fb382d540": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:e57104288fca4f763fdebac929cf9dfa75e3277027d8762de26dddaa22c81150": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    },
+    "sha256:e5c3cd156ddd20f6a483017b6b923dc8b2bf6baef2b9052208b14cf297fee996": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "routing_key",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "data",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1"
+        }
+      ]
+    },
+    "sha256:e60f71b621f1cae8061499680a74ee9035c0b094735132bdd93ee60d8429eda7": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "routing_key",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "4e657477-6f72-4000-8000-000000000065",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Fetch JSON"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000067",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-00000000012d"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000068",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-00000000012e"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000006f",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Fetch bytes"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000071",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-00000000012f"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000079",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Read HTTP stream"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000007b",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000130"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000007d",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000131"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000083",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Send WebSocket text"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000086",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000132"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000008d",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Send WebSocket bytes"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000090",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000133"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000097",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Publish MQTT text"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000009a",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000134"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000a1",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Publish MQTT bytes"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000a4",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000135"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000ab",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Publish AMQP text"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000af",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000138"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000ae",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000136"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000b5",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Publish AMQP bytes"
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000b9",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000139"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000b8",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4e657477-6f72-4000-8000-000000000137"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000066",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003e9"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb362e6af9d762f6d63bc509f912a71e6827c3f780846ee80aa58eb4e62b4de8",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "/json"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000070",
+      "definition_id": "org.orange.net/http-request-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003e9"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:2c624b6a2462af0624ea831d15b7f2c5f7684b2177acfc7fe3767af27a52eaea",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "/bytes"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000007a",
+      "definition_id": "org.orange.net/http-stream",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003e9"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:40e00a1dd7ce0b5967866530b37fafa1bca4cfe2dfce97ceca18a3fdeae0fbac",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "/stream"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000007c",
+      "definition_id": "org.orange.net/http-stream-line",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003e9"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb67ba791936b4bace05cdf20565fd49ed10122c464fd026cc01219fb382d540",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000084",
+      "definition_id": "org.orange.net/ws-send",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ec"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:e57104288fca4f763fdebac929cf9dfa75e3277027d8762de26dddaa22c81150",
+      "inputs": {
+        "text": {
+          "type": "core/string@1",
+          "value": "hello WebSocket"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000085",
+      "definition_id": "org.orange.net/ws-message",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ec"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb67ba791936b4bace05cdf20565fd49ed10122c464fd026cc01219fb382d540",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000008e",
+      "definition_id": "org.orange.net/ws-send-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ec"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:3f9eb2aeba42e5497e658970ae3dec1632bb131d6a130f74e360a13aed7e8fea",
+      "inputs": {
+        "data": {
+          "type": "core/bytes@1",
+          "value": "AP+ACg=="
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-00000000008f",
+      "definition_id": "org.orange.net/ws-binary",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ec"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:4edd8a4e739bc459b4b3a8c9f086d83b11013c2e75cfc253389c523b5063ff68",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000098",
+      "definition_id": "org.orange.net/mqtt-publish",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ed"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:5d21767b2201beabebe55063d6baa7f74885e69b048d90e44aeb8a1e993dba4b",
+      "inputs": {
+        "retain": {
+          "type": "core/bool@1",
+          "value": false
+        },
+        "text": {
+          "type": "core/string@1",
+          "value": "hello MQTT"
+        },
+        "topic": {
+          "type": "core/string@1",
+          "value": "orange/lab/text"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-000000000099",
+      "definition_id": "org.orange.net/mqtt-message",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ed"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:8db1dd1def71724a8bf36a76c6114b43cfd4d90f58e098706e607a6dca0d28d5",
+      "inputs": {
+        "topic": {
+          "type": "core/string@1",
+          "value": "orange/lab/text"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000a2",
+      "definition_id": "org.orange.net/mqtt-publish-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ed"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:9230d40a5a508a554295c0d51b3c084cdf19df27b9acd7c2b30fd792ec3660b9",
+      "inputs": {
+        "data": {
+          "type": "core/bytes@1",
+          "value": "AP+ACg=="
+        },
+        "retain": {
+          "type": "core/bool@1",
+          "value": false
+        },
+        "topic": {
+          "type": "core/string@1",
+          "value": "orange/lab/binary"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000a3",
+      "definition_id": "org.orange.net/mqtt-binary",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ed"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:10595c774cfe1287cd9c381067f1b5e324eecc7e4225e8573b4a02af463f1776",
+      "inputs": {
+        "topic": {
+          "type": "core/string@1",
+          "value": "orange/lab/binary"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000ac",
+      "definition_id": "org.orange.net/amqp-publish",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ee"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:e60f71b621f1cae8061499680a74ee9035c0b094735132bdd93ee60d8429eda7",
+      "inputs": {
+        "routing_key": {
+          "type": "core/string@1",
+          "value": "orange.lab.text"
+        },
+        "text": {
+          "type": "core/string@1",
+          "value": "hello AMQP"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000ad",
+      "definition_id": "org.orange.net/amqp-message",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ee"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:1e2f380a602f5db2e5d2bd9550f3d8ac0be2d8fdb97c34b462479ff2b837d3f3",
+      "inputs": {
+        "queue": {
+          "type": "core/string@1",
+          "value": "orange.lab.text"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000b6",
+      "definition_id": "org.orange.net/amqp-publish-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ee"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:e5c3cd156ddd20f6a483017b6b923dc8b2bf6baef2b9052208b14cf297fee996",
+      "inputs": {
+        "data": {
+          "type": "core/bytes@1",
+          "value": "AP+ACg=="
+        },
+        "routing_key": {
+          "type": "core/string@1",
+          "value": "orange.lab.binary"
+        }
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000000b7",
+      "definition_id": "org.orange.net/amqp-binary",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "4e657477-6f72-4000-8000-0000000003ee"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:1390e3935a789bb6cf8dee7818b6efae444225cad21aab2bcce7fb18658de042",
+      "inputs": {
+        "queue": {
+          "type": "core/string@1",
+          "value": "orange.lab.binary"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d3",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000067",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000068",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d0",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000065",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000066",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d1",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000066",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000067",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d2",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000066",
+        "port": "status"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000067",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d4",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000066",
+        "port": "response"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000068",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d5",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000006f",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000070",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d6",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000070",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000071",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d7",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000070",
+        "port": "response"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000071",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d8",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000079",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000007a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007d9",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000007a",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000007b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007da",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000007a",
+        "port": "lines"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000007b",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007db",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000007c",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000007d",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007dc",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000007c",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000007d",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007dd",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000083",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000084",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007de",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000085",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000086",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007df",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000085",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000086",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e0",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000008d",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000008e",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e1",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000008f",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000090",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e2",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-00000000008f",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000090",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e3",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000097",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-000000000098",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e4",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000099",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000009a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e5",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-000000000099",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-00000000009a",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e6",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000a1",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000a2",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e7",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000a3",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000a4",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e8",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000a3",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000a4",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007e9",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000ab",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000ac",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007ea",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000ac",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000af",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007eb",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000ad",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000ae",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007ec",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000ad",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000ae",
+        "port": "value"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007ed",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000b5",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000b6",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007ee",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000b6",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000b9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007ef",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000b7",
+        "port": "then"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000b8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e657477-6f72-4000-8000-0000000007f0",
+      "from": {
+        "node": "4e657477-6f72-4000-8000-0000000000b7",
+        "port": "payload"
+      },
+      "to": {
+        "node": "4e657477-6f72-4000-8000-0000000000b8",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "4e657477-6f72-4000-8000-000000000065": {
+        "x": 0,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000066": {
+        "x": 360,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000067": {
+        "x": 768,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000068": {
+        "x": 1128,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-00000000006f": {
+        "x": 0,
+        "y": 480
+      },
+      "4e657477-6f72-4000-8000-000000000070": {
+        "x": 360,
+        "y": 480
+      },
+      "4e657477-6f72-4000-8000-000000000071": {
+        "x": 768,
+        "y": 480
+      },
+      "4e657477-6f72-4000-8000-000000000079": {
+        "x": 0,
+        "y": 960
+      },
+      "4e657477-6f72-4000-8000-00000000007a": {
+        "x": 360,
+        "y": 960
+      },
+      "4e657477-6f72-4000-8000-00000000007b": {
+        "x": 768,
+        "y": 960
+      },
+      "4e657477-6f72-4000-8000-00000000007c": {
+        "x": 360,
+        "y": 1296
+      },
+      "4e657477-6f72-4000-8000-00000000007d": {
+        "x": 768,
+        "y": 1296
+      },
+      "4e657477-6f72-4000-8000-000000000083": {
+        "x": 1536,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000084": {
+        "x": 1896,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000085": {
+        "x": 2304,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-000000000086": {
+        "x": 2664,
+        "y": 0
+      },
+      "4e657477-6f72-4000-8000-00000000008d": {
+        "x": 1536,
+        "y": 264
+      },
+      "4e657477-6f72-4000-8000-00000000008e": {
+        "x": 1896,
+        "y": 264
+      },
+      "4e657477-6f72-4000-8000-00000000008f": {
+        "x": 2304,
+        "y": 264
+      },
+      "4e657477-6f72-4000-8000-000000000090": {
+        "x": 2664,
+        "y": 264
+      },
+      "4e657477-6f72-4000-8000-000000000097": {
+        "x": 1536,
+        "y": 624
+      },
+      "4e657477-6f72-4000-8000-000000000098": {
+        "x": 1896,
+        "y": 624
+      },
+      "4e657477-6f72-4000-8000-000000000099": {
+        "x": 2304,
+        "y": 624
+      },
+      "4e657477-6f72-4000-8000-00000000009a": {
+        "x": 2664,
+        "y": 624
+      },
+      "4e657477-6f72-4000-8000-0000000000a1": {
+        "x": 1536,
+        "y": 984
+      },
+      "4e657477-6f72-4000-8000-0000000000a2": {
+        "x": 1896,
+        "y": 984
+      },
+      "4e657477-6f72-4000-8000-0000000000a3": {
+        "x": 2304,
+        "y": 984
+      },
+      "4e657477-6f72-4000-8000-0000000000a4": {
+        "x": 2664,
+        "y": 984
+      },
+      "4e657477-6f72-4000-8000-0000000000ab": {
+        "x": 1536,
+        "y": 1512
+      },
+      "4e657477-6f72-4000-8000-0000000000ac": {
+        "x": 1896,
+        "y": 1512
+      },
+      "4e657477-6f72-4000-8000-0000000000af": {
+        "x": 2304,
+        "y": 1512
+      },
+      "4e657477-6f72-4000-8000-0000000000ad": {
+        "x": 2664,
+        "y": 1512
+      },
+      "4e657477-6f72-4000-8000-0000000000ae": {
+        "x": 3048,
+        "y": 1512
+      },
+      "4e657477-6f72-4000-8000-0000000000b5": {
+        "x": 1536,
+        "y": 1896
+      },
+      "4e657477-6f72-4000-8000-0000000000b6": {
+        "x": 1896,
+        "y": 1896
+      },
+      "4e657477-6f72-4000-8000-0000000000b9": {
+        "x": 2304,
+        "y": 1896
+      },
+      "4e657477-6f72-4000-8000-0000000000b7": {
+        "x": 2664,
+        "y": 1896
+      },
+      "4e657477-6f72-4000-8000-0000000000b8": {
+        "x": 3048,
+        "y": 1896
+      }
+    },
+    "groups": {
+      "case-1": {
+        "name": "HTTP JSON",
+        "color": "#8eaed6",
+        "nodes": [
+          "4e657477-6f72-4000-8000-000000000065",
+          "4e657477-6f72-4000-8000-000000000066",
+          "4e657477-6f72-4000-8000-000000000067",
+          "4e657477-6f72-4000-8000-000000000068"
+        ],
+        "collapsed": false
+      },
+      "case-2": {
+        "name": "HTTP binary response",
+        "color": "#589ac9",
+        "nodes": [
+          "4e657477-6f72-4000-8000-00000000006f",
+          "4e657477-6f72-4000-8000-000000000070",
+          "4e657477-6f72-4000-8000-000000000071"
+        ],
+        "collapsed": false
+      },
+      "case-3": {
+        "name": "HTTP NDJSON stream",
+        "color": "#42b3bd",
+        "nodes": [
+          "4e657477-6f72-4000-8000-000000000079",
+          "4e657477-6f72-4000-8000-00000000007a",
+          "4e657477-6f72-4000-8000-00000000007b",
+          "4e657477-6f72-4000-8000-00000000007c",
+          "4e657477-6f72-4000-8000-00000000007d"
+        ],
+        "collapsed": false
+      },
+      "case-4": {
+        "name": "WebSocket echo",
+        "color": "#b386d5",
+        "nodes": [
+          "4e657477-6f72-4000-8000-000000000083",
+          "4e657477-6f72-4000-8000-000000000084",
+          "4e657477-6f72-4000-8000-000000000085",
+          "4e657477-6f72-4000-8000-000000000086",
+          "4e657477-6f72-4000-8000-00000000008d",
+          "4e657477-6f72-4000-8000-00000000008e",
+          "4e657477-6f72-4000-8000-00000000008f",
+          "4e657477-6f72-4000-8000-000000000090"
+        ],
+        "collapsed": false
+      },
+      "case-5": {
+        "name": "MQTT publish and subscribe",
+        "color": "#75b87d",
+        "nodes": [
+          "4e657477-6f72-4000-8000-000000000097",
+          "4e657477-6f72-4000-8000-000000000098",
+          "4e657477-6f72-4000-8000-000000000099",
+          "4e657477-6f72-4000-8000-00000000009a",
+          "4e657477-6f72-4000-8000-0000000000a1",
+          "4e657477-6f72-4000-8000-0000000000a2",
+          "4e657477-6f72-4000-8000-0000000000a3",
+          "4e657477-6f72-4000-8000-0000000000a4"
+        ],
+        "collapsed": false
+      },
+      "case-6": {
+        "name": "AMQP publish and receive",
+        "color": "#d7a669",
+        "nodes": [
+          "4e657477-6f72-4000-8000-0000000000ab",
+          "4e657477-6f72-4000-8000-0000000000ac",
+          "4e657477-6f72-4000-8000-0000000000af",
+          "4e657477-6f72-4000-8000-0000000000ad",
+          "4e657477-6f72-4000-8000-0000000000ae",
+          "4e657477-6f72-4000-8000-0000000000b5",
+          "4e657477-6f72-4000-8000-0000000000b6",
+          "4e657477-6f72-4000-8000-0000000000b9",
+          "4e657477-6f72-4000-8000-0000000000b7",
+          "4e657477-6f72-4000-8000-0000000000b8"
+        ],
+        "collapsed": false
+      }
+    }
+  }
+}

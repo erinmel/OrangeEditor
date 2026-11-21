@@ -1,0 +1,300 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "80000000-0000-4000-8000-000000000100",
+  "revision": 3,
+  "package_lock": [
+    {
+      "id": "org.orange.json",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "80000000-0000-4000-8000-000000000064",
+      "name": "extracted_text",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {
+    "sha256:04cb0de9ff68157db65a12f736bedc7b013f291561c635536ba50da4d5e2d797": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/json@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/option@1<core/string@1>",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/json@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:86f4c8c5e0f76ca5d9bcf4238d7072752d8d9d362cbf14aa9bfd2444d31c731b": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/json@1"
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/option@1<core/json@1>",
+          "source": "computed"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "80000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Read sample JSON"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000004",
+      "definition_id": "core/coalesce",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "type_pins": {
+        "T": "core/json@1"
+      },
+      "inputs": {
+        "fallback": {
+          "type": "core/json@1",
+          "value": "\"(field missing)\""
+        }
+      },
+      "name": "Use a fallback if the path is missing"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000006",
+      "definition_id": "core/coalesce",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "type_pins": {
+        "T": "core/string@1"
+      },
+      "inputs": {
+        "fallback": {
+          "type": "core/string@1",
+          "value": "(field is not text)"
+        }
+      },
+      "name": "Use a fallback if the field is not text"
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000007",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "80000000-0000-4000-8000-000000000064"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "inputs": {
+        "text": {
+          "type": "core/string@1",
+          "value": "{\n  \"method\": \"GET\",\n  \"headers\": { \"Content-Type\": \"application/json\" },\n  \"items\": [{ \"name\": \"Studio mic\", \"level\": -24.5 }]\n}"
+        }
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000003",
+      "definition_id": "org.orange.json/get-path",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:86f4c8c5e0f76ca5d9bcf4238d7072752d8d9d362cbf14aa9bfd2444d31c731b",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "items[0].name"
+        }
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000000005",
+      "definition_id": "org.orange.json/as-string",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:04cb0de9ff68157db65a12f736bedc7b013f291561c635536ba50da4d5e2d797"
+    }
+  ],
+  "edges": [
+    {
+      "id": "80000000-0000-4000-8000-000000001000",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000007",
+        "port": "in"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000001005",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000006",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000007",
+        "port": "value"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000001001",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000002",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "value"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000001002",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000003",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000004",
+        "port": "value"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000001003",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000004",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000005",
+        "port": "value"
+      }
+    },
+    {
+      "id": "80000000-0000-4000-8000-000000001004",
+      "from": {
+        "node": "80000000-0000-4000-8000-000000000005",
+        "port": "result"
+      },
+      "to": {
+        "node": "80000000-0000-4000-8000-000000000006",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "80000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "80000000-0000-4000-8000-000000000002": {
+        "x": 0,
+        "y": 180
+      },
+      "80000000-0000-4000-8000-000000000003": {
+        "x": 330,
+        "y": 180
+      },
+      "80000000-0000-4000-8000-000000000004": {
+        "x": 660,
+        "y": 180
+      },
+      "80000000-0000-4000-8000-000000000005": {
+        "x": 990,
+        "y": 180
+      },
+      "80000000-0000-4000-8000-000000000006": {
+        "x": 1320,
+        "y": 180
+      },
+      "80000000-0000-4000-8000-000000000007": {
+        "x": 1650,
+        "y": 180
+      }
+    }
+  }
+}

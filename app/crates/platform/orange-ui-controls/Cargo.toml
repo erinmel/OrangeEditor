@@ -1,0 +1,16 @@
+[package]
+name = "orange-ui-controls"
+description = "Reusable theme-aware egui controls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+egui.workspace = true
+egui-lucide.workspace = true
+egui_extras.workspace = true
+egui_material_icons.workspace = true
+
+[lints]
+workspace = true

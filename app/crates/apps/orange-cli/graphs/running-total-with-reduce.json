@@ -1,0 +1,218 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "91000000-0000-4000-8000-000000000002",
+  "revision": 2,
+  "package_lock": [
+    {
+      "id": "org.orange.math",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "72000000-0000-4000-8000-000000000002",
+      "name": "result",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {
+    "sha256:349432ebf1126eb8a1b478bbc84d42c3d39c47b624c15960d5c098109baf99de": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "a",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "b",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "sum",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "computed"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "81000000-0000-4000-8000-000000000011",
+      "definition_id": "core/fold-begin",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "zone": "total"
+      },
+      "type_pins": {
+        "A": "core/i64@1",
+        "T": "core/i64@1"
+      },
+      "inputs": {
+        "initial": {
+          "type": "core/i64@1",
+          "value": "0"
+        },
+        "items": {
+          "type": "core/list@1<core/i64@1>",
+          "value": [
+            "2",
+            "3",
+            "5"
+          ]
+        }
+      },
+      "name": "Start running total"
+    },
+    {
+      "id": "81000000-0000-4000-8000-000000000013",
+      "definition_id": "core/fold-end",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "zone": "total"
+      },
+      "type_pins": {
+        "A": "core/i64@1"
+      },
+      "name": "Running total"
+    },
+    {
+      "id": "81000000-0000-4000-8000-000000000012",
+      "definition_id": "org.orange.math/add",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "type_pins": {
+        "T": "core/i64@1"
+      },
+      "provider": {
+        "package": "org.orange.math",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:349432ebf1126eb8a1b478bbc84d42c3d39c47b624c15960d5c098109baf99de",
+      "name": "Add item to total"
+    },
+    {
+      "id": "82000000-0000-4000-8000-000000000002",
+      "definition_id": "core/on-start",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "83000000-0000-4000-8000-000000000002",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "72000000-0000-4000-8000-000000000002"
+      },
+      "name": "Save result"
+    }
+  ],
+  "edges": [
+    {
+      "id": "61000000-0000-4000-8000-000000000011",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000011",
+        "port": "accumulator"
+      },
+      "to": {
+        "node": "81000000-0000-4000-8000-000000000012",
+        "port": "a"
+      }
+    },
+    {
+      "id": "61000000-0000-4000-8000-000000000012",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000011",
+        "port": "element"
+      },
+      "to": {
+        "node": "81000000-0000-4000-8000-000000000012",
+        "port": "b"
+      }
+    },
+    {
+      "id": "61000000-0000-4000-8000-000000000013",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000012",
+        "port": "sum"
+      },
+      "to": {
+        "node": "81000000-0000-4000-8000-000000000013",
+        "port": "next"
+      }
+    },
+    {
+      "id": "62000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "82000000-0000-4000-8000-000000000002",
+        "port": "then"
+      },
+      "to": {
+        "node": "83000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "63000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "81000000-0000-4000-8000-000000000013",
+        "port": "result"
+      },
+      "to": {
+        "node": "83000000-0000-4000-8000-000000000002",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "81000000-0000-4000-8000-000000000011": {
+        "x": 0,
+        "y": 0
+      },
+      "81000000-0000-4000-8000-000000000012": {
+        "x": 320,
+        "y": 0
+      },
+      "81000000-0000-4000-8000-000000000013": {
+        "x": 640,
+        "y": 0
+      },
+      "82000000-0000-4000-8000-000000000002": {
+        "y": -165,
+        "x": 640
+      },
+      "83000000-0000-4000-8000-000000000002": {
+        "y": 0,
+        "x": 975
+      }
+    }
+  }
+}

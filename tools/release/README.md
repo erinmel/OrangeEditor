@@ -1,6 +1,6 @@
 # Desktop release contract
 
-Release CD is implemented in [release.yml](../../.github/workflows/release.yml). The current workspace contains only a library, so [.github/release.json](../../.github/release.json) intentionally has null package/binary and `qualified: false`. Configuration validation succeeds; an attempted release fails preflight with an explicit missing-executable/qualification error. No source-only release, placeholder app, signing identity or product acceptance is invented.
+Release CD is implemented in [release.yml](../../.github/workflows/release.yml). The workspace builds the `orange-editor` executable from `orange-desktop`. [.github/release.json](../../.github/release.json) keeps package and binary unset and qualification disabled until the native adapters and their evidence are ready. Configuration validation succeeds. An attempted release stops at preflight.
 
 Before enabling CD, the executable work unit must select its package and binary, declare a reviewed license, choose release features/assets/runtime baselines, and implement the three native adapters below. `qualified` is an explicit maintainer declaration backed by the applicable WU-12/G5 or documented early-preview qualification evidence; it is not inferred from passing unit tests. Any later feature/target change requires renewed review.
 
@@ -38,3 +38,13 @@ PR and reusable validation jobs have read-only permissions and receive no releas
 ## Validation
 
 `node --test tools/release.test.mjs` exercises disabled/unqualified releases, wrong package/version, library targets, license/development-feature guards, missing packagers, failed native verification, artifact paths, actual checksums and complete platform collection. `node tools/release.mjs check` validates the tracked configuration without claiming release readiness. Run actionlint against both workflow files for schema/expression checks. No real desktop package can be built or published until the prerequisites above are implemented.
+
+For each final desktop artifact, run the following from a fresh install with a clean
+profile and record the platform, artifact checksum and result.
+
+| Flow | Expected result |
+| --- | --- |
+| Save and reopen | Save a graph with custom names, positions, wires and inputs. Close and reopen the application. The graph retains the edits and produces the same result when triggered. |
+| Package lifecycle | Export a pure function, import it, use it in a different graph and reopen that graph. After removal, the saved node remains visible with an unavailable-provider diagnostic. Reinstalling the exact archive restores it. |
+| File access | Import a function that writes a file. Select a fresh folder connection and run the graph. Verify the expected contents in that folder and the failure route for an invalid path. |
+| Audio playback and routing | Play a short file through an explicitly selected output. Verify which endpoint receives the signal and that completion fires. Repeat with a different endpoint where supported. Record any loopback or per-application capture result separately. |

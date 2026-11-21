@@ -2,7 +2,7 @@
 
 An expansion is installed into the running OrangeEditor application. It is not a Rust crate compiled into OrangeEditor and not a development MCP/plugin. Crates that a downstream product links against the core are a separate, build-time extension path (ADR-21). This design owns install, compatibility, permissions, contribution registration, lifetime barriers and removal.
 
-Maintained expansion source lives under `plugins/<name>` in the [monorepo](15-monorepo-layout.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
+Maintained expansion source lives under `plugins/<name>` in the [monorepo](02-architecture.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
 
 ADR-22 narrows foundation delivery to generic capabilities. Specialized OBS/Twitch, TTS, webhook and browser-canvas integrations are independent plugins, not bundled release requirements. A plugin can add a typed event source (for example, a remote service notification) using owned bounded ingress, without adding scheduler rules. The SDK acceptance sample is synthetic and requires no live account. Plugins generating speech return an approved audio asset or bounded PCM stream to the existing selected-device playback service; they never write to an audio callback.
 
@@ -187,13 +187,13 @@ directory in name order and reports each result separately. The application pass
 the packages to `Host::with_services`, so a loaded plugin's nodes, triggers and
 connection kinds behave exactly like built-in ones and are listed by `Host::nodes` and
 `Host::packages`. The `orange` command takes `--plugins <dir>`.
-`app/crates/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
+`app/crates/dev/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
 text cannot detect different dependency versions or features, so a plugin must be
 built with the application's lockfile; a panic in a plugin aborts the process; a
 library is never unloaded, is not loaded while the application runs, and cannot be
 removed with `Host::uninstall`; there is no manifest or grant for this tier.
 
-Types from a native plugin (2026-11-13, FR-09 first part): `ServicePackage::record(name,
+Types from a native plugin (2026-11-13 first part): `ServicePackage::record(name,
 fields)` and `enumeration(name, variants)` declare `<package id>/<name>@1`; `declare`
 takes a `TypeDecl` in full, for optional fields. The host registers the types of the
 active packages when it starts and refuses to start with a declaration that is not
@@ -215,7 +215,7 @@ refused. Types stay registered after their package is removed, like definitions,
 values and documents that name them still decode. Not provided: codecs other than
 the structural one, schema versions beyond `@1`, and an editor description of a type.
 
-Streams from a native plugin (2026-11-13, FR-50 last part): `ServicePackage::stream`
+Streams from a native plugin (2026-11-13 last part): `ServicePackage::stream`
 adds a node whose one data output is `core/stream@1<T>`, implemented as
 `ServiceStream::open(call) -> Box<dyn Items>`; any iterator of
 `Result<Value, KernelFault>` is `Items`. `open` runs on a worker and the node
@@ -256,6 +256,12 @@ dropping it (2026-11-15). `Definition::then_label` names a node's way on and
 library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
 application is a Wasm component or a graph package.
 
+Native sources can publish or revoke a computed output using `Emitter::publish`
+and fire a named outcome using `Emitter::emit_on`. The resolved port includes
+the stable counter for a variadic instance. The host binds these callbacks to
+the running provider guard and its checked ports. The native ABI identifier
+is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
+
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`
 (≤ 16), `homepage` and `repository` (`https://` URLs) and `keywords` (≤ 16 distinct
@@ -271,7 +277,7 @@ not defined. A bad field is `packages/manifest-metadata` and names the field.
 
 Manifest schema (K01, 2026-11-06; `orange-packages`): the manifest is strict JSON. Duplicate object keys and numbers other than integers within ±(2^53 − 1) are rejected at any depth, including uninterpreted sections, because readers disagree on them. `execution` is absent for a data-only package, `{"kind": "wasm-component", "entry", "world"}` with `world` = `orange:expansion/<name>@<x.y.z>`, or `{"kind": "worker", "wire_version": 1, "targets": [{"os": "windows"|"macos"|"linux", "arch": "x86_64"|"aarch64", "entry"}]}` with 1–16 distinct targets; any other kind, including native libraries, is refused. `contributions.panels` lists up to 256 distinct panel IDs `<package>/<[a-z][a-z0-9-]*>` in the package's own namespace; the declarative widget descriptor format is later UI work (ADR-08), so panels are identities only. `localization` follows 13 §3 exactly: format version 1, `fluent`, default locale `en` with an `en` catalogue, BCP 47-shaped tags unique ignoring case, non-empty lists of distinct `.ftl` files, `[a-z][a-z0-9-]*` message IDs and `[a-z][a-z0-9_]*` argument names typed from the 13 §3 vocabulary, with bounded counts. Every file reference is an archive path (below). Dependency locks are `{"id", "version", "content_digest": "sha256:<64 hex>"}`; installation refuses an active dependency whose content digest differs from the lock. `integrity.content_digest` (formerly `payload_digest`; the unreleased name has no reader) is the package's own content digest. `permissions` stays uninterpreted until grants (K03). Errors carry stable `packages/manifest-*` keys and redacted text.
 
-Canonical archive (K01, 2026-11-06; `orange-packages`): a `.orangeplug` file is the header `\x89OPKG\r\n\x1a`, layout version `u16 = 1`, flags `u16 = 0` and entry count `u32`, then per entry `path_len u16 | path | kind u8 = 0 | mode u8 = 0 | size u64 | bytes`, little-endian. `manifest.json` is the first entry; the others follow in strictly ascending path byte order and nothing follows the last. There is no compression: deflate has many valid encodings, so a canonical byte form would need a pinned encoder, and without it unpacked bytes never exceed archive bytes. Archive paths are relative ASCII `[A-Za-z0-9._-]` components separated by `/`, at most 240 bytes and 16 components, without `.`/`..`, empty components, trailing dots or Windows device names; two paths equal ignoring ASCII case, or a file that is also another entry's directory, are rejected. Kinds other than a regular file (directories, symbolic or hard links) and nonzero modes are rejected. The content digest is SHA-256 over `"orange.plugin/content/v1\0" | u64 len(M) | M | u32 n | n × (u16 len(path) | path | u64 size | SHA-256(bytes))`, where `M` is the RFC 8785 canonical JSON of the manifest without its `integrity` member and the entries are the archive's other files in order; it therefore covers every metadata byte, including dependency locks. `read_archive` streams entries through an `ArchiveSink`, checks every quota (`ArchiveLimits`: archive bytes, entries, per-file and total file bytes; defaults 256 MiB, 4,096, 128 MiB and 256 MiB, unmeasured) against declared sizes before reading an entry's bytes, never allocates by a declared size, requires each manifest-referenced file under its exact path, requires a component entry to start with the WebAssembly magic, refuses PE/ELF/Mach-O bytes outside declared worker targets, and finally compares the content digest; any failure aborts the sink. `DirectorySink` stages into a new directory under a plain (not linked or reparse-point) parent, creates every directory itself, opens files with `create_new`, flushes each, and deletes the directory on abort. `VerifiedArchive::require_digest` checks a document or dependency lock, and `into_contents` is the archive route to `PackageContents`. Cross-language vectors: `app/crates/orange-packages/tests/fixtures/archive-v1.json`, reproduced by the Rust reader and by the independent Node encoder `tools/package-archive.mjs`. Definition and specialization file locations inside the archive, signatures and actual code loading remain open.
+Canonical archive (K01, 2026-11-06; `orange-packages`): a `.orangeplug` file is the header `\x89OPKG\r\n\x1a`, layout version `u16 = 1`, flags `u16 = 0` and entry count `u32`, then per entry `path_len u16 | path | kind u8 = 0 | mode u8 = 0 | size u64 | bytes`, little-endian. `manifest.json` is the first entry; the others follow in strictly ascending path byte order and nothing follows the last. There is no compression: deflate has many valid encodings, so a canonical byte form would need a pinned encoder, and without it unpacked bytes never exceed archive bytes. Archive paths are relative ASCII `[A-Za-z0-9._-]` components separated by `/`, at most 240 bytes and 16 components, without `.`/`..`, empty components, trailing dots or Windows device names; two paths equal ignoring ASCII case, or a file that is also another entry's directory, are rejected. Kinds other than a regular file (directories, symbolic or hard links) and nonzero modes are rejected. The content digest is SHA-256 over `"orange.plugin/content/v1\0" | u64 len(M) | M | u32 n | n × (u16 len(path) | path | u64 size | SHA-256(bytes))`, where `M` is the RFC 8785 canonical JSON of the manifest without its `integrity` member and the entries are the archive's other files in order; it therefore covers every metadata byte, including dependency locks. `read_archive` streams entries through an `ArchiveSink`, checks every quota (`ArchiveLimits`: archive bytes, entries, per-file and total file bytes; defaults 256 MiB, 4,096, 128 MiB and 256 MiB, unmeasured) against declared sizes before reading an entry's bytes, never allocates by a declared size, requires each manifest-referenced file under its exact path, requires a component entry to start with the WebAssembly magic, refuses PE/ELF/Mach-O bytes outside declared worker targets, and finally compares the content digest; any failure aborts the sink. `DirectorySink` stages into a new directory under a plain (not linked or reparse-point) parent, creates every directory itself, opens files with `create_new`, flushes each, and deletes the directory on abort. `VerifiedArchive::require_digest` checks a document or dependency lock, and `into_contents` is the archive route to `PackageContents`. Cross-language vectors: `app/crates/platform/orange-packages/tests/fixtures/archive-v1.json`, reproduced by the Rust reader and by the independent Node encoder `tools/package-archive.mjs`. Definition and specialization file locations inside the archive, signatures and actual code loading remain open.
 
 The content digest excludes only the manifest's own `integrity.content_digest` value under the canonical rule below, which K01 fixes together with cross-language vectors; signatures, when added, are detached over that digest. Publisher names alone are not identity proof. Signed packages verify signatures against explicitly trusted signing identities; local unsigned packages show origin/hash and require explicit trust. Integrity verifies bytes, not benign behavior. Dependency locks record exact version+digest; a package cannot claim another publisher's reserved namespace. Cycles/incompatible major host API fail before activation. Offline local installation is baseline; registry/marketplace is P6.
 
@@ -303,6 +309,12 @@ Replaceable slots include `node:<definition>@<contract>`, `convert:<from>-><to>`
 When providers compete: no automatic last-installed-wins. User selects workspace/app defaults for **new bindings**; existing graph locks retain provider ID, package version/digest and contract. Explicit rebind previews affected nodes/types/config/resource changes, runs migration on a copy and validates the graph before commit. Missing selected provider blocks affected execution and preserves placeholders. Uninstall may propose a compatible bundled fallback, but executing it requires explicit rebind; there is no silent substitution. Diagnostics expose selected provider/registry generation and override provenance.
 
 Converter pair slots may contain distinct semantic entry contracts. An override implements the same converter ID/contract, preserving its endpoints, class, policies, errors and loss output. New-binding provider defaults are scoped to that entry contract; implementing an existing entry does not grant authority to register new foreign-to-foreign conversion semantics. Multiple providers for one entry do not increase the semantic conversion count used for auto-insertion ([11 §6](11-graph-language.md)).
+
+## Definition evolution
+
+A package version may stop shipping a definition and ship another in its place: a renamed node, renamed ports or config fields, or a new definition version whose contract changed. The new definition file lists what it replaces (`replaces`, [12 §6.4](12-graph-data-structures.md)). Opening a document rebuilds each node of a replaced definition that the host no longer has as a node of its replacement, keeping its values, wires and place, and reports the nodes it rebuilt. A replaced definition that is still installed is never moved, and two packages that disagree about one replacement are refused, so the result does not depend on install order. This is a load-time rewrite of the document, not a provider swap: running flows and locks of installed versions are untouched until the document is opened again.
+
+Built-in service packages declare replacements with `Definition::replaces`; archive definitions write the field directly. Config value upgrades beyond renamed fields (`config_version`) are not covered yet.
 
 ## Hot update/removal semantics
 
@@ -336,13 +348,13 @@ Durable journal (K01, corrected 2026-11-09; `orange-packages`): `FileJournal` im
 
 SDK surface (2026-11-03): `HOST_API_VERSION` (1.0) is the host API this foundation build offers; hosts pass it to `PackageStore::new`, which refuses a manifest whose range excludes it. Definition files decode with `NodeDefinition::from_json` (default 1 MiB, 1,024 ports) or `from_json_with_limits` ([12 §4](12-graph-data-structures.md)). `PackageContents::with_specializations(provider, definition, supported)` lists the argument sets a generic provider supports ([11 §5.5](11-graph-language.md)); the pair must be a declared `node:` contribution (`TransactionError::UndeclaredSpecialization` otherwise), and the list is published on that exact provider, so other instantiations report `E-NO-SPECIALIZATION`. Without a list the provider delegates to constraints. Which archive file carries the list is not specified yet; the host supplies it with the staged contents.
 
-Requirements: FR-09, FR-22, FR-34–38, FR-41–42, FR-44–46. Validation V03/V09 plus NFR-01/06/09 in [06](06-quality-and-validation.md). ADR-03/06/07/16 in [08](08-decisions.md).
+Validation V03/V09 in [10](10-development.md). ADR-03/06/07/16 in [08](08-decisions.md).
 
 The N1a orange-bundled scalar implementation uses the shipped native exception above. Ordinary org.orange.math definitions remain replaceable through provider contracts, but its native resolver binds only the exact selected native package/version/digest and supported scalar specialization. Selecting a guest/worker provider never falls back to native math when that provider cannot be resolved. The scalar implementation adds no installer, hot-loading mechanism or permission bypass for downloaded packages.
 
 Package interface, first world (K02b, 2026-11-08; `sdk/wit/orange-expansion.wit`):
 WIT package `orange:expansion@1.0.0`, world `plugin`. It imports `host` (always
-linked: `api-version() -> (u16, u16)`, currently (1, 0)) and `log` (`write(message)`,
+linked: `api-version -> (u16, u16)`, currently (1, 0)) and `log` (`write(message)`,
 linked only with the `log` grant), and exports `nodes.evaluate(definition, inputs) ->
 result<list<value>, node-error>`. A `value` is one Orange literal in the
 `orange.value.v1` codec: the JSON text of `{"type", "value"}` (or `"bits"` for floats),
@@ -445,7 +457,7 @@ Package effect nodes in graphs (2026-11-10): `WithGuests<R>` also implements
 runs on the run's own thread inside a pump. An Async node gets no kernel: the run
 issues an ordinary effect request whose `context` is that node's `GuestEffect`. The
 host recovers it with `guest_effect(&request.context)`, calls `GuestEffect::run` off
-the run's thread and passes the result to `Run::complete_effect`; `cancellation()`
+the run's thread and passes the result to `Run::complete_effect`; `cancellation`
 interrupts it when the effect's lease is cancelled. Each node binding owns one guest
 instance for the life of its plan and calls on it are serialized, so every request of
 one node reaches the same state. A guest-reported error becomes the node's own fault
@@ -472,7 +484,7 @@ key. Constant folding and data demands run guest kernels like bundled ones. Gues
 entropy, actions, async, events and generic (non-concrete) package nodes are later
 work; grants come from the host until manifest permissions are interpreted (K03).
 
-Verified payload correction (2026-11-09; FR-34/36/38, NFR-08/09):
+Verified payload correction (2026-11-09):
 `VerifiedArchive::verify_file` checks independently stored bytes against the exact
 entry's size and SHA-256. `GuestPackage::from_archive` checks before compilation
 and refuses a mismatched sink with `GuestLoadError::Integrity`. Reusing a
@@ -480,27 +492,27 @@ and refuses a mismatched sink with `GuestLoadError::Integrity`. Reusing a
 paths and keeps one archive's storage; failure clears that staging set. Verified
 metadata and arbitrary payload bytes cannot be mixed under a provider lock.
 
-Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance::cancellation()` and
-`GuestPlugin::cancellation()` return a cloneable `GuestCancellation` scoped to that
-instance's entire lifetime, not a reusable operation ID. `cancel()` sets a monotonic
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance::cancellation` and
+`GuestPlugin::cancellation` return a cloneable `GuestCancellation` scoped to that
+instance's entire lifetime, not a reusable operation ID. `cancel` sets a monotonic
 flag and wakes epoch checks. A cancellation observed before entry or in running
 guest code reports `GuestTrap::Interrupted`, poisons the instance, and later calls
 report `GuestError::Poisoned`. Discard that instance; handles never reset or retarget.
 An old handle may keep its engine alive but cannot cancel another store. Merely
-dropping a handle does not cancel work. `is_cancelled()` reports the local request;
+dropping a handle does not cancel work. `is_cancelled` reports the local request;
 an engine-wide interruption is separately reported by the executing instance.
 
-The host must periodically call `GuestEngine::advance_epoch()` while guest workers
+The host must periodically call `GuestEngine::advance_epoch` while guest workers
 run. A single wakeup can race Wasmtime's deadline renewal after a callback, so it
 is not a reliable ticker. The per-store callback interrupts only a cancelled store
-and lets peers continue. `GuestEngine::interrupt()` remains an explicit broadcast
+and lets peers continue. `GuestEngine::interrupt` remains an explicit broadcast
 to calls already running; idle instances renew their broadcast baseline before a
 later call. Epoch cadence and worker ownership are host policy; there is no
 wall-time latency qualification. Fuel is still charged independently. Epochs cannot
 preempt a blocked host import. Service-import cancellation, C11 lease integration,
 manifest authority enforcement and package revocation remain separate gates.
 
-Guest resource correction (2026-11-09; review F2/F3/F4/F7, FR-35/38, NFR-05/06/08):
+Guest resource correction (2026-11-09; review F2/F3/F4/F7):
 both instance constructors use one store-owned limiter. `memory_bytes` is the total
 of initial linear memories and successful growth; `table_elements` is the total
 initial/grown table entries. Denial reserves no capacity; allocation failure refunds

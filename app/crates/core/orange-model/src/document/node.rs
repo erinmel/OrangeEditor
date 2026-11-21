@@ -1,0 +1,226 @@
+//! Node instances, provider bindings and entry activation policies.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use super::keyed::Keyed;
+use super::literal::Literal;
+use super::{ConfigValue, Extensions, TypeParamName};
+use crate::id::{DefinitionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeInstance {
+    pub id: NodeId,
+    #[serde(flatten)]
+    pub definition: DefinitionRef,
+    pub config_version: u32,
+    #[serde(default)]
+    pub config: ConfigValue,
+    /// Persisted inference result.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub type_args: BTreeMap<TypeParamName, TypeExpr>,
+    /// Explicit user type choices. Missing on older documents means no pins; `type_args`
+    /// remains an inferred cache and is never migrated into this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,
+    /// `None` only for `core/` intrinsics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderBinding>,
+    /// Required for every non-intrinsic node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<SignatureKey>,
+    /// Includes literals shadowed by a connected edge.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<PortKey, Literal>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variadic: BTreeMap<PortId, VariadicState>,
+    /// Entries only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationPolicy>,
+    #[serde(flatten)]
+    pub extensions: Extensions,
+}
+
+impl Keyed for NodeInstance {
+    type Key = NodeId;
+
+    fn key(&self) -> NodeId {
+        self.id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DefinitionRef {
+    #[serde(rename = "definition_id")]
+    pub id: DefinitionId,
+    #[serde(rename = "definition_version")]
+    pub version: u32,
+}
+
+/// Exact provider selected for a node; changed only by an explicit rebind (ADR-07).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderBinding {
+    pub package: String,
+    pub version: String,
+    pub id: String,
+    #[serde(flatten)]
+    pub extensions: Extensions,
+}
+
+/// Variadic instance order plus the next never-reused counter (11 §4.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariadicState {
+    pub order: Vec<u16>,
+    pub next: u16,
+}
+
+impl VariadicState {
+    /// Active counters must be unique and strictly below the never-reused allocator.
+    /// Malformed imports remain editable, but cannot be executed or allocated from.
+    pub fn is_valid(&self) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        self.order
+            .iter()
+            .all(|&key| key < self.next && seen.insert(key))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActivationPolicy {
+    pub mode: ReentrancyMode,
+    /// Required by `parallel`; checked by the validator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u32>,
+    pub capacity: u32,
+    pub overflow: OverflowPolicy,
+    pub on_fault: FaultPolicy,
+    pub order: u32,
+    /// What the entry keeps of input that arrives while its run is paused.
+    #[serde(default, skip_serializing_if = "PausedPolicy::is_buffer")]
+    pub while_paused: PausedPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<EventTiming>,
+    #[serde(flatten)]
+    pub extensions: Extensions,
+}
+
+/// Admission timing for one event-driven entry, on the run clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum EventTiming {
+    Debounce { interval_ms: std::num::NonZeroU32 },
+    Throttle { interval_ms: std::num::NonZeroU32 },
+}
+
+impl EventTiming {
+    pub const fn interval_ms(self) -> std::num::NonZeroU32 {
+        match self {
+            Self::Debounce { interval_ms } | Self::Throttle { interval_ms } => interval_ms,
+        }
+    }
+}
+
+/// 11 §10.1. Input admitted to an entry while its run is paused. The default keeps the
+/// ordinary queue; saved documents omit it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PausedPolicy {
+    /// Queue as usual, under the entry's capacity and overflow policy.
+    #[default]
+    Buffer,
+    /// Keep only the newest pending delivery.
+    Latest,
+    /// Discard the delivery.
+    Drop,
+}
+impl PausedPolicy {
+    fn is_buffer(&self) -> bool {
+        *self == Self::Buffer
+    }
+}
+
+/// 11 §10.1. Packages cannot add modes (11 §16), so the set is closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReentrancyMode {
+    Queue,
+    Drop,
+    Replace,
+    Parallel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverflowPolicy {
+    Backpressure,
+    DropOldest,
+    DropNewest,
+    CoalesceLatest,
+    Fault,
+}
+
+/// Finite stream queue policy, shared by graph Tee and host push bridges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StreamOverflow {
+    Backpressure,
+    DropOldest,
+    DropNewest,
+    Fault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FaultPolicy {
+    Continue,
+    StopRun,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::NodeInstance;
+
+    #[test]
+    fn legacy_node_without_type_pins_loads_with_no_pins() {
+        let mut value = json!({
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "org.example/math",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"}
+        });
+        let node: NodeInstance = serde_json::from_value(value.clone()).unwrap();
+        assert!(node.type_pins.is_empty());
+        assert_eq!(node.type_args["T"].as_str(), "core/i64@1");
+
+        value["type_pins"] = json!({"T": "core/f64@1"});
+        let pinned: NodeInstance = serde_json::from_value(value).unwrap();
+        assert_eq!(pinned.type_pins["T"].as_str(), "core/f64@1");
+        let encoded = serde_json::to_value(pinned).unwrap();
+        assert_eq!(encoded["type_pins"]["T"], "core/f64@1");
+    }
+
+    #[test]
+    fn paused_policy_defaults_to_buffer_and_is_saved_only_when_set() {
+        use super::{ActivationPolicy, PausedPolicy};
+        let mut value = json!({
+            "mode": "queue", "capacity": 4, "overflow": "fault",
+            "on_fault": "continue", "order": 0
+        });
+        let policy: ActivationPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(policy.while_paused, PausedPolicy::Buffer);
+        assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+
+        value["while_paused"] = json!("latest");
+        let policy: ActivationPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(policy.while_paused, PausedPolicy::Latest);
+        assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+
+        value["while_paused"] = json!("sometimes");
+        assert!(serde_json::from_value::<ActivationPolicy>(value).is_err());
+    }
+}
