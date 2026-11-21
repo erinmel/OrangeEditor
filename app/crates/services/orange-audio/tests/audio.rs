@@ -907,6 +907,35 @@ fn a_wired_file_source_drives_when_transient_and_finished_from_one_stream() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn m4a_files_play_and_finish_through_both_graph_paths() {
+    let mut host = host();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for name in ["stereo-aac.m4a", "stereo-alac.m4a"] {
+        let path = fixtures.join(name);
+        let playback = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
+        let flow = host.open(&playback).unwrap();
+        host.trigger(flow, node(1), None).unwrap();
+        until("the M4A playback action to finish", || {
+            read(&host, flow, 100).is_some()
+        });
+        assert_eq!(read(&host, flow, 100), Some(Value::I64(1)), "{name}");
+        host.close(flow).unwrap();
+
+        let source = live_file_document(&host, &path);
+        let flow = host.open(&source).unwrap();
+        until("the M4A source to be ready", || {
+            host.inspect(flow, |run| run.live_value(node(1)).is_some())
+                .unwrap()
+        });
+        host.trigger(flow, node(8), None).unwrap();
+        until("the M4A source to finish", || {
+            read(&host, flow, 102) == Some(Value::U64(1))
+        });
+        host.close(flow).unwrap();
+    }
+}
+
 /// Plays a short tone on the real default device. Run by hand:
 /// `cargo test -p orange-audio --test audio -- --ignored`.
 #[test]

@@ -6,7 +6,7 @@
 //! `org.orange.audio/input` connections and use the nodes below. An application that
 //! does not want audio leaves the package out.
 //!
-//! Playback reads WAV (integer or float PCM), FLAC, MP3 and Ogg Vorbis files, converts them to the
+//! Playback reads WAV (integer or float PCM), FLAC, MP3, Ogg Vorbis and M4A files, converts them to the
 //! device's rate and channels, and mixes up to [`MAX_VOICES`] sounds per output. A
 //! sound plays once or repeats until stopped; an output's sounds can be paused,
 //! resumed, moved to a position and scaled by one volume. The device callback only
@@ -77,7 +77,7 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// sound file, as [`AUDIO_SOURCE`] gives it. Settings: `device` as for an output, or
 /// `file`; `window_ms` (5 to 1,000, default 50), the length of each level measurement.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
-/// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
+/// Plays a WAV, FLAC, MP3, Ogg Vorbis or M4A file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
 pub const PLAY: &str = "org.orange.audio/play";
 /// Plays one of the sound files of a folder and continues when it has ended. Inputs
@@ -140,7 +140,7 @@ const BAD_INPUT: KernelFault = fault(
 const FILE: KernelFault = fault(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
-    "The sound file is missing or is not a supported WAV, FLAC, MP3 or Ogg Vorbis file.",
+    "The sound file is missing or is not a supported WAV, FLAC, MP3, Ogg Vorbis or M4A file.",
 );
 const TOO_LARGE: KernelFault = fault(
     "org.orange.audio/TooLarge",
@@ -374,7 +374,7 @@ fn choose(folder: &Path, pick: u64) -> Result<std::path::PathBuf, KernelFault> {
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| {
-                        ["wav", "flac", "mp3", "ogg"]
+                        SOUND_FILES
                             .iter()
                             .any(|known| extension.eq_ignore_ascii_case(known))
                     })
@@ -1142,7 +1142,7 @@ fn play_definition() -> String {
 }
 
 /// The file name extensions of the sound files played.
-const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg"];
+const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg", "m4a"];
 
 fn play_from_definition() -> String {
     Definition::node(PACKAGE, "play-from", "Play sound from folder")
@@ -1244,7 +1244,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(folder.join("sub.wav")).unwrap();
         assert_eq!(choose(&folder, 0), Err(EMPTY));
-        for name in ["b.WAV", "a.ogg", "notes.txt", "c.mp3"] {
+        for name in ["b.WAV", "a.ogg", "notes.txt", "c.mp3", "d.M4A"] {
             std::fs::write(folder.join(name), b"").unwrap();
         }
         let chosen = |pick| {
@@ -1253,9 +1253,10 @@ mod tests {
         };
         // Text files and folders are not sounds; the count goes round.
         assert_eq!(
-            [chosen(0), chosen(1), chosen(2), chosen(3), chosen(u64::MAX)],
-            ["a.ogg", "b.WAV", "c.mp3", "a.ogg", "a.ogg"]
+            [chosen(0), chosen(1), chosen(2), chosen(3), chosen(4)],
+            ["a.ogg", "b.WAV", "c.mp3", "d.M4A", "a.ogg"]
         );
+        assert_eq!(chosen(u64::MAX), "d.M4A");
         assert_eq!(choose(&folder.join("missing"), 0), Err(FILE));
         std::fs::remove_dir_all(&folder).unwrap();
     }
@@ -1381,7 +1382,9 @@ mod tests {
     fn sound_inputs_offer_a_file_or_folder_chooser() {
         let (_, play) = orange_sdk::NodeDefinition::described(&play_definition()).unwrap();
         assert_eq!(play.paths[0].port, "path");
-        assert!(!play.paths[0].folder && play.paths[0].extensions.contains(&"ogg".to_owned()));
+        assert!(!play.paths[0].folder);
+        assert!(play.paths[0].extensions.contains(&"ogg".to_owned()));
+        assert!(play.paths[0].extensions.contains(&"m4a".to_owned()));
         let (_, from) = orange_sdk::NodeDefinition::described(&play_from_definition()).unwrap();
         assert!(from.paths[0].folder);
     }

@@ -20,7 +20,7 @@ cpal.workspace = true
 claxon.workspace = true
 # WAV decoding.
 hound.workspace = true
-# MP3 and Ogg Vorbis decoding.
+# MP3, Ogg Vorbis, and M4A decoding.
 symphonia.workspace = true
 
 [dev-dependencies]
