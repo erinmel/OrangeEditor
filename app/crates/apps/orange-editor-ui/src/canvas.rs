@@ -26,7 +26,7 @@ pub const ROW_HEIGHT: f32 = card::LINE;
 const CARD_RADIUS: f32 = 8.0;
 
 /// Time for the full execution wire to fade after a step.
-const PULSE_SECONDS: f32 = 0.16;
+const PULSE_SECONDS: f32 = 0.55;
 
 /// Space under the last row.
 pub const FOOTER_HEIGHT: f32 = card::END;
@@ -348,7 +348,7 @@ struct Wiring {
 
 #[derive(Debug, Clone, Copy)]
 enum PulseRoute {
-    Sole,
+    Default(&'static str),
     Port(&'static str),
 }
 
@@ -1065,7 +1065,8 @@ impl Canvas {
             None
         } else {
             match outcome {
-                Then | Completed => Some(PulseRoute::Sole),
+                Then => Some(PulseRoute::Default("then")),
+                Completed => Some(PulseRoute::Default("completed")),
                 True => Some(PulseRoute::Port("true")),
                 False => Some(PulseRoute::Port("false")),
                 Body => Some(PulseRoute::Port("body")),
@@ -1097,7 +1098,14 @@ impl Canvas {
             .activity
             .get(&node)
             .filter(|step| match step.route {
-                Some(PulseRoute::Sole) => geometry.sole_exec_output(node) == Some(port),
+                Some(PulseRoute::Default(preferred)) => {
+                    let exit = geometry
+                        .port(node, preferred, false)
+                        .filter(|port| port.exec)
+                        .map(|_| preferred)
+                        .or_else(|| geometry.sole_exec_output(node));
+                    exit == Some(port)
+                }
                 Some(PulseRoute::Port(route)) => route == port,
                 None => false,
             })
@@ -1822,34 +1830,12 @@ impl Canvas {
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
             );
-            let pulse = |time: std::time::Instant| {
-                let progress = time.elapsed().as_secs_f32() / PULSE_SECONDS;
-                (progress < 1.0).then_some(1.0 - progress)
-            };
-            let passage = if wire.exec
-                && mark.is_none()
-                && let Some(time) = self
-                    .entry_activity
-                    .get(&wire.from.0)
-                    .and_then(|ports| ports.get(&wire.from.1))
-            {
-                pulse(*time)
-            } else if wire.exec
-                && mark.is_none()
-                && let Some(step) = self.activity.get(&wire.from.0)
-            {
-                let port = match step.route {
-                    Some(PulseRoute::Sole) => geometry.sole_exec_output(wire.from.0),
-                    Some(PulseRoute::Port(port)) => Some(port),
-                    None => None,
-                };
-                (port == Some(wire.from.1.as_str()))
-                    .then(|| pulse(step.time))
-                    .flatten()
+            let fade = if wire.exec && mark.is_none() {
+                self.exit_glow(&geometry, wire.from.0, &wire.from.1)
             } else {
-                None
+                0.0
             };
-            if let Some(fade) = passage {
+            if fade > 0.0 {
                 painter.add(CubicBezierShape::from_points_stroke(
                     points,
                     false,
@@ -3254,6 +3240,26 @@ mod tests {
             })
             .drop_without_applying_deltas();
         }
+    }
+
+    #[test]
+    fn a_successful_action_pulses_its_then_wire_even_with_a_failure_output() {
+        let node = node(
+            1,
+            vec![port("then", false, true), port("failed", false, true)],
+        );
+        let id = node.id;
+        let graph = GraphView {
+            nodes: vec![std::sync::Arc::new(node)],
+            ..GraphView::default()
+        };
+        let geometry = Geometry::new(&graph);
+        let mut canvas = Canvas::default();
+        canvas.record_step(id, false, orange_host::ControlOutcome::Then);
+        assert!(canvas.exit_glow(&geometry, id, "then") > 0.0);
+        assert_eq!(canvas.exit_glow(&geometry, id, "failed"), 0.0);
+        canvas.record_step(id, true, orange_host::ControlOutcome::Failed);
+        assert_eq!(canvas.exit_glow(&geometry, id, "then"), 0.0);
     }
 
     fn id(n: u32) -> NodeId {

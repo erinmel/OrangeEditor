@@ -15,6 +15,7 @@ pub const GROUP_PAD: f32 = 16.0;
 pub const GROUP_TITLE: f32 = 28.0;
 /// Height of a collapsed group's card.
 const COLLAPSED_HEIGHT: f32 = 58.0;
+const GROUP_TEXT_ZOOM: f32 = 0.55;
 
 /// A change to a group that a person asked for on the canvas.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +201,12 @@ impl Canvas {
                     self.select_many(&group.nodes);
                 }
             }
+            if touched.secondary_clicked() {
+                self.renaming = Some((group.id.clone(), group.name.clone()));
+            }
+            let touched = touched.on_hover_text_at_pointer(&group.name);
             let _ = touched.context_menu(|ui| {
+                ui.set_width(244.0);
                 let renaming = self
                     .renaming
                     .get_or_insert_with(|| (group.id.clone(), group.name.clone()));
@@ -208,23 +214,83 @@ impl Canvas {
                     *renaming = (group.id.clone(), group.name.clone());
                 }
                 ui.label(t("name"));
-                let typed = ui.text_edit_singleline(&mut renaming.1);
+                let confirmed = ui
+                    .horizontal(|ui| {
+                        use crate::controls::{self, Action, Surface};
+                        let field_width = ui.available_width() - 28.0 - ui.spacing().item_spacing.x;
+                        let typed = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut renaming.1)
+                                    .desired_width(field_width.max(0.0)),
+                            )
+                            .on_hover_text(t("rename-inline-hint"));
+                        let name = renaming.1.trim();
+                        let apply = controls::button(
+                            ui,
+                            Surface::Panel,
+                            Action::Menu,
+                            !name.is_empty() && name != group.name,
+                            egui::Button::new(crate::icons::centered(crate::icons::CHECK))
+                                .min_size(Vec2::splat(28.0)),
+                        )
+                        .on_hover_text(t("group-apply-name"));
+                        apply.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::Role::Button,
+                                apply.enabled(),
+                                t("group-apply-name"),
+                            )
+                        });
+                        apply.clicked()
+                            || typed.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    })
+                    .inner;
                 let name = renaming.1.trim().to_owned();
-                if typed.lost_focus() && !name.is_empty() && name != group.name {
+                if confirmed && !name.is_empty() && name != group.name {
                     let mut changed = group.clone();
-                    changed.name = name;
+                    changed.name.clone_from(&name);
                     done.group = Some(GroupEdit::Change(changed));
+                    ui.close();
                 }
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    for choice in GROUP_COLORS {
+                    for (choice, label) in GROUP_COLORS.into_iter().zip([
+                        "group-color-blue",
+                        "group-color-green",
+                        "group-color-orange",
+                        "group-color-purple",
+                        "group-color-red",
+                        "group-color-teal",
+                    ]) {
                         let [r, g, b] = choice;
-                        let swatch = egui::Button::new("  ")
-                            .fill(Color32::from_rgb(r, g, b))
-                            .selected(choice == group.color);
-                        if ui.add(swatch).clicked() {
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                        let selected = choice == group.color;
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::Role::RadioButton,
+                                true,
+                                selected,
+                                t(label),
+                            )
+                        });
+                        let response = response.on_hover_text(t(label));
+                        let fill = Color32::from_rgb(r, g, b);
+                        ui.painter().rect_filled(rect.shrink(3.0), 4.0, fill);
+                        if selected || response.hovered() || response.has_focus() {
+                            ui.painter().rect_stroke(
+                                rect,
+                                5.0,
+                                Stroke::new(1.0, ui.visuals().text_color()),
+                                StrokeKind::Inside,
+                            );
+                        }
+                        if response.clicked() {
                             let mut changed = group.clone();
                             changed.color = choice;
                             done.group = Some(GroupEdit::Change(changed));
+                            ui.close();
                         }
                     }
                 });
@@ -233,17 +299,34 @@ impl Canvas {
                 } else {
                     t("collapse")
                 };
-                if ui.button(fold).clicked() {
+                ui.add_space(6.0);
+                let menu_action = |ui: &mut egui::Ui, icon, label, enabled| {
+                    use crate::controls::{self, Action, Surface};
+                    let button = egui::Button::new((crate::icons::centered(icon), label))
+                        .min_size(Vec2::new(ui.available_width(), 28.0));
+                    controls::button(ui, Surface::Panel, Action::Menu, enabled, button).clicked()
+                };
+                let fold_icon = if group.collapsed {
+                    crate::icons::EXPAND
+                } else {
+                    crate::icons::COLLAPSE
+                };
+                if menu_action(ui, fold_icon, fold, true) {
                     let mut changed = group.clone();
                     changed.collapsed = !changed.collapsed;
                     done.group = Some(GroupEdit::Change(changed));
                     ui.close();
                 }
-                if ui.button(t("group-select-nodes")).clicked() && !group.collapsed {
+                if menu_action(
+                    ui,
+                    crate::icons::SELECT_ALL,
+                    t("group-select-nodes"),
+                    !group.collapsed,
+                ) {
                     self.select_many(&group.nodes);
                     ui.close();
                 }
-                if ui.button(t("ungroup")).clicked() {
+                if menu_action(ui, crate::icons::UNGROUP, t("ungroup"), true) {
                     done.group = Some(GroupEdit::Ungroup(group.id.clone()));
                     ui.close();
                 }
@@ -299,7 +382,11 @@ impl Canvas {
                 ),
                 StrokeKind::Inside,
             );
-            let font = FontId::proportional(13.0 * zoom.max(0.5));
+            if zoom < GROUP_TEXT_ZOOM {
+                continue;
+            }
+            let painter = painter.with_clip_rect(shown);
+            let font = FontId::proportional(13.0 * zoom);
             // The caret is from the bundled icon font, the name from the text font.
             let mark = if group.collapsed {
                 crate::icons::EXPAND
@@ -313,11 +400,15 @@ impl Canvas {
                 FontId::new(font.size, crate::icons::family()),
                 colors.text,
             );
-            let _ = painter.text(
-                Pos2::new(caret.right() + 4.0 * zoom, title.center().y),
-                Align2::LEFT_CENTER,
-                group.name.as_str(),
-                font.clone(),
+            let name_at = Pos2::new(caret.right() + 4.0 * zoom, title.center().y);
+            let mut name =
+                egui::text::LayoutJob::simple_singleline(group.name.clone(), font, colors.text);
+            name.wrap.max_width = (title.right() - name_at.x - 10.0 * zoom).max(0.0);
+            name.wrap.max_rows = 1;
+            let name = painter.layout_job(name);
+            painter.galley(
+                name_at - Vec2::new(0.0, name.size().y / 2.0),
+                name,
                 colors.text,
             );
             if group.collapsed {
@@ -389,6 +480,54 @@ impl Canvas {
 mod tests {
     use super::*;
     use orange_host::{Host, HostOptions};
+
+    #[test]
+    fn a_collapsed_group_has_a_clipped_title_and_hides_text_at_overview_zoom() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let node = host
+            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let group = Group {
+            id: "group".into(),
+            name: "An intentionally long group title that has nowhere to go".into(),
+            color: GROUP_COLORS[0],
+            nodes: vec![node],
+            collapsed: true,
+        };
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.set_groups(vec![group.clone()]);
+        let frame = canvas.group_frame(&graph, &group).unwrap();
+        let context = egui::Context::default();
+        for zoom in [1.0, 0.25] {
+            canvas.zoom = zoom;
+            let scale = |rect: Rect| {
+                Rect::from_min_max(
+                    Pos2::ZERO + rect.min.to_vec2() * zoom,
+                    Pos2::ZERO + rect.max.to_vec2() * zoom,
+                )
+            };
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                canvas.draw_groups(ui.painter(), &graph, scale, &Palette::of(ui));
+            });
+            let title = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("An intentionally") => {
+                    Some((text, shape.clip_rect))
+                }
+                _ => None,
+            });
+            if zoom >= GROUP_TEXT_ZOOM {
+                let (text, clip) = title.unwrap();
+                assert!(text.galley.elided);
+                assert!(clip.right() <= scale(frame).right());
+            } else {
+                assert!(title.is_none());
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
 
     #[test]
     fn dragging_the_group_title_snaps_the_frame_and_moves_members_together() {

@@ -851,7 +851,7 @@ fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
     assert!(
         texts
             .iter()
-            .any(|text| text.galley.text() == "request will retry")
+            .any(|text| text.galley.text().contains("request will retry"))
     );
     assert!(
         !texts

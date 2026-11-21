@@ -188,7 +188,7 @@ pub(super) fn problem_text(diagnostic: &Diagnostic, names: &Names) -> String {
     }
 }
 
-fn top_node(diagnostic: &orange_host::Diagnostic) -> Option<NodeId> {
+fn top_node(diagnostic: &Diagnostic) -> Option<NodeId> {
     diagnostic
         .subject
         .node
@@ -197,7 +197,7 @@ fn top_node(diagnostic: &orange_host::Diagnostic) -> Option<NodeId> {
 
 /// Authoring errors expected while filling out a node. Graph structure, provider
 /// integrity, declarations and edge errors keep their normal validation severity.
-fn can_be_draft(diagnostic: &orange_host::Diagnostic) -> bool {
+fn can_be_draft(diagnostic: &Diagnostic) -> bool {
     diagnostic.subject.edge.is_none()
         && matches!(
             diagnostic.code.as_str(),
@@ -224,7 +224,7 @@ fn can_be_draft(diagnostic: &orange_host::Diagnostic) -> bool {
 impl Document {
     /// Draft cards may have incoming data if they are actions with no execution
     /// wire or consumers. Passive sources and sinks can run on data alone.
-    fn draft_nodes(&self, diagnostics: &[orange_host::Diagnostic]) -> BTreeSet<NodeId> {
+    fn draft_nodes(&self, diagnostics: &[Diagnostic]) -> BTreeSet<NodeId> {
         let mut candidates = BTreeSet::new();
         let mut required = HashSet::new();
         for diagnostic in diagnostics {
@@ -291,7 +291,7 @@ impl Document {
 
     pub(super) fn record_problem(
         &mut self,
-        diagnostic: &orange_host::Diagnostic,
+        diagnostic: &Diagnostic,
         wire: Option<canvas::WireEnds>,
         draft: bool,
         marks: &mut canvas::Marks,
@@ -490,55 +490,76 @@ impl Editor {
         });
         ui.separator();
         let query = self.log_search.trim().to_lowercase();
+        let mut text = String::new();
+        let mut levels = Vec::new();
+        for line in &self.log {
+            if self.log_filter.is_some_and(|level| level != line.level)
+                || !contains_query(&query, &[&line.text, line.level.label(), line.level.name()])
+            {
+                continue;
+            }
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            let start = text.len();
+            text.push_str(line.level.label());
+            text.push_str("  ");
+            levels.push((start..text.len(), line.level));
+            if line.repeated > 1 {
+                text.push_str(&tf(
+                    "log-repeated",
+                    &[
+                        ("line", line.text.as_str().into()),
+                        ("count", line.repeated.into()),
+                    ],
+                ));
+            } else {
+                text.push_str(&line.text);
+            }
+        }
+        if text.is_empty() {
+            ui.weak(t(if self.log.is_empty() {
+                "no-log-messages"
+            } else {
+                "no-log-results"
+            }));
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_salt("editor-events")
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let mut any = false;
-                for line in &self.log {
-                    if self.log_filter.is_some_and(|level| level != line.level)
-                        || !contains_query(
-                            &query,
-                            &[&line.text, line.level.label(), line.level.name()],
-                        )
-                    {
-                        continue;
+                let mut layout = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width: f32| {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.wrap.max_width = width;
+                    let format = |color| egui::TextFormat {
+                        font_id: egui::TextStyle::Monospace.resolve(ui.style()),
+                        color,
+                        ..Default::default()
+                    };
+                    let normal = format(ui.visuals().text_color());
+                    let text = buffer.as_str();
+                    let mut end = 0;
+                    for (range, level) in &levels {
+                        job.append(&text[end..range.start], 0.0, normal.clone());
+                        job.append(&text[range.clone()], 0.0, format(level.color(ui)));
+                        end = range.end;
                     }
-                    any = true;
-                    ui.horizontal_top(|ui| {
-                        ui.add_sized(
-                            [74.0, 18.0],
-                            egui::Label::new(
-                                egui::RichText::new(line.level.label())
-                                    .monospace()
-                                    .color(line.level.color(ui)),
-                            ),
-                        );
-                        let shown = if line.repeated > 1 {
-                            tf(
-                                "log-repeated",
-                                &[
-                                    ("line", line.text.as_str().into()),
-                                    ("count", line.repeated.into()),
-                                ],
-                            )
-                        } else {
-                            line.text.clone()
-                        };
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(shown).monospace())
-                                .wrap()
-                                .selectable(true),
-                        );
-                    });
-                }
-                if !any {
-                    ui.weak(t(if self.log.is_empty() {
-                        "no-log-messages"
-                    } else {
-                        "no-log-results"
-                    }));
-                }
+                    job.append(&text[end..], 0.0, normal);
+                    ui.fonts_mut(|fonts| fonts.layout_job(job))
+                };
+                ui.add(
+                    egui::TextEdit::multiline(&mut text.as_str())
+                        .id(ui.make_persistent_id((
+                            "editor-log-text",
+                            self.log_filter.map(NoteLevel::label),
+                            &query,
+                        )))
+                        .layouter(&mut layout)
+                        .desired_rows(1)
+                        .desired_width(f32::INFINITY)
+                        .frame(egui::Frame::NONE),
+                );
             });
     }
 
@@ -671,6 +692,89 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_selection_survives_scrolling_and_copies_multiple_lines() {
+        let mut editor = Editor::new();
+        for index in 0..96 {
+            editor.say(format!("event {index}"));
+        }
+        let context = egui::Context::default();
+        icons::install(&context);
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(480.0, 240.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| editor.log_content(ui),
+            )
+        };
+        let log_position = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text().starts_with("INFO  event 0") => {
+                        Some((text.pos, shape.clip_rect.center().y))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        frame(vec![]).drop_without_applying_deltas();
+        let output = frame(vec![]);
+        let (original, y) = log_position(&output);
+        output.drop_without_applying_deltas();
+        let pointer = egui::pos2(original.x + 24.0, y);
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ])
+            .drop_without_applying_deltas();
+        }
+        frame(vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }])
+        .drop_without_applying_deltas();
+        frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 140.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::NONE,
+        }])
+        .drop_without_applying_deltas();
+        let output = frame(vec![egui::Event::Copy]);
+        assert_ne!(log_position(&output).0.y, original.y);
+        assert!(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    egui::OutputCommand::CopyText(text)
+                        if text.starts_with("INFO  event 0\nINFO  event 1\n")
+                            && text.ends_with("INFO  event 95")
+                ))
+        );
+        output.drop_without_applying_deltas();
+    }
 
     #[test]
     fn changing_language_updates_existing_problems() {
