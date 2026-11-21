@@ -56,7 +56,8 @@ ring = "=0.17.14"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "=0.11.1"
 # AIFF, MP3, Ogg Vorbis, and M4A decoding (orange-audio only). MPL-2.0, admitted in deny.toml.
-symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "aiff", "alac", "isomp4", "mp3", "ogg", "pcm", "vorbis"] }
+symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "aiff", "alac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+symphonia-opus = "=0.1.1"
 thiserror = "=2.0.21"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }

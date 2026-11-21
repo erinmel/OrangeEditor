@@ -337,8 +337,8 @@ not allocate, lock, log or read files. The capture callback only sums squares an
 steps the threshold; a session thread turns crossings into entry firings.
 
 Playback controls and formats (2026-11-12): `play`, `loop` and file-backed audio
-sources read WAV, AIFF (PCM), FLAC, MP3, Ogg Vorbis and M4A (AAC-LC or ALAC).
-Files are identified by content. AIFF, MP3, Ogg and M4A use Symphonia 0.6.1.
+sources read WAV, AIFF (PCM), FLAC, MP3, Ogg Vorbis, M4A (AAC-LC or ALAC) and
+Opus in Ogg or WebM. Files are identified by content.
 `loop` starts the sound again each time it ends and continues
 only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
 `set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
@@ -350,7 +350,7 @@ device has asked for no samples for two seconds. The callback rules are unchange
 
 Folder playback (2026-11-13): `play-from` (inputs `folder`, `pick`, `gain`;
 output `file`) plays the sound file a number chooses among the folder's WAV, AIFF,
-FLAC, MP3, Ogg and M4A files in name order, counting round; a counter makes a
+FLAC, MP3, Ogg, M4A, Opus and WebM files in name order, counting round; a counter makes a
 playlist and a seeded
 random number a repeatable shuffle, so the node itself draws no randomness. A folder
 without sound files is the fault `org.orange.audio/Empty`.
@@ -490,6 +490,19 @@ A future TTS or other generator plugin can return a validated asset handle or fe
 ### Sources and analyzers (2026-11-17; ADR-30)
 
 An **audio source** connection (`org.orange.audio/input`) is a microphone or other input, what the system plays (loopback), or a **sound file**. It is opened once per flow and shared: the capture callback only stores samples in the source's ring and measures the whole-sound level. A file source plays into the same ring at real-time pace once Play source (or "Play at start") starts it, optionally also heard on an output ("Hear it"), so whatever listens to a microphone listens to a file the same way.
+
+To play a sound produced on another machine, have that machine serve the file
+over HTTP or HTTPS. Enter its URL in the Audio Source connection's **Sound file**
+field, enable **Play at start** or use **Source control**, and wire the stream
+to **Audio out** or an analyzer. For example, use
+`http://192.168.1.20:8080/clip.wav` on a trusted local network. The response can
+arrive in chunks and playback can start during transfer. Use a format that can
+be decoded sequentially, such as PCM WAV with a valid header or Ogg Opus.
+
+Each URL supplies one finite sound. Looping and seeking reuse the decoded
+samples from that response. Redirects and credentials embedded in the URL
+are rejected. The response is limited to 64 MiB and a 60-second request
+budget. Retained PCM is bounded to 57.6 million samples and ten minutes.
 
 Listening is done by **entries and nodes with their own settings**, not by the connection: On band level (band, threshold, release, hold, window; replaces the first On level), On transient (band, sensitivity, floor, minimum gap; 45–120 Hz by default for kicks) and Band level (a band of a stream). Each analyzer reads the ring with its own cursor on its own thread. A band is a 2nd-order Butterworth high-pass at `low_hz` and low-pass at `high_hz` (12 dB per octave each), so neighbouring frequencies leak in at reduced level; a side left at 0 is open. On transient fires on a rise of the band's level of 3 to 12 dB (by sensitivity) above its recent energy average, above a floor and after a minimum gap, and re-arms only once the level falls back, so a held note is one hit. This is a band-energy onset detector, not spectral flux or pitch tracking.
 

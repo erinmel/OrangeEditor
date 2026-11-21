@@ -49,8 +49,8 @@ const policy = {
   // Desktop application: the window, the editor interface and the built-in service packages.
   'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault']},
   // Base audio service package: the only crate with an audio device library. Built on
-  // the plugin SDK alone; its tests run it in a host.
-  'orange-audio': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+  // the plugin SDK and reuses the network package for HTTP file sources.
+  'orange-audio': {core: false, normal: ['orange-sdk', 'orange-net'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.

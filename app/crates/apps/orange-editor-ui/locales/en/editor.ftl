@@ -13,6 +13,7 @@ connection-folder-root = Root folder
 max-iterations = Maximum iterations
 max-iterations-help = The loop takes its Failed route if it exceeds this limit.
 connection-audio-source = Read audio from
+connection-network-audio = Network audio
 connection-audio-group = Audio
 folder-path-label = { $port } · { $folder }
 folder-invalid-path = Enter a relative path inside { $folder }.

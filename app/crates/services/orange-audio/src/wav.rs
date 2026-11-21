@@ -4,6 +4,8 @@ use hound::{SampleFormat, WavReader};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::io::MediaSource;
 
 /// Largest sound file that is decoded.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -61,12 +63,23 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
 
 /// Probes AIFF, MP3, Ogg Vorbis and M4A by file contents.
 fn decode_with_symphonia(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
+    let file = std::fs::File::open(path).map_err(|_| WavError::Unreadable)?;
+    let mut samples = Vec::new();
+    let spec = decode_packets(Box::new(file), |rate, channels, decoded| {
+        append_packet(&mut samples, rate, channels, decoded)
+    })?;
+    convert(&samples, spec.1, spec.0, channels, rate)
+}
+
+pub(crate) fn decode_packets(
+    input: Box<dyn MediaSource + '_>,
+    mut consume: impl FnMut(u32, u16, GenericAudioBufferRef<'_>) -> Result<(), WavError>,
+) -> Result<(u32, u16), WavError> {
     use symphonia::core::codecs::CodecParameters;
     use symphonia::core::errors::Error;
     use symphonia::core::formats::TrackType;
     use symphonia::core::io::MediaSourceStream;
-    let file = std::fs::File::open(path).map_err(|_| WavError::Unreadable)?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let stream = MediaSourceStream::new(input, Default::default());
     let mut format = symphonia::default::get_probe()
         .probe(
             &Default::default(),
@@ -82,10 +95,9 @@ fn decode_with_symphonia(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f
         return Err(WavError::Unreadable);
     };
     let track_id = track.id;
-    let mut decoder = symphonia::default::get_codecs()
+    let mut decoder = codecs()
         .make_audio_decoder(params, &Default::default())
         .map_err(|_| WavError::Unreadable)?;
-    let mut samples: Vec<f32> = Vec::new();
     let mut source: Option<(u32, u16)> = None;
     while let Some(packet) = format.next_packet().map_err(|_| WavError::Unreadable)? {
         if packet.track_id != track_id {
@@ -104,19 +116,41 @@ fn decode_with_symphonia(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f
         if *source.get_or_insert((sample_rate, count)) != (sample_rate, count) {
             return Err(WavError::Unreadable);
         }
-        let start = samples.len();
-        let end = start
-            .checked_add(decoded.samples_interleaved())
-            .ok_or(WavError::TooLarge)?;
-        let limit = MAX_SECONDS * u64::from(sample_rate) * u64::from(count);
-        if end as u64 > limit {
-            return Err(WavError::TooLarge);
-        }
-        samples.resize(end, 0.0);
-        decoded.copy_to_slice_interleaved(&mut samples[start..]);
+        consume(sample_rate, count, decoded)?;
     }
-    let (source_rate, source_channels) = source.ok_or(WavError::Unreadable)?;
-    convert(&samples, source_channels, source_rate, channels, rate)
+    source.ok_or(WavError::Unreadable)
+}
+
+pub(crate) fn append_packet(
+    samples: &mut Vec<f32>,
+    rate: u32,
+    channels: u16,
+    decoded: GenericAudioBufferRef<'_>,
+) -> Result<(), WavError> {
+    let start = samples.len();
+    let end = start
+        .checked_add(decoded.samples_interleaved())
+        .ok_or(WavError::TooLarge)?;
+    let limit = MAX_SECONDS * u64::from(rate) * u64::from(channels);
+    if end as u64 > limit {
+        return Err(WavError::TooLarge);
+    }
+    samples.resize(end, 0.0);
+    decoded.copy_to_slice_interleaved(&mut samples[start..]);
+    Ok(())
+}
+
+fn codecs() -> &'static symphonia::core::codecs::registry::CodecRegistry {
+    use std::sync::OnceLock;
+    use symphonia::core::{codecs::registry::CodecRegistry, common::Tier};
+
+    static CODECS: OnceLock<CodecRegistry> = OnceLock::new();
+    CODECS.get_or_init(|| {
+        let mut codecs = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut codecs);
+        codecs.register_audio_decoder_at_tier::<symphonia_opus::OpusDecoder>(Tier::Fallback);
+        codecs
+    })
 }
 
 fn flac(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
@@ -332,11 +366,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FFmpeg 7.1 encoded these 250 ms, 24 kHz stereo tones as AAC-LC, ALAC and AIFF PCM.
+    /// FFmpeg 7.1 encoded these 250 ms stereo tones at 24 or 48 kHz.
     #[test]
-    fn m4a_and_aiff_preserve_duration_and_stereo_channels() {
+    fn added_formats_preserve_duration_and_stereo_channels() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        for name in ["stereo-aac.m4a", "stereo-alac.m4a", "stereo-pcm.aiff"] {
+        for name in [
+            "stereo-aac.m4a",
+            "stereo-alac.m4a",
+            "stereo-pcm.aiff",
+            "stereo.opus",
+            "stereo.webm",
+        ] {
             let samples = load(&fixtures.join(name), 24_000, 2).unwrap();
             let (frames, incomplete) = samples.as_chunks::<2>();
             assert!(incomplete.is_empty(), "{name}");

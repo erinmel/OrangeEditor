@@ -3259,10 +3259,12 @@ dependencies = [
  "hound",
  "orange-host",
  "orange-model",
+ "orange-net",
  "orange-sdk",
  "orange-testkit",
  "serde_json",
  "symphonia",
+ "symphonia-opus",
  "windows",
  "windows-core",
 ]
@@ -4692,6 +4694,7 @@ dependencies = [
  "symphonia-codec-vorbis",
  "symphonia-core",
  "symphonia-format-isomp4",
+ "symphonia-format-mkv",
  "symphonia-format-ogg",
  "symphonia-format-riff",
  "symphonia-metadata",
@@ -4790,6 +4793,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "symphonia-format-mkv"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d015c5c0558864665894b3f4cbd95e10abb01b9c868e751c72670f326a56360e"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+]
+
+[[package]]
 name = "symphonia-format-ogg"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4824,6 +4839,17 @@ dependencies = [
  "regex-lite",
  "smallvec",
  "symphonia-core",
+]
+
+[[package]]
+name = "symphonia-opus"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a95bd25bbb2d56bcaed835cd91664532be2b94835d09228e8842246e7189ccdd"
+dependencies = [
+ "log",
+ "symphonia-core",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -18,7 +18,13 @@ impl DevicePicker {
         self.connection
             .as_ref()
             .and_then(|connection| connection.settings["file"].as_str())
-            .and_then(|path| std::path::Path::new(path).file_name()?.to_str())
+            .and_then(|path| {
+                if path.starts_with("http://") || path.starts_with("https://") {
+                    Some(t("connection-network-audio"))
+                } else {
+                    std::path::Path::new(path).file_name()?.to_str()
+                }
+            })
             .unwrap_or_else(|| {
                 self.selected
                     .as_deref()

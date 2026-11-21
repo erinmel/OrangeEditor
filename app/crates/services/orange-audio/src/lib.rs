@@ -6,14 +6,14 @@
 //! `org.orange.audio/input` connections and use the nodes below. An application that
 //! does not want audio leaves the package out.
 //!
-//! Playback reads WAV (integer or float PCM), AIFF (PCM), FLAC, MP3, Ogg Vorbis and
-//! M4A files, converts them to the device's rate and channels, and mixes up to
+//! Playback reads WAV, AIFF, FLAC, MP3, Ogg Vorbis, M4A and Opus files, converts
+//! them to the device's rate and channels, and mixes up to
 //! [`MAX_VOICES`] sounds per output. A sound plays once or repeats until stopped;
 //! an output's sounds can be paused,
 //! resumed, moved to a position and scaled by one volume. The device callback only
 //! mixes prepared samples. These controls act on every sound of an output connection:
-//! sounds that need separate control play on separate connections. Streaming from disk
-//! and playlists are not provided.
+//! sounds that need separate control play on separate connections. File-backed
+//! audio sources can also receive progressive HTTP(S) responses.
 //!
 //! [`AUDIO_SOURCE`] publishes an audio stream ([`STREAM_TYPE`]) from a device or
 //! sound file. [`LIVE_LEVEL`], [`MULTIBAND_SPECTRUM`], [`NOISE_GATE`], [`TRANSIENT`], [`AUDIO_OUT`]
@@ -142,7 +142,7 @@ const BAD_INPUT: KernelFault = fault(
 const FILE: KernelFault = fault(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
-    "The sound file is missing or is not a supported WAV, AIFF, FLAC, MP3, Ogg Vorbis or M4A file.",
+    "The sound file is missing or uses an unsupported audio format.",
 );
 const TOO_LARGE: KernelFault = fault(
     "org.orange.audio/TooLarge",
@@ -671,7 +671,7 @@ impl InputShared {
 /// Owns the capture stream; analyzers read its ring. A device that cannot be opened, or
 /// that fails while open, is opened again with backoff, so a microphone plugged in
 /// later is heard.
-fn listen(shared: &InputShared) {
+fn listen(shared: &Arc<InputShared>) {
     while !shared.started.load(Ordering::Acquire) {
         if shared.stopped() {
             return;
@@ -773,7 +773,7 @@ impl ConnectionAdapter for InputAdapter {
         vec![orange_sdk::SettingText {
             setting: "file".into(),
             label: "Sound file".into(),
-            help: "Play and listen to this file instead of a device.".into(),
+            help: "Enter a local sound file or an HTTP(S) audio URL.".into(),
             hint: "C:/Music/track.ogg".into(),
             secret: false,
             required: false,
@@ -986,7 +986,14 @@ impl SourceControl {
             Self::Pause => transport.pause(),
             Self::Resume => transport.resume(),
             Self::Stop => transport.stop(),
-            Self::Seek => transport.seek(seconds),
+            Self::Seek => {
+                let (rate, channels) = shared
+                    .current_ring()
+                    .map_or((file_source::RATE, file_source::CHANNELS), |ring| {
+                        (ring.rate, ring.channels)
+                    });
+                transport.seek(seconds, rate, channels);
+            }
         }
         Ok(Vec::new())
     }
@@ -1144,7 +1151,9 @@ fn play_definition() -> String {
 }
 
 /// The file name extensions of the sound files played.
-const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg", "m4a", "aif", "aiff"];
+const SOUND_FILES: &[&str] = &[
+    "wav", "flac", "mp3", "ogg", "m4a", "aif", "aiff", "opus", "webm",
+];
 
 fn play_from_definition() -> String {
     Definition::node(PACKAGE, "play-from", "Play sound from folder")

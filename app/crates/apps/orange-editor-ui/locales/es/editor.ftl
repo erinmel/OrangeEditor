@@ -12,6 +12,7 @@ connection-folder-root = Carpeta raíz
 max-iterations = Máximo de iteraciones
 max-iterations-help = El bucle usa la salida de error si supera este límite.
 connection-audio-source = Leer audio desde
+connection-network-audio = Audio de red
 connection-audio-group = Audio
 folder-path-label = { $port } · { $folder }
 folder-invalid-path = Introduce una ruta relativa dentro de { $folder }.

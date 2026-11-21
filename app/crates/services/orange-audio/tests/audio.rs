@@ -432,10 +432,14 @@ fn the_audio_nodes_are_listed_with_their_text() {
 /// One connected file supplies two live meters and the stream-wired entries. Manual
 /// playback waits for the live baseline, making the test independent of decode time.
 fn live_file_document(host: &Host, path: &Path) -> String {
+    live_audio_document(host, path.to_str().unwrap())
+}
+
+fn live_audio_document(host: &Host, file: &str) -> String {
     let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000007".parse().unwrap());
     let connection = json!({"id": INPUT, "name": "track",
         "adapter": orange_audio::INPUT_ADAPTER, "scope": "graph",
-        "settings": {"file": path.to_str().unwrap()}});
+        "settings": {"file": file}});
     let _ = document
         .apply([orange_model::DocCommand::UpsertConnection(
             serde_json::from_value(connection).unwrap(),
@@ -908,10 +912,16 @@ fn a_wired_file_source_drives_when_transient_and_finished_from_one_stream() {
 }
 
 #[test]
-fn m4a_and_aiff_files_play_and_finish_through_both_graph_paths() {
+fn added_audio_formats_play_and_finish_through_both_graph_paths() {
     let mut host = host();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for name in ["stereo-aac.m4a", "stereo-alac.m4a", "stereo-pcm.aiff"] {
+    for name in [
+        "stereo-aac.m4a",
+        "stereo-alac.m4a",
+        "stereo-pcm.aiff",
+        "stereo.opus",
+        "stereo.webm",
+    ] {
         let path = fixtures.join(name);
         let playback = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
         let flow = host.open(&playback).unwrap();
@@ -934,6 +944,61 @@ fn m4a_and_aiff_files_play_and_finish_through_both_graph_paths() {
         });
         host.close(flow).unwrap();
     }
+}
+
+#[test]
+fn remote_file_plays_before_http_response_finishes() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let path = tone("remote-progressive.wav", 3_000);
+    let body = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let (release, released) = std::sync::mpsc::channel();
+    let reply = std::thread::spawn(move || {
+        let (mut client, _) = server.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 4_096 {
+            let mut byte = [0];
+            client.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        write!(
+            client,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        let midpoint = body.len() / 2;
+        client.write_all(&body[..midpoint]).unwrap();
+        released.recv_timeout(Duration::from_secs(10)).unwrap();
+        client.write_all(&body[midpoint..]).unwrap();
+    });
+
+    let mut host = host();
+    let doc = live_audio_document(&host, &format!("http://{address}/sound.wav"));
+    let flow = host.open(&doc).unwrap();
+    until("the remote source to publish its stream", || {
+        host.inspect(flow, |run| run.live_value(node(1)).is_some())
+            .unwrap()
+    });
+    host.trigger(flow, node(8), None).unwrap();
+    until(
+        "audible content before the response finishes",
+        || matches!(host.inspect(flow, |run| run.live_value(node(3)).cloned()).unwrap(), Some(Value::F64(level)) if level > -30.0),
+    );
+    assert_eq!(read(&host, flow, 102), Some(Value::U64(0)));
+    release.send(()).unwrap();
+    reply.join().unwrap();
+    until("the remote source to finish", || {
+        read(&host, flow, 102) == Some(Value::U64(1))
+    });
+    host.close(flow).unwrap();
 }
 
 /// Plays a short tone on the real default device. Run by hand:

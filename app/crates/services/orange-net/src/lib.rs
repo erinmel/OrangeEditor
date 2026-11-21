@@ -22,7 +22,7 @@ pub mod oauth;
 mod transport;
 mod ws;
 
-pub use feed::{download, fetch, new_feed_key, sha256, sign_feed, verify_feed};
+pub use feed::{download, fetch, media_reader, new_feed_key, sha256, sign_feed, verify_feed};
 pub use ws::MAX_QUEUED_MESSAGES;
 
 use orange_sdk::{FaultText, KernelFault, ServicePackage, SettingText};
