@@ -1,0 +1,473 @@
+//! Structural validation of persisted graph edges (11 §§4.2–4.3).
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::catalog::{RegistrySnapshot, rigid_params};
+use crate::document::{
+    Edge, GraphDocument, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
+};
+use crate::id::{EdgeId, NodeId};
+use crate::index::DocIndex;
+use crate::type_term::TypeTerm;
+
+use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
+use super::ports::{PortLookupError, PortResolver};
+use super::scope::Scope;
+
+/// Result of validating the graph's connections using currently available metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionValidation {
+    pub diagnostics: Vec<Diagnostic>,
+    /// Nodes whose signatures or unresolved generic types prevented a complete check.
+    pub incomplete_nodes: BTreeSet<NodeId>,
+}
+
+/// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
+pub(crate) fn validate_connections_in(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+    index: &DocIndex,
+    mut cache: Option<&mut EdgeCache>,
+    visits: &mut super::visits::VisitCounts,
+) -> ConnectionValidation {
+    let origin = registry.origin();
+    let mut report = ConnectionValidation::default();
+    let mut diagnostics = Vec::new();
+    let mut edges: Vec<_> = scope
+        .bodies(document)
+        .into_iter()
+        .flat_map(|(body_ref, body)| {
+            visits.bodies += 1;
+            body.edges.values().map(move |edge| (body_ref, edge))
+        })
+        .collect();
+    edges.sort_by_key(|(_, edge)| edge.id);
+
+    // Cardinality counts persisted edges even when their opposite endpoint is malformed.
+    let mut incoming: BTreeMap<(NodeId, crate::id::PortKey), Vec<EdgeId>> = BTreeMap::new();
+    let mut outgoing: BTreeMap<(NodeId, crate::id::PortKey), Vec<EdgeId>> = BTreeMap::new();
+    for (_, edge) in &edges {
+        visits.edges += 1;
+        incoming
+            .entry((edge.to.node, edge.to.port.clone()))
+            .or_default()
+            .push(edge.id);
+        outgoing
+            .entry((edge.from.node, edge.from.port.clone()))
+            .or_default()
+            .push(edge.id);
+    }
+
+    let mut scoped_out = BTreeSet::new();
+    for (stored_body, edge) in &edges {
+        visits.edges += 1;
+        let from_body = index.body_of(edge.from.node);
+        let to_body = index.body_of(edge.to.node);
+        if matches!((from_body, to_body), (Some(from), Some(to)) if from != to)
+            || (from_body.is_some_and(|body| body != *stored_body)
+                && to_body.is_some_and(|body| body != *stored_body))
+        {
+            scoped_out.insert(edge.id);
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::ScopeEdge,
+                subject(&edge.from, Some(edge.id)),
+                origin,
+            ));
+            continue;
+        }
+
+        // The check reads both endpoint ports.
+        visits.ports += 2;
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.edge(
+                document,
+                resolved,
+                edge,
+                origin,
+                &mut report,
+                &mut diagnostics,
+            );
+        } else {
+            check_edge(
+                document,
+                resolved,
+                edge,
+                origin,
+                &mut report,
+                &mut diagnostics,
+            );
+        }
+    }
+
+    for ((node, port), edge_ids) in incoming {
+        let port_ref = PortRef { node, port };
+        visits.ports += 1;
+        let edge_ids: Vec<_> = edge_ids
+            .into_iter()
+            .filter(|edge| {
+                visits.edges += 1;
+                !scoped_out.contains(edge)
+            })
+            .collect();
+        if edge_ids.len() <= 1 {
+            continue;
+        }
+        let Ok(port) = resolved.port(&port_ref) else {
+            continue;
+        };
+        if port.direction == crate::document::PortDirection::Input && port.kind == PortKind::Data {
+            let edge = edge_ids[0];
+            diagnostics.push(
+                Diagnostic::new(
+                    DiagnosticCode::FaninData,
+                    subject(&port_ref, Some(edge)),
+                    origin,
+                )
+                .with_count("count", edge_ids.len() as u64),
+            );
+        }
+    }
+
+    for ((node, port), edge_ids) in outgoing {
+        let port_ref = PortRef { node, port };
+        visits.ports += 1;
+        let edge_ids: Vec<_> = edge_ids
+            .into_iter()
+            .filter(|edge| {
+                visits.edges += 1;
+                !scoped_out.contains(edge)
+            })
+            .collect();
+        if edge_ids.len() <= 1 {
+            continue;
+        }
+        let Ok(port) = resolved.port(&port_ref) else {
+            continue;
+        };
+        let code = if port.direction != crate::document::PortDirection::Output {
+            None
+        } else {
+            match port.kind {
+                PortKind::Exec => Some(DiagnosticCode::FanoutExec),
+                PortKind::Event => Some(DiagnosticCode::FanoutEvent),
+                PortKind::Data => match stream_status(&port, rigid_params(document, port_ref.node))
+                {
+                    Some(true) => Some(DiagnosticCode::StreamFanout),
+                    Some(false) => None,
+                    None => {
+                        report.incomplete_nodes.insert(port_ref.node);
+                        None
+                    }
+                },
+            }
+        };
+        if let Some(code) = code {
+            diagnostics.push(
+                Diagnostic::new(code, subject(&port_ref, Some(edge_ids[0])), origin)
+                    .with_count("count", edge_ids.len() as u64),
+            );
+        }
+    }
+
+    // Edges crossing body boundaries are intentionally not checked a second time.
+    sort_diagnostics(&mut diagnostics);
+    report.diagnostics = diagnostics;
+    report
+}
+
+/// Whether the whole-document pass would report nothing new for the stored edge `edge`
+/// added to an otherwise clean body: the edge checks without diagnostics or
+/// incompleteness, an exec or event output has no other connection, and a data input has
+/// no other wire and a shared data output is not a stream.
+pub(crate) fn added_edge_is_clean(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    index: &DocIndex,
+    edge: &Edge,
+    origin: &HostOrigin,
+    visits: &mut super::visits::VisitCounts,
+) -> bool {
+    // The edge check reads the edge and both endpoint ports; the fan scans below read at
+    // most two edges each, and the source port once more.
+    visits.edges += 1;
+    visits.ports += 3;
+    let mut report = ConnectionValidation::default();
+    let mut diagnostics = Vec::new();
+    check_edge(
+        document,
+        resolved,
+        edge,
+        origin,
+        &mut report,
+        &mut diagnostics,
+    );
+    if !diagnostics.is_empty() || !report.incomplete_nodes.is_empty() {
+        return false;
+    }
+    let Ok(from) = resolved.port(&edge.from) else {
+        return false;
+    };
+    // Whether a port has more than one edge, reading at most two.
+    let mut fan = |edges: &mut dyn Iterator<Item = EdgeId>| {
+        edges.take(2).inspect(|_| visits.edges += 1).count() > 1
+    };
+    if from.kind != PortKind::Data {
+        // An exec or event output takes one connection; exec inputs take any number.
+        return !fan(&mut index.outgoing(&edge.from));
+    }
+    if fan(&mut index.incoming(&edge.to)) {
+        return false;
+    }
+    if fan(&mut index.outgoing(&edge.from)) {
+        return stream_status(&from, rigid_params(document, edge.from.node)) == Some(false);
+    }
+    true
+}
+
+/// One edge's endpoint, direction, kind and type checks, as the pass runs them for every
+/// edge not already reported as crossing a body boundary.
+fn check_edge(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    edge: &Edge,
+    origin: &HostOrigin,
+    report: &mut ConnectionValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let from = resolve_endpoint(
+        document,
+        resolved,
+        &edge.from,
+        edge.id,
+        origin,
+        report,
+        diagnostics,
+    );
+    let to = resolve_endpoint(
+        document,
+        resolved,
+        &edge.to,
+        edge.id,
+        origin,
+        report,
+        diagnostics,
+    );
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+
+    if from.direction != crate::document::PortDirection::Output
+        || to.direction != crate::document::PortDirection::Input
+    {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::PortDirection,
+            subject(&edge.from, Some(edge.id)),
+            origin,
+        ));
+        return;
+    }
+
+    let matrix_ok = matches!(
+        (from.kind, to.kind),
+        (PortKind::Data, PortKind::Data)
+            | (PortKind::Exec, PortKind::Exec)
+            | (PortKind::Event, PortKind::Exec)
+    );
+    if !matrix_ok {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::KindMismatch,
+            subject(&edge.from, Some(edge.id)),
+            origin,
+        ));
+        return;
+    }
+
+    if from.kind == PortKind::Data {
+        let rigid = rigid_params(document, edge.to.node);
+        if !(is_concrete(&from, rigid) && is_concrete(&to, rigid)) {
+            unchecked_edge(edge, resolved, origin, report, diagnostics);
+        } else if from.ty != to.ty {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::TypeMismatch,
+                subject(&edge.to, Some(edge.id)),
+                origin,
+            ));
+        }
+    }
+}
+
+fn resolve_endpoint(
+    _document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    endpoint: &PortRef,
+    edge: EdgeId,
+    origin: &HostOrigin,
+    report: &mut ConnectionValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<std::rc::Rc<PortDescriptor>> {
+    match resolved.port(endpoint) {
+        Ok(port) => Some(port),
+        Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::PortUnknown,
+                subject(endpoint, Some(edge)),
+                origin,
+            ));
+            None
+        }
+        Err(PortLookupError::MissingMetadata) => {
+            report.incomplete_nodes.insert(endpoint.node);
+            None
+        }
+    }
+}
+
+/// True when every type parameter in the term is rigid in this body.
+fn only_rigid(term: &TypeTerm, rigid: &[TypeParam]) -> bool {
+    match term {
+        TypeTerm::Param(name) => rigid.iter().any(|param| param.name.as_str() == name),
+        TypeTerm::Named(named) => named.args.iter().all(|arg| only_rigid(arg, rigid)),
+    }
+}
+
+/// True when the port's type parses and names no type parameter other than the owning
+/// function's rigid ones, so it can be compared textually.
+fn is_concrete(port: &PortDescriptor, rigid: &[TypeParam]) -> bool {
+    port.ty
+        .as_ref()
+        .and_then(|ty| TypeTerm::parse(ty).ok())
+        .is_some_and(|term| only_rigid(&term, rigid))
+}
+
+/// An edge whose data types cannot be compared leaves both endpoints incomplete. A resolved
+/// endpoint is blocked by its peer and says so; an unresolved one is already explained by
+/// node resolution.
+fn unchecked_edge(
+    edge: &Edge,
+    resolved: &PortResolver<'_>,
+    origin: &HostOrigin,
+    report: &mut ConnectionValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for endpoint in [&edge.from, &edge.to] {
+        report.incomplete_nodes.insert(endpoint.node);
+        if resolved.contains_key(&endpoint.node) {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::DependencyUnavailable,
+                subject(endpoint, Some(edge.id)),
+                origin,
+            ));
+        }
+    }
+}
+
+/// Whether a data output is an affine stream. A bare rigid parameter may be instantiated
+/// with a stream, so it counts as one (strictest reading); other terms over rigid parameters
+/// follow their outer constructor.
+fn stream_status(port: &PortDescriptor, rigid: &[TypeParam]) -> Option<bool> {
+    let term = TypeTerm::parse(port.ty.as_ref()?).ok()?;
+    if !only_rigid(&term, rigid) {
+        None
+    } else {
+        Some(matches!(term, TypeTerm::Param(_)) || term.core("stream").is_some())
+    }
+}
+
+fn subject(endpoint: &PortRef, edge: Option<EdgeId>) -> Subject {
+    Subject::new(Some(endpoint.node), Some(endpoint.port.clone()), edge)
+}
+
+/// Each edge's check result from an earlier analysis of the same session (16, V12b). An
+/// entry is reused while the edge and both endpoint nodes are untouched by the change
+/// journal and each endpoint's fresh resolution equals the one the check saw; function
+/// declaration and registry changes clear the cache, since the check reads a body's
+/// rigid type parameters. Misses run the same [`check_edge`].
+#[derive(Default, Clone)]
+pub(crate) struct EdgeCache {
+    entries: BTreeMap<EdgeId, EdgeEntry>,
+    pub(crate) computed: usize,
+    pub(crate) hits: usize,
+}
+
+#[derive(Clone)]
+struct EdgeEntry {
+    ends: (NodeId, NodeId),
+    from: Option<SignatureSnapshot>,
+    to: Option<SignatureSnapshot>,
+    diagnostics: Vec<Diagnostic>,
+    incomplete: Vec<NodeId>,
+}
+
+impl EdgeCache {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn forget(&mut self, edge: &EdgeId) {
+        self.entries.remove(edge);
+    }
+
+    /// Drops every entry whose edge ends at one of `nodes`.
+    pub(crate) fn forget_nodes(&mut self, nodes: &BTreeSet<NodeId>) {
+        if !nodes.is_empty() {
+            self.entries.retain(|_, entry| {
+                !nodes.contains(&entry.ends.0) && !nodes.contains(&entry.ends.1)
+            });
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn edge(
+        &mut self,
+        document: &GraphDocument,
+        resolved: &PortResolver<'_>,
+        edge: &Edge,
+        origin: &HostOrigin,
+        report: &mut ConnectionValidation,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let from = resolved.get(&edge.from.node);
+        let to = resolved.get(&edge.to.node);
+        if let Some(entry) = self.entries.get(&edge.id)
+            && entry.from.as_ref() == from
+            && entry.to.as_ref() == to
+        {
+            self.hits += 1;
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+            report
+                .incomplete_nodes
+                .extend(entry.incomplete.iter().copied());
+            return;
+        }
+        self.computed += 1;
+        let mut own = ConnectionValidation::default();
+        let mut own_diagnostics = Vec::new();
+        check_edge(
+            document,
+            resolved,
+            edge,
+            origin,
+            &mut own,
+            &mut own_diagnostics,
+        );
+        diagnostics.extend(own_diagnostics.iter().cloned());
+        report
+            .incomplete_nodes
+            .extend(own.incomplete_nodes.iter().copied());
+        self.entries.insert(
+            edge.id,
+            EdgeEntry {
+                ends: (edge.from.node, edge.to.node),
+                from: from.cloned(),
+                to: to.cloned(),
+                diagnostics: own_diagnostics,
+                incomplete: own.incomplete_nodes.into_iter().collect(),
+            },
+        );
+    }
+}

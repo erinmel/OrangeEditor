@@ -1,0 +1,222 @@
+//! Node contracts and resolved type arguments.
+
+use std::collections::BTreeMap;
+
+use thiserror::Error;
+
+use crate::config_pointer::pointer_get;
+use crate::document::{
+    ConfigValue, DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName,
+};
+use crate::id::DeclId;
+use crate::id::TypeExpr;
+
+/// Host-supplied contract of one definition version: its declared ports before type
+/// substitution. Persisted signature snapshots are resolved results, never contracts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeContract {
+    /// Kind of the projected signature snapshots of this definition's instances.
+    pub kind: NodeKind,
+    /// Declared suspension behavior. `None` is unresolved for async/iterator definitions.
+    pub suspends: Option<Suspends>,
+    pub type_params: Vec<TypeParam>,
+    /// Declared ports; data port types may mention `$name` parameters.
+    pub ports: Vec<PortDescriptor>,
+}
+
+/// Resolved type arguments of one generic node, by parameter name.
+pub type TypeArgs = BTreeMap<TypeParamName, TypeExpr>;
+
+/// Identity namespace of a config field that holds a graph declaration ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReferenceKind {
+    Variable,
+    Event,
+    Function,
+    Connection,
+}
+
+/// A config field whose string value is a typed graph identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceField {
+    /// RFC 6901 JSON pointer within the node config, such as `/variable`.
+    pub pointer: String,
+    pub kind: ReferenceKind,
+}
+
+/// Whether a variable node reads or writes its declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableAccess {
+    Read,
+    Write,
+    Update,
+    WriteShared,
+    UpdateShared,
+    /// `core/on-variable-changed`: `value` and `previous` outputs of the variable type.
+    Changed,
+}
+
+/// How an event intrinsic uses its event declaration (11 §8.4, §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventAccess {
+    /// `core/on-event`: an entry whose `payload` output carries the declared payload.
+    Handle,
+    /// `core/emit`: an action whose `payload` input carries the declared payload.
+    Emit,
+    /// `core/await-event`: an async with an optional `timeout`, `then`/`timed_out` outcomes
+    /// and a `payload` output available on `then`.
+    Await,
+}
+
+/// Record/enum construction and projection nodes whose ports follow the registered
+/// nominal schema named by `config.type` (11 §5.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NominalAccess {
+    /// One input per field in schema order (optional fields as `option<F>`), `result`.
+    MakeRecord,
+    /// `record` input, `result` of `config.field` (`option<F>` when optional).
+    GetField,
+    /// `record` and `value` (F, or `option<F>` when optional) inputs, `result` record
+    /// equal to `record` except `config.field`.
+    SetField,
+    /// `payload` input when `config.variant` has one, `result` enum.
+    MakeEnum,
+    /// `value` enum input, `result: option<P>` of `config.variant`'s payload.
+    EnumPayload,
+}
+
+/// Where a definition's ports come from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ports {
+    /// Fixed ports; data port types may mention `$name` parameters.
+    Declared(Vec<PortDescriptor>),
+    /// Variable-derived ports: Read has a `value` output, Write has a `value`
+    /// input, and Update has a `value` input plus `old`/`new` outputs. Shared writes
+    /// use the async shared-variable contracts.
+    Variable(VariableAccess),
+    /// Event-derived ports: `payload` is typed by the referenced event declaration.
+    Event(EventAccess),
+    /// `core/for-each`: the element ports follow `config.mode` (`list` or `map`, 11 §8.4).
+    ForEach,
+    /// `core/on-manual`: a `payload` output typed by the concrete `config.payload` type,
+    /// or no data output when that field is absent (11 §10.2).
+    Manual,
+    /// `core/on-timer` and `core/on-timeout`: fixed tick outputs whose schedule comes from
+    /// a config checked by [`TimerSchedule::from_node`](super::TimerSchedule::from_node).
+    Timer,
+    /// Pure record/enum nodes whose ports follow a registered nominal schema.
+    Nominal(NominalAccess),
+}
+
+/// Inputs needed to evaluate one volatile definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volatility {
+    StateRead,
+    Clock,
+    Entropy,
+    /// A package's live value: its provider publishes it to the run, which reads the
+    /// latest one like a variable. The node's data inputs are the arguments the
+    /// provider is armed with, evaluated at the root (11 §10.5).
+    Live,
+}
+
+/// A provider declaration, checked for kind compatibility; not authentication of code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Determinism {
+    Deterministic,
+    Seeded,
+    External,
+    Nondeterministic,
+}
+
+/// One registered node definition version.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeDefinition {
+    pub definition: DefinitionRef,
+    pub config_version: u32,
+    /// Kind of the projected signature snapshots of this definition's instances.
+    pub kind: NodeKind,
+    /// Required for volatile definitions only. Packages may declare Entropy only.
+    pub volatility: Option<Volatility>,
+    pub determinism: Determinism,
+    /// Declared suspension behavior. `None` is unresolved for async/iterator definitions.
+    pub suspends: Option<Suspends>,
+    pub type_params: Vec<TypeParam>,
+    pub ports: Ports,
+    /// Config fields holding declaration IDs; the only fields treated as references.
+    pub references: Vec<ReferenceField>,
+    /// Core-implemented argument sets. `None`: constraints decide.
+    pub specializations: Option<Vec<TypeArgs>>,
+    /// Enforced by validation's versioned config-schema dialect; unsupported constructs
+    /// produce diagnostics rather than silently accepting the configuration.
+    pub config_schema: Option<serde_json::Value>,
+}
+
+/// Why a reference field does not yield a declaration ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ReferenceError {
+    #[error("reference field is absent")]
+    Missing,
+    #[error("reference field is not a valid declaration ID")]
+    Malformed,
+}
+
+impl ReferenceField {
+    /// Reads the field from `config`; the only place a config string becomes a declaration ID.
+    pub(crate) fn parse(&self, config: &ConfigValue) -> Result<DeclId, ReferenceError> {
+        let value = pointer_get(config, &self.pointer).ok_or(ReferenceError::Missing)?;
+        let text = value.as_str().ok_or(ReferenceError::Malformed)?;
+        let parsed = match self.kind {
+            ReferenceKind::Variable => text.parse().map(DeclId::Variable).ok(),
+            ReferenceKind::Event => text.parse().map(DeclId::Event).ok(),
+            ReferenceKind::Function => text.parse().map(DeclId::Function).ok(),
+            ReferenceKind::Connection => text.parse().map(DeclId::Connection).ok(),
+        };
+        parsed.ok_or(ReferenceError::Malformed)
+    }
+}
+
+/// Why a contract cannot be computed from a definition and a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ContractError {
+    #[error("the referenced variable is missing or not declared")]
+    VariableUnknown,
+    #[error("synchronous variable writes cannot target workspace scope")]
+    VariableScope,
+    #[error("variable update operation is missing, malformed or unknown")]
+    UpdateOperation,
+    #[error("variable update operation is recognized but not supported by this contract")]
+    UpdateUnsupported,
+    #[error("shared variable writes require a workspace variable")]
+    SharedVariableScope,
+    #[error("variable type has no exact proof for the requested update operation")]
+    UpdateConstraint,
+    #[error("variable type cannot be resolved")]
+    TypeMismatch,
+    #[error("variable type resolution exceeded its resource limit")]
+    TypeComplexity,
+    #[error("the referenced event is missing or not declared")]
+    EventUnknown,
+    #[error("the referenced connection is missing or not declared")]
+    ConnectionUnknown,
+    #[error("for-each mode is not `list` or `map`")]
+    ForEachMode,
+    #[error("manual entry config is malformed or its payload is not a concrete registered type")]
+    ManualPayload,
+    #[error("timer entry config is malformed or out of range")]
+    TimerConfig,
+    #[error("variable-changed entry needs a run variable with an initial value and `eq`")]
+    VariableChanged,
+    #[error("converter config is malformed or uses an unsupported version")]
+    ConverterConfig,
+    #[error("converter entry is unavailable")]
+    ConverterEntry,
+    #[error("converter options are invalid or incomplete")]
+    ConverterOptions,
+    #[error("converter provider is unavailable")]
+    ConverterProvider,
+    #[error("converter package provider has no unique package lock entry")]
+    ConverterPackageLockMissing,
+    #[error("record/enum node config must name a registered type and an existing member")]
+    NominalConfig,
+}

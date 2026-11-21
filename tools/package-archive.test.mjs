@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {canonical, vectors} from './package-archive.mjs';
 
 const fixture = JSON.parse(readFileSync(
-  new URL('../app/crates/orange-packages/tests/fixtures/archive-v1.json', import.meta.url), 'utf8'));
+  new URL('../app/crates/platform/orange-packages/tests/fixtures/archive-v1.json', import.meta.url), 'utf8'));
 
 test('the reference encoder reproduces the committed archive vectors byte for byte', () => {
   assert.deepEqual(vectors(), fixture);

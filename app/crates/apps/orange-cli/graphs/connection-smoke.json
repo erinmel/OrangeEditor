@@ -1,0 +1,1463 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-0000000000a9",
+  "revision": 14,
+  "package_lock": [
+    {
+      "id": "org.orange.json",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    },
+    {
+      "id": "org.orange.net",
+      "version": "0.0.0",
+      "content_digest": "sha256:f264fc68eb4ef10354ff58109a95740e364b438b95d21ce98dc3dca121efbfb3"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "10000000-0000-4000-8000-000000000064",
+      "name": "JSON member",
+      "type": "core/option@1<core/json@1>",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000065",
+      "name": "Malformed JSON result",
+      "type": "core/result@1<core/json@1>",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000066",
+      "name": "Runs",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000067",
+      "name": "Threshold crossings",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000068",
+      "name": "Previous run count",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000006e",
+      "name": "HTTP status",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000006f",
+      "name": "HTTP JSON type",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000070",
+      "name": "HTTPS status",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000071",
+      "name": "HTTPS JSON type",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000072",
+      "name": "Rejected request status",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000078",
+      "name": "Last socket JSON type",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [
+    {
+      "id": "40000000-0000-4000-8000-000000000001",
+      "name": "Local HTTP",
+      "adapter": "org.orange.net/http",
+      "scope": "graph",
+      "settings": {
+        "base_url": "http://localhost:8080",
+        "timeout_ms": 2000
+      }
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000002",
+      "name": "Local HTTPS",
+      "adapter": "org.orange.net/http",
+      "scope": "graph",
+      "settings": {
+        "base_url": "https://localhost:9443",
+        "timeout_ms": 2000
+      }
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000003",
+      "name": "Local WebSocket",
+      "adapter": "org.orange.net/websocket",
+      "scope": "graph",
+      "settings": {
+        "url": "ws://localhost:8765/echo"
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:40fe0184f9148c262658177f7035e310077effc2a337f58df64ca47cef5bb880": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/json@1"
+        },
+        {
+          "port_id": "key",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/option@1<core/json@1>",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:4826a7f3acf9f779891ba0b3f9c1e765fd755ac0d1a77f7b8cbb099305c4efff": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/json@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:627af36ca784530adb2f496c761a25efeaf3fca2a2eef6a8d94f73a2ab111a02": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/json@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:cb67ba791936b4bace05cdf20565fd49ed10122c464fd026cc01219fb382d540": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:e57104288fca4f763fdebac929cf9dfa75e3277027d8762de26dddaa22c81150": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Run JSON and feedback"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000064"
+      },
+      "name": "Keep the JSON member"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000006",
+      "definition_id": "core/try",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "name": "Catch the parse fault"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000007",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000065"
+      },
+      "name": "Keep the parse result"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000008",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000066",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Count runs"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000009",
+      "definition_id": "core/get-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000066"
+      },
+      "name": "Read runs"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000000a",
+      "definition_id": "core/on-watch",
+      "definition_version": 1,
+      "config_version": 2,
+      "config": {
+        "mode": "above",
+        "threshold": 1
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "When runs exceed one"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000000b",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000067",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Count crossings"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000000c",
+      "definition_id": "core/on-variable-changed",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000066"
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "When the run count changes"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000000d",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000068"
+      },
+      "name": "Keep the previous count"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000014",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Try HTTP"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000016",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-00000000006e"
+      },
+      "name": "Keep response status"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000017",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-00000000006e"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "-1"
+        }
+      },
+      "name": "Mark transport failure"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000001a",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-00000000006f"
+      },
+      "name": "Keep the JSON type"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000001e",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Try HTTPS"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000020",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000070"
+      },
+      "name": "Keep response status"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000021",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000070"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "-1"
+        }
+      },
+      "name": "Mark transport failure"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000024",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000071"
+      },
+      "name": "Keep the JSON type"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000028",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Reject an invalid HTTP path"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000002a",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000072"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "-1"
+        }
+      },
+      "name": "Confirm request rejected"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000032",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Send JSON over WebSocket"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000037",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000078"
+      },
+      "name": "Keep the message type"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "inputs": {
+        "text": {
+          "type": "core/string@1",
+          "value": "{\"item\": null, \"items\": [1, 2]}"
+        }
+      },
+      "name": "Parse sample"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "org.orange.json/get",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:40fe0184f9148c262658177f7035e310077effc2a337f58df64ca47cef5bb880",
+      "inputs": {
+        "key": {
+          "type": "core/string@1",
+          "value": "item"
+        }
+      },
+      "name": "Find a present null"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "inputs": {
+        "text": {
+          "type": "core/string@1",
+          "value": "{\"broken\":}"
+        }
+      },
+      "name": "Parse malformed JSON"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000015",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000001"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:627af36ca784530adb2f496c761a25efeaf3fca2a2eef6a8d94f73a2ab111a02",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "/demo"
+        }
+      },
+      "name": "HTTP GET /demo"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000018",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "name": "Parse the response body"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000019",
+      "definition_id": "org.orange.json/kind",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:4826a7f3acf9f779891ba0b3f9c1e765fd755ac0d1a77f7b8cbb099305c4efff",
+      "name": "Read the JSON type"
+    },
+    {
+      "id": "10000000-0000-4000-8000-00000000001f",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000002"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:627af36ca784530adb2f496c761a25efeaf3fca2a2eef6a8d94f73a2ab111a02",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "/demo"
+        }
+      },
+      "name": "HTTPS GET /demo"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000022",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "name": "Parse the response body"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000023",
+      "definition_id": "org.orange.json/kind",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:4826a7f3acf9f779891ba0b3f9c1e765fd755ac0d1a77f7b8cbb099305c4efff",
+      "name": "Read the JSON type"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000029",
+      "definition_id": "org.orange.net/http-request",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000001"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:627af36ca784530adb2f496c761a25efeaf3fca2a2eef6a8d94f73a2ab111a02",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "invalid-path"
+        }
+      },
+      "name": "Path without a slash"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000033",
+      "definition_id": "org.orange.net/ws-send",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000003"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:e57104288fca4f763fdebac929cf9dfa75e3277027d8762de26dddaa22c81150",
+      "inputs": {
+        "text": {
+          "type": "core/string@1",
+          "value": "{\"echo\": true}"
+        }
+      },
+      "name": "Queue JSON text"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000034",
+      "definition_id": "org.orange.net/ws-message",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000003"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cb67ba791936b4bace05cdf20565fd49ed10122c464fd026cc01219fb382d540",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Receive WebSocket text"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000035",
+      "definition_id": "org.orange.json/parse",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:6e3e6e0e69c26886ced3ba4e714c535a5788d417e45f02405c6ae624f210e149",
+      "name": "Parse received text"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000036",
+      "definition_id": "org.orange.json/kind",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.json",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:4826a7f3acf9f779891ba0b3f9c1e765fd755ac0d1a77f7b8cbb099305c4efff",
+      "name": "Read the message type"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000007",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000006",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000007",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000007",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000007",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000008",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000008",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000009",
+        "port": "value"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000000a",
+        "port": "watch"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000009",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000000a",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000000b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000010",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000000c",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000000d",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000011",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000000c",
+        "port": "previous"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000000d",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000018",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000016",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000001a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000026",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000020",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000024",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000005",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000012",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000014",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000015",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000013",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000015",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000016",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000014",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000015",
+        "port": "status"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000016",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000015",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000015",
+        "port": "failed"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000017",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000016",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000015",
+        "port": "response"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000018",
+        "port": "text"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000017",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000018",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000019",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000019",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000019",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000001a",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000020",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000001e",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000001f",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000021",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000001f",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000020",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000022",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000001f",
+        "port": "status"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000020",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000023",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000001f",
+        "port": "failed"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000021",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000024",
+      "from": {
+        "node": "10000000-0000-4000-8000-00000000001f",
+        "port": "response"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000022",
+        "port": "text"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000025",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000022",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000023",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000027",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000023",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000024",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000028",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000028",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000029",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000029",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000029",
+        "port": "failed"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-00000000002a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000030",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000032",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000033",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000031",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000034",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000037",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000032",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000034",
+        "port": "payload"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000035",
+        "port": "text"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000033",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000035",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000036",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000034",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000036",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000037",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 0,
+        "y": 150
+      },
+      "10000000-0000-4000-8000-000000000003": {
+        "x": 380,
+        "y": 150
+      },
+      "10000000-0000-4000-8000-000000000004": {
+        "x": 760,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000005": {
+        "x": 0,
+        "y": 300
+      },
+      "10000000-0000-4000-8000-000000000006": {
+        "x": 380,
+        "y": 300
+      },
+      "10000000-0000-4000-8000-000000000007": {
+        "x": 1140,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000008": {
+        "x": 1520,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000009": {
+        "x": 0,
+        "y": 480
+      },
+      "10000000-0000-4000-8000-00000000000a": {
+        "x": 380,
+        "y": 480
+      },
+      "10000000-0000-4000-8000-00000000000b": {
+        "x": 760,
+        "y": 480
+      },
+      "10000000-0000-4000-8000-00000000000c": {
+        "x": 1140,
+        "y": 480
+      },
+      "10000000-0000-4000-8000-00000000000d": {
+        "x": 1520,
+        "y": 480
+      },
+      "10000000-0000-4000-8000-000000000014": {
+        "x": 0,
+        "y": 950
+      },
+      "10000000-0000-4000-8000-000000000015": {
+        "x": 380,
+        "y": 950
+      },
+      "10000000-0000-4000-8000-000000000016": {
+        "x": 800,
+        "y": 950
+      },
+      "10000000-0000-4000-8000-000000000017": {
+        "x": 800,
+        "y": 1194
+      },
+      "10000000-0000-4000-8000-000000000018": {
+        "x": 1220,
+        "y": 1130
+      },
+      "10000000-0000-4000-8000-000000000019": {
+        "x": 1600,
+        "y": 1130
+      },
+      "10000000-0000-4000-8000-00000000001a": {
+        "x": 1980,
+        "y": 950
+      },
+      "10000000-0000-4000-8000-00000000001e": {
+        "x": 0,
+        "y": 1480
+      },
+      "10000000-0000-4000-8000-00000000001f": {
+        "x": 380,
+        "y": 1480
+      },
+      "10000000-0000-4000-8000-000000000020": {
+        "x": 800,
+        "y": 1480
+      },
+      "10000000-0000-4000-8000-000000000021": {
+        "x": 800,
+        "y": 1724
+      },
+      "10000000-0000-4000-8000-000000000022": {
+        "x": 1220,
+        "y": 1660
+      },
+      "10000000-0000-4000-8000-000000000023": {
+        "x": 1600,
+        "y": 1660
+      },
+      "10000000-0000-4000-8000-000000000024": {
+        "x": 1980,
+        "y": 1480
+      },
+      "10000000-0000-4000-8000-000000000028": {
+        "x": 0,
+        "y": 2020
+      },
+      "10000000-0000-4000-8000-000000000029": {
+        "x": 380,
+        "y": 2020
+      },
+      "10000000-0000-4000-8000-00000000002a": {
+        "x": 800,
+        "y": 2020
+      },
+      "10000000-0000-4000-8000-000000000032": {
+        "x": 0,
+        "y": 2410
+      },
+      "10000000-0000-4000-8000-000000000033": {
+        "x": 380,
+        "y": 2410
+      },
+      "10000000-0000-4000-8000-000000000034": {
+        "x": 0,
+        "y": 2680
+      },
+      "10000000-0000-4000-8000-000000000035": {
+        "x": 380,
+        "y": 2850
+      },
+      "10000000-0000-4000-8000-000000000036": {
+        "x": 800,
+        "y": 2850
+      },
+      "10000000-0000-4000-8000-000000000037": {
+        "x": 1220,
+        "y": 2680
+      }
+    },
+    "groups": {
+      "json-feedback": {
+        "name": "JSON and feedback",
+        "color": "#6aaa64",
+        "nodes": [
+          "10000000-0000-4000-8000-000000000001",
+          "10000000-0000-4000-8000-000000000002",
+          "10000000-0000-4000-8000-000000000003",
+          "10000000-0000-4000-8000-000000000004",
+          "10000000-0000-4000-8000-000000000005",
+          "10000000-0000-4000-8000-000000000006",
+          "10000000-0000-4000-8000-000000000007",
+          "10000000-0000-4000-8000-000000000008",
+          "10000000-0000-4000-8000-000000000009",
+          "10000000-0000-4000-8000-00000000000a",
+          "10000000-0000-4000-8000-00000000000b",
+          "10000000-0000-4000-8000-00000000000c",
+          "10000000-0000-4000-8000-00000000000d"
+        ],
+        "collapsed": false
+      },
+      "http": {
+        "name": "HTTP request",
+        "color": "#569cd6",
+        "nodes": [
+          "10000000-0000-4000-8000-000000000014",
+          "10000000-0000-4000-8000-000000000015",
+          "10000000-0000-4000-8000-000000000016",
+          "10000000-0000-4000-8000-000000000017",
+          "10000000-0000-4000-8000-000000000018",
+          "10000000-0000-4000-8000-000000000019",
+          "10000000-0000-4000-8000-00000000001a"
+        ],
+        "collapsed": false
+      },
+      "https": {
+        "name": "HTTPS request",
+        "color": "#5ab4b4",
+        "nodes": [
+          "10000000-0000-4000-8000-00000000001e",
+          "10000000-0000-4000-8000-00000000001f",
+          "10000000-0000-4000-8000-000000000020",
+          "10000000-0000-4000-8000-000000000021",
+          "10000000-0000-4000-8000-000000000022",
+          "10000000-0000-4000-8000-000000000023",
+          "10000000-0000-4000-8000-000000000024"
+        ],
+        "collapsed": false
+      },
+      "invalid-request": {
+        "name": "Invalid HTTP request",
+        "color": "#c85a5a",
+        "nodes": [
+          "10000000-0000-4000-8000-000000000028",
+          "10000000-0000-4000-8000-000000000029",
+          "10000000-0000-4000-8000-00000000002a"
+        ],
+        "collapsed": false
+      },
+      "websocket": {
+        "name": "WebSocket send and receive",
+        "color": "#b46ec8",
+        "nodes": [
+          "10000000-0000-4000-8000-000000000032",
+          "10000000-0000-4000-8000-000000000033",
+          "10000000-0000-4000-8000-000000000034",
+          "10000000-0000-4000-8000-000000000035",
+          "10000000-0000-4000-8000-000000000036",
+          "10000000-0000-4000-8000-000000000037"
+        ],
+        "collapsed": false
+      }
+    }
+  }
+}

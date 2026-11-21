@@ -1,0 +1,5 @@
+[build]
+# Keep build artifacts from other OrangeEditor checkouts out of this workspace.
+target-dir = "target"
+# Synced Windows folders can reject rustc's incremental cache hard links.
+incremental = false

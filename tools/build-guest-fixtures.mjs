@@ -15,6 +15,8 @@ const out = outIndex >= 0 && args[outIndex + 1]
 
 const run = (...cargoArgs) => execFileSync('cargo', cargoArgs, {cwd: sdk, stdio: 'inherit'});
 run('build', '--release', '--locked', '-p', 'orange-probe-guest', '--target', 'wasm32-unknown-unknown');
-const core = path.join(sdk, 'target', 'wasm32-unknown-unknown', 'release', 'orange_probe_guest.wasm');
+// Ask Cargo where it builds: .cargo/config.toml can move the target directory.
+const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--format-version', '1', '--no-deps', '--locked'], {cwd: sdk, encoding: 'utf8'}));
+const core = path.join(metadata.target_directory, 'wasm32-unknown-unknown', 'release', 'orange_probe_guest.wasm');
 run('run', '--release', '--locked', '-q', '-p', 'orange-componentize', '--', core, out);
 console.log(`Probe component written to ${out}`);
