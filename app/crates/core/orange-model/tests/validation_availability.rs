@@ -1,0 +1,597 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use crate::catalog::RegistrySnapshot;
+use crate::document::{GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot};
+use crate::from_json;
+use crate::id::{EdgeId, NodeId, PortId, PortKey};
+use crate::validation::{
+    ConnectionValidation, Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics,
+    validate_availability, validate_regions,
+};
+use serde_json::{Value, json};
+
+const SIGNATURE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn id(n: u8) -> String {
+    format!("10000000-0000-4000-8000-{n:012}")
+}
+
+fn nid(n: u8) -> NodeId {
+    id(n).parse().unwrap()
+}
+
+fn pid(text: &str) -> PortId {
+    text.parse().unwrap()
+}
+
+fn registry() -> Arc<RegistrySnapshot> {
+    RegistrySnapshot::core(HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap())
+}
+
+struct N {
+    json: Value,
+    id: NodeId,
+    signature: SignatureSnapshot,
+}
+
+fn node(n: u8, definition: &str, kind: NodeKind, ports: Vec<PortDescriptor>) -> N {
+    let mut json = json!({
+        "id": id(n), "definition_id": definition, "definition_version": 1,
+        "config_version": 1, "config": {}
+    });
+    if !definition.starts_with("core/") {
+        json["signature"] = json!(SIGNATURE);
+    }
+    N {
+        json,
+        id: nid(n),
+        signature: SignatureSnapshot {
+            kind,
+            suspends: None,
+            ports,
+            extensions: Default::default(),
+        },
+    }
+}
+
+fn int() -> crate::id::TypeExpr {
+    "core/i64@1".parse().unwrap()
+}
+
+fn entry(n: u8) -> N {
+    node(
+        n,
+        "example/entry",
+        NodeKind::Entry,
+        vec![
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::data_out("payload", int(), OutputSource::Payload),
+        ],
+    )
+}
+
+/// Action producing `out` (available on `then` by default) and consuming `v`.
+fn action(n: u8) -> N {
+    node(
+        n,
+        "example/action",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Execution),
+        ],
+    )
+}
+
+fn pure(n: u8) -> N {
+    node(
+        n,
+        "example/pure",
+        NodeKind::Pure,
+        vec![
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Computed),
+        ],
+    )
+}
+
+/// Async node with `then`/`failed`; `out` is available on `then`, `err` on `failed`.
+fn asynchronous(n: u8) -> N {
+    let mut error = PortDescriptor::data_out("err", int(), OutputSource::Execution);
+    error.available_on = Some(vec![pid("failed")]);
+    node(
+        n,
+        "example/async",
+        NodeKind::Async,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::exec_out("failed"),
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Execution),
+            error,
+        ],
+    )
+}
+
+fn branch(n: u8) -> N {
+    node(
+        n,
+        "core/branch",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("true"),
+            PortDescriptor::exec_out("false"),
+        ],
+    )
+}
+
+fn looped(n: u8) -> N {
+    node(
+        n,
+        "core/count",
+        NodeKind::Iterator,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("body"),
+            PortDescriptor::exec_out("completed"),
+            PortDescriptor::data_out("index", int(), OutputSource::Iteration),
+        ],
+    )
+}
+
+fn fork(n: u8, join: &str) -> N {
+    let mut fork = node(
+        n,
+        "core/fork",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("completed"),
+            PortDescriptor::exec_out("branch").variadic(1, None),
+        ],
+    );
+    fork.json["variadic"] = json!({"branch":{"order":[0,1],"next":2}});
+    fork.json["config"] = json!({"join": join});
+    fork
+}
+
+fn sequence(n: u8) -> N {
+    let mut node = node(
+        n,
+        "core/sequence",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then").variadic(2, None),
+        ],
+    );
+    node.json["variadic"] = json!({"then":{"order":[0,1],"next":2}});
+    node
+}
+
+fn exec(n: u8, from: u8, from_port: &str, to: u8) -> Value {
+    json!({
+        "id": format!("30000000-0000-4000-8000-{n:012}"),
+        "from": {"node": id(from), "port": from_port},
+        "to": {"node": id(to), "port": "in"}
+    })
+}
+
+fn data(n: u8, from: u8, from_port: &str, to: u8) -> Value {
+    json!({
+        "id": format!("30000000-0000-4000-8000-{n:012}"),
+        "from": {"node": id(from), "port": from_port},
+        "to": {"node": id(to), "port": "v"}
+    })
+}
+
+fn codes(nodes: Vec<N>, edges: Vec<Value>) -> Vec<DiagnosticCode> {
+    diagnostics(nodes, edges).iter().map(|d| d.code).collect()
+}
+
+fn diagnostics(nodes: Vec<N>, edges: Vec<Value>) -> Vec<Diagnostic> {
+    let doc: GraphDocument = from_json(
+        &json!({
+            "format":"orange.graph","format_version":1,
+            "graph_id":"40000000-0000-4000-8000-000000000001","revision":0,
+            "nodes": nodes.iter().map(|n| n.json.clone()).collect::<Vec<_>>(),
+            "edges": edges,
+            "signatures":{SIGNATURE:{"kind":"pure","ports":[]}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let resolved: BTreeMap<_, _> = nodes.into_iter().map(|n| (n.id, n.signature)).collect();
+    let registry = registry();
+    let connections = ConnectionValidation::default();
+    let regions = validate_regions(&doc, &resolved, &connections, &registry);
+    assert!(regions.is_valid(), "{:?}", regions.diagnostics);
+    validate_availability(&doc, &resolved, &connections, &regions.index, &registry).diagnostics
+}
+
+const OK: [DiagnosticCode; 0] = [];
+const UNAVAILABLE: [DiagnosticCode; 1] = [DiagnosticCode::UnavailableValue];
+const CROSS: [DiagnosticCode; 1] = [DiagnosticCode::CrossActivation];
+
+#[test]
+fn straight_line_and_sequence_steps_dominate() {
+    let result = codes(
+        vec![entry(1), action(2), action(3)],
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "then", 3),
+            data(3, 2, "out", 3),
+            data(4, 1, "payload", 2),
+        ],
+    );
+    assert_eq!(result, OK);
+    let result = codes(
+        vec![entry(1), sequence(2), action(3), action(4)],
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "then#0", 3),
+            exec(3, 2, "then#1", 4),
+            data(4, 3, "out", 4),
+        ],
+    );
+    assert_eq!(result, OK);
+    // Steps run in order, so the later step's value is not there for the earlier one.
+    let result = codes(
+        vec![entry(1), sequence(2), action(3), action(4)],
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "then#0", 3),
+            exec(3, 2, "then#1", 4),
+            data(4, 4, "out", 3),
+        ],
+    );
+    assert_eq!(result, UNAVAILABLE);
+}
+
+#[test]
+fn sequence_availability_follows_persisted_order_instead_of_port_counters() {
+    // Stable counters can be sparse and reordered by insertion. Step #7 runs before #2.
+    for (producer, consumer, expected) in [(3, 4, OK.as_slice()), (4, 3, &UNAVAILABLE)] {
+        let mut steps = sequence(2);
+        steps.json["variadic"] = json!({"then":{"order":[7,2],"next":8}});
+        assert_eq!(
+            codes(
+                vec![entry(1), steps, action(3), action(4)],
+                vec![
+                    exec(1, 1, "then", 2),
+                    exec(2, 2, "then#7", 3),
+                    exec(3, 2, "then#2", 4),
+                    data(4, producer, "out", consumer),
+                ],
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn consumer_before_the_producer_is_unavailable() {
+    let result = codes(
+        vec![entry(1), action(2), action(3)],
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "then", 3),
+            data(3, 3, "out", 2),
+        ],
+    );
+    assert_eq!(result, UNAVAILABLE);
+}
+
+#[test]
+fn branch_value_read_after_the_merge_is_unavailable() {
+    let merged = vec![
+        exec(1, 1, "then", 2),
+        exec(2, 2, "true", 3),
+        exec(3, 3, "then", 4),
+        exec(4, 2, "false", 4),
+        data(5, 3, "out", 4),
+    ];
+    assert_eq!(
+        codes(vec![entry(1), branch(2), action(3), action(4)], merged),
+        UNAVAILABLE
+    );
+    // Without the false-path merge the read is dominated.
+    let inside = vec![
+        exec(1, 1, "then", 2),
+        exec(2, 2, "true", 3),
+        exec(3, 3, "then", 4),
+        data(5, 3, "out", 4),
+    ];
+    assert_eq!(
+        codes(vec![entry(1), branch(2), action(3), action(4)], inside),
+        OK
+    );
+}
+
+#[test]
+fn zero_iteration_loops_hide_body_and_iteration_values_after_completed() {
+    let nodes = || vec![entry(1), looped(2), action(3), action(4), action(5)];
+    let base = || {
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "body", 3),
+            exec(3, 2, "completed", 4),
+            exec(4, 4, "then", 5),
+        ]
+    };
+    let mut edges = base();
+    edges.push(data(5, 2, "index", 3));
+    assert_eq!(codes(nodes(), edges), OK);
+    let mut edges = base();
+    edges.push(data(5, 2, "index", 4));
+    assert_eq!(codes(nodes(), edges), UNAVAILABLE);
+    let mut edges = base();
+    edges.push(data(5, 3, "out", 4));
+    assert_eq!(codes(nodes(), edges), UNAVAILABLE);
+    // A value produced before the loop dominates the body.
+    let mut edges = base();
+    edges.push(data(5, 1, "payload", 3));
+    assert_eq!(codes(nodes(), edges), OK);
+}
+
+#[test]
+fn loop_body_value_is_unavailable_to_an_earlier_body_node_next_iteration() {
+    let result = codes(
+        vec![entry(1), looped(2), action(3), action(4)],
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "body", 3),
+            exec(3, 3, "then", 4),
+            data(4, 4, "out", 3),
+        ],
+    );
+    assert_eq!(result, UNAVAILABLE);
+}
+
+#[test]
+fn fork_values_need_join_all_and_never_cross_sibling_branches() {
+    let nodes = |join: &str| vec![entry(1), fork(2, join), action(3), action(4), action(5)];
+    let edges = |extra: Value| {
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "branch#0", 3),
+            exec(3, 2, "branch#1", 4),
+            exec(4, 2, "completed", 5),
+            extra,
+        ]
+    };
+    assert_eq!(codes(nodes("all"), edges(data(5, 3, "out", 5))), OK);
+    for join in ["any", "race", "detach", "unknown"] {
+        assert_eq!(
+            codes(nodes(join), edges(data(5, 3, "out", 5))),
+            UNAVAILABLE,
+            "{join}"
+        );
+    }
+    assert_eq!(
+        codes(nodes("all"), edges(data(5, 3, "out", 4))),
+        UNAVAILABLE
+    );
+}
+
+#[test]
+fn async_failure_path_cannot_read_then_outputs_but_can_read_error() {
+    let nodes = || vec![entry(1), asynchronous(2), action(3), action(4)];
+    let wires = |extra: Value| {
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "then", 3),
+            exec(3, 2, "failed", 4),
+            extra,
+        ]
+    };
+    assert_eq!(codes(nodes(), wires(data(4, 2, "out", 3))), OK);
+    assert_eq!(codes(nodes(), wires(data(4, 2, "out", 4))), UNAVAILABLE);
+    assert_eq!(codes(nodes(), wires(data(4, 2, "err", 4))), OK);
+    assert_eq!(codes(nodes(), wires(data(4, 2, "err", 3))), UNAVAILABLE);
+}
+
+#[test]
+fn pure_cones_inherit_the_exec_consumers_requirement() {
+    let nodes = || vec![entry(1), branch(2), action(3), action(4), pure(5)];
+    let control = || {
+        vec![
+            exec(1, 1, "then", 2),
+            exec(2, 2, "true", 3),
+            exec(3, 3, "then", 4),
+            exec(4, 2, "false", 4),
+            data(5, 3, "out", 5),
+        ]
+    };
+    let mut edges = control();
+    edges.push(data(6, 5, "out", 4));
+    assert_eq!(codes(nodes(), edges), UNAVAILABLE);
+    // A pure node nobody executes reads nothing.
+    assert_eq!(codes(nodes(), control()), OK);
+}
+
+#[test]
+fn values_do_not_cross_activations() {
+    let result = codes(
+        vec![entry(1), entry(2), action(3), action(4)],
+        vec![
+            exec(1, 1, "then", 3),
+            exec(2, 2, "then", 4),
+            data(3, 3, "out", 4),
+        ],
+    );
+    assert_eq!(result, CROSS);
+    let result = codes(
+        vec![entry(1), entry(2), action(3), action(4)],
+        vec![
+            exec(1, 1, "then", 3),
+            exec(2, 2, "then", 4),
+            data(3, 1, "payload", 4),
+        ],
+    );
+    assert_eq!(result, CROSS);
+}
+
+#[test]
+fn long_action_chains_check_each_read_against_its_own_producer() {
+    // 100 actions, each reading its predecessor's output: all dominated.
+    let nodes = || {
+        [entry(1)]
+            .into_iter()
+            .chain((2..=101u8).map(action))
+            .collect()
+    };
+    let mut edges = vec![];
+    for n in 2..=101u8 {
+        edges.push(exec(n - 1, n - 1, "then", n));
+        if n > 2 {
+            edges.push(data(100 + n, n - 1, "out", n));
+        }
+    }
+    assert_eq!(codes(nodes(), edges.clone()), OK);
+    // Node 50 instead reads node 80's value, produced later in the chain.
+    let premature = edges
+        .iter()
+        .position(|edge| edge["to"]["node"] == id(50) && edge["to"]["port"] == "v");
+    edges[premature.unwrap()] = data(150, 80, "out", 50);
+    assert_eq!(codes(nodes(), edges), UNAVAILABLE);
+}
+
+#[test]
+fn a_join_all_elsewhere_still_reports_a_premature_read_after_it() {
+    let nodes = vec![
+        entry(1),
+        fork(2, "all"),
+        action(3),
+        action(4),
+        action(5),
+        action(6),
+        action(7),
+    ];
+    let edges = vec![
+        exec(1, 1, "then", 2),
+        exec(2, 2, "branch#0", 3),
+        exec(3, 2, "branch#1", 4),
+        exec(4, 2, "completed", 5),
+        exec(5, 5, "then", 6),
+        exec(6, 6, "then", 7),
+        // Available only through the all-join; then a read of a later action's value.
+        data(7, 3, "out", 5),
+        data(8, 7, "out", 6),
+    ];
+    assert_eq!(codes(nodes, edges), UNAVAILABLE);
+}
+
+/// Action with two data inputs `v` and `w`, producing `out` on `then`.
+fn action2(n: u8) -> N {
+    node(
+        n,
+        "example/action2",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_in("w", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Execution),
+        ],
+    )
+}
+
+/// Pure node with two data inputs `v` and `w`.
+fn pure2(n: u8) -> N {
+    node(
+        n,
+        "example/pure2",
+        NodeKind::Pure,
+        vec![
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_in("w", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Computed),
+        ],
+    )
+}
+
+fn data_to(n: u8, from: u8, from_port: &str, to: u8, to_port: &str) -> Value {
+    let mut edge = data(n, from, from_port, to);
+    edge["to"]["port"] = json!(to_port);
+    edge
+}
+
+#[test]
+fn a_shared_pure_cone_reports_each_consumers_own_requirement_and_edge() {
+    // Activation A: entry 1 -> C0 (7) -> P (3) -> loop 4 { body: C1 (5) } -> C2 (6) -> C4 (9).
+    // Activation B: entry 2 -> C3 (8).
+    // Shared cone: 10(v = A.payload, w = P.out), 11(v = 10, w = loop index), 12(11), 13(10).
+    let nodes = vec![
+        entry(1),
+        entry(2),
+        action(3),
+        looped(4),
+        action(5),
+        action(6),
+        action2(7),
+        action(8),
+        action2(9),
+        pure2(10),
+        pure2(11),
+        pure(12),
+        pure(13),
+    ];
+    let edges = vec![
+        exec(1, 1, "then", 7),
+        exec(2, 7, "then", 3),
+        exec(3, 3, "then", 4),
+        exec(4, 4, "body", 5),
+        exec(5, 4, "completed", 6),
+        exec(6, 6, "then", 9),
+        exec(7, 2, "then", 8),
+        data_to(20, 1, "payload", 10, "v"),
+        data_to(21, 3, "out", 10, "w"),
+        data_to(22, 10, "out", 11, "v"),
+        data_to(23, 4, "index", 11, "w"),
+        data(24, 11, "out", 12),
+        data(25, 10, "out", 13),
+        // A cone edge reached from two direct edges is reported on the higher edge id.
+        data_to(30, 12, "out", 7, "v"),
+        data_to(31, 13, "out", 7, "w"),
+        data(32, 12, "out", 5),
+        data(33, 12, "out", 6),
+        data(34, 13, "out", 8),
+        data_to(35, 13, "out", 9, "v"),
+        data_to(36, 12, "out", 9, "w"),
+    ];
+    use DiagnosticCode::{CrossActivation as Cross, UnavailableValue as Unavailable};
+    let origin = registry().origin().clone();
+    let mut expected: Vec<Diagnostic> = [
+        // C0 runs before P (read through both cones) and outside the loop body.
+        (Unavailable, 7, "w", 31),
+        (Unavailable, 7, "v", 30),
+        // C1 runs inside the loop body after P: everything is available.
+        // C2 and C4 run after the loop: only its index is gone.
+        (Unavailable, 6, "v", 33),
+        (Unavailable, 9, "w", 36),
+        // C3 is in activation B: the payload and P's value belong to A.
+        (Cross, 8, "v", 34),
+    ]
+    .into_iter()
+    .map(|(code, node, port, edge)| {
+        let edge: EdgeId = format!("30000000-0000-4000-8000-{edge:012}")
+            .parse()
+            .unwrap();
+        let port = PortKey::new(pid(port), None);
+        Diagnostic::new(
+            code,
+            Subject::new(Some(nid(node)), Some(port), Some(edge))
+                .with_port_direction(crate::document::PortDirection::Input),
+            &origin,
+        )
+    })
+    .collect();
+    sort_diagnostics(&mut expected);
+    assert_eq!(diagnostics(nodes, edges), expected);
+}
