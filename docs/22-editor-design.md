@@ -8,11 +8,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 
 ## Finding nodes and connecting distant sections
 
-The picker shows the same family colors and symbols as node cards. Audio has one
-category with sections for routing, playback, processing and analysis. Loops have
-their own category. Advanced holds explicit resource management, special numeric
-predicates, and loop endpoints for manual construction. Hover a category or an
-audio section to see what it is for.
+The picker groups built-in nodes by task: Flow & triggers, Data & text, Math &
+logic, Files & network, Audio, and Utilities. Sections within those groups keep
+related nodes together, such as Loops, JSON, HTTP Request, and Audio routing.
+Search matches group and section names alongside node labels and aliases. Hover
+a heading for its purpose. Nodes opens by default and the application remembers
+the last sidebar tab chosen explicitly.
 
 Place Wireless Signal to create a named run event with an Emit and an On Event.
 Wire the source trigger into Emit and wire each On Event into its own flow.
@@ -36,8 +37,10 @@ such as a log and a dashboard. The CLI starter graphs in the README show the
 corresponding HTTP, loops, failure and event patterns.
 
 In Settings, the theme tiles preview and select System, Light and Dark. System
-shows both palettes on a diagonal. Editing a shortcut immediately waits for a
-key combination. Confirm it to save, use Escape to cancel, or explicitly reassign
+shows both palettes on a diagonal and may preview additional sidebar, canvas,
+button and text surfaces. Editing a shortcut immediately waits for a
+key combination, showing held modifiers as you press them. Confirm it to save,
+use Escape to cancel, or explicitly reassign
 a conflicting binding. Search accepts the displayed action, category and key
 combination in the selected language.
 
@@ -149,21 +152,55 @@ combination in the selected language.
   centered chevron and the theme's selection outline on focus or when open.
 
   The private `orange-ui-controls` crate owns button roles, dropdowns, search
-  layout, icon button geometry, disclosure rows, segmented radios and sliders. The semantic
+  layout, icon button geometry, disclosure rows, notebook tabs, segmented radios,
+  continuous and stepped sliders, marked sliders and circular knobs, checkboxes,
+  switches, simple and emphasized radios, text fields and text areas, shared
+  dialog and popup frames, and reusable level-meter and chart representations.
+  Notebooks support horizontal and vertical orientations with compact or
+  comfortable padding. Buttons expose solid, outline, ghost and subtle visual
+  styles plus persistent toggle state, hover, pressed, focused and disabled states.
+  Geometry presets cover rounded, compact, pill, no-border and square buttons.
+  Semantic tones cover neutral, info, success, warning and danger. Confirmation
+  pairs keep Cancel neutral and Confirm on a selected semantic tone. Border,
+  radius, fill and foreground are host-theme tokens shared with every other control.
+  Meter and chart modules own continuous, segmented and line/area/bars drawing;
+  OrangeEditor supplies normalized audio values and graph-specific thresholds.
+  The semantic
   palette exposes text, muted text, panel, dialog and inset layers, plus colors
   and foregrounds for primary, secondary and destructive actions. Apps can
   override those tokens per egui context. Tertiary actions and quiet menu
   buttons gain emphasis on hover. Hover and press transitions follow egui's
   animation time, including immediate state changes when it is zero.
   Apps supply their own icons and labels. Connection form actions wrap as the
-  panel narrows, and the segmented control stacks its choices in one frame.
+  panel narrows. Notebook tabs never change height: when a narrow dock cannot
+  show every tab, overflow tabs move into a fixed-height dropdown while the
+  selected tab remains visible.
+  Panel notebooks fill their available panel width: left and right docks distribute
+  compact tabs across the row, and the bottom Problems/Log notebook aligns its
+  search and content beneath the same header. Fixed-width notebooks remain opt-in
+  for dialogs and toolbars.
+  Notebook padding is compact by default: text has a short inset, the frame
+  has two to four units of inset, and tab height remains 28 units. Comfortable
+  padding is an opt-in alternative for larger dialogs, never a narrow-dock default.
   Two-option and multi-option selectors share an indicator that moves to the
   selected segment using the same animation time. A short underline shows keyboard
   focus while the indicator moves.
+  Every button family uses the same interaction precedence: disabled suppresses
+  interaction and lowers contrast; selected or active is persistent; pressed is
+  transient while held; focused has a visible outline independent of pointer
+  hover; hovered lightens its fill; inactive uses the rest state. A boolean
+  toggle exposes on/off; a segmented radio or radio list exposes one choice;
+  a checklist or multi-select exposes several independent choices.
   Continuous and stepped sliders share a thin rail and pill-shaped thumb. The
   stepped control draws small borderless pills in the thumb's shape that blend
   into the active or inactive rail, optionally labels values below it,
   and changes by one step with the arrow keys. Grid spacing shows the labels.
+  Continuous marked sliders show guide notches without snapping. Canvas zoom
+  uses guides at 50%, 75%, 100%, 125%, 150% and 175%, but accepts every value within 20–175%.
+  A guided slider may hide guides, show only pills, show only labels, or show
+  pills and labels. A strict guided slider snaps to its configured step; a free
+  guided slider never snaps. Circular controls share the same guide and step
+  concepts for values that suit a dial.
 
 ### 3.1 Card anatomy (rules, 2026-11-18, revised)
 
@@ -281,7 +318,8 @@ Names only on the left and Node cards on the right.
   and the unsaved indicator remain in the status bar.
 * Settings uses a centered, resizable dialog with a search field above the text
   navigation in the left sidebar, an independently scrolling content pane, and a
-  fixed full-width Done button below both panes. General groups Language
+  Done button spanning the left sidebar. On compact windows with a top navigation
+  strip, Done uses the bottom footer. General groups Language
   and Node search. Node search displays either names or read-only canvas cards with
   their ports and charts directly in the results. The same choice applies to the node
   tree and canvas quick-add. Search and the section selector share a single strip in
@@ -308,9 +346,14 @@ Names only on the left and Node cards on the right.
   running. Icons are centered within their buttons. Hovering an enabled button
   highlights its background, including the red Stop control. Menu and toolbar
   shortcut labels follow the current binding.
-* Problems has a search field and filters for Blockers, Warnings and Drafts.
-  Drag over diagnostic text and use the system copy shortcut to copy the
-  selection. The **Show the node** button jumps to the affected node.
+* Problems has a search field and an inline severity dropdown for Blockers,
+  Warnings and Drafts. The dropdown and search are on one flex row; no extra
+  filter row is drawn.
+  Each row has a checkbox for multi-selection. Ctrl/Cmd+C copies only selected
+  rows as formatted plain text with severity, diagnostic code, affected node
+  and message. **Clear selection** clears the checkboxes and **Copy selected
+  problems** repeats the same plain-text copy.
+  The **Show the node** button jumps to the affected node.
   **Copy visible problems** copies the current results with their severity,
   diagnostic code when available, message and location.
   Search matches node names, text and diagnostic codes. Blockers appear first.

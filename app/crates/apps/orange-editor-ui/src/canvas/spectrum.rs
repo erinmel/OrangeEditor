@@ -83,26 +83,16 @@ fn db_y(plot: Rect, db: f64) -> f32 {
 }
 
 fn trace(painter: &egui::Painter, plot: Rect, samples: &[f64], zoom: f32, color: Color32) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the spectrum has a bounded bucket count"
-    )]
-    let bucket_width = plot.width() / samples.len() as f32;
-    #[expect(clippy::cast_precision_loss, reason = "bounded spectrum bucket count")]
-    let points = samples
+    let normalized: Vec<_> = samples
         .iter()
-        .enumerate()
-        .map(|(index, db)| {
-            let x = plot.left() + (index as f32 + 0.5) * bucket_width;
-            Pos2::new(x, db_y(plot, *db))
-        })
+        .map(|db| crate::declarations::audio_level_fraction(*db))
         .collect();
-    painter
-        .with_clip_rect(painter.clip_rect().intersect(plot))
-        .add(egui::Shape::line(
-            points,
-            Stroke::new((1.5 * zoom).max(1.0), color),
-        ));
+    orange_ui_controls::paint_line(
+        painter,
+        plot,
+        &normalized,
+        Stroke::new((1.5 * zoom).max(1.0), color),
+    );
 }
 
 fn select_range(
@@ -639,29 +629,6 @@ impl MeterMotion {
     }
 }
 
-fn meter_gradient(bar: Rect, y: impl Fn(f64) -> f32, brightness: f32) -> egui::Mesh {
-    let mut mesh = egui::Mesh::default();
-    for (index, (db, red, green, blue)) in (0_u32..).zip([
-        (SILENCE_DB, 22, 154, 82),
-        (-24.0, 53, 217, 100),
-        (-18.0, 242, 211, 65),
-        (-12.0, 255, 190, 50),
-        (-7.0, 244, 82, 66),
-        (0.0, 255, 61, 76),
-    ]) {
-        let row = y(db);
-        let color = Color32::from_rgb(red, green, blue).gamma_multiply(brightness);
-        let next = index * 2;
-        mesh.colored_vertex(Pos2::new(bar.left(), row), color);
-        mesh.colored_vertex(Pos2::new(bar.right(), row), color);
-        if next != 0 {
-            mesh.add_triangle(next - 2, next - 1, next);
-            mesh.add_triangle(next, next - 1, next + 1);
-        }
-    }
-    mesh
-}
-
 pub(super) fn draw_noise(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
@@ -717,29 +684,43 @@ pub(super) fn draw_noise(
         }
     }
     let y = |db| db_y(bar, db);
-    let channel = |low, high| {
-        Rect::from_min_max(
-            Pos2::new(bar.left(), y(high)),
-            Pos2::new(bar.right(), y(low)),
-        )
-    };
+    let fill = crate::declarations::audio_level_fraction(motion.fill);
+    let peak = crate::declarations::audio_level_fraction(motion.peak);
     painter.rect_filled(bar, 0.0, colors.background);
-    painter.add(egui::Shape::mesh(meter_gradient(bar, y, 0.23)));
-    if motion.fill > SILENCE_DB {
-        let clip = painter
-            .clip_rect()
-            .intersect(channel(SILENCE_DB, motion.fill));
-        painter
-            .with_clip_rect(clip)
-            .add(egui::Shape::mesh(meter_gradient(bar, y, 1.0)));
-    }
-    if motion.peak > motion.fill + 0.5 {
-        painter.hline(
-            bar.x_range(),
-            y(motion.peak),
-            Stroke::new(1.5 * zoom, Color32::from_gray(240)),
-        );
-    }
+    orange_ui_controls::paint_vertical_meter(
+        painter,
+        bar,
+        fill,
+        peak,
+        &[
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(SILENCE_DB),
+                color: Color32::from_rgb(22, 154, 82),
+            },
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(-24.0),
+                color: Color32::from_rgb(53, 217, 100),
+            },
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(-18.0),
+                color: Color32::from_rgb(242, 211, 65),
+            },
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(-12.0),
+                color: Color32::from_rgb(255, 190, 50),
+            },
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(-7.0),
+                color: Color32::from_rgb(244, 82, 66),
+            },
+            orange_ui_controls::MeterStop {
+                fraction: crate::declarations::audio_level_fraction(0.0),
+                color: Color32::from_rgb(255, 61, 76),
+            },
+        ],
+        Color32::from_gray(240),
+        0.23,
+    );
     let font = FontId::proportional(10.5 * zoom);
     for db in [0, -10, -20, -30, -40, -60, -80, -100, -120] {
         let y = y(f64::from(db));

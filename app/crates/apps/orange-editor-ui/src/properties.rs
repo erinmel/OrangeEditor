@@ -349,8 +349,24 @@ impl AudioRange {
         }
     }
 
-    pub(crate) fn slider(self, ui: &mut egui::Ui, id: egui::Id, value: f64) -> Option<f64> {
+    pub(crate) fn slider(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+    ) -> Option<f64> {
         let id = id.with("audio-drag");
+        self.marked_slider(ui, surface, id, value)
+    }
+
+    fn marked_slider(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+    ) -> Option<f64> {
         let mut fraction = ui
             .data(|data| data.get_temp::<f32>(id))
             .unwrap_or_else(|| self.fraction(value));
@@ -361,7 +377,7 @@ impl AudioRange {
         } else {
             [0.0, 0.25, 0.5, 0.75, 1.0]
         };
-        let response = orange_ui_controls::marked_slider(ui, Surface::Panel, &mut fraction, &marks);
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks);
         if response.dragged() {
             ui.data_mut(|data| data.insert_temp(id, fraction));
             return None;
@@ -1154,7 +1170,7 @@ impl Editor {
                         && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
                     {
                         let id = ui.make_persistent_id((&node.id, &pointer));
-                        if let Some(value) = range.slider(ui, id, value) {
+                        if let Some(value) = range.slider(ui, Surface::Panel, id, value) {
                             #[expect(
                                 clippy::cast_possible_truncation,
                                 reason = "an integer setting rounds the bounded slider position"

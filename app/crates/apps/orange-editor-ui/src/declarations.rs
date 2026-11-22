@@ -756,10 +756,22 @@ impl Editor {
                                 let mut kept = variable.clone();
                                 ui.label(t("lasts"));
                                 for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                                    let _ =
-                                        ui.radio_value(&mut kept.scope, scope, scope_name(scope));
+                                    let _ = orange_ui_controls::radio(
+                                        ui,
+                                        Surface::Dialog,
+                                        orange_ui_controls::RadioStyle::Simple,
+                                        &mut kept.scope,
+                                        scope,
+                                        scope_name(scope),
+                                    );
                                 }
-                                let _ = ui.checkbox(&mut kept.persistent, t("keep-between-runs"));
+                                let _ = orange_ui_controls::checkbox(
+                                    ui,
+                                    Surface::Dialog,
+                                    orange_ui_controls::CheckStyle::Emphasis,
+                                    &mut kept.persistent,
+                                    t("keep-between-runs"),
+                                );
                                 if kept != *variable {
                                     change = Some(kept);
                                 }
@@ -977,7 +989,13 @@ impl Editor {
                         }
                         ui.end_row();
                         ui.label("");
-                        let _ = ui.checkbox(&mut form.persistent, t("keep-between-runs"));
+                        let _ = orange_ui_controls::checkbox(
+                            ui,
+                            Surface::Dialog,
+                            orange_ui_controls::CheckStyle::Emphasis,
+                            &mut form.persistent,
+                            t("keep-between-runs"),
+                        );
                         ui.end_row();
                     });
                 ui.horizontal(|ui| {

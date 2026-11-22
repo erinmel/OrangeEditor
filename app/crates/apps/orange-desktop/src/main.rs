@@ -90,7 +90,52 @@ impl Drop for Desktop {
     }
 }
 
+// Native clipboard shortcuts are delivered as raw keys so the Settings recorder
+// can see the original chord even with an empty clipboard. Text fields still
+// receive egui's clipboard commands when they own keyboard input.
+fn text_clipboard_command(event: &eframe::egui::Event) -> Option<eframe::egui::Key> {
+    use eframe::egui::{Event, Key};
+    let Event::Key {
+        key,
+        modifiers,
+        pressed: true,
+        ..
+    } = *event
+    else {
+        return None;
+    };
+    match key {
+        Key::Copy | Key::Cut | Key::Paste => Some(key),
+        Key::C if modifiers.command_only() => Some(Key::Copy),
+        Key::X if modifiers.command_only() => Some(Key::Cut),
+        Key::V if modifiers.command_only() => Some(Key::Paste),
+        Key::Delete if cfg!(target_os = "windows") && modifiers.shift => Some(Key::Cut),
+        Key::Insert if cfg!(target_os = "windows") && modifiers.ctrl => Some(Key::Copy),
+        Key::Insert if cfg!(target_os = "windows") && modifiers.shift => Some(Key::Paste),
+        _ => None,
+    }
+}
+
 impl eframe::App for Desktop {
+    fn raw_input_hook(&mut self, ctx: &eframe::egui::Context, input: &mut eframe::egui::RawInput) {
+        use eframe::egui::{Event, Key, ViewportCommand};
+        if self.editor.is_recording_shortcut() || !ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        input.events.retain_mut(|event| {
+            match text_clipboard_command(event) {
+                Some(Key::Copy) => *event = Event::Copy,
+                Some(Key::Cut) => *event = Event::Cut,
+                Some(Key::Paste) => {
+                    ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
+    }
+
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         // What the graph logged, between frames, then the run's own events.
         let (notes, dropped) = self.logbook.take();
@@ -534,6 +579,7 @@ fn main() -> ExitCode {
         }
     };
     let options = eframe::NativeOptions {
+        clipboard_shortcuts: false,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(desktop.title.clone())
             .with_inner_size([1280.0, 800.0])
@@ -565,6 +611,27 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_clipboard_keys_map_to_text_commands() {
+        use eframe::egui::{Event, Key, Modifiers};
+        for (key, command) in [
+            (Key::C, Key::Copy),
+            (Key::V, Key::Paste),
+            (Key::X, Key::Cut),
+        ] {
+            assert_eq!(
+                super::text_clipboard_command(&Event::Key {
+                    key,
+                    physical_key: None,
+                    modifiers: Modifiers::COMMAND,
+                    pressed: true,
+                    repeat: false,
+                }),
+                Some(command)
+            );
+        }
+    }
+
     use orange_host::Catalogs;
 
     /// Every language has the desktop's English messages, and no others.

@@ -86,27 +86,22 @@ impl Editor {
             if import.requested != Grants::default() {
                 ui.separator();
                 ui.label(t("package-permissions"));
-                for (requested, approved, label) in [
-                    (
-                        import.requested.log,
-                        &mut import.approved.log,
-                        "package-grant-log",
-                    ),
-                    (
-                        import.requested.files,
-                        &mut import.approved.files,
-                        "package-grant-files",
-                    ),
-                    (
-                        import.requested.http,
-                        &mut import.approved.http,
-                        "package-grant-http",
-                    ),
-                ] {
-                    if requested {
-                        ui.checkbox(approved, t(label));
-                    }
+                let mut choices = Vec::new();
+                if import.requested.log {
+                    choices.push((&mut import.approved.log, t("package-grant-log")));
                 }
+                if import.requested.files {
+                    choices.push((&mut import.approved.files, t("package-grant-files")));
+                }
+                if import.requested.http {
+                    choices.push((&mut import.approved.http, t("package-grant-http")));
+                }
+                let _ = orange_ui_controls::check_list(
+                    ui,
+                    crate::controls::Surface::Dialog,
+                    orange_ui_controls::CheckStyle::Emphasis,
+                    &mut choices,
+                );
             } else {
                 ui.label(t("package-no-permissions"));
             }

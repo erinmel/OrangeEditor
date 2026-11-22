@@ -199,7 +199,10 @@ impl Editor {
                 } else {
                     egui::pos2(nav_rect.right() + SPACE_LARGE, content.top() + SPACE_MEDIUM)
                 },
-                egui::pos2(content.right() - SPACE_MEDIUM, footer_y - SPACE_MEDIUM),
+                egui::pos2(
+                    content.right() - SPACE_MEDIUM,
+                    if compact { footer_y } else { content.bottom() } - SPACE_MEDIUM,
+                ),
             ),
         );
         if matches.iter().any(|&found| found) {
@@ -255,7 +258,7 @@ impl Editor {
             page.label(egui::RichText::new(t("settings-empty")).strong());
         }
         let left = content.left() + SPACE_MEDIUM;
-        let right = content.right() - SPACE_MEDIUM;
+        let right = nav_rect.right() - SPACE_MEDIUM;
         ui.painter().hline(left..=right, footer_y, divider);
         let area = egui::Rect::from_min_max(
             egui::pos2(left, footer_y + SPACE_MEDIUM),
@@ -386,12 +389,12 @@ impl Editor {
                         Surface::Dialog,
                         Action::Toggle(preference == choice),
                         true,
-                        egui::Button::new(()).min_size(egui::vec2(width, 78.0)),
+                        egui::Button::new(()).min_size(egui::vec2(width, 96.0)),
                     )
                     .labelled_by(label.id);
                     let sample = egui::Rect::from_min_max(
                         response.rect.min + egui::vec2(5.0, 5.0),
-                        response.rect.max - egui::vec2(5.0, 24.0),
+                        response.rect.max - egui::vec2(5.0, 30.0),
                     );
                     let painter = ui.painter_at(response.rect);
                     match choice {
@@ -428,26 +431,36 @@ impl Editor {
     fn interface_scale_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         setting_row(ui, t("interface-scale"), |ui, label| {
             let mut scale = ctx.zoom_factor();
-            egui::ComboBox::from_id_salt("interface-scale")
-                .width(96.0)
-                .selected_text(format!("{:.0}%", scale * 100.0))
-                .show_select(ui, Surface::Dialog, |ui| {
-                    for percent in [75_u16, 90, 100, 110, 125, 150, 175, 200] {
-                        if ui
-                            .selectable_value(
-                                &mut scale,
-                                f32::from(percent) / 100.0,
-                                format!("{percent}%"),
-                            )
-                            .changed()
-                        {
-                            self.preferred_scale = Some(scale);
-                            ctx.set_zoom_factor(scale);
-                        }
-                    }
-                })
-                .response
-                .labelled_by(label.id);
+            let options = [
+                (0.75, "75%"),
+                (0.90, "90%"),
+                (1.00, "100%"),
+                (1.10, "110%"),
+                (1.25, "125%"),
+                (1.50, "150%"),
+                (1.75, "175%"),
+                (2.00, "200%"),
+            ];
+            let selected_label = options
+                .iter()
+                .find(|(value, _)| (*value - scale).abs() < f32::EPSILON)
+                .map_or_else(
+                    || format!("{:.0}%", scale * 100.0),
+                    |(_, label)| (*label).to_owned(),
+                );
+            let response = orange_ui_controls::select(
+                ui,
+                Surface::Dialog,
+                ui.make_persistent_id("interface-scale"),
+                &mut scale,
+                &selected_label,
+                &options,
+            )
+            .labelled_by(label.id);
+            if response.changed() {
+                self.preferred_scale = Some(scale);
+                ctx.set_zoom_factor(scale);
+            }
         });
     }
 

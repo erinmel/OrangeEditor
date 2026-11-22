@@ -1,7 +1,10 @@
 //! Editor defaults for the reusable egui controls.
 use crate::{i18n::t, icons};
 
-pub use orange_ui_controls::{Action, Dropdown, Surface, button};
+pub use orange_ui_controls::{
+    Action, ButtonGeometry, ButtonSpec, ButtonStyle, ButtonTone, ControlState, Dropdown, Surface,
+    button,
+};
 
 pub(crate) fn dialog_actions(
     ui: &mut egui::Ui,

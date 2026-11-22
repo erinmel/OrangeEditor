@@ -272,6 +272,113 @@ fn grid_preferences_round_trip_and_keep_defaults_for_old_settings() {
 }
 
 #[test]
+fn launch_restores_the_last_selected_tab_or_defaults_to_nodes() {
+    use crate::Tab;
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    let graph = orange_host::new_document().unwrap();
+    editor.open_untitled(&mut host, graph.clone());
+    assert_eq!(editor.tab, Tab::Nodes);
+
+    editor.restore_preferences(&serde_json::json!({"version": 1, "tab": "connections"}));
+    editor.open_untitled(&mut host, graph);
+    assert_eq!(editor.tab, Tab::Connections);
+    assert!(editor.panels.nodes);
+
+    // An action that opens Variables temporarily does not set the next launch tab.
+    editor.tab = Tab::Variables;
+    assert_eq!(editor.preferences()["tab"], "connections");
+}
+
+#[test]
+fn panel_visibility_round_trips_and_old_preferences_keep_defaults() {
+    let mut editor = Editor::new();
+    editor.panels.nodes = false;
+    editor.panels.properties = false;
+    editor.panels.packages = true;
+    editor.panels.log = true;
+    let saved = editor.preferences();
+
+    let mut restored = Editor::new();
+    restored.restore_preferences(&saved);
+    assert!(!restored.panels.nodes);
+    assert!(!restored.panels.properties);
+    assert!(restored.panels.packages);
+    assert!(restored.panels.log);
+
+    let mut old = Editor::new();
+    old.restore_preferences(&serde_json::json!({"version": 1}));
+    assert!(old.panels.nodes);
+    assert!(old.panels.properties);
+    assert!(!old.panels.packages);
+    assert!(!old.panels.log);
+}
+
+#[test]
+fn live_recorder_shows_held_modifiers_and_keeps_control_with_special_keys() {
+    let ctx = egui::Context::default();
+    let mut editor = Editor::new();
+    editor.begin_shortcut_edit("duplicate", original("duplicate"));
+    let mods = Modifiers::CTRL
+        .plus(Modifiers::COMMAND)
+        .plus(Modifiers::SHIFT);
+    let frame = |editor: &mut Editor, events| {
+        let result = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                editor.keybindings_ui(ui, "duplicate");
+            },
+        );
+        let shown = result.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == modifier_prefix(normalized_modifiers(mods))
+        ));
+        result.drop_without_applying_deltas();
+        shown
+    };
+    assert!(frame(
+        &mut editor,
+        vec![egui::Event::ModifiersChanged(mods)]
+    ));
+    assert!(editor.shortcut_edit.as_ref().unwrap().recording);
+    frame(
+        &mut editor,
+        vec![egui::Event::Key {
+            key: Key::PageUp,
+            physical_key: None,
+            modifiers: mods,
+            pressed: true,
+            repeat: false,
+        }],
+    );
+    let edit = editor.shortcut_edit.as_ref().unwrap();
+    assert!(!edit.recording);
+    assert_eq!(
+        parse_shortcut(&edit.text),
+        Some(normalized(mods, Key::PageUp))
+    );
+    editor.begin_shortcut_edit("duplicate", original("duplicate"));
+    frame(
+        &mut editor,
+        vec![egui::Event::Key {
+            key: Key::V,
+            physical_key: None,
+            modifiers: Modifiers::COMMAND,
+            pressed: true,
+            repeat: false,
+        }],
+    );
+    let edit = editor.shortcut_edit.as_ref().unwrap();
+    assert!(!edit.recording);
+    assert_eq!(
+        parse_shortcut(&edit.text),
+        Some(normalized(Modifiers::COMMAND, Key::V))
+    );
+}
+
+#[test]
 fn saved_rebinding_is_used_by_the_editor_keyboard_entrypoint() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();

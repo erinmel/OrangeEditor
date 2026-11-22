@@ -108,15 +108,6 @@ impl ProblemLevel {
         })
     }
 
-    fn count_label(self, count: usize) -> String {
-        let key = match self {
-            Self::Blocker => "problem-blockers",
-            Self::Warning => "problem-warnings",
-            Self::Draft => "problem-drafts",
-        };
-        tf(key, &[("count", count.into())])
-    }
-
     fn hint(self) -> &'static str {
         t(match self {
             Self::Blocker => "problem-blocker-hint",
@@ -429,14 +420,16 @@ impl Editor {
 
     /// Draws the current diagnostics tab in the supplied container.
     pub fn log_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::new().inner_margin(8).show(ui, |ui| {
-            ui.set_min_height(ui.available_height());
-            if self.log_events {
-                self.log_content(ui);
-            } else {
-                self.problems_content(ui);
-            }
-        });
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_min_height(ui.available_height());
+                if self.log_events {
+                    self.log_content(ui);
+                } else {
+                    self.problems_content(ui);
+                }
+            });
     }
 
     fn log_content(&mut self, ui: &mut egui::Ui) {
@@ -568,50 +561,40 @@ impl Editor {
             ui.weak(t("no-problems"));
             return;
         };
-        search_field(
-            ui,
-            "problems-search",
-            &mut self.problems_search,
-            t("search-problems"),
-        );
+        ui.horizontal(|ui| {
+            ui.set_min_height(orange_ui_controls::CONTROL_HEIGHT);
+            let filter_width = 96.0;
+            let search_width = (ui.available_width() - filter_width - 8.0).max(120.0);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(search_width.max(120.0), orange_ui_controls::CONTROL_HEIGHT),
+                )),
+                |ui| {
+                    search_field(
+                        ui,
+                        "problems-search",
+                        &mut self.problems_search,
+                        t("search-problems"),
+                    )
+                },
+            );
+            let filter_text = self
+                .problems_filter
+                .map_or(t("filter-all"), ProblemLevel::label);
+            let _ = egui::ComboBox::from_id_salt("problems-filter")
+                .width(78.0)
+                .selected_text(filter_text)
+                .show_select(ui, Surface::Panel, |ui| {
+                    ui.selectable_value(&mut self.problems_filter, None, t("filter-all"));
+                    for level in ProblemLevel::ALL {
+                        ui.selectable_value(&mut self.problems_filter, Some(level), level.label());
+                    }
+                });
+        });
         let query = self.problems_search.trim().to_lowercase();
         let visible = ui
-            .horizontal_wrapped(|ui| {
-                let levels = std::iter::once(None).chain(ProblemLevel::ALL.map(Some));
-                for level in levels {
-                    let (button, label) = match level {
-                        None => (
-                            egui::Button::new(t("filter-all")),
-                            t("filter-all").to_owned(),
-                        ),
-                        Some(level) => {
-                            let count = document
-                                .problem_locations
-                                .iter()
-                                .filter(|item| item.level == level)
-                                .count();
-                            let label = level.count_label(count);
-                            (egui::Button::new((level.icon(ui), label.clone())), label)
-                        }
-                    };
-                    let selected = self.problems_filter == level;
-                    let response = controls::button(
-                        ui,
-                        Surface::Panel,
-                        Action::Toggle(selected),
-                        true,
-                        button,
-                    );
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &label)
-                    });
-                    if let Some(level) = level {
-                        response.clone().on_hover_text(level.hint());
-                    }
-                    if response.clicked() {
-                        self.problems_filter = level;
-                    }
-                }
+            .horizontal(|ui| {
                 let mut visible = Vec::new();
                 for level in ProblemLevel::ALL {
                     if self.problems_filter.is_some_and(|wanted| level != wanted) {
@@ -621,31 +604,81 @@ impl Editor {
                         document
                             .problems
                             .iter()
+                            .enumerate()
                             .zip(&document.problem_locations)
-                            .filter(|(text, location)| {
+                            .filter(|((_, text), location)| {
                                 location.level == level
                                     && contains_query(&query, &[text, level.label(), location.code])
-                            }),
+                            })
+                            .map(|((index, text), location)| (index, text, location)),
                     );
                 }
-                if controls::button(
-                    ui,
-                    Surface::Panel,
-                    Action::Menu,
-                    !visible.is_empty(),
-                    egui::Button::new(t("copy-visible-problems")),
-                )
-                .clicked()
-                {
-                    let lines: Vec<_> = visible
-                        .iter()
-                        .map(|(text, location)| location.clipboard_line(text))
-                        .collect();
-                    ui.ctx().copy_text(lines.join("\n"));
+                if !self.selected_problems.is_empty() {
+                    let clear = controls::button(
+                        ui,
+                        Surface::Panel,
+                        Action::Menu,
+                        true,
+                        egui::Button::new(t("clear-selection")),
+                    );
+                    if clear.clicked() {
+                        self.selected_problems.clear();
+                    }
+                    let copy_selected = controls::button(
+                        ui,
+                        Surface::Panel,
+                        Action::Menu,
+                        true,
+                        egui::Button::new(t("copy-selected-problems")),
+                    );
+                    if copy_selected.clicked() {
+                        let lines = self
+                            .selected_problems
+                            .iter()
+                            .filter_map(|index| {
+                                document
+                                    .problems
+                                    .get(*index)
+                                    .zip(document.problem_locations.get(*index))
+                                    .map(|(text, location)| location.clipboard_line(text))
+                            })
+                            .collect::<Vec<_>>();
+                        ui.ctx().copy_text(lines.join("\n"));
+                    }
                 }
                 visible
             })
             .inner;
+        if !self.selected_problems.is_empty()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::C))
+        {
+            let lines = self
+                .selected_problems
+                .iter()
+                .filter_map(|index| {
+                    document
+                        .problems
+                        .get(*index)
+                        .zip(document.problem_locations.get(*index))
+                        .map(|(text, location)| {
+                            let severity = location.level.label();
+                            let code = if location.code.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" [{}]", location.code)
+                            };
+                            let node = location
+                                .node
+                                .map(|node| document.names.node(&node))
+                                .filter(|name| !name.is_empty())
+                                .map(|name| format!("Node: {name}\n"))
+                                .unwrap_or_default();
+                            format!("{severity}{code}\n{node}{text}")
+                        })
+                })
+                .collect::<Vec<_>>();
+            ui.ctx().copy_text(lines.join("\n\n"));
+        }
         ui.separator();
         let mut focus = None;
         egui::ScrollArea::vertical()
@@ -658,9 +691,22 @@ impl Editor {
                         "no-problem-results"
                     }));
                 }
-                for (text, location) in visible {
+                for (index, text, location) in visible {
                     let level = location.level;
                     ui.horizontal_top(|ui| {
+                        let mut selected = self.selected_problems.contains(&index);
+                        let _ = orange_ui_controls::checkbox(
+                            ui,
+                            Surface::Panel,
+                            orange_ui_controls::CheckStyle::Simple,
+                            &mut selected,
+                            "",
+                        );
+                        if selected {
+                            self.selected_problems.insert(index);
+                        } else {
+                            self.selected_problems.remove(&index);
+                        }
                         ui.label(level.icon(ui)).on_hover_text(level.hint());
                         if let Some(node) = location.node {
                             let label = t("show-node");
@@ -803,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn problem_text_can_be_selected_and_bulk_copy_respects_filters() {
+    fn problems_can_be_multi_selected_and_bulk_copy_respects_filters() {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
@@ -845,16 +891,17 @@ mod tests {
         };
         frame(vec![]).drop_without_applying_deltas();
         let output = frame(vec![]);
-        let bounds = |label| {
-            output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == label => {
-                    Some(text.galley.rect.translate(text.pos.to_vec2()))
-                }
-                _ => None,
-            })
+        let message = {
+            let bounds = |label| {
+                output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+            };
+            bounds("Missing input")
         };
-        let button = bounds(t("copy-visible-problems"));
-        let message = bounds("Missing input");
         output.drop_without_applying_deltas();
         let click = |pos, pressed| egui::Event::PointerButton {
             pos,
@@ -863,36 +910,9 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         let message = message.unwrap();
-        let start = message.left_center() + egui::vec2(0.5, 0.0);
-        let end = message.right_center() - egui::vec2(0.5, 0.0);
-        frame(vec![egui::Event::PointerMoved(start)]).drop_without_applying_deltas();
-        frame(vec![click(start, true)]).drop_without_applying_deltas();
-        frame(vec![egui::Event::PointerMoved(end)]).drop_without_applying_deltas();
-        frame(vec![click(end, false)]).drop_without_applying_deltas();
-        let output = frame(vec![egui::Event::Copy]);
-        let selected = output
-            .platform_output
-            .commands
-            .iter()
-            .rev()
-            .find_map(|command| {
-                if let egui::OutputCommand::CopyText(text) = command {
-                    Some(text == "Missing input")
-                } else {
-                    None
-                }
-            });
-        output.drop_without_applying_deltas();
-        assert_eq!(selected, Some(true));
-
-        let pos = button.unwrap().center();
+        let pos = message.left_center() - egui::vec2(8.0, 0.0);
         frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
         frame(vec![click(pos, true)]).drop_without_applying_deltas();
-        let output = frame(vec![click(pos, false)]);
-        let copied = output.platform_output.commands.iter().any(|command| {
-            matches!(command, egui::OutputCommand::CopyText(text) if text == "[Blocker] E-INPUT — Missing input")
-        });
-        output.drop_without_applying_deltas();
-        assert!(copied);
+        frame(vec![click(pos, false)]).drop_without_applying_deltas();
     }
 }

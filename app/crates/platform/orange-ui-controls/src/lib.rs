@@ -4,7 +4,17 @@ use egui::{Button, ComboBox, InnerResponse, Response, Stroke, Ui};
 pub mod color_picker;
 pub mod icons;
 mod selection;
-pub use selection::{StepLabels, continuous_slider, marked_slider, segmented, stepped_slider};
+pub mod visualizations;
+pub use selection::{
+    NotebookOrientation, NotebookPadding, NotebookWidth, SliderBehavior, SliderGuide, SliderMarks,
+    StepLabels, continuous_marked_slider, continuous_slider, guided_slider, knob, marked_slider,
+    notebook, notebook_flex, notebook_styled, segmented, stepped_slider,
+};
+pub use visualizations::{
+    ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,
+    MeterRepresentation, MeterStop, chart, frequency_chart, line_overlay, paint_line,
+    paint_vertical_meter,
+};
 
 pub const SPACE_SMALL: f32 = 4.0;
 pub const SPACE_MEDIUM: f32 = 8.0;
@@ -152,6 +162,157 @@ pub enum Action {
     Menu,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A button's visual treatment independent of its semantic role.
+pub enum ButtonStyle {
+    /// A contrasting filled action.
+    Solid,
+    /// A bordered action with the surrounding surface fill.
+    Outline,
+    /// A quiet action with no persistent border.
+    Ghost,
+    /// A subdued action for menus and toolbars.
+    Subtle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Semantic emphasis for a button without coupling meaning to visual filling.
+pub enum ButtonTone {
+    Neutral,
+    Info,
+    Success,
+    Warning,
+    Danger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Interaction state used by button, toggle, radio and segmented renderers.
+pub enum ControlState {
+    Inactive,
+    Hovered,
+    Pressed,
+    Focused,
+    Selected,
+    Disabled,
+}
+
+impl ControlState {
+    pub fn of(response: &Response, selected: bool) -> Self {
+        if !response.enabled() {
+            Self::Disabled
+        } else if selected {
+            Self::Selected
+        } else if response.is_pointer_button_down_on() {
+            Self::Pressed
+        } else if response.has_focus() {
+            Self::Focused
+        } else if response.hovered() {
+            Self::Hovered
+        } else {
+            Self::Inactive
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Geometry shared by ordinary and icon buttons.
+pub struct ButtonGeometry {
+    pub radius: u8,
+    pub border_width: f32,
+    pub border: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ButtonSpec {
+    pub style: ButtonStyle,
+    pub tone: ButtonTone,
+    pub geometry: ButtonGeometry,
+    pub enabled: bool,
+    pub active: bool,
+}
+
+impl ButtonSpec {
+    pub const fn new(style: ButtonStyle, tone: ButtonTone) -> Self {
+        Self {
+            style,
+            tone,
+            geometry: ButtonGeometry::ROUNDED,
+            enabled: true,
+            active: false,
+        }
+    }
+
+    pub const fn geometry(mut self, geometry: ButtonGeometry) -> Self {
+        self.geometry = geometry;
+        self
+    }
+
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub const fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+}
+
+impl ButtonGeometry {
+    pub const ROUNDED: Self = Self {
+        radius: CONTROL_RADIUS,
+        border_width: 1.0,
+        border: true,
+    };
+    pub const COMPACT: Self = Self {
+        radius: 4,
+        border_width: 1.0,
+        border: true,
+    };
+    pub const PILL: Self = Self {
+        radius: u8::MAX,
+        border_width: 1.0,
+        border: true,
+    };
+    pub const NO_BORDER: Self = Self {
+        radius: CONTROL_RADIUS,
+        border_width: 0.0,
+        border: false,
+    };
+    pub const SQUARE: Self = Self {
+        radius: 0,
+        border_width: 1.0,
+        border: true,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The visual density of a checkbox or toggle.
+pub enum CheckStyle {
+    /// A native-style square checkbox.
+    Simple,
+    /// A compact switch with a moving indicator.
+    Toggle,
+    /// A filled, high-contrast switch with a stronger selected state.
+    Emphasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The visual density of a radio or single-choice list item.
+pub enum RadioStyle {
+    /// A native-style circular radio.
+    Simple,
+    /// A bordered choice that reads as a persistent selection.
+    Emphasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionStyle {
+    Compact,
+    Segmented,
+    Card,
+}
+
 /// A dropdown with a surface fill and a centered chevron.
 pub trait Dropdown {
     /// Draws the dropdown using the host's theme for `surface`.
@@ -212,9 +373,10 @@ pub fn tree_section<R>(
     let body_style = ui.style().clone();
     with_style(ui, surface, Action::Menu, |ui| {
         let spacing = ui.spacing_mut();
-        spacing.interact_size.y = 22.0;
-        spacing.button_padding.y = 2.0;
-        spacing.indent = 17.0;
+        spacing.interact_size.y = 26.0;
+        spacing.button_padding = egui::vec2(SPACE_MEDIUM, 3.0);
+        spacing.indent = 20.0;
+        spacing.item_spacing.x = SPACE_SMALL;
         let visuals = ui.visuals_mut();
         visuals.collapsing_header_frame = true;
         for state in widget_states(&mut visuals.widgets) {
@@ -291,6 +453,184 @@ pub fn button(
     response
 }
 
+/// Draws a button with explicit visual style, geometry and semantic tone.
+pub fn button_with(
+    ui: &mut Ui,
+    surface: Surface,
+    spec: ButtonSpec,
+    egui_button: Button<'_>,
+) -> Response {
+    let style = spec.style;
+    let tone = spec.tone;
+    let geometry = spec.geometry;
+    let enabled = spec.enabled;
+    let active = spec.active;
+    let mut role = match tone {
+        ButtonTone::Neutral => match style {
+            ButtonStyle::Solid => Action::Secondary,
+            ButtonStyle::Outline => Action::Outline,
+            ButtonStyle::Ghost => Action::Tertiary,
+            ButtonStyle::Subtle => Action::Menu,
+        },
+        ButtonTone::Info => Action::Primary,
+        ButtonTone::Success => Action::Primary,
+        ButtonTone::Warning => Action::Secondary,
+        ButtonTone::Danger => Action::Destructive,
+    };
+    if active {
+        role = Action::Toggle(true);
+    }
+    let theme = Theme::of(ui);
+    let (fill, border, ink) = role_colors(theme, surface, role);
+    let fill = match tone {
+        ButtonTone::Info => theme.primary,
+        ButtonTone::Success => theme.primary,
+        ButtonTone::Warning => theme.secondary.lerp_to_gamma(theme.text, 0.12),
+        ButtonTone::Danger => theme.danger_fill,
+        ButtonTone::Neutral => fill,
+    };
+    let border = if geometry.border {
+        border
+    } else {
+        egui::Stroke::NONE.color
+    };
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = with_style(ui, surface, role, |ui| {
+        for state in widget_states(&mut ui.visuals_mut().widgets) {
+            state.bg_stroke = egui::Stroke::NONE;
+            state.bg_fill = egui::Color32::TRANSPARENT;
+            state.weak_bg_fill = egui::Color32::TRANSPARENT;
+            state.fg_stroke.color = ink;
+        }
+        ui.visuals_mut().override_text_color = Some(ink);
+        ui.add_enabled(enabled, egui_button.frame(true))
+    });
+    let (hover, press) = motion(ui, &response);
+    if ui.is_rect_visible(response.rect) {
+        let base = if active {
+            theme.selected_fill(surface)
+        } else {
+            fill
+        };
+        let muted = base.lerp_to_gamma(ink, hover * 0.07 + press * 0.09);
+        let stroke = if response.has_focus() {
+            egui::Stroke::new(1.0, theme.focus)
+        } else if geometry.border {
+            egui::Stroke::new(geometry.border_width, border)
+        } else {
+            egui::Stroke::NONE
+        };
+        let fade = if enabled { 1.0 } else { 0.45 };
+        ui.painter().set(
+            background,
+            egui::epaint::RectShape::new(
+                response.rect,
+                geometry.radius,
+                muted.gamma_multiply(fade),
+                egui::Stroke::new(stroke.width, stroke.color.gamma_multiply(fade)),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
+    response
+}
+
+/// Standard confirmation and cancel pair for dialogs.
+pub fn confirm_cancel(
+    ui: &mut Ui,
+    surface: Surface,
+    confirm: &str,
+    cancel: &str,
+    confirm_tone: ButtonTone,
+    confirm_enabled: bool,
+) -> (Response, Response) {
+    ui.horizontal_wrapped(|ui| {
+        let cancel = button_with(
+            ui,
+            surface,
+            ButtonSpec::new(ButtonStyle::Outline, ButtonTone::Neutral),
+            Button::new(cancel),
+        );
+        let confirm = button_with(
+            ui,
+            surface,
+            ButtonSpec::new(ButtonStyle::Solid, confirm_tone).enabled(confirm_enabled),
+            Button::new(confirm),
+        );
+        (cancel, confirm)
+    })
+    .inner
+}
+
+/// Draws a button using an explicit visual treatment.
+pub fn button_styled(
+    ui: &mut Ui,
+    surface: Surface,
+    role: Action,
+    style: ButtonStyle,
+    enabled: bool,
+    egui_button: Button<'_>,
+) -> Response {
+    let role = match style {
+        ButtonStyle::Solid => role,
+        ButtonStyle::Outline => Action::Outline,
+        ButtonStyle::Ghost => Action::Tertiary,
+        ButtonStyle::Subtle => Action::Menu,
+    };
+    button(ui, surface, role, enabled, egui_button)
+}
+
+/// A persistent on/off button that updates its boolean value and exposes hover,
+/// pressed, focus and disabled states through the shared button renderer.
+pub fn toggle_button(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut bool,
+    enabled: bool,
+    egui_button: Button<'_>,
+) -> Response {
+    let mut response = button(ui, surface, Action::Toggle(*value), enabled, egui_button);
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response
+}
+
+/// Draws a multi-select option list where several choices may be selected.
+pub fn multi_select<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    surface: Surface,
+    selected: &mut Vec<T>,
+    choices: &[(T, &str)],
+) -> Response {
+    let mut changed = false;
+    let mut last = None;
+    ui.vertical(|ui| {
+        for (choice, label) in choices {
+            let mut on = selected.contains(choice);
+            let response = checkbox(ui, surface, CheckStyle::Simple, &mut on, label);
+            if response.changed() {
+                if on {
+                    if !selected.contains(choice) {
+                        selected.push(*choice);
+                    }
+                } else {
+                    selected.retain(|value| value != choice);
+                }
+                changed = true;
+            }
+            last = Some(response);
+        }
+    });
+    let mut response =
+        last.unwrap_or_else(|| ui.allocate_response(egui::vec2(0.0, 0.0), egui::Sense::hover()));
+    if changed {
+        response.mark_changed();
+    }
+    response
+}
+
 fn motion(ui: &Ui, response: &Response) -> (f32, f32) {
     let duration = ui.style().animation_time;
     let animate = |key, target| {
@@ -348,6 +688,182 @@ pub fn toggle(ui: &mut Ui, surface: Surface, value: &mut bool, label: &str) -> R
         ControlSize::Compact.apply(ui.spacing_mut());
         ui.checkbox(value, label)
     })
+}
+
+/// Draws a checkbox or switch with one shared selected, disabled and focus contract.
+pub fn checkbox(
+    ui: &mut Ui,
+    surface: Surface,
+    style: CheckStyle,
+    value: &mut bool,
+    label: &str,
+) -> Response {
+    match style {
+        CheckStyle::Simple => toggle(ui, surface, value, label),
+        CheckStyle::Toggle | CheckStyle::Emphasis => {
+            let theme = Theme::of(ui);
+            let height = CONTROL_HEIGHT;
+            let label_width = ui.available_width();
+            let (rect, mut response) =
+                ui.allocate_exact_size(egui::vec2(label_width, height), egui::Sense::click());
+            if response.clicked() {
+                *value = !*value;
+                response.mark_changed();
+            }
+            if ui.is_rect_visible(rect) {
+                let track = egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + 15.0, rect.center().y),
+                    egui::vec2(26.0, 14.0),
+                );
+                let selected_fill = if style == CheckStyle::Emphasis {
+                    theme.primary
+                } else {
+                    theme.selected_fill(surface)
+                };
+                let fill = if *value {
+                    selected_fill
+                } else {
+                    theme.secondary
+                };
+                let fill = if response.hovered() {
+                    fill.lerp_to_gamma(theme.text, 0.06)
+                } else {
+                    fill
+                };
+                ui.painter().rect(
+                    track,
+                    7,
+                    fill,
+                    if response.has_focus() {
+                        egui::Stroke::new(1.0, theme.focus)
+                    } else {
+                        egui::Stroke::new(1.0, theme.border)
+                    },
+                    egui::StrokeKind::Inside,
+                );
+                let thumb_x = if *value {
+                    track.right() - 7.0
+                } else {
+                    track.left() + 7.0
+                };
+                ui.painter().circle_filled(
+                    egui::pos2(thumb_x, track.center().y),
+                    5.0,
+                    if *value { theme.on_primary } else { theme.text },
+                );
+                let text = egui::RichText::new(label).color(theme.text);
+                let galley = ui.painter().layout_no_wrap(
+                    text.text().to_owned(),
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    theme.text,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        track.right() + SPACE_MEDIUM,
+                        rect.center().y - galley.size().y / 2.0,
+                    ),
+                    galley,
+                    theme.text,
+                );
+            }
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::accesskit::Role::CheckBox,
+                    response.enabled(),
+                    *value,
+                    label,
+                )
+            });
+            response
+        }
+    }
+}
+
+/// Draws one radio choice. Segmented radio groups should use `segmented`; this
+/// primitive is for independent choices inside forms or popup menus.
+pub fn radio<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    surface: Surface,
+    style: RadioStyle,
+    value: &mut T,
+    choice: T,
+    label: &str,
+) -> Response {
+    let selected = *value == choice;
+    match style {
+        RadioStyle::Simple => ui.radio_value(value, choice, label),
+        RadioStyle::Emphasis => {
+            let mut response = button(
+                ui,
+                surface,
+                if selected {
+                    Action::Toggle(true)
+                } else {
+                    Action::Toggle(false)
+                },
+                true,
+                egui::Button::new(label).truncate(),
+            );
+            if response.clicked() {
+                *value = choice;
+                response.mark_changed();
+            }
+            response
+        }
+    }
+}
+
+/// Draws a themed single-choice dropdown from labels and values.
+pub fn select<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    surface: Surface,
+    id: egui::Id,
+    selected: &mut T,
+    selected_label: &str,
+    options: &[(T, &str)],
+) -> Response {
+    let mut changed = false;
+    let mut response = egui::ComboBox::from_id_salt(id)
+        .selected_text(selected_label)
+        .show_select(ui, surface, |ui| {
+            for (value, label) in options {
+                let is_selected = *selected == *value;
+                if ui.selectable_label(is_selected, *label).clicked() && !is_selected {
+                    *selected = *value;
+                    changed = true;
+                    ui.close();
+                }
+            }
+        })
+        .response;
+    if changed {
+        response.mark_changed();
+    }
+    response
+}
+
+/// Draws a themed checklist for independent boolean choices.
+pub fn check_list(
+    ui: &mut Ui,
+    surface: Surface,
+    style: CheckStyle,
+    choices: &mut [(&mut bool, &str)],
+) -> Response {
+    let mut changed = false;
+    let mut response = None;
+    ui.vertical(|ui| {
+        for (value, label) in choices.iter_mut() {
+            let item = checkbox(ui, surface, style, value, label);
+            changed |= item.changed();
+            response = Some(item);
+        }
+    });
+    let mut response = response
+        .unwrap_or_else(|| ui.allocate_response(egui::vec2(0.0, 0.0), egui::Sense::hover()));
+    if changed {
+        response.mark_changed();
+    }
+    response
 }
 
 /// Draws dialog actions in a recessed footer. Returns Cancel and Confirm in that order.
@@ -509,6 +1025,72 @@ pub fn search(
         }
     }
     field.response
+}
+
+/// A themed single-line text field for forms and in-place editors.
+pub fn text_field(
+    ui: &mut Ui,
+    surface: Surface,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+) -> Response {
+    with_style(ui, surface, Action::Outline, |ui| {
+        let theme = Theme::of(ui);
+        ui.visuals_mut().extreme_bg_color = theme.inset;
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .hint_text(hint)
+            .text_color(theme.text)
+            .margin(egui::Margin::symmetric(8, 4))
+            .desired_width(f32::INFINITY)
+            .show(ui)
+            .response
+            .response
+    })
+}
+
+/// A themed multi-line text area for JSON, scripts and descriptions.
+pub fn text_area(
+    ui: &mut Ui,
+    surface: Surface,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+) -> Response {
+    with_style(ui, surface, Action::Outline, |ui| {
+        let theme = Theme::of(ui);
+        ui.visuals_mut().extreme_bg_color = theme.inset;
+        egui::TextEdit::multiline(text)
+            .id(id)
+            .hint_text(hint)
+            .text_color(theme.text)
+            .margin(egui::Margin::symmetric(8, 4))
+            .desired_width(f32::INFINITY)
+            .show(ui)
+            .response
+            .response
+    })
+}
+
+/// The shared frame for settings, confirmation and form windows.
+pub fn dialog_frame(ui: &Ui) -> egui::Frame {
+    let theme = Theme::of(ui);
+    egui::Frame::window(ui.style())
+        .fill(theme.dialog)
+        .stroke(egui::Stroke::new(1.0, theme.border))
+        .corner_radius(CONTROL_RADIUS)
+        .inner_margin(SPACE_MEDIUM)
+}
+
+/// The shared frame for menus, popups and anchored editors.
+pub fn popup_frame(ui: &Ui) -> egui::Frame {
+    let theme = Theme::of(ui);
+    egui::Frame::popup(ui.style())
+        .fill(theme.dialog)
+        .stroke(egui::Stroke::new(1.0, theme.border))
+        .corner_radius(CONTROL_RADIUS)
+        .inner_margin(SPACE_MEDIUM)
 }
 
 /// Draws a compact icon button and gives the painter a centered square.
@@ -732,6 +1314,64 @@ mod tests {
                 assert_eq!(Theme::of(ui).primary, ui.visuals().selection.bg_fill);
             })
             .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn button_geometry_tones_active_and_disabled_states_share_the_contract() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for geometry in [
+                ButtonGeometry::ROUNDED,
+                ButtonGeometry::COMPACT,
+                ButtonGeometry::PILL,
+                ButtonGeometry::NO_BORDER,
+                ButtonGeometry::SQUARE,
+            ] {
+                let enabled = button_with(
+                    ui,
+                    Surface::Panel,
+                    ButtonSpec::new(ButtonStyle::Solid, ButtonTone::Info).geometry(geometry),
+                    Button::new("Enabled"),
+                );
+                assert!(enabled.enabled());
+                let disabled = button_with(
+                    ui,
+                    Surface::Panel,
+                    ButtonSpec::new(ButtonStyle::Outline, ButtonTone::Neutral)
+                        .geometry(geometry)
+                        .enabled(false),
+                    Button::new("Disabled"),
+                );
+                assert!(!disabled.enabled());
+            }
+        })
+        .drop_without_applying_deltas();
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut active = false;
+            let response = toggle_button(ui, Surface::Panel, &mut active, true, Button::new("Run"));
+            assert!(!active);
+            assert!(response.rect.height() > 0.0);
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn confirm_cancel_keeps_cancel_available_and_confirm_disabled_when_needed() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (cancel, confirm) = confirm_cancel(
+                ui,
+                Surface::Dialog,
+                "Confirm",
+                "Cancel",
+                ButtonTone::Danger,
+                false,
+            );
+            assert!(cancel.enabled());
+            assert!(!confirm.enabled());
+        })
+        .drop_without_applying_deltas();
     }
 
     #[test]

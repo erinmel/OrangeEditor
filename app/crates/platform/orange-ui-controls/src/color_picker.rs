@@ -122,17 +122,10 @@ pub fn popup(
             .ctx
             .data_mut(|data| data.insert_temp(id, Some(Draft::new(current, show_alpha))));
     }
-    let theme = super::Theme::of(parent);
     let mut applied = None;
     Popup::menu(anchor)
         .id(id)
-        .frame(
-            egui::Frame::popup(parent.style())
-                .fill(theme.dialog)
-                .stroke(Stroke::new(1.0, theme.border))
-                .corner_radius(super::CONTROL_RADIUS)
-                .inner_margin(12),
-        )
+        .frame(super::popup_frame(parent))
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             applied = inline(ui, id, current, show_alpha, labels);

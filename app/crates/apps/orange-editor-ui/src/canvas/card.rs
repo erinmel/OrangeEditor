@@ -51,7 +51,7 @@ impl<'a> FieldOf<'a> {
         }
     }
 
-    pub(super) const fn control_height(self) -> f32 {
+    pub(super) fn control_height(self) -> f32 {
         match self {
             Self::TextArea(_, _, height) => height,
             _ => CONTROL,

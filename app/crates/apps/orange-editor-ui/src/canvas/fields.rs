@@ -643,7 +643,7 @@ impl Canvas {
                                     |ui| {
                                         ui.set_clip_rect(ui.clip_rect().intersect(track));
                                         ui.spacing_mut().interact_size.y = track.height();
-                                        range.slider(ui, id, value)
+                                        range.slider(ui, Surface::Card, id, value)
                                     },
                                 )
                                 .inner;

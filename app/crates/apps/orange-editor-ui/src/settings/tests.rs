@@ -109,7 +109,7 @@ fn settings_rows_align_controls_and_stack_when_the_column_would_not_fit() {
 }
 
 #[test]
-fn done_spans_the_settings_footer_at_compact_and_wide_sizes() {
+fn done_fills_the_sidebar_footer_or_the_compact_footer() {
     for width in [380.0, 960.0] {
         let mut editor = Editor::new();
         editor.settings_open = true;
@@ -157,10 +157,27 @@ fn done_spans_the_settings_footer_at_compact_and_wide_sizes() {
                 assert!(
                     (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0).contains(&(button.left() - window.left()))
                 );
-                assert!(
-                    (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0)
-                        .contains(&(window.right() - button.right()))
-                );
+                if width < 540.0 {
+                    assert!(
+                        (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0)
+                            .contains(&(window.right() - button.right()))
+                    );
+                } else {
+                    let sidebar_right = shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if rect.rect.contains_rect(button)
+                                    && rect.rect.height() > 200.0
+                                    && rect.rect.width() < window.width() / 2.0 =>
+                            {
+                                Some(rect.rect.right())
+                            }
+                            _ => None,
+                        })
+                        .expect("left sidebar");
+                    assert!((sidebar_right - button.right() - SPACE_MEDIUM).abs() < 2.0);
+                }
                 assert!(window.bottom() - button.bottom() >= SPACE_MEDIUM);
                 assert!(
                     button.center().distance(ink.center()) < 3.0,

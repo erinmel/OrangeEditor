@@ -264,49 +264,49 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
     let mut groups: Vec<(String, Vec<PaletteItem>)> = Vec::new();
     // Found nodes come best first, so a category's place is that of its best node.
     for found in discover(host, search, language) {
-        let category = match found.definition.as_str() {
-            id if id.starts_with("org.orange.audio/") => {
-                text_in(language, "palette-audio", "Audio")
-            }
-            "core/get-variable"
-            | "core/set-variable"
-            | "core/update-variable"
-            | "preset:increment"
-            | "preset:decrement" => text_in(language, "variables", "Variables"),
-            id => family(id).map_or(found.category, |(key, caption, _)| {
-                text_in(language, key, caption)
-            }),
+        let category =
+            catalog_group(&found.definition).map_or(found.category, |group| group.name(language));
+        let purpose = if found.purpose.is_empty() {
+            catalog_section(&found.definition)
+                .map_or_else(String::new, |(_, help)| text_in(language, help, ""))
+        } else {
+            found.purpose
         };
         let item = PaletteItem {
             id: found.definition,
             label: found.label,
             package: found.package,
-            purpose: found.purpose,
+            purpose,
         };
         match groups.iter_mut().find(|(name, _)| *name == category) {
             Some((_, items)) => items.push(item),
             None => groups.push((category, vec![item])),
         }
     }
-    // Conversions are search results too, in a category of their own.
     let converts = conversion_items(host, search, language, None);
     if !converts.is_empty() {
-        groups.push((text_in(language, "conversions", "Conversions"), converts));
+        let category = DATA.name(language);
+        if let Some((_, items)) = groups.iter_mut().find(|(name, _)| *name == category) {
+            items.extend(converts);
+        } else {
+            groups.push((category, converts));
+        }
     }
     if search.trim().is_empty() {
-        groups.sort_by(|a, b| a.0.cmp(&b.0));
-    }
-    if search.trim().is_empty() {
+        groups.sort_by(|a, b| {
+            catalog_group_rank(&a.0, language).cmp(&catalog_group_rank(&b.0, language))
+        });
         for (_, items) in &mut groups {
             items.sort_by_key(|item| {
-                let section = audio_section(&item.id).map(|(name, _)| name);
-                match section {
-                    Some("audio-routing") => 0,
-                    Some("audio-playback") => 1,
-                    Some("audio-effects") => 2,
-                    Some("audio-analyze") => 3,
+                let section = catalog_section(&item.id).map_or("", |(title, _)| title);
+                let order = match section {
+                    "audio-routing" => 0,
+                    "audio-playback" => 1,
+                    "audio-effects" => 2,
+                    "audio-analyze" => 3,
                     _ => 0,
-                }
+                };
+                (order, section)
             });
         }
     }
@@ -346,7 +346,7 @@ pub(crate) fn signal(node: &NodeView) -> Option<(bool, &str)> {
     Some((sender, node.settings.get("event")?.as_str()?))
 }
 
-pub(crate) fn audio_section(definition: &str) -> Option<(&'static str, &'static str)> {
+fn audio_section(definition: &str) -> Option<(&'static str, &'static str)> {
     let id = definition.strip_prefix("org.orange.audio/")?;
     Some(match id {
         "audio-source" | "audio-out" => ("audio-routing", "audio-routing-help"),
@@ -432,17 +432,166 @@ fn loop_name(name: &str) -> bool {
     )
 }
 
+#[derive(Clone, Copy)]
+struct CatalogGroup {
+    key: &'static str,
+    fallback: &'static str,
+    representative: &'static str,
+    help: &'static str,
+}
+
+impl CatalogGroup {
+    fn name(self, language: &str) -> String {
+        text_in(language, self.key, self.fallback)
+    }
+}
+
+const FLOW: CatalogGroup = CatalogGroup {
+    key: "catalog-flow",
+    fallback: "Flow & triggers",
+    representative: "core/branch",
+    help: "catalog-flow-help",
+};
+const DATA: CatalogGroup = CatalogGroup {
+    key: "catalog-data",
+    fallback: "Data & text",
+    representative: "org.orange.json/get",
+    help: "catalog-data-help",
+};
+const CALCULATE: CatalogGroup = CatalogGroup {
+    key: "catalog-math",
+    fallback: "Math & logic",
+    representative: "org.orange.math/add",
+    help: "catalog-math-help",
+};
+const SERVICES: CatalogGroup = CatalogGroup {
+    key: "catalog-services",
+    fallback: "Files & network",
+    representative: "org.orange.net/http-request",
+    help: "catalog-services-help",
+};
+const AUDIO: CatalogGroup = CatalogGroup {
+    key: "palette-audio",
+    fallback: "Audio",
+    representative: "org.orange.audio/audio-source",
+    help: "node-family-audio",
+};
+const TOOLS: CatalogGroup = CatalogGroup {
+    key: "catalog-tools",
+    fallback: "Utilities",
+    representative: "org.orange.logging/log-message",
+    help: "catalog-tools-help",
+};
+
+fn catalog_group_rank(category: &str, language: &str) -> usize {
+    for (rank, group) in [FLOW, DATA, CALCULATE, SERVICES, AUDIO, TOOLS]
+        .iter()
+        .enumerate()
+    {
+        if category == group.name(language) || category == group.fallback {
+            return rank;
+        }
+    }
+    6
+}
+
+fn catalog_group(definition: &str) -> Option<CatalogGroup> {
+    if definition.starts_with(CONVERSION) {
+        return Some(DATA);
+    }
+    let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
+    Some(match (namespace, name) {
+        ("org.orange.audio", _) => AUDIO,
+        ("org.orange.input", "on-key-pressed") => FLOW,
+        ("org.orange.files" | "org.orange.net", _) => SERVICES,
+        ("org.orange.math", _) => CALCULATE,
+        (
+            "org.orange.json" | "org.orange.collections" | "org.orange.text" | "org.orange.color",
+            _,
+        ) => DATA,
+        ("org.orange.input" | "org.orange.time" | "org.orange.clock" | "org.orange.logging", _) => {
+            TOOLS
+        }
+        ("core", "number" | "whole-number" | "bool" | "text" | "value" | "true-or-false") => DATA,
+        ("core", name) if name.contains("variable") || name.contains("shared") => DATA,
+        ("preset:increment" | "preset:decrement", _) => DATA,
+        ("core", "and" | "or" | "not" | "xor" | "all-conditions" | "any-conditions") => CALCULATE,
+        ("core", "register" | "close-handle" | "close-stream" | "next-item") => TOOLS,
+        ("core", _) => FLOW,
+        (preset, _) if preset.starts_with("preset:") => FLOW,
+        _ => return None,
+    })
+}
+
+pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'static str)> {
+    if definition.starts_with(CONVERSION) {
+        return Some(("conversions", "catalog-conversions-help"));
+    }
+    if let Some(section) = audio_section(definition) {
+        return Some(section);
+    }
+    if let Some((key, _, _)) = family(definition) {
+        match key {
+            "palette-http" => return Some((key, "node-family-network")),
+            "palette-compare" => return Some((key, "node-family-math")),
+            "palette-loops" => return Some((key, "node-family-loops")),
+            "palette-advanced" => return Some((key, "palette-advanced-help")),
+            _ => {}
+        }
+    }
+    let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
+    Some(match (namespace, name) {
+        ("org.orange.files", _) => ("catalog-files", "node-family-files"),
+        ("org.orange.net", _) => ("catalog-network", "node-family-network"),
+        ("org.orange.math", _) => ("catalog-math-section", "node-family-math"),
+        ("org.orange.json", _) => ("catalog-json", "node-family-data"),
+        ("org.orange.collections", _) => ("catalog-collections", "node-family-data"),
+        ("org.orange.text", _) => ("catalog-text", "node-family-text"),
+        ("org.orange.color", _) => ("catalog-color", "catalog-data-help"),
+        ("org.orange.time" | "org.orange.clock", _) => ("catalog-time", "node-family-time"),
+        ("org.orange.logging", _) => ("catalog-logging", "node-family-log"),
+        ("org.orange.input", "on-key-pressed") => ("catalog-triggers", "node-family-events"),
+        ("org.orange.input", _) => ("catalog-input", "catalog-tools-help"),
+        ("core", name) if name.starts_with("on-") || matches!(name, "emit" | "await-event") => {
+            ("catalog-triggers", "node-family-events")
+        }
+        (
+            "preset:signal"
+            | "preset:watchdog"
+            | "preset:rising-edge"
+            | "preset:falling-edge"
+            | "preset:deadband",
+            _,
+        ) => ("catalog-triggers", "node-family-events"),
+        ("core", "call" | "return" | "function-entry" | "function-outputs") => {
+            ("catalog-functions", "node-family-functions")
+        }
+        ("core", name) if name.contains("variable") || name.contains("shared") => {
+            ("variables", "node-family-state")
+        }
+        ("preset:increment" | "preset:decrement", _) => ("variables", "node-family-state"),
+        ("core", _) | ("preset:guard", _) => match catalog_group(definition)?.key {
+            "catalog-data" => ("catalog-values", "node-family-data"),
+            "catalog-math" => ("catalog-logic", "node-family-math"),
+            _ => ("catalog-control", "node-family-flow"),
+        },
+        _ => return None,
+    })
+}
+
 pub(crate) fn category_heading(
     category: &str,
     definition: &str,
     language: &str,
 ) -> (egui::text::LayoutJob, &'static str) {
-    let (mut glyph, mut color, mut help) = badge(definition);
-    if category == text_in(language, "palette-advanced", "Advanced") {
-        glyph = crate::icons::SETTINGS;
-        color = egui::Color32::from_rgb(149, 132, 178);
-        help = "palette-advanced-help";
-    }
+    let group = catalog_group(definition).filter(|group| group.name(language) == category);
+    let (glyph, color, help) = group.map_or_else(
+        || badge(definition),
+        |group| {
+            let (glyph, color, _) = badge(group.representative);
+            (glyph, color, group.help)
+        },
+    );
     let mut job = egui::text::LayoutJob::default();
     let mut content = [0; 4];
     job.append(
@@ -539,10 +688,13 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
             let alias = family(&found.definition).is_some_and(|(_, _, words)| {
                 query.split_whitespace().all(|word| words.contains(word))
             });
-            let audio = audio_section(&found.definition).is_some_and(|(section, _)| {
+            let catalog = catalog_group(&found.definition).is_some_and(|group| {
+                let section = catalog_section(&found.definition)
+                    .map_or_else(String::new, |(key, _)| text_in(language, key, key));
                 let terms = orange_host::fold_search(&format!(
-                    "audio sound sonido {} {}",
-                    text_in(language, section, section),
+                    "{} {} {} {section}",
+                    group.name(language),
+                    group.fallback,
                     found.label
                 ));
                 query.split_whitespace().all(|word| terms.contains(word))
@@ -572,7 +724,7 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                     "link relay trigger enlace señal senal evento",
                 );
             if (alias
-                || audio
+                || catalog
                 || signal
                 || deadband
                 || watchdog
@@ -934,6 +1086,50 @@ mod tests {
                 .events()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn catalog_groups_related_operations_under_common_headings() {
+        for (nodes, expected) in [
+            (
+                ["core/on-manual", "core/for-each", "preset:signal"],
+                "Flow & triggers",
+            ),
+            (
+                [
+                    "core/get-variable",
+                    "org.orange.json/get",
+                    "convert:example",
+                ],
+                "Data & text",
+            ),
+            (
+                [
+                    "org.orange.files/read-text",
+                    "org.orange.net/http-request",
+                    "org.orange.net/websocket",
+                ],
+                "Files & network",
+            ),
+        ] {
+            for node in nodes {
+                assert_eq!(catalog_group(node).unwrap().name("en"), expected);
+            }
+        }
+        assert_eq!(catalog_section("core/for-each").unwrap().0, "palette-loops");
+        assert_eq!(
+            catalog_section("org.orange.net/http-request").unwrap().0,
+            "palette-http"
+        );
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        assert!(
+            palette_in(&host, "datos texto entero", "es")
+                .iter()
+                .any(|(group, items)| {
+                    group == "Datos y texto"
+                        && items.iter().any(|item| item.id == "core/whole-number")
+                })
         );
     }
 

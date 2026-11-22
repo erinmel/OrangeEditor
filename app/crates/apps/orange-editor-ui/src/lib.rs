@@ -462,6 +462,8 @@ pub struct Editor {
     log_search: String,
     problems_search: String,
     problems_filter: Option<ProblemLevel>,
+    /// Problem row indices selected for copy or bulk inspection.
+    selected_problems: std::collections::BTreeSet<usize>,
     declaration_search: [String; 3],
     node_search_previews: bool,
     pending_package: Option<package_import::PackageImport>,
@@ -491,6 +493,7 @@ pub struct Editor {
     typed: std::collections::BTreeMap<String, String>,
     /// The left panel shows the document's declarations instead of the node kinds.
     tab: Tab,
+    preferred_tab: Tab,
     forms: declarations::Forms,
     /// The setting choices of each connection adapter (its devices, say), listed when
     /// first shown and again when a person asks: listing may ask the operating system.
@@ -585,6 +588,7 @@ impl Editor {
         self.node_config_menu = None;
         self.renaming_node = None;
         self.inspected_port = None;
+        self.tab = self.preferred_tab;
         self.previews.invalidate();
         self.stop(host);
         let path = path.into();
@@ -2111,11 +2115,48 @@ impl Editor {
             ui.menu_button(format!("{:.0}%", self.canvas.zoom() * 100.0), |ui| {
                 let label = ui.label(t("canvas-zoom"));
                 let mut zoom = self.canvas.zoom();
-                if orange_ui_controls::continuous_slider(
+                let start = *canvas::ZOOM_RANGE.start();
+                let end = *canvas::ZOOM_RANGE.end();
+                let guides = [
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((0.50 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "50%",
+                    },
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((0.75 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "75%",
+                    },
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((1.00 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "100%",
+                    },
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((1.25 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "125%",
+                    },
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((1.50 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "150%",
+                    },
+                    orange_ui_controls::SliderGuide {
+                        fraction: ((1.75 - f64::from(start)) / (f64::from(end) - f64::from(start)))
+                            as f32,
+                        label: "175%",
+                    },
+                ];
+                if orange_ui_controls::guided_slider(
                     ui,
                     Surface::Dialog,
                     &mut zoom,
                     canvas::ZOOM_RANGE,
+                    orange_ui_controls::SliderBehavior::Free,
+                    orange_ui_controls::SliderMarks::NotchesAndValues,
+                    &guides,
                 )
                 .labelled_by(label.id)
                 .changed()
@@ -2151,10 +2192,14 @@ impl Editor {
     /// Draws the Inspector and Packages tabs in the supplied container.
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let mut packages = self.panels.packages && !self.panels.properties;
-        ui.horizontal(|ui| {
-            let _ = ui.selectable_value(&mut packages, false, t("properties"));
-            let _ = ui.selectable_value(&mut packages, true, t("packages"));
-        });
+        let _ = orange_ui_controls::notebook_styled(
+            ui,
+            Surface::Panel,
+            orange_ui_controls::NotebookOrientation::Horizontal,
+            orange_ui_controls::NotebookPadding::Compact,
+            &mut packages,
+            &[(false, t("properties")), (true, t("packages"))],
+        );
         ui.separator();
         self.panels.properties = !packages;
         self.panels.packages = packages;
@@ -2197,21 +2242,19 @@ impl Editor {
 
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().button_padding.x = 6.0;
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.spacing_mut().interact_size.x = 0.0;
-            let _ = ui.selectable_value(&mut self.tab, Tab::Nodes, t("nodes"));
-            let _ = ui
-                .selectable_value(&mut self.tab, Tab::Variables, t("variables"))
-                .on_hover_text(t("variables-hint"));
-            let _ = ui
-                .selectable_value(&mut self.tab, Tab::Connections, t("connections"))
-                .on_hover_text(t("connections-hint"));
-            let _ = ui
-                .selectable_value(&mut self.tab, Tab::Types, t("types"))
-                .on_hover_text(t("types-hint"));
-        });
+        let options = Tab::ALL.map(|(tab, label)| (tab, t(label)));
+        let previous = self.tab;
+        let response = orange_ui_controls::notebook_styled(
+            ui,
+            Surface::Panel,
+            orange_ui_controls::NotebookOrientation::Horizontal,
+            orange_ui_controls::NotebookPadding::Compact,
+            &mut self.tab,
+            &options,
+        );
+        if response.changed() || previous != self.tab {
+            self.preferred_tab = self.tab;
+        }
         ui.separator();
         match self.tab {
             Tab::Nodes => {}
@@ -2286,7 +2329,7 @@ impl Editor {
                     |ui| {
                         let mut section = None;
                         for item in items {
-                            let next = palette::audio_section(&item.id);
+                            let next = palette::catalog_section(&item.id);
                             if !searching
                                 && section != next
                                 && let Some((title, description)) = next
@@ -2751,7 +2794,19 @@ mod tests {
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
             item.id.starts_with(palette::CONVERSION) && item.label.contains("Text")
         }));
-        assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let rank = |name: &str| match name {
+            "Flow & triggers" => 0,
+            "Data & text" => 1,
+            "Math & logic" => 2,
+            "Files & network" => 3,
+            "Audio" => 4,
+            "Utilities" => 5,
+            _ => 6,
+        };
+        assert!(
+            all.windows(2)
+                .all(|pair| rank(&pair[0].0) <= rank(&pair[1].0))
+        );
         // Every word must match, in any letter case, in the label, definition or category.
         let found = palette(&host, "MATH add");
         assert!(count(&found) >= 1 && count(&found) < count(&all));
@@ -3266,7 +3321,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_are_centered_and_switching_tabs_preserves_canvas_height() {
+    fn diagnostics_tabs_fill_the_panel_and_switching_tabs_preserves_canvas_height() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         let bound = host.bind(&graph()).unwrap();
@@ -3298,7 +3353,8 @@ mod tests {
                 group = group.union(egui::Rect::from_min_size(text.pos, text.galley.size()));
             }
         }
-        assert!((group.center().x - 640.0).abs() <= 8.0, "{group:?}");
+        assert!(group.left() >= 8.0, "{group:?}");
+        assert!(group.right() <= 1272.0, "{group:?}");
         output.drop_without_applying_deltas();
         let height = editor.canvas.size()[1];
         editor.log_events = true;
