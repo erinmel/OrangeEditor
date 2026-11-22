@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchCondition {
     Changed,
+    Deadband(Value),
     Rising,
     Falling,
     Numeric {
@@ -73,6 +74,7 @@ enum Test<'a> {
     Changed,
     Edge(bool),
     Numeric(Mode, &'a Number, &'a Number),
+    Deadband(&'a Number),
 }
 
 /// The syntactically checked configuration of a Watch before its input type is known.
@@ -105,6 +107,13 @@ impl<'a> WatchConfig<'a> {
             return None;
         }
         let number = |key| config.get(key)?.as_number();
+        if mode == "deadband" {
+            return (config.len() == 2).then_some(Self {
+                test: Test::Deadband(number("threshold")?),
+                hold_ns: 0,
+                cooldown_ns: 0,
+            });
+        }
         let (mode, first, second, fields) = match mode {
             "above" | "below" => {
                 let threshold = number("threshold")?;
@@ -151,7 +160,7 @@ impl<'a> WatchConfig<'a> {
         match self.test {
             Test::Changed => shape.host_eq(),
             Test::Edge(_) => shape == &ValueShape::Bool,
-            Test::Numeric(..) => matches!(
+            Test::Numeric(..) | Test::Deadband(_) => matches!(
                 shape,
                 ValueShape::I32
                     | ValueShape::I64
@@ -172,6 +181,10 @@ impl<'a> WatchConfig<'a> {
             Test::Changed => Some(WatchCondition::Changed),
             Test::Edge(true) => Some(WatchCondition::Rising),
             Test::Edge(false) => Some(WatchCondition::Falling),
+            Test::Deadband(threshold) if threshold.as_f64()? >= 0.0 => {
+                Some(WatchCondition::Deadband(bound(threshold, shape)?))
+            }
+            Test::Deadband(_) => None,
             Test::Numeric(mode, first, second) => {
                 let first = bound(first, shape)?;
                 let second = bound(second, shape)?;
@@ -212,7 +225,7 @@ pub(super) fn schema() -> Json {
         "type": "object",
         "required": ["mode"],
         "properties": {
-            "mode": {"type": "string", "enum": ["changed", "rising", "falling", "above", "below", "inside", "outside"]},
+            "mode": {"type": "string", "enum": ["changed", "rising", "falling", "above", "below", "inside", "outside", "deadband"]},
             "threshold": {"type": "number"},
             "release": {"type": "number"},
             "low": {"type": "number"},

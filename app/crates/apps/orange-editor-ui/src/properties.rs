@@ -506,6 +506,7 @@ fn setting_key(pointer: &str) -> String {
 
 pub(crate) fn watch_fields(mode: Option<&str>) -> &'static [&'static str] {
     match mode {
+        Some("deadband") => &["mode", "threshold"],
         Some("above" | "below") => &["mode", "threshold", "release", "hold", "cooldown"],
         Some("inside" | "outside") => &["mode", "low", "high", "hold", "cooldown"],
         _ => &["mode"],
@@ -558,6 +559,7 @@ pub(crate) fn watch_label(name: &str) -> &'static str {
         "below" => t("when-below"),
         "inside" => t("when-inside"),
         "outside" => t("when-outside"),
+        "deadband" => t("when-deadband"),
         "threshold" => t("when-threshold"),
         "release" => t("when-release"),
         "low" => t("when-low"),

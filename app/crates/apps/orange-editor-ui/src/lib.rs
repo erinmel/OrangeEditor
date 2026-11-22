@@ -2706,12 +2706,16 @@ mod tests {
         let count = |groups: &[(String, Vec<PaletteItem>)]| {
             groups.iter().map(|(_, items)| items.len()).sum::<usize>()
         };
-        // The catalogue also offers three authoring presets and the conversions.
         let offered = host
             .nodes()
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
             .count();
-        assert_eq!(count(&all), offered + host.conversions().len() + 3);
+        let presets = all
+            .iter()
+            .flat_map(|(_, items)| items)
+            .filter(|item| item.id.starts_with("preset:"))
+            .count();
+        assert_eq!(count(&all), offered + host.conversions().len() + presets);
         // Conversions are found by Spanish words too.
         assert!(
             palette(&host, "convertir entero texto")

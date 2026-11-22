@@ -479,7 +479,90 @@ impl Host {
         definition: &str,
         at: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        if definition == "preset:watchdog" {
+            return self.watchdog_commands(draft, at);
+        }
         self.node_commands(draft, definition, at, "node")
+    }
+
+    fn watchdog_commands(
+        &self,
+        draft: &Draft,
+        [x, y]: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let name = (1..)
+            .map(|index| {
+                if index == 1 {
+                    "Heartbeat".to_owned()
+                } else {
+                    format!("Heartbeat {index}")
+                }
+            })
+            .find(|name| {
+                draft
+                    .document()
+                    .events()
+                    .values()
+                    .all(|event| event.name != *name)
+            })
+            .ok_or_else(|| refused(&"no heartbeat event name is available"))?;
+        let event = draft.fresh_id("watchdog-event");
+        let declaration = serde_json::from_value(json!({
+            "id": event, "name": name, "payload": "core/bool@1", "scope": "run"
+        }))
+        .map_err(|error| refused(&error))?;
+        let (emit, emission) =
+            self.node_commands(draft, intrinsic::EMIT, [x, y], "watchdog-emit")?;
+        let (entry, admission) =
+            self.node_commands(draft, intrinsic::ON_EVENT, [x, y + 176.0], "watchdog-entry")?;
+        let (wait, timeout) = self.node_commands(
+            draft,
+            intrinsic::WAIT,
+            [x + 360.0, y + 176.0],
+            "watchdog-wait",
+        )?;
+        let mut commands = vec![DocCommand::UpsertEvent(declaration)];
+        commands.extend(emission);
+        commands.extend(admission);
+        commands.extend(timeout);
+        for node in [emit, entry] {
+            commands.push(DocCommand::SetConfig {
+                node,
+                config_version: 1,
+                config: [("event".to_owned(), json!(event))].into_iter().collect(),
+            });
+        }
+        let mut policy: ActivationPolicy =
+            serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;
+        policy.mode = orange_model::document::ReentrancyMode::Replace;
+        commands.push(DocCommand::SetActivation {
+            node: entry,
+            policy: Some(policy),
+        });
+        for (node, port, ty, value) in [
+            (emit, "payload", "core/bool@1", json!(true)),
+            (wait, "duration", "core/duration@1", json!("750000000")),
+        ] {
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((node, port))?,
+                literal: Some(Literal::value(
+                    ty.parse().map_err(|error| refused(&error))?,
+                    value,
+                )),
+            });
+        }
+        commands.push(DocCommand::Connect {
+            edge: Edge {
+                id: draft
+                    .fresh_id("watchdog-wire")
+                    .parse()
+                    .map_err(|error| refused(&error))?,
+                from: port_ref((entry, "then"))?,
+                to: port_ref((wait, "in"))?,
+                extensions: Default::default(),
+            },
+        });
+        Ok((emit, commands))
     }
 
     /// Places both halves of a collection or state loop with a passthrough body.
@@ -538,13 +621,20 @@ impl Host {
         at: [f32; 2],
         identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let counter_operation = match definition {
+            "preset:increment" => Some("add"),
+            "preset:decrement" => Some("sub"),
+            _ => None,
+        };
         let watch_mode = match definition {
             "preset:rising-edge" => Some("rising"),
             "preset:falling-edge" => Some("falling"),
+            "preset:deadband" => Some("deadband"),
             _ => None,
         };
         let definition = match definition {
             "preset:guard" => intrinsic::BRANCH,
+            _ if counter_operation.is_some() => intrinsic::UPDATE_VARIABLE,
             _ if watch_mode.is_some() => intrinsic::ON_WATCH,
             _ => definition,
         };
@@ -571,12 +661,45 @@ impl Host {
         let entry = found.kind == NodeKind::Entry;
         let mut config = new_config(found, registry)?;
         let mut type_pins = BTreeMap::new();
+        let counter = counter_operation.map(|operation| {
+            let _ = config.insert("operation".to_owned(), json!(operation));
+            let variables = draft.document().variables();
+            let (name, existing) = (1..)
+                .map(|index| if index == 1 { "Counter".to_owned() } else { format!("Counter {index}") })
+                .find_map(|name| {
+                    let existing = variables.values().find(|variable| variable.name == name);
+                    if let Some(variable) = existing
+                        && (variable.scope != orange_model::document::VarScope::Run
+                            || !matches!(variable.ty.as_str(), "core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1")
+                            || variable.init.is_none())
+                    {
+                        return None;
+                    }
+                    Some((name, existing))
+                })
+                .ok_or_else(|| refused(&"no counter name is available"))?;
+            if let Some(variable) = existing {
+                let _ = config.insert("variable".to_owned(), json!(variable.id));
+                return Ok::<_, HostError>((None, variable.ty.clone()));
+            }
+            let id = draft.fresh_id("counter-variable");
+            let declaration: orange_model::document::VariableDecl = serde_json::from_value(json!({
+                "id": id, "name": name, "type": "core/i64@1", "scope": "run", "init": {"type": "core/i64@1", "value": "0"}
+            })).map_err(|error| refused(&error))?;
+            let _ = config.insert("variable".to_owned(), json!(declaration.id));
+            let ty = declaration.ty.clone();
+            Ok((Some(declaration), ty))
+        }).transpose()?;
         if let Some(mode) = watch_mode {
             let _ = config.insert("mode".to_owned(), json!(mode));
-            type_pins.insert(
-                "T".parse().map_err(|error| refused(&error))?,
-                "core/bool@1".parse().map_err(|error| refused(&error))?,
-            );
+            if mode == "deadband" {
+                let _ = config.insert("threshold".to_owned(), json!(1));
+            } else {
+                type_pins.insert(
+                    "T".parse().map_err(|error| refused(&error))?,
+                    "core/bool@1".parse().map_err(|error| refused(&error))?,
+                );
+            }
         }
         let mut commands = if definition.id.is_core() {
             vec![DocCommand::AddNode {
@@ -657,6 +780,15 @@ impl Host {
             commands.push(DocCommand::SetActivation {
                 node,
                 policy: Some(policy),
+            });
+        }
+        if let Some((declaration, ty)) = counter {
+            if let Some(declaration) = declaration {
+                commands.insert(0, DocCommand::UpsertVariable(declaration));
+            }
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((node, "value"))?,
+                literal: Some(Literal::value(ty, json!("1"))),
             });
         }
         commands.push(place_command(node, Some(at)));

@@ -249,14 +249,16 @@ pub fn palette(host: &Host, search: &str) -> Vec<(String, Vec<PaletteItem>)> {
 pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec<PaletteItem>)> {
     let mut groups: Vec<(String, Vec<PaletteItem>)> = Vec::new();
     // Found nodes come best first, so a category's place is that of its best node.
-    for found in search_with_presets(host.search_nodes(search, language), search, language) {
-        let category = if matches!(
-            found.definition.as_str(),
-            "core/get-variable" | "core/set-variable"
-        ) {
-            text_in(language, "variables", "Variables")
-        } else {
-            found.category
+    for found in discover(host, search, language) {
+        let category = match found.definition.as_str() {
+            "core/get-variable"
+            | "core/set-variable"
+            | "core/update-variable"
+            | "preset:increment"
+            | "preset:decrement" => text_in(language, "variables", "Variables"),
+            id => family(id).map_or(found.category, |(key, caption, _)| {
+                text_in(language, key, caption)
+            }),
         };
         let item = PaletteItem {
             id: found.definition,
@@ -320,6 +322,120 @@ pub(crate) fn conversion_items(
         .collect()
 }
 
+fn family(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    Some(match id {
+        "org.orange.net/http-request"
+        | "org.orange.net/http-request-bytes"
+        | "org.orange.net/http-request-json"
+        | "org.orange.net/http-stream"
+        | "org.orange.net/http-stream-line" => (
+            "palette-http",
+            "HTTP Request",
+            "http request peticion solicitud",
+        ),
+        "org.orange.audio/audio-format" | "org.orange.audio/live-level" => (
+            "palette-audio-inspect",
+            "Audio · Inspect",
+            "audio inspect inspeccionar",
+        ),
+        "org.orange.audio/play" | "org.orange.audio/play-from" | "org.orange.audio/loop" => (
+            "palette-playback",
+            "Audio · Playback",
+            "audio playback reproducir",
+        ),
+        "org.orange.files/read-text"
+        | "org.orange.files/read-bytes"
+        | "org.orange.files/read-range"
+        | "org.orange.files/write-text"
+        | "org.orange.files/write-bytes" => (
+            "palette-file-content",
+            "File Contents",
+            "file contents archivo contenido",
+        ),
+        "org.orange.math/equal"
+        | "org.orange.math/not-equal"
+        | "org.orange.math/float-equal"
+        | "org.orange.math/float-not-equal"
+        | "org.orange.math/greater"
+        | "org.orange.math/greater-or-equal"
+        | "org.orange.math/less"
+        | "org.orange.math/less-or-equal" => ("palette-compare", "Compare", "compare comparar"),
+        "org.orange.math/is-finite"
+        | "org.orange.math/is-nan"
+        | "org.orange.math/is-infinite"
+        | "org.orange.math/total-order-less"
+        | "core/register"
+        | "core/close-handle"
+        | "core/close-stream"
+        | "core/next-item"
+        | "core/map-end"
+        | "core/filter-end"
+        | "core/fold-end"
+        | "core/repeat-end" => ("palette-advanced", "Advanced", "advanced avanzado"),
+        id if id.starts_with("org.orange.json/as-") || id.starts_with("org.orange.json/from-") => (
+            "palette-json-convert",
+            "Convert JSON Value",
+            "convert json value convertir valor",
+        ),
+        _ => return None,
+    })
+}
+
+pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_host::Found> {
+    let mut nodes = host.search_nodes(search, language);
+    let query = search.trim().to_lowercase();
+    if !query.is_empty() {
+        let counter = preset_match(
+            &query,
+            language,
+            "counter-increment",
+            "Increment",
+            "bump+ bump + count up",
+        ) || preset_match(
+            &query,
+            language,
+            "counter-decrement",
+            "Decrement",
+            "bump- bump - count down",
+        );
+        for found in host.search_nodes("", language) {
+            let alias = family(&found.definition).is_some_and(|(_, _, words)| {
+                query.split_whitespace().all(|word| words.contains(word))
+            });
+            let deadband = found.definition == "core/on-watch"
+                && preset_match(
+                    &query,
+                    language,
+                    "when-deadband",
+                    "Deadband",
+                    "change tolerance",
+                );
+            let watchdog = found.definition == "core/on-event"
+                && preset_match(
+                    &query,
+                    language,
+                    "watchdog-preset",
+                    "Idle Watchdog",
+                    "heartbeat timeout",
+                );
+            if (alias
+                || deadband
+                || watchdog
+                || counter && found.definition == "core/update-variable")
+                && !nodes.iter().any(|node| node.definition == found.definition)
+            {
+                nodes.push(found);
+            }
+        }
+    }
+    search_with_presets(nodes, search, language)
+}
+
+fn preset_match(query: &str, language: &str, key: &str, label: &str, aliases: &str) -> bool {
+    let terms = format!("{label} {} {aliases}", text_in(language, key, label)).to_lowercase();
+    query.split_whitespace().all(|word| terms.contains(word))
+}
+
 pub(crate) fn search_with_presets(
     results: Vec<orange_host::Found>,
     search: &str,
@@ -345,6 +461,34 @@ pub(crate) fn search_with_presets(
                     "Fires when a boolean becomes false.",
                 ),
                 (
+                    "core/on-watch",
+                    "preset:deadband",
+                    "when-deadband",
+                    "Deadband",
+                    "Fires when a numeric value moves beyond a tolerance.",
+                ),
+                (
+                    "core/update-variable",
+                    "preset:increment",
+                    "counter-increment",
+                    "Increment",
+                    "Add a step to a counter.",
+                ),
+                (
+                    "core/update-variable",
+                    "preset:decrement",
+                    "counter-decrement",
+                    "Decrement",
+                    "Subtract a step from a counter.",
+                ),
+                (
+                    "core/on-event",
+                    "preset:watchdog",
+                    "watchdog-preset",
+                    "Idle Watchdog",
+                    "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
+                ),
+                (
                     "core/branch",
                     "preset:guard",
                     "guard-preset",
@@ -357,18 +501,21 @@ pub(crate) fn search_with_presets(
             .filter_map(|(_, id, key, fallback, purpose)| {
                 let label = text_in(language, key, fallback);
                 let purpose = text_in(language, &format!("{key}-help"), purpose);
-                let terms = format!("{fallback} {label}").to_lowercase();
-                query
-                    .split_whitespace()
-                    .all(|word| terms.contains(word))
-                    .then(|| orange_host::Found {
-                        definition: id.to_owned(),
-                        label,
-                        package: base.package.clone(),
-                        category: base.category.clone(),
-                        purpose,
-                        matched: base.matched,
-                    })
+                let aliases = match id {
+                    "preset:deadband" => "change tolerance",
+                    "preset:watchdog" => "heartbeat timeout",
+                    "preset:increment" => "bump+ bump + count up",
+                    "preset:decrement" => "bump- bump - count down",
+                    _ => "",
+                };
+                preset_match(&query, language, key, fallback, aliases).then(|| orange_host::Found {
+                    definition: id.to_owned(),
+                    label,
+                    package: base.package.clone(),
+                    category: base.category.clone(),
+                    purpose,
+                    matched: base.matched,
+                })
             }),
         );
         choices.push(base);
@@ -509,6 +656,117 @@ fn text_in(language: &str, key: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn counter_presets_share_an_initialized_signed_counter_and_offer_a_step() {
+        let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        for (query, preset, operation) in [
+            ("bump+", "preset:increment", "add"),
+            ("bump -", "preset:decrement", "sub"),
+        ] {
+            assert!(
+                discover(&host, query, "en")
+                    .iter()
+                    .any(|node| node.definition == preset)
+            );
+            let id = host.add_node(&mut draft, preset, [0.0, 0.0]).unwrap();
+            let graph = host.draft_view(&draft).unwrap();
+            let card = graph.nodes.iter().find(|node| node.id == id).unwrap();
+            assert_eq!(card.settings["operation"], operation);
+            assert!(
+                card.ports
+                    .iter()
+                    .any(|port| port.id == "value" && port.value.as_deref() == Some("1"))
+            );
+        }
+        assert_eq!(draft.document().variables().len(), 1);
+    }
+
+    #[test]
+    fn counter_presets_reuse_the_numbered_counter_after_a_name_collision() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        host.declare_variable(
+            &mut draft,
+            &orange_host::Variable {
+                id: None,
+                name: "Counter".to_owned(),
+                ty: "core/string@1".to_owned(),
+                scope: orange_host::VarScope::Run,
+                persistent: false,
+                initial: None,
+            },
+        )
+        .unwrap();
+
+        let increment = host
+            .add_node(&mut draft, "preset:increment", [0.0, 0.0])
+            .unwrap();
+        let decrement = host
+            .add_node(&mut draft, "preset:decrement", [0.0, 0.0])
+            .unwrap();
+        let doc = draft.document();
+        let counter = doc
+            .variables()
+            .values()
+            .find(|var| var.name == "Counter 2")
+            .unwrap();
+        assert_eq!(doc.variables().len(), 2);
+        for node in [increment, decrement] {
+            assert_eq!(
+                doc.root().nodes[&node].config["variable"],
+                serde_json::json!(counter.id)
+            );
+        }
+    }
+
+    #[test]
+    fn watchdog_search_places_an_editable_timer_as_one_undo() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        assert!(
+            discover(&host, "detector de inactividad", "es")
+                .iter()
+                .any(|node| node.definition == "preset:watchdog")
+        );
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
+        let choice = editor
+            .quick_choices(&host, "heartbeat timeout")
+            .into_iter()
+            .find(|choice| choice.definition == "preset:watchdog")
+            .unwrap();
+        let emitter = editor.pick_quick(&mut host, &choice).unwrap();
+        let draft = &editor.document.as_ref().unwrap().draft;
+        let doc = draft.document();
+        let body = doc.root();
+        assert_eq!(doc.events().len(), 1);
+        assert_eq!(body.nodes.len(), 3);
+        let edge = body.edges.values().next().unwrap();
+        let entry = &body.nodes[&edge.from.node];
+        let wait = &body.nodes[&edge.to.node];
+        assert_eq!(body.nodes[&emitter].definition.id.as_str(), "core/emit");
+        assert_eq!(entry.definition.id.as_str(), "core/on-event");
+        assert_eq!(
+            serde_json::to_value(entry.activation.as_ref().unwrap()).unwrap()["mode"],
+            "replace"
+        );
+        assert_eq!(wait.definition.id.as_str(), "core/wait");
+        assert_eq!(body.edges.len(), 1);
+        editor.undo(&mut host);
+        assert!(editor.graph().unwrap().nodes.is_empty());
+        assert!(
+            editor
+                .document
+                .as_ref()
+                .unwrap()
+                .draft
+                .document()
+                .events()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn guard_search_places_a_branch_with_a_boolean_condition() {

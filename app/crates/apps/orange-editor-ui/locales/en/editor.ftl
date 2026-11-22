@@ -663,6 +663,24 @@ rename-node-default = Leave blank to use the node type name
 rename-inline-hint = Enter to apply the name. Esc to cancel.
 make-function-help = Incoming value wires become parameters. Outgoing value wires become results. Keep the nodes that supply arguments or use results outside the selection.
 
+palette-http = HTTP Request
+palette-audio-inspect = Audio · Inspect
+palette-playback = Audio · Playback
+palette-file-content = File Contents
+palette-compare = Compare
+palette-advanced = Advanced
+palette-json-convert = Convert JSON Value
+counter-increment = Increment
+counter-increment-help = Add a step to a counter.
+counter-decrement = Decrement
+counter-decrement-help = Subtract a step from a counter.
+
+when-deadband = Deadband
+when-deadband-help = Fires when a numeric value moves beyond a tolerance.
+
+watchdog-preset = Idle Watchdog
+watchdog-preset-help = Wire heartbeats into Emit. Wait finishes after the last heartbeat.
+
 audio-filter-low = Low-pass
 audio-filter-high = High-pass
 audio-filter-band = Band-pass

@@ -660,6 +660,24 @@ rename-node-default = Déjalo vacío para usar el nombre del tipo de nodo
 rename-inline-hint = Pulsa Intro para aplicar el nombre o Esc para cancelar.
 make-function-help = Los cables de valores entrantes se convierten en parámetros y los salientes en resultados. Deja fuera de la selección los nodos que proporcionan argumentos o usan los resultados.
 
+palette-http = Solicitud HTTP
+palette-audio-inspect = Audio · Inspección
+palette-playback = Audio · Reproducción
+palette-file-content = Contenido de archivos
+palette-compare = Comparar
+palette-advanced = Avanzado
+palette-json-convert = Convertir valor JSON
+counter-increment = Incrementar
+counter-increment-help = Suma un paso a un contador.
+counter-decrement = Decrementar
+counter-decrement-help = Resta un paso de un contador.
+
+when-deadband = Banda muerta
+when-deadband-help = Se dispara cuando un valor numérico supera la tolerancia.
+
+watchdog-preset = Detector de inactividad
+watchdog-preset-help = Conecta los latidos a Emitir. La espera termina después del último latido.
+
 audio-filter-low = Paso bajo
 audio-filter-high = Paso alto
 audio-filter-band = Paso de banda

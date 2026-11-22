@@ -505,7 +505,17 @@ impl Run {
         self.watches
             .replace_fault(index, None, self.options.limits.max_state_bytes)?;
         let previous = &self.watches.previous[index];
+        if let WatchCondition::Deadband(threshold) = watch.condition()
+            && (matches!(&value, Value::F32(sample) if !sample.is_finite())
+                || matches!(&value, Value::F64(sample) if !sample.is_finite())
+                || previous
+                    .as_ref()
+                    .is_some_and(|old| !exceeds_deadband(old, &value, threshold)))
+        {
+            return Ok(());
+        }
         let firing = match watch.condition() {
+            WatchCondition::Deadband(_) => previous.is_some().then_some(cause),
             WatchCondition::Changed => previous
                 .as_ref()
                 .is_some_and(|old| watch.ty().equal_values(old, &value) == Some(false))
@@ -588,6 +598,18 @@ impl Run {
             Err(_) => self.events.count_overflow(),
         }
         Ok(())
+    }
+}
+
+fn exceeds_deadband(old: &Value, new: &Value, threshold: &Value) -> bool {
+    match (old, new, threshold) {
+        (Value::I32(a), Value::I32(b), Value::I32(t)) => a.abs_diff(*b) > t.unsigned_abs(),
+        (Value::I64(a), Value::I64(b), Value::I64(t)) => a.abs_diff(*b) > t.unsigned_abs(),
+        (Value::U32(a), Value::U32(b), Value::U32(t)) => a.abs_diff(*b) > *t,
+        (Value::U64(a), Value::U64(b), Value::U64(t)) => a.abs_diff(*b) > *t,
+        (Value::F32(a), Value::F32(b), Value::F32(t)) => (a - b).abs() > *t,
+        (Value::F64(a), Value::F64(b), Value::F64(t)) => (a - b).abs() > *t,
+        _ => false,
     }
 }
 
@@ -833,6 +855,30 @@ impl Run {
 mod tests {
     use super::*;
     use orange_compiler::FaultText;
+
+    #[test]
+    fn deadband_distance_is_strict_and_handles_integer_extremes() {
+        assert!(!exceeds_deadband(
+            &Value::I32(-1),
+            &Value::I32(1),
+            &Value::I32(2)
+        ));
+        assert!(exceeds_deadband(
+            &Value::I64(i64::MIN),
+            &Value::I64(i64::MAX),
+            &Value::I64(i64::MAX)
+        ));
+        assert!(!exceeds_deadband(
+            &Value::U64(u64::MAX),
+            &Value::U64(0),
+            &Value::U64(u64::MAX)
+        ));
+        assert!(exceeds_deadband(
+            &Value::F64(1.0),
+            &Value::F64(0.49),
+            &Value::F64(0.5)
+        ));
+    }
 
     #[test]
     fn last_watch_fault_text_is_admitted_transactionally_and_released_on_success() {

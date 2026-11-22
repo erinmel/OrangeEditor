@@ -87,12 +87,11 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return Vec::new();
         };
-        let found = host.search_nodes(search, self.language());
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
             (Some(from), Some(document)) => {
                 let takers = host.takers(&document.draft, (from.0, &from.1));
                 // The search's order, keeping the kinds that take the wire.
-                found
+                host.search_nodes(search, self.language())
                     .into_iter()
                     .filter_map(|found| {
                         let taker = takers
@@ -108,7 +107,7 @@ impl Editor {
                     })
                     .collect()
             }
-            _ => palette::search_with_presets(found, search, self.language())
+            _ => palette::discover(host, search, self.language())
                 .into_iter()
                 .map(|found| QuickChoice {
                     definition: found.definition,
