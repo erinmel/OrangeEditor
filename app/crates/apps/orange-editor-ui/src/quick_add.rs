@@ -200,7 +200,7 @@ impl Editor {
                         t("add-a-node")
                     });
                     // The arrows move the choice, not the caret.
-                    let [up, down] = crate::controls::consume_plain_keys(
+                    let [up, down] = controls::consume_plain_keys(
                         ui,
                         [egui::Key::ArrowUp, egui::Key::ArrowDown],
                     );

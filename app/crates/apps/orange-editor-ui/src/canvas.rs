@@ -12,7 +12,7 @@ use crate::organise::NodeRename;
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use orange_host::{GraphView, NodeId, NodeView, PortView};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
 pub const NODE_WIDTH: f32 = card::WIDTH;
@@ -80,7 +80,7 @@ fn animation_phase(time: f64) -> f32 {
 }
 
 /// The choices of the enum types a document's inputs use, by type.
-pub(crate) type Enums = std::collections::HashMap<String, Vec<orange_host::EnumChoice>>;
+pub(crate) type Enums = HashMap<String, Vec<orange_host::EnumChoice>>;
 
 /// The choices of every enum type a port of `graph`, a variable or the document's
 /// own types use.
@@ -127,7 +127,7 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
 
 /// What conversions are called on their cards: the type they take and the type they
 /// give, "Int to Text".
-fn titles(graph: &GraphView) -> std::collections::HashMap<NodeId, String> {
+fn titles(graph: &GraphView) -> HashMap<NodeId, String> {
     graph
         .nodes
         .iter()
@@ -308,19 +308,18 @@ pub use orange_host::WireEnds;
 /// The problems the canvas shows on nodes and wires.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Marks {
-    pub nodes: std::collections::HashMap<NodeId, Mark>,
+    pub nodes: HashMap<NodeId, Mark>,
     /// By the wire's two ends, output first.
-    pub wires: std::collections::HashMap<WireEnds, Mark>,
+    pub wires: HashMap<WireEnds, Mark>,
     /// By node, port name and known direction.
-    pub ports:
-        std::collections::HashMap<(NodeId, String, Option<orange_host::PortDirection>), Mark>,
+    pub ports: HashMap<(NodeId, String, Option<orange_host::PortDirection>), Mark>,
 }
 
 impl Marks {
     /// Adds a problem to what is already marked on a node or wire: the texts are
     /// kept one per line, and an error outweighs a warning.
     pub fn add<K: std::hash::Hash + Eq>(
-        marks: &mut std::collections::HashMap<K, Mark>,
+        marks: &mut HashMap<K, Mark>,
         key: K,
         error: bool,
         text: String,
@@ -417,23 +416,23 @@ pub struct Canvas {
     marks: Marks,
     draft_marks: BTreeSet<NodeId>,
     help_revision: Option<(u64, String)>,
-    descriptions: std::collections::HashMap<String, String>,
-    labels: std::collections::HashMap<String, String>,
+    descriptions: HashMap<String, String>,
+    labels: HashMap<String, String>,
     /// Titles of nodes named by what they hold rather than their kind: a conversion is
     /// "Int to Text".
-    titles: std::collections::HashMap<NodeId, String>,
-    connection_labels: std::collections::HashMap<String, String>,
-    pub(super) connection_adapters: std::collections::HashMap<String, String>,
-    pub(super) connection_profiles: std::collections::HashMap<String, Vec<(String, String)>>,
+    titles: HashMap<NodeId, String>,
+    connection_labels: HashMap<String, String>,
+    pub(super) connection_adapters: HashMap<String, String>,
+    pub(super) connection_profiles: HashMap<String, Vec<(String, String)>>,
     /// When each node of a running flow last took a step, and whether it failed.
-    activity: std::collections::HashMap<NodeId, StepActivity>,
+    activity: HashMap<NodeId, StepActivity>,
     entry_activity: BTreeMap<NodeId, BTreeMap<String, std::time::Instant>>,
     /// The latest value a running flow put on each output, as a person reads it.
-    values: std::collections::HashMap<NodeId, std::collections::HashMap<String, PortSample>>,
+    values: HashMap<NodeId, HashMap<String, PortSample>>,
     value_epoch: u64,
     /// Nodes whose last step failed, with why; kept until the node succeeds or a new
     /// run starts.
-    failures: std::collections::HashMap<NodeId, String>,
+    failures: HashMap<NodeId, String>,
     /// The values and failures are from a run that has ended or a graph since changed.
     stale: bool,
     /// The size of the canvas when it was last shown, in points.
@@ -442,7 +441,7 @@ pub struct Canvas {
     /// renamed with what is typed.
     groups: Vec<orange_host::Group>,
     selected_group_frame: Option<String>,
-    hidden: std::collections::HashSet<NodeId>,
+    hidden: HashSet<NodeId>,
     renaming: Option<(String, String, bool)>,
     node_rename: Option<NodeRename>,
 }
@@ -477,17 +476,17 @@ impl Default for Canvas {
             selected_wire: None,
             marks: Marks::default(),
             draft_marks: BTreeSet::new(),
-            activity: std::collections::HashMap::new(),
+            activity: HashMap::new(),
             entry_activity: BTreeMap::new(),
             help_revision: None,
-            descriptions: std::collections::HashMap::new(),
-            labels: std::collections::HashMap::new(),
-            titles: std::collections::HashMap::new(),
-            connection_labels: std::collections::HashMap::new(),
-            connection_adapters: std::collections::HashMap::new(),
-            connection_profiles: std::collections::HashMap::new(),
-            values: std::collections::HashMap::new(),
-            failures: std::collections::HashMap::new(),
+            descriptions: HashMap::new(),
+            labels: HashMap::new(),
+            titles: HashMap::new(),
+            connection_labels: HashMap::new(),
+            connection_adapters: HashMap::new(),
+            connection_profiles: HashMap::new(),
+            values: HashMap::new(),
+            failures: HashMap::new(),
             stale: false,
             value_epoch: 0,
             size: Vec2::new(800.0, 600.0),
@@ -497,7 +496,7 @@ impl Default for Canvas {
             grid_style: GridStyle::default(),
             groups: Vec::new(),
             selected_group_frame: None,
-            hidden: std::collections::HashSet::new(),
+            hidden: HashSet::new(),
             renaming: None,
             waypoints: HashMap::new(),
             node_rename: None,
@@ -737,8 +736,7 @@ impl Canvas {
             .iter()
             .any(|node| !self.places.contains_key(&node.id) && node.position.is_none());
         let automatic = needs_layout.then(|| auto_layout(graph));
-        let retained: std::collections::HashSet<_> =
-            graph.nodes.iter().map(|node| node.id).collect();
+        let retained: HashSet<_> = graph.nodes.iter().map(|node| node.id).collect();
         self.places.retain(|id, _| retained.contains(id));
         for node in &graph.nodes {
             if let std::collections::btree_map::Entry::Vacant(entry) = self.places.entry(node.id)

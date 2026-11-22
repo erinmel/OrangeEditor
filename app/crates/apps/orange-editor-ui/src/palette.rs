@@ -825,7 +825,7 @@ mod tests {
 
     #[test]
     fn counter_presets_share_an_initialized_signed_counter_and_offer_a_step() {
-        let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         for (query, preset, operation) in [
             ("bump+", "preset:increment", "add"),

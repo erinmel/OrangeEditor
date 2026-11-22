@@ -657,7 +657,7 @@ mod tests {
     use super::*;
     #[test]
     fn exhausted_bus_sequence_refuses_without_wrapping_or_reserving_messages() {
-        let registry = super::super::test_registry();
+        let registry = test_registry();
         let event: EventDeclId = "40000000-0000-4000-8000-000000000001".parse().unwrap();
         let meter = WorkspaceBusMeter {
             bytes: Budget::new(4096),

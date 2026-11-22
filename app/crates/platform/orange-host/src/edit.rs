@@ -803,7 +803,7 @@ impl Host {
                 .find_map(|name| {
                     let existing = variables.values().find(|variable| variable.name == name);
                     if let Some(variable) = existing
-                        && (variable.scope != orange_model::document::VarScope::Run
+                        && (variable.scope != VarScope::Run
                             || !matches!(variable.ty.as_str(), "core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1")
                             || variable.init.is_none())
                     {

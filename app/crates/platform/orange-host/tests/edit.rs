@@ -1272,6 +1272,7 @@ fn a_draft_view_after_each_edit_is_the_view_of_its_text() {
 #[test]
 fn for_each_follows_a_wired_map_or_list() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let host = &host;
     let mut doc: Json = serde_json::from_str(&empty()).unwrap();
     doc["variables"] = json!([
         {"id": id(101), "name": "scores", "type": "core/map@1<core/string@1,core/i64@1>",
@@ -1306,7 +1307,7 @@ fn for_each_follows_a_wired_map_or_list() {
         ids
     };
     assert_eq!(ports(&draft), ["element", "index"]);
-    let value = output(&host, &draft, scores);
+    let value = output(host, &draft, scores);
     assert!(
         host.takers(&draft, (scores, &value))
             .iter()
@@ -1325,7 +1326,7 @@ fn for_each_follows_a_wired_map_or_list() {
         host.connect(&mut draft, (each, "key"), (key, "value"))
             .unwrap()
     );
-    let value = output(&host, &draft, names);
+    let value = output(host, &draft, names);
     assert!(matches!(
         host.connect_through(&mut draft, (names, &value), (each, "items"), None)
             .unwrap(),

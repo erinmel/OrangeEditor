@@ -121,7 +121,7 @@ impl Host {
     /// a node ranks by its weakest word unless the whole search matches its name or an
     /// alias. With nothing typed, every kind by name.
     pub fn search_nodes(&self, search: &str, locale: &str) -> Vec<Found> {
-        let search = fold(search);
+        let search = fold_search(search);
         let words: Vec<&str> = search.split_whitespace().collect();
         let mut found: Vec<Found> = self
             .nodes()
@@ -229,12 +229,12 @@ impl Host {
         let id = info.definition.definition.id.as_str();
         let key = node_key(id);
         // The name in the search's language, and in English too.
-        let label = fold(&self.label_in(info, locale));
-        let english = fold(&info.label());
+        let label = fold_search(&self.label_in(info, locale));
+        let english = fold_search(&info.label());
         let mut aliases: Vec<String> = self
             .catalogs
             .words(locale, &format!("alias-{key}"))
-            .map(|word| fold(&word))
+            .map(|word| fold_search(&word))
             .collect();
         if english != label {
             aliases.push(english);
@@ -244,7 +244,7 @@ impl Host {
             aliases.extend(
                 self.catalogs
                     .words(locale, &node_key(&keywords.key))
-                    .map(|word| fold(&word)),
+                    .map(|word| fold_search(&word)),
             );
             aliases.extend(
                 keywords
@@ -252,40 +252,40 @@ impl Host {
                     .split(',')
                     .map(str::trim)
                     .filter(|w| !w.is_empty())
-                    .map(fold),
+                    .map(fold_search),
             );
         }
         let category = self.category_in(info, locale);
         let category_slug = category_key(info);
-        let mut concept_words: Vec<String> = fold(&category)
+        let mut concept_words: Vec<String> = fold_search(&category)
             .split_whitespace()
             .map(str::to_owned)
             .collect();
         concept_words.extend(
             self.catalogs
                 .words(locale, &format!("category-{category_slug}"))
-                .map(|word| fold(&word)),
+                .map(|word| fold_search(&word)),
         );
         for concept in concepts(info) {
             concept_words.extend(
                 self.catalogs
                     .words(locale, &format!("concept-{concept}"))
-                    .map(|word| fold(&word)),
+                    .map(|word| fold_search(&word)),
             );
         }
-        let mut description = fold(id);
+        let mut description = fold_search(id);
         if let Some(text) = info
             .presentation
             .and_then(|shown| shown.description.as_ref())
         {
             description.push(' ');
-            description.push_str(&fold(&self.text_in(text, locale)));
+            description.push_str(&fold_search(&self.text_in(text, locale)));
             description.push(' ');
-            description.push_str(&fold(&text.fallback));
+            description.push_str(&fold_search(&text.fallback));
         }
         if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
             description.push(' ');
-            description.push_str(&fold(&text));
+            description.push_str(&fold_search(&text));
         }
 
         // The whole search against the name and aliases, as a phrase.
@@ -472,7 +472,7 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
 
 /// Lower case without accents, so "numero" finds "número".
 /// Fold case and common Latin accents for locale-aware search.
-pub fn fold(text: &str) -> String {
+pub fn fold_search(text: &str) -> String {
     text.chars()
         .flat_map(char::to_lowercase)
         .map(|c| match c {

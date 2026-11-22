@@ -21,34 +21,36 @@ use crate::{BindingError, CatalogError, KernelError, MathPackage};
 pub const MAX_COLLECTION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BUILD_LIST_ITEMS: u16 = 256;
 
-/// Pure generic collection operations. Lists and options are generic over `T`; maps
-/// over `K: eq + hash` and `V`. Results are new values; inputs are never mutated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollectionOperation {
-    ListLength,
-    ListGet,
-    ListSlice,
-    ListConcat,
-    ListAppend,
-    ListReverse,
-    ListContains,
-    ListIndexOf,
-    MapLength,
-    MapGet,
-    MapContainsKey,
-    MapInsert,
-    MapRemove,
-    MapKeys,
-    MapValues,
-    OptionIsSome,
-    BuildList,
-    BuildMap,
-    ListSetAt,
-    ListRemoveAt,
-    ListDistinct,
-    ListSort,
-    OptionSome,
-    OptionNone,
+operation_catalog! {
+    /// Pure generic collection operations. Lists and options are generic over `T`; maps
+    /// over `K: eq + hash` and `V`. Results are new values; inputs are never mutated.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CollectionOperation {
+        ListLength => "org.orange.collections/list-length",
+        ListGet => "org.orange.collections/list-get",
+        ListSlice => "org.orange.collections/list-slice",
+        ListConcat => "org.orange.collections/list-concat",
+        ListAppend => "org.orange.collections/list-append",
+        ListReverse => "org.orange.collections/list-reverse",
+        ListContains => "org.orange.collections/list-contains",
+        ListIndexOf => "org.orange.collections/list-index-of",
+        MapLength => "org.orange.collections/map-length",
+        MapGet => "org.orange.collections/map-get",
+        MapContainsKey => "org.orange.collections/map-contains-key",
+        MapInsert => "org.orange.collections/map-insert",
+        MapRemove => "org.orange.collections/map-remove",
+        MapKeys => "org.orange.collections/map-keys",
+        MapValues => "org.orange.collections/map-values",
+        OptionIsSome => "org.orange.collections/option-is-some",
+        BuildList => "org.orange.collections/build-list",
+        BuildMap => "org.orange.collections/build-map",
+        ListSetAt => "org.orange.collections/list-set-at",
+        ListRemoveAt => "org.orange.collections/list-remove-at",
+        ListDistinct => "org.orange.collections/list-distinct",
+        ListSort => "org.orange.collections/list-sort",
+        OptionSome => "org.orange.collections/option-some",
+        OptionNone => "org.orange.collections/option-none",
+    }
 }
 
 const LIST: &str = "core/list@1<$T>";
@@ -57,66 +59,6 @@ const U64: &str = "core/u64@1";
 const BOOL: &str = "core/bool@1";
 
 impl CollectionOperation {
-    pub const ALL: [Self; 24] = [
-        Self::ListLength,
-        Self::ListGet,
-        Self::ListSlice,
-        Self::ListConcat,
-        Self::ListAppend,
-        Self::ListReverse,
-        Self::ListContains,
-        Self::ListIndexOf,
-        Self::MapLength,
-        Self::MapGet,
-        Self::MapContainsKey,
-        Self::MapInsert,
-        Self::MapRemove,
-        Self::MapKeys,
-        Self::MapValues,
-        Self::OptionIsSome,
-        Self::BuildList,
-        Self::BuildMap,
-        Self::ListSetAt,
-        Self::ListRemoveAt,
-        Self::ListDistinct,
-        Self::ListSort,
-        Self::OptionSome,
-        Self::OptionNone,
-    ];
-
-    pub const fn definition_id(self) -> &'static str {
-        match self {
-            Self::ListLength => "org.orange.collections/list-length",
-            Self::ListGet => "org.orange.collections/list-get",
-            Self::ListSlice => "org.orange.collections/list-slice",
-            Self::ListConcat => "org.orange.collections/list-concat",
-            Self::ListAppend => "org.orange.collections/list-append",
-            Self::ListReverse => "org.orange.collections/list-reverse",
-            Self::ListContains => "org.orange.collections/list-contains",
-            Self::ListIndexOf => "org.orange.collections/list-index-of",
-            Self::MapLength => "org.orange.collections/map-length",
-            Self::MapGet => "org.orange.collections/map-get",
-            Self::MapContainsKey => "org.orange.collections/map-contains-key",
-            Self::MapInsert => "org.orange.collections/map-insert",
-            Self::MapRemove => "org.orange.collections/map-remove",
-            Self::MapKeys => "org.orange.collections/map-keys",
-            Self::MapValues => "org.orange.collections/map-values",
-            Self::OptionIsSome => "org.orange.collections/option-is-some",
-            Self::BuildList => "org.orange.collections/build-list",
-            Self::BuildMap => "org.orange.collections/build-map",
-            Self::ListSetAt => "org.orange.collections/list-set-at",
-            Self::ListRemoveAt => "org.orange.collections/list-remove-at",
-            Self::ListDistinct => "org.orange.collections/list-distinct",
-            Self::ListSort => "org.orange.collections/list-sort",
-            Self::OptionSome => "org.orange.collections/option-some",
-            Self::OptionNone => "org.orange.collections/option-none",
-        }
-    }
-
-    pub fn from_definition_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|op| op.definition_id() == id)
-    }
-
     /// Strict executable inputs with their declared types. The first input is the
     /// container whose concrete type binds the node.
     pub const fn inputs(self) -> &'static [(&'static str, &'static str)] {

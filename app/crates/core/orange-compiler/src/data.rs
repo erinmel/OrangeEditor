@@ -169,7 +169,7 @@ impl DataPlan {
         self.revision
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        crate::plan_inputs_current(self.state, &self.snapshot, document, registry)
+        plan_inputs_current(self.state, &self.snapshot, document, registry)
     }
     pub fn nodes(&self) -> &[DataNode] {
         &self.nodes

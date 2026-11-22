@@ -534,9 +534,10 @@ fn a_noise_gate_filters_the_pcm_stream_before_a_downstream_meter() {
             -amplitude
         }
     });
-    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let setup = &host;
+    let mut draft = setup.draft(&orange_host::new_document().unwrap()).unwrap();
     let add =
-        |draft: &mut orange_host::Draft, kind| host.add_node(draft, kind, [0.0, 0.0]).unwrap();
+        |draft: &mut orange_host::Draft, kind| setup.add_node(draft, kind, [0.0, 0.0]).unwrap();
     let source = add(&mut draft, orange_audio::AUDIO_SOURCE);
     let gate = add(&mut draft, orange_audio::NOISE_GATE);
     let before = add(&mut draft, orange_audio::LIVE_LEVEL);
@@ -546,25 +547,27 @@ fn a_noise_gate_filters_the_pcm_stream_before_a_downstream_meter() {
         ((source, "stream"), (before, "stream")),
         ((gate, "gated_stream"), (after, "stream")),
     ] {
-        host.connect(&mut draft, from, to).unwrap();
+        setup.connect(&mut draft, from, to).unwrap();
     }
-    let mut input = host.declarations(&draft).connections.remove(0);
+    let mut input = setup.declarations(&draft).connections.remove(0);
     input.settings = json!({"file": path, "autoplay": true});
-    host.declare_connection(&mut draft, &input).unwrap();
-    let flow = host.open(&to_json(draft.document()).unwrap()).unwrap();
+    setup.declare_connection(&mut draft, &input).unwrap();
+    let flow = Host::open(&mut host, &to_json(draft.document()).unwrap()).unwrap();
 
+    let running = &host;
     let levels = || {
-        host.inspect(flow, move |run| {
-            let port = "level".parse().unwrap();
-            let (Some(Value::F64(before)), Some(Value::F64(after))) = (
-                run.live_port_value(before, &port),
-                run.live_port_value(after, &port),
-            ) else {
-                return None;
-            };
-            Some((*before, *after))
-        })
-        .unwrap()
+        running
+            .inspect(flow, move |run| {
+                let port = "level".parse().unwrap();
+                let (Some(Value::F64(before)), Some(Value::F64(after))) = (
+                    run.live_port_value(before, &port),
+                    run.live_port_value(after, &port),
+                ) else {
+                    return None;
+                };
+                Some((*before, *after))
+            })
+            .unwrap()
     };
     let closed = || {
         levels().is_some_and(|(before, after)| {
@@ -576,7 +579,7 @@ fn a_noise_gate_filters_the_pcm_stream_before_a_downstream_meter() {
         levels().is_some_and(|(before, after)| before > -15.0 && (before - after).abs() < 1.0)
     });
     until("gate closes after loud PCM", closed);
-    host.close(flow).unwrap();
+    Host::close(&mut host, flow).unwrap();
 }
 
 #[test]
@@ -593,29 +596,33 @@ fn the_audio_level_trigger_fires_on_loud_audio_and_the_source_finishes() {
         let sample = (phase.sin() * 16_000.0) as i16;
         sample
     });
-    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let setup = &host;
+    let mut draft = setup.draft(&orange_host::new_document().unwrap()).unwrap();
     let add =
-        |draft: &mut orange_host::Draft, kind| host.add_node(draft, kind, [0.0, 0.0]).unwrap();
+        |draft: &mut orange_host::Draft, kind| setup.add_node(draft, kind, [0.0, 0.0]).unwrap();
     let source = add(&mut draft, orange_audio::AUDIO_SOURCE);
     let trigger = add(&mut draft, orange_audio::NOISE_LEVEL);
     let playback = add(&mut draft, orange_audio::SOURCE_CONTROL);
     let manual = add(&mut draft, "core/on-manual");
     let finished = add(&mut draft, orange_audio::SOURCE_FINISHED);
     for target in [trigger, playback, finished] {
-        host.connect(&mut draft, (source, "stream"), (target, "stream"))
+        setup
+            .connect(&mut draft, (source, "stream"), (target, "stream"))
             .unwrap();
     }
-    host.connect(&mut draft, (manual, "then"), (playback, "in"))
+    setup
+        .connect(&mut draft, (manual, "then"), (playback, "in"))
         .unwrap();
-    host.set_config(
-        &mut draft,
-        trigger,
-        &json!({"direction": "above", "threshold_db": -20, "hold_ms": 100, "reset_db": 4}),
-    )
-    .unwrap();
+    setup
+        .set_config(
+            &mut draft,
+            trigger,
+            &json!({"direction": "above", "threshold_db": -20, "hold_ms": 100, "reset_db": 4}),
+        )
+        .unwrap();
     let mut counts = Vec::new();
     for (provider, name) in [(trigger, "Loud"), (finished, "Finished")] {
-        let variable = host
+        let variable = setup
             .declare_variable(
                 &mut draft,
                 &Variable {
@@ -629,23 +636,26 @@ fn the_audio_level_trigger_fires_on_loud_audio_and_the_source_finishes() {
             )
             .unwrap();
         let action = add(&mut draft, "core/update-variable");
-        host.set_config(
-            &mut draft,
-            action,
-            &json!({"variable": variable, "operation": "add"}),
-        )
-        .unwrap();
-        host.set_input(&mut draft, (action, "value"), Some("1"))
+        setup
+            .set_config(
+                &mut draft,
+                action,
+                &json!({"variable": variable, "operation": "add"}),
+            )
             .unwrap();
-        host.connect(&mut draft, (provider, "then"), (action, "in"))
+        setup
+            .set_input(&mut draft, (action, "value"), Some("1"))
+            .unwrap();
+        setup
+            .connect(&mut draft, (provider, "then"), (action, "in"))
             .unwrap();
         counts.push(variable);
     }
-    let mut input = host.declarations(&draft).connections.remove(0);
+    let mut input = setup.declarations(&draft).connections.remove(0);
     input.settings = json!({"file": path});
-    host.declare_connection(&mut draft, &input).unwrap();
+    setup.declare_connection(&mut draft, &input).unwrap();
     let graph = draft.text().unwrap();
-    let diagnostics = host.check(&graph).unwrap();
+    let diagnostics = setup.check(&graph).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let flow = host.open(&graph).unwrap();
     let read_count = |index: usize| {
@@ -678,22 +688,24 @@ fn audio_out_is_a_passive_sink_with_a_wireable_enable_control() {
     use orange_host::{VarScope, Variable};
     let mut host = host();
     let path = wav_signal("disabled-output.wav", 300, |_| 0);
-    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-    let source = host
+    let setup = &host;
+    let mut draft = setup.draft(&orange_host::new_document().unwrap()).unwrap();
+    let source = setup
         .add_node(&mut draft, orange_audio::AUDIO_SOURCE, [0.0, 0.0])
         .unwrap();
-    let output = host
+    let output = setup
         .add_node(&mut draft, orange_audio::AUDIO_OUT, [220.0, 0.0])
         .unwrap();
-    host.connect(&mut draft, (source, "stream"), (output, "stream"))
+    setup
+        .connect(&mut draft, (source, "stream"), (output, "stream"))
         .unwrap();
-    let view = host.draft_view(&draft).unwrap();
+    let view = setup.draft_view(&draft).unwrap();
     let card = view.nodes.iter().find(|node| node.id == output).unwrap();
     assert!(card.ports.iter().all(|port| !port.exec));
     let enabled = card.ports.iter().find(|port| port.id == "enabled").unwrap();
     assert!(enabled.input);
     assert_eq!(enabled.default.as_deref(), Some("true"));
-    let enabled = host
+    let enabled = setup
         .declare_variable(
             &mut draft,
             &Variable {
@@ -706,41 +718,46 @@ fn audio_out_is_a_passive_sink_with_a_wireable_enable_control() {
             },
         )
         .unwrap();
-    let get = host
+    let get = setup
         .add_node(&mut draft, "core/get-variable", [0.0, 0.0])
         .unwrap();
-    host.set_config(&mut draft, get, &json!({"variable": enabled}))
+    setup
+        .set_config(&mut draft, get, &json!({"variable": enabled}))
         .unwrap();
-    host.connect(&mut draft, (get, "value"), (output, "enabled"))
+    setup
+        .connect(&mut draft, (get, "value"), (output, "enabled"))
         .unwrap();
     let controls: Vec<_> = ["true", "false"]
         .into_iter()
         .map(|value| {
-            let manual = host
+            let manual = setup
                 .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
                 .unwrap();
-            let set = host
+            let set = setup
                 .add_node(&mut draft, "core/set-variable", [0.0, 0.0])
                 .unwrap();
-            host.set_config(&mut draft, set, &json!({"variable": enabled}))
+            setup
+                .set_config(&mut draft, set, &json!({"variable": enabled}))
                 .unwrap();
-            host.set_input(&mut draft, (set, "value"), Some(value))
+            setup
+                .set_input(&mut draft, (set, "value"), Some(value))
                 .unwrap();
-            host.connect(&mut draft, (manual, "then"), (set, "in"))
+            setup
+                .connect(&mut draft, (manual, "then"), (set, "in"))
                 .unwrap();
             manual
         })
         .collect();
-    for mut connection in host.declarations(&draft).connections {
+    for mut connection in setup.declarations(&draft).connections {
         if connection.adapter == orange_audio::INPUT_ADAPTER {
             connection.settings = json!({"file": path});
         } else if connection.adapter == orange_audio::OUTPUT_ADAPTER {
             connection.settings = json!({"device": orange_audio::NULL_DEVICE});
         }
-        host.declare_connection(&mut draft, &connection).unwrap();
+        setup.declare_connection(&mut draft, &connection).unwrap();
     }
     let graph = draft.text().unwrap();
-    assert!(host.check(&graph).unwrap().is_empty());
+    assert!(setup.check(&graph).unwrap().is_empty());
     let flow = host.open(&graph).unwrap();
     let is_playing = |state| {
         host.inspect(flow, move |run| {
@@ -1317,12 +1334,14 @@ fn every_stream_processor_changes_the_level_it_should() {
         let sample = (phase.sin() * 23_000.0) as i16;
         sample
     });
-    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let setup = &host;
+    let mut draft = setup.draft(&orange_host::new_document().unwrap()).unwrap();
     let add =
-        |draft: &mut orange_host::Draft, kind| host.add_node(draft, kind, [0.0, 0.0]).unwrap();
+        |draft: &mut orange_host::Draft, kind| setup.add_node(draft, kind, [0.0, 0.0]).unwrap();
     let source = add(&mut draft, orange_audio::AUDIO_SOURCE);
     let dry = add(&mut draft, orange_audio::LIVE_LEVEL);
-    host.connect(&mut draft, (source, "stream"), (dry, "stream"))
+    setup
+        .connect(&mut draft, (source, "stream"), (dry, "stream"))
         .unwrap();
     let mut meters = Vec::new();
     for (kind, output, settings) in [
@@ -1353,15 +1372,16 @@ fn every_stream_processor_changes_the_level_it_should() {
         ),
     ] {
         let processor = add(&mut draft, kind);
-        host.set_config(&mut draft, processor, &settings).unwrap();
+        setup.set_config(&mut draft, processor, &settings).unwrap();
         if kind == orange_audio::COMPRESSOR {
             let seconds = add(&mut draft, "core/number");
-            host.set_input(&mut draft, (seconds, "value"), Some("0.001"))
+            setup
+                .set_input(&mut draft, (seconds, "value"), Some("0.001"))
                 .unwrap();
             let from = (seconds, "result");
             let to = (processor, "attack");
             let orange_host::Connected::Choose(choices) =
-                host.connect_through(&mut draft, from, to, None).unwrap()
+                setup.connect_through(&mut draft, from, to, None).unwrap()
             else {
                 panic!("a decimal wired to Attack must ask for its unit");
             };
@@ -1370,22 +1390,26 @@ fn every_stream_processor_changes_the_level_it_should() {
                 .find(|choice| choice.options["unit"] == "seconds");
             assert!(seconds.is_some());
             assert!(matches!(
-                host.connect_through(&mut draft, from, to, seconds).unwrap(),
+                setup
+                    .connect_through(&mut draft, from, to, seconds)
+                    .unwrap(),
                 orange_host::Connected::Converted(_)
             ));
         }
         let meter = add(&mut draft, orange_audio::LIVE_LEVEL);
-        host.connect(&mut draft, (source, "stream"), (processor, "stream"))
+        setup
+            .connect(&mut draft, (source, "stream"), (processor, "stream"))
             .unwrap();
-        host.connect(&mut draft, (processor, output), (meter, "stream"))
+        setup
+            .connect(&mut draft, (processor, output), (meter, "stream"))
             .unwrap();
         meters.push(meter);
     }
-    let mut input = host.declarations(&draft).connections.remove(0);
+    let mut input = setup.declarations(&draft).connections.remove(0);
     input.settings = json!({"file": path, "autoplay": true});
-    host.declare_connection(&mut draft, &input).unwrap();
+    setup.declare_connection(&mut draft, &input).unwrap();
     let text = draft.text().unwrap();
-    let diagnostics = host.check(&text).unwrap();
+    let diagnostics = setup.check(&text).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let flow = host.open(&text).unwrap();
     let level = |meter| {
