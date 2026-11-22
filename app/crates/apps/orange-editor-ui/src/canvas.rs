@@ -440,7 +440,7 @@ pub struct Canvas {
     groups: Vec<orange_host::Group>,
     selected_group_frame: Option<String>,
     hidden: std::collections::HashSet<NodeId>,
-    renaming: Option<(String, String)>,
+    renaming: Option<(String, String, bool)>,
     node_rename: Option<NodeRename>,
 }
 impl Default for Canvas {
@@ -1403,6 +1403,7 @@ impl Canvas {
 
         // Dragging the background scrolls; the wheel scrolls, and zooms with the
         // zoom gesture or key, about the pointer.
+        let previous_view = (self.origin, self.zoom);
         // Dragging the background with Shift or Ctrl held draws a box that selects.
         let (shift, command) = ui.input(|input| (input.modifiers.shift, input.modifiers.command));
         let graph_point = |at: Pos2, origin: Pos2, zoom: f32| origin + (at - area.min) / zoom;
@@ -1494,7 +1495,18 @@ impl Canvas {
         // Groups: their title bars are handled under the cards, and their frames drawn
         // behind them.
         let screen = |rect: Rect| Rect::from_min_max(to_screen(rect.min), to_screen(rect.max));
-        self.group_input(ui, graph, screen, response.id, &mut done);
+        let dismiss_group_menu = previous_view != (self.origin, self.zoom)
+            || ui.input(|input| {
+                input.events.iter().any(|event| matches!(event, egui::Event::MouseWheel { delta, .. } if *delta != Vec2::ZERO))
+            });
+        self.group_input(
+            ui,
+            graph,
+            screen,
+            response.id,
+            dismiss_group_menu,
+            &mut done,
+        );
         self.draw_groups(&painter, graph, screen, &colors);
         let collapsed = self.collapsed_frames(graph);
 

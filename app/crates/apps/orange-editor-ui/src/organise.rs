@@ -30,39 +30,62 @@ impl NodeRename {
         font: impl Into<egui::FontSelection>,
     ) -> Option<bool> {
         let id = ui.make_persistent_id(("rename-node", self.node));
-        let [save, cancel] = if ui.memory(|memory| memory.has_focus(id)) {
-            crate::controls::consume_plain_keys(ui, [egui::Key::Enter, egui::Key::Escape])
-        } else {
-            [false, false]
-        };
-        let mut field = egui::TextEdit::singleline(&mut self.name)
-            .id(id)
-            .font(font)
-            .align(egui::Align2::LEFT_CENTER)
-            .min_size(egui::vec2(0.0, ui.available_height()))
-            .margin(egui::Margin::symmetric(3, 0))
-            .text_color(crate::canvas::node_title_color(ui.visuals()))
-            .desired_width(f32::INFINITY)
-            .hint_text(t("rename-node-default"))
-            .show(ui);
-        let response = field
-            .response
-            .response
-            .on_hover_text(t("rename-inline-hint"));
-        if std::mem::take(&mut self.focus) {
-            use egui::text::{CCursor, CCursorRange};
-            response.request_focus();
-            field.state.cursor.set_char_range(Some(CCursorRange::two(
-                CCursor::new(0),
-                CCursor::new(self.name.chars().count()),
-            )));
-            field.state.store(ui.ctx(), id);
-        } else if save || cancel || response.lost_focus() {
-            response.surrender_focus();
-            return Some(save && !cancel);
-        }
-        None
+        let height = ui.available_height();
+        rename_field(
+            ui,
+            id,
+            &mut self.name,
+            &mut self.focus,
+            font,
+            height,
+            Some(t("rename-node-default")),
+        )
     }
+}
+
+/// Edits a title in place. Enter commits; Escape and focus loss discard it.
+pub(crate) fn rename_field(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    name: &mut String,
+    focus: &mut bool,
+    font: impl Into<egui::FontSelection>,
+    height: f32,
+    hint: Option<&str>,
+) -> Option<bool> {
+    let [save, cancel] = if ui.memory(|memory| memory.has_focus(id)) {
+        controls::consume_plain_keys(ui, [egui::Key::Enter, egui::Key::Escape])
+    } else {
+        [false, false]
+    };
+    let end = name.chars().count();
+    let mut field = egui::TextEdit::singleline(name)
+        .id(id)
+        .font(font)
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(egui::vec2(0.0, height))
+        .margin(egui::Margin::symmetric(3, 0))
+        .text_color(crate::canvas::node_title_color(ui.visuals()))
+        .desired_width(f32::INFINITY)
+        .hint_text(hint.unwrap_or_default())
+        .show(ui);
+    let response = field
+        .response
+        .response
+        .on_hover_text(t("rename-inline-hint"));
+    if std::mem::take(focus) {
+        use egui::text::{CCursor, CCursorRange};
+        response.request_focus();
+        field
+            .state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
+        field.state.store(ui.ctx(), id);
+    } else if save || cancel || response.lost_focus() {
+        response.surrender_focus();
+        return Some(save && !cancel);
+    }
+    None
 }
 
 #[derive(Debug)]

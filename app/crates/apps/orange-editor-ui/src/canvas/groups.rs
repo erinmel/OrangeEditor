@@ -150,6 +150,7 @@ impl Canvas {
         graph: &GraphView,
         screen: impl Fn(Rect) -> Rect,
         base: egui::Id,
+        dismiss_menu: bool,
         done: &mut CanvasResponse,
     ) {
         let zoom = self.zoom;
@@ -200,9 +201,18 @@ impl Canvas {
                     self.select_many(&group.nodes);
                 }
             }
+            if dismiss_menu {
+                let popup_id = egui::Popup::default_response_id(&touched);
+                if egui::Popup::is_id_open(ui.ctx(), popup_id) {
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                    ui.memory_mut(|memory| memory.surrender_focus(touched.id.with("group-name")));
+                    self.renaming = None;
+                }
+                continue;
+            }
             let opening = touched.secondary_clicked();
             if opening {
-                self.renaming = Some((group.id.clone(), group.name.clone()));
+                self.renaming = Some((group.id.clone(), group.name.clone(), true));
             }
             let touched = touched.on_hover_text_at_pointer(&group.name);
             let popup = egui::Popup::context_menu(&touched)
@@ -211,96 +221,104 @@ impl Canvas {
                 ui.set_width(244.0);
                 let renaming = self
                     .renaming
-                    .get_or_insert_with(|| (group.id.clone(), group.name.clone()));
+                    .get_or_insert_with(|| (group.id.clone(), group.name.clone(), true));
                 if renaming.0 != group.id {
-                    *renaming = (group.id.clone(), group.name.clone());
+                    *renaming = (group.id.clone(), group.name.clone(), true);
                 }
-                let label = ui.label(t("name"));
-                let field_id = touched.id.with("group-name");
-                let typed = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut renaming.1)
-                            .id(field_id)
-                            .desired_width(f32::INFINITY),
-                    )
-                    .labelled_by(label.id);
-                if opening {
-                    typed.request_focus();
-                }
-                let confirm = crate::controls::button(
+                let (_, name, focus) = renaming;
+                let height = ui.spacing().interact_size.y;
+                let result = crate::organise::rename_field(
                     ui,
-                    crate::controls::Surface::Panel,
-                    crate::controls::Action::Primary,
-                    !renaming.1.trim().is_empty() && renaming.1.trim() != group.name,
-                    egui::Button::new(t("group-apply-name")),
+                    touched.id.with("group-name"),
+                    name,
+                    focus,
+                    egui::TextStyle::Body,
+                    height,
+                    Some(t("name")),
                 );
-                let confirmed = confirm.clicked()
-                    || typed.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let name = renaming.1.trim().to_owned();
-                if confirmed && !name.is_empty() && name != group.name {
-                    let mut changed = group.clone();
-                    changed.name.clone_from(&name);
-                    done.group = Some(GroupEdit::Change(changed));
-                    ui.close();
-                    return;
+                if result == Some(true) {
+                    let name = name.trim();
+                    if !name.is_empty() && name != group.name {
+                        let mut changed = group.clone();
+                        changed.name = name.to_owned();
+                        done.group = Some(GroupEdit::Change(changed));
+                        ui.close();
+                        return;
+                    }
+                }
+                if result.is_some() {
+                    name.clone_from(&group.name);
                 }
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    for (choice, label) in GROUP_COLORS.into_iter().zip([
-                        "group-color-blue",
-                        "group-color-green",
-                        "group-color-orange",
-                        "group-color-purple",
-                        "group-color-red",
-                        "group-color-teal",
-                    ]) {
-                        let [r, g, b] = choice;
-                        let (rect, response) =
-                            ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-                        let selected = choice == group.color;
-                        response.widget_info(|| {
+                let custom_id = touched.id.with("custom-group-color");
+                let was_open =
+                    !opening && ui.data(|data| data.get_temp::<bool>(custom_id).unwrap_or(false));
+                let custom_clicked = ui
+                    .horizontal(|ui| {
+                        for (choice, label) in GROUP_COLORS.into_iter().zip([
+                            "group-color-blue",
+                            "group-color-green",
+                            "group-color-orange",
+                            "group-color-purple",
+                            "group-color-red",
+                            "group-color-teal",
+                        ]) {
+                            let [r, g, b] = choice;
+                            let (rect, response) =
+                                ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                            let selected = choice == group.color;
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::RadioButton,
+                                    true,
+                                    selected,
+                                    t(label),
+                                )
+                            });
+                            let response = response.on_hover_text(t(label));
+                            let fill = Color32::from_rgb(r, g, b);
+                            ui.painter().rect_filled(rect.shrink(3.0), 4.0, fill);
+                            if selected || response.hovered() || response.has_focus() {
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    5.0,
+                                    Stroke::new(1.0, ui.visuals().text_color()),
+                                    StrokeKind::Inside,
+                                );
+                            }
+                            if response.clicked() {
+                                let mut changed = group.clone();
+                                changed.color = choice;
+                                done.group = Some(GroupEdit::Change(changed));
+                                ui.close();
+                            }
+                        }
+                        let custom = ui
+                            .add(
+                                egui::Button::new(crate::icons::centered(crate::icons::ADD))
+                                    .min_size(Vec2::splat(26.0))
+                                    .selected(was_open || !GROUP_COLORS.contains(&group.color)),
+                            )
+                            .on_hover_text(t("group-custom-color"));
+                        custom.widget_info(|| {
                             egui::WidgetInfo::selected(
-                                egui::Role::RadioButton,
+                                egui::Role::Button,
                                 true,
-                                selected,
-                                t(label),
+                                was_open,
+                                t("group-custom-color"),
                             )
                         });
-                        let response = response.on_hover_text(t(label));
-                        let fill = Color32::from_rgb(r, g, b);
-                        ui.painter().rect_filled(rect.shrink(3.0), 4.0, fill);
-                        if selected || response.hovered() || response.has_focus() {
-                            ui.painter().rect_stroke(
-                                rect,
-                                5.0,
-                                Stroke::new(1.0, ui.visuals().text_color()),
-                                StrokeKind::Inside,
-                            );
-                        }
-                        if response.clicked() {
-                            let mut changed = group.clone();
-                            changed.color = choice;
-                            done.group = Some(GroupEdit::Change(changed));
-                            ui.close();
-                        }
-                    }
-                });
-                let custom_id = touched.id.with("custom-group-color");
-                let custom =
-                    ui.add(egui::Button::new(t("group-custom-color")).selected(
-                        ui.data(|data| data.get_temp::<bool>(custom_id).unwrap_or(false)),
-                    ));
-                if opening || custom.clicked() {
+                        custom.clicked()
+                    })
+                    .inner;
+                let custom_open = was_open ^ custom_clicked;
+                if opening || custom_clicked {
                     ui.data_mut(|data| {
-                        let open = data.get_temp::<bool>(custom_id).unwrap_or(false);
-                        let open = !opening && !open;
-                        data.insert_temp(custom_id, open);
-                        if !open {
-                            orange_ui_controls::color_picker::reset(data, custom_id);
-                        }
+                        data.insert_temp(custom_id, custom_open);
+                        orange_ui_controls::color_picker::reset(data, custom_id);
                     });
                 }
-                if ui.data(|data| data.get_temp::<bool>(custom_id).unwrap_or(false)) {
+                if custom_open {
                     let [r, g, b] = group.color;
                     if let Some([r, g, b, _]) = orange_ui_controls::color_picker::inline(
                         ui,
@@ -520,7 +538,8 @@ mod tests {
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         canvas.set_groups(vec![group.clone()]);
-        let at = canvas.group_frame(&graph, &group).unwrap().min + Vec2::splat(10.0);
+        let frame_group = group.clone();
+        let title_at = std::cell::Cell::new(Pos2::ZERO);
         let context = egui::Context::default();
         crate::icons::install(&context);
         let mut frame = |events, replacement: Option<&Group>| {
@@ -535,13 +554,10 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    canvas.group_input(
-                        ui,
-                        &graph,
-                        |rect| rect,
-                        egui::Id::unique("group-menu-test"),
-                        &mut result,
-                    )
+                    let canvas_start = ui.cursor().min;
+                    result = canvas.show(ui, &graph, &[]);
+                    let title = canvas.group_frame(&graph, &frame_group).unwrap().center();
+                    title_at.set(canvas_start + (title - canvas.origin) * canvas.zoom);
                 },
             );
             (output, result.group)
@@ -563,6 +579,7 @@ mod tests {
             orange_testkit::ui::text_center(&output.shapes, label).expect(label)
         };
         frame(vec![], None).0.drop_without_applying_deltas();
+        let at = title_at.get();
         orange_testkit::ui::click(at, egui::PointerButton::Secondary, |events| {
             frame(events, None).0.drop_without_applying_deltas();
         });
@@ -586,7 +603,7 @@ mod tests {
             frame(events, None).0.drop_without_applying_deltas();
         });
         let (output, _) = frame(vec![], None);
-        let custom = button_center(&output, t("group-custom-color"));
+        let custom = button_center(&output, &crate::icons::ADD.to_string());
         output.drop_without_applying_deltas();
         let mut click = |pos| {
             frame(
@@ -604,6 +621,32 @@ mod tests {
             )
         };
         click(custom).0.drop_without_applying_deltas();
+        let (output, _) = frame(vec![], None);
+        assert!(orange_testkit::ui::text_center(&output.shapes, "#569CD6").is_some());
+        output.drop_without_applying_deltas();
+
+        let (output, changed) = frame(
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 80.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            None,
+        );
+        assert!(orange_testkit::ui::text_center(&output.shapes, "#569CD6").is_none());
+        assert_eq!(changed, None);
+        output.drop_without_applying_deltas();
+        orange_testkit::ui::click(title_at.get(), egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
+        let (output, _) = frame(vec![], None);
+        let custom = button_center(&output, &crate::icons::ADD.to_string());
+        output.drop_without_applying_deltas();
+        orange_testkit::ui::click(custom, egui::PointerButton::Primary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
         let (output, _) = frame(vec![], None);
         let field = button_center(&output, "#569CD6");
         output.drop_without_applying_deltas();
@@ -752,6 +795,7 @@ mod tests {
                             &graph,
                             |rect| rect,
                             egui::Id::unique("group-test"),
+                            false,
                             &mut done,
                         );
                     },

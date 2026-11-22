@@ -71,7 +71,6 @@ expand = Expand
 collapse = Collapse
 group-select-nodes = Select its nodes
 group-custom-color = Custom color…
-group-apply-name = Apply group name
 group-color-blue = Blue
 group-color-green = Green
 group-color-orange = Orange
