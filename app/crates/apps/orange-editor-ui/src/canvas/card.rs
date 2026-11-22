@@ -39,6 +39,7 @@ pub(super) enum FieldOf<'a> {
     /// One more instance of a port the node has as many of as it is given, such as
     /// a Fork's branches.
     AddPort(&'a orange_host::VariadicView),
+    AddSignalReceiver,
 }
 
 impl<'a> FieldOf<'a> {
@@ -346,6 +347,16 @@ impl<'a> Card<'a> {
         }
         for add in growing {
             push(&mut rows, Some(add), None);
+        }
+        if crate::palette::signal(node).is_some_and(|(sender, _)| sender) {
+            push(
+                &mut rows,
+                Some(Left::Field {
+                    editor: FieldOf::AddSignalReceiver,
+                    named: false,
+                }),
+                None,
+            );
         }
         let empty = rows.is_empty();
         if empty {

@@ -140,6 +140,136 @@ fn a_graph_is_built_from_an_empty_document_and_runs() {
 }
 
 #[test]
+fn two_wireless_senders_deliver_their_payloads_to_both_receivers() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let emitter = host
+        .add_node(&mut draft, "preset:signal", [300.0, 0.0])
+        .unwrap();
+    let first = draft
+        .document()
+        .root()
+        .nodes
+        .values()
+        .find(|node| node.definition.id.as_str() == "core/on-event")
+        .unwrap()
+        .id;
+    let second = host
+        .add_signal_receiver(&mut draft, emitter, [600.0, 200.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (emitter, "in"))
+        .unwrap();
+
+    let other_trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 200.0])
+        .unwrap();
+    let other_sender = host
+        .add_signal_sender(&mut draft, first, [300.0, 200.0])
+        .unwrap();
+    host.set_input(&mut draft, (other_sender, "payload"), Some("false"))
+        .unwrap();
+    host.connect(&mut draft, (other_trigger, "then"), (other_sender, "in"))
+        .unwrap();
+    assert_eq!(draft.document().events().len(), 1);
+
+    let mut results = Vec::new();
+    for (receiver, name) in [(first, "first"), (second, "second")] {
+        let variable = host
+            .declare_variable(
+                &mut draft,
+                &orange_host::Variable {
+                    id: None,
+                    name: name.to_owned(),
+                    ty: "core/bool@1".to_owned(),
+                    scope: orange_host::VarScope::Run,
+                    persistent: false,
+                    initial: None,
+                },
+            )
+            .unwrap();
+        let set = host
+            .add_node(&mut draft, "core/set-variable", [900.0, 0.0])
+            .unwrap();
+        host.set_config(&mut draft, set, &json!({"variable": variable}))
+            .unwrap();
+        host.connect(&mut draft, (receiver, "then"), (set, "in"))
+            .unwrap();
+        host.connect(&mut draft, (receiver, "payload"), (set, "value"))
+            .unwrap();
+        results.push(variable.parse().unwrap());
+    }
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    let results: [_; 2] = results.try_into().unwrap();
+    for (source, value) in [(trigger, true), (other_trigger, false)] {
+        host.trigger(flow, source, None).unwrap();
+        until("both wireless receivers wrote the sender's payload", || {
+            host.inspect(flow, move |run| {
+                results
+                    .iter()
+                    .all(|&variable| run.variable(variable) == Some(&Value::Bool(value)))
+            })
+            .unwrap()
+        });
+    }
+}
+
+#[test]
+fn a_wireless_sender_without_receivers_continues_and_can_be_reconnected() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let sender = host
+        .add_node(&mut draft, "preset:signal", [300.0, 100.0])
+        .unwrap();
+    let receiver = draft
+        .document()
+        .root()
+        .nodes
+        .values()
+        .find(|node| node.definition.id.as_str() == "core/on-event")
+        .unwrap()
+        .id;
+    assert!(host.remove_nodes(&mut draft, &[receiver]).unwrap());
+    assert_eq!(draft.document().events().len(), 1);
+    host.connect(&mut draft, (trigger, "then"), (sender, "in"))
+        .unwrap();
+    host.connect(&mut draft, (sender, "then"), (set, "in"))
+        .unwrap();
+
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    until("Emit continued with no receivers", || {
+        host.inspect(flow, |run| {
+            run.variable(id(100).parse().unwrap()) == Some(&Value::I64(7))
+        })
+        .unwrap()
+    });
+
+    let replacement = host
+        .add_signal_receiver(&mut draft, sender, [700.0, 100.0])
+        .unwrap();
+    assert!(host.remove_nodes(&mut draft, &[sender]).unwrap());
+    assert_eq!(draft.document().events().len(), 1);
+    assert!(draft.document().root().nodes.contains_key(&replacement));
+    assert!(draft.undo());
+    assert!(draft.document().root().nodes.contains_key(&sender));
+    assert!(draft.redo());
+    assert!(!draft.document().root().nodes.contains_key(&sender));
+    assert!(draft.document().root().nodes.contains_key(&replacement));
+    let new_sender = host
+        .add_signal_sender(&mut draft, replacement, [300.0, 100.0])
+        .unwrap();
+    let event = *draft.document().events().keys().next().unwrap();
+    assert!(
+        host.remove_nodes(&mut draft, &[new_sender, replacement])
+            .unwrap()
+    );
+    assert!(draft.document().events().contains_key(&event));
+}
+
+#[test]
 fn each_edit_is_one_step_back_and_forward() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
     let mut draft = host.draft(&empty()).unwrap();

@@ -62,10 +62,10 @@ impl Section {
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
         };
-        self.title().to_lowercase().contains(query)
+        orange_host::fold_search(self.title()).contains(query)
             || labels
                 .iter()
-                .any(|label| t(label).to_lowercase().contains(query))
+                .any(|label| orange_host::fold_search(t(label)).contains(query))
     }
 }
 
@@ -149,7 +149,7 @@ impl Editor {
         self.settings_search_ui(&mut header);
 
         let previous = self.settings_tab;
-        let query = self.settings_search.trim().to_lowercase();
+        let query = orange_host::fold_search(self.settings_search.trim());
         let matches = Section::ALL.map(|section| {
             section.matches(&query)
                 || section == Section::Shortcuts && self.shortcut_matches_any(&query)
@@ -199,10 +199,7 @@ impl Editor {
                 } else {
                     egui::pos2(nav_rect.right() + SPACE_LARGE, content.top() + SPACE_MEDIUM)
                 },
-                egui::pos2(
-                    content.right() - SPACE_MEDIUM,
-                    if compact { footer_y } else { content.bottom() } - SPACE_MEDIUM,
-                ),
+                egui::pos2(content.right() - SPACE_MEDIUM, footer_y - SPACE_MEDIUM),
             ),
         );
         if matches.iter().any(|&found| found) {
@@ -258,14 +255,8 @@ impl Editor {
             page.label(egui::RichText::new(t("settings-empty")).strong());
         }
         let left = content.left() + SPACE_MEDIUM;
-        let right = if compact {
-            content.right()
-        } else {
-            nav_rect.right()
-        } - SPACE_MEDIUM;
-        if compact {
-            ui.painter().hline(left..=right, footer_y, divider);
-        }
+        let right = content.right() - SPACE_MEDIUM;
+        ui.painter().hline(left..=right, footer_y, divider);
         let area = egui::Rect::from_min_max(
             egui::pos2(left, footer_y + SPACE_MEDIUM),
             egui::pos2(right, content.bottom() - SPACE_MEDIUM),
@@ -279,7 +270,7 @@ impl Editor {
             true,
             egui::Button::new((egui::Atom::grow(), t("settings-done"), egui::Atom::grow()))
                 .gap(0.0)
-                .min_size(egui::vec2(88.0, CONTROL_HEIGHT)),
+                .min_size(area.size()),
         )
         .clicked()
     }
@@ -379,34 +370,56 @@ impl Editor {
     fn appearance_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         use egui::ThemePreference::{Dark, Light, System};
         setting_row(ui, t("appearance"), |ui, label| {
-            let mut preference = ctx.options(|options| options.theme_preference);
-            if orange_ui_controls::segmented(
-                ui,
-                Surface::Dialog,
-                label,
-                &mut preference,
-                &[
+            let preference = ctx.options(|options| options.theme_preference);
+            let light = ctx.style_of(egui::Theme::Light);
+            let dark = ctx.style_of(egui::Theme::Dark);
+            ui.horizontal_top(|ui| {
+                let width =
+                    ((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).max(1.0);
+                for (choice, name) in [
                     (System, t("appearance-system")),
                     (Light, t("appearance-light")),
                     (Dark, t("appearance-dark")),
-                ],
-            )
-            .changed()
-            {
-                self.preferred_theme = Some(preference);
-                ctx.set_theme(preference);
-            }
-            ui.add_space(SPACE_SMALL);
-            ui.horizontal_top(|ui| {
-                let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-                for (theme, name) in [
-                    (egui::Theme::Light, t("appearance-light")),
-                    (egui::Theme::Dark, t("appearance-dark")),
                 ] {
-                    ui.vertical(|ui| {
-                        paint_theme_sample(ui, &ctx.style_of(theme).visuals, width);
-                        ui.small(name);
+                    let response = controls::button(
+                        ui,
+                        Surface::Dialog,
+                        Action::Toggle(preference == choice),
+                        true,
+                        egui::Button::new(()).min_size(egui::vec2(width, 78.0)),
+                    )
+                    .labelled_by(label.id);
+                    let sample = egui::Rect::from_min_max(
+                        response.rect.min + egui::vec2(5.0, 5.0),
+                        response.rect.max - egui::vec2(5.0, 24.0),
+                    );
+                    let painter = ui.painter_at(response.rect);
+                    match choice {
+                        Light => paint_theme_sample(&painter, sample, &light.visuals),
+                        Dark => paint_theme_sample(&painter, sample, &dark.visuals),
+                        System => {
+                            paint_system_sample(&painter, sample, &light.visuals, &dark.visuals)
+                        }
+                    }
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::Role::RadioButton,
+                            ui.is_enabled(),
+                            preference == choice,
+                            name,
+                        )
                     });
+                    painter.text(
+                        response.rect.center_bottom() - egui::vec2(0.0, 11.0),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                    );
+                    if response.clicked() {
+                        self.preferred_theme = Some(choice);
+                        ctx.set_theme(choice);
+                    }
                 }
             });
         });
@@ -490,10 +503,8 @@ fn settings_pane(ui: &mut egui::Ui, id: &str, rect: egui::Rect) -> egui::Ui {
     pane
 }
 
-fn paint_theme_sample(ui: &mut egui::Ui, visuals: &egui::Visuals, width: f32) {
+fn paint_theme_sample(painter: &egui::Painter, rect: egui::Rect, visuals: &egui::Visuals) {
     use egui::{Rect, Stroke, StrokeKind, pos2, vec2};
-    let (rect, _) = ui.allocate_exact_size(vec2(width.max(1.0), 53.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
     let border = visuals.window_stroke;
     painter.rect(rect, 5, visuals.window_fill, border, StrokeKind::Inside);
     let inner = rect.shrink(5.0);
@@ -529,6 +540,47 @@ fn paint_theme_sample(ui: &mut egui::Ui, visuals: &egui::Visuals, width: f32) {
         visuals.selection.stroke,
         StrokeKind::Inside,
     );
+}
+
+fn paint_system_sample(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    light: &egui::Visuals,
+    dark: &egui::Visuals,
+) {
+    use egui::{Shape, Stroke, StrokeKind, pos2};
+    painter.rect_filled(rect, 0, dark.window_fill);
+    painter.add(Shape::convex_polygon(
+        vec![rect.left_top(), rect.right_top(), rect.left_bottom()],
+        light.window_fill,
+        Stroke::NONE,
+    ));
+    for (visuals, at) in [
+        (
+            light,
+            pos2(
+                rect.left() + rect.width() * 0.24,
+                rect.top() + rect.height() * 0.31,
+            ),
+        ),
+        (
+            dark,
+            pos2(
+                rect.left() + rect.width() * 0.76,
+                rect.top() + rect.height() * 0.69,
+            ),
+        ),
+    ] {
+        let chip = egui::Rect::from_center_size(at, egui::vec2(rect.width() * 0.27, 8.0));
+        painter.rect(
+            chip,
+            2,
+            visuals.selection.bg_fill,
+            visuals.selection.stroke,
+            StrokeKind::Inside,
+        );
+    }
+    painter.rect_stroke(rect, 0, dark.window_stroke, StrokeKind::Inside);
 }
 
 fn settings_group(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {

@@ -27,6 +27,7 @@ pub(super) enum FieldEdit {
     Browse(String),
     /// One more instance of this variadic port.
     AddPort(String),
+    AddSignalReceiver,
     /// The devices of this adapter are to be listed again.
     RefreshDevices(String),
 }
@@ -176,6 +177,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         ),
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
+        FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
     }
 }
 
@@ -209,6 +211,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
+        FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
     }
 }
 
@@ -711,9 +714,8 @@ impl Canvas {
                 edit
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
-            FieldOf::AddPort(variadic) => {
-                // A quiet button across the card: "+ Add branch".
-                let label = add_port_text(node, variadic);
+            action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver) => {
+                let label = name(node, action, None);
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -745,9 +747,10 @@ impl Canvas {
                     label,
                     colors.text,
                 );
-                touched
-                    .clicked()
-                    .then(|| FieldEdit::AddPort(variadic.port.clone()))
+                touched.clicked().then(|| match action {
+                    FieldOf::AddPort(variadic) => FieldEdit::AddPort(variadic.port.clone()),
+                    _ => FieldEdit::AddSignalReceiver,
+                })
             }
         }
     }

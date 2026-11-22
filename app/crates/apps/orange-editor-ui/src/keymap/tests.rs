@@ -94,7 +94,6 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
 fn recording_an_inline_shortcut_keeps_all_modifiers() {
     let mut editor = Editor::new();
     editor.begin_shortcut_edit("save", original("save"));
-    editor.shortcut_edit.as_mut().unwrap().recording = true;
     let context = egui::Context::default();
     let frame = |editor: &mut Editor, events| {
         context
@@ -135,6 +134,25 @@ fn recording_an_inline_shortcut_keeps_all_modifiers() {
 }
 
 #[test]
+fn shortcut_search_matches_localized_groups_and_labels_together() {
+    crate::i18n::set_language("es");
+    let editor = Editor::new();
+    let action = "save";
+    let label = action_label(action);
+    assert!(editor.shortcut_matches(action, &label, "shortcut-files", "archivos guardar", None));
+    assert!(!editor.shortcut_matches(action, &label, "shortcut-files", "portapapeles", None));
+    assert!(editor.shortcut_matches_any("ejecucion"));
+    assert_eq!(
+        parse_shortcut("ctrl+mayús+intro"),
+        Some(normalized(
+            Modifiers::CTRL.plus(Modifiers::SHIFT),
+            Key::Enter
+        ))
+    );
+    crate::i18n::set_language("en");
+}
+
+#[test]
 fn inline_shortcut_edit_preserves_row_spacing() {
     let mut editor = Editor::new();
     let context = egui::Context::default();
@@ -164,7 +182,7 @@ fn inline_shortcut_edit_preserves_row_spacing() {
 }
 
 #[test]
-fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
+fn recording_a_conflict_only_reassigns_after_explicit_confirmation() {
     let mut editor = Editor::new();
     editor.settings_open = true;
     editor.settings_tab = crate::settings::Section::Shortcuts;
@@ -192,7 +210,21 @@ fn typing_a_conflict_only_reassigns_after_explicit_confirmation() {
         frame(&mut editor, vec![]);
     }
     let save = editor.canvas.keys.label("save");
-    frame(&mut editor, vec![egui::Event::Text(save.clone())]);
+    let binding = original("save").unwrap();
+    frame(
+        &mut editor,
+        vec![
+            egui::Event::ModifiersChanged(binding.modifiers),
+            egui::Event::Key {
+                key: binding.logical_key,
+                physical_key: None,
+                modifiers: binding.modifiers,
+                pressed: true,
+                repeat: false,
+            },
+            egui::Event::ModifiersChanged(Modifiers::NONE),
+        ],
+    );
     let mut shapes = Vec::new();
     for _ in 0..8 {
         shapes = frame(&mut editor, vec![]);

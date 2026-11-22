@@ -65,6 +65,16 @@ const ACTION_GROUPS: &[(&str, &[Action])] = &[
     ),
 ];
 
+fn group_help(group: &str) -> &'static str {
+    match group {
+        "shortcut-files" => "shortcut-files-help",
+        "shortcut-editing" => "shortcut-editing-help",
+        "shortcut-canvas" => "shortcut-canvas-help",
+        "shortcut-run" => "shortcut-run-help",
+        _ => "shortcut-application-help",
+    }
+}
+
 fn actions() -> impl Iterator<Item = &'static Action> {
     ACTION_GROUPS.iter().flat_map(|(_, group)| group.iter())
 }
@@ -109,15 +119,15 @@ fn parse_shortcut(text: &str) -> Option<KeyboardShortcut> {
             "ctrl" | "control" => modifiers.ctrl = true,
             "cmd" | "command" => modifiers.command = true,
             "alt" | "option" => modifiers.alt = true,
-            "shift" => modifiers.shift = true,
+            "shift" | "mayús" | "mayus" => modifiers.shift = true,
             _ => return None,
         }
     }
     let key = key.trim();
     let key = Key::from_name(key).or_else(|| match key.to_ascii_lowercase().as_str() {
         "esc" => Some(Key::Escape),
-        "return" => Some(Key::Enter),
-        "del" => Some(Key::Delete),
+        "return" | "intro" => Some(Key::Enter),
+        "del" | "supr" => Some(Key::Delete),
         _ => Key::ALL
             .iter()
             .copied()
@@ -386,30 +396,38 @@ impl crate::Editor {
         self.shortcut_edit = Some(ShortcutEdit {
             action,
             text: binding.map_or_else(String::new, format_shortcut),
-            recording: false,
+            recording: true,
             focus: true,
         });
     }
 
     pub(crate) fn shortcut_matches_any(&self, query: &str) -> bool {
         let chord = parse_shortcut(query);
-        actions().any(|(action, label, _, _)| self.shortcut_matches(action, t(label), query, chord))
+        ACTION_GROUPS.iter().any(|(group, actions)| {
+            actions.iter().any(|(action, label, _, _)| {
+                self.shortcut_matches(action, t(label), group, query, chord)
+            })
+        })
     }
 
     fn shortcut_matches(
         &self,
         action: &str,
         label: &str,
+        group: &'static str,
         query: &str,
         chord: Option<KeyboardShortcut>,
     ) -> bool {
-        label.to_lowercase().contains(query)
-            || self
-                .canvas
-                .keys
-                .label(action)
-                .to_lowercase()
-                .contains(query)
+        if query.is_empty() {
+            return true;
+        }
+        let terms = orange_host::fold_search(&format!(
+            "{label} {} {} {}",
+            t(group),
+            t(group_help(group)),
+            self.canvas.keys.label(action)
+        ));
+        query.split_whitespace().all(|word| terms.contains(word))
             || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
     }
 
@@ -468,7 +486,7 @@ impl crate::Editor {
                             .shortcut_edit
                             .as_ref()
                             .is_some_and(|edit| edit.action == action)
-                            && !self.shortcut_matches(action, label, query, searched_chord)
+                            && !self.shortcut_matches(action, label, group, query, searched_chord)
                         {
                             continue;
                         }
@@ -480,7 +498,8 @@ impl crate::Editor {
                                 ui,
                                 heading,
                                 egui::Label::new(egui::RichText::new(t(group)).strong()),
-                            );
+                            )
+                            .on_hover_text(t(group_help(group)));
                             headed = true;
                         }
                         self.shortcut_binding_row(ui, table_width, action, label, keys);
@@ -561,7 +580,17 @@ impl crate::Editor {
                 )
                 .clicked()
             {
-                self.begin_shortcut_edit(action, original(action));
+                if let Some(original) = original(action)
+                    && self.canvas.keys.conflict(action, original).is_none()
+                {
+                    self.canvas.keys.0.insert(action.to_owned(), Some(original));
+                    self.shortcut_edit = None;
+                } else {
+                    self.begin_shortcut_edit(action, original(action));
+                    if let Some(edit) = &mut self.shortcut_edit {
+                        edit.recording = false;
+                    }
+                }
                 ui.close();
             }
         });
@@ -598,15 +627,19 @@ impl crate::Editor {
                         .retain(|event| !matches!(event, egui::Event::Text(_)));
                 });
                 edit.recording = false;
-                if key != Key::Escape {
-                    edit.text = format_shortcut(normalized(modifiers, key));
+                if key == Key::Escape {
+                    return;
                 }
+                edit.text = format_shortcut(normalized(modifiers, key));
                 edit.focus = true;
             }
         } else if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             return;
         }
-        let scroll_to_editor = edit.focus && !edit.recording;
+        let scroll_to_editor = edit.focus;
+        if edit.recording {
+            edit.focus = false;
+        }
         let mut recording_label = String::new();
         let (enter, apply, cancel, remove) = {
             let mut editor_ui = ui.new_child(

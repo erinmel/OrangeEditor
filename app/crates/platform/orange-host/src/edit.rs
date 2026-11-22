@@ -516,6 +516,14 @@ impl Draft {
     }
 }
 
+fn event_config(node: NodeId, event: &str) -> DocCommand {
+    DocCommand::SetConfig {
+        node,
+        config_version: 1,
+        config: [("event".to_owned(), json!(event))].into_iter().collect(),
+    }
+}
+
 impl Host {
     /// Adds a node of kind `definition` (such as `org.orange.files/write-text`) at a
     /// place on the canvas, bound to this host's provider for it, with the default
@@ -541,25 +549,24 @@ impl Host {
         definition: &str,
         at: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
-        if definition == "preset:watchdog" {
-            return self.watchdog_commands(draft, at);
+        match definition {
+            "preset:watchdog" => self.watchdog_commands(draft, at),
+            "preset:signal" => self
+                .signal_commands(draft, at, "Signal", [360.0, 0.0])
+                .map(|([sender, _], commands)| (sender, commands)),
+            _ => self.node_commands(draft, definition, at, "node"),
         }
-        self.node_commands(draft, definition, at, "node")
     }
 
-    fn watchdog_commands(
+    fn signal_commands(
         &self,
         draft: &Draft,
         [x, y]: [f32; 2],
-    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
-        let name = (1..)
-            .map(|index| {
-                if index == 1 {
-                    "Heartbeat".to_owned()
-                } else {
-                    format!("Heartbeat {index}")
-                }
-            })
+        base: &str,
+        [dx, dy]: [f32; 2],
+    ) -> Result<([NodeId; 2], Vec<DocCommand>), HostError> {
+        let name = std::iter::once(base.to_owned())
+            .chain((2..).map(|index| format!("{base} {index}")))
             .find(|name| {
                 draft
                     .document()
@@ -567,33 +574,103 @@ impl Host {
                     .values()
                     .all(|event| event.name != *name)
             })
-            .ok_or_else(|| refused(&"no heartbeat event name is available"))?;
-        let event = draft.fresh_id("watchdog-event");
+            .ok_or_else(|| refused(&"no signal name is available"))?;
+        let event = draft.fresh_id("signal-event");
         let declaration = serde_json::from_value(json!({
             "id": event, "name": name, "payload": "core/bool@1", "scope": "run"
         }))
         .map_err(|error| refused(&error))?;
-        let (emit, emission) =
-            self.node_commands(draft, intrinsic::EMIT, [x, y], "watchdog-emit")?;
-        let (entry, admission) =
-            self.node_commands(draft, intrinsic::ON_EVENT, [x, y + 176.0], "watchdog-entry")?;
+        let (emit, emission) = self.node_commands(draft, intrinsic::EMIT, [x, y], "signal-emit")?;
+        let (entry, reception) =
+            self.node_commands(draft, intrinsic::ON_EVENT, [x + dx, y + dy], "signal-entry")?;
+        let mut commands = vec![DocCommand::UpsertEvent(declaration)];
+        commands.extend(emission);
+        commands.extend(reception);
+        for node in [emit, entry] {
+            commands.push(event_config(node, &event));
+        }
+        commands.push(DocCommand::SetLiteral {
+            port: port_ref((emit, "payload"))?,
+            literal: Some(Literal::value(
+                "core/bool@1".parse().map_err(|error| refused(&error))?,
+                json!(true),
+            )),
+        });
+        Ok(([emit, entry], commands))
+    }
+
+    /// Adds a new On Event for the same declared event as an emitter or receiver.
+    pub fn add_signal_receiver(
+        &self,
+        draft: &mut Draft,
+        source: NodeId,
+        at: [f32; 2],
+    ) -> Result<NodeId, HostError> {
+        self.add_signal_endpoint(draft, source, at, intrinsic::ON_EVENT)
+    }
+
+    /// Adds a new Emit for the same declared event as an emitter or receiver.
+    pub fn add_signal_sender(
+        &self,
+        draft: &mut Draft,
+        source: NodeId,
+        at: [f32; 2],
+    ) -> Result<NodeId, HostError> {
+        self.add_signal_endpoint(draft, source, at, intrinsic::EMIT)
+    }
+
+    fn add_signal_endpoint(
+        &self,
+        draft: &mut Draft,
+        source: NodeId,
+        at: [f32; 2],
+        definition: &str,
+    ) -> Result<NodeId, HostError> {
+        let source = draft
+            .document()
+            .root()
+            .nodes
+            .get(&source)
+            .filter(|node| {
+                matches!(
+                    node.definition.id.as_str(),
+                    intrinsic::EMIT | intrinsic::ON_EVENT
+                )
+            })
+            .ok_or_else(|| refused(&"choose an Emit or On Event node"))?;
+        let event = source
+            .config
+            .get("event")
+            .and_then(Json::as_str)
+            .and_then(|id| id.parse::<EventDeclId>().ok())
+            .and_then(|id| draft.document().events().get(&id))
+            .ok_or_else(|| refused(&"choose an event before adding a signal endpoint"))?;
+        let (node, mut commands) = self.node_commands(draft, definition, at, "signal-endpoint")?;
+        commands.push(event_config(node, &event.id.to_string()));
+        if definition == intrinsic::EMIT && event.payload.as_str() == "core/bool@1" {
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((node, "payload"))?,
+                literal: Some(Literal::value(event.payload.clone(), json!(true))),
+            });
+        }
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(node)
+    }
+
+    fn watchdog_commands(
+        &self,
+        draft: &Draft,
+        [x, y]: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let ([emit, entry], mut commands) =
+            self.signal_commands(draft, [x, y], "Heartbeat", [0.0, 176.0])?;
         let (wait, timeout) = self.node_commands(
             draft,
             intrinsic::WAIT,
             [x + 360.0, y + 176.0],
             "watchdog-wait",
         )?;
-        let mut commands = vec![DocCommand::UpsertEvent(declaration)];
-        commands.extend(emission);
-        commands.extend(admission);
         commands.extend(timeout);
-        for node in [emit, entry] {
-            commands.push(DocCommand::SetConfig {
-                node,
-                config_version: 1,
-                config: [("event".to_owned(), json!(event))].into_iter().collect(),
-            });
-        }
         let mut policy: ActivationPolicy =
             serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;
         policy.mode = orange_model::document::ReentrancyMode::Replace;
@@ -601,18 +678,13 @@ impl Host {
             node: entry,
             policy: Some(policy),
         });
-        for (node, port, ty, value) in [
-            (emit, "payload", "core/bool@1", json!(true)),
-            (wait, "duration", "core/duration@1", json!("750000000")),
-        ] {
-            commands.push(DocCommand::SetLiteral {
-                port: port_ref((node, port))?,
-                literal: Some(Literal::value(
-                    ty.parse().map_err(|error| refused(&error))?,
-                    value,
-                )),
-            });
-        }
+        commands.push(DocCommand::SetLiteral {
+            port: port_ref((wait, "duration"))?,
+            literal: Some(Literal::value(
+                "core/duration@1".parse().map_err(|error| refused(&error))?,
+                json!("750000000"),
+            )),
+        });
         commands.push(DocCommand::Connect {
             edge: Edge {
                 id: draft

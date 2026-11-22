@@ -2273,14 +2273,27 @@ impl Editor {
             }
             let mut index = 0;
             for (category, items) in found {
+                let Some(first) = items.first() else {
+                    continue;
+                };
+                let (heading, help) = palette::category_heading(category, &first.id, language);
                 orange_ui_controls::tree_section(
                     ui,
                     Surface::Panel,
-                    egui::CollapsingHeader::new(category.as_str())
+                    egui::CollapsingHeader::new(heading)
                         .id_salt((category.as_str(), searching))
                         .default_open(searching),
                     |ui| {
+                        let mut section = None;
                         for item in items {
+                            let next = palette::audio_section(&item.id);
+                            if !searching
+                                && section != next
+                                && let Some((title, description)) = next
+                            {
+                                ui.weak(t(title)).on_hover_text(t(description));
+                            }
+                            section = next;
                             let active =
                                 searching && field.has_focus() && index == self.palette_highlighted;
                             index += 1;
@@ -2296,6 +2309,7 @@ impl Editor {
                                 None,
                                 active,
                                 card,
+                                Some(&item.id),
                             );
                             if row.drag_started() {
                                 let card = self.previews.card(host, draft, &item.id).cloned();
@@ -2312,7 +2326,9 @@ impl Editor {
                             }
                         }
                     },
-                );
+                )
+                .header_response
+                .on_hover_text(t(help));
             }
         });
         if let Some(definition) = add {
@@ -2514,6 +2530,9 @@ impl Editor {
             let _ = self.connect(host, (from.0, &from.1), (to.0, &to.1));
         }
         self.conversion_menu(ui.ctx(), host);
+        if let Some(node) = done.add_signal_receiver {
+            self.add_signal_endpoint(host, node, false);
+        }
         if let Some((node, port)) = done.add_port {
             let _ = self.add_port(host, node, &port);
         }

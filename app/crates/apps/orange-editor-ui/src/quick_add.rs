@@ -289,6 +289,7 @@ impl Editor {
                                     target.as_deref(),
                                     on,
                                     card,
+                                    Some(&choice.definition),
                                 );
                                 if row.drag_started() {
                                     let card = self

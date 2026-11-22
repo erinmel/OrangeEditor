@@ -41,6 +41,8 @@ pub enum Command {
     Delete,
     InsertNode,
     AddWaypoint,
+    AddSignalReceiver,
+    AddSignalSender,
     RemoveWaypoint,
     DeleteWire,
     Disconnect,
@@ -174,6 +176,33 @@ impl Editor {
                         true,
                     ),
                 ];
+                if self.graph().is_some_and(|graph| {
+                    graph
+                        .nodes
+                        .iter()
+                        .any(|card| card.id == *node && palette::signal(card).is_some())
+                }) {
+                    entries.insert(
+                        1,
+                        entry(
+                            Command::AddSignalReceiver,
+                            t("signal-add-receiver"),
+                            "",
+                            icons::SIGNAL,
+                            true,
+                        ),
+                    );
+                    entries.insert(
+                        2,
+                        entry(
+                            Command::AddSignalSender,
+                            t("signal-add-sender"),
+                            "",
+                            icons::SIGNAL,
+                            true,
+                        ),
+                    );
+                }
                 if self.call_function(*node).is_some() {
                     entries.push(entry(
                         Command::ExportFunction,
@@ -323,6 +352,9 @@ impl Editor {
                 self.open_insert_node(wire.clone(), menu.at, menu.screen);
                 true
             }
+            (Command::AddSignalReceiver | Command::AddSignalSender, MenuTarget::Node(node)) => {
+                self.add_signal_endpoint(host, *node, command == Command::AddSignalSender)
+            }
             (Command::AddWaypoint, MenuTarget::Wire(wire)) => {
                 self.set_waypoint(host, wire, Some(menu.at))
             }
@@ -340,6 +372,55 @@ impl Editor {
                 true
             }
             _ => false,
+        }
+    }
+
+    pub(crate) fn add_signal_endpoint(
+        &mut self,
+        host: &mut Host,
+        node: NodeId,
+        sender: bool,
+    ) -> bool {
+        let Some(graph) = self.graph() else {
+            return false;
+        };
+        let places: std::collections::BTreeMap<_, _> = self.canvas.places().into_iter().collect();
+        let Some(&[x, mut y]) = places.get(&node) else {
+            return false;
+        };
+        let side = canvas::NODE_WIDTH + 48.0;
+        let x = if sender { x - side } else { x + side };
+        let mut occupied: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter_map(|card| {
+                let [left, top] = places.get(&card.id)?;
+                let size = canvas::node_size(card);
+                (x < left + size.x && *left < x + canvas::NODE_WIDTH)
+                    .then_some((*top, top + size.y))
+            })
+            .collect();
+        occupied.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (top, bottom) in occupied {
+            if y + 220.0 > top && y < bottom + 24.0 {
+                y = bottom + 24.0;
+            }
+        }
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = if sender {
+            host.add_signal_sender(draft, node, [x, y])
+        } else {
+            host.add_signal_receiver(draft, node, [x, y])
+        };
+        match result {
+            Ok(endpoint) => {
+                let _ = self.edited(host, Ok(true));
+                self.canvas.select(Some(endpoint));
+                true
+            }
+            Err(error) => self.edited(host, Err(error)),
         }
     }
 
@@ -488,6 +569,102 @@ mod tests {
     use super::*;
     use crate::tests::graph;
     use orange_host::HostOptions;
+
+    #[test]
+    fn keyboard_and_context_delete_only_the_selected_signal_endpoint() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let sender = editor
+            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .unwrap();
+        let first = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id != sender)
+            .unwrap()
+            .id;
+        assert!(editor.add_signal_endpoint(&mut host, sender, false));
+        let second = editor.canvas.selected().unwrap();
+
+        editor.open_menu(MenuTarget::Node(first), [0.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, Command::AddSignalSender));
+        let other_sender = editor.canvas.selected().unwrap();
+        assert_eq!(editor.graph().unwrap().nodes.len(), 4);
+        let wait_a = editor
+            .add_node_at(&mut host, "core/wait", [740.0, 0.0])
+            .unwrap();
+        let wait_b = editor
+            .add_node_at(&mut host, "core/wait", [740.0, 200.0])
+            .unwrap();
+        assert!(editor.connect(&mut host, (first, "then"), (wait_a, "in")));
+        assert!(editor.connect(&mut host, (second, "then"), (wait_b, "in")));
+
+        editor.open_menu(MenuTarget::Node(first), [0.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, Command::Delete));
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.id != first)
+        );
+        assert_eq!(editor.graph().unwrap().nodes.len(), 5);
+        assert_eq!(editor.graph().unwrap().wires.len(), 1);
+        assert_eq!(editor.graph().unwrap().wires[0].from.0, second);
+
+        editor.canvas.select(Some(sender));
+        let ctx = egui::Context::default();
+        for events in [
+            vec![],
+            vec![egui::Event::Key {
+                key: egui::Key::Delete,
+                physical_key: None,
+                modifiers: egui::Modifiers::NONE,
+                pressed: true,
+                repeat: false,
+            }],
+        ] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.ui(ui, &mut host);
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        assert_eq!(graph.wires.len(), 1);
+        assert!(graph.nodes.iter().any(|node| node.id == second));
+        assert!(graph.nodes.iter().any(|node| node.id == other_sender));
+        assert_eq!(
+            editor
+                .document
+                .as_ref()
+                .unwrap()
+                .draft
+                .document()
+                .events()
+                .len(),
+            1
+        );
+        editor.undo(&mut host);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|node| node.id == sender)
+        );
+    }
 
     fn id(n: u32) -> NodeId {
         format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()

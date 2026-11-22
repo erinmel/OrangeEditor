@@ -6,6 +6,41 @@ exists. It draws on node editors people already know (Blender's node editors, Un
 Blueprints, Houdini, ComfyUI, Warudo) and on the owner's review of the current editor.
 It changes no graph semantics; where a change needs one (11), it is called out.
 
+## Finding nodes and connecting distant sections
+
+The picker shows the same family colors and symbols as node cards. Audio has one
+category with sections for routing, playback, processing and analysis. Loops have
+their own category. Advanced holds explicit resource management, special numeric
+predicates, and loop endpoints for manual construction. Hover a category or an
+audio section to see what it is for.
+
+Place Wireless Signal to create a named run event with an Emit and an On Event.
+Wire the source trigger into Emit and wire each On Event into its own flow.
+Use Add signal receiver in the sender card or in either endpoint's context menu.
+Use Add signal sender in the context menu to attach another Emit to the same event.
+Deleting an endpoint removes that card and its attached wires. The named event and
+the other cards stay available, even after the last sender or receiver is deleted.
+An Emit with no listeners still continues on its normal exit. Hover an endpoint
+to reveal dashed links. Each receiver starts a separate activation through the run event queue
+(11 §10). Pass shared information as the event payload or through a declared
+variable. The links describe event routing on the canvas and are saved through
+the event references on the nodes.
+
+For a larger automation, group the trigger, data preparation, and effects where
+each can be inspected independently. For example, a timer can start an HTTP JSON
+request, route its success through JSON Field and a typed conversion, and use
+For Each for a side effect per item. Use Repeat with State to carry a result from
+one iteration to the next, or Make Function to expose typed inputs and outputs for
+reusable calculations. One Wireless Signal can reach independent destinations
+such as a log and a dashboard. The CLI starter graphs in the README show the
+corresponding HTTP, loops, failure and event patterns.
+
+In Settings, the theme tiles preview and select System, Light and Dark. System
+shows both palettes on a diagonal. Editing a shortcut immediately waits for a
+key combination. Confirm it to save, use Escape to cancel, or explicitly reassign
+a conflicting binding. Search accepts the displayed action, category and key
+combination in the selected language.
+
 ## 1. Principles
 
 1. **The canvas is where work happens.** Anything a person sets often (a number, a
@@ -246,25 +281,23 @@ Names only on the left and Node cards on the right.
   and the unsaved indicator remain in the status bar.
 * Settings uses a centered, resizable dialog with a search field above the text
   navigation in the left sidebar, an independently scrolling content pane, and a
-  fixed Done button below the left navigation. On compact windows it stays at the
-  bottom left below the content. On wide windows the settings page scrolls to
-  the bottom of the window alongside the sidebar action. General groups Language
+  fixed full-width Done button below both panes. General groups Language
   and Node search. Node search displays either names or read-only canvas cards with
   their ports and charts directly in the results. The same choice applies to the node
   tree and canvas quick-add. Search and the section selector share a single strip in
   compact windows. Search finds settings sections, shortcut
   actions and key combinations. Display and canvas groups controls by interface,
   including the persisted System, Light, and Dark appearance choices,
-  panels and canvas. Light and Dark theme samples show the window, navigation,
-  input, and selection colors before changing the active theme. Choice labels align
+  panels and canvas. Choose the Light or Dark preview to apply that theme. The
+  System preview shows both palettes on a diagonal and follows the OS. Choice labels align
   in a column when space permits and stack above their controls in compact windows.
   Interface scale applies when a percentage is chosen in its dropdown. At large
   scales or narrow widths, the editing commands can scroll
   horizontally so Settings and the run controls stay visible.
   The Keyboard shortcuts page displays grouped, left-aligned action labels and
-  single-line bindings. Select a binding to replace its cell with an inline field
-  and compact actions while keeping the same row height. Type
-  a replacement or use Record keys to capture a chord. Shortcuts can be removed or reset, and conflicts require
+  single-line bindings. Select a binding to record a chord in its cell while
+  keeping the same row height. Confirm or edit the captured chord there. Shortcuts
+  can be removed or reset, and conflicts require
   explicit reassignment. The desktop saves bindings, node language and canvas preferences
   under the user's configuration directory on exit. Graph documents carry none of
   these preferences.

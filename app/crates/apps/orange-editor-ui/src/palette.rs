@@ -18,6 +18,7 @@ pub(crate) fn result_row(
     target: Option<&str>,
     highlighted: bool,
     card: Option<&NodeView>,
+    definition: Option<&str>,
 ) -> egui::Response {
     let width = ui.available_width();
     let preview = card.map(|node| {
@@ -58,8 +59,21 @@ pub(crate) fn result_row(
     let font = egui::TextStyle::Body.resolve(ui.style());
     let color = visuals.text_color();
     let mut job = egui::text::LayoutJob::default();
-    job.wrap.max_width = (rect.width() - 16.0).max(0.0);
     job.wrap.max_rows = 1;
+    let left = if let Some(definition) = definition {
+        let (glyph, accent, _) = badge(definition);
+        crate::icons::paint_centered(
+            ui.painter(),
+            egui::pos2(rect.left() + 15.0, rect.center().y),
+            glyph,
+            font.size,
+            color.lerp_to_gamma(accent, 0.57),
+        );
+        26.0
+    } else {
+        8.0
+    };
+    job.wrap.max_width = (rect.width() - left - 8.0).max(0.0);
     job.append(name, 0.0, egui::TextFormat::simple(font.clone(), color));
     if let Some(target) = target {
         let mut icon = [0; 4];
@@ -72,7 +86,7 @@ pub(crate) fn result_row(
     }
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
     ui.painter().galley(
-        egui::pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0),
+        egui::pos2(rect.min.x + left, rect.center().y - galley.size().y / 2.0),
         galley,
         visuals.text_color(),
     );
@@ -251,6 +265,9 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
     // Found nodes come best first, so a category's place is that of its best node.
     for found in discover(host, search, language) {
         let category = match found.definition.as_str() {
+            id if id.starts_with("org.orange.audio/") => {
+                text_in(language, "palette-audio", "Audio")
+            }
             "core/get-variable"
             | "core/set-variable"
             | "core/update-variable"
@@ -279,19 +296,17 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
     if search.trim().is_empty() {
         groups.sort_by(|a, b| a.0.cmp(&b.0));
     }
-    if search.trim().is_empty() || search.trim().eq_ignore_ascii_case("audio") {
-        let preferred = [
-            "org.orange.audio/audio-source",
-            "org.orange.audio/multiband-spectrum",
-            "org.orange.audio/noise-level",
-            "org.orange.audio/audio-out",
-        ];
+    if search.trim().is_empty() {
         for (_, items) in &mut groups {
             items.sort_by_key(|item| {
-                preferred
-                    .iter()
-                    .position(|&id| id == item.id)
-                    .unwrap_or(preferred.len())
+                let section = audio_section(&item.id).map(|(name, _)| name);
+                match section {
+                    Some("audio-routing") => 0,
+                    Some("audio-playback") => 1,
+                    Some("audio-effects") => 2,
+                    Some("audio-analyze") => 3,
+                    _ => 0,
+                }
             });
         }
     }
@@ -320,6 +335,123 @@ pub(crate) fn conversion_items(
             wanted.split_whitespace().all(|word| terms.contains(word))
         })
         .collect()
+}
+
+pub(crate) fn signal(node: &NodeView) -> Option<(bool, &str)> {
+    let sender = match node.definition.as_str() {
+        "core/emit" => true,
+        "core/on-event" => false,
+        _ => return None,
+    };
+    Some((sender, node.settings.get("event")?.as_str()?))
+}
+
+pub(crate) fn audio_section(definition: &str) -> Option<(&'static str, &'static str)> {
+    let id = definition.strip_prefix("org.orange.audio/")?;
+    Some(match id {
+        "audio-source" | "audio-out" => ("audio-routing", "audio-routing-help"),
+        "compressor" | "limiter" | "gain" | "filter" | "noise-gate" => {
+            ("audio-effects", "audio-effects-help")
+        }
+        "audio-format" | "live-level" | "noise-level" | "multiband-spectrum" | "band-level"
+        | "transient" | "source-finished" => ("audio-analyze", "audio-analyze-help"),
+        _ => ("audio-playback", "audio-playback-help"),
+    })
+}
+
+pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
+    use crate::icons;
+    let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
+    let (glyph, rgb, description) = match (namespace, name) {
+        ("core", "emit" | "on-event") | ("preset:signal" | "preset:watchdog", _) => {
+            (icons::SIGNAL, [67, 152, 193], "node-family-events")
+        }
+        ("core", name) if name.starts_with("on-") => {
+            (icons::FLOW, [205, 124, 58], "node-family-events")
+        }
+        ("core", "call" | "function-entry" | "function-outputs" | "return") => {
+            (icons::FUNCTION, [137, 114, 207], "node-family-functions")
+        }
+        ("core", name) if loop_name(name) => (icons::REFRESH, [51, 151, 163], "node-family-loops"),
+        ("core", name) if name.contains("variable") || name.contains("shared") => {
+            (icons::VARIABLE, [60, 156, 112], "node-family-state")
+        }
+        ("preset:increment" | "preset:decrement", _) => {
+            (icons::VARIABLE, [60, 156, 112], "node-family-state")
+        }
+        ("core", "number" | "whole-number") | ("org.orange.math", _) => {
+            (icons::MATH, [64, 145, 213], "node-family-math")
+        }
+        ("core", "text") | ("org.orange.text", _) => {
+            (icons::TEXT, [183, 110, 174], "node-family-text")
+        }
+        ("core", "wait") | ("org.orange.time" | "org.orange.clock", _) => {
+            (icons::CLOCK, [74, 152, 165], "node-family-time")
+        }
+        ("org.orange.audio", _) => (icons::AUDIO, [151, 119, 213], "node-family-audio"),
+        ("org.orange.net", _) => (icons::NETWORK, [56, 150, 189], "node-family-network"),
+        ("org.orange.files", _) => (icons::OPEN, [190, 144, 65], "node-family-files"),
+        ("org.orange.logging", _) => (icons::LOG, [172, 129, 74], "node-family-log"),
+        ("org.orange.json" | "org.orange.collections", _) => {
+            (icons::VARIABLE, [62, 152, 130], "node-family-data")
+        }
+        (
+            "core"
+            | "preset:guard"
+            | "preset:rising-edge"
+            | "preset:falling-edge"
+            | "preset:deadband",
+            _,
+        ) => (icons::LOGIC, [211, 131, 66], "node-family-flow"),
+        _ => (icons::PACKAGES, [132, 132, 143], "node-family-package"),
+    };
+    (
+        glyph,
+        egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+        description,
+    )
+}
+
+fn loop_name(name: &str) -> bool {
+    matches!(
+        name,
+        "count"
+            | "while"
+            | "for-each"
+            | "for-range"
+            | "break"
+            | "continue"
+            | "repeat-begin"
+            | "repeat-end"
+            | "map-begin"
+            | "map-end"
+            | "filter-begin"
+            | "filter-end"
+            | "fold-begin"
+            | "fold-end"
+    )
+}
+
+pub(crate) fn category_heading(
+    category: &str,
+    definition: &str,
+    language: &str,
+) -> (egui::text::LayoutJob, &'static str) {
+    let (mut glyph, mut color, mut help) = badge(definition);
+    if category == text_in(language, "palette-advanced", "Advanced") {
+        glyph = crate::icons::SETTINGS;
+        color = egui::Color32::from_rgb(149, 132, 178);
+        help = "palette-advanced-help";
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let mut content = [0; 4];
+    job.append(
+        glyph.encode_utf8(&mut content),
+        0.0,
+        egui::TextFormat::simple(egui::FontId::new(13.0, crate::icons::family()), color),
+    );
+    job.append(category, 6.0, egui::TextFormat::default());
+    (job, help)
 }
 
 fn family(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
@@ -377,13 +509,18 @@ fn family(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
             "Convert JSON Value",
             "convert json value convertir valor",
         ),
+        id if id.strip_prefix("core/").is_some_and(loop_name) => (
+            "palette-loops",
+            "Loops",
+            "loop repeat iterate bucle repetir iterar",
+        ),
         _ => return None,
     })
 }
 
 pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_host::Found> {
     let mut nodes = host.search_nodes(search, language);
-    let query = search.trim().to_lowercase();
+    let query = orange_host::fold_search(search.trim());
     if !query.is_empty() {
         let counter = preset_match(
             &query,
@@ -402,6 +539,14 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
             let alias = family(&found.definition).is_some_and(|(_, _, words)| {
                 query.split_whitespace().all(|word| words.contains(word))
             });
+            let audio = audio_section(&found.definition).is_some_and(|(section, _)| {
+                let terms = orange_host::fold_search(&format!(
+                    "audio sound sonido {} {}",
+                    text_in(language, section, section),
+                    found.label
+                ));
+                query.split_whitespace().all(|word| terms.contains(word))
+            });
             let deadband = found.definition == "core/on-watch"
                 && preset_match(
                     &query,
@@ -418,7 +563,17 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                     "Idle Watchdog",
                     "heartbeat timeout",
                 );
+            let signal = found.definition == "core/on-event"
+                && preset_match(
+                    &query,
+                    language,
+                    "signal-preset",
+                    "Wireless Signal",
+                    "link relay trigger enlace señal senal evento",
+                );
             if (alias
+                || audio
+                || signal
                 || deadband
                 || watchdog
                 || counter && found.definition == "core/update-variable")
@@ -432,7 +587,10 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
 }
 
 fn preset_match(query: &str, language: &str, key: &str, label: &str, aliases: &str) -> bool {
-    let terms = format!("{label} {} {aliases}", text_in(language, key, label)).to_lowercase();
+    let terms = orange_host::fold_search(&format!(
+        "{label} {} {aliases}",
+        text_in(language, key, label)
+    ));
     query.split_whitespace().all(|word| terms.contains(word))
 }
 
@@ -441,7 +599,7 @@ pub(crate) fn search_with_presets(
     search: &str,
     language: &str,
 ) -> Vec<orange_host::Found> {
-    let query = search.trim().to_lowercase();
+    let query = orange_host::fold_search(search.trim());
     let mut choices = Vec::with_capacity(results.len());
     for base in results {
         choices.extend(
@@ -489,6 +647,13 @@ pub(crate) fn search_with_presets(
                     "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
                 ),
                 (
+                    "core/on-event",
+                    "preset:signal",
+                    "signal-preset",
+                    "Wireless Signal",
+                    "Send to named receivers without a long wire.",
+                ),
+                (
                     "core/branch",
                     "preset:guard",
                     "guard-preset",
@@ -504,6 +669,7 @@ pub(crate) fn search_with_presets(
                 let aliases = match id {
                     "preset:deadband" => "change tolerance",
                     "preset:watchdog" => "heartbeat timeout",
+                    "preset:signal" => "link relay trigger enlace señal senal evento",
                     "preset:increment" => "bump+ bump + count up",
                     "preset:decrement" => "bump- bump - count down",
                     _ => "",
@@ -722,6 +888,77 @@ mod tests {
     }
 
     #[test]
+    fn wireless_signal_shares_one_event_with_multiple_receivers() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        assert!(
+            discover(&host, "senal inalambrica", "es")
+                .iter()
+                .any(|r| r.definition == "preset:signal")
+        );
+        let sender = editor
+            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .unwrap();
+        editor.open_menu(
+            crate::MenuTarget::Node(sender),
+            [64.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(
+            editor
+                .menu_entries()
+                .iter()
+                .any(|entry| entry.command == crate::Command::AddSignalReceiver)
+        );
+        assert!(editor.run_command(&mut host, crate::Command::AddSignalReceiver));
+        let graph = editor.graph().unwrap();
+        let sender = graph.nodes.iter().find(|node| node.id == sender).unwrap();
+        let (_, event) = signal(sender).unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| signal(node) == Some((false, event)))
+                .count(),
+            2
+        );
+        assert!(graph.wires.is_empty());
+        assert_eq!(
+            editor
+                .document
+                .as_ref()
+                .unwrap()
+                .draft
+                .document()
+                .events()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn audio_is_one_category_and_its_sections_are_searchable() {
+        let (host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_audio::package()]).unwrap();
+        let audio: Vec<_> = palette_in(&host, "", "es")
+            .into_iter()
+            .filter(|(_, items)| {
+                items
+                    .iter()
+                    .any(|item| item.id.starts_with("org.orange.audio/"))
+            })
+            .collect();
+        assert_eq!(audio.len(), 1);
+        assert_eq!(audio[0].0, "Audio");
+        assert!(
+            discover(&host, "procesar audio", "es")
+                .iter()
+                .any(|item| item.definition == "org.orange.audio/compressor")
+        );
+    }
+
+    #[test]
     fn watchdog_search_places_an_editable_timer_as_one_undo() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         assert!(
@@ -871,7 +1108,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let row = result_row(ui, "And", "Both inputs", None, false, None);
+                let row = result_row(ui, "And", "Both inputs", None, false, None, None);
                 height = row.rect.height();
                 row_layer = Some((row.rect, orange_ui_controls::Theme::of(ui).secondary));
             },
@@ -899,7 +1136,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            result_row(ui, "Absolute", "", Some("value"), true, None);
+            result_row(ui, "Absolute", "", Some("value"), true, None, None);
         });
         assert!(output.shapes.iter().any(|shape| match &shape.shape {
             egui::Shape::Text(text) => {
@@ -928,7 +1165,7 @@ mod tests {
         crate::icons::install(&ctx);
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(300.0);
-            result_row(ui, "Frequency Splitter", "", None, false, Some(card));
+            result_row(ui, "Frequency Splitter", "", None, false, Some(card), None);
         });
         for expected in [t("spectrum-live-trace"), t("spectrum-connect"), "Hz"] {
             assert!(
@@ -956,7 +1193,15 @@ mod tests {
                 ..Default::default()
             };
             ctx.run_ui(input, |ui| {
-                let row = result_row(ui, "AND", "Both values must be true", None, false, None);
+                let row = result_row(
+                    ui,
+                    "AND",
+                    "Both values must be true",
+                    None,
+                    false,
+                    None,
+                    None,
+                );
                 rect = row.rect;
                 dragged |= row.drag_started();
             })

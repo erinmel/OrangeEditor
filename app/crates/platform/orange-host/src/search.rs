@@ -471,7 +471,8 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
 }
 
 /// Lower case without accents, so "numero" finds "número".
-fn fold(text: &str) -> String {
+/// Fold case and common Latin accents for locale-aware search.
+pub fn fold(text: &str) -> String {
     text.chars()
         .flat_map(char::to_lowercase)
         .map(|c| match c {

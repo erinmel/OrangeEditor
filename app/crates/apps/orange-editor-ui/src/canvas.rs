@@ -197,6 +197,7 @@ struct ExpandedText {
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CanvasResponse {
+    pub(crate) add_signal_receiver: Option<NodeId>,
     pub(crate) waypoint: Option<(WireEnds, [f32; 2])>,
     /// The trigger whose button was pressed.
     pub trigger: Option<NodeId>,
@@ -1970,6 +1971,39 @@ impl Canvas {
             self.selected_wire = None;
         }
 
+        if self.wiring.is_none()
+            && ui.input(|input| !input.pointer.any_down())
+            && let Some(id) = card_at_pointer
+            && let Some((sending, event)) = graph
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .and_then(|node| crate::palette::signal(node))
+        {
+            let edge_of = |node, output| {
+                let position = to_screen(*self.places.get(&node)?);
+                let size = geometry.size(node) * zoom;
+                Some(position + Vec2::new(if output { size.x } else { 0.0 }, size.y * 0.5))
+            };
+            if let Some(here) = edge_of(id, sending) {
+                let (_, color, _) = crate::palette::badge("core/emit");
+                for peer in &graph.nodes {
+                    if !self.hidden.contains(&peer.id)
+                        && crate::palette::signal(peer) == Some((!sending, event))
+                        && let Some(there) = edge_of(peer.id, !sending)
+                        && let Some(points) = clip_signal_line(here, there, area)
+                    {
+                        painter.extend(egui::Shape::dashed_line(
+                            &points,
+                            Stroke::new(1.8, color),
+                            7.0,
+                            5.0,
+                        ));
+                    }
+                }
+            }
+        }
+
         // Each card owns its marks. A card in front covers the card and its marks.
         let mut port_marks = BTreeMap::<_, Vec<_>>::new();
         for ((node, port, direction), mark) in &self.marks.ports {
@@ -2334,6 +2368,9 @@ impl Canvas {
                         done.browse_path = Some((node.id, port));
                     }
                     fields::FieldEdit::AddPort(port) => done.add_port = Some((node.id, port)),
+                    fields::FieldEdit::AddSignalReceiver => {
+                        done.add_signal_receiver = Some(node.id)
+                    }
                     fields::FieldEdit::RefreshDevices(adapter) => {
                         done.refresh_devices = Some(adapter);
                     }
@@ -2791,11 +2828,7 @@ fn draw_node<'a>(
     painter.rect_filled(rect, radius, colors.card);
     // The header carries the node family's color: a tint, and a line along its foot,
     // so nodes of one package are told apart at a glance, even zoomed out.
-    let family = if node.entry {
-        colors.exec
-    } else {
-        family_color(&node.definition)
-    };
+    let family = family_color(&node.definition);
     let header_color = mix(colors.card, family, 0.25);
     painter.rect_filled(
         header,
@@ -3092,29 +3125,38 @@ fn draw_port_shape(
     }
 }
 
+fn clip_signal_line(from: Pos2, to: Pos2, area: Rect) -> Option<[Pos2; 2]> {
+    let delta = to - from;
+    let (mut first, mut last) = (0.0_f32, 1.0_f32);
+    for (position, movement, min, max) in [
+        (from.x, delta.x, area.left(), area.right()),
+        (from.y, delta.y, area.top(), area.bottom()),
+    ] {
+        if movement == 0.0 {
+            if !(min..=max).contains(&position) {
+                return None;
+            }
+        } else {
+            let a = (min - position) / movement;
+            let b = (max - position) / movement;
+            first = first.max(a.min(b));
+            last = last.min(a.max(b));
+        }
+    }
+    (first <= last).then(|| [from + delta * first, from + delta * last])
+}
+
 fn luminance(color: Color32) -> f32 {
     let linear = egui::Rgba::from(color);
     0.2126 * linear.r() + 0.7152 * linear.g() + 0.0722 * linear.b()
 }
 
 fn family_icon(node: &NodeView) -> char {
-    use crate::icons;
-    if node.entry {
-        return icons::FLOW;
-    }
-    let (namespace, name) = node.definition.split_once('/').unwrap_or_default();
-    match (namespace, name) {
-        ("core", "call" | "function-entry" | "function-outputs" | "return") => icons::FUNCTION,
-        ("core", "count" | "while" | "for-each" | "break" | "continue") => icons::REFRESH,
-        ("core", "number" | "whole-number") => icons::MATH,
-        ("core", name) if name.contains("variable") || name.contains("shared") => icons::VARIABLE,
-        ("core", _) => icons::NODE,
-        ("org.orange.math", _) => icons::MATH,
-        ("org.orange.audio", _) => icons::AUDIO,
-        ("org.orange.net", _) => icons::NETWORK,
-        ("org.orange.files", _) => icons::OPEN,
-        ("org.orange.logging", _) => icons::LOG,
-        _ => icons::PACKAGES,
+    let (icon, _, family) = crate::palette::badge(&node.definition);
+    if node.entry && family == "node-family-package" {
+        crate::icons::FLOW
+    } else {
+        icon
     }
 }
 
@@ -3200,13 +3242,9 @@ fn short_type(ty: &str) -> String {
 /// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
 /// so every node of one package shares it.
 fn family_color(definition: &str) -> Color32 {
-    match definition {
-        "core/get-variable"
-        | "core/set-variable"
-        | "core/update-variable"
-        | "core/set-shared"
-        | "core/update-shared" => return Color32::from_rgb(75, 154, 120),
-        _ => {}
+    let (_, color, category) = crate::palette::badge(definition);
+    if category != "node-family-package" {
+        return color;
     }
     let family = definition.split('/').next().unwrap_or(definition);
     if family == "core" {
@@ -4199,6 +4237,109 @@ mod tests {
         assert!(output.shapes.len() > 20, "{}", output.shapes.len());
         output.drop_without_applying_deltas();
         assert_eq!(response, CanvasResponse::default());
+    }
+
+    #[test]
+    fn clicking_add_receiver_on_the_sender_uses_the_canvas_action() {
+        let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let sender = host
+            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.fit = false;
+        canvas.origin = Pos2::ZERO;
+        let ctx = egui::Context::default();
+        let mut draw = |events| {
+            let mut action = None;
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| action = canvas.show(ui, &graph, &[]).add_signal_receiver,
+            );
+            let button = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == t("signal-add-receiver") => {
+                    Some(text.pos + text.galley.size() / 2.0)
+                }
+                _ => None,
+            });
+            output.drop_without_applying_deltas();
+            (action, button)
+        };
+        let (_, at) = draw(vec![]);
+        let at = at.expect("sender shows an Add signal receiver button");
+        let _ = draw(vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let (action, _) = draw(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(action, Some(sender));
+    }
+
+    #[test]
+    fn wireless_links_are_drawn_only_while_an_endpoint_is_hovered() {
+        let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let sender = host
+            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let receiver = graph
+            .nodes
+            .iter()
+            .find(|node| node.id != sender)
+            .unwrap()
+            .id;
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.fit = false;
+        canvas.origin = Pos2::ZERO;
+        let ctx = egui::Context::default();
+        let (_, accent, _) = crate::palette::badge("core/emit");
+        let mut frame = |pointer| {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    ..Default::default()
+                },
+                |ui| {
+                    canvas.show(ui, &graph, &[]);
+                },
+            );
+            let drawn = output.shapes.iter().any(|shape| {
+                matches!(
+                    &shape.shape,
+                    egui::Shape::LineSegment { stroke, .. } if stroke.color == accent
+                        && (stroke.width - 1.8).abs() < f32::EPSILON
+                )
+            });
+            output.drop_without_applying_deltas();
+            drawn
+        };
+        let position = |id| {
+            let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+            let [x, y] = node.position.unwrap();
+            Pos2::new(x + 30.0, y + 25.0)
+        };
+        assert!(!frame(Pos2::new(30.0, 450.0)));
+        assert!(frame(position(sender)));
+        assert!(frame(position(receiver)));
+        assert!(!frame(Pos2::new(30.0, 450.0)));
     }
 
     #[test]

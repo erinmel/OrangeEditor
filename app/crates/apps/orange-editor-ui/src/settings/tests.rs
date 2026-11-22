@@ -23,8 +23,62 @@ fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
         };
         assert!(has_fill(window) && has_fill(field));
     }
+    assert!(shapes.iter().any(|shape| matches!(
+        &shape.shape,
+        egui::Shape::Path(path) if path.points.len() == 3 && path.fill == colors[0].0
+    )));
     assert_eq!(ctx.theme(), egui::Theme::Dark);
     assert_eq!(editor.preferred_theme, None);
+}
+
+#[test]
+fn clicking_a_theme_preview_changes_the_preference() {
+    let ctx = egui::Context::default();
+    ctx.set_theme(egui::ThemePreference::System);
+    let mut editor = Editor::new();
+    let frame = |editor: &mut Editor, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                editor.appearance_picker(ui, &ctx);
+            },
+        )
+    };
+    let output = frame(&mut editor, Vec::new());
+    let at = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == t("appearance-light") => {
+                Some(text.pos + text.galley.size() / 2.0)
+            }
+            _ => None,
+        })
+        .unwrap();
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        frame(
+            &mut editor,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    assert_eq!(editor.preferred_theme, Some(egui::ThemePreference::Light));
+    assert_eq!(
+        ctx.options(|options| options.theme_preference),
+        egui::ThemePreference::Light
+    );
 }
 
 #[test]
@@ -55,7 +109,7 @@ fn settings_rows_align_controls_and_stack_when_the_column_would_not_fit() {
 }
 
 #[test]
-fn done_is_centered_under_left_navigation_at_compact_and_wide_sizes() {
+fn done_spans_the_settings_footer_at_compact_and_wide_sizes() {
     for width in [380.0, 960.0] {
         let mut editor = Editor::new();
         editor.settings_open = true;
@@ -102,6 +156,10 @@ fn done_is_centered_under_left_navigation_at_compact_and_wide_sizes() {
                 assert!(clip.contains_rect(ink), "{width}: {clip:?}, {ink:?}");
                 assert!(
                     (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0).contains(&(button.left() - window.left()))
+                );
+                assert!(
+                    (SPACE_MEDIUM..=SPACE_MEDIUM * 3.0)
+                        .contains(&(window.right() - button.right()))
                 );
                 assert!(window.bottom() - button.bottom() >= SPACE_MEDIUM);
                 assert!(
