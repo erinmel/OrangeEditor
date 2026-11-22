@@ -1,0 +1,187 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000001",
+  "revision": 0,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Counter",
+      "type": "core/i64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/i64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Increment"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "1"
+        }
+      },
+      "name": "Add one"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Decrement"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001",
+        "operation": "sub"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "1"
+        }
+      },
+      "name": "Subtract one"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Reset"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000006",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "0"
+        }
+      },
+      "name": "Reset to zero"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000003": {
+        "x": 0,
+        "y": 208
+      },
+      "10000000-0000-4000-8000-000000000004": {
+        "x": 320,
+        "y": 208
+      },
+      "10000000-0000-4000-8000-000000000005": {
+        "x": 0,
+        "y": 416
+      },
+      "10000000-0000-4000-8000-000000000006": {
+        "x": 320,
+        "y": 416
+      }
+    }
+  }
+}
