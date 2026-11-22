@@ -675,6 +675,9 @@ counter-increment-help = Add a step to a counter.
 counter-decrement = Decrement
 counter-decrement-help = Subtract a step from a counter.
 
+wire-reroute = Set reroute point
+remove-reroute = Remove reroute point
+
 when-deadband = Deadband
 when-deadband-help = Fires when a numeric value moves beyond a tolerance.
 

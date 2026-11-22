@@ -12,7 +12,7 @@ use crate::organise::NodeRename;
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use orange_host::{GraphView, NodeId, NodeView, PortView};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
 pub const NODE_WIDTH: f32 = card::WIDTH;
@@ -197,6 +197,7 @@ struct ExpandedText {
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CanvasResponse {
+    pub(crate) waypoint: Option<(WireEnds, [f32; 2])>,
     /// The trigger whose button was pressed.
     pub trigger: Option<NodeId>,
     /// Nodes were let go at new places: [`Canvas::places`] is worth saving.
@@ -301,7 +302,7 @@ pub struct Mark {
 }
 
 /// A wire by its two ends, output first: a node and a port name each.
-pub type WireEnds = ((NodeId, String), (NodeId, String));
+pub use orange_host::WireEnds;
 
 /// The problems the canvas shows on nodes and wires.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -363,6 +364,7 @@ struct StepActivity {
 /// nodes are.
 #[derive(Debug, Clone)]
 pub struct Canvas {
+    pub(crate) waypoints: HashMap<WireEnds, [f32; 2]>,
     pub(crate) spectra: BTreeMap<NodeId, Vec<f64>>,
     pub(crate) collapsed_spectra: BTreeSet<NodeId>,
     pub(crate) noise_readings: BTreeMap<NodeId, f64>,
@@ -496,6 +498,7 @@ impl Default for Canvas {
             selected_group_frame: None,
             hidden: std::collections::HashSet::new(),
             renaming: None,
+            waypoints: HashMap::new(),
             node_rename: None,
         }
     }
@@ -1797,15 +1800,50 @@ impl Canvas {
             } else {
                 colors.port_color(ty, wire.exec)
             };
-            // The wire leaves and arrives level, bending more the further it goes.
-            let points = wire_points(from, to, zoom);
+            let ends = (wire.from.clone(), wire.to.clone());
+            let mut waypoint = self.waypoints.get(&ends).copied();
+            if let Some([x, y]) = waypoint {
+                let at = to_screen(Pos2::new(x, y));
+                let handle = ui
+                    .interact(
+                        Rect::from_center_size(at, Vec2::splat(14.0 * zoom.max(0.6))),
+                        response.id.with(("wire-bend", &ends)),
+                        Sense::drag(),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Grab);
+                if handle.dragged() || handle.drag_stopped() {
+                    let drag = handle.id.with("drag-offset");
+                    let offset = handle
+                        .total_drag_delta()
+                        .map(|offset| offset / zoom)
+                        .or_else(|| ui.data(|data| data.get_temp::<Vec2>(drag)))
+                        .unwrap_or(Vec2::ZERO);
+                    waypoint = Some([x + offset.x, y + offset.y]);
+                    if handle.drag_stopped() {
+                        ui.data_mut(|data| data.remove::<Vec2>(drag));
+                        done.waypoint = waypoint.map(|at| (ends.clone(), at));
+                    } else {
+                        ui.data_mut(|data| data.insert_temp(drag, offset));
+                    }
+                }
+                if let Some([x, y]) = waypoint {
+                    painter.circle_filled(to_screen(Pos2::new(x, y)), 4.0 * zoom.max(0.6), color);
+                }
+            }
+            let bend = waypoint.map(|[x, y]| to_screen(Pos2::new(x, y)));
+            let points = [
+                Some(wire_points(from, bend.unwrap_or(to), zoom)),
+                bend.map(|bend| wire_points(bend, to, zoom)),
+            ];
             if done.context.is_none()
                 && let Some(click) = background_menu
-                && near_wire(points, click, 6.0 * zoom.max(0.6))
+                && points
+                    .into_iter()
+                    .flatten()
+                    .any(|points| near_wire(points, click, 6.0 * zoom.max(0.6)))
             {
                 let (at, screen) = menu_at(click, origin, zoom);
-                let ends = (wire.from.clone(), wire.to.clone());
-                done.context = Some((crate::MenuTarget::Wire(ends), at, screen));
+                done.context = Some((crate::MenuTarget::Wire(ends.clone()), at, screen));
             }
             let width = if wire.exec { 3.0 } else { 1.8 } * zoom.max(0.6)
                 + if mark.is_some() {
@@ -1813,78 +1851,79 @@ impl Canvas {
                 } else {
                     0.0
                 };
-            if !wire_visible(&points, painter.clip_rect(), width) {
-                continue;
-            }
-            let ends = (wire.from.clone(), wire.to.clone());
-            if let Some(at) = pointer
-                && Rect::from_points(&points)
-                    .expand(WIRE_GRAB * zoom.max(0.6))
-                    .contains(at)
-            {
-                let away = bezier_distance(&points, at);
-                if nearest.as_ref().is_none_or(|(best, _)| away < *best) {
-                    nearest = Some((away, ends.clone()));
+            for points in points.into_iter().flatten() {
+                if !wire_visible(&points, painter.clip_rect(), width) {
+                    continue;
                 }
-            }
-            // The wire under the pointer thickens; the selected one is drawn in the
-            // selection color.
-            let hovered = self.hover_wire.as_ref() == Some(&ends);
-            let picked = self.selected_wire.as_ref() == Some(&ends);
-            let (width, color) = match (picked, hovered) {
-                (true, _) => (width + 2.0 * zoom.max(0.6), colors.selected),
-                (false, true) => (width + 1.5 * zoom.max(0.6), color),
-                _ => (width, color),
-            };
-            let curve = CubicBezierShape::from_points_stroke(
-                points,
-                false,
-                Color32::TRANSPARENT,
-                Stroke::new(width, color),
-            );
-            let fade = if wire.exec && mark.is_none() {
-                self.exit_glow(&geometry, wire.from.0, &wire.from.1)
-            } else {
-                0.0
-            };
-            if fade > 0.0 {
-                painter.add(CubicBezierShape::from_points_stroke(
+                if let Some(at) = pointer
+                    && Rect::from_points(&points)
+                        .expand(WIRE_GRAB * zoom.max(0.6))
+                        .contains(at)
+                {
+                    let away = bezier_distance(&points, at);
+                    if nearest.as_ref().is_none_or(|(best, _)| away < *best) {
+                        nearest = Some((away, ends.clone()));
+                    }
+                }
+                // The wire under the pointer thickens; the selected one is drawn in the
+                // selection color.
+                let hovered = self.hover_wire.as_ref() == Some(&ends);
+                let picked = self.selected_wire.as_ref() == Some(&ends);
+                let (width, color) = match (picked, hovered) {
+                    (true, _) => (width + 2.0 * zoom.max(0.6), colors.selected),
+                    (false, true) => (width + 1.5 * zoom.max(0.6), color),
+                    _ => (width, color),
+                };
+                let curve = CubicBezierShape::from_points_stroke(
                     points,
                     false,
                     Color32::TRANSPARENT,
-                    Stroke::new(
-                        width + 7.0 * zoom.max(0.6),
-                        color.gamma_multiply(0.30 * fade),
-                    ),
-                ));
-                painter.add(CubicBezierShape::from_points_stroke(
-                    points,
-                    false,
-                    Color32::TRANSPARENT,
-                    Stroke::new(width, mix(color, colors.text, fade * 0.75)),
-                ));
-                pulsing = true;
-            } else {
-                painter.add(curve.clone());
-            }
-            if alive
-                && mark.is_none()
-                && card::stream_type(ty)
-                && !self.failures.contains_key(&wire.from.0)
-                && self
-                    .output_sample(wire.from.0, &wire.from.1)
-                    .is_some_and(|sample| !sample.preview && sample.epoch == self.value_epoch)
-            {
-                for offset in [0.0, 0.25, 0.5, 0.75] {
-                    let t = (animation_time + offset).fract();
-                    let fade = (t.min(1.0 - t) * 8.0).min(1.0);
-                    painter.circle_filled(
-                        curve.sample(t),
-                        1.65 * zoom.max(0.6),
-                        mix(color, colors.text, 0.45).gamma_multiply(fade),
-                    );
+                    Stroke::new(width, color),
+                );
+                let fade = if wire.exec && mark.is_none() {
+                    self.exit_glow(&geometry, wire.from.0, &wire.from.1)
+                } else {
+                    0.0
+                };
+                if fade > 0.0 {
+                    painter.add(CubicBezierShape::from_points_stroke(
+                        points,
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(
+                            width + 7.0 * zoom.max(0.6),
+                            color.gamma_multiply(0.30 * fade),
+                        ),
+                    ));
+                    painter.add(CubicBezierShape::from_points_stroke(
+                        points,
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(width, mix(color, colors.text, fade * 0.75)),
+                    ));
+                    pulsing = true;
+                } else {
+                    painter.add(curve.clone());
                 }
-                pulsing = true;
+                if alive
+                    && mark.is_none()
+                    && card::stream_type(ty)
+                    && !self.failures.contains_key(&wire.from.0)
+                    && self
+                        .output_sample(wire.from.0, &wire.from.1)
+                        .is_some_and(|sample| !sample.preview && sample.epoch == self.value_epoch)
+                {
+                    for offset in [0.0, 0.25, 0.5, 0.75] {
+                        let t = (animation_time + offset).fract();
+                        let fade = (t.min(1.0 - t) * 8.0).min(1.0);
+                        painter.circle_filled(
+                            curve.sample(t),
+                            1.65 * zoom.max(0.6),
+                            mix(color, colors.text, 0.45).gamma_multiply(fade),
+                        );
+                    }
+                    pulsing = true;
+                }
             }
         }
 

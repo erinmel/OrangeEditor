@@ -82,7 +82,7 @@ pub use documents::{
     autosave_document, discard_autosave, publish_function, recover_document, save_document,
 };
 pub use draft::{Draft, MAX_UNDO, OpenReport};
-pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
+pub use edit::{NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
 pub use names::{

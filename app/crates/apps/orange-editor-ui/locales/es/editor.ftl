@@ -672,6 +672,9 @@ counter-increment-help = Suma un paso a un contador.
 counter-decrement = Decrementar
 counter-decrement-help = Resta un paso de un contador.
 
+wire-reroute = Colocar punto de desvío
+remove-reroute = Eliminar punto de desvío
+
 when-deadband = Banda muerta
 when-deadband-help = Se dispara cuando un valor numérico supera la tolerancia.
 

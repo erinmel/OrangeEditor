@@ -606,6 +606,7 @@ impl Editor {
         self.canvas.load(&graph);
         self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
         self.canvas.set_groups(draft.groups());
+        self.canvas.waypoints = draft.wire_waypoints().collect();
         self.document = Some(Document {
             path,
             untitled: false,
@@ -687,6 +688,7 @@ impl Editor {
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
         self.canvas.set_groups(document.draft.groups());
+        self.canvas.waypoints = document.draft.wire_waypoints().collect();
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
         self.check(host);
@@ -2568,6 +2570,9 @@ impl Editor {
         }
         if let Some((at, screen)) = done.quick_add {
             self.open_quick_add(None, at, screen);
+        }
+        if let Some((wire, at)) = done.waypoint {
+            self.set_waypoint(host, &wire, Some(at));
         }
         if let Some(edit) = done.group {
             self.group_edit(host, edit);

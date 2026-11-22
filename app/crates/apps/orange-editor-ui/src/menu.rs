@@ -40,6 +40,8 @@ pub enum Command {
     ExportFunction,
     Delete,
     InsertNode,
+    AddWaypoint,
+    RemoveWaypoint,
     DeleteWire,
     Disconnect,
     WatchValue,
@@ -193,8 +195,22 @@ impl Editor {
                 ]);
                 entries
             }
-            MenuTarget::Wire(_) => vec![
+            MenuTarget::Wire(wire) => vec![
                 entry(Command::InsertNode, t("insert-node"), "", icons::ADD, true),
+                entry(
+                    Command::AddWaypoint,
+                    t("wire-reroute"),
+                    "",
+                    icons::ARRANGE,
+                    true,
+                ),
+                entry(
+                    Command::RemoveWaypoint,
+                    t("remove-reroute"),
+                    "",
+                    icons::DISCONNECT,
+                    self.canvas.waypoints.contains_key(wire),
+                ),
                 entry(
                     Command::DeleteWire,
                     t("delete-wire"),
@@ -225,6 +241,20 @@ impl Editor {
                 ]
             }
         }
+    }
+
+    pub(crate) fn set_waypoint(
+        &mut self,
+        host: &mut Host,
+        wire: &canvas::WireEnds,
+        at: Option<[f32; 2]>,
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let ((source, out), (target, input)) = wire;
+        let result = draft.set_wire_waypoint((*source, out), (*target, input), at);
+        self.edited(host, result)
     }
 
     /// Runs `command` of the open menu on what was right-clicked, and closes the menu.
@@ -292,6 +322,12 @@ impl Editor {
             (Command::InsertNode, MenuTarget::Wire(wire)) => {
                 self.open_insert_node(wire.clone(), menu.at, menu.screen);
                 true
+            }
+            (Command::AddWaypoint, MenuTarget::Wire(wire)) => {
+                self.set_waypoint(host, wire, Some(menu.at))
+            }
+            (Command::RemoveWaypoint, MenuTarget::Wire(wire)) => {
+                self.set_waypoint(host, wire, None)
             }
             (Command::DeleteWire, MenuTarget::Wire(wire)) => self.remove_wire(host, wire),
             (Command::Disconnect, MenuTarget::Port { node, port, input }) => {
@@ -554,7 +590,12 @@ mod tests {
         editor.open_menu(MenuTarget::Wire(wire), [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(
             commands(&editor),
-            [Command::InsertNode, Command::DeleteWire]
+            [
+                Command::InsertNode,
+                Command::AddWaypoint,
+                Command::RemoveWaypoint,
+                Command::DeleteWire
+            ]
         );
         // An unwired port cannot be disconnected but can be watched.
         let port = MenuTarget::Port {
@@ -564,6 +605,21 @@ mod tests {
         };
         let entries = editor.entries_for(&port);
         assert!(!entries[0].enabled && entries[1].enabled);
+    }
+
+    #[test]
+    fn rerouting_is_a_layout_edit_with_undo() {
+        let (mut editor, mut host) = opened();
+        let wire = ((id(1), "then".to_owned()), (id(2), "in".to_owned()));
+        editor.open_menu(
+            MenuTarget::Wire(wire.clone()),
+            [50.0, 80.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(editor.run_command(&mut host, Command::AddWaypoint));
+        assert_eq!(editor.canvas.waypoints.get(&wire), Some(&[50.0, 80.0]));
+        editor.undo(&mut host);
+        assert!(!editor.canvas.waypoints.contains_key(&wire));
     }
 
     #[test]

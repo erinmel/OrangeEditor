@@ -20,6 +20,9 @@ use serde_json::{Value as Json, json};
 /// One end of a wire: a node and the name of one of its ports.
 pub type PortEnd<'a> = (NodeId, &'a str);
 
+/// Both ends of a wire with owned port names.
+pub type WireEnds = ((NodeId, String), (NodeId, String));
+
 pub(crate) fn collection_mode(ty: &str) -> Option<&'static str> {
     if ty.starts_with("core/list@1<") {
         Some("list")
@@ -452,6 +455,65 @@ pub(crate) fn place_command(node: NodeId, at: Option<[f32; 2]>) -> DocCommand {
         path: vec!["nodes".to_owned(), node.to_string()],
         value: at.map(|[x, y]| json!({"x": f64::from(x.round()), "y": f64::from(y.round())})),
     })
+}
+
+impl Draft {
+    /// Top-level layout waypoints keyed by the wire ends. The canvas edits its first waypoint.
+    pub fn wire_waypoints(&self) -> impl Iterator<Item = (WireEnds, [f32; 2])> + '_ {
+        let layout = self.document().editor().get("edges");
+        self.document()
+            .root()
+            .edges
+            .values()
+            .filter_map(move |edge| {
+                let saved = layout?.get(edge.id.to_string())?["waypoints"].get(0)?;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "canvas coordinates are f32"
+                )]
+                let point = [
+                    saved.get(0)?.as_f64()? as f32,
+                    saved.get(1)?.as_f64()? as f32,
+                ];
+                point.into_iter().all(f32::is_finite).then(|| {
+                    (
+                        (
+                            (edge.from.node, edge.from.port.to_string()),
+                            (edge.to.node, edge.to.port.to_string()),
+                        ),
+                        point,
+                    )
+                })
+            })
+    }
+
+    /// Sets or removes a top-level wire's layout waypoint without changing connectivity.
+    pub fn set_wire_waypoint(
+        &mut self,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+        at: Option<[f32; 2]>,
+    ) -> Result<bool, HostError> {
+        let (from, to) = (port_ref(from)?, port_ref(to)?);
+        let edge = self
+            .document()
+            .root()
+            .edges
+            .values()
+            .find(|edge| edge.from == from && edge.to == to)
+            .ok_or_else(|| refused(&"there is no such wire"))?;
+        if at.is_some_and(|point| !point.into_iter().all(f32::is_finite)) {
+            return Err(refused(&"the waypoint needs finite coordinates"));
+        }
+        self.layout(vec![DocCommand::Layout(LayoutCommand::Set {
+            path: vec![
+                "edges".to_owned(),
+                edge.id.to_string(),
+                "waypoints".to_owned(),
+            ],
+            value: at.map(|[x, y]| json!([[x.round(), y.round()]])),
+        })])
+    }
 }
 
 impl Host {
