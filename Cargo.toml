@@ -60,7 +60,7 @@ symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "
 symphonia-opus = "=0.1.1"
 thiserror = "=2.0.21"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
-ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 uuid = { version = "=1.29.0", features = ["serde"] }
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
 webpki-roots = "=1.0.11"
