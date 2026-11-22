@@ -151,7 +151,3 @@ measurement and the Git workflow.
 
 [Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md) describe how to work
 in this repository.
-
-este es un cambio
-este es un cambio local
-este es otro cambio
