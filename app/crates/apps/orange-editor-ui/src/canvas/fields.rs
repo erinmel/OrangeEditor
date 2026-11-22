@@ -625,10 +625,40 @@ impl Canvas {
                         let current = (!value.is_null()).then(|| value.to_string());
                         let key = pointer_of(name);
                         let ty = if whole { "core/i64@1" } else { "core/f64@1" };
+                        let (slider, number_slot) = if let Some(range) =
+                            crate::properties::AudioRange::of(node, name, schema)
+                            && let Some(value) = value.as_f64()
+                        {
+                            let split = slot.right() - (85.0 * zoom).min(slot.width() * 0.5);
+                            let track = Rect::from_min_max(
+                                slot.min,
+                                Pos2::new(split - 6.0 * zoom, slot.bottom()),
+                            );
+                            let slider = ui
+                                .scope_builder(
+                                    UiBuilder::new().max_rect(track).id_salt(id.with("slider")),
+                                    |ui| {
+                                        ui.set_clip_rect(ui.clip_rect().intersect(track));
+                                        ui.spacing_mut().interact_size.y = track.height();
+                                        range.slider(ui, id, value)
+                                    },
+                                )
+                                .inner;
+                            (
+                                slider,
+                                Rect::from_min_max(Pos2::new(split, slot.top()), slot.max),
+                            )
+                        } else {
+                            (None, slot)
+                        };
+                        if let Some(value) = slider {
+                            return setting_number(node, name, schema, &value.to_string())
+                                .and_then(set);
+                        }
                         let typed = self.number_control(
                             ui,
                             (node.id, &key),
-                            slot,
+                            number_slot,
                             id,
                             (current.as_deref(), None),
                             (whole, ty, unit(name)),
@@ -988,6 +1018,9 @@ fn setting_number(
         return watch_number_value(typed, matches!(name, "hold" | "cooldown")).ok();
     }
     let number: f64 = typed.trim().parse().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
     let least = schema["minimum"].as_f64().unwrap_or(f64::MIN);
     let most = schema["maximum"].as_f64().unwrap_or(f64::MAX);
     let number = number.clamp(least, most);

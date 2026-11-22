@@ -301,6 +301,76 @@ pub const COMMON_TYPES: [&str; 6] = [
 /// Nanoseconds in a millisecond: lengths of time are typed in milliseconds.
 const NANOS_PER_MILLI: f64 = 1_000_000.0;
 
+/// Display scaling for bounded audio settings. The provider schema owns the valid range.
+#[derive(Clone, Copy)]
+pub(crate) struct AudioRange {
+    min: f64,
+    max: f64,
+    logarithmic: bool,
+}
+
+impl AudioRange {
+    pub(crate) fn of(node: &NodeView, name: &str, schema: &Json) -> Option<Self> {
+        if !node.definition.starts_with("org.orange.audio/")
+            || !matches!(schema["type"].as_str(), Some("number" | "integer"))
+        {
+            return None;
+        }
+        let (min, max) = (schema["minimum"].as_f64()?, schema["maximum"].as_f64()?);
+        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
+            min,
+            max,
+            logarithmic: min > 0.0 && name.ends_with("_hz"),
+        })
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "normalized screen coordinate"
+    )]
+    fn fraction(self, value: f64) -> f32 {
+        let value = value.clamp(self.min, self.max);
+        if self.logarithmic {
+            ((value / self.min).ln() / (self.max / self.min).ln()) as f32
+        } else {
+            ((value - self.min) / (self.max - self.min)) as f32
+        }
+    }
+
+    fn value(self, fraction: f32) -> f64 {
+        if fraction <= 0.0 {
+            self.min
+        } else if fraction >= 1.0 {
+            self.max
+        } else if self.logarithmic {
+            self.min * (self.max / self.min).powf(f64::from(fraction))
+        } else {
+            self.min + f64::from(fraction) * (self.max - self.min)
+        }
+    }
+
+    pub(crate) fn slider(self, ui: &mut egui::Ui, id: egui::Id, value: f64) -> Option<f64> {
+        let id = id.with("audio-drag");
+        let mut fraction = ui
+            .data(|data| data.get_temp::<f32>(id))
+            .unwrap_or_else(|| self.fraction(value));
+        let marks = if self.logarithmic {
+            [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0].map(|at| self.fraction(at))
+        } else if self.min < 0.0 && self.max > 0.0 {
+            [0.0, 0.25, self.fraction(0.0), 0.75, 1.0]
+        } else {
+            [0.0, 0.25, 0.5, 0.75, 1.0]
+        };
+        let response = orange_ui_controls::marked_slider(ui, Surface::Panel, &mut fraction, &marks);
+        if response.dragged() {
+            ui.data_mut(|data| data.insert_temp(id, fraction));
+            return None;
+        }
+        ui.data_mut(|data| data.remove::<f32>(id));
+        (response.changed() || response.drag_stopped()).then(|| self.value(fraction))
+    }
+}
+
 pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'static str> {
     if node.definition != "org.orange.audio/noise-gate" {
         return None;
@@ -1078,6 +1148,23 @@ impl Editor {
                 | Field::WatchNumber { .. }
                 | Field::Time
                 | Field::Text => {
+                    if let Some(range) = AudioRange::of(node, name, schema)
+                        && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
+                    {
+                        let id = ui.make_persistent_id((&node.id, &pointer));
+                        if let Some(value) = range.slider(ui, id, value) {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "an integer setting rounds the bounded slider position"
+                            )]
+                            let literal = if schema["type"] == "integer" {
+                                json!(value.round() as i64)
+                            } else {
+                                json!(value)
+                            };
+                            changed = Some(Change::Setting(pointer.clone(), Some(literal)));
+                        }
+                    }
                     let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
                     let hint = if needed { "required" } else { "optional" };
@@ -1600,6 +1687,10 @@ pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'
         ("core/on-watch", _) => watch_label(choice),
         ("core/for-each", "list") => t("for-each-list"),
         ("core/for-each", "map") => t("for-each-map"),
+        ("org.orange.audio/filter", "low-pass") => t("audio-filter-low"),
+        ("org.orange.audio/filter", "high-pass") => t("audio-filter-high"),
+        ("org.orange.audio/filter", "band-pass") => t("audio-filter-band"),
+        ("org.orange.audio/filter", "notch") => t("audio-filter-notch"),
         ("org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp", "rfc3339") => {
             t("timestamp-rfc3339")
         }

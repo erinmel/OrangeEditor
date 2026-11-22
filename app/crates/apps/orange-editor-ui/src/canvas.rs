@@ -33,7 +33,7 @@ pub const FOOTER_HEIGHT: f32 = card::END;
 /// Distance between the columns and rows of an automatic layout.
 pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 /// The zoom range.
-pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.2..=2.5;
+pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.2..=1.75;
 pub(crate) const GRID_STEPS: [u16; 4] = [12, 24, 36, 48];
 pub(crate) const DEFAULT_GRID_STEP: u16 = 24;
 

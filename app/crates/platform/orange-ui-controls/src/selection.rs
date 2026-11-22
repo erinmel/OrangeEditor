@@ -197,7 +197,7 @@ pub fn continuous_slider(
 ) -> Response {
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
-    let response = slider_input(ui, Slider::new(value, range));
+    let response = slider_input(ui, Slider::new(value, range), 22.0);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "normalized screen coordinate"
@@ -208,6 +208,28 @@ pub fn continuous_slider(
         ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
     };
     SliderTrack::new(&response, fraction).paint(ui, surface, &response, |_, _, _| {});
+    response
+}
+
+/// Adjusts a normalized value continuously, with visual marks that do not snap it.
+pub fn marked_slider(ui: &mut Ui, surface: Surface, fraction: &mut f32, marks: &[f32]) -> Response {
+    let height = ui.spacing().interact_size.y;
+    let response = slider_input(
+        ui,
+        Slider::new(fraction, 0.0..=1.0).smart_aim(false),
+        height,
+    );
+    let track = SliderTrack::new(&response, *fraction);
+    track.paint(ui, surface, &response, |painter, active, idle| {
+        for mark in marks {
+            let x = egui::lerp(track.travel, *mark);
+            painter.vline(
+                x,
+                egui::Rangef::new(track.thumb.y - height * 0.20, track.thumb.y + height * 0.20),
+                Stroke::new(1.0, if x <= track.thumb.x { active } else { idle }),
+            );
+        }
+    });
     response
 }
 
@@ -237,6 +259,7 @@ pub fn stepped_slider(
         Slider::new(value, start..=end)
             .step_by(f64::from(step))
             .smart_aim(false),
+        22.0,
     );
     let track = SliderTrack::new(
         &response,
@@ -370,11 +393,11 @@ impl SliderTrack {
     }
 }
 
-fn slider_input(ui: &mut Ui, slider: Slider<'_>) -> Response {
+fn slider_input(ui: &mut Ui, slider: Slider<'_>, height: f32) -> Response {
     let width = ui.available_width().min(320.0);
     ui.scope(|ui| {
         ui.spacing_mut().slider_width = width;
-        ui.spacing_mut().interact_size.y = 22.0;
+        ui.spacing_mut().interact_size.y = height;
         let widgets = &mut ui.visuals_mut().widgets;
         widgets.noninteractive.bg_fill = egui::Color32::TRANSPARENT;
         widgets.noninteractive.fg_stroke = Stroke::NONE;

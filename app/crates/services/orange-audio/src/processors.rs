@@ -352,7 +352,7 @@ impl Process for Gain {
 
 const FILTER_CUTOFF: Setting = Setting("cutoff_hz", 20.0, 20_000.0, 1_000.0);
 const FILTER_Q: Setting = Setting("q", 0.1, 10.0, std::f64::consts::FRAC_1_SQRT_2);
-const FILTER_MODES: [&str; 3] = ["low-pass", "high-pass", "band-pass"];
+const FILTER_MODES: [&str; 4] = ["low-pass", "high-pass", "band-pass", "notch"];
 
 pub(crate) fn filter_settings(definition: Definition) -> Definition {
     let definition = definition.setting(
@@ -375,7 +375,7 @@ pub(crate) fn filter(config: &Map<String, Json>) -> Result<Make, String> {
     let mode = match config.get("mode") {
         None | Some(Json::Null) => "low-pass".to_owned(),
         Some(Json::String(mode)) if FILTER_MODES.contains(&mode.as_str()) => mode.clone(),
-        Some(_) => return Err("`mode` is low-pass, high-pass or band-pass".to_owned()),
+        Some(_) => return Err("`mode` is low-pass, high-pass, band-pass or notch".to_owned()),
     };
     let cutoff = FILTER_CUTOFF.read(config)?;
     let q = FILTER_Q.read(config)?;
@@ -388,6 +388,7 @@ pub(crate) fn filter(config: &Map<String, Json>) -> Result<Make, String> {
         let b = match mode.as_str() {
             "high-pass" => [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0],
             "band-pass" => [alpha, 0.0, -alpha],
+            "notch" => [1.0, -2.0 * cos, 1.0],
             _ => [(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0],
         };
         let a0 = 1.0 + alpha;
@@ -634,6 +635,7 @@ mod tests {
         assert!(level("band-pass", 1_000.0) > 0.45);
         assert!(level("band-pass", 100.0) < 0.1);
         assert!(level("band-pass", 10_000.0) < 0.1);
-        assert!(filter(&config(json!({"mode": "notch"}))).is_err());
+        assert!(level("notch", 1_000.0) < 0.01);
+        assert!(level("notch", 100.0) > 0.45);
     }
 }

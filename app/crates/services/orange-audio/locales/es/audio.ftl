@@ -18,7 +18,7 @@ org-orange-audio-record-label = Grabar en archivo
 org-orange-audio-audio-source-label = Fuente de audio
 org-orange-audio-audio-source-description = Proporciona la señal de un dispositivo o archivo. Conéctala a un analizador, una salida o un grabador.
 org-orange-audio-audio-source-keywords = entrada de audio, micrófono, aplicación, sistema, cable virtual, archivo
-org-orange-audio-audio-format-label = Formato de audio
+org-orange-audio-audio-format-label = Información de la señal
 org-orange-audio-audio-format-description = Indica la frecuencia de muestreo y el número de canales de la señal.
 org-orange-audio-live-level-label = Nivel
 org-orange-audio-live-level-description = Mide en dBFS el nivel de una señal mientras cambia.
@@ -69,7 +69,7 @@ org-orange-audio-gain-label = Ganancia
 org-orange-audio-gain-description = Sube o baja el volumen de una señal en decibelios.
 org-orange-audio-gain-keywords = volumen, más fuerte, más bajo, amplificar, atenuar, decibelios, efecto de audio
 org-orange-audio-filter-label = Filtro
-org-orange-audio-filter-description = Deja pasar las frecuencias graves (paso bajo), agudas (paso alto) o medias (paso banda) de una señal alrededor del corte.
+org-orange-audio-filter-description = Deja pasar las frecuencias graves (paso bajo), agudas (paso alto) o medias (paso banda) de una señal alrededor del corte. El modo de rechazo atenúa una banda estrecha alrededor del corte.
 org-orange-audio-filter-keywords = ecualizador, eq, paso bajo, paso alto, paso banda, graves, agudos, frecuencia, efecto de audio
 
 org-orange-audio-loop-description = Repite el archivo de sonido hasta que Control de sonido envía Detener a la misma salida. El paso siguiente se ejecuta al detener el bucle.

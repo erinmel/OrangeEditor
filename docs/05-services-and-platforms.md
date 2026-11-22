@@ -514,7 +514,7 @@ Transport belongs to the file source: Play, Pause, Resume, Stop and Jump to time
 
 The live Audio source node publishes the existing `org.orange.audio/stream@1`
 record. Level and Band level take that stream and publish `f64` dBFS values.
-Audio format returns its sample rate and channel count. Transient and Source
+Stream info returns its sample rate in Hz and channel count on the existing format output. Filter also offers a notch mode that rejects a band around the cutoff. Transient and Source
 finished take the stream as a root argument. Source control applies transport to
 that file source, and Sound control applies transport and gain to the chosen
 output. Band trigger takes the stream directly and emits the measured dBFS on

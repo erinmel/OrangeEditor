@@ -410,9 +410,10 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .source_outputs("finished", None, 0);
     let audio_format = stream_input(live(
         "audio-format",
-        "Audio format",
-        "Reports the rate and channel count of a stream.",
+        "Stream info",
+        "Shows the sample rate in Hz and the number of channels in a live audio stream.",
     ))
+    .keywords("audio format, sample rate, hz, channels, mono, stereo")
     .live("format", FORMAT_TYPE);
     let frequency_splitter = entry(
         "multiband-spectrum",
@@ -473,7 +474,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     let filter = crate::processors::filter_settings(stream_input(live(
         "filter",
         "Filter",
-        "Keeps the low (low-pass), high (high-pass) or middle (band-pass) frequencies of a stream around the cutoff.",
+        "Keeps the frequencies below, above, or around the cutoff. The notch mode rejects a narrow band around the cutoff.",
     )))
     .keywords("eq, equalizer, low pass, high pass, band pass, bass, treble, frequency, audio effect")
     .live("filtered_stream", STREAM_TYPE);

@@ -4,7 +4,7 @@ use egui::{Button, ComboBox, InnerResponse, Response, Stroke, Ui};
 pub mod color_picker;
 pub mod icons;
 mod selection;
-pub use selection::{StepLabels, continuous_slider, segmented, stepped_slider};
+pub use selection::{StepLabels, continuous_slider, marked_slider, segmented, stepped_slider};
 
 pub const SPACE_SMALL: f32 = 4.0;
 pub const SPACE_MEDIUM: f32 = 8.0;

@@ -502,6 +502,7 @@ spectrum-await-audio = Waiting for audio samples
 spectrum-connect = Connect an audio source
 audio-setting-window-ms = Measurement time (ms)
 audio-setting-threshold-db = Threshold
+audio-stream-info-value = { $rate } Hz · { $channels } ch
 audio-setting-release-db = Reset at (dBFS)
 audio-setting-hold-ms = Hold
 audio-setting-window-help = How much sound each reading measures. A longer time smooths out short changes.
@@ -661,3 +662,8 @@ function-package-save = Save package…
 rename-node-default = Leave blank to use the node type name
 rename-inline-hint = Enter to apply the name. Esc to cancel.
 make-function-help = Incoming value wires become parameters. Outgoing value wires become results. Keep the nodes that supply arguments or use results outside the selection.
+
+audio-filter-low = Low-pass
+audio-filter-high = High-pass
+audio-filter-band = Band-pass
+audio-filter-notch = Notch (band-stop)

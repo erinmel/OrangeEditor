@@ -173,6 +173,21 @@ fn presented_value(
         return None;
     }
     let short = match value {
+        orange_host::Value::Record(record) if record.ty.as_str() == "org.orange.audio/format@1" => {
+            match record.fields.as_ref() {
+                [
+                    Some(orange_host::Value::U64(rate)),
+                    Some(orange_host::Value::U64(channels)),
+                ] => tf(
+                    "audio-stream-info-value",
+                    &[
+                        ("rate", rate.to_string().into()),
+                        ("channels", channels.to_string().into()),
+                    ],
+                ),
+                _ => canvas::value_text(enums, ty, value),
+            }
+        }
         orange_host::Value::F64(number) => decimal(*number),
         orange_host::Value::F32(number) => decimal(f64::from(*number)),
         _ => canvas::value_text(enums, ty, value),

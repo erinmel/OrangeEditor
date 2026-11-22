@@ -502,6 +502,7 @@ spectrum-await-audio = Esperando muestras de audio
 spectrum-connect = Conecta una fuente de audio
 audio-setting-window-ms = Tiempo de medición (ms)
 audio-setting-threshold-db = Umbral
+audio-stream-info-value = { $rate } Hz · { $channels } canales
 audio-setting-release-db = Rearmar a (dBFS)
 audio-setting-hold-ms = Duración
 audio-setting-window-help = Cuánto audio abarca cada lectura. Un tiempo mayor suaviza los cambios breves.
@@ -658,3 +659,8 @@ function-package-save = Guardar paquete…
 rename-node-default = Déjalo vacío para usar el nombre del tipo de nodo
 rename-inline-hint = Pulsa Intro para aplicar el nombre o Esc para cancelar.
 make-function-help = Los cables de valores entrantes se convierten en parámetros y los salientes en resultados. Deja fuera de la selección los nodos que proporcionan argumentos o usan los resultados.
+
+audio-filter-low = Paso bajo
+audio-filter-high = Paso alto
+audio-filter-band = Paso de banda
+audio-filter-notch = Rechazo de banda
