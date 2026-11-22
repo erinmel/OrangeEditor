@@ -54,3 +54,9 @@ name-org-orange-json-from-i64 = Integer to JSON
 name-org-orange-json-from-u64 = Unsigned Integer to JSON
 name-org-orange-json-from-f64 = Number to JSON
 name-org-orange-json-null = JSON Null
+
+name-org-orange-math-map-range = Map Range
+port-from-min = Source start
+port-from-max = Source end
+port-to-min = Target start
+port-to-max = Target end

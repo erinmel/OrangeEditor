@@ -287,3 +287,9 @@ port-separator = separador
 port-path = ruta
 port-data = datos
 port-payload = datos
+
+name-org-orange-math-map-range = Remapear intervalo
+port-from-min = Inicio de origen
+port-from-max = Fin de origen
+port-to-min = Inicio de destino
+port-to-max = Fin de destino

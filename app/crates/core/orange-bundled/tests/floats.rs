@@ -67,6 +67,7 @@ fn answer(op: Op) -> (Vec<f64>, f64) {
         Op::Log2 => (vec![8.0], 3.0),
         Op::Log10 => (vec![1.0], 0.0),
         Op::Power => (vec![2.0, 10.0], 1024.0),
+        Op::MapRange => (vec![5.0, 0.0, 10.0, 100.0, 200.0], 150.0),
         Op::Floor => (vec![-2.5], -3.0),
         Op::Ceiling => (vec![-2.5], -2.0),
         Op::Truncate => (vec![-2.5], -2.0),
@@ -807,4 +808,36 @@ fn real_state_demands_are_stable_across_pump_slices() {
         run.dispose().unwrap();
         assert_eq!(run.retention().reserved_bytes, 0);
     }
+}
+
+#[test]
+fn map_range_clamps_and_accepts_descending_ranges() {
+    let operation = finite(Op::MapRange);
+    let evaluate = |values: [f64; 5]| operation.evaluate(&values.map(Value::F64));
+    assert!(matches!(
+        evaluate([15.0, 0.0, 10.0, 100.0, 200.0]),
+        Ok(Value::F64(200.0))
+    ));
+    assert!(matches!(
+        evaluate([2.5, 10.0, 0.0, 100.0, 200.0]),
+        Ok(Value::F64(175.0))
+    ));
+    assert!(matches!(
+        evaluate([5.0, 0.0, 0.0, 0.0, 10.0]),
+        Err(KernelError::DivideByZero)
+    ));
+}
+
+#[test]
+fn map_range_can_extrapolate_and_span_the_finite_range() {
+    let operation = bind(Op::MapRange, F64, json!({"clamp": false}));
+    let evaluate = |values: [f64; 5]| operation.evaluate(&values.map(Value::F64));
+    assert!(matches!(
+        evaluate([15.0, 0.0, 10.0, 100.0, 200.0]),
+        Ok(Value::F64(250.0))
+    ));
+    assert!(matches!(
+        evaluate([0.0, -f64::MAX, f64::MAX, -1.0, 1.0]),
+        Ok(Value::F64(0.0))
+    ));
 }

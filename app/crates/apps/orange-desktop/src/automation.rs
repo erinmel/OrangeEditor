@@ -983,6 +983,15 @@ fn compute(host: &mut Host, template: &str, definition: &str, ty: &str, variant:
             ("org.orange.time/parse-timestamp", "text") => Some(
                 json!({"type": "core/string@1", "value": "2026-11-20T12:34:56.123456789-06:00"}),
             ),
+            ("org.orange.math/map-range", "from_max" | "to_max") => match port.ty.as_deref() {
+                Some("core/f64@1") => Some(json!({
+                    "type": "core/f64@1", "bits": format!("{:016x}", 1.5_f64.to_bits())
+                })),
+                Some("core/f32@1") => Some(json!({
+                    "type": "core/f32@1", "bits": format!("{:08x}", 1.5_f32.to_bits())
+                })),
+                _ => None,
+            },
             _ => port.ty.as_deref().and_then(|ty| sample(ty, variant)),
         };
         if let Some(literal) = literal {

@@ -348,6 +348,8 @@ Square root, rounding, negate, absolute, minimum, maximum, clamp and remainder a
 exact IEEE operations. Exponential, the logarithms and power use the platform
 library: last-bit results may differ between platforms, and replay determinism is
 scoped to the locked implementation and platform ([03](03-data-and-execution.md)).
+**Map Range.** `org.orange.math/map-range@1` maps a float from one interval to another. All five inputs and the result have the same f32 or f64 type. Reversed intervals are accepted. Equal source endpoints fault with DivideByZero. The `clamp` boolean defaults to true and confines the result to the target interval. When false, the operation extrapolates. It follows the math package's finite and IEEE policies.
+
 The remaining casts are a later L02 increment.
 
 L02c trigonometry, float predicates and XOR (2026-11-08): seventeen more `T: float`
