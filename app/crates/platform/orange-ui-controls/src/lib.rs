@@ -84,13 +84,15 @@ impl Theme {
     }
 
     pub fn of(ui: &Ui) -> Self {
-        if let Some(theme) = ui
-            .ctx()
-            .data(|data| data.get_temp(egui::Id::unique("orange-ui-controls-theme")))
+        Self::resolve(ui.ctx(), ui.visuals())
+    }
+
+    fn resolve(ctx: &egui::Context, visuals: &egui::Visuals) -> Self {
+        if let Some(theme) =
+            ctx.data(|data| data.get_temp(egui::Id::unique("orange-ui-controls-theme")))
         {
             return theme;
         }
-        let visuals = ui.visuals();
         let text = visuals.strong_text_color();
         let primary = visuals.selection.bg_fill;
         let [r, g, b, _] = egui::Rgba::from(primary).to_array();
@@ -1027,6 +1029,71 @@ pub fn search(
     field.response
 }
 
+/// Consumes unmodified navigation keys reserved by a focused control.
+pub fn consume_plain_keys<const N: usize>(ui: &Ui, keys: [egui::Key; N]) -> [bool; N] {
+    ui.input_mut(|input| keys.map(|key| input.consume_key(egui::Modifiers::NONE, key)))
+}
+
+/// Draws wrapping toolbar actions followed by a field that fills the remaining
+/// row. When the field would fall below its minimum width, it wraps below.
+pub fn action_row<R>(
+    ui: &mut Ui,
+    field_min: f32,
+    actions: impl FnOnce(&mut Ui),
+    field: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let full_width = ui.available_width().max(0.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(SPACE_MEDIUM, SPACE_SMALL);
+        ControlSize::Standard.apply(ui.spacing_mut());
+        actions(ui);
+        let remaining = ui.available_rect_before_wrap().width().max(0.0);
+        let width = if remaining >= field_min.min(full_width) {
+            remaining
+        } else {
+            ui.end_row();
+            full_width
+        };
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, CONTROL_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            field,
+        )
+        .inner
+    })
+    .inner
+}
+
+/// Two-column form grid with the same spacing as the shared fields.
+pub fn form_grid(id: impl egui::AsIdSalt) -> egui::Grid {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing(egui::vec2(SPACE_LARGE, SPACE_MEDIUM))
+}
+
+/// A wrapping inline message. The caller supplies the text, including the
+/// meaning of the state, so its color is only a visual cue.
+pub fn notice(ui: &mut Ui, tone: ButtonTone, text: impl Into<egui::WidgetText>) -> Response {
+    let theme = Theme::of(ui);
+    let accent = match tone {
+        ButtonTone::Danger => theme.danger,
+        ButtonTone::Warning => ui.visuals().warn_fg_color,
+        ButtonTone::Success => egui::Color32::from_rgb(64, 154, 108),
+        ButtonTone::Info => theme.focus,
+        ButtonTone::Neutral => theme.border,
+    };
+    egui::Frame::new()
+        .fill(theme.dialog.lerp_to_gamma(accent, 0.11))
+        .stroke(Stroke::new(1.0, theme.border.lerp_to_gamma(accent, 0.52)))
+        .corner_radius(CONTROL_RADIUS)
+        .inner_margin(egui::vec2(SPACE_MEDIUM, SPACE_SMALL))
+        .show(ui, |ui| {
+            ui.visuals_mut().override_text_color = Some(theme.text);
+            ui.add(egui::Label::new(text).wrap())
+        })
+        .inner
+}
+
 /// A themed single-line text field for forms and in-place editors.
 pub fn text_field(
     ui: &mut Ui,
@@ -1040,7 +1107,9 @@ pub fn text_field(
         ui.visuals_mut().extreme_bg_color = theme.inset;
         egui::TextEdit::singleline(text)
             .id(id)
-            .hint_text(hint)
+            .align(egui::Align2::LEFT_CENTER)
+            .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
+            .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
             .margin(egui::Margin::symmetric(8, 4))
             .desired_width(f32::INFINITY)
@@ -1073,24 +1142,79 @@ pub fn text_area(
     })
 }
 
-/// The shared frame for settings, confirmation and form windows.
-pub fn dialog_frame(ui: &Ui) -> egui::Frame {
-    let theme = Theme::of(ui);
-    egui::Frame::window(ui.style())
+fn surface_frame(frame: egui::Frame, theme: Theme) -> egui::Frame {
+    frame
         .fill(theme.dialog)
-        .stroke(egui::Stroke::new(1.0, theme.border))
+        .stroke(Stroke::new(1.0, theme.border))
         .corner_radius(CONTROL_RADIUS)
         .inner_margin(SPACE_MEDIUM)
 }
 
+/// The shared frame for settings, confirmation and form windows.
+pub fn dialog_frame(ui: &Ui) -> egui::Frame {
+    surface_frame(egui::Frame::window(ui.style()), Theme::of(ui))
+}
+
+/// Builds a window using the same surface and insets as modal dialogs.
+pub fn dialog_window(
+    ctx: &egui::Context,
+    title: impl Into<egui::WidgetText>,
+) -> egui::Window<'static> {
+    let style = ctx.style_of(ctx.theme());
+    let theme = Theme::resolve(ctx, &style.visuals);
+    egui::Window::new(title).frame(surface_frame(egui::Frame::window(&style), theme))
+}
+
+/// Builds a modal with the shared dialog surface.
+pub fn modal(ctx: &egui::Context, id: egui::Id) -> egui::Modal {
+    let style = ctx.style_of(ctx.theme());
+    let theme = Theme::resolve(ctx, &style.visuals);
+    egui::Modal::new(id).frame(surface_frame(egui::Frame::window(&style), theme))
+}
+
 /// The shared frame for menus, popups and anchored editors.
 pub fn popup_frame(ui: &Ui) -> egui::Frame {
-    let theme = Theme::of(ui);
-    egui::Frame::popup(ui.style())
-        .fill(theme.dialog)
-        .stroke(egui::Stroke::new(1.0, theme.border))
-        .corner_radius(CONTROL_RADIUS)
-        .inner_margin(SPACE_MEDIUM)
+    surface_frame(egui::Frame::popup(ui.style()), Theme::of(ui))
+}
+
+/// Draws a foreground popup with the shared screen inset and preferred content width.
+pub fn anchored_popup<R>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    anchor: egui::Pos2,
+    preferred_width: f32,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<R> {
+    let bounds = ctx.content_rect().shrink(SPACE_SMALL);
+    let width = preferred_width.min((bounds.width() - 2.0 * (SPACE_MEDIUM + 1.0)).max(1.0));
+    egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(bounds.clamp(anchor))
+        .constrain_to(bounds)
+        .show(ctx, |ui| {
+            popup_frame(ui)
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    contents(ui)
+                })
+                .inner
+        })
+}
+
+/// A leading label and trailing shortcut, with shared row height and center line.
+pub fn menu_item(
+    ui: &mut Ui,
+    icon: egui::Atom<'_>,
+    label: &str,
+    shortcut: &str,
+    enabled: bool,
+) -> Response {
+    let width = ui.available_width();
+    let item = Button::new((icon, label))
+        .shortcut_text(shortcut)
+        .min_size(egui::vec2(width, CONTROL_HEIGHT))
+        .truncate();
+    button(ui, Surface::Dialog, Action::Menu, enabled, item)
 }
 
 /// Draws a compact icon button and gives the painter a centered square.
@@ -1244,6 +1368,147 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             }]);
             assert_eq!(text.is_empty(), !pressed);
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn action_row_preserves_order_and_wraps_the_field_at_narrow_widths() {
+        for (width, wraps) in [(200.0, true), (420.0, false)] {
+            let ctx = egui::Context::default();
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 220.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let bounds = ui.available_rect_before_wrap();
+                    let mut action = egui::Rect::NOTHING;
+                    let field = action_row(
+                        ui,
+                        120.0,
+                        |ui| {
+                            action = ui
+                                .allocate_exact_size(
+                                    egui::vec2(124.0, CONTROL_HEIGHT),
+                                    egui::Sense::hover(),
+                                )
+                                .0;
+                        },
+                        |ui| {
+                            ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), CONTROL_HEIGHT),
+                                egui::Sense::hover(),
+                            )
+                            .0
+                        },
+                    );
+                    assert!(
+                        bounds.expand(1.0).contains_rect(field),
+                        "{width}: {bounds:?} does not contain {field:?}"
+                    );
+                    if wraps {
+                        assert!(
+                            field.top() >= action.bottom(),
+                            "{width}: {action:?}, {field:?}"
+                        );
+                        assert!((field.left() - bounds.left()).abs() < 1.0);
+                    } else {
+                        assert!(field.left() >= action.right());
+                        assert!((field.center().y - action.center().y).abs() < 1.0);
+                    }
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn anchored_popup_stays_inside_the_screen_when_opened_at_an_edge() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(240.0, 180.0));
+        let mut shown = egui::Rect::NOTHING;
+        for _ in 0..3 {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    shown = anchored_popup(
+                        ui.ctx(),
+                        egui::Id::unique("edge-popup"),
+                        screen.right_bottom(),
+                        312.0,
+                        |ui| {
+                            ui.label("Popup near the bottom right");
+                        },
+                    )
+                    .response
+                    .rect;
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        assert!(screen.contains_rect(shown), "{shown:?} outside {screen:?}");
+    }
+
+    #[test]
+    fn notices_wrap_long_text_in_a_narrow_surface() {
+        let ctx = egui::Context::default();
+        let message = "Could not complete the requested operation. Review the details.";
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(148.0);
+            let row = notice(ui, ButtonTone::Danger, message);
+            assert!(row.rect.width() < 148.0);
+        });
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == message && text.galley.rows.len() > 1
+        )));
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn menu_labels_and_shortcut_share_a_center_line_in_both_themes() {
+        for visuals in [egui::Visuals::light(), egui::Visuals::dark()] {
+            let ctx = egui::Context::default();
+            ctx.set_visuals(visuals);
+            let mut row = egui::Rect::NOTHING;
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(200.0);
+                row = menu_item(
+                    ui,
+                    egui::Atom::custom(
+                        egui::IdSalt::new("sample-menu-icon"),
+                        egui::Vec2::splat(12.0),
+                    ),
+                    "Copy item",
+                    "Ctrl+C",
+                    true,
+                )
+                .rect;
+            });
+            let find = |caption| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == caption => {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let label = find("Copy item");
+            let shortcut = find("Ctrl+C");
+            assert!(row.contains_rect(label) && row.contains_rect(shortcut));
+            assert!(label.right() < shortcut.left());
+            assert!((label.center().y - shortcut.center().y).abs() < 2.5);
+            assert!((label.center().y - row.center().y).abs() < 2.5);
             output.drop_without_applying_deltas();
         }
     }

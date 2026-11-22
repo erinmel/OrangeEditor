@@ -726,7 +726,7 @@ impl Editor {
             .connection_label(&view.definition)
             .unwrap_or_else(|| t("configure-node").to_owned());
         let mut open = true;
-        egui::Window::new(label)
+        orange_ui_controls::dialog_window(ctx, label)
             .id(egui::Id::unique("node-config").with(node))
             .default_pos(position)
             .default_width(330.0)
@@ -2057,7 +2057,7 @@ impl Editor {
         let copyable = self.canvas.copyable_port_text(graph, *node, port, *input);
         let title = format!("{} · {}", self.canvas.display_name(view), port_label(port));
         let mut open = true;
-        egui::Window::new(title)
+        orange_ui_controls::dialog_window(ctx, title)
             .id(egui::Id::unique("orange-port-inspector"))
             .default_width(480.0)
             .collapsible(false)
@@ -2100,8 +2100,9 @@ impl Editor {
         }
         section(ui, if http { t("http-results") } else { t("values") });
         if let Some(why) = failure {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
+            orange_ui_controls::notice(
+                ui,
+                controls::ButtonTone::Danger,
                 tf("failed", &[("why", why.to_string().into())]),
             );
         }

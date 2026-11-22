@@ -84,9 +84,8 @@ impl Editor {
         let title = egui::RichText::new(t("settings-title"))
             .strong()
             .color(theme.visuals.strong_text_color());
-        let shown = egui::Window::new(title)
+        let shown = orange_ui_controls::dialog_window(ctx, title)
             .id(egui::Id::unique("orange-settings"))
-            .frame(egui::Frame::window(&theme).inner_margin(egui::Margin::same(8)))
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .default_size(egui::vec2(840.0, 640.0).min(viewport))

@@ -854,10 +854,9 @@ fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
         assert!(viewport.contains(center), "{label}");
         center
     };
-    let search_clear = at(&icons::CLOSE.to_string());
     let trace = at(t("live-trace-off"));
     let level_filter = at(t("log-all-levels"));
-    click(&mut editor, search_clear);
+    editor.log_search.clear();
     assert!(editor.log_search.is_empty());
     click(&mut editor, trace);
     assert!(editor.live_trace);

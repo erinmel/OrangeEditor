@@ -814,8 +814,9 @@ impl crate::Editor {
         if !edit.recording {
             if let Some(other) = conflict {
                 ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
+                    orange_ui_controls::notice(
+                        ui,
+                        controls::ButtonTone::Warning,
                         tf(
                             "already-assigned",
                             &[("action", action_label(other).into())],
@@ -831,7 +832,7 @@ impl crate::Editor {
                     .clicked();
                 });
             } else if binding.is_none() && !edit.text.trim().is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, t("shortcut-invalid"));
+                orange_ui_controls::notice(ui, controls::ButtonTone::Danger, t("shortcut-invalid"));
             }
         }
         if remove {

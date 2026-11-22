@@ -353,9 +353,10 @@ Names only on the left and Node cards on the right.
   rows as formatted plain text with severity, diagnostic code, affected node
   and message. **Clear selection** clears the checkboxes and **Copy selected
   problems** repeats the same plain-text copy.
+  Log uses the same element-first flex-row rule: level filter, live-trace and
+  clear actions come before search. Problems and Log do not add a separate
+  notebook inside the bottom diagnostics panel.
   The **Show the node** button jumps to the affected node.
-  **Copy visible problems** copies the current results with their severity,
-  diagnostic code when available, message and location.
   Search matches node names, text and diagnostic codes. Blockers appear first.
   The workspace badge counts blockers and warnings. Drafts have their own count in
   the panel.
@@ -401,9 +402,10 @@ severity choices and literal messages.
 
 ### 4.2 Shared controls
 
-Use the editor's public `orange_editor_ui::controls` module for choices, panel
-search, framed actions and menu rows. Applications embedding the editor can reuse
-these controls in their own layouts with their own egui theme.
+Use `orange-ui-controls` for reusable layout and presentation. The editor's
+public `orange_editor_ui::controls` module supplies its localized labels and
+icon defaults. Applications embedding the editor can reuse the controls with
+their own egui theme.
 Choose `Surface::Panel` in a dock or toolbar, `Surface::Dialog` in a window or
 modal, and `Surface::Card` for fields drawn on the canvas. Fills and borders are
 derived from that surface and the active theme. Canvas controls retain the card's
@@ -445,13 +447,21 @@ default fonts across platforms.
 | Outlined button | Use `Action::Outline` for Cancel, Close, and secondary dialog actions. Its resting fill matches the surrounding surface. |
 | Destructive button | Use `Action::Destructive` for commands that remove saved data. Pair a restrained error tint with an explicit label. Clear log is a neutral command with a centered trash icon and is disabled for an empty log. |
 | Toggle | Use `Action::Toggle` for pressed commands and filters, and the labeled toggle for a Boolean setting. Keep inactive toggles flat. Toggle and segmented controls share the selection fill and focus color. |
-| Menu row | Use `Action::Menu` for commands in context menus. Align the shared command icon, label and shortcut. The row gains a background on hover or focus. |
+| Menu row | Use `menu_item` for context commands. Center icons and text on the same row, align labels to the leading edge, and place shortcut labels at the trailing edge. |
+| Toolbar | Use `action_row` when actions precede a search field. Search fills the remaining width or wraps below when the dock is narrow. |
+| Form | Use `form_grid` for labels and fields, with shared column and row spacing. Single-line fields center text vertically. |
+| Window and popup | Use `dialog_window`, `modal`, or `anchored_popup` for shared surface, radius, border and inset. Keep command routing and close rules with the caller. |
+| Keyboard navigation | Use `consume_plain_keys` after deciding which control owns focus. Bindings and conflict rules belong to the editor. |
+| Notice | Use `notice` for an inline warning or error, with text that conveys the state. |
 | List row | Use the shared raised row surface for clickable search results. The palette owns node names, card previews, and the drag payload. |
 | Dialog actions | Put Cancel first, followed by one filled confirmation, in the shared recessed footer. Use the primary color for actions like Install and Save, and the destructive color for Remove. |
 
 Toolbar icon buttons and list rows retain their compact shapes and visible hover
-and focus states. Use the shared controls whenever a choice or action needs a
-visible boundary at rest.
+and focus states. When a screen introduces a repeated pattern, define its layout,
+spacing, and enabled and focused states in the shared crate before using it
+across screens. For changes to a shared component, exercise narrow and wide
+layouts, Light and Dark, keyboard focus, and localized text where relevant. Run
+the shared-control and editor tests before adopting the change more broadly.
 
 ## 5. Variables and connections
 

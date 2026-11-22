@@ -187,136 +187,132 @@ impl Editor {
         let mut close = false;
         let mut dragged = false;
         let bounds = ctx.content_rect().shrink(6.0);
-        let shown = egui::Area::new(egui::Id::unique("orange-quick-add"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen)
-            .constrain_to(bounds)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(304.0_f32.min((bounds.width() - 20.0).max(48.0)));
-                    ui.strong(if wired {
-                        t("connect-a-node")
-                    } else {
-                        t("add-a-node")
-                    });
-                    // The arrows move the choice, not the caret.
-                    let [up, down] = controls::consume_plain_keys(
-                        ui,
-                        [egui::Key::ArrowUp, egui::Key::ArrowDown],
-                    );
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut search)
-                            .hint_text(if wired {
-                                t("quick-add-wire-hint")
-                            } else {
-                                t("quick-add-hint")
-                            })
-                            .desired_width(f32::INFINITY),
-                    );
-                    if field.changed() {
-                        highlighted = 0;
-                    }
-                    let key = (
-                        search.clone(),
-                        self.language().to_owned(),
-                        host.registry().generation(),
-                    );
-                    if self
-                        .quick
-                        .as_ref()
-                        .is_some_and(|quick| quick.choices_key.as_ref() != Some(&key))
-                    {
-                        let choices = self.quick_choices(host, &search);
-                        if let Some(quick) = &mut self.quick {
-                            quick.choices_key = Some(key);
-                            quick.choices = choices;
-                        }
-                    }
-                    let choices = self
-                        .quick
-                        .as_ref()
-                        .map_or(&[][..], |quick| quick.choices.as_slice());
-                    let last = choices.len().min(SHOWN).saturating_sub(1);
-                    highlighted = highlighted.min(last);
-                    if down {
-                        highlighted = (highlighted + 1).min(last);
-                    }
-                    if up {
-                        highlighted = highlighted.saturating_sub(1);
-                    }
-                    if !focused {
-                        if ui.input(|input| input.focused) {
-                            field.request_focus();
-                        }
-                        focused = true;
-                    }
-                    let (enter, escape) = ui.input(|input| {
-                        (
-                            input.key_pressed(egui::Key::Enter),
-                            input.key_pressed(egui::Key::Escape),
-                        )
-                    });
-                    if escape {
-                        close = true;
-                    }
-                    if enter {
-                        picked = choices.get(highlighted).cloned();
-                    }
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
-                        .show(ui, |ui| {
-                            if choices.is_empty() {
-                                ui.weak(t("quick-add-no-match"));
-                            }
-                            for (index, choice) in choices.iter().take(SHOWN).enumerate() {
-                                let on = index == highlighted;
-                                let target = choice.input.as_deref().map(port_label);
-                                let detail = if choice.purpose.is_empty() {
-                                    choice.category.clone()
-                                } else {
-                                    format!("{} · {}", choice.category, choice.purpose)
-                                };
-                                let draft = self.document.as_ref().map(|document| &document.draft);
-                                let card = self
-                                    .node_search_previews
-                                    .then(|| self.previews.card(host, None, &choice.definition))
-                                    .flatten();
-                                let row = palette::result_row(
-                                    ui,
-                                    &choice.label,
-                                    &detail,
-                                    target.as_deref(),
-                                    on,
-                                    card,
-                                    Some(&choice.definition),
-                                );
-                                if row.drag_started() {
-                                    let card = self
-                                        .previews
-                                        .card(host, draft, &choice.definition)
-                                        .cloned();
-                                    row.dnd_set_drag_payload(palette::PaletteDrag {
-                                        item: PaletteItem {
-                                            id: choice.definition.clone(),
-                                            label: choice.label.clone(),
-                                            package: String::new(),
-                                            purpose: choice.purpose.clone(),
-                                        },
-                                        card,
-                                    });
-                                    dragged = true;
-                                }
-                                if on && (up || down) {
-                                    row.scroll_to_me(None);
-                                }
-                                if row.clicked() {
-                                    picked = Some(choice.clone());
-                                }
-                            }
-                        });
+        let shown = orange_ui_controls::anchored_popup(
+            ctx,
+            egui::Id::unique("orange-quick-add"),
+            screen,
+            304.0,
+            |ui| {
+                ui.strong(if wired {
+                    t("connect-a-node")
+                } else {
+                    t("add-a-node")
                 });
-            });
+                // The arrows move the choice, not the caret.
+                let [up, down] =
+                    controls::consume_plain_keys(ui, [egui::Key::ArrowUp, egui::Key::ArrowDown]);
+                let field = controls::search(
+                    ui,
+                    "quick-add-search",
+                    &mut search,
+                    if wired {
+                        t("quick-add-wire-hint")
+                    } else {
+                        t("quick-add-hint")
+                    },
+                );
+                if field.changed() {
+                    highlighted = 0;
+                }
+                let key = (
+                    search.clone(),
+                    self.language().to_owned(),
+                    host.registry().generation(),
+                );
+                if self
+                    .quick
+                    .as_ref()
+                    .is_some_and(|quick| quick.choices_key.as_ref() != Some(&key))
+                {
+                    let choices = self.quick_choices(host, &search);
+                    if let Some(quick) = &mut self.quick {
+                        quick.choices_key = Some(key);
+                        quick.choices = choices;
+                    }
+                }
+                let choices = self
+                    .quick
+                    .as_ref()
+                    .map_or(&[][..], |quick| quick.choices.as_slice());
+                let last = choices.len().min(SHOWN).saturating_sub(1);
+                highlighted = highlighted.min(last);
+                if down {
+                    highlighted = (highlighted + 1).min(last);
+                }
+                if up {
+                    highlighted = highlighted.saturating_sub(1);
+                }
+                if !focused {
+                    if ui.input(|input| input.focused) {
+                        field.request_focus();
+                    }
+                    focused = true;
+                }
+                let (enter, escape) = ui.input(|input| {
+                    (
+                        input.key_pressed(egui::Key::Enter),
+                        input.key_pressed(egui::Key::Escape),
+                    )
+                });
+                if escape {
+                    close = true;
+                }
+                if enter {
+                    picked = choices.get(highlighted).cloned();
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
+                    .show(ui, |ui| {
+                        if choices.is_empty() {
+                            ui.weak(t("quick-add-no-match"));
+                        }
+                        for (index, choice) in choices.iter().take(SHOWN).enumerate() {
+                            let on = index == highlighted;
+                            let target = choice.input.as_deref().map(port_label);
+                            let detail = if choice.purpose.is_empty() {
+                                choice.category.clone()
+                            } else {
+                                format!("{} · {}", choice.category, choice.purpose)
+                            };
+                            let draft = self.document.as_ref().map(|document| &document.draft);
+                            let card = self
+                                .node_search_previews
+                                .then(|| self.previews.card(host, None, &choice.definition))
+                                .flatten();
+                            let row = palette::result_row(
+                                ui,
+                                &choice.label,
+                                &detail,
+                                target.as_deref(),
+                                on,
+                                card,
+                                Some(&choice.definition),
+                            );
+                            if row.drag_started() {
+                                let card =
+                                    self.previews.card(host, draft, &choice.definition).cloned();
+                                row.dnd_set_drag_payload(palette::PaletteDrag {
+                                    item: PaletteItem {
+                                        id: choice.definition.clone(),
+                                        label: choice.label.clone(),
+                                        package: String::new(),
+                                        purpose: choice.purpose.clone(),
+                                    },
+                                    card,
+                                });
+                                dragged = true;
+                            }
+                            if on && (up || down) {
+                                row.scroll_to_me(None);
+                            }
+                            if row.clicked() {
+                                picked = Some(choice.clone());
+                            }
+                        }
+                    });
+            },
+        );
         if shown.response.clicked_elsewhere() && focused && was_focused {
             close = true;
         }

@@ -931,56 +931,49 @@ impl Editor {
         let choices = &waiting.choices;
         let mut chosen = None;
         let mut close = false;
-        let shown = egui::Area::new(egui::Id::unique("orange-conversion-choice"))
-            .order(egui::Order::Foreground)
-            .constrain(true)
-            .fixed_pos(at)
-            .show(ctx, |ui| {
-                let theme = orange_ui_controls::Theme::of(ui);
-                egui::Frame::popup(ui.style())
-                    .fill(theme.dialog)
-                    .stroke(egui::Stroke::new(1.0, theme.border))
-                    .inner_margin(orange_ui_controls::SPACE_LARGE)
+        let shown = orange_ui_controls::anchored_popup(
+            ctx,
+            egui::Id::unique("orange-conversion-choice"),
+            at,
+            312.0,
+            |ui| {
+                ui.strong(t("choose-conversion"));
+                ui.weak(t("choose-conversion-hint"));
+                ui.add_space(orange_ui_controls::SPACE_SMALL);
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() * 0.45).min(320.0))
                     .show(ui, |ui| {
-                        ui.set_width((ctx.content_rect().width() - 26.0).clamp(1.0, 312.0));
-                        ui.strong(t("choose-conversion"));
-                        ui.weak(t("choose-conversion-hint"));
-                        ui.add_space(orange_ui_controls::SPACE_SMALL);
-                        egui::ScrollArea::vertical()
-                            .max_height((ctx.content_rect().height() * 0.45).min(320.0))
-                            .show(ui, |ui| {
-                                for choice in choices {
-                                    let button =
-                                        egui::Button::new(palette::conversion_label(choice))
-                                            .min_size(egui::vec2(ui.available_width(), 0.0));
-                                    if controls::button(
-                                        ui,
-                                        Surface::Dialog,
-                                        controls::Action::Outline,
-                                        true,
-                                        button,
-                                    )
-                                    .clicked()
-                                    {
-                                        chosen = Some(choice.clone());
-                                    }
-                                    ui.weak(palette::conversion_detail(choice));
-                                    ui.add_space(orange_ui_controls::SPACE_SMALL);
-                                }
-                            });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = controls::button(
+                        for choice in choices {
+                            let button = egui::Button::new(palette::conversion_label(choice))
+                                .min_size(egui::vec2(ui.available_width(), 0.0));
+                            if controls::button(
                                 ui,
                                 Surface::Dialog,
                                 controls::Action::Outline,
                                 true,
-                                egui::Button::new(t("cancel")),
+                                button,
                             )
-                            .clicked();
-                        });
+                            .clicked()
+                            {
+                                chosen = Some(choice.clone());
+                            }
+                            ui.weak(palette::conversion_detail(choice));
+                            ui.add_space(orange_ui_controls::SPACE_SMALL);
+                        }
                     });
-            })
-            .response;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = controls::button(
+                        ui,
+                        Surface::Dialog,
+                        controls::Action::Outline,
+                        true,
+                        egui::Button::new(t("cancel")),
+                    )
+                    .clicked();
+                });
+            },
+        )
+        .response;
         if shown.clicked_elsewhere() || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             close = true;
         }

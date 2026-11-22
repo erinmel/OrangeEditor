@@ -433,54 +433,63 @@ impl Editor {
     }
 
     fn log_content(&mut self, ui: &mut egui::Ui) {
-        search_field(ui, "log-search", &mut self.log_search, t("search-log"));
-        ui.horizontal_wrapped(|ui| {
-            let selection = self.log_filter.map_or_else(
-                || t("log-all-levels").to_owned(),
-                |level| tf("log-level-selected", &[("level", level.name().into())]),
-            );
-            egui::ComboBox::from_id_salt("log-level-filter")
-                .width(124.0)
-                .selected_text(selection)
-                .show_select(ui, Surface::Panel, |ui| {
-                    ui.selectable_value(&mut self.log_filter, None, t("log-all-levels"));
-                    for level in NoteLevel::ALL {
-                        ui.selectable_value(&mut self.log_filter, Some(level), level.name());
-                    }
+        orange_ui_controls::action_row(
+            ui,
+            120.0,
+            |ui| {
+                let selection = self.log_filter.map_or_else(
+                    || t("log-all-levels").to_owned(),
+                    |level| tf("log-level-selected", &[("level", level.name().into())]),
+                );
+                egui::ComboBox::from_id_salt("log-level-filter")
+                    .width(124.0)
+                    .selected_text(selection)
+                    .show_select(ui, Surface::Panel, |ui| {
+                        ui.selectable_value(&mut self.log_filter, None, t("log-all-levels"));
+                        for level in NoteLevel::ALL {
+                            ui.selectable_value(&mut self.log_filter, Some(level), level.name());
+                        }
+                    });
+                let trace_label = t(if self.live_trace {
+                    "live-trace-on"
+                } else {
+                    "live-trace-off"
                 });
-            let trace_label = t(if self.live_trace {
-                "live-trace-on"
-            } else {
-                "live-trace-off"
-            });
-            let trace = controls::button(
-                ui,
-                Surface::Panel,
-                Action::Toggle(self.live_trace),
-                true,
-                egui::Button::new((icons::text(icons::WATCH), trace_label)),
-            )
-            .on_hover_text(t("live-trace-hint"));
-            trace.widget_info(|| {
-                egui::WidgetInfo::selected(egui::Role::CheckBox, true, self.live_trace, trace_label)
-            });
-            if trace.clicked() {
-                self.live_trace = !self.live_trace;
-            }
-            if controls::button(
-                ui,
-                Surface::Panel,
-                Action::Menu,
-                !self.log.is_empty(),
-                egui::Button::new((icons::centered(icons::DELETE), t("clear-log"))),
-            )
-            .on_hover_text(t("clear-log-hint"))
-            .clicked()
-            {
-                self.log.clear();
-                self.last_note = false;
-            }
-        });
+                let trace = controls::button(
+                    ui,
+                    Surface::Panel,
+                    Action::Toggle(self.live_trace),
+                    true,
+                    egui::Button::new((icons::text(icons::WATCH), trace_label)),
+                )
+                .on_hover_text(t("live-trace-hint"));
+                trace.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::CheckBox,
+                        true,
+                        self.live_trace,
+                        trace_label,
+                    )
+                });
+                if trace.clicked() {
+                    self.live_trace = !self.live_trace;
+                }
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    Action::Menu,
+                    !self.log.is_empty(),
+                    egui::Button::new((icons::centered(icons::DELETE), t("clear-log"))),
+                )
+                .on_hover_text(t("clear-log-hint"))
+                .clicked()
+                {
+                    self.log.clear();
+                    self.last_note = false;
+                }
+            },
+            |ui| search_field(ui, "log-search", &mut self.log_search, t("search-log")),
+        );
         ui.separator();
         let query = self.log_search.trim().to_lowercase();
         let mut text = String::new();
@@ -561,37 +570,36 @@ impl Editor {
             ui.weak(t("no-problems"));
             return;
         };
-        ui.horizontal(|ui| {
-            ui.set_min_height(orange_ui_controls::CONTROL_HEIGHT);
-            let filter_width = 96.0;
-            let search_width = (ui.available_width() - filter_width - 8.0).max(120.0);
-            ui.scope_builder(
-                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                    ui.cursor().min,
-                    egui::vec2(search_width.max(120.0), orange_ui_controls::CONTROL_HEIGHT),
-                )),
-                |ui| {
-                    search_field(
-                        ui,
-                        "problems-search",
-                        &mut self.problems_search,
-                        t("search-problems"),
-                    )
-                },
-            );
-            let filter_text = self
-                .problems_filter
-                .map_or(t("filter-all"), ProblemLevel::label);
-            let _ = egui::ComboBox::from_id_salt("problems-filter")
-                .width(78.0)
-                .selected_text(filter_text)
-                .show_select(ui, Surface::Panel, |ui| {
-                    ui.selectable_value(&mut self.problems_filter, None, t("filter-all"));
-                    for level in ProblemLevel::ALL {
-                        ui.selectable_value(&mut self.problems_filter, Some(level), level.label());
-                    }
-                });
-        });
+        orange_ui_controls::action_row(
+            ui,
+            120.0,
+            |ui| {
+                let filter_text = self
+                    .problems_filter
+                    .map_or(t("filter-all"), ProblemLevel::label);
+                egui::ComboBox::from_id_salt("problems-filter")
+                    .width(96.0)
+                    .selected_text(filter_text)
+                    .show_select(ui, Surface::Panel, |ui| {
+                        ui.selectable_value(&mut self.problems_filter, None, t("filter-all"));
+                        for level in ProblemLevel::ALL {
+                            ui.selectable_value(
+                                &mut self.problems_filter,
+                                Some(level),
+                                level.label(),
+                            );
+                        }
+                    });
+            },
+            |ui| {
+                search_field(
+                    ui,
+                    "problems-search",
+                    &mut self.problems_search,
+                    t("search-problems"),
+                )
+            },
+        );
         let query = self.problems_search.trim().to_lowercase();
         let visible = ui
             .horizontal(|ui| {

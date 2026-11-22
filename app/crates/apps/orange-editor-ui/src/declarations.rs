@@ -926,78 +926,69 @@ impl Editor {
                         &[("name", name.as_str().into())],
                     ));
                 }
-                egui::Grid::new("orange-variable-form")
-                    .num_columns(2)
-                    .spacing([8.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label(t("name"));
+                orange_ui_controls::form_grid("orange-variable-form").show(ui, |ui| {
+                    ui.label(t("name"));
+                    let _ = ui.add(
+                        egui::TextEdit::singleline(&mut form.name)
+                            .hint_text(t("variable-name-hint"))
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.end_row();
+                    ui.label(t("type"));
+                    let _ = egui::ComboBox::from_id_salt("orange-variable-type")
+                        .selected_text(type_name(&form.ty))
+                        .show_select(ui, Surface::Panel, |ui| {
+                            for ty in COMMON_TYPES {
+                                let _ =
+                                    ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
+                            }
+                            for (local, name) in types_tab::choices() {
+                                let _ = ui.selectable_value(&mut form.ty, local, name);
+                            }
+                        });
+                    ui.end_row();
+                    ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
+                    let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
+                        .selected_text(scope_name(form.scope))
+                        .show_select(ui, Surface::Panel, |ui| {
+                            for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
+                                if scope == VarScope::Workspace && !can_use_workspace {
+                                    continue;
+                                }
+                                let _ =
+                                    ui.selectable_value(&mut form.scope, scope, scope_name(scope));
+                            }
+                        });
+                    ui.end_row();
+                    ui.label(t("starts-at"));
+                    if let Some(choices) = enums.get(&form.ty) {
+                        let mut initial =
+                            Some(form.initial.clone()).filter(|text| !text.is_empty());
+                        choice_list(
+                            ui,
+                            egui::IdSalt::new("orange-new-variable-initial"),
+                            choices,
+                            &mut initial,
+                        );
+                        form.initial = initial.unwrap_or_default();
+                    } else {
                         let _ = ui.add(
-                            egui::TextEdit::singleline(&mut form.name)
-                                .hint_text(t("variable-name-hint"))
+                            egui::TextEdit::singleline(&mut form.initial)
+                                .hint_text(t("empty-until-written"))
                                 .desired_width(ui.available_width()),
                         );
-                        ui.end_row();
-                        ui.label(t("type"));
-                        let _ = egui::ComboBox::from_id_salt("orange-variable-type")
-                            .selected_text(type_name(&form.ty))
-                            .show_select(ui, Surface::Panel, |ui| {
-                                for ty in COMMON_TYPES {
-                                    let _ = ui.selectable_value(
-                                        &mut form.ty,
-                                        ty.to_owned(),
-                                        type_name(ty),
-                                    );
-                                }
-                                for (local, name) in types_tab::choices() {
-                                    let _ = ui.selectable_value(&mut form.ty, local, name);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
-                        let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
-                            .selected_text(scope_name(form.scope))
-                            .show_select(ui, Surface::Panel, |ui| {
-                                for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                                    if scope == VarScope::Workspace && !can_use_workspace {
-                                        continue;
-                                    }
-                                    let _ = ui.selectable_value(
-                                        &mut form.scope,
-                                        scope,
-                                        scope_name(scope),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                        ui.label(t("starts-at"));
-                        if let Some(choices) = enums.get(&form.ty) {
-                            let mut initial =
-                                Some(form.initial.clone()).filter(|text| !text.is_empty());
-                            choice_list(
-                                ui,
-                                egui::IdSalt::new("orange-new-variable-initial"),
-                                choices,
-                                &mut initial,
-                            );
-                            form.initial = initial.unwrap_or_default();
-                        } else {
-                            let _ = ui.add(
-                                egui::TextEdit::singleline(&mut form.initial)
-                                    .hint_text(t("empty-until-written"))
-                                    .desired_width(ui.available_width()),
-                            );
-                        }
-                        ui.end_row();
-                        ui.label("");
-                        let _ = orange_ui_controls::checkbox(
-                            ui,
-                            Surface::Dialog,
-                            orange_ui_controls::CheckStyle::Emphasis,
-                            &mut form.persistent,
-                            t("keep-between-runs"),
-                        );
-                        ui.end_row();
-                    });
+                    }
+                    ui.end_row();
+                    ui.label("");
+                    let _ = orange_ui_controls::checkbox(
+                        ui,
+                        Surface::Dialog,
+                        orange_ui_controls::CheckStyle::Emphasis,
+                        &mut form.persistent,
+                        t("keep-between-runs"),
+                    );
+                    ui.end_row();
+                });
                 ui.horizontal(|ui| {
                     let ready = !form.name.trim().is_empty();
                     declare = ui.add_enabled(ready, egui::Button::new(t("add"))).clicked();

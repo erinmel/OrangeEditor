@@ -488,71 +488,70 @@ impl Editor {
         };
         let (screen, shown_before) = (menu.screen, menu.shown);
         let mut chosen = None;
-        let bounds = ctx.content_rect().shrink(6.0);
-        let shown = egui::Area::new(egui::Id::unique("orange-context-menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen)
-            .constrain_to(bounds)
-            .show(ctx, |ui| {
-                egui::Frame::menu(ui.style()).show(ui, |ui| {
-                    ui.set_width(220.0_f32.min((bounds.width() - 20.0).max(48.0)));
-                    ui.strong(title);
-                    ui.separator();
-                    let mut previous_group = None;
-                    for entry in &entries {
-                        let group = match entry.command {
-                            Command::Group
-                            | Command::MakeFunction
-                            | Command::ExportFunction
-                            | Command::Arrange => 1,
-                            Command::Fit | Command::SelectAll => 2,
-                            Command::Delete | Command::DeleteWire | Command::Disconnect => 3,
-                            _ => 0,
-                        };
-                        if previous_group.is_some_and(|previous| previous != group) {
-                            ui.separator();
+        let shown = orange_ui_controls::anchored_popup(
+            ctx,
+            egui::Id::unique("orange-context-menu"),
+            screen,
+            220.0,
+            |ui| {
+                ui.strong(title);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 64.0).max(28.0))
+                    .show(ui, |ui| {
+                        let mut previous_group = None;
+                        for entry in &entries {
+                            let group = match entry.command {
+                                Command::Group
+                                | Command::MakeFunction
+                                | Command::ExportFunction
+                                | Command::Arrange => 1,
+                                Command::Fit | Command::SelectAll => 2,
+                                Command::Delete | Command::DeleteWire | Command::Disconnect => 3,
+                                _ => 0,
+                            };
+                            if previous_group.is_some_and(|previous| previous != group) {
+                                ui.separator();
+                            }
+                            previous_group = Some(group);
+                            let action = match entry.command {
+                                Command::AddNode => Some("add"),
+                                Command::Paste => Some("paste"),
+                                Command::SelectAll => Some("select-all"),
+                                Command::Group => Some("group"),
+                                Command::Arrange => Some("arrange"),
+                                Command::Fit => Some("fit"),
+                                Command::Copy => Some("copy"),
+                                Command::Cut => Some("cut"),
+                                Command::Duplicate => Some("duplicate"),
+                                Command::MakeFunction => Some("function"),
+                                Command::Delete | Command::DeleteWire => Some("delete"),
+                                _ => None,
+                            };
+                            let shortcut = action.map_or_else(
+                                || entry.shortcut.to_owned(),
+                                |action| self.canvas.keys.label(action),
+                            );
+                            let shortcut = if shortcut == t("unassigned") {
+                                ""
+                            } else {
+                                &shortcut
+                            };
+                            if orange_ui_controls::menu_item(
+                                ui,
+                                icons::centered(entry.icon),
+                                entry.label,
+                                shortcut,
+                                entry.enabled,
+                            )
+                            .clicked()
+                            {
+                                chosen = Some(entry.command);
+                            }
                         }
-                        previous_group = Some(group);
-                        let action = match entry.command {
-                            Command::AddNode => Some("add"),
-                            Command::Paste => Some("paste"),
-                            Command::SelectAll => Some("select-all"),
-                            Command::Group => Some("group"),
-                            Command::Arrange => Some("arrange"),
-                            Command::Fit => Some("fit"),
-                            Command::Copy => Some("copy"),
-                            Command::Cut => Some("cut"),
-                            Command::Duplicate => Some("duplicate"),
-                            Command::MakeFunction => Some("function"),
-                            Command::Delete | Command::DeleteWire => Some("delete"),
-                            _ => None,
-                        };
-                        let shortcut = action.map_or_else(
-                            || entry.shortcut.to_owned(),
-                            |action| self.canvas.keys.label(action),
-                        );
-                        let shortcut = if shortcut == t("unassigned") {
-                            ""
-                        } else {
-                            &shortcut
-                        };
-                        let button = egui::Button::new((icons::centered(entry.icon), entry.label))
-                            .shortcut_text(shortcut)
-                            .min_size(egui::vec2(ui.available_width(), 28.0));
-                        if controls::button(
-                            ui,
-                            Surface::Dialog,
-                            controls::Action::Menu,
-                            entry.enabled,
-                            button,
-                        )
-                        .clicked()
-                        {
-                            chosen = Some(entry.command);
-                        }
-                    }
-                });
-            });
+                    });
+            },
+        );
         let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
         if let Some(command) = chosen {
             let _ = self.run_command(host, command);

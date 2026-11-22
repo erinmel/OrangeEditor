@@ -159,29 +159,28 @@ impl Editor {
         let Some(export) = &mut self.function_export else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("function-export")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading(t("export-function-title"));
-            ui.strong(&export.label);
-            let Ok(preview) = &export.preview else {
-                if let Err(error) = &export.preview {
-                    ui.label(error);
-                }
-                return (
-                    controls::button(
-                        ui,
-                        Surface::Dialog,
-                        Action::Outline,
-                        true,
-                        egui::Button::new(t("close")),
-                    )
-                    .clicked(),
-                    false,
-                );
-            };
-            egui::Grid::new("function-package-fields")
-                .num_columns(2)
-                .show(ui, |ui| {
+        let modal =
+            orange_ui_controls::modal(ctx, egui::Id::unique("function-export")).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(t("export-function-title"));
+                ui.strong(&export.label);
+                let Ok(preview) = &export.preview else {
+                    if let Err(error) = &export.preview {
+                        ui.label(error);
+                    }
+                    return (
+                        controls::button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Outline,
+                            true,
+                            egui::Button::new(t("close")),
+                        )
+                        .clicked(),
+                        false,
+                    );
+                };
+                orange_ui_controls::form_grid("function-package-fields").show(ui, |ui| {
                     for (label, field) in [
                         (t("function-package-id"), &mut export.package),
                         (t("function-package-version"), &mut export.version),
@@ -192,37 +191,37 @@ impl Editor {
                         ui.end_row();
                     }
                 });
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    preview_ports(ui, &preview.inputs, &preview.outputs);
-                    ui.strong(t("function-package-dependencies"));
-                    if preview.dependencies.is_empty() {
-                        ui.weak(t("function-package-none"));
-                    }
-                    for (id, version) in &preview.dependencies {
-                        ui.label(format!("{id} {version}"));
-                    }
-                    if let Some(adapter) = &preview.connection_adapter {
-                        ui.label(tf(
-                            "function-package-connection",
-                            &[("adapter", adapter.as_str().into())],
-                        ));
-                    }
-                });
-            if let Some(error) = &export.error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            }
-            let (cancel, save) = controls::dialog_actions(
-                ui,
-                Action::Primary,
-                [&export.package, &export.version, &export.node]
-                    .iter()
-                    .all(|field| !field.trim().is_empty()),
-                egui::Button::new(t("function-package-save")),
-            );
-            (cancel.clicked(), save.clicked())
-        });
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        preview_ports(ui, &preview.inputs, &preview.outputs);
+                        ui.strong(t("function-package-dependencies"));
+                        if preview.dependencies.is_empty() {
+                            ui.weak(t("function-package-none"));
+                        }
+                        for (id, version) in &preview.dependencies {
+                            ui.label(format!("{id} {version}"));
+                        }
+                        if let Some(adapter) = &preview.connection_adapter {
+                            ui.label(tf(
+                                "function-package-connection",
+                                &[("adapter", adapter.as_str().into())],
+                            ));
+                        }
+                    });
+                if let Some(error) = &export.error {
+                    orange_ui_controls::notice(ui, controls::ButtonTone::Danger, error);
+                }
+                let (cancel, save) = controls::dialog_actions(
+                    ui,
+                    Action::Primary,
+                    [&export.package, &export.version, &export.node]
+                        .iter()
+                        .all(|field| !field.trim().is_empty()),
+                    egui::Button::new(t("function-package-save")),
+                );
+                (cancel.clicked(), save.clicked())
+            });
         let (cancel, save) = modal.inner;
         if cancel || modal.should_close() {
             self.function_export = None;
@@ -404,7 +403,7 @@ impl Editor {
         let mut open = true;
         let mut make = false;
         let mut cancel = false;
-        egui::Window::new(t("make-a-function"))
+        orange_ui_controls::dialog_window(ctx, t("make-a-function"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

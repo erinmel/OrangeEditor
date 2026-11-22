@@ -16,20 +16,23 @@ impl Editor {
         let Some(key) = &self.pending_package_removal else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("orange-remove-package")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(t("remove-package"));
-            ui.label(tf(
-                "remove-package-hint",
-                &[("package", key.to_string().into())],
-            ));
-            controls::dialog_actions(
-                ui,
-                Action::Destructive,
-                true,
-                egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
-            )
-        });
+        let modal = orange_ui_controls::modal(ctx, egui::Id::unique("orange-remove-package")).show(
+            ctx,
+            |ui| {
+                ui.set_max_width(420.0);
+                ui.heading(t("remove-package"));
+                ui.label(tf(
+                    "remove-package-hint",
+                    &[("package", key.to_string().into())],
+                ));
+                controls::dialog_actions(
+                    ui,
+                    Action::Destructive,
+                    true,
+                    egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
+                )
+            },
+        );
         let (cancel, remove) = &modal.inner;
         if remove.clicked()
             && let Some(key) = self.pending_package_removal.take()
@@ -79,39 +82,42 @@ impl Editor {
         let Some(import) = &mut self.pending_package else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("orange-import-package")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(t("import-package"));
-            ui.label(&import.name);
-            if import.requested != Grants::default() {
-                ui.separator();
-                ui.label(t("package-permissions"));
-                let mut choices = Vec::new();
-                if import.requested.log {
-                    choices.push((&mut import.approved.log, t("package-grant-log")));
+        let modal = orange_ui_controls::modal(ctx, egui::Id::unique("orange-import-package")).show(
+            ctx,
+            |ui| {
+                ui.set_max_width(420.0);
+                ui.heading(t("import-package"));
+                ui.label(&import.name);
+                if import.requested != Grants::default() {
+                    ui.separator();
+                    ui.label(t("package-permissions"));
+                    let mut choices = Vec::new();
+                    if import.requested.log {
+                        choices.push((&mut import.approved.log, t("package-grant-log")));
+                    }
+                    if import.requested.files {
+                        choices.push((&mut import.approved.files, t("package-grant-files")));
+                    }
+                    if import.requested.http {
+                        choices.push((&mut import.approved.http, t("package-grant-http")));
+                    }
+                    let _ = orange_ui_controls::check_list(
+                        ui,
+                        crate::controls::Surface::Dialog,
+                        orange_ui_controls::CheckStyle::Emphasis,
+                        &mut choices,
+                    );
+                } else {
+                    ui.label(t("package-no-permissions"));
                 }
-                if import.requested.files {
-                    choices.push((&mut import.approved.files, t("package-grant-files")));
-                }
-                if import.requested.http {
-                    choices.push((&mut import.approved.http, t("package-grant-http")));
-                }
-                let _ = orange_ui_controls::check_list(
+                controls::dialog_actions(
                     ui,
-                    crate::controls::Surface::Dialog,
-                    orange_ui_controls::CheckStyle::Emphasis,
-                    &mut choices,
-                );
-            } else {
-                ui.label(t("package-no-permissions"));
-            }
-            controls::dialog_actions(
-                ui,
-                Action::Primary,
-                true,
-                egui::Button::new(t("install-package")),
-            )
-        });
+                    Action::Primary,
+                    true,
+                    egui::Button::new(t("install-package")),
+                )
+            },
+        );
         let (cancel, install) = &modal.inner;
         if install.clicked() {
             if let Some(import) = self.pending_package.take() {
