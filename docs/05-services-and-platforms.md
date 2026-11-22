@@ -337,7 +337,7 @@ not allocate, lock, log or read files. The capture callback only sums squares an
 steps the threshold; a session thread turns crossings into entry firings.
 
 Playback controls and formats (2026-11-12): `play` and `loop` read WAV, FLAC, MP3 and
-Ogg Vorbis files, told apart by content (MP3 and Ogg through symphonia 0.5.5); `loop` starts the sound again each time it ends and continues
+Ogg Vorbis files, told apart by content (MP3 and Ogg through Symphonia 0.6.1); `loop` starts the sound again each time it ends and continues
 only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
 `set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
 sounds that need separate control play on separate connections. A paused output is
