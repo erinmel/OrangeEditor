@@ -1379,6 +1379,31 @@ impl Editor {
         self.drain_event_batch(events) == MAX_EVENTS_PER_POLL
     }
 
+    /// Reconciles the active run after the observer queue is drained. Terminal
+    /// state is available here even when its notification did not fit.
+    pub fn reconcile_run_state(&mut self, host: &Host) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        let Some((flow, _)) = &document.flow else {
+            return false;
+        };
+        if host.state(*flow).is_some_and(|state| {
+            !matches!(
+                state,
+                orange_host::RunState::Stopped
+                    | orange_host::RunState::Faulted
+                    | orange_host::RunState::Disposed
+            )
+        }) {
+            return false;
+        }
+        document.flow = None;
+        self.canvas.audio_running = false;
+        self.canvas.mark_stale();
+        true
+    }
+
     fn drain_event_batch(&mut self, events: &orange_host::Events) -> usize {
         let mut received = 0;
         for _ in 0..MAX_EVENTS_PER_POLL {

@@ -20,6 +20,7 @@ rustls.workspace = true
 webpki-roots.workspace = true
 tungstenite.workspace = true
 ureq.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0" }

@@ -136,10 +136,17 @@ replaced file gives its bytes back) and `HostOptions::plugin_http_hosts` lists t
 hosts requests may go to, where `.example.org` allows every host under that domain
 (anything else is `not-allowed`); `orange` takes `--plugin-quota-mb` and
 `--plugin-host`. Without them there is no limit. Limits: the quota counts at most
-10,000 files; a
-request blocks its node and cannot be interrupted by cancellation, only by the
+10,000 files. Pure evaluation and component initialization cannot use file or HTTP
+imports. Graph bindings expose host I/O only to Async nodes. An in-progress
+request occupies a worker and ends at its
 client's timeout; there are no sockets, clocks, random numbers, environment or
 processes for components.
+
+One engine also bounds concurrent stores, aggregate linear-memory bytes and
+aggregate table elements through `GuestLimits`. The defaults are 256 stores,
+512 MiB of linear memory and 262,144 elements. Dropping a store returns its
+capacity. Plugin calls check the combined input budget before copying values
+into the component and the output budget before returning them to a graph.
 
 Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
 its tier, can be switched off by ID and on again without removing it; the switch is
@@ -189,8 +196,11 @@ connection kinds behave exactly like built-in ones and are listed by `Host::node
 `Host::packages`. The `orange` command takes `--plugins <dir>`.
 `app/crates/dev/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
 text cannot detect different dependency versions or features, so a plugin must be
-built with the application's lockfile; a panic in a plugin aborts the process; a
-library is never unloaded, is not loaded while the application runs, and cannot be
+built with the application's lockfile; a panic across an exported C ABI or a process
+abort ends the process. The host contains ordinary Rust unwinds at compilation,
+preview, service invocation and the graph turn boundary. A kernel panic during a
+turn interrupts the run and starts cleanup. A library is never unloaded, is not
+loaded while the application runs, and cannot be
 removed with `Host::uninstall`; there is no manifest or grant for this tier.
 
 Types from a native plugin (2026-11-13 first part): `ServicePackage::record(name,

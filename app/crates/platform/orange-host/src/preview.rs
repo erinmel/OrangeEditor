@@ -29,10 +29,26 @@ impl Host {
         json: &str,
         ports: &[(NodeId, PortKey)],
     ) -> Result<Vec<Previewed>, HostError> {
+        match effects::guard(|| self.preview_inner(json, ports)) {
+            Ok(result) => result,
+            Err(_) => {
+                self.preview = None;
+                Err(HostError::Run(RunError::Interrupted))
+            }
+        }
+    }
+
+    fn preview_inner(
+        &mut self,
+        json: &str,
+        ports: &[(NodeId, PortKey)],
+    ) -> Result<Vec<Previewed>, HostError> {
         let refused = |error: &dyn std::fmt::Debug| HostError::Document(format!("{error:?}"));
         let document = if ports.is_empty() {
             self.linked(json)?
         } else {
+            orange_model::document::codec::check_json_envelope(json)
+                .map_err(|error| HostError::Document(error.to_string()))?;
             let mut saved: serde_json::Value = serde_json::from_str(json)
                 .map_err(|error| HostError::Document(error.to_string()))?;
             saved["exports"] = ports

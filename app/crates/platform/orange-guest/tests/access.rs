@@ -153,10 +153,21 @@ fn granted_imports_reach_only_the_data_directory_and_the_hosts_client() {
     }
     let mut plugin = GuestPlugin::with_access(&component, BOTH, access.clone()).unwrap();
     let copy = || std::fs::read_to_string(data.join("copy")).unwrap();
+    assert_eq!(
+        plugin.evaluate(&types, "notes/a.txt", &[], &[]),
+        Ok(Ok(vec![]))
+    );
+    assert!(!data.exists());
+    assert!(client.0.lock().unwrap().is_empty());
+
+    // The same guest file operation succeeds through an effect export.
+    let file_guest = GUEST.replace("(core func $i \"execute\")", "(core func $i \"evaluate\")");
+    let file_component = engine.compile(file_guest.as_bytes()).unwrap();
+    let mut files = GuestPlugin::with_access(&file_component, BOTH, access.clone()).unwrap();
 
     // Files: written under the data directory, with directories made on the way.
     assert_eq!(
-        plugin.evaluate(&types, "notes/a.txt", &[], &[]),
+        files.execute(&types, "notes/a.txt", &[], &[]),
         Ok(Ok(vec![]))
     );
     assert_eq!(
@@ -166,7 +177,7 @@ fn granted_imports_reach_only_the_data_directory_and_the_hosts_client() {
     assert_eq!(copy(), "notes/a.txt");
     // A path that would leave the directory is refused for writing and for reading.
     for escape in ["../escape.txt", "/escape.txt", "notes/../../escape.txt"] {
-        assert_eq!(plugin.evaluate(&types, escape, &[], &[]), Ok(Ok(vec![])));
+        assert_eq!(files.execute(&types, escape, &[], &[]), Ok(Ok(vec![])));
         assert_eq!(copy(), "invalid-path", "{escape}");
     }
     assert!(!outside.join("escape.txt").exists());

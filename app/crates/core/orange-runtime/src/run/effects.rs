@@ -14,8 +14,12 @@ pub struct EffectId {
 /// Read-only lifetime signal for a host adapter. Cancellation is monotonic and
 /// signals intent; the host remains responsible for cancelling its external work.
 #[derive(Clone)]
-pub struct EffectLease(Arc<AtomicU8>, Arc<std::sync::atomic::AtomicBool>);
+pub struct EffectLease(Arc<AtomicU8>, Arc<std::sync::atomic::AtomicBool>, u64);
 impl EffectLease {
+    /// The process-local identity of the run owning this effect.
+    pub fn run_id(&self) -> u64 {
+        self.2
+    }
     /// The owning run is paused and this work is still wanted. Advisory: the host may
     /// hold long work such as a transfer or playback; its result is admitted either way.
     pub fn is_paused(&self) -> bool {
@@ -391,7 +395,11 @@ impl Run {
                 owner: prepared.owner,
                 inputs: prepared.values,
                 hold: prepared.hold,
-                lease: EffectLease(Arc::new(AtomicU8::new(0)), self.effects.paused.clone()),
+                lease: EffectLease(
+                    Arc::new(AtomicU8::new(0)),
+                    self.effects.paused.clone(),
+                    self.id,
+                ),
                 issued: false,
                 completion: None,
                 revoked: None,

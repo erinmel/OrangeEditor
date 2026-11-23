@@ -18,6 +18,7 @@
 use orange_sdk::{SecretError, SecretStore, is_secret_name};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
+use zeroize::Zeroizing;
 
 /// Longest secret that is stored, in bytes. Operating-system stores have limits of
 /// their own near this size.
@@ -95,7 +96,7 @@ impl SecretStore for OsVault {
 /// that asks the user for them at each start.
 #[derive(Default)]
 pub struct MemoryVault {
-    secrets: Mutex<BTreeMap<String, String>>,
+    secrets: Mutex<BTreeMap<String, Zeroizing<String>>>,
 }
 /// The secrets are left out.
 impl std::fmt::Debug for MemoryVault {
@@ -126,7 +127,7 @@ impl MemoryVault {
             .secrets
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(name.to_owned(), secret.to_owned());
+            .insert(name.to_owned(), Zeroizing::new(secret.to_owned()));
         Ok(())
     }
 
@@ -149,7 +150,7 @@ impl SecretStore for MemoryVault {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(name)
-            .cloned()
+            .map(|secret| secret.as_str().to_owned())
             .ok_or(SecretError::NotFound)
     }
     fn replace(&self, name: &str, secret: &str) -> Result<(), SecretError> {

@@ -46,29 +46,35 @@ struct PluginState {
     limits: InstanceLimits,
     log: Vec<String>,
     access: GuestAccess,
+    effects_allowed: bool,
     /// Largest content one import call hands to the guest.
     transfer_bytes: usize,
 }
 
 impl files::Host for PluginState {
     fn read(&mut self, path: String) -> Result<Vec<u8>, String> {
+        self.require_effect()?;
         self.access
             .read(&path, self.transfer_bytes)
             .map_err(str::to_owned)
     }
     fn write(&mut self, path: String, data: Vec<u8>) -> Result<(), String> {
+        self.require_effect()?;
         self.access.write(&path, &data).map_err(str::to_owned)
     }
     fn list(&mut self, path: String) -> Result<Vec<String>, String> {
+        self.require_effect()?;
         self.access.list(&path).map_err(str::to_owned)
     }
     fn remove(&mut self, path: String) -> Result<(), String> {
+        self.require_effect()?;
         self.access.remove(&path).map_err(str::to_owned)
     }
 }
 
 impl http::Host for PluginState {
     fn send(&mut self, request: http::Request) -> Result<http::Response, String> {
+        self.require_effect()?;
         let request = HttpRequest {
             method: request.method,
             url: request.url,
@@ -83,6 +89,16 @@ impl http::Host for PluginState {
                 body: response.body,
             })
             .map_err(str::to_owned)
+    }
+}
+
+impl PluginState {
+    fn require_effect(&self) -> Result<(), String> {
+        if self.effects_allowed {
+            Ok(())
+        } else {
+            Err(crate::access::NOT_ALLOWED.to_owned())
+        }
     }
 }
 
@@ -117,7 +133,8 @@ pub struct GuestPlugin {
     store: Store<PluginState>,
     bindings: Plugin,
     fuel: u64,
-    output_bytes: usize,
+    transfer_bytes: usize,
+    input_bytes: usize,
     poisoned: bool,
     cancellation: GuestCancellation,
 }
@@ -236,9 +253,10 @@ impl GuestPlugin {
         let mut store = Store::new(
             &engine.engine,
             PluginState {
-                limits: InstanceLimits::new(limits),
+                limits: InstanceLimits::new(limits, &engine.aggregate)?,
                 log: Vec::new(),
                 access,
+                effects_allowed: false,
                 transfer_bytes: limits.transfer_bytes,
             },
         );
@@ -274,7 +292,8 @@ impl GuestPlugin {
             store,
             bindings,
             fuel: limits.fuel_per_call,
-            output_bytes: limits.transfer_bytes,
+            transfer_bytes: limits.transfer_bytes,
+            input_bytes: limits.input_bytes,
             poisoned: false,
             cancellation,
         })
@@ -320,9 +339,22 @@ impl GuestPlugin {
             self.poisoned = true;
             return Err(GuestError::Trap(GuestTrap::Interrupted));
         }
-        let mut encoded = Vec::with_capacity(inputs.len());
+        let mut encoded = Vec::new();
+        let mut remaining = self.input_bytes;
         for (ty, value) in inputs {
-            encoded.push(to_wire(ty, value, types)?);
+            let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
+                .ok_or(GuestError::InputContract)?
+                .checked_charge(value, remaining)
+                .map_err(|_| GuestError::InputContract)?;
+            let wire = to_wire(ty, value, types)?;
+            let charge = match &wire {
+                Wire::Literal(text) => charge.max(text.len()),
+                _ => charge,
+            };
+            remaining = remaining
+                .checked_sub(charge)
+                .ok_or(GuestError::InputContract)?;
+            encoded.push(wire);
         }
         self.store
             .set_fuel(self.fuel)
@@ -331,6 +363,7 @@ impl GuestPlugin {
             self.poisoned = true;
             return Err(error);
         }
+        self.store.data_mut().effects_allowed = matches!(export, Export::Execute);
         let called = match export {
             Export::Evaluate => self.bindings.orange_expansion_nodes().call_evaluate(
                 &mut self.store,
@@ -343,6 +376,7 @@ impl GuestPlugin {
                 &encoded,
             ),
         };
+        self.store.data_mut().effects_allowed = false;
         let result = called.map_err(|error| {
             self.poisoned = true;
             classify(&error)
@@ -362,7 +396,7 @@ impl GuestPlugin {
                     return Err(GuestError::OutputContract);
                 }
                 let mut decoded = Vec::with_capacity(values.len());
-                let mut remaining = self.output_bytes;
+                let mut remaining = self.transfer_bytes;
                 for (wire, ty) in values.into_iter().zip(outputs) {
                     let value = from_wire(wire, ty, types, remaining)?;
                     let charge = orange_model::value::shape::ValueShape::of_in(ty, types)

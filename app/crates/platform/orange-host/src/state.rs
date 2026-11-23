@@ -49,6 +49,21 @@ fn file(directory: &Path, name: &str) -> PathBuf {
     directory.join(format!("{name}.variables.json"))
 }
 
+/// Grants exclusive write ownership for a graph or the shared workspace.
+pub(crate) fn lock(directory: &Path, name: &str) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(directory).map_err(|error| io("create the state directory", &error))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(format!("{name}.variables.lock")))
+        .map_err(|error| io("open the persistent state lock", &error))?;
+    lock.try_lock()
+        .map_err(|_| "could not acquire exclusive ownership of persistent state".to_owned())?;
+    Ok(lock)
+}
+
 fn io(what: &str, error: &std::io::Error) -> String {
     // An I/O message can name paths; only the operation and error kind are kept.
     format!("{what}: {:?}", error.kind())

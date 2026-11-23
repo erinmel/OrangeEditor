@@ -235,6 +235,12 @@ struct Settings {
     /// Published by the broker if the connection is lost.
     will: Option<Outgoing>,
 }
+impl Drop for Settings {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.password.zeroize();
+    }
+}
 
 /// What a session and its broker still owe each other, kept across reconnects.
 #[derive(Default)]
@@ -1072,15 +1078,13 @@ mod tests {
         );
         // A kept session with a retained will: no clean-session flag, the will flag
         // with its quality of service and retain, and the will after the client ID.
-        let with_will = Settings {
-            persistent: true,
-            will: Some(Outgoing {
-                topic: "w".into(),
-                payload: b"x".to_vec(),
-                retain: true,
-            }),
-            ..settings()
-        };
+        let mut with_will = settings();
+        with_will.persistent = true;
+        with_will.will = Some(Outgoing {
+            topic: "w".into(),
+            payload: b"x".to_vec(),
+            retain: true,
+        });
         assert_eq!(
             connect_packet(&with_will),
             [

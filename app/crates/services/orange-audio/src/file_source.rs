@@ -15,6 +15,7 @@ use crate::{InputShared, wav};
 use serde_json::{Map, Value as Json};
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,6 +27,8 @@ pub(crate) const CHANNELS: u16 = 2;
 const BLOCK: Duration = Duration::from_millis(10);
 /// Ten minutes of stereo PCM at 48 kHz, shared by playback, looping and seeking.
 const MAX_REMOTE_SAMPLES: usize = 57_600_000;
+const MAX_TOTAL_REMOTE_SAMPLES: usize = 512 * 1024 * 1024 / size_of::<f32>();
+static REMOTE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 
 /// What an input connection's settings say about a file source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +266,12 @@ struct RemoteSound {
     done: Option<Result<(), String>>,
 }
 
+impl Drop for RemoteSound {
+    fn drop(&mut self) {
+        REMOTE_SAMPLES.fetch_sub(self.samples.len(), Ordering::Relaxed);
+    }
+}
+
 /// Demuxers can treat a read error as EOF. Preserve the transport outcome so a
 /// disconnected server cannot produce a successful Source Finished event.
 struct CheckedRead<'a, R> {
@@ -319,15 +328,21 @@ fn remote_sound(
                             return Err(wav::WavError::Unreadable);
                         }
                         let mut output = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        if output
-                            .samples
-                            .len()
-                            .saturating_add(packet.samples_interleaved())
-                            > MAX_REMOTE_SAMPLES
-                        {
+                        let added = packet.samples_interleaved();
+                        if output.samples.len().saturating_add(added) > MAX_REMOTE_SAMPLES {
                             return Err(wav::WavError::TooLarge);
                         }
-                        wav::append_packet(&mut output.samples, rate, channels, packet)?;
+                        let retained = REMOTE_SAMPLES.fetch_add(added, Ordering::Relaxed);
+                        if retained.saturating_add(added) > MAX_TOTAL_REMOTE_SAMPLES {
+                            REMOTE_SAMPLES.fetch_sub(added, Ordering::Relaxed);
+                            return Err(wav::WavError::TooLarge);
+                        }
+                        if let Err(error) =
+                            wav::append_packet(&mut output.samples, rate, channels, packet)
+                        {
+                            REMOTE_SAMPLES.fetch_sub(added, Ordering::Relaxed);
+                            return Err(error);
+                        }
                         if !output.samples.is_empty() {
                             output.format = Some((rate, channels));
                         }

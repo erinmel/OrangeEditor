@@ -7,6 +7,7 @@
 use crate::{Host, HostError, graphs};
 use orange_model::from_json;
 use serde_json::{Value as Json, json};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,17 +32,26 @@ fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), HostError> {
 }
 
 fn read(path: &Path) -> Result<Option<String>, HostError> {
-    match std::fs::metadata(path) {
+    let file = match std::fs::File::open(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io("read the document", &error)),
-        Ok(metadata) if metadata.len() > MAX_DOCUMENT_BYTES => {
-            return Err(HostError::Document("the file is too large".into()));
-        }
-        Ok(_) => {}
+        Ok(file) => file,
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io("read the document", &error))?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(HostError::Document("the file is too large".into()));
     }
-    std::fs::read_to_string(path)
+    String::from_utf8(bytes)
         .map(Some)
-        .map_err(|e| io("read the document", &e))
+        .map_err(|_| HostError::Document("the file is not UTF-8 text".into()))
+}
+
+/// Reads a bounded UTF-8 graph file. Format validation takes place when it is imported.
+pub fn read_document(path: &Path) -> Result<String, HostError> {
+    read(path)?.ok_or_else(|| HostError::Document("the file was not found".into()))
 }
 
 fn is_document(text: &str) -> bool {

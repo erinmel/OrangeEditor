@@ -241,10 +241,8 @@ impl Host {
             .collect()
     }
 
-    /// Opens a connection of `adapter` with `settings` and lets it go, to check them:
-    /// the settings are valid and every credential they name is in the store. Nothing
-    /// is sent by an adapter that connects on first use. The error says why it would
-    /// not open, never with a secret's value.
+    /// Checks candidate settings with the adapter. This does not resolve vault
+    /// references, so it can be used for an authoring form before approval.
     pub fn test_connection(
         &self,
         adapter: &str,
@@ -254,9 +252,8 @@ impl Host {
             .adapters
             .get(adapter)
             .ok_or_else(|| format!("no adapter `{adapter}` is available"))?;
-        let (settings, _) = with_secrets(self.options.secrets.as_ref(), settings)?;
         found
-            .open(&settings)
+            .open(settings)
             .map(drop)
             .map_err(|_| "The adapter could not open with these settings. Check the connection and credentials.".into())
     }
@@ -436,7 +433,12 @@ impl Host {
         if !connection.settings.is_object() {
             return Err(refused(&"a connection's settings are a JSON object"));
         }
-        if let Some(at) = plain_secret(&connection.settings, "") {
+        if let Some(adapter) = self.adapters.get(&connection.adapter) {
+            if let Some(settings) = connection.settings.as_object() {
+                crate::credentials::references(adapter.as_ref(), settings)
+                    .map_err(|error| HostError::Connection(connection.name.clone(), error))?;
+            }
+        } else if let Some(at) = plain_secret(&connection.settings, "") {
             return Err(refused(&format!(
                 "the setting `{at}` holds a secret: write it as credential://<name> and keep the secret in the store"
             )));
@@ -553,6 +555,9 @@ impl Host {
             }
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        if !secrets.is_empty() {
+            self.approve_connection_credentials(draft, &id)?;
+        }
         Ok(id)
     }
 

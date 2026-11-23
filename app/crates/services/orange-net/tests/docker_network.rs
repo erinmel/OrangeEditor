@@ -13,6 +13,17 @@ const HTTP_BODY: &str = r#"{"source":"orange-network-lab","ok":true}"#;
 #[derive(Debug)]
 struct LabSecrets;
 
+fn open(host: &mut Host, graph: &str) -> orange_host::FlowId {
+    let draft = host.draft(graph).unwrap();
+    for connection in host.declarations(&draft).connections {
+        if let Some(id) = connection.id {
+            host.approve_connection_credentials_for_session(&draft, &id)
+                .unwrap();
+        }
+    }
+    host.open(graph).unwrap()
+}
+
 impl SecretStore for LabSecrets {
     fn get(&self, name: &str) -> Result<String, SecretError> {
         Ok(match name {
@@ -142,7 +153,7 @@ fn the_saved_lab_exchanges_messages_with_and_without_explicit_authentication() {
         ("baseline", GRAPH.to_owned()),
         ("authenticated", protected_graph(false)),
     ] {
-        let flow = host.open(&graph).unwrap();
+        let flow = open(&mut host, &graph);
         let read = |n: u32| {
             let variable = id(300 + n).parse().unwrap();
             host.inspect(flow, move |run| run.variable(variable).cloned())
@@ -191,7 +202,7 @@ fn the_saved_lab_exchanges_messages_with_and_without_explicit_authentication() {
         );
     }
 
-    let flow = host.open(&protected_graph(true)).unwrap();
+    let flow = open(&mut host, &protected_graph(true));
     host.trigger(flow, id(101).parse().unwrap(), None).unwrap();
     let status = id(301).parse().unwrap();
     let response = id(302).parse().unwrap();

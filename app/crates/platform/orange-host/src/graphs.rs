@@ -25,6 +25,7 @@ pub(crate) type Graphs = BTreeMap<GraphKey, Arc<GraphNode>>;
 /// One decoded `graphs/<name>.json`.
 #[derive(Debug)]
 pub(crate) struct GraphNode {
+    bytes: usize,
     function: Json,
     /// Local variables the body uses. Each call gets its own; nothing else is shared.
     variables: Vec<Json>,
@@ -97,6 +98,7 @@ impl GraphNode {
                 .filter(Json::is_string)
                 .ok_or("an entry node made as a graph needs a `payload` output")?;
             return Ok(Self {
+                bytes: text.len(),
                 function: Json::Null,
                 variables: Vec::new(),
                 signatures: file["signatures"].as_object().cloned().unwrap_or_default(),
@@ -137,6 +139,7 @@ impl GraphNode {
             return Err("a graph node may declare local variables only".into());
         }
         Ok(Self {
+            bytes: text.len(),
             function,
             variables,
             signatures: file["signatures"].as_object().cloned().unwrap_or_default(),
@@ -215,11 +218,11 @@ pub(crate) fn rename_edges(function: &mut Json, rename: impl Fn(&mut Json)) {
 
 /// Turns the node into a call of `function`. Its ID, literals, type arguments and
 /// therefore every edge attached to it stay as they are.
-fn retarget(node: &mut Map<String, Json>, function: &Json) {
+fn retarget(node: &mut Map<String, Json>, function: &str) {
     let _ = node.insert("definition_id".into(), json!("core/call"));
     let _ = node.insert("definition_version".into(), json!(1));
     let _ = node.insert("config_version".into(), json!(1));
-    let _ = node.insert("config".into(), json!({"function": function["id"]}));
+    let _ = node.insert("config".into(), json!({"function": function}));
     let _ = node.remove("provider");
     let _ = node.remove("signature");
 }
@@ -268,12 +271,28 @@ fn fragment_for(
     Linked::Fragment(nodes, edges, declaration)
 }
 
+struct LinkBudget {
+    bytes: usize,
+    functions: BTreeSet<String>,
+}
+
+impl LinkBudget {
+    fn charge(&mut self, graph: &GraphNode) -> Result<(), String> {
+        self.bytes = self
+            .bytes
+            .checked_sub(graph.bytes)
+            .ok_or("graph package expansion exceeds the document budget")?;
+        Ok(())
+    }
+}
+
 fn retarget_all(
     nodes: Option<&mut Json>,
     graphs: &Graphs,
     root: bool,
     used: &mut Vec<(Arc<GraphNode>, Linked)>,
-) {
+    budget: &mut LinkBudget,
+) -> Result<(), String> {
     for node in nodes.and_then(Json::as_array_mut).into_iter().flatten() {
         if let Some(graph) = graph_of(node, graphs) {
             let connection = node["config"]["connection"].as_str().map(str::to_owned);
@@ -284,6 +303,7 @@ fn retarget_all(
                 let (true, Some(user), Some(fields)) = (root, user, node.as_object_mut()) else {
                     continue;
                 };
+                budget.charge(&graph)?;
                 let linked = fragment_for(&graph, trigger, &user, connection.as_deref());
                 if let Linked::Fragment(_, _, event) = &linked {
                     // The node becomes the handler of the fragment's event: the same
@@ -298,13 +318,25 @@ fn retarget_all(
                 used.push((graph, linked));
                 continue;
             }
-            let function = function_for(&graph, connection.as_deref());
             if let Some(fields) = node.as_object_mut() {
-                retarget(fields, &function);
-                used.push((graph, Linked::Function(function)));
+                let Some(id) = graph.function["id"].as_str() else {
+                    continue;
+                };
+                let id = graph
+                    .connection
+                    .as_ref()
+                    .and(connection.as_deref())
+                    .map_or_else(|| id.to_owned(), |actual| derived(id, actual));
+                retarget(fields, &id);
+                if budget.functions.insert(id) {
+                    budget.charge(&graph)?;
+                    let function = function_for(&graph, connection.as_deref());
+                    used.push((graph, Linked::Function(function)));
+                }
             }
         }
     }
+    Ok(())
 }
 
 fn add_missing(document: &mut Map<String, Json>, list: &str, items: &[Json]) {
@@ -346,24 +378,46 @@ fn add_support(document: &mut Map<String, Json>, graph: &GraphNode) {
 /// Links every graph-implemented node of a saved document, including those inside the
 /// functions it pulls in. A node whose graph is not installed is left as it is, and
 /// validation then reports its provider as unavailable.
-pub(crate) fn link(document: &mut Json, graphs: &Graphs) {
+pub(crate) fn link(document: &mut Json, graphs: &Graphs, input_bytes: usize) -> Result<(), String> {
     let Some(root) = document.as_object_mut() else {
-        return;
+        return Ok(());
     };
-    // Each pass rewrites at least one node and a function is added once, so this ends.
-    loop {
+    let mut budget = LinkBudget {
+        bytes: (crate::MAX_DOCUMENT_BYTES as usize).saturating_sub(input_bytes),
+        functions: BTreeSet::new(),
+    };
+    // Ordinary calls sharing a body add it once, and every new fragment is charged
+    // before cloning its JSON. Bound the number of repeated full body traversals too.
+    for _ in 0..64 {
         let mut used = Vec::new();
-        retarget_all(root.get_mut("nodes"), graphs, true, &mut used);
+        retarget_all(root.get_mut("nodes"), graphs, true, &mut used, &mut budget)?;
         let functions = root.get_mut("functions").and_then(Json::as_array_mut);
         for function in functions.into_iter().flatten() {
-            retarget_all(function.get_mut("nodes"), graphs, false, &mut used);
+            retarget_all(
+                function.get_mut("nodes"),
+                graphs,
+                false,
+                &mut used,
+                &mut budget,
+            )?;
         }
         if used.is_empty() {
-            return;
+            return Ok(());
         }
         for (graph, linked) in used {
             match linked {
                 Linked::Function(function) => {
+                    if root
+                        .get("functions")
+                        .and_then(Json::as_array)
+                        .into_iter()
+                        .flatten()
+                        .any(|existing| existing["id"] == function["id"] && *existing != function)
+                    {
+                        return Err(
+                            "a graph package function conflicts with a document function ID".into(),
+                        );
+                    }
                     add_missing(root, "functions", std::slice::from_ref(&function));
                 }
                 Linked::Fragment(nodes, edges, event) => {
@@ -375,6 +429,7 @@ pub(crate) fn link(document: &mut Json, graphs: &Graphs) {
             add_support(root, &graph);
         }
     }
+    Err("graph package expansion exceeds the link depth limit".into())
 }
 
 /// A document holding only the given graphs, for validating them before publication.

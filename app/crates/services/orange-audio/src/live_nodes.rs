@@ -73,6 +73,7 @@ fn input_stream(arguments: &Arguments) -> Result<Arc<InputShared>, String> {
         arguments
             .get("stream")
             .ok_or("the entry needs an audio stream")?,
+        arguments.run_id(),
     )
     .map_err(|fault| fault.message.to_string())
 }
@@ -83,11 +84,12 @@ impl LiveSource for AudioSource {
         &self,
         session: Option<Arc<dyn Session>>,
         _settings: &Map<String, Json>,
-        _arguments: &Arguments,
+        arguments: &Arguments,
         publisher: Publisher,
     ) -> Result<Box<dyn Send>, String> {
         let session = input_of(session.as_ref())?;
-        let value = stream_value(session.id).map_err(|fault| fault.message.to_string())?;
+        let value = stream_value(&session, arguments.run_id())
+            .map_err(|fault| fault.message.to_string())?;
         let life = Arc::new(Lifecycle::new());
         let running = Arc::clone(&life);
         thread::Builder::new()
@@ -119,6 +121,7 @@ impl LiveSource for Processor {
             input_stream(arguments)?,
             make(settings, arguments)?,
             publisher,
+            arguments.run_id(),
         )
     }
 }
@@ -281,7 +284,7 @@ impl ServiceSource for ReactiveAudio {
     ) -> Result<Box<dyn Send>, String> {
         let stream = input_stream(arguments)?;
         if self.spectrum {
-            crate::reactive::spectrum(stream, settings, emitter, self.streams)
+            crate::reactive::spectrum(stream, settings, emitter, self.streams, arguments.run_id())
         } else {
             crate::reactive::noise(stream, settings, emitter)
         }
@@ -328,7 +331,7 @@ impl ServiceNode for SourceTransport {
             4 => SourceControl::Seek,
             _ => return Err(BAD_INPUT),
         };
-        let input = source(stream)?;
+        let input = source(stream, call.lease.run_id())?;
         control.apply(&input, std::slice::from_ref(seconds))
     }
 }

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 /// What a run's effect request carries for a service node.
 pub(crate) struct ServiceEffect {
+    pub definition: DefinitionRef,
     pub node: Arc<dyn ServiceNode>,
     pub connection: Option<ConnectionId>,
     /// The item type, when the node's one data output is a stream.
@@ -134,6 +135,7 @@ impl Services {
         Ok(EffectBinding {
             route: 0,
             context: Arc::new(ServiceEffect {
+                definition: request.definition().clone(),
                 node: Arc::clone(node),
                 connection,
                 stream,
@@ -143,4 +145,41 @@ impl Services {
             action: None,
         })
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct Gate {
+    pub graph: crate::GraphId,
+    pub policy: Option<Arc<dyn crate::ConnectionAuthorizer>>,
+}
+
+impl Gate {
+    pub(crate) fn allows(
+        &self,
+        node: crate::NodeId,
+        definition: &DefinitionRef,
+        operation: crate::ServiceOperation,
+        connection: Option<ConnectionId>,
+        inputs: &[crate::Value],
+    ) -> bool {
+        self.policy.as_ref().is_none_or(|policy| {
+            crate::effects::guard(|| {
+                policy.allows_operation(crate::ServiceRequest {
+                    graph: self.graph,
+                    node,
+                    definition,
+                    operation,
+                    connection,
+                    inputs,
+                })
+            })
+            .unwrap_or(false)
+        })
+    }
+}
+
+pub(crate) fn declared_connection(
+    settings: &orange_model::document::ConfigValue,
+) -> Option<ConnectionId> {
+    settings.get("connection")?.as_str()?.parse().ok()
 }

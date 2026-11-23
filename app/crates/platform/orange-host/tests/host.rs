@@ -1220,6 +1220,20 @@ fn persistent_graph(graph: u32) -> String {
 }
 
 #[test]
+fn panicking_inspector_does_not_stop_the_run() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&persistent_graph(1)).unwrap();
+    assert!(matches!(
+        host.inspect::<()>(flow, |_| panic!("synthetic inspector failure")),
+        Err(HostError::Run(_))
+    ));
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph's write", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+}
+
+#[test]
 fn persistent_variables_survive_a_restart_and_can_be_edited() {
     let directory = std::env::temp_dir().join(format!(
         "orange-host-state-{}-{:?}",
@@ -1281,6 +1295,10 @@ fn persistent_variables_survive_a_restart_and_can_be_edited() {
                 == Some(Value::I64(40))
         });
         until("the edit to be stored", || stored(&host) == as_stored(40));
+        assert!(matches!(
+            start().store_variable(Some(graph), total(), literal(99)),
+            Err(HostError::State(_))
+        ));
         // A value of another type, or an unknown variable, changes nothing.
         assert!(matches!(
             host.set_variable(flow, total(), Value::Bool(true)),
@@ -1350,6 +1368,20 @@ fn persistent_shared_variables_are_stored_and_edited_through_the_host() {
     {
         let mut host = start();
         assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+        let (mut other, _) = Host::new(HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            other.share_variables(&declaration(true)),
+            Err(HostError::State(_))
+        ));
+        let literal = serde_json::from_value(json!({"type": I64, "value": "50"})).unwrap();
+        assert!(matches!(
+            other.store_variable(None, counter, literal),
+            Err(HostError::State(_))
+        ));
         let flow = host.open(&counting_graph(1)).unwrap();
         host.trigger(flow, node(1), Some(Value::I64(5))).unwrap();
         until("the flow's write", || {

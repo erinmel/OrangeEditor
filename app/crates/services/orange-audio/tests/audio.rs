@@ -1062,10 +1062,14 @@ fn remote_file_plays_before_http_response_finishes() {
     let mut host = host();
     let doc = live_audio_document(&host, &format!("http://{address}/sound.wav"));
     let flow = host.open(&doc).unwrap();
-    until("the remote source to publish its stream", || {
-        host.inspect(flow, |run| run.live_value(node(1)).is_some())
-            .unwrap()
-    });
+    orange_testkit::until_with_context(
+        "the remote source to publish its stream",
+        || {
+            host.inspect(flow, |run| run.live_value(node(1)).is_some())
+                .unwrap()
+        },
+        || host.state(flow),
+    );
     host.trigger(flow, node(8), None).unwrap();
     until(
         "audible content before the response finishes",

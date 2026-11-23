@@ -458,6 +458,7 @@ impl ServiceNode for Control {
 }
 
 struct InputShared {
+    streams: Mutex<BTreeMap<u64, Weak<RecordRepr>>>,
     /// What a stream value names this input by (see [`SOURCES`]).
     id: u64,
     /// The ring of the device while it is open.
@@ -533,15 +534,22 @@ impl Drop for InputShared {
 }
 
 /// The stream value of an input.
-fn stream_value(id: u64) -> Result<Value, KernelFault> {
-    Ok(Value::Record(Arc::new(RecordRepr {
+fn stream_value(input: &InputShared, run_id: u64) -> Result<Value, KernelFault> {
+    let mut streams = input.streams.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(record) = streams.get(&run_id).and_then(Weak::upgrade) {
+        return Ok(Value::Record(record));
+    }
+    streams.retain(|_, record| record.strong_count() > 0);
+    let record = Arc::new(RecordRepr {
         ty: STREAM_TYPE.parse().map_err(|_| BAD_INPUT)?,
-        fields: Box::new([Some(Value::U64(id))]),
-    })))
+        fields: Box::new([Some(Value::U64(input.id))]),
+    });
+    let _ = streams.insert(run_id, Arc::downgrade(&record));
+    Ok(Value::Record(record))
 }
 
 /// The input a stream value names, while it is open.
-fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
+fn source(value: &Value, run_id: u64) -> Result<Arc<InputShared>, KernelFault> {
     let Value::Record(record) = value else {
         return Err(BAD_INPUT);
     };
@@ -556,7 +564,18 @@ fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
         .unwrap_or_else(PoisonError::into_inner)
         .get(id)
         .and_then(Weak::upgrade);
-    source.filter(|source| !source.stopped()).ok_or(ENDED)
+    source
+        .filter(|source| {
+            !source.stopped()
+                && source
+                    .streams
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&run_id)
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|issued| Arc::ptr_eq(record, &issued))
+        })
+        .ok_or(ENDED)
 }
 
 impl InputShared {
@@ -566,6 +585,7 @@ impl InputShared {
         window: Duration,
     ) -> Arc<Self> {
         let shared = Arc::new(Self {
+            streams: Mutex::new(BTreeMap::new()),
             id: next_source(),
             ring: Mutex::new(None),
             file,
@@ -1077,7 +1097,7 @@ impl ServiceNode for Record {
         if path.is_empty() || !(*seconds > 0.0 && *seconds <= MAX_RECORD_SECONDS) {
             return Err(BAD_INPUT);
         }
-        let source = source(stream)?;
+        let source = source(stream, call.lease.run_id())?;
         let cancelled = || call.lease.is_cancelled();
         let ring = source.wait_ring(Some(OPEN_WAIT), &cancelled)?;
         record(
@@ -1426,8 +1446,17 @@ mod tests {
     #[test]
     fn a_stream_names_its_input_until_the_input_closes() {
         let input = tone_input();
-        let value = stream_value(input.0.id).unwrap();
-        assert!(Arc::ptr_eq(&source(&value).unwrap(), &input.0));
+        let value = stream_value(&input.0, 10).unwrap();
+        assert!(Arc::ptr_eq(&source(&value, 10).unwrap(), &input.0));
+        assert_eq!(source(&value, 11).err(), Some(ENDED));
+        let Value::Record(record) = &value else {
+            unreachable!()
+        };
+        let restored = Value::Record(Arc::new(RecordRepr {
+            ty: record.ty.clone(),
+            fields: record.fields.clone(),
+        }));
+        assert_eq!(source(&restored, 10).err(), Some(ENDED));
         let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
         assert_eq!((ring.rate, ring.channels), (48_000, 2));
         let shared = Arc::downgrade(&input.0);
@@ -1438,8 +1467,8 @@ mod tests {
             thread::sleep(POLL);
         }
         assert!(ring.closed());
-        assert_eq!(source(&value).err(), Some(ENDED));
-        assert_eq!(source(&Value::U64(1)).err(), Some(BAD_INPUT));
+        assert_eq!(source(&value, 10).err(), Some(ENDED));
+        assert_eq!(source(&Value::U64(1), 10).err(), Some(BAD_INPUT));
     }
 
     #[test]

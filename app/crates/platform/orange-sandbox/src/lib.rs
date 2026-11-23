@@ -13,7 +13,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
-use std::io::Write;
+use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -135,11 +135,10 @@ impl Folder {
 
     /// An existing file, checked for reading.
     fn source(&self, path: &str) -> Result<PathBuf, FsError> {
-        let full = inside(&self.root, path, false)?;
-        if !full.is_file() {
+        let (full, metadata) = self.checked(path, false)?;
+        if !metadata.is_file() {
             return Err(FsError::NotFound);
         }
-        self.contained(&full)?;
         Ok(full)
     }
 
@@ -149,22 +148,56 @@ impl Folder {
         self.writable()?;
         let full = inside(&self.root, path, false)?;
         let parent = full.parent().ok_or(FsError::InvalidPath)?;
-        std::fs::create_dir_all(parent).map_err(|_| FsError::Failed)?;
-        self.contained(parent)?;
-        if full.is_symlink() {
-            return Err(FsError::InvalidPath);
+        self.create_inside(parent)?;
+        match tree::metadata(&full) {
+            Ok(info) if info.is_file() => {}
+            Err(FsError::NotFound) => {}
+            Ok(_) | Err(FsError::InvalidPath) => return Err(FsError::InvalidPath),
+            Err(error) => return Err(error),
         }
         Ok(full)
+    }
+
+    /// Create one component at a time and verify every existing parent before any
+    /// mutation. The root itself is the capability explicitly supplied by the host.
+    fn create_inside(&self, directory: &Path) -> Result<(), FsError> {
+        let relative = directory
+            .strip_prefix(&self.root)
+            .map_err(|_| FsError::InvalidPath)?;
+        std::fs::create_dir_all(&self.root).map_err(|error| io(&error))?;
+        let mut current = self.root.clone();
+        let _ = tree::metadata(&current)?;
+        for component in relative.components() {
+            self.contained(&current)?;
+            current.push(component);
+            match std::fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(io(&error)),
+            }
+            if !tree::metadata(&current)?.is_dir() {
+                return Err(FsError::InvalidPath);
+            }
+        }
+        self.contained(&current)
     }
 
     /// Reads a whole file of at most `max_bytes`.
     pub fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, FsError> {
         let full = self.source(path)?;
-        let size = std::fs::metadata(&full).map_err(|e| io(&e))?.len();
+        let file = std::fs::File::open(&full).map_err(|error| io(&error))?;
+        let size = file.metadata().map_err(|error| io(&error))?.len();
         if size > max_bytes {
             return Err(FsError::TooLarge);
         }
-        std::fs::read(&full).map_err(|e| io(&e))
+        let mut data = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut data)
+            .map_err(|error| io(&error))?;
+        if data.len() as u64 > max_bytes {
+            return Err(FsError::TooLarge);
+        }
+        Ok(data)
     }
 
     /// The size of a file in bytes.
@@ -200,19 +233,27 @@ impl Folder {
     /// Creates or replaces a file atomically, creating the directories on its path.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
         let full = self.target(path)?;
-        let (temporary, mut file) = self.temporary_beside(&full)?;
-        let written = file
-            .write_all(data)
-            .and_then(|()| file.sync_all())
+        self.replace_with(&full, |file| {
+            file.write_all(data).map_err(|error| io(&error))
+        })
+    }
+
+    fn replace_with(
+        &self,
+        full: &Path,
+        write: impl FnOnce(&mut std::fs::File) -> Result<(), FsError>,
+    ) -> Result<(), FsError> {
+        let (temporary, mut file) = self.temporary_beside(full)?;
+        let written = write(&mut file)
+            .and_then(|()| file.sync_all().map_err(|error| io(&error)))
             .and_then(|()| {
                 drop(file);
-                std::fs::rename(&temporary, &full)
+                std::fs::rename(&temporary, full).map_err(|error| io(&error))
             });
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
-            return Err(FsError::Failed);
         }
-        Ok(())
+        written
     }
 
     /// A new temporary file in the directory of `full`. It is created exclusively, so
@@ -247,17 +288,22 @@ impl Folder {
     /// Adds to the end of a file, creating it if needed. The file may not grow past
     /// `max_bytes`.
     pub fn append(&self, path: &str, data: &[u8], max_bytes: u64) -> Result<(), FsError> {
+        if data.len() as u64 > max_bytes {
+            return Err(FsError::TooLarge);
+        }
         let full = self.target(path)?;
-        let size = std::fs::metadata(&full).map_or(0, |metadata| metadata.len());
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&full)
+            .map_err(|error| io(&error))?;
+        file.lock().map_err(|error| io(&error))?;
+        let size = file.metadata().map_err(|error| io(&error))?.len();
         if size.saturating_add(data.len() as u64) > max_bytes {
             return Err(FsError::TooLarge);
         }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&full)
-            .and_then(|mut file| file.write_all(data))
-            .map_err(|_| FsError::Failed)
+        file.write_all(data).map_err(|error| io(&error))
     }
 
     /// The names in a directory, sorted; `""` is the folder itself and a directory's
@@ -267,7 +313,7 @@ impl Folder {
         if path.is_empty() && !full.exists() {
             return Ok(Vec::new());
         }
-        self.contained(&full)?;
+        let _ = self.checked(path, true)?;
         let mut names = Vec::new();
         for entry in std::fs::read_dir(&full).map_err(|e| io(&e))? {
             let entry = entry.map_err(|_| FsError::Failed)?;
@@ -291,22 +337,17 @@ impl Folder {
 
     /// Whether a file or directory exists.
     pub fn exists(&self, path: &str) -> Result<bool, FsError> {
-        let full = inside(&self.root, path, true)?;
-        if !full.exists() {
-            return Ok(false);
+        match self.checked(path, true) {
+            Ok(_) => Ok(true),
+            Err(FsError::NotFound) => Ok(false),
+            Err(error) => Err(error),
         }
-        self.contained(&full).map(|()| true)
     }
 
     /// Deletes a file.
     pub fn remove(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let full = inside(&self.root, path, false)?;
-        let parent = full.parent().ok_or(FsError::InvalidPath)?;
-        if !parent.exists() {
-            return Err(FsError::NotFound);
-        }
-        self.contained(parent)?;
+        let full = self.source(path)?;
         std::fs::remove_file(&full).map_err(|e| io(&e))
     }
 
@@ -320,30 +361,35 @@ impl Folder {
     /// Copies a file of at most `max_bytes`, replacing a file already at `to`.
     pub fn copy(&self, path: &str, to: &str, max_bytes: u64) -> Result<(), FsError> {
         let from = self.source(path)?;
-        if std::fs::metadata(&from).map_err(|e| io(&e))?.len() > max_bytes {
+        let input = std::fs::File::open(from).map_err(|error| io(&error))?;
+        if input.metadata().map_err(|error| io(&error))?.len() > max_bytes {
             return Err(FsError::TooLarge);
         }
-        std::fs::copy(&from, self.target(to)?)
-            .map(|_| ())
-            .map_err(|e| io(&e))
+        let target = self.target(to)?;
+        self.replace_with(&target, |output| {
+            let count = std::io::copy(&mut input.take(max_bytes.saturating_add(1)), output)
+                .map_err(|error| io(&error))?;
+            if count > max_bytes {
+                return Err(FsError::TooLarge);
+            }
+            Ok(())
+        })
     }
 
     /// Creates a directory and the directories on its path.
     pub fn make_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
         let full = inside(&self.root, path, false)?;
-        std::fs::create_dir_all(&full).map_err(|_| FsError::Failed)?;
-        self.contained(&full)
+        self.create_inside(&full)
     }
 
     /// Removes an empty directory.
     pub fn remove_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let full = inside(&self.root, path, false)?;
-        if !full.is_dir() {
+        let (full, info) = self.checked(path, false)?;
+        if !info.is_dir() {
             return Err(FsError::NotFound);
         }
-        self.contained(&full)?;
         std::fs::remove_dir(&full).map_err(|_| FsError::Failed)
     }
 }
@@ -424,6 +470,30 @@ mod tests {
         assert_eq!(locked.rename("b/c.bin", "d"), Err(FsError::ReadOnly));
         assert_eq!(locked.make_directory("e"), Err(FsError::ReadOnly));
         let _ = std::fs::remove_dir_all(&above);
+    }
+
+    #[test]
+    fn concurrent_appends_enforce_the_same_limit_across_folder_instances() {
+        let root =
+            std::env::temp_dir().join(format!("orange-sandbox-append-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let folder = Folder::new(&root, false);
+        folder.write("shared", b"").unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let outcomes = std::thread::scope(|scope| {
+            let append = || {
+                let folder = Folder::new(&root, false);
+                barrier.wait();
+                folder.append("shared", b"1234", 4)
+            };
+            let first = scope.spawn(append);
+            let second = append();
+            [first.join().unwrap(), second]
+        });
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(outcomes.contains(&Err(FsError::TooLarge)));
+        assert_eq!(folder.read("shared", 4).unwrap(), b"1234");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

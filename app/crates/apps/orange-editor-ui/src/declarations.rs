@@ -130,6 +130,23 @@ impl ConnectionForm {
     }
 
     fn check(&self, host: &Host, mut settings: Json) -> Result<(), String> {
+        // Check the shape without looking up a credential from an imported profile.
+        for field in host
+            .adapter_texts(&self.adapter)
+            .into_iter()
+            .filter(|field| field.secret)
+        {
+            if text_at(&settings, &field.setting)
+                .and_then(Json::as_str)
+                .is_some_and(|text| text.starts_with(orange_host::SECRET_PREFIX))
+            {
+                set_text(
+                    &mut settings,
+                    &field.setting,
+                    Some(Json::from("credential-check")),
+                );
+            }
+        }
         for (setting, secret) in &self.secrets.0 {
             if !secret.is_empty() {
                 set_text(&mut settings, setting, Some(Json::from(secret.as_str())));
@@ -1037,7 +1054,14 @@ impl Editor {
         secrets: &[(String, String)],
     ) -> Option<String> {
         let draft = self.editing()?;
-        let result = host.declare_connection_with_secrets(draft, connection, secrets);
+        let result = host
+            .declare_connection_with_secrets(draft, connection, secrets)
+            .and_then(|id| {
+                if secrets.is_empty() {
+                    host.approve_connection_credentials(draft, &id)?;
+                }
+                Ok(id)
+            });
         self.edited_value(host, result)
     }
 
@@ -1309,7 +1333,11 @@ impl Editor {
                     });
                 ui.horizontal_wrapped(|ui| {
                     let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
-                    let label = if form.changing.is_some() {
+                    let label = if form.settings.contains(orange_host::SECRET_PREFIX)
+                        || form.secrets.0.values().any(|secret| !secret.is_empty())
+                    {
+                        t("save-and-approve-credentials")
+                    } else if form.changing.is_some() {
                         t("save")
                     } else {
                         t("add")
@@ -1900,7 +1928,15 @@ mod tests {
             "credential://{}",
             orange_host::secret_name(&id, "token")
         )));
-        assert_eq!(store.0.lock().unwrap().len(), 1);
+        assert_eq!(
+            store
+                .0
+                .lock()
+                .unwrap()
+                .get(&orange_host::secret_name(&id, "token"))
+                .map(String::as_str),
+            Some("s3cret-value")
+        );
         draw(&mut editor, &mut host);
     }
 

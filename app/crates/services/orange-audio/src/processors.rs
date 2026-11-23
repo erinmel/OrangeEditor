@@ -438,9 +438,10 @@ pub(crate) fn start(
     input: Arc<InputShared>,
     make: Make,
     publisher: Publisher,
+    run_id: u64,
 ) -> Result<Box<dyn Send>, String> {
     let output = Output(InputShared::register(None, None, Duration::from_millis(25)));
-    let value = stream_value(output.0.id).map_err(|fault| fault.message.to_owned())?;
+    let value = stream_value(&output.0, run_id).map_err(|fault| fault.message.to_owned())?;
     let life = Arc::new(Lifecycle::new());
     let running = Arc::clone(&life);
     thread::Builder::new()

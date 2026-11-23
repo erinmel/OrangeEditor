@@ -27,7 +27,7 @@ pub use plugin::{
     API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,
 };
 
-use limits::InstanceLimits;
+use limits::{Aggregate, InstanceLimits};
 use thiserror::Error;
 use wasmtime::component::{Component, ComponentNamedList, Instance, Lift, Linker, Lower};
 use wasmtime::{Config, Engine, Store, Trap};
@@ -35,6 +35,12 @@ use wasmtime::{Config, Engine, Store, Trap};
 /// Per-instance resource limits (04 proposals: 64 MiB linear memory, finite fuel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuestLimits {
+    /// Concurrent Wasmtime stores across all components compiled by one engine.
+    pub stores: usize,
+    /// Linear-memory bytes held by those stores together.
+    pub total_memory_bytes: usize,
+    /// Table elements held by those stores together.
+    pub total_table_elements: usize,
     /// Total linear-memory bytes one instance may grow to.
     pub memory_bytes: usize,
     /// Fuel granted to each call; it is reset, not accumulated, before every call.
@@ -47,6 +53,8 @@ pub struct GuestLimits {
     pub tables: usize,
     /// Total table elements across the store, including initial allocations.
     pub table_elements: usize,
+    /// Aggregate host-to-guest argument budget before encoding and copying.
+    pub input_bytes: usize,
     /// Canonical lifting budget for each guest-to-host import or returned result.
     /// Includes list descriptors and encoded strings, using Wasmtime's nominal
     /// hostcall fuel charge. Separate from execution fuel and retained log limits.
@@ -59,12 +67,16 @@ pub struct GuestLimits {
 impl Default for GuestLimits {
     fn default() -> Self {
         Self {
+            stores: 256,
+            total_memory_bytes: 512 * 1024 * 1024,
+            total_table_elements: 262_144,
             memory_bytes: 64 * 1024 * 1024,
             fuel_per_call: 10_000_000,
             instances: 64,
             memories: 64,
             tables: 64,
             table_elements: 65_536,
+            input_bytes: 1024 * 1024,
             transfer_bytes: 1024 * 1024,
             max_wasm_stack: 512 * 1024,
         }
@@ -84,6 +96,8 @@ pub enum GuestTrap {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum GuestError {
+    #[error("the guest engine has reached its store limit")]
+    Capacity,
     #[error("the guest engine configuration is invalid")]
     Engine,
     #[error("the component is not a valid component for this engine")]
@@ -105,6 +119,7 @@ pub enum GuestError {
 impl GuestError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::Capacity => "core/guest-capacity",
             Self::Engine => "core/guest-engine",
             Self::Compile => "core/guest-compile",
             Self::Link => "core/guest-link",
@@ -134,6 +149,7 @@ pub struct GuestEngine {
     engine: Engine,
     limits: GuestLimits,
     broadcast: Arc<AtomicU64>,
+    aggregate: Arc<std::sync::Mutex<Aggregate>>,
 }
 
 impl std::fmt::Debug for GuestEngine {
@@ -157,6 +173,7 @@ impl GuestEngine {
             engine,
             limits,
             broadcast: Arc::new(AtomicU64::new(0)),
+            aggregate: Arc::default(),
         })
     }
 
@@ -233,7 +250,7 @@ impl GuestInstance {
         let mut store = Store::new(
             &component.engine.engine,
             HostState {
-                limits: InstanceLimits::new(limits),
+                limits: InstanceLimits::new(limits, &component.engine.aggregate)?,
             },
         );
         store.limiter(|state| &mut state.limits);

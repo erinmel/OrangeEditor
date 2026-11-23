@@ -6,7 +6,7 @@
 //! text, so a path or address outside the plugin's reach does not leak through them.
 use orange_sandbox::{Folder, FsError};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// The file does not exist.
 pub const NOT_FOUND: &str = "not-found";
@@ -30,6 +30,9 @@ pub use orange_sandbox::MAX_PATH_BYTES;
 pub const MAX_ENTRIES: usize = 10_000;
 /// Most headers of one request.
 pub const MAX_HEADERS: usize = 64;
+// The quota check and write must agree across guest instances pointing at the
+// same package directory. No guest code runs under this guard.
+static DATA_QUOTAS: Mutex<()> = Mutex::new(());
 
 /// One HTTPS request a plugin asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +134,10 @@ impl GuestAccess {
 
     pub(crate) fn write(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
         let folder = self.folder()?;
+        let _reservation = self
+            .max_data_bytes
+            .map(|_| DATA_QUOTAS.lock().map_err(|_| FAILED))
+            .transpose()?;
         if let Some(limit) = self.max_data_bytes {
             // The file being replaced gives its bytes back.
             let replaced = folder.size(path).unwrap_or(0);

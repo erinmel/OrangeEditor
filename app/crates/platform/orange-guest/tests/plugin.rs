@@ -161,6 +161,19 @@ fn decoded_outputs_share_one_budget_and_a_refusal_keeps_the_instance_usable() {
     let inputs = vec![(list_type.clone(), list.clone()); 2];
     let outputs = [list_type.clone(), list_type];
     let types = types();
+    let mut input_limited = plugin(
+        GuestLimits {
+            input_bytes: 600,
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        input_limited.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Err(GuestError::InputContract)
+    );
+    assert!(!input_limited.is_poisoned());
     // Both encoded literals fit, but two decoded lists charge 2*(16+32*16).
     let mut small = plugin(
         GuestLimits {

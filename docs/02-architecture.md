@@ -95,14 +95,20 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
 
 - **Control** (`pause`, `resume`, `stop`, `trigger`, `emit`) is a bounded, non-blocking
   send to a flow's mailbox; a full mailbox answers `Busy`.
-- **Observation** is one bounded channel of `HostEvent`s. A slow observer loses
-  telemetry, counted, but never the end of a flow, and never slows a run.
+- **Observation** is a bounded channel of `HostEvent`s. A slow observer can miss
+  telemetry. The host retries the latest changed values while the flow is active
+  and prioritizes terminal notifications in the overflow queue. `Host::state`
+  reports authoritative state while the flow is retained by the host.
 - **Effects** run on a worker pool that grows while every worker is busy, up to a
   bound, so a sound playing to its end or a slow server never stalls other nodes. The
-  queue of waiting effects is bounded too.
+  queue of waiting effects is bounded too. A single flow can occupy at most half
+  the worker ceiling rounded up, including queued work.
 - **Services** come from `ServicePackage`s: compiled in (`Host::with_services`) or loaded
   from native libraries. Opening a document opens a session for each connection its
   nodes name; graph-scoped sessions belong to the flow, shared ones to the host.
+- **Persistent variables** have one writer for each graph ID or workspace state
+  directory. A second host or an offline edit must acquire the same file lock before
+  writing. A graph replacement transfers ownership to the new run.
 - **Packages** install, update and uninstall while the editor is open. A running flow
   keeps the provider it was compiled with until it stops ([04](04-expansion-plugins.md)).
 
@@ -115,7 +121,8 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
 | Native plugins and services | In process | Nothing: trusted like the application |
 | Graphs | In the runtime | Declared limits on time, memory, queues and recursion |
 
-Credentials stay in the OS store; documents, traces and exports hold references and
+Graph-scoped credential approvals stay in the OS store and bind the graph,
+connection, adapter and settings before credentials are resolved. Documents, traces and exports hold references and
 redacted values only. Product text is translated through Fluent catalogues
 ([13](13-internationalization.md)); the language of the interface never changes what a
 graph means.

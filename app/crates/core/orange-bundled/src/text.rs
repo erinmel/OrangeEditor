@@ -190,6 +190,41 @@ pub struct ResolvedText {
     operation: TextOperation,
     unit: TextUnit,
     ends: TrimEnds,
+    regex_cache: Option<Arc<RegexCache>>,
+}
+
+#[derive(Default)]
+struct RegexCache(std::sync::Mutex<Option<(String, regex::Regex)>>);
+
+impl std::fmt::Debug for RegexCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegexCache").finish_non_exhaustive()
+    }
+}
+
+impl RegexCache {
+    fn get(&self, pattern: &str) -> Result<regex::Regex, KernelError> {
+        let mut cached = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((previous, regex)) = cached.as_ref()
+            && previous == pattern
+        {
+            return Ok(regex.clone());
+        }
+        let regex = regex::RegexBuilder::new(pattern)
+            .size_limit(MAX_REGEX_COMPILED_BYTES)
+            .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
+            .nest_limit(32)
+            .build()
+            .map_err(|error| match error {
+                regex::Error::CompiledTooBig(_) => KernelError::LimitExceeded,
+                _ => KernelError::Domain,
+            })?;
+        *cached = Some((pattern.to_owned(), regex.clone()));
+        Ok(regex)
+    }
 }
 
 /// A field and the unconsumed delimiter (or end of input).
@@ -470,15 +505,11 @@ impl ResolvedText {
                 if source.len() > MAX_REGEX_TEXT_BYTES || pattern.len() > MAX_REGEX_PATTERN_BYTES {
                     return Err(KernelError::LimitExceeded);
                 }
-                let regex = regex::RegexBuilder::new(pattern)
-                    .size_limit(MAX_REGEX_COMPILED_BYTES)
-                    .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
-                    .nest_limit(32)
-                    .build()
-                    .map_err(|error| match error {
-                        regex::Error::CompiledTooBig(_) => KernelError::LimitExceeded,
-                        _ => KernelError::Domain,
-                    })?;
+                let regex = self
+                    .regex_cache
+                    .as_ref()
+                    .ok_or(KernelError::InputContract)?
+                    .get(pattern)?;
                 if self.operation == RegexMatch {
                     Value::Bool(regex.is_match(source))
                 } else {
@@ -710,6 +741,11 @@ impl MathPackage {
             operation,
             unit,
             ends,
+            regex_cache: matches!(
+                operation,
+                TextOperation::RegexMatch | TextOperation::RegexExtract
+            )
+            .then(Arc::default),
         })
     }
 }

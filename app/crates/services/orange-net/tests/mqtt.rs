@@ -207,12 +207,19 @@ fn broker() -> (String, Arc<Seen>, Receiver<(String, String, String)>) {
 struct Secrets;
 impl orange_host::SecretStore for Secrets {
     fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
-        if name == "mqtt/password" {
-            Ok("generated-broker-value".to_owned())
-        } else {
-            Err(orange_host::SecretError::NotFound)
+        match name {
+            "mqtt/password" => Ok("generated-broker-value".to_owned()),
+            "mqtt/wrong" => Ok("not-the-password".to_owned()),
+            _ => Err(orange_host::SecretError::NotFound),
         }
     }
+}
+
+fn open(host: &mut Host, text: &str) -> orange_host::FlowId {
+    let draft = host.draft(text).unwrap();
+    host.approve_connection_credentials_for_session(&draft, CONNECTION)
+        .unwrap();
+    host.open(text).unwrap()
 }
 
 /// Text messages are stored in variable 100 and binary ones in 101. Manual entry 2
@@ -345,7 +352,7 @@ fn a_graph_publishes_and_is_triggered_by_the_topics_it_subscribes_to() {
     // The document holds the reference, not the password.
     assert!(!text.contains("generated-broker-value"));
 
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     assert_eq!(
         logins.recv_timeout(WAIT).unwrap(),
         (
@@ -380,7 +387,7 @@ fn an_unacknowledged_message_is_sent_again_after_reconnecting() {
     let (url, seen, logins) = broker();
     let mut host = host();
     let text = document(&host, &url);
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     let _ = logins.recv_timeout(WAIT).unwrap();
 
     // The broker drops the connection instead of acknowledging the message.
@@ -418,10 +425,10 @@ fn a_real_broker_delivers_what_the_graph_publishes() {
     // ORANGE_MQTT_WRONG_PASSWORD makes the login fail: nothing must be delivered.
     let wrong = std::env::var("ORANGE_MQTT_WRONG_PASSWORD").is_ok();
     if wrong {
-        settings["password"] = json!("not-the-password");
+        settings["password"] = json!("credential://mqtt/wrong");
     }
     let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     if wrong {
         host.trigger(flow, node(2), None).unwrap();
         std::thread::sleep(Duration::from_secs(4));

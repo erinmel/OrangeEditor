@@ -11,6 +11,7 @@ orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
 # Windows Credential Manager, macOS Keychain and the Linux Secret Service. The D-Bus
 # client library is built from source (`vendored`), so no system package is needed.
 keyring.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

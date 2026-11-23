@@ -308,10 +308,12 @@ pub(crate) fn spectrum(
     settings: &Map<String, Json>,
     emitter: Emitter,
     streams: bool,
+    run_id: u64,
 ) -> Result<Box<dyn Send>, String> {
     let specs = bands(settings, streams)?;
     for output in specs.iter().filter_map(|spec| spec.output.as_ref()) {
-        let value = stream_value(output.source.id).map_err(|fault| fault.message.to_owned())?;
+        let value =
+            stream_value(&output.source, run_id).map_err(|fault| fault.message.to_owned())?;
         emitter
             .publish(&output.port, Some(value))
             .map_err(|_| "Band output could not be published")?;

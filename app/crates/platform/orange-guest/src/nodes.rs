@@ -245,7 +245,12 @@ impl GuestPackage {
                 output_types.push(ty);
             }
         }
-        let plugin = GuestPlugin::with_access(&self.component, self.grants, self.access.clone())
+        let access = if request.signature().kind == NodeKind::Async {
+            self.access.clone()
+        } else {
+            GuestAccess::default()
+        };
+        let plugin = GuestPlugin::with_access(&self.component, self.grants, access)
             .map_err(|_| ResolveError::Unavailable)?;
         let cancellation = plugin.cancellation();
         Ok((

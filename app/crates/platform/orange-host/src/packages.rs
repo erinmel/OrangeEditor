@@ -475,7 +475,8 @@ impl Host {
         .map_err(|error| refused(error.to_string()))?;
         let mut scratch = graphs::scratch(&empty, bodies)
             .ok_or_else(|| refused("could not build a validation document".into()))?;
-        graphs::link(&mut scratch, known);
+        let input_bytes = scratch.to_string().len();
+        graphs::link(&mut scratch, known, input_bytes).map_err(refused)?;
         let document =
             from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
         let analysis = analyzed(&document, registry);

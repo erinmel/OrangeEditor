@@ -21,6 +21,9 @@ const RESPONSE_HEADERS: &str = "core/map@1<core/string@1,core/list@1<core/string
 const MAX_QUERY_PAIRS: usize = 64;
 const MAX_REQUEST_TARGET_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TIMEOUT_MS: u64 = 120_000;
+const MAX_STREAM_TIMEOUT_MS: u64 = 900_000;
 
 const NO_SESSION: KernelFault = fault(
     "org.orange.net/Connection",
@@ -53,11 +56,21 @@ struct HttpSession {
     agent: Agent,
     /// For responses read as they arrive: no limit on the whole exchange.
     stream_agent: Agent,
+    stream_timeout: Duration,
     base_url: String,
     headers: Vec<(String, String)>,
     oauth: Option<oauth::OAuth>,
+    retry_non_idempotent: bool,
     /// The entries that receive the lines of streamed responses.
     listeners: Arc<Listeners>,
+}
+impl Drop for HttpSession {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        for (_, value) in &mut self.headers {
+            value.zeroize();
+        }
+    }
 }
 /// Header values are left out: they can be credentials.
 impl std::fmt::Debug for HttpSession {
@@ -71,33 +84,44 @@ impl std::fmt::Debug for HttpSession {
 impl HttpSession {
     /// Sends one request with the connection's headers and the validated extras.
     /// With OAuth the request carries the current access token;
-    /// if the server answers 401 the token is replaced and the request sent once more.
+    /// A 401 refreshes the token. Automatic replay requires an idempotent method
+    /// or explicit permission on the connection.
     fn send(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &[u8],
         streamed: bool,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
         let Some(oauth) = &self.oauth else {
             return self.send_once(method, path, content_type, extra, body, streamed, None);
         };
-        let token = oauth.token(false).map_err(|_| AUTHORIZATION)?;
+        let token = oauth.token(None).map_err(|_| AUTHORIZATION)?;
         let response = self.send_once(
             method,
             path,
             content_type,
             extra,
-            body.clone(),
+            body,
             streamed,
             Some(&token),
         )?;
         if response.status().as_u16() != 401 {
             return Ok(response);
         }
-        let token = oauth.token(true).map_err(|_| AUTHORIZATION)?;
+        let token = oauth
+            .token(Some(token.as_str()))
+            .map_err(|_| AUTHORIZATION)?;
+        if !self.retry_non_idempotent
+            && !matches!(
+                method,
+                "GET" | "HEAD" | "PUT" | "DELETE" | "OPTIONS" | "TRACE"
+            )
+        {
+            return Ok(response);
+        }
         self.send_once(
             method,
             path,
@@ -116,7 +140,7 @@ impl HttpSession {
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &[u8],
         streamed: bool,
         token: Option<&str>,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
@@ -129,15 +153,15 @@ impl HttpSession {
         agent.run(request).map_err(|_| TRANSPORT)
     }
 
-    fn build_request(
+    fn build_request<'body>(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &'body [u8],
         token: Option<&str>,
-    ) -> Result<Request<Vec<u8>>, KernelFault> {
+    ) -> Result<Request<&'body [u8]>, KernelFault> {
         let header_bytes = extra
             .iter()
             .map(|(name, value)| name.as_str().len() + value.len())
@@ -189,6 +213,9 @@ impl Session for HttpSession {
 #[derive(Debug)]
 pub(crate) struct HttpAdapter;
 impl ConnectionAdapter for HttpAdapter {
+    fn renewal_field(&self) -> Option<&'static str> {
+        Some("/oauth/refresh_token")
+    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         self.open_renewing(settings, Renew::none())
     }
@@ -252,13 +279,14 @@ impl ConnectionAdapter for HttpAdapter {
             None => DEFAULT_TIMEOUT_MS,
             Some(value) => value
                 .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`timeout_ms` must be a positive integer")?,
+                .filter(|ms| (1..=MAX_TIMEOUT_MS).contains(ms))
+                .ok_or("`timeout_ms` must be from 1 through 120000")?,
         };
         let headers = auth_headers(settings)?;
         // Request and profile headers can carry credentials under any application name.
         let configure = || {
             Agent::config_builder()
+                .proxy(None)
                 .http_status_as_error(false)
                 .max_redirects(0)
         };
@@ -271,8 +299,8 @@ impl ConnectionAdapter for HttpAdapter {
             None => DEFAULT_STREAM_TIMEOUT_MS,
             Some(value) => value
                 .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`stream_timeout_ms` must be a positive integer")?,
+                .filter(|ms| (1..=MAX_STREAM_TIMEOUT_MS).contains(ms))
+                .ok_or("`stream_timeout_ms` must be from 1 through 900000")?,
         };
         // A streamed response may last long: only reaching the server and the whole
         // body have limits.
@@ -293,12 +321,23 @@ impl ConnectionAdapter for HttpAdapter {
             }
             Some(setting) => Some(oauth::OAuth::from_setting(setting, renew)?),
         };
+        let retry_non_idempotent = settings
+            .get("retry_non_idempotent")
+            .map(|setting| {
+                setting
+                    .as_bool()
+                    .ok_or("`retry_non_idempotent` must be a boolean")
+            })
+            .transpose()?
+            .unwrap_or(false);
         Ok(Arc::new(HttpSession {
             agent,
             stream_agent,
+            stream_timeout: Duration::from_millis(stream_timeout),
             base_url: base_url.trim_end_matches('/').to_owned(),
             headers,
             oauth,
+            retry_non_idempotent,
             listeners: Arc::new(Listeners::new()),
         }))
     }
@@ -349,6 +388,7 @@ impl ServiceNode for HttpRequest {
         else {
             return Err(BAD_REQUEST);
         };
+        admit_body(call, body.len())?;
         let mut headers = parse_header_lines(headers.lines())?;
         append_header_fields(&mut headers, header_fields)?;
         let response = session.send(
@@ -356,7 +396,7 @@ impl ServiceNode for HttpRequest {
             &request_path(path, query)?,
             content_type,
             &headers,
-            body.as_bytes().to_vec(),
+            body.as_bytes(),
             false,
         )?;
         text_response(response, false)
@@ -378,6 +418,7 @@ impl ServiceNode for HttpRequestJson {
         else {
             return Err(BAD_REQUEST);
         };
+        admit_body(call, body.as_str().len())?;
         let mut headers = Vec::new();
         append_header_fields(&mut headers, fields)?;
         let response = session.send(
@@ -385,7 +426,7 @@ impl ServiceNode for HttpRequestJson {
             &request_path(path, query)?,
             "application/json",
             &headers,
-            body.as_str().as_bytes().to_vec(),
+            body.as_str().as_bytes(),
             false,
         )?;
         text_response(response, true)
@@ -548,6 +589,7 @@ fn send_binary(
     else {
         return Err(BAD_REQUEST);
     };
+    admit_body(call, body.len())?;
     let ListRepr::Str(headers) = headers.as_ref() else {
         return Err(BAD_REQUEST);
     };
@@ -557,9 +599,19 @@ fn send_binary(
         path,
         content_type,
         &headers,
-        body.as_ref().clone(),
+        body.as_slice(),
         streamed,
     )
+}
+
+fn admit_body(call: &Call<'_>, bytes: usize) -> Result<(), KernelFault> {
+    if call.lease.is_cancelled() {
+        return Err(TRANSPORT);
+    }
+    if bytes > MAX_REQUEST_BODY_BYTES {
+        return Err(BAD_REQUEST);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -603,7 +655,14 @@ impl ServiceNode for HttpStream {
         let mut reader = std::io::BufReader::new(response.body_mut().as_reader());
         let mut line = Vec::new();
         let mut lines = 0i64;
+        let deadline = std::time::Instant::now() + session.stream_timeout;
         loop {
+            if call.lease.is_cancelled() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(TRANSPORT);
+            }
             line.clear();
             // One byte over the limit tells a line that is too long from one that fits.
             let read = (&mut reader)
@@ -633,6 +692,9 @@ impl ServiceNode for HttpStream {
                 while emitter.emit(Some(payload.clone())) == Err(EmitError::Busy) {
                     if call.lease.is_cancelled() {
                         return Ok(vec![status, ok, Value::I64(lines)]);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(TRANSPORT);
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
@@ -810,10 +872,12 @@ mod tests {
             );
             HttpSession {
                 stream_agent: agent.clone(),
+                stream_timeout: Duration::from_millis(DEFAULT_STREAM_TIMEOUT_MS),
                 agent,
                 base_url: base_url.to_owned(),
                 headers,
                 oauth: None,
+                retry_non_idempotent: false,
                 listeners: Arc::new(Listeners::new()),
             }
         }
@@ -894,7 +958,7 @@ mod tests {
                 "/anything?test=1",
                 "application/json",
                 &parse_header_lines(["Accept: application/json", "X-Trace: sample"]).unwrap(),
-                json_body.to_vec(),
+                json_body,
                 false,
             )
             .unwrap();
@@ -992,7 +1056,7 @@ mod tests {
         let headers = parse_header_lines(["x-profile-key: replacement"]).unwrap();
         assert!(
             session
-                .build_request("GET", "/", "", &headers, Vec::new(), None)
+                .build_request("GET", "/", "", &headers, &[], None)
                 .is_err()
         );
     }

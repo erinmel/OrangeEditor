@@ -95,9 +95,22 @@ is typed masked; `Host::declare_connection_with_secrets` stores it with
 `SecretStore::replace` under `connection/<connection ID>/<setting>` before the
 declaration is committed and writes only the reference, so nothing is declared when the
 store refuses. Undoing the declaration leaves the stored secret; it is replaced when
-the same setting is typed again. `Host::test_connection` resolves the references and
-opens the adapter once and releases it. Adapters that connect on first use may only
-validate settings. The editor shows a host-owned error if the adapter refuses to open
+the same setting is typed again. A reference is accepted only in a secret setting the
+adapter declares. Opening a graph-scoped profile requires local approval for its
+graph ID, connection ID, adapter and complete settings. The editor's **Save and approve
+credential use** action records that approval in the OS vault. For the CLI, use
+`orange run graph.json --approve-connection <connection-id>` after reviewing that
+profile. A destination or settings change requires renewed approval. The application
+can supply session-only approval when using a read-only vault. Shared profiles are
+supplied by the application and may additionally be restricted with a
+`HostOptions::connection_authorizer`. Its connection check receives unresolved
+settings. Its operation check receives the definition, connection, and evaluated
+inputs before an effect runs or a source starts. Policies that only allow
+connections still deny service operations until explicitly allowed.
+
+`Host::test_connection` opens the adapter with candidate settings and releases it.
+The editor substitutes a placeholder when checking a saved reference. It shows a
+host-owned error if the adapter refuses to open
 so that an adapter's error text cannot expose a credential. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
@@ -116,14 +129,19 @@ or `{token_url, client_id, refresh_token}` (with an optional `client_secret`) fo
 refresh grant, plus optional `scope` and `client_auth` (`body`, the default, or
 `basic`). The token endpoint must be `https://`, or `http://` on this machine only.
 Nothing is requested when the connection opens. The first request fetches an access
-token; it is reused until 30 seconds before `expires_in` runs out; a request answered
-with 401 fetches a new token and is sent once more. A connection set up with a refresh
+token; it is reused until 30 seconds before its expiry. The in-memory lifetime is
+capped at one hour, with five minutes when the endpoint omits expiry. A 401 rejects
+the token used by that request and can reuse a newer token from another request.
+The HTTP connection retries idempotent methods by default. Set
+`retry_non_idempotent` only for APIs where retrying the request is safe.
+A connection set up with a refresh
 token follows the server's rotation of it; when the token came from the credential
 store (`"refresh_token": "credential://<name>"`) the replacement is also stored under
 that name, so the sign-in survives a restart. The adapter never sees the store or the
 name: the host gives each connection it opens a `Renew`, the adapter reports the
-setting whose secret changed, and the host writes it through `SecretStore::replace`,
-which a read-only store refuses. A connection using client credentials never changes
+setting and previous value. The host accepts rotation only for the adapter's
+declared refresh field and checks the current vault value before replacement. The
+request reports an authorization fault if the replacement cannot be saved. A connection using client credentials never changes
 grant. A token endpoint that refuses takes the node's failed
 route with `org.orange.net/Authorization`; errors repeat the status and the
 standard's error code, never a secret or token. `orange oauth login <settings.json>
@@ -406,7 +424,9 @@ connection captures as a value of the package record type `org.orange.audio/stre
 take it. The value names a live input and holds no samples, so it is not a
 `core/stream@1` (11 §12): sample-rate audio is not pulled through the graph item by
 item, and package effects cannot take core stream inputs. Copying it fans out by
-design; each consumer reads independently. It is refused (`org.orange.audio/Ended`)
+design; each consumer reads independently. Only a live handle issued in the same
+run generation resolves the source. Checkpoints, JSON literals and other runs
+cannot turn a recorded ID into access to an input. It is refused (`org.orange.audio/Ended`)
 once its input connection has closed, and a value of another shape is
 `org.orange.audio/Input`.
 

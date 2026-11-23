@@ -193,6 +193,14 @@ struct Shared {
     /// Started once a flow has attached its triggers; the socket is not opened before.
     life: Lifecycle,
 }
+impl Drop for Shared {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        for (_, value) in &mut self.headers {
+            value.zeroize();
+        }
+    }
+}
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shared")

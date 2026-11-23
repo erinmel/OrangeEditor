@@ -15,6 +15,52 @@ const PACKAGE: &str = "org.example.live";
 const LEVEL: &str = "core/u64@1";
 const STRING: &str = "core/string@1";
 
+#[test]
+fn a_failed_staged_source_leaves_the_existing_run_and_can_be_retried() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Source(Arc<AtomicBool>, Arc<Mutex<Option<Emitter>>>);
+    impl ServiceSource for Source {
+        fn start(
+            &self,
+            _: Option<Arc<dyn Session>>,
+            emitter: Emitter,
+        ) -> Result<Box<dyn Send>, String> {
+            if self.0.load(Ordering::Relaxed) {
+                return Err("source declined".into());
+            }
+            *self.1.lock().unwrap() = Some(emitter);
+            Ok(Box::new(()))
+        }
+    }
+
+    let refuse = Arc::new(AtomicBool::new(false));
+    let emitter = Arc::new(Mutex::new(None));
+    let definition = Definition::entry(PACKAGE, "on-ready", "On ready").build();
+    let package = ServicePackage::new(PACKAGE, "1.0.0")
+        .source(&definition, Source(refuse.clone(), emitter.clone()))
+        .unwrap();
+    let (mut host, _) = Host::with_services(HostOptions::default(), vec![package]).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    host.add_node(&mut draft, "org.example.live/on-ready", [0.0, 0.0])
+        .unwrap();
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    let previous = emitter.lock().unwrap().clone().unwrap();
+    host.add_node(&mut draft, "core/on-manual", [150.0, 0.0])
+        .unwrap();
+    let changed = draft.text().unwrap();
+    refuse.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        host.update(flow, &changed),
+        Err(orange_host::HostError::Source(..))
+    ));
+    assert!(previous.emit(None).is_ok());
+    refuse.store(false, Ordering::Relaxed);
+    assert!(host.update(flow, &changed).unwrap().changed);
+    assert_eq!(previous.emit(None), Err(orange_sdk::EmitError::Closed));
+    host.close(flow).unwrap();
+}
+
 /// What the test's providers were started with, and how to make them publish or fire.
 #[derive(Default)]
 struct Seen {

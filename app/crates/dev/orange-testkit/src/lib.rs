@@ -53,10 +53,21 @@ pub fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
         "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
 }
 /// Waits until `done` is true, failing the test after [`WAIT`].
-pub fn until(what: &str, mut done: impl FnMut() -> bool) {
+pub fn until(what: &str, done: impl FnMut() -> bool) {
+    until_with_context(what, done, || ())
+}
+
+/// Captures a redacted diagnostic snapshot only if the expected state is not reached.
+pub fn until_with_context<T: std::fmt::Debug>(
+    what: &str,
+    mut done: impl FnMut() -> bool,
+    context: impl FnOnce() -> T,
+) {
     let start = Instant::now();
     while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
+        if start.elapsed() >= WAIT {
+            panic!("timed out waiting for {what}. Last state: {:?}", context());
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
 }

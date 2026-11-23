@@ -147,7 +147,10 @@ impl eframe::App for Desktop {
             self.editor.note(*level, text);
         }
         self.editor.notes_dropped(dropped);
-        if self.editor.poll_events(&self.events) || !notes.is_empty() {
+        if self.editor.poll_events(&self.events)
+            || self.editor.reconcile_run_state(&self.host)
+            || !notes.is_empty()
+        {
             // A bounded poll may leave a backlog, including events from retired flows.
             ui.ctx().request_repaint();
         }
@@ -432,7 +435,7 @@ impl Desktop {
                 let Some(path) = dialog.set_title(t("desktop-open-graph")).pick_file() else {
                     return;
                 };
-                match std::fs::read_to_string(&path) {
+                match orange_host::read_document(&path) {
                     Ok(text) => self
                         .editor
                         .open(&mut self.host, path.display().to_string(), text),
@@ -514,7 +517,8 @@ fn start(
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
-        let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
+        let text = orange_host::read_document(std::path::Path::new(&path))
+            .map_err(|error| format!("{path}: {error}"))?;
         if canvas_only && screenshot.is_none() {
             let graph = host
                 .view(&text)

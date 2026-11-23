@@ -18,6 +18,7 @@ pub fn media_reader(url: &str, max_bytes: u64) -> Result<impl std::io::Read + Se
         return Err("an audio URL must be HTTP or HTTPS without embedded credentials".into());
     }
     let response = Agent::config_builder()
+        .proxy(None)
         .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(60)))
         .timeout_connect(Some(Duration::from_secs(5)))

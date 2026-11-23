@@ -543,6 +543,42 @@ fn decode(
     budget: ImportBudget,
     history: &History,
 ) -> Result<(GraphDocument, Upgrade), CodecError> {
+    let upgrade = preflight(text, limits, budget, history)?;
+    let document = match upgrade {
+        // Deserialize directly so the typed admission step reports structural errors.
+        Upgrade::Current => {
+            let mut json = serde_json::Deserializer::from_str(text);
+            let document = DocumentWire::deserialize(&mut json)?;
+            json.end()?;
+            document
+        }
+        Upgrade::From(_) => {
+            let mut file: serde_json::Map<String, serde_json::Value> = serde_json::from_str(text)?;
+            let _ = history.upgrade(&mut file).map_err(codec_error)?;
+            DocumentWire::deserialize(serde_json::Value::Object(file))?
+        }
+    };
+    admit(document).map(|document| (document, upgrade))
+}
+
+/// Checks the saved envelope, duplicate keys and import budgets before an editor
+/// normalizes author-friendly literals and supplies missing bindings.
+pub fn check_json_envelope(text: &str) -> Result<(), CodecError> {
+    preflight(
+        text,
+        ImportLimits::default(),
+        ImportBudget::default(),
+        &HISTORY,
+    )
+    .map(drop)
+}
+
+fn preflight(
+    text: &str,
+    limits: ImportLimits,
+    budget: ImportBudget,
+    history: &History,
+) -> Result<Upgrade, CodecError> {
     enforce_limit(ImportResource::Bytes, text.len(), limits.max_bytes)?;
     let violation = Rc::new(Cell::new(None));
     let mut deserializer = serde_json::Deserializer::from_str(text);
@@ -575,23 +611,7 @@ fn decode(
     enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
     enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
     check_nesting(header.counts.nesting)?;
-    let document = match upgrade {
-        // Deserialize the body directly: wrapping the entire graph in another flattened
-        // struct buffers it through Serde's intermediate representation a second time.
-        // The unchecked wire form is read so `admit` reports typed codec errors.
-        Upgrade::Current => {
-            let mut json = serde_json::Deserializer::from_str(text);
-            let document = DocumentWire::deserialize(&mut json)?;
-            json.end()?;
-            document
-        }
-        Upgrade::From(_) => {
-            let mut file: serde_json::Map<String, serde_json::Value> = serde_json::from_str(text)?;
-            let _ = history.upgrade(&mut file).map_err(codec_error)?;
-            DocumentWire::deserialize(serde_json::Value::Object(file))?
-        }
-    };
-    admit(document).map(|document| (document, upgrade))
+    Ok(upgrade)
 }
 
 /// The codec's error for a refused envelope or upgrade.

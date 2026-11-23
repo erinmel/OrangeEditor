@@ -8,10 +8,10 @@
 //! ring behind skips ahead to recent samples (the oldest are dropped), and a reader
 //! that has caught up gets nothing until the writer adds more.
 //!
-//! Every sample is an atomic, so readers and the writer share it without locks and
-//! without `unsafe`; a reader that is overtaken mid-read gets a glitch, never a fault.
+//! Each atomic slot carries a sequence tag with its sample. Readers discard an
+//! overwritten frame instead of combining samples from different positions.
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Seconds of capture a ring holds.
 pub const RING_SECONDS: u32 = 1;
@@ -23,7 +23,7 @@ const MIN_RING: usize = 4_096;
 pub(crate) struct Ring {
     pub rate: u32,
     pub channels: u16,
-    samples: Box<[AtomicU32]>,
+    samples: Box<[AtomicU64]>,
     /// Samples written since the ring was made; slot `n % len` holds sample `n`.
     written: AtomicU64,
     /// Set when the device stopped: no more samples come.
@@ -43,7 +43,7 @@ impl Ring {
         Arc::new(Self {
             rate,
             channels: channels.max(1),
-            samples: (0..length).map(|_| AtomicU32::new(0)).collect(),
+            samples: (0..length).map(|_| AtomicU64::new(0)).collect(),
             written: AtomicU64::new(0),
             closed: AtomicBool::new(false),
         })
@@ -62,7 +62,7 @@ impl Ring {
                 .ok()
                 .and_then(|slot| self.samples.get(slot))
             {
-                slot.store(sample.to_bits(), Ordering::Relaxed);
+                slot.store((at << 32) | u64::from(sample.to_bits()), Ordering::Relaxed);
             }
             at += 1;
         }
@@ -74,11 +74,15 @@ impl Ring {
         self.written.load(Ordering::Acquire)
     }
 
-    fn sample(&self, at: u64) -> f32 {
-        usize::try_from(at % self.len())
-            .ok()
-            .and_then(|slot| self.samples.get(slot))
-            .map_or(0.0, |slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+    fn sample(&self, at: u64) -> Option<f32> {
+        let slot = self.samples.get(usize::try_from(at % self.len()).ok()?)?;
+        let value = slot.load(Ordering::Relaxed);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the low 32 bits contain the sample"
+        )]
+        let sample = f32::from_bits(value as u32);
+        ((value & 0xffff_ffff_0000_0000) == at << 32).then_some(sample)
     }
 
     /// Copies the newest samples into `out`, up to its length in whole frames and no
@@ -91,7 +95,7 @@ impl Ring {
         let count = out.len().min(kept) / frame * frame;
         let start = written - count as u64;
         for (offset, slot) in (0u64..).zip(out.iter_mut().take(count)) {
-            *slot = self.sample(start + offset);
+            *slot = self.sample(start + offset).unwrap_or_default();
         }
         count
     }
@@ -157,12 +161,19 @@ impl Cursor {
         self.at = at;
         let frame = usize::from(self.ring.channels);
         let ready = usize::try_from(written - self.at).unwrap_or(usize::MAX);
-        let count = ready.min(out.len() / frame * frame);
-        for (offset, slot) in (0u64..).zip(out.iter_mut().take(count)) {
-            *slot = self.ring.sample(self.at + offset);
+        let count = ready.min(out.len()) / frame * frame;
+        let mut copied = 0;
+        'frames: for output in out[..count].chunks_exact_mut(frame) {
+            for (offset, slot) in output.iter_mut().enumerate() {
+                let Some(sample) = self.ring.sample(self.at + offset as u64) else {
+                    break 'frames;
+                };
+                *slot = sample;
+            }
+            self.at += frame as u64;
+            copied += frame;
         }
-        self.at += count as u64;
-        count
+        copied
     }
 }
 
@@ -183,6 +194,7 @@ pub(crate) struct Live {
     fraction: f64,
     step: f64,
     channels: usize,
+    scratch: Box<[f32]>,
     started: bool,
     /// Set by a stop command; the voice is then handed back.
     pub ended: bool,
@@ -204,6 +216,7 @@ impl Live {
             fraction: 0.0,
             step,
             channels: usize::from(channels.max(1)),
+            scratch: vec![0.0; usize::from(channels.max(1))].into_boxed_slice(),
             started: false,
             ended: false,
         }
@@ -231,18 +244,26 @@ impl Live {
             self.fraction = 0.0;
         }
         let source_channels = usize::from(ring.channels);
-        for frame in out.chunks_exact_mut(self.channels) {
+        'frames: for frame in out.chunks_exact_mut(self.channels) {
             // Interpolation needs this frame and the next.
             if written < self.at + 2 * source {
                 break;
             }
             #[expect(clippy::cast_possible_truncation, reason = "a fraction within 0..1")]
             let mix = self.fraction as f32;
-            for (channel, sample) in frame.iter_mut().enumerate() {
+            for (channel, sample) in self.scratch.iter_mut().enumerate() {
                 let offset = (channel % source_channels) as u64;
-                let a = ring.sample(self.at + offset);
-                let b = ring.sample(self.at + source + offset);
-                *sample += (a + (b - a) * mix) * gain;
+                let (Some(a), Some(b)) = (
+                    ring.sample(self.at + offset),
+                    ring.sample(self.at + source + offset),
+                ) else {
+                    self.started = false;
+                    break 'frames;
+                };
+                *sample = (a + (b - a) * mix) * gain;
+            }
+            for (sample, value) in frame.iter_mut().zip(&self.scratch) {
+                *sample += value;
             }
             self.fraction += self.step;
             while self.fraction >= 1.0 {

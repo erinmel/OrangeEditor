@@ -93,20 +93,22 @@ pub trait SecretStore: std::fmt::Debug + Send + Sync + 'static {
 /// plain value, not a reference, is not stored anywhere.
 #[derive(Clone, Default)]
 pub struct Renew(Option<Arc<Keep>>);
-type Keep = dyn Fn(&str, &str) + Send + Sync;
+type Keep = dyn Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync;
 impl Renew {
     /// A renewal that stores nothing.
     pub fn none() -> Self {
         Self(None)
     }
-    pub fn new(keep: impl Fn(&str, &str) + Send + Sync + 'static) -> Self {
+    pub fn new(
+        keep: impl Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync + 'static,
+    ) -> Self {
         Self(Some(Arc::new(keep)))
     }
     /// Reports that the secret given in `setting` is now `secret`.
-    pub fn keep(&self, setting: &str, secret: &str) {
-        if let Some(keep) = &self.0 {
-            keep(setting, secret);
-        }
+    pub fn keep(&self, setting: &str, current: &str, secret: &str) -> Result<(), SecretError> {
+        self.0
+            .as_ref()
+            .map_or(Ok(()), |keep| keep(setting, current, secret))
     }
 }
 impl std::fmt::Debug for Renew {
@@ -150,6 +152,11 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     /// default offers none.
     fn texts(&self) -> Vec<SettingText> {
         Vec::new()
+    }
+    /// Secret field whose service protocol can rotate the existing credential.
+    /// This must also be a declared secret text setting, as a JSON pointer.
+    fn renewal_field(&self) -> Option<&'static str> {
+        None
     }
     /// True-or-false settings an editor can show as switches. The default offers none.
     fn toggles(&self) -> Vec<SettingToggle> {
@@ -511,11 +518,20 @@ impl ServiceNode for Streaming {
 /// The values a source's data inputs have, by input name: what a node's wires carry
 /// when the run arms its source (11 §10.5).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Arguments(Vec<(String, Value)>);
+pub struct Arguments(Vec<(String, Value)>, u64);
 impl Arguments {
     /// Arguments from input names and values, as the host hands them over.
     pub fn new(values: Vec<(String, Value)>) -> Self {
-        Self(values)
+        Self(values, 0)
+    }
+    /// Identifies the run providing the arguments, for ownership of live resources.
+    pub fn with_run_id(mut self, run_id: u64) -> Self {
+        self.1 = run_id;
+        self
+    }
+    /// The run this source belongs to. Zero denotes standalone SDK arguments.
+    pub fn run_id(&self) -> u64 {
+        self.1
     }
     /// The value of input `name`.
     pub fn get(&self, name: &str) -> Option<&Value> {

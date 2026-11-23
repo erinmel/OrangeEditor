@@ -41,7 +41,7 @@ the foundation.
 | Editor and desktop application | Working on Windows; Linux and macOS build in CI but are not used day to day |
 | Network, files, credentials | Working, with a Docker lab for HTTP, WebSocket, MQTT and AMQP |
 | Audio | File sources and stream processors are exercised in automated tests. Output routing and capture need release qualification on each advertised platform. Linux per-application capture requires PipeWire. macOS per-application capture is still open. |
-| Wasm packages | Pure, action and async nodes run; host service imports and resources are missing |
+| Wasm packages | Pure, action and async nodes run. Granted files and HTTPS access are available to async nodes when the host supplies the service. |
 | Native plugins | Load at start; not sandboxed |
 | File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
 | Releases | The release workflow and receipt checks exist. Native packaging adapters and clean-install qualification are pending. See the [desktop release contract](../tools/release/README.md). |
@@ -52,7 +52,9 @@ These are the gaps between the vision and the repository today, most important f
 
 1. **Documentation for people who use it.** No getting-started guide, no tutorial and
    no node reference. A reference could be generated from the node catalogue, which
-   already carries names and purposes in English and Spanish.
+   already carries names and purposes in English and Spanish. Use
+   `orange nodes --json` to export bilingual names, categories and static port
+   contracts from the active registry.
 2. **A threat model.** Credentials, package grants, native plugins (not sandboxed) and
    network access are each described, but nowhere together with what an attacker could
    do and what stops it.
@@ -65,8 +67,8 @@ These are the gaps between the vision and the repository today, most important f
    bands. Transient hit markers on the chart and wireable When thresholds are still open.
 6. **Platform qualification.** Frame time, memory and latency targets are measured on
    one Windows machine only; macOS and Linux audio, input and capture need real runs.
-7. **Wasm guest services.** Installed Wasm packages cannot yet call host services or own
-   resources, so service plugins must be native libraries today.
+7. **Wasm guest resources.** File and HTTP imports exist for async providers. General
+   graph resource ownership and interruptible blocking host calls are open.
 8. **Accessibility.** Keyboard use works for shortcuts and search; screen reader output
    from the canvas has not been checked.
 

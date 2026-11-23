@@ -87,6 +87,7 @@ pub fn token_request(
         return Err("the token URL must be https://, or http:// on this machine".into());
     }
     let agent: Agent = Agent::config_builder()
+        .proxy(None)
         .timeout_global(Some(TIMEOUT))
         .max_redirects(0)
         .http_status_as_error(false)
@@ -153,16 +154,16 @@ pub fn token_request(
 pub(crate) struct OAuth {
     token_url: String,
     client_id: String,
-    client_secret: Option<String>,
+    client_secret: Option<zeroize::Zeroizing<String>>,
     scope: Option<String>,
     /// Send the client's ID and secret as Basic authorization, not as form fields.
     basic: bool,
     /// The refresh token, replaced when the server rotates it. `None` selects the
     /// client-credentials grant.
-    refresh: Mutex<Option<String>>,
+    refresh: Mutex<Option<zeroize::Zeroizing<String>>>,
     /// Where a replaced refresh token is reported, to be kept for the next start.
     renew: Renew,
-    token: Mutex<Option<(String, Option<Instant>)>>,
+    token: Mutex<Option<(zeroize::Zeroizing<String>, Instant)>>,
 }
 /// Secrets and tokens are left out.
 impl std::fmt::Debug for OAuth {
@@ -203,8 +204,8 @@ impl OAuth {
         if !is_endpoint(&token_url) {
             return Err("`oauth.token_url` must be https://, or http:// on this machine".into());
         }
-        let client_secret = text("client_secret")?;
-        let refresh = text("refresh_token")?;
+        let client_secret = text("client_secret")?.map(zeroize::Zeroizing::new);
+        let refresh = text("refresh_token")?.map(zeroize::Zeroizing::new);
         if client_secret.is_none() && refresh.is_none() {
             return Err("`oauth` needs `client_secret` or `refresh_token`".into());
         }
@@ -227,14 +228,17 @@ impl OAuth {
         })
     }
 
-    /// The access token to send. With `renew`, the one held is given up first, as
-    /// after a request the server answered with 401.
-    pub(crate) fn token(&self, renew: bool) -> Result<String, String> {
+    /// The access token to send. A 401 rejects the token actually used by that
+    /// request. Another request may already have refreshed it.
+    pub(crate) fn token(
+        &self,
+        rejected: Option<&str>,
+    ) -> Result<zeroize::Zeroizing<String>, String> {
         // Held across the request: several nodes waiting for one token ask for it once.
         let mut held = self.token.lock().unwrap_or_else(PoisonError::into_inner);
-        if !renew
-            && let Some((token, expires)) = held.as_ref()
-            && expires.is_none_or(|expires| Instant::now() + EARLY < expires)
+        if let Some((token, expires)) = held.as_ref()
+            && rejected != Some(token.as_str())
+            && expires.saturating_duration_since(Instant::now()) > EARLY
         {
             return Ok(token.clone());
         }
@@ -265,19 +269,27 @@ impl OAuth {
             }
         };
         let answer = token_request(&self.token_url, &form, basic)?;
+        let expires = Instant::now()
+            .checked_add(Duration::from_secs(
+                answer.expires_in.unwrap_or(300).min(3600),
+            ))
+            .ok_or("the token endpoint returned an invalid expiry")?;
+        let token = zeroize::Zeroizing::new(answer.access_token);
         // Only a connection set up with a refresh token follows its rotation; one
         // using client credentials keeps that grant whatever the server sends.
-        if let Some(rotated) = answer.refresh_token.filter(|_| refresh.is_some())
-            && refresh.as_ref() != Some(&rotated)
+        let mut renewal = Ok(());
+        if let (Some(old), Some(rotated)) =
+            (refresh, answer.refresh_token.map(zeroize::Zeroizing::new))
+            && old.as_str() != rotated.as_str()
         {
-            self.renew.keep("/oauth/refresh_token", &rotated);
+            renewal = self
+                .renew
+                .keep("/oauth/refresh_token", old.as_str(), rotated.as_str());
             *self.refresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(rotated);
         }
-        let expires = answer
-            .expires_in
-            .map(|seconds| Instant::now() + Duration::from_secs(seconds));
-        *held = Some((answer.access_token.clone(), expires));
-        Ok(answer.access_token)
+        *held = Some((token.clone(), expires));
+        renewal.map_err(|_| "the rotated credential could not be stored")?;
+        Ok(token)
     }
 }
 

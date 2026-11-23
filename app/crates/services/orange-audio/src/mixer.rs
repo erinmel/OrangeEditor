@@ -11,6 +11,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 /// Sounds one output plays at once. Further sounds are refused, not queued.
 pub const MAX_VOICES: usize = 32;
+const COMMAND_CAPACITY: usize = MAX_VOICES * 4;
 
 /// One playing sound: samples already in the device's rate and channel layout.
 #[derive(Debug)]
@@ -55,7 +56,7 @@ pub(crate) struct Mixer {
 /// mixer has filled, by which the controller sees that the device is still running.
 pub(crate) fn mixer() -> (Mixer, SyncSender<Command>, Receiver<Voice>, Arc<AtomicU64>) {
     // Every voice may be stopped and replaced within one block.
-    let (commands, receive) = sync_channel(MAX_VOICES * 4);
+    let (commands, receive) = sync_channel(COMMAND_CAPACITY);
     let (retired, done) = sync_channel(MAX_VOICES * 4);
     let blocks = Arc::new(AtomicU64::new(0));
     let mixer = Mixer {
@@ -80,7 +81,10 @@ fn end(voice: &mut Voice) {
 impl Mixer {
     /// Writes the next block of interleaved samples, each within -1.0..=1.0.
     pub(crate) fn fill(&mut self, out: &mut [f32]) {
-        while let Ok(command) = self.commands.try_recv() {
+        for _ in 0..COMMAND_CAPACITY {
+            let Ok(command) = self.commands.try_recv() else {
+                break;
+            };
             match command {
                 Command::Play(voice) => {
                     if let Some(free) = self.voices.iter_mut().find(|slot| slot.is_none()) {

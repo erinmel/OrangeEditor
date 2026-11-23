@@ -13,6 +13,12 @@ const I64: &str = "core/i64@1";
 const STRING: &str = "core/string@1";
 const CONNECTION: &str = "40000000-0000-4000-8000-000000000001";
 
+fn approve(host: &Host, text: &str) {
+    let draft = host.draft(text).unwrap();
+    host.approve_connection_credentials_for_session(&draft, CONNECTION)
+        .unwrap();
+}
+
 /// Answers each request with status 201 and a body echoing its request line and body.
 fn server(requests: usize) -> String {
     server_with(requests, 201)
@@ -533,10 +539,9 @@ impl orange_host::SecretStore for Kept {
 struct Secrets;
 impl orange_host::SecretStore for Secrets {
     fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
-        if name == "api/token" {
-            Ok("generated-test-token".to_owned())
-        } else {
-            Err(orange_host::SecretError::NotFound)
+        match name {
+            "api/token" => Ok("generated-test-token".to_owned()),
+            _ => Err(orange_host::SecretError::NotFound),
         }
     }
 }
@@ -640,6 +645,7 @@ fn a_binary_request_carries_the_connections_credential_and_returns_bytes() {
 
     // A credential the store does not have refuses the connection, by name only.
     let missing = build(&host, "credential://api/other");
+    approve(&host, &missing);
     let Err(HostError::Connection(_, reason)) = host.open(&missing) else {
         panic!("a missing credential is refused");
     };
@@ -649,6 +655,7 @@ fn a_binary_request_carries_the_connections_credential_and_returns_bytes() {
     let text = build(&host, "credential://api/token");
     assert!(text.contains("credential://api/token"));
     assert!(!text.contains("generated-test-token"));
+    approve(&host, &text);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the reply", || read(&host, flow, 102).is_some());
@@ -702,7 +709,7 @@ fn authorization_settings_are_checked_when_a_document_opens() {
         &mut host,
         json!({"bearer": "credential://api/token"})
     ));
-    assert!(!refused(
+    assert!(refused(
         &mut host,
         json!({"basic": {"user": "u", "password": "p"}})
     ));
@@ -800,8 +807,10 @@ fn an_oauth_connection_gets_keeps_and_replaces_its_access_token() {
     let mut connection = graph_connection(&url);
     connection["settings"]["oauth"] = json!({"token_url": format!("{url}/token"),
         "client_id": "app", "client_secret": "credential://api/token", "scope": "read write"});
+    connection["settings"]["retry_non_idempotent"] = json!(true);
     let text = document(&host, connection);
     assert!(!text.contains("generated-test-token"));
+    approve(&host, &text);
     let flow = host.open(&text).unwrap();
     // Opening asks for nothing: the token is fetched when a request needs it.
     assert!(log.lock().unwrap().is_empty());
@@ -835,11 +844,22 @@ fn an_oauth_connection_gets_keeps_and_replaces_its_access_token() {
 fn a_refresh_token_is_exchanged_and_a_rotated_one_is_used_next() {
     // Tokens that expire at once make every request ask for a new one.
     let (url, log, _reject) = oauth_server(0);
-    let mut host = host();
+    let mut host = Host::with_services(
+        HostOptions {
+            secrets: Some(std::sync::Arc::new(Kept(std::sync::Mutex::new(
+                "first-refresh".into(),
+            )))),
+            ..HostOptions::default()
+        },
+        vec![orange_net::package()],
+    )
+    .unwrap()
+    .0;
     let mut connection = graph_connection(&url);
     connection["settings"]["oauth"] = json!({"token_url": format!("{url}/token"),
-        "client_id": "app", "refresh_token": "first-refresh"});
+        "client_id": "app", "refresh_token": "credential://api/refresh"});
     let text = document(&host, connection);
+    approve(&host, &text);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the first request", || log.lock().unwrap().len() == 2);
@@ -873,6 +893,7 @@ fn a_refresh_token_is_exchanged_and_a_rotated_one_is_used_next() {
         "client_id": "app", "refresh_token": "credential://api/refresh"});
     let text = document(&host, connection);
     assert!(!text.contains("stored-refresh"));
+    approve(&host, &text);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the request with the stored token", || {
@@ -883,14 +904,23 @@ fn a_refresh_token_is_exchanged_and_a_rotated_one_is_used_next() {
         "token grant_type=refresh_token&refresh_token=stored-refresh&client_id=app"
     );
     assert_eq!(*kept.0.lock().unwrap(), "refresh-1");
-    let mut host = self::host();
+    let mut host = Host::with_services(
+        HostOptions {
+            secrets: Some(std::sync::Arc::new(Secrets)),
+            ..HostOptions::default()
+        },
+        vec![orange_net::package()],
+    )
+    .unwrap()
+    .0;
 
     // A token endpoint that refuses takes the node's failed route.
     let (url, _log, _reject) = oauth_server(3600);
     let mut connection = graph_connection(&url);
     connection["settings"]["oauth"] = json!({"token_url": format!("{url}/missing"),
-        "client_id": "app", "client_secret": "s"});
+        "client_id": "app", "client_secret": "credential://api/token"});
     let text = document(&host, connection);
+    approve(&host, &text);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the failed route", || {

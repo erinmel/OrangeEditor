@@ -16,6 +16,7 @@ impl Host {
             name: document.graph_id().to_string(),
             variables,
             registry: Arc::clone(registry),
+            lock: None,
         })
     }
 
@@ -38,14 +39,7 @@ impl Host {
             let _ = answer.send(outcome);
             applied
         });
-        flow.shared
-            .queries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-            .ok_or(HostError::FlowEnded)?
-            .push_back(query);
-        flow.wake();
+        flow.enqueue_query(query, self.options.inbox_capacity)?;
         result
             .recv()
             .map_err(|_| HostError::FlowEnded)?
@@ -135,6 +129,7 @@ impl Host {
             .as_ref()
             .ok_or_else(|| HostError::State("the host has no state directory".into()))?;
         let name = graph.map_or_else(|| state::SHARED.to_owned(), |graph| graph.to_string());
+        let _lock = state::lock(directory, &name).map_err(HostError::State)?;
         let mut stored = state::load(directory, &name).map_err(HostError::State)?;
         let entry = stored
             .iter_mut()
@@ -163,6 +158,11 @@ impl Host {
     /// next turn; writes from different flows are applied one at a time.
     pub fn share_variables(&mut self, json: &str) -> Result<(), HostError> {
         let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let mut keep = self
+            .space
+            .keep
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut workspace = self
             .space
             .workspace
@@ -184,20 +184,18 @@ impl Host {
             && !kept.is_empty()
         {
             let registry = Arc::clone(self.store.current());
+            let lock = state::lock(&directory, state::SHARED).map_err(HostError::State)?;
             let stored = state::load(&directory, state::SHARED).map_err(HostError::State)?;
             for (id, value) in state::restore(&stored, &kept, registry.types()) {
                 let _ = created
                     .set(id, &value)
                     .map_err(|error| HostError::Workspace(error.to_string()))?;
             }
-            *self
-                .space
-                .keep
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Keep {
+            *keep = Some(Keep {
                 directory,
                 name: state::SHARED.to_owned(),
                 variables: kept,
+                lock: Some(Arc::new(lock)),
                 registry,
             });
         }
