@@ -33,6 +33,8 @@ pub const GAIN: &str = "org.orange.audio/gain";
 pub const FILTER: &str = "org.orange.audio/filter";
 /// The record output of Audio format, with U64 fields `rate` and `channels`.
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
+/// Per-channel RMS, sample peak and full-scale latch, in stream channel order.
+pub(crate) const CHANNEL_LEVELS_TYPE: &str = "org.orange.audio/channel-levels@1";
 /// Measures a stream's level in dBFS continuously.
 pub const LIVE_LEVEL: &str = "org.orange.audio/live-level";
 /// Fires when a stream has a hit in a selected band.
@@ -432,10 +434,13 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Audio Level Trigger",
         "Measure overall volume and trigger after staying above or below a threshold.",
     )
+    .version(2)
+    .replaces("noise-level", 1, &[])
     .keywords("microphone, noise level, loudness, volume, rms, dbfs, threshold")
     .then_label("Triggered")
     .live("level", F64)
     .live("condition_met", "core/bool@1")
+    .live("channel_levels", CHANNEL_LEVELS_TYPE)
     .setting(
         "direction",
         json!({"type": "string", "enum": ["above", "below"], "default": "above"}),
@@ -519,6 +524,14 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .record(
             "format",
             &[("rate", "core/u64@1"), ("channels", "core/u64@1")],
+        )
+        .record(
+            "channel-levels",
+            &[
+                ("rms", "core/list@1<core/f64@1>"),
+                ("peak", "core/list@1<core/f64@1>"),
+                ("clipped", "core/list@1<core/bool@1>"),
+            ],
         )
         .enumeration("source-command", SOURCE_COMMANDS)
         .enumeration("sound-command", SOUND_COMMANDS)

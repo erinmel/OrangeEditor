@@ -842,7 +842,23 @@ impl Drop for Analyzing {
 fn watch_windows(
     input: Arc<InputShared>,
     listening: Listening,
-    mut observe: impl FnMut(Option<f64>) -> bool + Send + 'static,
+    observe: impl FnMut(Option<f64>) -> bool + Send + 'static,
+) -> Result<Box<dyn Send>, String> {
+    watch_window_measurements(
+        input,
+        listening.window,
+        move |ring| BandMeter::new(ring, &listening),
+        |meter, samples, report| meter.push(samples, report),
+        observe,
+    )
+}
+
+fn watch_window_measurements<M, T>(
+    input: Arc<InputShared>,
+    window: Duration,
+    make: impl Fn(&Ring) -> M + Send + 'static,
+    push: impl Fn(&mut M, &[f32], &mut dyn FnMut(T)) + Send + 'static,
+    mut observe: impl FnMut(Option<T>) -> bool + Send + 'static,
 ) -> Result<Box<dyn Send>, String> {
     let life = Arc::new(Lifecycle::new());
     let running = Arc::clone(&life);
@@ -854,10 +870,10 @@ fn watch_windows(
                 let Ok(ring) = input.wait_ring(None, &|| running.stopped()) else {
                     return;
                 };
-                let mut meter = BandMeter::new(&ring, &listening);
+                let mut meter = make(&ring);
                 let mut cursor = Cursor::new(Arc::clone(&ring));
                 // Read about four times per window: often enough to fire within one.
-                let pace = (listening.window / 4).clamp(Duration::from_millis(2), POLL);
+                let pace = (window / 4).clamp(Duration::from_millis(2), POLL);
                 while !running.stopped() {
                     let previous_dropped = cursor.dropped;
                     let read = cursor.read(&mut block);
@@ -869,13 +885,13 @@ fn watch_windows(
                         continue;
                     }
                     if previous_dropped != cursor.dropped {
-                        meter = BandMeter::new(&ring, &listening);
+                        meter = make(&ring);
                         if !observe(None) {
                             return;
                         }
                     }
                     let mut active = true;
-                    meter.push(&block[..read], |level| {
+                    push(&mut meter, &block[..read], &mut |level| {
                         active = active && observe(Some(level))
                     });
                     if !active {
@@ -1282,9 +1298,9 @@ mod tests {
         // Audio source, Noise Gate, Compressor, Limiter, Gain, Filter, Audio format,
         // Level.
         assert_eq!(package.lives().len(), 8);
-        assert!(package.replacements().is_empty());
+        assert_eq!(package.replacements().len(), 1);
         assert_eq!(package.adapters().len(), 2);
-        assert_eq!(package.types().len(), 4);
+        assert_eq!(package.types().len(), 5);
     }
 
     #[test]

@@ -97,15 +97,6 @@ fn pointer_of(name: &str) -> String {
     format!("/{}", name.replace('~', "~0").replace('/', "~1"))
 }
 
-/// A choice as a person reads it: When's modes in words, others as declared.
-fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
-    if name == "direction" && spectrum::is_noise(node) {
-        spectrum::direction(choice)
-    } else {
-        crate::properties::setting_choice_caption(node, choice)
-    }
-}
-
 /// The text a field shows while nothing edits it, and whether it is a default.
 pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
     match field {
@@ -118,6 +109,17 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| kind.hint().to_owned());
             (text, port.value.is_none())
+        }
+        FieldOf::Input(port) if port.ty.as_deref() == Some("core/duration@1") => {
+            let display = port
+                .value
+                .as_deref()
+                .or(port.default.as_deref())
+                .and_then(duration_millis);
+            (
+                display.map_or_else(|| "-".to_owned(), |ms| format!("{ms} ms")),
+                port.value.is_none(),
+            )
         }
         FieldOf::Input(port) => match (&port.value, &port.default) {
             (Some(value), _) => (
@@ -159,7 +161,9 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             let set = node.settings.get(name).is_some();
             let text = match &value {
                 serde_json::Value::Null => "—".to_owned(),
-                serde_json::Value::String(text) => choice_label(node, name, text).to_owned(),
+                serde_json::Value::String(text) => {
+                    crate::properties::setting_choice_label(node, text).into_owned()
+                }
                 other => {
                     let unit = unit(name);
                     if unit.is_empty() {
@@ -485,6 +489,11 @@ impl Canvas {
             }
             FieldOf::Input(port) => {
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
+                if port.ty.as_deref() == Some("core/duration@1") {
+                    return self
+                        .duration_input(ui, (node.id, &port.id), slot, id, port)
+                        .and_then(input);
+                }
                 if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
                     let color = crate::properties::input_color(port);
                     let response = ui
@@ -629,7 +638,10 @@ impl Canvas {
                             for option in &options {
                                 let label = option.as_str().map_or_else(
                                     || option.to_string(),
-                                    |o| choice_label(node, name, o).to_owned(),
+                                    |o| {
+                                        crate::properties::setting_choice_label(node, o)
+                                            .into_owned()
+                                    },
                                 );
                                 if ui.selectable_label(*option == value, label).clicked()
                                     && *option != value
@@ -1016,7 +1028,12 @@ impl Canvas {
         let touched = number_field(ui, slot, id, shown.as_deref(), default, unit);
         if touched.clicked() {
             self.number_drag = None;
-            let typed = value.unwrap_or_default().to_owned();
+            let typed = if ty == "core/duration@1" {
+                value.or(default)
+            } else {
+                value
+            };
+            let typed = typed.unwrap_or_default().to_owned();
             self.typing = Some((node, key.to_owned(), typed, false));
             return None;
         }
@@ -1037,6 +1054,67 @@ impl Canvas {
         }
         None
     }
+
+    pub(crate) fn duration_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: (NodeId, &str),
+        slot: Rect,
+        id: egui::Id,
+        port: &PortView,
+    ) -> Option<String> {
+        let value = port.value.as_deref().and_then(duration_millis);
+        let default = port.default.as_deref().and_then(duration_millis);
+        self.number_control(
+            ui,
+            key,
+            slot,
+            id,
+            (value.as_deref(), default.as_deref()),
+            (false, "core/duration@1", "ms"),
+        )
+        .and_then(|ms| duration_nanos(&ms))
+        .filter(|nanos| Some(nanos.as_str()) != port.value.as_deref().or(port.default.as_deref()))
+    }
+}
+
+pub(super) fn duration_millis(raw: &str) -> Option<String> {
+    let ns = field_text(raw).parse::<i64>().ok()?;
+    let magnitude = ns.unsigned_abs();
+    let sign = if ns < 0 { "-" } else { "" };
+    let whole = magnitude / 1_000_000;
+    let fraction = magnitude % 1_000_000;
+    if fraction == 0 {
+        Some(format!("{sign}{whole}"))
+    } else {
+        Some(
+            format!("{sign}{whole}.{fraction:06}")
+                .trim_end_matches('0')
+                .to_owned(),
+        )
+    }
+}
+
+pub(super) fn duration_nanos(ms: &str) -> Option<String> {
+    let (negative, magnitude) = ms.strip_prefix('-').map_or((false, ms), |ms| (true, ms));
+    let (whole, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u64>().ok()?
+    };
+    if magnitude.is_empty() || magnitude == "." || fraction.len() > 6 {
+        return None;
+    }
+    let nanos = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<6}").parse::<u64>().ok()?
+    };
+    let value = i128::from(whole) * 1_000_000 + i128::from(nanos);
+    i64::try_from(if negative { -value } else { value })
+        .ok()
+        .map(|ns| ns.to_string())
 }
 
 /// A setting's number as typed, held to its schema; When's optional fields take an

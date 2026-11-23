@@ -1500,6 +1500,26 @@ impl Editor {
                         {
                             self.canvas.noise_readings.insert(*node, *level);
                         }
+                        if id == "channel_levels"
+                            && view.is_some_and(|view| {
+                                view.definition == "org.orange.audio/noise-level"
+                            })
+                        {
+                            if let Some(reading) =
+                                canvas::spectrum::ChannelLevels::from_value(value)
+                            {
+                                self.canvas.noise_channels.insert(*node, reading);
+                            } else {
+                                self.canvas.noise_channels.remove(node);
+                            }
+                            if !view.is_some_and(|view| {
+                                view.ports
+                                    .iter()
+                                    .any(|port| !port.input && port.id == id && port.connected)
+                            }) {
+                                continue;
+                            }
+                        }
                         let ty = view
                             .and_then(|view| view.ports.iter().find(|shown| shown.id == id))
                             .and_then(|shown| shown.ty.as_deref());

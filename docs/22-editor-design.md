@@ -575,8 +575,12 @@ Transient remains searchable for graphs that react to sudden hits, such as kicks
 
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
 The trigger and gallery use the same segmented RMS widget, including the level
-zones, held-peak animation and target marker. The trigger has one lane over
--120 to 0 dBFS and clears the reading when the source is unavailable.
+zones, held-peak animation, clipping lights and target marker. A live stereo
+input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane. For
+more than two channels, the display uses aggregate RMS and the highest channel
+peak. Each red light latches when a measured sample reaches full scale and
+clears when the stream is lost or the analyzer restarts. With a stopped or
+unavailable input, the meter shows its empty scale without channel labels.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold in the settings column.
 The direction, hold duration and reset margin sit in the same column.
@@ -589,7 +593,15 @@ Hold requires
 continuous qualification. Reset margin is the amount the signal must move past the
 threshold in the opposite direction to rearm after a firing.
 Level and Condition met are live data outputs. Triggered continues execution
-after qualification.
+after qualification. The threshold, hold and reset always apply to aggregate RMS.
+The Channel levels output carries RMS and sample peaks in dBFS and clip flags
+in stream channel order, including all channels of a multichannel stream.
+Version 1 trigger cards upgrade when a graph opens and keep their settings and
+existing wires.
+
+Editable duration inputs on the canvas and in Properties show milliseconds and
+accept fractional milliseconds up to nanosecond precision. Dragging steps by
+whole milliseconds. The graph still stores its duration literals in nanoseconds.
 
 Place Noise Gate between a source and Audio Out, Record to File or another
 stream consumer to mute quiet samples. Threshold sets the level to open, Reset

@@ -2,12 +2,68 @@ use super::*;
 use crate::declarations::audio_level_fraction;
 use orange_ui_controls::{
     UiTokens,
-    audio_meter::RmsMeter,
+    audio_meter::{ChannelReading, RmsMeter},
     eq_plot::{PlotAxes, frequency_fraction, paint_cached_trace},
 };
 
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 24_000.0;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChannelLevels {
+    Mono(ChannelReading),
+    Stereo([ChannelReading; 2]),
+    Multichannel { peak: f32, clipped: bool },
+}
+
+impl ChannelLevels {
+    #[expect(clippy::cast_possible_truncation, reason = "audio display only")]
+    pub(crate) fn from_value(value: &orange_host::Value) -> Option<Self> {
+        use orange_host::Value;
+        let Value::Record(record) = value else {
+            return None;
+        };
+        if record.ty.as_str() != "org.orange.audio/channel-levels@1" {
+            return None;
+        }
+        let [
+            Some(Value::List(rms)),
+            Some(Value::List(peak)),
+            Some(Value::List(clipped)),
+        ] = &record.fields[..]
+        else {
+            return None;
+        };
+        if rms.len() != peak.len() || rms.len() != clipped.len() {
+            return None;
+        }
+        let reading = |index| {
+            let (Some(Value::F64(rms)), Some(Value::F64(peak)), Some(Value::Bool(clipped))) =
+                (rms.get(index), peak.get(index), clipped.get(index))
+            else {
+                return None;
+            };
+            (rms.is_finite() && peak.is_finite()).then_some(ChannelReading {
+                rms: rms as f32,
+                peak: peak as f32,
+                clipped,
+            })
+        };
+        match rms.len() {
+            0 => None,
+            1 => Some(Self::Mono(reading(0)?)),
+            2 => Some(Self::Stereo([reading(0)?, reading(1)?])),
+            n => {
+                let (peak, clipped) =
+                    (0..n).try_fold((-120.0_f32, false), |(peak, clipped), index| {
+                        let channel = reading(index)?;
+                        Some((peak.max(channel.peak), clipped || channel.clipped))
+                    })?;
+                Some(Self::Multichannel { peak, clipped })
+            }
+        }
+    }
+}
 const SPECTRUM_PLOT_TOP: f32 = 29.0;
 const SPECTRUM_PLOT_BOTTOM: f32 = 185.0;
 pub(super) const NOISE_CHART: f32 = 204.0;
@@ -623,14 +679,15 @@ pub(super) fn draw_noise(
     node: &NodeView,
     rect: Rect,
     zoom: f32,
-    reading: Option<f64>,
+    readings: (Option<f64>, Option<ChannelLevels>),
     controls: bool,
     running: bool,
 ) -> Option<f64> {
+    let (reading, channels) = readings;
     let colors = Palette::of(ui);
     let bar = Rect::from_min_size(
-        rect.min + Vec2::new(21.0, BODY_TOP + 10.0) * zoom,
-        Vec2::new(40.0, 185.0) * zoom,
+        rect.min + Vec2::new(17.0, BODY_TOP + 18.0) * zoom,
+        Vec2::new(49.0, 163.0) * zoom,
     );
     let id = ui.scope_id().with(("noise-threshold", node.id));
     #[expect(
@@ -667,15 +724,35 @@ pub(super) fn draw_noise(
         let dbfs = changed.unwrap_or_else(|| threshold.shown(ui.ctx())) as f32;
         meter.target = Some((dbfs, colors.exec));
     }
-    meter.show(
+    let stereo = match channels {
+        Some(ChannelLevels::Stereo([left, right])) => Some([("L", left), ("R", right)]),
+        _ => None,
+    };
+    let single = match channels {
+        Some(ChannelLevels::Mono(reading)) => Some((t("meter-mono"), reading)),
+        Some(ChannelLevels::Multichannel { peak, clipped }) => meter
+            .reading
+            .map(|rms| (t("meter-mix"), ChannelReading { rms, peak, clipped })),
+        _ => None,
+    };
+    let lanes = stereo
+        .as_ref()
+        .map_or(single.as_slice(), |pair| pair.as_slice());
+    meter.show_channels(
         ui,
         painter,
         id.with("meter"),
         UiTokens::for_surface(ui, orange_ui_controls::Surface::Card),
+        lanes,
     );
+    if !lanes.is_empty() {
+        let lights = Rect::from_min_max(bar.min - Vec2::new(0.0, 15.0) * zoom, bar.right_top());
+        ui.interact(lights, id.with("clip-status"), Sense::hover())
+            .on_hover_text(t("meter-clip-hint"));
+    }
     let (status, short) = audio_status_labels(node, running, reading.is_some());
     let caption = Rect::from_min_size(
-        Pos2::new(bar.left() - 8.0 * zoom, bar.bottom() + 2.0 * zoom),
+        Pos2::new(bar.left() - 4.0 * zoom, bar.bottom() + 14.0 * zoom),
         Vec2::new(97.0, 17.0) * zoom,
     );
     ui.interact(caption, id.with("status"), Sense::hover())

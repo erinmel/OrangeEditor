@@ -6,8 +6,8 @@ use super::*;
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
 pub(super) const WIDTH: f32 = 272.0;
-const METER_WIDTH: f32 = 332.0;
-pub(super) const METER_FIELDS_X: f32 = 110.0;
+const METER_WIDTH: f32 = 354.0;
+pub(super) const METER_FIELDS_X: f32 = 116.0;
 const LITERAL_WIDTH: f32 = 180.0;
 const CHART_WIDTH: f32 = 400.0;
 /// A row of one line: a flow row, an output, an input without a field.
@@ -15,8 +15,8 @@ pub(super) const LINE: f32 = 28.0;
 /// The name line of a field block.
 const NAME: f32 = 18.0;
 /// A field's control.
-pub(super) const CONTROL: f32 = 26.0;
-const DIAL_CONTROL: f32 = 44.0;
+pub(super) const CONTROL: f32 = 30.0;
+const DIAL_CONTROL: f32 = 50.0;
 /// The space under a field block's control.
 const GAP: f32 = 8.0;
 /// The space under a card's last row.
@@ -151,7 +151,7 @@ pub(super) struct Card<'a> {
 }
 
 /// Whether `ty` is a stream: a connection between nodes, never a value to type or show.
-pub(super) fn stream_type(ty: Option<&str>) -> bool {
+pub(crate) fn stream_type(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| {
         ty.starts_with("core/stream@1<")
             || ty
@@ -239,6 +239,11 @@ impl<'a> Card<'a> {
             node.ports
                 .iter()
                 .filter(|port| port.exec && port.input)
+                // The gate accepts both spellings. Keep existing alias wires
+                // reachable without offering two identical inputs on new cards.
+                .filter(|port| {
+                    node.definition != "core/gate" || port.id != "enter" || port.connected
+                })
                 .map(Left::Port),
         );
         let outs: Vec<_> = node

@@ -19,7 +19,7 @@ fn for_each_shows_its_default_list_mode_and_the_map_choice() {
         t("for-each-list")
     );
     assert_eq!(
-        crate::properties::setting_choice_caption(node, "map"),
+        crate::properties::setting_choice_label(node, "map"),
         t("for-each-map")
     );
     assert!(
@@ -572,6 +572,26 @@ fn a_number_is_typed_after_a_click_and_kept_on_enter() {
         }
     }
     assert_eq!(written, Some((id(1), "count".into(), "42".into())));
+}
+
+#[test]
+fn durations_show_milliseconds_and_step_in_exact_nanoseconds() {
+    let mut duration = port("attack", true, false, "core/duration@1");
+    duration.default = Some("10000000".into());
+    assert_eq!(
+        fields::shown(&node(), card::FieldOf::Input(&duration)),
+        ("10 ms".into(), true)
+    );
+    let stepped = super::stepped(Some("10.000001"), 12.0, false, "core/duration@1");
+    assert_eq!(
+        fields::duration_nanos(&stepped).as_deref(),
+        Some("13000001")
+    );
+    assert_eq!(fields::duration_nanos("0.000001").as_deref(), Some("1"));
+    let boundary = i64::MAX.to_string();
+    let shown = fields::duration_millis(&boundary).unwrap();
+    assert_eq!(fields::duration_nanos(&shown), Some(boundary));
+    assert!(fields::duration_nanos("0.0000001").is_none());
 }
 
 /// A choice setting opens its list on a click and writes the chosen item.

@@ -54,6 +54,7 @@ struct Desktop {
     editor: Editor,
     /// With `--canvas-only`: the graph and its canvas, shown without the editor.
     bare: Option<(GraphView, Canvas)>,
+    capture_canvas_only: bool,
     shot: Option<Shot>,
     title: String,
 }
@@ -76,6 +77,9 @@ fn preferences_path() -> Option<std::path::PathBuf> {
 
 impl Drop for Desktop {
     fn drop(&mut self) {
+        if self.shot.is_some() {
+            return;
+        }
         let Some(path) = preferences_path() else {
             return;
         };
@@ -164,6 +168,10 @@ impl eframe::App for Desktop {
                 let _ = eframe::egui::CentralPanel::default()
                     .frame(eframe::egui::Frame::NONE)
                     .show(ui, |ui| canvas.show(ui, graph, &[]));
+            }
+            None if self.capture_canvas_only => {
+                self.editor
+                    .ui_with_layout(ui, &mut self.host, Editor::canvas_panel);
             }
             None => self.editor.ui(ui, &mut self.host),
         }
@@ -507,7 +515,7 @@ fn start(
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
-        if canvas_only {
+        if canvas_only && screenshot.is_none() {
             let graph = host
                 .view(&text)
                 .map_err(|error| format!("{path}: {error}"))?;
@@ -536,6 +544,7 @@ fn start(
         events,
         editor,
         bare,
+        capture_canvas_only: canvas_only && screenshot.is_some(),
         title,
         shot: screenshot.map(|path| Shot {
             path,

@@ -38,36 +38,46 @@ fn tone(name: &str, millis: u32) -> PathBuf {
 }
 
 fn wav_signal(name: &str, millis: u32, sample: impl Fn(u32) -> i16) -> PathBuf {
+    wav_channels(name, millis, 1, |frame, _| sample(frame))
+}
+
+fn wav_channels(
+    name: &str,
+    millis: u32,
+    channels: u16,
+    sample: impl Fn(u32, u16) -> i16,
+) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("orange-audio-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
-    let spec = hound_spec();
+    let spec = hound_spec(channels);
     let mut bytes = Vec::new();
     let samples = 8 * millis;
     // A minimal 16-bit PCM WAV file.
-    let data = samples * 2;
+    let data = samples * u32::from(channels) * 2;
     bytes.extend_from_slice(b"RIFF");
     bytes.extend_from_slice(&(36 + data).to_le_bytes());
     bytes.extend_from_slice(b"WAVEfmt ");
     bytes.extend_from_slice(&spec);
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data.to_le_bytes());
-    for n in 0..samples {
-        let value = sample(n);
-        bytes.extend_from_slice(&value.to_le_bytes());
+    for frame in 0..samples {
+        for channel in 0..channels {
+            bytes.extend_from_slice(&sample(frame, channel).to_le_bytes());
+        }
     }
     std::fs::write(&path, bytes).unwrap();
     path
 }
-/// The `fmt ` chunk of 16-bit mono PCM at 8 kHz.
-fn hound_spec() -> Vec<u8> {
+/// The `fmt ` chunk of 16-bit PCM at 8 kHz.
+fn hound_spec(channels: u16) -> Vec<u8> {
     let mut chunk = Vec::new();
     chunk.extend_from_slice(&16u32.to_le_bytes());
     chunk.extend_from_slice(&1u16.to_le_bytes());
-    chunk.extend_from_slice(&1u16.to_le_bytes());
+    chunk.extend_from_slice(&channels.to_le_bytes());
     chunk.extend_from_slice(&8_000u32.to_le_bytes());
-    chunk.extend_from_slice(&16_000u32.to_le_bytes());
-    chunk.extend_from_slice(&2u16.to_le_bytes());
+    chunk.extend_from_slice(&(16_000u32 * u32::from(channels)).to_le_bytes());
+    chunk.extend_from_slice(&(2 * channels).to_le_bytes());
     chunk.extend_from_slice(&16u16.to_le_bytes());
     chunk
 }
@@ -587,13 +597,16 @@ fn the_audio_level_trigger_fires_on_loud_audio_and_the_source_finishes() {
     use orange_host::{VarScope, Variable};
     let mut host = host();
     // Silence, then 350 ms of a loud 80 Hz tone, then silence.
-    let path = wav_signal("level-trigger.wav", 1_600, |frame| {
+    let path = wav_channels("level-trigger.wav", 1_600, 2, |frame, channel| {
+        if frame == 2_800 && channel == 0 {
+            return i16::MIN;
+        }
         if !(650..1_000).contains(&(frame / 8)) {
             return 0;
         }
         let phase = std::f64::consts::TAU * 80.0 * f64::from(frame) / 8_000.0;
         #[expect(clippy::cast_possible_truncation, reason = "bounded PCM sample")]
-        let sample = (phase.sin() * 16_000.0) as i16;
+        let sample = (phase.sin() * if channel == 0 { 16_000.0 } else { -8_000.0 }) as i16;
         sample
     });
     let setup = &host;
@@ -655,6 +668,32 @@ fn the_audio_level_trigger_fires_on_loud_audio_and_the_source_finishes() {
     input.settings = json!({"file": path});
     setup.declare_connection(&mut draft, &input).unwrap();
     let graph = draft.text().unwrap();
+    // Reopen the actual version-1 signature with the same stream and execution wires.
+    let mut old: Json = serde_json::from_str(&graph).unwrap();
+    let node = old["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["id"] == trigger.to_string())
+        .unwrap();
+    let current = node["signature"].as_str().unwrap().to_owned();
+    let legacy = "sha256:9e1ec569244fbbbfcdb0f688a0a89dc1bc5657ce8b4476958f093f8a80d353de";
+    node["definition_version"] = json!(1);
+    node["signature"] = json!(legacy);
+    let mut signature = old["signatures"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&current)
+        .unwrap();
+    signature["ports"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|port| port["port_id"] != "channel_levels");
+    old["signatures"][legacy] = signature;
+    let opened = setup.draft(&old.to_string()).unwrap();
+    assert_eq!(opened.opened().replaced.len(), 1);
+    assert_eq!(opened.opened().replaced[0].node, trigger);
+    let graph = opened.text().unwrap();
     let diagnostics = setup.check(&graph).unwrap();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let flow = host.open(&graph).unwrap();
@@ -674,6 +713,29 @@ fn the_audio_level_trigger_fires_on_loud_audio_and_the_source_finishes() {
         level() == Some(Value::F64(orange_audio::SILENCE_DB))
     });
     host.trigger(flow, manual, None).unwrap();
+    until("only the left channel to latch a full-scale peak", || {
+        host.inspect(flow, move |run| {
+            let port = "channel_levels".parse().unwrap();
+            let Some(Value::Record(record)) = run.live_port_value(trigger, &port) else {
+                return false;
+            };
+            let [
+                Some(Value::List(rms)),
+                Some(Value::List(peak)),
+                Some(Value::List(clipped)),
+            ] = &record.fields[..]
+            else {
+                return false;
+            };
+            rms.len() == 2
+                && peak.len() == 2
+                && clipped.len() == 2
+                && clipped.get(0) == Some(Value::Bool(true))
+                && clipped.get(1) == Some(Value::Bool(false))
+        })
+        .unwrap()
+    });
+    assert_eq!(read_count(0), Some(Value::U64(0)));
     until("the file to finish", || {
         read_count(1) == Some(Value::U64(1))
     });

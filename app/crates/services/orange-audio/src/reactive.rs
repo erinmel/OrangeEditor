@@ -3,11 +3,13 @@ use crate::{
     Analyzing, BandMeter, Cursor, EmitError, Emitter, InputShared, Lifecycle, Listening, Map,
     Value,
     analysis::{Band, number},
+    level::{ChannelMeter, ChannelWindow},
+    live_nodes::CHANNEL_LEVELS_TYPE,
     spectrum,
     stream::Ring,
-    stream_value, watch_windows,
+    stream_value, watch_window_measurements,
 };
-use orange_sdk::{ListRepr, PortKey};
+use orange_sdk::{ListRepr, PortKey, RecordRepr};
 use serde_json::Value as Json;
 use std::{
     sync::Arc,
@@ -106,22 +108,48 @@ pub(crate) fn noise(
     let rule = Rule::parse(settings, below)?;
     let level_port = port("level")?;
     let state_port = port("condition_met")?;
+    let channels_port = port("channel_levels")?;
+    let channels_type = CHANNEL_LEVELS_TYPE
+        .parse()
+        .map_err(|_| "Invalid channel levels type")?;
     let trigger = port("then")?;
     let mut gate = Crossing::default();
-    watch_windows(
+    watch_window_measurements(
         input,
-        Listening {
-            low_hz: 0.0,
-            high_hz: 0.0,
-            window: WINDOW,
+        WINDOW,
+        |ring| {
+            let listening = Listening {
+                low_hz: 0.0,
+                high_hz: 0.0,
+                window: WINDOW,
+            };
+            ChannelMeter::new(listening.frames(ring.rate), ring.channels)
         },
-        move |level| {
+        |meter, samples, report| meter.push(samples, report),
+        move |window: Option<ChannelWindow>| {
+            let level = window.as_ref().map(|window| window.level);
             if let Some(level) = level {
                 gate.update(rule, level);
             } else {
                 gate = Crossing::default();
             }
             emitter.publish(&level_port, level.map(Value::F64)).is_ok()
+                && emitter
+                    .publish(
+                        &channels_port,
+                        window.map(|window| {
+                            let list = |repr| Some(Value::List(Arc::new(repr)));
+                            Value::Record(Arc::new(RecordRepr {
+                                ty: Clone::clone(&channels_type),
+                                fields: Box::new([
+                                    list(ListRepr::F64(window.rms)),
+                                    list(ListRepr::F64(window.peak)),
+                                    list(ListRepr::Bool(window.clipped)),
+                                ]),
+                            }))
+                        }),
+                    )
+                    .is_ok()
                 && emitter
                     .publish(&state_port, Some(Value::Bool(gate.active)))
                     .is_ok()

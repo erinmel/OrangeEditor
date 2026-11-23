@@ -112,7 +112,6 @@ pub fn stereo_meter(
     };
     let painter = ui.painter_at(outer);
     let font = FontId::monospace(9.5);
-    let colors = theme.meter_zone_inks();
     let face = MeterFace {
         painter: &painter,
         tokens,
@@ -163,15 +162,7 @@ pub fn stereo_meter(
         if reset.clicked() {
             level.clipped = false;
         }
-        painter.circle_filled(
-            center,
-            4.0,
-            if level.clipped {
-                colors[2]
-            } else {
-                theme.bg_canvas().lerp_to_gamma(colors[2], 0.25)
-            },
-        );
+        face.clip_light(center, level.clipped);
         theme.focus(ui, &reset);
         reset.on_hover_text(reset_labels[index]);
     }
@@ -214,6 +205,16 @@ struct MeterFace<'a> {
 }
 
 impl MeterFace<'_> {
+    fn clip_light(&self, center: Pos2, clipped: bool) {
+        let red = self.tokens.theme.meter_zone_inks()[2];
+        let ink = if clipped {
+            red
+        } else {
+            self.tokens.theme.bg_canvas().lerp_to_gamma(red, 0.25)
+        };
+        self.painter.circle_filled(center, 4.0 * self.zoom, ink);
+    }
+
     fn lane(&self, lane: Rect, level: ChannelLevel) {
         paint_lane(
             self.painter,
@@ -257,15 +258,104 @@ pub struct RmsMeter {
     pub target: Option<(f32, Color32)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ChannelReading {
+    pub rms: f32,
+    pub peak: f32,
+    pub clipped: bool,
+}
+
 impl RmsMeter {
     pub fn show(self, ui: &Ui, painter: &egui::Painter, id: egui::Id, tokens: UiTokens) {
+        self.show_channels(ui, painter, id, tokens, &[]);
+    }
+
+    /// Adds channel lanes and latched sample-peak lights when the host has real
+    /// channel measurements. The target still refers to the aggregate RMS rule.
+    pub fn show_channels(
+        self,
+        ui: &Ui,
+        painter: &egui::Painter,
+        id: egui::Id,
+        tokens: UiTokens,
+        channels: &[(&str, ChannelReading)],
+    ) {
         if !ui.is_rect_visible(self.lane) {
             return;
         }
         let floor = RMS_FLOOR_DBFS;
+        let face = MeterFace {
+            painter,
+            tokens,
+            orientation: MeterOrientation::Vertical,
+            style: MeterStyle::Segmented,
+            floor,
+            zoom: self.zoom,
+        };
+        let lanes = self.lane;
+        let gap = 0.5 / ui.pixels_per_point();
+        let middle = lanes.center().x;
+        let split = [
+            Rect::from_min_max(lanes.min, pos2(middle - gap, lanes.bottom())),
+            Rect::from_min_max(pos2(middle + gap, lanes.top()), lanes.max),
+        ];
+        let draw = |channel: usize, lane: Rect, label: &str, reading: ChannelReading| {
+            let level = Self::advance(ui, id.with(channel), Some((reading.rms, reading.peak)));
+            face.lane(lane, level);
+            face.clip_light(
+                lane.center_top() - vec2(0.0, 7.0 * self.zoom),
+                reading.clipped,
+            );
+            let _ = painter.text(
+                lane.center_bottom() + vec2(0.0, 7.0 * self.zoom),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::monospace(10.0 * self.zoom),
+                tokens.theme.text_primary(),
+            );
+        };
+        match channels {
+            [(left, first), (right, second)] => {
+                draw(0, split[0], left, *first);
+                draw(1, split[1], right, *second);
+            }
+            [(name, reading)] => {
+                draw(0, lanes, name, *reading);
+                ui.data_mut(|data| data.remove::<RmsMotion>(id.with(1)));
+            }
+            _ => {
+                face.lane(
+                    lanes,
+                    Self::advance(ui, id, self.reading.map(|db| (db, db))),
+                );
+                ui.data_mut(|data| {
+                    data.remove::<RmsMotion>(id.with(0));
+                    data.remove::<RmsMotion>(id.with(1));
+                });
+            }
+        }
+        face.scale(lanes, MONO_TICKS);
+        if let Some((db, ink)) = self.target {
+            let y = meter_position(lanes, MeterOrientation::Vertical, floor, db);
+            let stroke = Stroke::new(1.5 * self.zoom, ink);
+            painter.hline(
+                lanes.left() - 4.0 * self.zoom..=lanes.right() + 5.0 * self.zoom,
+                y,
+                stroke,
+            );
+            painter.circle_filled(
+                pos2(lanes.right() + 5.0 * self.zoom, y),
+                2.5 * self.zoom,
+                ink,
+            );
+        }
+    }
+
+    fn advance(ui: &Ui, id: egui::Id, reading: Option<(f32, f32)>) -> ChannelLevel {
+        let floor = RMS_FLOOR_DBFS;
         let now = ui.input(|input| input.time);
-        let level = if let Some(value) = self.reading.filter(|value| value.is_finite()) {
-            let value = value.clamp(floor, 0.0);
+        if let Some((rms, peak)) = reading.filter(|(rms, peak)| rms.is_finite() && peak.is_finite())
+        {
             let mut state = ui
                 .data(|data| data.get_temp::<RmsMotion>(id))
                 .unwrap_or(RmsMotion {
@@ -277,10 +367,10 @@ impl RmsMeter {
                 reason = "elapsed display time is bounded"
             )]
             let elapsed = (now - state.time).clamp(0.0, 10.0) as f32;
-            state.ballistics.advance_in(value, value, elapsed, floor);
+            state.ballistics.advance_in(rms, peak, elapsed, floor);
             state.time = now;
             let level = state.ballistics.level;
-            if level.peak > value || level.held > level.peak {
+            if level.peak > peak || level.rms > rms || level.held > level.peak {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(16));
             }
@@ -289,30 +379,6 @@ impl RmsMeter {
         } else {
             ui.data_mut(|data| data.remove::<RmsMotion>(id));
             PeakBallistics::at_floor(floor).level
-        };
-        let face = MeterFace {
-            painter,
-            tokens,
-            orientation: MeterOrientation::Vertical,
-            style: MeterStyle::Segmented,
-            floor,
-            zoom: self.zoom,
-        };
-        face.lane(self.lane, level);
-        face.scale(self.lane, MONO_TICKS);
-        if let Some((db, ink)) = self.target {
-            let y = meter_position(self.lane, MeterOrientation::Vertical, floor, db);
-            let stroke = Stroke::new(1.5 * self.zoom, ink);
-            painter.hline(
-                self.lane.left() - 4.0 * self.zoom..=self.lane.right() + 5.0 * self.zoom,
-                y,
-                stroke,
-            );
-            painter.circle_filled(
-                pos2(self.lane.right() + 5.0 * self.zoom, y),
-                2.5 * self.zoom,
-                ink,
-            );
         }
     }
 
@@ -501,6 +567,63 @@ mod tests {
                 _ => assert!(state.is_none()),
             }
         }
+    }
+
+    #[test]
+    fn rms_meter_paints_each_live_channel_and_only_its_own_clip_light() {
+        let ctx = egui::Context::default();
+        let lane = Rect::from_min_size(pos2(20.0, 20.0), vec2(44.0, 160.0));
+        let mut red = Color32::TRANSPARENT;
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let tokens = UiTokens::resolve(&ctx);
+            red = tokens.theme.meter_zone_inks()[2];
+            RmsMeter {
+                lane,
+                zoom: 1.0,
+                reading: Some(-16.0),
+                target: None,
+            }
+            .show_channels(
+                ui,
+                ui.painter(),
+                egui::Id::unique("stereo-test"),
+                tokens,
+                &[
+                    (
+                        "L",
+                        ChannelReading {
+                            rms: -12.0,
+                            peak: 0.0,
+                            clipped: true,
+                        },
+                    ),
+                    (
+                        "R",
+                        ChannelReading {
+                            rms: -30.0,
+                            peak: -18.0,
+                            clipped: false,
+                        },
+                    ),
+                ],
+            );
+        });
+        let lit = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Circle(dot) if dot.fill == red && dot.center.y < lane.top() => {
+                    Some(dot.center)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(lit.as_slice(), [left] if left.x < lane.center().x));
+        for label in ["L", "R"] {
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == label)));
+        }
+        output.drop_without_applying_deltas();
     }
 
     #[test]

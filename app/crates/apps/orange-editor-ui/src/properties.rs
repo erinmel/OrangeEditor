@@ -1106,14 +1106,17 @@ impl Editor {
         self.inspect(&node, host);
         ui.add_space(2.0);
         self.properties_title(ui, host, &node);
-        let mut subtitle = self.canvas.kind_name(&node).to_owned();
-        if let Some(detail) = &node.detail {
-            subtitle.push_str(" · ");
-            subtitle.push_str(detail);
+        let kind = self.canvas.kind_name(&node);
+        let title = self.canvas.display_name(&node);
+        let subtitle = match (title == kind, node.detail.as_deref()) {
+            (true, detail) => detail.map(str::to_owned),
+            (false, Some(detail)) => Some(format!("{kind} · {detail}")),
+            (false, None) => Some(kind.to_owned()),
+        };
+        if let Some(subtitle) = subtitle {
+            ui.add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
+                .on_hover_text(node.definition.as_str());
         }
-        let _ = ui
-            .add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
-            .on_hover_text(node.definition.as_str());
         if let Some(description) = self.canvas.description(&node.definition) {
             ui.add_space(4.0);
             let _ = ui.add(egui::Label::new(description).wrap());
@@ -1407,8 +1410,10 @@ impl Editor {
             row(ui, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
                     let selected = current.as_str().or_else(|| schema["default"].as_str());
-                    let shown = selected
-                        .map_or(t("not-set"), |choice| setting_choice_caption(node, choice));
+                    let shown = selected.map_or_else(
+                        || t("not-set").into(),
+                        |choice| setting_choice_label(node, choice),
+                    );
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
@@ -1424,7 +1429,7 @@ impl Editor {
                             }
                             for option in options {
                                 let on = selected == Some(*option);
-                                let label = setting_choice_caption(node, option);
+                                let label = setting_choice_label(node, option);
                                 if ui.selectable_label(on, label).clicked() && !on {
                                     changed =
                                         Some(Change::Setting(pointer.clone(), Some(json!(option))));
@@ -1779,6 +1784,33 @@ impl Editor {
                     }
                     return;
                 }
+                if port.ty.as_deref() == Some("core/duration@1") {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if port.value.is_some()
+                            && ui
+                                .small_button(icons::text(icons::CLOSE))
+                                .on_hover_text(t("clear-value-hint"))
+                                .clicked()
+                        {
+                            write = Some(Change::Input(port.id.clone(), None));
+                        }
+                        let (slot, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 30.0),
+                            egui::Sense::hover(),
+                        );
+                        let key = format!("properties-duration:{}", port.id);
+                        if let Some(nanos) = self.canvas.duration_input(
+                            ui,
+                            (node.id, &key),
+                            slot,
+                            response.id.with("value"),
+                            port,
+                        ) {
+                            write = Some(Change::Input(port.id.clone(), Some(nanos)));
+                        }
+                    });
+                    return;
+                }
                 let before = Self::shown_input(port);
                 // A path is chosen with the system's chooser, where the application
                 // has one.
@@ -2003,7 +2035,17 @@ pub fn port_label(id: &str) -> String {
     }
 }
 
-pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
+pub(crate) fn setting_choice_label<'a>(
+    node: &NodeView,
+    choice: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    if choice.starts_with("local/") {
+        return crate::type_name(choice).into();
+    }
+    setting_choice_caption(node, choice).into()
+}
+
+fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
     match (node.definition.as_str(), choice) {
         ("core/on-watch", _) => watch_label(choice),
         ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
@@ -2403,7 +2445,9 @@ impl Editor {
         let ports: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| !port.exec && (!http || !port.input))
+            .filter(|port| {
+                !port.exec && !canvas::stream_type(port.ty.as_deref()) && (!http || !port.input)
+            })
             .filter_map(|port| {
                 let (shown, stale) = self
                     .canvas
@@ -2440,16 +2484,33 @@ impl Editor {
             } else {
                 format!("{} ({side}){freshness}", port_label(&port.id))
             };
-            egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
-                .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
-                .default_open(response)
-                .show(ui, |ui| {
-                    let copyable = self
-                        .canvas
-                        .copyable_port_text(graph, node.id, &port.id, port.input)
-                        .unwrap_or(&shown.full);
-                    display_port_text(ui, &shown.full, copyable, 126.0);
-                });
+            let id = ui.make_persistent_id(("orange-value", node.id, port.id.as_str(), port.input));
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                response,
+            );
+            let row = orange_ui_controls::navigation::sidebar_row(
+                ui,
+                &title,
+                false,
+                Some(state.is_open()),
+                |ui, rect, ink| {
+                    icons::paint_centered(ui.painter(), rect.center(), icons::WATCH, 15.0, ink);
+                },
+            )
+            .on_hover_text(title);
+            if row.clicked() {
+                state.toggle(ui);
+                state.store(ui.ctx());
+            }
+            if state.is_open() {
+                let copyable = self
+                    .canvas
+                    .copyable_port_text(graph, node.id, &port.id, port.input)
+                    .unwrap_or(&shown.full);
+                display_port_text(ui, &shown.full, copyable, 126.0);
+            }
         }
     }
 }

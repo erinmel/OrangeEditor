@@ -115,6 +115,14 @@ pub(crate) fn enums_of(
 
 /// `value` of type `ty` as a person reads it: an enum's choice by its name.
 pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::Value) -> String {
+    if let orange_host::Value::Duration(nanos) = value
+        && let Some(ms) = fields::duration_millis(&nanos.to_string())
+    {
+        return format!("{ms} ms");
+    }
+    if matches!(value, orange_host::Value::Json(_)) {
+        return orange_host::inspect(value);
+    }
     if let orange_host::Value::Enum { tag, payload: None } = value
         && let Some(choice) = ty
             .and_then(|ty| enums.get(ty))
@@ -170,6 +178,7 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
 }
 
 mod card;
+pub(crate) use card::stream_type;
 pub(crate) use settings::advanced as advanced_setting;
 #[cfg(test)]
 mod field_tests;
@@ -382,6 +391,7 @@ pub struct Canvas {
     pub(crate) spectra: BTreeMap<NodeId, Vec<f64>>,
     pub(crate) collapsed_spectra: BTreeSet<NodeId>,
     pub(crate) noise_readings: BTreeMap<NodeId, f64>,
+    pub(crate) noise_channels: BTreeMap<NodeId, spectrum::ChannelLevels>,
     pub(crate) keys: crate::keymap::Keymap,
     pub(crate) shortcuts_enabled: bool,
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
@@ -466,6 +476,7 @@ impl Default for Canvas {
             spectra: BTreeMap::new(),
             collapsed_spectra: BTreeSet::new(),
             noise_readings: BTreeMap::new(),
+            noise_channels: BTreeMap::new(),
             keys: crate::keymap::Keymap::default(),
             shortcuts_enabled: true,
             device_pickers: BTreeMap::new(),
@@ -1199,6 +1210,9 @@ impl Canvas {
         if port == "level" {
             self.noise_readings.remove(&node);
         }
+        if port == "channel_levels" {
+            self.noise_channels.remove(&node);
+        }
     }
 
     /// Forgets the previews of `nodes` only, keeping every other one.
@@ -1239,6 +1253,7 @@ impl Canvas {
     pub fn mark_stale(&mut self) {
         self.spectra.clear();
         self.noise_readings.clear();
+        self.noise_channels.clear();
         self.stale = true;
         self.value_epoch = self.value_epoch.wrapping_add(1);
         if self.value_epoch == 0 {
@@ -1349,6 +1364,7 @@ impl Canvas {
         self.audio_running = false;
         self.spectra.clear();
         self.noise_readings.clear();
+        self.noise_channels.clear();
         self.activity.clear();
         self.entry_activity.clear();
         self.values.clear();
@@ -1360,6 +1376,7 @@ impl Canvas {
         self.audio_running = true;
         self.spectra.clear();
         self.noise_readings.clear();
+        self.noise_channels.clear();
         self.activity.clear();
         self.entry_activity.clear();
         self.failures.clear();
@@ -1635,7 +1652,9 @@ impl Canvas {
 
         // Ports: dragging from an output draws a wire; the second mouse button opens
         // the port's menu.
-        let grab = (PORT_RADIUS + 5.0) * zoom.max(0.6);
+        // Keep a 20-point target even when the connector is drawn small. Below
+        // that spacing, constrain targets to their own row so neighbours stay usable.
+        let grab = ((PORT_RADIUS + 5.0) * zoom).max(10.0);
         let front = self.front;
         let card_pointer = ui.input(|input| {
             input
@@ -1687,7 +1706,10 @@ impl Canvas {
                     continue;
                 }
                 let touched = ui.interact(
-                    Rect::from_center_size(at, Vec2::splat(2.0 * grab)),
+                    Rect::from_center_size(
+                        at,
+                        Vec2::new(2.0 * grab, (2.0 * grab).min(card::LINE * zoom)),
+                    ),
                     response.id.with((node.id, port.id.as_str(), port.input)),
                     Sense::click_and_drag(),
                 );
@@ -2220,7 +2242,10 @@ impl Canvas {
                     node,
                     rect,
                     zoom,
-                    self.noise_readings.get(&node.id).copied(),
+                    (
+                        self.noise_readings.get(&node.id).copied(),
+                        self.noise_channels.get(&node.id).copied(),
+                    ),
                     controls,
                     self.audio_running,
                 )
@@ -2532,7 +2557,14 @@ impl Canvas {
                         ui.disable();
                         if spectrum::is_noise(card) {
                             let _ = spectrum::draw_noise(
-                                ui, &painter, card, rect, zoom, None, false, false,
+                                ui,
+                                &painter,
+                                card,
+                                rect,
+                                zoom,
+                                (None, None),
+                                false,
+                                false,
                             );
                         } else if spectrum::combined(card) {
                             let _ = spectrum::chart_toggle(
@@ -2616,6 +2648,9 @@ fn whole_range(ty: &str) -> (i128, i128) {
 /// A number typed on a card as the input keeps it: a whole number that `ty` holds, or
 /// a finite decimal.
 fn number_text(text: &str, whole: bool, ty: &str) -> Option<String> {
+    if ty == "core/duration@1" {
+        return fields::duration_nanos(text).map(|_| text.to_owned());
+    }
     if whole {
         return parse_whole(text, ty).map(|value| value.to_string());
     }
@@ -2626,6 +2661,19 @@ fn number_text(text: &str, whole: bool, ty: &str) -> Option<String> {
 /// A number field's value after a drag of `pixels` from `value`: one step for each
 /// five pixels for a whole number, a hundredth for each pixel for a decimal.
 fn stepped(value: Option<&str>, pixels: f32, whole: bool, ty: &str) -> String {
+    if ty == "core/duration@1" {
+        let start = value
+            .and_then(fields::duration_nanos)
+            .and_then(|ns| ns.parse::<i64>().ok())
+            .unwrap_or(0);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mouse steps are rounded to milliseconds"
+        )]
+        let delta = ((pixels / 4.0).round() as i64).saturating_mul(1_000_000);
+        return fields::duration_millis(&start.saturating_add(delta).to_string())
+            .unwrap_or_default();
+    }
     if whole {
         let base = value.and_then(|text| parse_whole(text, ty)).unwrap_or(0);
         return step_whole(base, pixels, ty).to_string();
@@ -2843,7 +2891,8 @@ pub(crate) fn preview_card(ui: &mut egui::Ui, node: &NodeView, name: &str, rect:
             let _ =
                 spectrum::draw_combined(ui, &painter, node, rect, zoom, None, false, None, false);
         } else if spectrum::is_noise(node) {
-            let _ = spectrum::draw_noise(ui, &painter, node, rect, zoom, None, false, false);
+            let _ =
+                spectrum::draw_noise(ui, &painter, node, rect, zoom, (None, None), false, false);
         }
     }
 }
@@ -2969,7 +3018,19 @@ fn draw_node<'a>(
             let literal_output = matches!(row.left, Some(card::Left::Field { named: false, .. }));
             let band = spectrum::primary_band(node, port).is_some();
             if readable && !literal_output && !(band && controls) {
-                let (label, _) = elide(painter, &port_title(port), &font, half);
+                let reserved = if port.exec {
+                    17.0 * zoom
+                } else if band {
+                    23.0 * zoom
+                } else {
+                    0.0
+                };
+                let (label, _) = elide(
+                    painter,
+                    &port_title(port),
+                    &font,
+                    (half - reserved).max(0.0),
+                );
                 let end = Pos2::new(rect.right() - pad - if band { 23.0 * zoom } else { 0.0 }, y);
                 if port.exec {
                     let arrow = 11.0 * zoom;
@@ -3034,8 +3095,12 @@ fn draw_node<'a>(
                 if !readable {
                     continue;
                 }
-                let label = crate::properties::log_part_label(node, &port.id)
-                    .unwrap_or_else(|| port_title(port));
+                let label = if node.definition == "core/gate" && port.id == "enter" {
+                    t("port-enter-alias").to_owned()
+                } else {
+                    crate::properties::log_part_label(node, &port.id)
+                        .unwrap_or_else(|| port_title(port))
+                };
                 if port.exec {
                     // The way in is a tinted chip inside the card.
                     let arrow = 11.0 * zoom;
@@ -4792,6 +4857,20 @@ mod formula_tests {
                         canvas
                             .noise_readings
                             .insert(*meter, -20.0 - f64::from(frame % 40));
+                        use orange_ui_controls::audio_meter::ChannelReading;
+                        let swing = f32::from(u16::try_from(frame % 40).unwrap());
+                        let channel = |rms, peak| ChannelReading {
+                            rms,
+                            peak,
+                            clipped: false,
+                        };
+                        canvas.noise_channels.insert(
+                            *meter,
+                            super::spectrum::ChannelLevels::Stereo([
+                                channel(-18.0 - swing, -9.0 - swing),
+                                channel(-22.0 - swing, -14.0 - swing),
+                            ]),
+                        );
                     }
                 }
                 let now = Instant::now();

@@ -35,6 +35,7 @@ org-orange-audio-noise-gate-description = Silencia el audio de bajo nivel y entr
 org-orange-audio-noise-gate-keywords = micrófono, puerta de ruido, noise gate, silenciar, ruido de fondo, umbral, filtro de audio
 port-gated-stream = señal procesada
 port-condition-met = condición cumplida
+port-channel-levels = niveles por canal
 org-orange-audio-transient-label = Transitorio
 org-orange-audio-transient-description = Se dispara con cada golpe en la banda de una señal, como un bombo.
 org-orange-audio-transient-keywords = bombo, golpe, ritmo, tambor, pulso
