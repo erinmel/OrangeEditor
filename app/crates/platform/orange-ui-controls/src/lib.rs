@@ -20,8 +20,9 @@ pub mod visualizations;
 pub use selection::{
     BinaryChoice, KnobStyle, NotebookOrientation, NotebookPadding, NotebookWidth, SliderBehavior,
     SliderGuide, SliderMarks, StepLabels, continuous_marked_slider, continuous_slider,
-    guided_slider, knob, marked_slider, marked_slider_preview, notebook, notebook_flex,
-    notebook_styled, pill_segmented, rotary, rotary_preview, segmented, stepped_slider,
+    guided_slider, knob, logarithmic_slider, marked_slider, marked_slider_preview, notebook,
+    notebook_flex, notebook_styled, pill_segmented, rotary, rotary_preview, segmented,
+    stepped_slider,
 };
 pub use visualizations::{
     ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,

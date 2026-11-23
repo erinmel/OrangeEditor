@@ -6,7 +6,7 @@ use orange_ui_controls::{
     NotebookOrientation, RadioStyle, SliderBehavior, SliderGuide, SliderMarks, StepLabels, Surface,
     UiTokens, button, button_with, checkbox,
     components::{self, MenuItem, MenuTrigger, PasswordLabels, PathPicker},
-    guided_slider, knob,
+    guided_slider, knob, logarithmic_slider,
     note::{Note, NoteState, NoteTone},
     notebook, pill_segmented, radio, rotary, stepped_slider,
 };
@@ -813,14 +813,8 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
     )
     .labelled_by(label.id);
     let label = ui.label(format!("Log cutoff · {:.0} Hz", fixture.cutoff_hz));
-    ui.add(
-        egui::Slider::new(&mut fixture.cutoff_hz, 20.0..=20_000.0)
-            .logarithmic(true)
-            .show_value(false)
-            .suffix(" Hz")
-            .max_decimals(0),
-    )
-    .labelled_by(label.id);
+    logarithmic_slider(ui, Surface::Card, &mut fixture.cutoff_hz, 20.0..=20_000.0)
+        .labelled_by(label.id);
     let label = ui.label(format!("Dense steps · {} frames", fixture.dense_steps));
     stepped_slider(
         ui,

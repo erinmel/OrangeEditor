@@ -638,6 +638,32 @@ pub fn continuous_slider(
     response
 }
 
+/// Draws the shared slider on a logarithmic scale for a positive, finite range.
+pub fn logarithmic_slider(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+) -> Response {
+    let start = f64::from(*range.start());
+    let end = f64::from(*range.end());
+    if start <= 0.0 || !start.is_finite() || !end.is_finite() || end <= start {
+        return continuous_slider(ui, surface, value, range);
+    }
+    let response = slider_input(
+        ui,
+        Slider::new(value, range).logarithmic(true).smart_aim(false),
+        22.0,
+    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "normalized screen coordinate"
+    )]
+    let fraction = ((f64::from(*value).clamp(start, end) / start).ln() / (end / start).ln()) as f32;
+    SliderTrack::new(response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
+    response
+}
+
 /// Continuously adjusts a value with optional visual guide marks.
 ///
 /// Marks are normalized positions on the rail and never snap or constrain the
@@ -1506,6 +1532,40 @@ mod tests {
         .drop_without_applying_deltas();
         assert_eq!(free, 37.0);
         assert_eq!(strict, 50.0);
+    }
+
+    #[test]
+    fn logarithmic_slider_paints_a_full_rail_and_uses_a_geometric_midpoint() {
+        let ctx = egui::Context::default();
+        let mut value = 20_000.0;
+        let mut frame = |events| {
+            let mut rect = Rect::NOTHING;
+            let out = ctx.run_ui(input(240.0, events), |ui| {
+                rect = logarithmic_slider(ui, Surface::Card, &mut value, 20.0..=20_000.0).rect;
+            });
+            let has_rail = out.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rail)
+                    if rail.rect.width() > rect.width() * 0.9
+                        && rail.rect.height() == 5.0
+                        && rail.fill != egui::Color32::TRANSPARENT)
+            });
+            out.drop_without_applying_deltas();
+            (rect, value, has_rail)
+        };
+        let (rect, start, visible) = frame(vec![]);
+        assert!(visible && start == 20_000.0);
+        let pos = rect.center();
+        frame(vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                pressed,
+                button: egui::PointerButton::Primary,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+        let (_, value, visible) = frame(vec![]);
+        assert!(visible && (value - 632.46).abs() < 1.0, "{value}");
     }
 
     #[test]
