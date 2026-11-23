@@ -15,7 +15,7 @@ fn for_each_shows_its_default_list_mode_and_the_map_choice() {
     let node = &graph.nodes[0];
     let schema = &node.schema.as_ref().unwrap()["properties"]["mode"];
     assert_eq!(
-        fields::shown(node, card::FieldOf::Setting("mode", schema)).0,
+        fields::shown(node, card::FieldOf::Setting("mode", schema, None)).0,
         t("for-each-list")
     );
     assert_eq!(
@@ -188,7 +188,7 @@ impl Session {
         let layout = card::Card::new(node);
         let control = layout.rows[index].control(layout.size.x).unwrap();
         // The canvas's own transform: from its origin, at its zoom.
-        let place = self.canvas.places[&id(1)];
+        let place = self.canvas.places[&node.id];
         let to_screen =
             |at: Pos2| self.corner + (place + at.to_vec2() - self.canvas.origin) * self.canvas.zoom;
         Rect::from_min_max(to_screen(control.min), to_screen(control.max))
@@ -512,7 +512,7 @@ fn fields_follow_the_flow_rows_in_declared_order() {
             Some(card::Left::Port(port)) => port.id.clone(),
             Some(card::Left::Field { editor, .. }) => match editor {
                 card::FieldOf::Input(port) => port.id.clone(),
-                card::FieldOf::Setting(name, _) => name.to_owned(),
+                card::FieldOf::Setting(name, _, _) => name.to_owned(),
                 _ => "?".into(),
             },
             _ => String::new(),
@@ -649,10 +649,148 @@ fn band_outputs_are_ordered_by_frequency() {
         .rows
         .iter()
         .filter_map(|row| row.right)
-        .filter_map(|port| spectrum::band_of(&port.id))
-        .filter_map(|band| spectrum::band_low(node, band))
+        .filter_map(|port| spectrum::band_low(node, &port.id))
         .collect();
     assert_eq!(lows, [60.0, 400.0, 2_000.0]);
+}
+
+#[test]
+fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, orange_audio::NOISE_LEVEL, [40.0, 40.0])
+        .unwrap();
+    let mut session = Session::new();
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.places.insert(trigger, Pos2::new(40.0, 40.0));
+    let node = session.graph.nodes[0].clone();
+    let layout = card::Card::new(&node);
+    let hold = layout
+        .rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row.left,
+                Some(card::Left::Field {
+                    editor: card::FieldOf::Setting("hold_ms", _, Some(_)),
+                    ..
+                })
+            )
+        })
+        .unwrap();
+    let is_hold_dial = |shapes: &[egui::epaint::ClippedShape]| {
+        shapes.iter().any(
+            |item| matches!(&item.shape, egui::Shape::Text(text) if text.galley.text() == "150"),
+        )
+    };
+    let (_, canvas) = session.frame_output(vec![]);
+    assert!(is_hold_dial(&canvas.shapes));
+    canvas.drop_without_applying_deltas();
+    let preview = session.context.run_ui(egui::RawInput::default(), |ui| {
+        preview_card(
+            ui,
+            &node,
+            &node.name,
+            Rect::from_min_size(Pos2::new(20.0, 20.0), layout.size),
+            1.0,
+        );
+    });
+    assert!(is_hold_dial(&preview.shapes));
+    preview.drop_without_applying_deltas();
+    let rect = session.control(hold);
+    let at = Pos2::new(rect.left() + rect.height() * 0.5, rect.center().y);
+    let _ = session.click(at);
+    let done = session.frame(vec![egui::Event::Key {
+        key: egui::Key::ArrowRight,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    let (node, setting, value) = done.set_config.expect("hold dial changes the setting");
+    assert_eq!(node, trigger);
+    assert_eq!(setting, "/hold_ms");
+    assert_eq!(value.as_f64(), Some(151.0));
+
+    session.canvas.zoom = *ZOOM_RANGE.end();
+    let (_, canvas) = session.frame_output(vec![]);
+    let slot = session.control(hold);
+    let center = Pos2::new(slot.left() + slot.height() * 0.5, slot.center().y);
+    let radius = slot.height() * 0.35 * 0.76;
+    assert!(canvas.shapes.iter().any(|item| {
+        matches!(&item.shape, egui::Shape::Circle(circle)
+            if circle.center.distance(center) < 0.5 && (circle.radius - radius).abs() < 0.1)
+    }));
+    canvas.drop_without_applying_deltas();
+}
+
+#[test]
+fn threshold_meter_drag_previews_every_control_and_commits_once() {
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, orange_audio::NOISE_LEVEL, [40.0, 40.0])
+        .unwrap();
+    let mut session = Session::new();
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.places.insert(trigger, Pos2::new(40.0, 40.0));
+    let node = session.graph.nodes[0].clone();
+    let threshold = crate::properties::ThresholdEdit::for_node(&node).unwrap();
+    let _ = session.frame(vec![]);
+    let zoom = session.canvas.zoom;
+    let top = session.corner + (session.canvas.places[&trigger] - session.canvas.origin) * zoom;
+    let from = top + Vec2::new(40.0, BODY_TOP + 10.0 + 185.0 * 35.0 / 120.0) * zoom;
+    let to = from + Vec2::new(0.0, 32.0) * zoom;
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    session.frame(vec![egui::Event::PointerMoved(from)]);
+    session.frame(vec![button(from, true)]);
+    session.frame(vec![egui::Event::PointerMoved(from + (to - from) * 0.5)]);
+    let (drag, output) = session.frame_output(vec![egui::Event::PointerMoved(to)]);
+    assert!(drag.set_config.is_none());
+    let shown = threshold.shown(&session.context);
+    assert!(shown < -50.0, "{shown}");
+    let labels: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|item| match &item.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().replace('−', "-")),
+            _ => None,
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.contains(&format!("{shown:.0}"))),
+        "{labels:?}"
+    );
+    let (config, pointer, value) = session.frame(vec![button(to, false)]).set_config.unwrap();
+    assert_eq!(
+        (config, pointer.as_str(), value.as_f64()),
+        (trigger, "/threshold_db", Some(shown))
+    );
+    assert!(session.frame(vec![]).set_config.is_none());
+
+    let mut changed = (*node).clone();
+    changed
+        .ports
+        .push(port("sidechain", true, false, "core/f64@1"));
+    assert!(!spectrum::is_noise(&changed));
+    assert!(port_offset(&changed, "sidechain", true).is_some());
 }
 
 /// Dragging a band's edge on the splitter's chart changes that edge and keeps the other.

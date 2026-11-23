@@ -152,14 +152,15 @@ pub fn inline(
     let mut draft = ui
         .data_mut(|data| data.get_temp_mut_or_default::<Option<Draft>>(id).take())
         .unwrap_or_else(|| Draft::new(current, show_alpha));
-    let width = 224.0;
-    let track = 16.0;
+    let width = (ui.ctx().content_rect().width() - 28.0).clamp(176.0, 280.0);
+    let track = 18.0;
     let gap = super::SPACE_MEDIUM;
     let bars = if show_alpha { 2.0 } else { 1.0 };
     ui.set_width(width);
     ui.spacing_mut().item_spacing.x = gap;
     let old = draft.color;
-    let sizes = Vec2::splat(width - bars * (track + gap));
+    let sizes = vec2(width - bars * (track + gap), 150.0);
+    ui.add_space(super::SPACE_SMALL);
     ui.horizontal(|ui| {
         let area = target(ui, sizes, labels.saturation_value);
         let hue = target(ui, vec2(track, sizes.y), labels.hue);
@@ -213,20 +214,33 @@ pub fn inline(
             bar_mark(ui, alpha.rect, 1.0 - f32::from(draft.color[3]) / 255.0);
         }
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         let mut edited = false;
         let count = if show_alpha { 4 } else { 3 };
         let columns = if show_alpha { 4.0 } else { 3.0 };
         let cell_width = (width + gap) / columns - gap;
         for (&name, channel) in labels.channels.iter().zip(&mut draft.color).take(count) {
             edited |= ui
-                .add_sized(
-                    [cell_width, ui.spacing().interact_size.y],
-                    egui::DragValue::new(channel)
-                        .range(0..=255)
-                        .prefix(format!("{name} ")),
+                .allocate_ui_with_layout(
+                    vec2(
+                        cell_width,
+                        16.0 + ui.spacing().item_spacing.y + ui.spacing().interact_size.y,
+                    ),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        let label = ui.add_sized(
+                            [cell_width, 16.0],
+                            egui::Label::new(egui::RichText::new(name).weak()).truncate(),
+                        );
+                        ui.add_sized(
+                            [cell_width, ui.spacing().interact_size.y],
+                            egui::DragValue::new(channel).range(0..=255),
+                        )
+                        .labelled_by(label.id)
+                        .changed()
+                    },
                 )
-                .changed();
+                .inner;
         }
         if edited {
             draft.hsv = opaque_hsv(draft.color);
@@ -235,32 +249,41 @@ pub fn inline(
     if draft.color != old {
         draft.refresh_text(show_alpha);
     }
-    let label = ui.label(labels.value);
+    ui.separator();
     let format = draft.format;
-    super::segmented(
-        ui,
-        super::Surface::Dialog,
-        &label,
-        &mut draft.format,
-        &[
-            (Format::Hex, "Hex"),
-            (Format::Rgb, if show_alpha { "RGBA" } else { "RGB" }),
-        ],
-    );
+    let label = ui
+        .horizontal_wrapped(|ui| {
+            let label = ui.strong(labels.value);
+
+            super::segmented(
+                ui,
+                super::Surface::Dialog,
+                &label,
+                &mut draft.format,
+                &[
+                    (Format::Hex, "Hex"),
+                    (Format::Rgb, if show_alpha { "RGBA" } else { "RGB" }),
+                ],
+            );
+            label
+        })
+        .inner;
     if draft.format != format {
         draft.refresh_text(show_alpha);
     }
+    let field = super::input_frame(ui, super::Surface::Dialog, super::CONTROL_RADIUS);
     let response = ui
         .add(
             egui::TextEdit::singleline(&mut draft.text)
                 .id(id.with("value"))
+                .frame(field)
                 .align(egui::Align2::LEFT_CENTER)
-                .margin(egui::Margin::symmetric(8, 3))
                 .min_size(vec2(0.0, super::CONTROL_HEIGHT))
                 .desired_width(f32::INFINITY)
                 .font(egui::TextStyle::Monospace),
         )
         .labelled_by(label.id);
+    super::paint_input_focus(ui, &response, super::CONTROL_RADIUS);
     if response.changed() {
         let color = parse(&draft.text);
         draft.invalid = color.is_none();
@@ -297,39 +320,43 @@ pub fn inline(
             }
         });
     }
-    ui.add_space(super::SPACE_SMALL);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if super::button(
-            ui,
-            super::Surface::Dialog,
-            super::Action::Primary,
-            !draft.invalid,
-            egui::Button::new(labels.apply).min_size(vec2(76.0, 0.0)),
-        )
-        .clicked()
-        {
-            applied = Some(draft.color);
-            ui.data_mut(|data| {
-                let mut colors = data.get_temp::<Vec<[u8; 4]>>(recent_id).unwrap_or_default();
-                colors.retain(|color| *color != draft.color);
-                colors.insert(0, draft.color);
-                colors.truncate(8);
-                data.insert_temp(recent_id, colors);
-            });
-            ui.close();
-        }
-        if super::button(
-            ui,
-            super::Surface::Dialog,
-            super::Action::Outline,
-            true,
-            egui::Button::new(labels.cancel).min_size(vec2(76.0, 0.0)),
-        )
-        .clicked()
-        {
-            ui.close();
-        }
-    });
+    ui.separator();
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if super::button(
+                ui,
+                super::Surface::Dialog,
+                super::Action::Primary,
+                !draft.invalid,
+                egui::Button::new(labels.apply).min_size(vec2(76.0, 0.0)),
+            )
+            .clicked()
+            {
+                applied = Some(draft.color);
+                ui.data_mut(|data| {
+                    let mut colors = data.get_temp::<Vec<[u8; 4]>>(recent_id).unwrap_or_default();
+                    colors.retain(|color| *color != draft.color);
+                    colors.insert(0, draft.color);
+                    colors.truncate(8);
+                    data.insert_temp(recent_id, colors);
+                });
+                ui.close();
+            }
+            if super::button(
+                ui,
+                super::Surface::Dialog,
+                super::Action::Outline,
+                true,
+                egui::Button::new(labels.cancel).min_size(vec2(76.0, 0.0)),
+            )
+            .clicked()
+            {
+                ui.close();
+            }
+        },
+    );
     ui.data_mut(|data| *data.get_temp_mut_or_default::<Option<Draft>>(id) = Some(draft));
     applied
 }
@@ -565,7 +592,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(square.width(), square.height());
+        assert!(square.width() > square.height());
         output.drop_without_applying_deltas();
         let (_, picked, output) = click(square.center());
         assert!(picked.is_none());

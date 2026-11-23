@@ -626,12 +626,6 @@ impl Host {
             for instance in instances {
                 let key = PortKey::new(port.port_id.clone(), instance);
                 let id = key.to_string();
-                if node.definition.id.as_str() == "org.orange.audio/multiband-spectrum"
-                    && id == "spectrum"
-                    && !wired(node.id, &id, input)
-                {
-                    continue;
-                }
                 let ty = port.ty.as_ref().map(|ty| match &settled {
                     Some(args) => orange_model::signature::substitute_params(ty, args).to_string(),
                     None => ty.to_string(),

@@ -16,6 +16,7 @@ pub(super) const LINE: f32 = 28.0;
 const NAME: f32 = 18.0;
 /// A field's control.
 pub(super) const CONTROL: f32 = 26.0;
+const DIAL_CONTROL: f32 = 44.0;
 /// The space under a field block's control.
 const GAP: f32 = 8.0;
 /// The space under a card's last row.
@@ -31,7 +32,11 @@ pub(super) enum FieldOf<'a> {
     /// A file or folder on an input, chosen with the system's chooser.
     Path(&'a PortView, &'a orange_host::PathInput),
     /// A setting of the node, by name and schema.
-    Setting(&'a str, &'a serde_json::Value),
+    Setting(
+        &'a str,
+        &'a serde_json::Value,
+        Option<crate::properties::AudioDial>,
+    ),
     /// The variable named by the setting at this JSON pointer.
     Variable(&'a str),
     /// The connection or device the node uses.
@@ -54,6 +59,7 @@ impl<'a> FieldOf<'a> {
     pub(super) fn control_height(self) -> f32 {
         match self {
             Self::TextArea(_, _, height) => height,
+            Self::Setting(_, _, Some(_)) => DIAL_CONTROL,
             _ => CONTROL,
         }
     }
@@ -79,10 +85,11 @@ pub(super) struct Row<'a> {
     /// An output on the row's first line.
     pub right: Option<&'a PortView>,
     pub field_inset: f32,
+    pub field_end: Option<f32>,
 }
 
-impl Row<'_> {
-    pub(super) fn input(&self) -> Option<&PortView> {
+impl<'a> Row<'a> {
+    pub(super) fn input(&self) -> Option<&'a PortView> {
         match self.left {
             Some(Left::Port(port)) => Some(port),
             Some(Left::Field { editor, .. }) => editor.port(),
@@ -121,7 +128,9 @@ impl Row<'_> {
         };
         let top = self.top + if named { NAME } else { 0.0 };
         // A literal's output dot sits beside its field.
-        let right = if self.right.is_some() && !named {
+        let right = if let Some(end) = self.field_end {
+            end
+        } else if self.right.is_some() && !named {
             width - CARD_PADDING - 10.0
         } else {
             width - CARD_PADDING
@@ -216,6 +225,7 @@ impl<'a> Card<'a> {
                     left,
                     right,
                     field_inset: CARD_PADDING,
+                    field_end: None,
                 });
                 y += height;
             };
@@ -298,7 +308,7 @@ impl<'a> Card<'a> {
             });
         }
         lefts.extend(settings::fields(node).map(|(name, schema)| Left::Field {
-            editor: FieldOf::Setting(name, schema),
+            editor: FieldOf::Setting(name, schema, None),
             named: true,
         }));
         // A port the node may have more of ends the card with a button that adds one;
@@ -328,14 +338,14 @@ impl<'a> Card<'a> {
             .collect();
         // A splitter's band outputs read from low to high frequency, whatever order the
         // bands were drawn in.
-        outputs.sort_by(|a, b| {
-            let low = |port: &PortView| {
-                spectrum::band_of(&port.id).and_then(|band| spectrum::band_low(node, band))
-            };
-            low(a)
-                .partial_cmp(&low(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        if spectrum::combined(node) {
+            let low = |port: &PortView| spectrum::band_low(node, &port.id);
+            outputs.sort_by(|a, b| {
+                low(a)
+                    .partial_cmp(&low(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
         let mut outputs = outputs.into_iter().peekable();
         for left in lefts {
             let hosts = !matches!(left, Left::Field { named: false, .. }) || literal;
@@ -379,22 +389,44 @@ impl<'a> Card<'a> {
                 left: None,
                 right: Some(port),
                 field_inset: METER_FIELDS_X,
+                field_end: None,
             });
             y += LINE;
         }
+        let mut dial_count = 0;
+        let mut dial_y = y;
+        let middle = f32::midpoint(METER_FIELDS_X, METER_WIDTH - CARD_PADDING);
         for (name, schema) in settings::fields(node) {
-            let height = NAME + CONTROL + GAP;
+            let dial = crate::properties::AudioDial::for_setting(node, name);
+            let editor = FieldOf::Setting(name, schema, dial);
+            let height = NAME + editor.control_height() + GAP;
+            let (top, inset, end) = if dial.is_some() {
+                if dial_count == 0 {
+                    dial_y = y;
+                    y += height;
+                }
+                dial_count += 1;
+                if dial_count == 1 {
+                    (dial_y, METER_FIELDS_X, Some(middle - 6.0))
+                } else {
+                    (dial_y, middle, None)
+                }
+            } else {
+                let top = y;
+                y += height;
+                (top, METER_FIELDS_X, None)
+            };
             rows.push(Row {
-                top: y,
+                top,
                 height,
                 left: Some(Left::Field {
-                    editor: FieldOf::Setting(name, schema),
+                    editor,
                     named: true,
                 }),
                 right: None,
-                field_inset: METER_FIELDS_X,
+                field_inset: inset,
+                field_end: end,
             });
-            y += height;
         }
         let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
         for port in node.ports.iter().filter(|port| port.input) {
@@ -404,6 +436,7 @@ impl<'a> Card<'a> {
                 left: Some(Left::Port(port)),
                 right: None,
                 field_inset: CARD_PADDING,
+                field_end: None,
             });
             stream_y += LINE;
         }

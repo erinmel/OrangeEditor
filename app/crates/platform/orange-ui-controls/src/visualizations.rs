@@ -285,15 +285,25 @@ pub fn line_overlay(ui: &mut Ui, rect: Rect, values: &[f32], stroke: Stroke) -> 
 /// Paints a line directly into an existing plot, preserving the caller's clip,
 /// hit regions and drawing order.
 pub fn paint_line(painter: &egui::Painter, rect: Rect, values: &[f32], stroke: Stroke) {
-    if values.len() < 2 {
+    paint_line_iter(painter, rect, values.iter().copied(), stroke);
+}
+
+/// Paints normalized samples without a temporary conversion buffer.
+pub fn paint_line_iter(
+    painter: &egui::Painter,
+    rect: Rect,
+    values: impl ExactSizeIterator<Item = f32>,
+    stroke: Stroke,
+) {
+    let len = values.len();
+    if len < 2 || !painter.clip_rect().intersects(rect) {
         return;
     }
     let points: Vec<_> = values
-        .iter()
         .enumerate()
         .map(|(index, value)| {
             egui::pos2(
-                egui::lerp(rect.x_range(), (index as f32 + 0.5) / values.len() as f32),
+                egui::lerp(rect.x_range(), (index as f32 + 0.5) / len as f32),
                 egui::lerp(rect.y_range(), 1.0 - value.clamp(0.0, 1.0)),
             )
         })

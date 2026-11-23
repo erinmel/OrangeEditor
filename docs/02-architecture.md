@@ -29,6 +29,15 @@ Packages can supply their own node text and the host owns file dialogs through
 `Editor::take_request`. The [embedding test](../app/crates/apps/orange-editor-ui/tests/embedding.rs)
 exercises the public layout, theme, icon and text hooks.
 
+`orange-ui-controls` provides reusable egui components and depends on no graph
+or host crate in product builds. Hosts own component state and localized labels.
+The default-enabled `icons` feature supplies the `UiIcon` adapter and its
+Material, Phosphor and Lucide assets. `native-dialogs` supplies an
+`rfd` adapter for file, multi-file and folder selection; a host may handle the
+picker response directly. The desktop gallery's `eframe`, WAV and output-device
+dependencies are example-only. Meters consume host measurements and the
+frequency utilities take caller-owned filter state and caller-provided buffers.
+
 ## Layers
 
 ```text

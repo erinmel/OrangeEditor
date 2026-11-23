@@ -1348,6 +1348,7 @@ impl Editor {
         let _ = host.stop(flow, StopMode::Graceful);
         let _ = host.close(flow);
         // What the run showed stays, dimmed, until the next run.
+        self.canvas.audio_running = false;
         self.canvas.mark_stale();
         self.say(tf("flow-closed", &[("flow", flow.to_string().into())]));
     }
@@ -1370,12 +1371,21 @@ impl Editor {
     /// anything arrived, so a window knows to draw and poll again. The finite batch
     /// leaves time for input and painting even when producers continuously refill it.
     pub fn take_events(&mut self, events: &orange_host::Events) -> bool {
-        let mut any = false;
+        self.drain_event_batch(events) != 0
+    }
+
+    /// Processes one batch and reports whether the window should poll again immediately.
+    pub fn poll_events(&mut self, events: &orange_host::Events) -> bool {
+        self.drain_event_batch(events) == MAX_EVENTS_PER_POLL
+    }
+
+    fn drain_event_batch(&mut self, events: &orange_host::Events) -> usize {
+        let mut received = 0;
         for _ in 0..MAX_EVENTS_PER_POLL {
             let Ok(event) = events.try_recv() else {
                 break;
             };
-            any = true;
+            received += 1;
             let Some(document) = &mut self.document else {
                 continue;
             };
@@ -1464,15 +1474,14 @@ impl Editor {
                             })
                             && let orange_host::Value::List(values) = value
                         {
-                            if !self.canvas.collapsed_spectra.contains(node) {
-                                let bins = (0..values.len().min(96))
-                                    .filter_map(|index| match values.get(index) {
-                                        Some(orange_host::Value::F64(db)) => Some(db),
-                                        _ => None,
-                                    })
-                                    .collect();
-                                let _ = self.canvas.spectra.insert(*node, bins);
-                            }
+                            let bins = self.canvas.spectra.entry(*node).or_default();
+                            bins.clear();
+                            bins.extend((0..values.len().min(96)).filter_map(|index| {
+                                match values.get(index) {
+                                    Some(orange_host::Value::F64(db)) => Some(db),
+                                    _ => None,
+                                }
+                            }));
                             // Display bins have their own canvas presentation. An
                             // explicitly wired spectrum still needs its live sample.
                             if !view.is_some_and(|view| {
@@ -1560,6 +1569,7 @@ impl Editor {
                 FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
                     document.flow = None;
+                    self.canvas.audio_running = false;
                     self.canvas.mark_stale();
                 }
                 _ => {}
@@ -1578,7 +1588,7 @@ impl Editor {
                 self.say_at(level, line);
             }
         }
-        any
+        received
     }
 
     /// Draws the editor into `ui` and applies what the person did.
@@ -2185,7 +2195,7 @@ impl Editor {
     /// Draws the Inspector and Packages tabs in the supplied container.
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let mut packages = self.panels.packages && !self.panels.properties;
-        let _ = orange_ui_controls::notebook_styled(
+        let _ = orange_ui_controls::notebook_flex(
             ui,
             Surface::Panel,
             orange_ui_controls::NotebookOrientation::Horizontal,
@@ -2237,7 +2247,7 @@ impl Editor {
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let options = Tab::ALL.map(|(tab, label)| (tab, t(label)));
         let previous = self.tab;
-        let response = orange_ui_controls::notebook_styled(
+        let response = orange_ui_controls::notebook_flex(
             ui,
             Surface::Panel,
             orange_ui_controls::NotebookOrientation::Horizontal,
@@ -2640,8 +2650,10 @@ impl Editor {
         }
         self.menu_popup(ui.ctx(), host);
         self.quick_add_popup(ui.ctx(), host);
-        if let Some((node, pointer, value)) = done.set_config {
-            self.set_setting(host, node, &pointer, Some(value));
+        if let Some((node, pointer, value)) = done.set_config
+            && self.set_setting(host, node, &pointer, Some(value))
+        {
+            ui.ctx().request_repaint();
         }
         if let Some((node, pointer)) = done.new_variable {
             self.new_variable_for_node(node, &pointer);
@@ -3714,10 +3726,19 @@ mod glyph_tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), crate::icons::ALL.len());
+        let installed = context.fonts(|fonts| fonts.definitions().font_data.len());
+        // Material and Phosphor are fonts. Lucide is rendered from SVG assets.
+        assert_eq!(
+            installed,
+            egui::FontDefinitions::default().font_data.len() + 2
+        );
         crate::icons::install(&context);
+        context
+            .run_ui(Default::default(), |_| {})
+            .drop_without_applying_deltas();
         assert_eq!(
             context.fonts(|fonts| fonts.definitions().font_data.len()),
-            egui::FontDefinitions::default().font_data.len() + 1
+            installed
         );
     }
 }

@@ -1,19 +1,32 @@
 //! Shared control roles. Colors follow the host theme and the surrounding surface.
 use egui::{Button, ComboBox, InnerResponse, Response, Stroke, Ui};
 
+pub mod audio_meter;
 pub mod color_picker;
+pub mod components;
+mod desktop_style;
+pub mod eq_plot;
+pub mod frequency;
+#[cfg(feature = "icons")]
 pub mod icons;
+pub use desktop_style::apply_desktop_style;
+pub mod navigation;
+pub mod note;
+pub mod patterns;
+pub mod theme;
+pub use theme::{Density, Divider, SpacingScale, ThemeMode, UiTokens};
 mod selection;
 pub mod visualizations;
 pub use selection::{
-    NotebookOrientation, NotebookPadding, NotebookWidth, SliderBehavior, SliderGuide, SliderMarks,
-    StepLabels, continuous_marked_slider, continuous_slider, guided_slider, knob, marked_slider,
-    notebook, notebook_flex, notebook_styled, segmented, stepped_slider,
+    BinaryChoice, KnobStyle, NotebookOrientation, NotebookPadding, NotebookWidth, SliderBehavior,
+    SliderGuide, SliderMarks, StepLabels, continuous_marked_slider, continuous_slider,
+    guided_slider, knob, marked_slider, marked_slider_preview, notebook, notebook_flex,
+    notebook_styled, pill_segmented, rotary, rotary_preview, segmented, stepped_slider,
 };
 pub use visualizations::{
     ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,
     MeterRepresentation, MeterStop, chart, frequency_chart, line_overlay, paint_line,
-    paint_vertical_meter,
+    paint_line_iter, paint_vertical_meter,
 };
 
 pub const SPACE_SMALL: f32 = 4.0;
@@ -92,6 +105,25 @@ impl Theme {
             ctx.data(|data| data.get_temp(egui::Id::unique("orange-ui-controls-theme")))
         {
             return theme;
+        }
+        if let Some(tokens) = UiTokens::installed(ctx) {
+            let t = tokens.theme;
+            return Self {
+                panel: t.surface,
+                dialog: t.surface_elevated,
+                inset: t.surface_elevated,
+                text: t.text,
+                muted_text: t.text_muted,
+                border: t.border.color,
+                primary: t.primary,
+                on_primary: t.on_primary,
+                secondary: t.surface_elevated,
+                on_secondary: t.text,
+                focus: t.focus_ring.color,
+                danger: t.danger,
+                danger_fill: t.surface_elevated,
+                on_danger: t.danger,
+            };
         }
         let text = visuals.strong_text_color();
         let primary = visuals.selection.bg_fill;
@@ -334,7 +366,9 @@ impl Dropdown for ComboBox<'_> {
         contents: impl FnOnce(&mut Ui) -> R,
     ) -> InnerResponse<Option<R>> {
         with_style(ui, surface, Action::Secondary, |ui| {
-            let focus = Stroke::new(1.0, Theme::of(ui).focus);
+            let theme = Theme::of(ui);
+            let field = input_frame(ui, surface, CONTROL_RADIUS);
+            let focus = Stroke::new(2.0, theme.focus);
             let widgets = &mut ui.visuals_mut().widgets;
             for state in [
                 &mut widgets.inactive,
@@ -342,7 +376,9 @@ impl Dropdown for ComboBox<'_> {
                 &mut widgets.active,
                 &mut widgets.open,
             ] {
-                state.bg_stroke = Stroke::NONE;
+                state.bg_stroke = field.stroke;
+                state.bg_fill = field.fill;
+                state.weak_bg_fill = field.fill;
                 state.expansion = 0.0;
             }
             widgets.active.bg_stroke = focus;
@@ -423,7 +459,7 @@ pub fn button(
     });
     let (hover, press) = motion(ui, &response);
     if ui.is_rect_visible(response.rect) {
-        let fill = fill.lerp_to_gamma(ink, hover * 0.07 + press * 0.09);
+        let fill = button_feedback_fill(fill, ink, hover * 0.07 + press * 0.09);
         let quiet = matches!(
             action,
             Action::Menu | Action::Tertiary | Action::Toggle(false)
@@ -514,9 +550,9 @@ pub fn button_with(
         } else {
             fill
         };
-        let muted = base.lerp_to_gamma(ink, hover * 0.07 + press * 0.09);
+        let muted = button_feedback_fill(base, ink, hover * 0.07 + press * 0.09);
         let stroke = if response.has_focus() {
-            egui::Stroke::new(1.0, theme.focus)
+            egui::Stroke::new(2.0, theme.focus)
         } else if geometry.border {
             egui::Stroke::new(geometry.border_width, border)
         } else {
@@ -675,12 +711,39 @@ fn role_colors(
     };
     match action {
         Action::Primary => (theme.primary, theme.focus, theme.on_primary),
-        Action::Toggle(true) => (theme.selected_fill(surface), theme.focus, theme.text),
-        Action::Secondary => (neutral_fill, theme.border, theme.on_secondary),
+        Action::Toggle(true) => {
+            let fill = theme.selected_fill(surface);
+            (
+                fill,
+                theme.focus,
+                crate::theme::ensure_contrast(theme.text, fill, 5.3),
+            )
+        }
+        Action::Secondary => {
+            let fill = if matches!(surface, Surface::Panel) {
+                theme.secondary
+            } else {
+                neutral_fill.lerp_to_gamma(theme.text, 0.14)
+            };
+            (
+                fill,
+                theme.border,
+                crate::theme::ensure_contrast(theme.text, fill, 4.5),
+            )
+        }
         Action::Outline => (background, theme.border, theme.text),
         Action::Destructive => (theme.danger_fill, theme.danger, theme.on_danger),
         Action::Tertiary => (background, theme.border, theme.muted_text),
         Action::Toggle(false) | Action::Menu => (background, theme.border, theme.text),
+    }
+}
+
+fn button_feedback_fill(fill: egui::Color32, ink: egui::Color32, amount: f32) -> egui::Color32 {
+    let feedback = fill.lerp_to_gamma(ink, amount);
+    if crate::theme::contrast(ink, feedback) >= 4.5 {
+        feedback
+    } else {
+        fill
     }
 }
 
@@ -703,80 +766,10 @@ pub fn checkbox(
     match style {
         CheckStyle::Simple => toggle(ui, surface, value, label),
         CheckStyle::Toggle | CheckStyle::Emphasis => {
-            let theme = Theme::of(ui);
-            let height = CONTROL_HEIGHT;
-            let label_width = ui.available_width();
-            let (rect, mut response) =
-                ui.allocate_exact_size(egui::vec2(label_width, height), egui::Sense::click());
-            if response.clicked() {
-                *value = !*value;
-                response.mark_changed();
-            }
-            if ui.is_rect_visible(rect) {
-                let track = egui::Rect::from_center_size(
-                    egui::pos2(rect.left() + 15.0, rect.center().y),
-                    egui::vec2(26.0, 14.0),
-                );
-                let selected_fill = if style == CheckStyle::Emphasis {
-                    theme.primary
-                } else {
-                    theme.selected_fill(surface)
-                };
-                let fill = if *value {
-                    selected_fill
-                } else {
-                    theme.secondary
-                };
-                let fill = if response.hovered() {
-                    fill.lerp_to_gamma(theme.text, 0.06)
-                } else {
-                    fill
-                };
-                ui.painter().rect(
-                    track,
-                    7,
-                    fill,
-                    if response.has_focus() {
-                        egui::Stroke::new(1.0, theme.focus)
-                    } else {
-                        egui::Stroke::new(1.0, theme.border)
-                    },
-                    egui::StrokeKind::Inside,
-                );
-                let thumb_x = if *value {
-                    track.right() - 7.0
-                } else {
-                    track.left() + 7.0
-                };
-                ui.painter().circle_filled(
-                    egui::pos2(thumb_x, track.center().y),
-                    5.0,
-                    if *value { theme.on_primary } else { theme.text },
-                );
-                let text = egui::RichText::new(label).color(theme.text);
-                let galley = ui.painter().layout_no_wrap(
-                    text.text().to_owned(),
-                    egui::TextStyle::Body.resolve(ui.style()),
-                    theme.text,
-                );
-                ui.painter().galley(
-                    egui::pos2(
-                        track.right() + SPACE_MEDIUM,
-                        rect.center().y - galley.size().y / 2.0,
-                    ),
-                    galley,
-                    theme.text,
-                );
-            }
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::accesskit::Role::CheckBox,
-                    response.enabled(),
-                    *value,
-                    label,
-                )
-            });
-            response
+            let tokens = UiTokens::for_surface(ui, surface);
+            tokens.scope(ui, None, |ui, tokens| {
+                components::switch(ui, tokens, value, label)
+            })
         }
     }
 }
@@ -982,21 +975,51 @@ pub fn search(
     clear_icon: egui::Atom<'_>,
     clear_label: &str,
 ) -> Response {
+    search_sized(
+        ui,
+        salt,
+        query,
+        hint,
+        search_icon,
+        clear_icon,
+        clear_label,
+        f32::INFINITY,
+    )
+}
+
+/// Search field with a caller-set width, for expanding search affordances.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the search field's host labels and icon slots"
+)]
+pub fn search_sized(
+    ui: &mut Ui,
+    salt: &str,
+    query: &mut String,
+    hint: &str,
+    search_icon: egui::Atom<'static>,
+    clear_icon: egui::Atom<'_>,
+    clear_label: &str,
+    width: f32,
+) -> Response {
     let id = ui.make_persistent_id(salt);
     let clear_id = egui::IdSalt::new("clear-search");
     let theme = Theme::of(ui);
     let show_clear = !query.is_empty();
+    let width = width.min((ui.clip_rect().right() - ui.next_widget_position().x - 2.0).max(0.0));
     let mut field = with_style(ui, Surface::Panel, Action::Outline, |ui| {
-        ui.visuals_mut().extreme_bg_color = theme.inset;
         let mut edit = egui::TextEdit::singleline(query)
             .id(id)
+            .frame(input_frame(ui, Surface::Panel, 255))
             .align(egui::Align2::LEFT_CENTER)
-            .min_size(egui::vec2(0.0, CONTROL_HEIGHT))
+            .min_size(egui::vec2(
+                0.0,
+                ui.spacing().interact_size.y.max(CONTROL_HEIGHT),
+            ))
             .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
             .prefix(search_icon)
-            .margin(egui::Margin::symmetric(8, 3))
-            .desired_width(f32::INFINITY);
+            .desired_width(width);
         if show_clear {
             edit = edit.suffix(egui::Atom::custom(clear_id, egui::vec2(20.0, 20.0)));
         }
@@ -1026,6 +1049,7 @@ pub fn search(
             field.mark_changed();
         }
     }
+    paint_input_focus(ui, &field.response, 255);
     field.response
 }
 
@@ -1104,18 +1128,18 @@ pub fn text_field(
 ) -> Response {
     with_style(ui, surface, Action::Outline, |ui| {
         let theme = Theme::of(ui);
-        ui.visuals_mut().extreme_bg_color = theme.inset;
-        egui::TextEdit::singleline(text)
+        let response = egui::TextEdit::singleline(text)
             .id(id)
+            .frame(input_frame(ui, surface, CONTROL_RADIUS))
             .align(egui::Align2::LEFT_CENTER)
             .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
             .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
-            .margin(egui::Margin::symmetric(8, 4))
             .desired_width(f32::INFINITY)
             .show(ui)
-            .response
-            .response
+            .response;
+        paint_input_focus(ui, &response, CONTROL_RADIUS);
+        response.response
     })
 }
 
@@ -1129,17 +1153,158 @@ pub fn text_area(
 ) -> Response {
     with_style(ui, surface, Action::Outline, |ui| {
         let theme = Theme::of(ui);
-        ui.visuals_mut().extreme_bg_color = theme.inset;
-        egui::TextEdit::multiline(text)
+        let response = egui::TextEdit::multiline(text)
             .id(id)
-            .hint_text(hint)
+            .frame(input_frame(ui, surface, CONTROL_RADIUS))
+            .desired_rows(4)
+            .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
-            .margin(egui::Margin::symmetric(8, 4))
             .desired_width(f32::INFINITY)
             .show(ui)
-            .response
-            .response
+            .response;
+        paint_input_focus(ui, &response, CONTROL_RADIUS);
+        response.response
     })
+}
+
+pub(crate) fn input_frame(ui: &Ui, surface: Surface, radius: u8) -> egui::Frame {
+    let theme = Theme::of(ui);
+    let (fill, ink) = if UiTokens::configured(ui.ctx()) {
+        let palette = UiTokens::resolve(ui.ctx()).theme;
+        (palette.bg_input(), palette.control_border().color)
+    } else {
+        (theme.inset, theme.border)
+    };
+    let border = crate::theme::ensure_contrast(ink, theme.background(surface), 3.0);
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(radius)
+        .inner_margin(egui::Margin::symmetric(9, 4))
+}
+
+pub(crate) fn paint_input_focus(ui: &Ui, response: &Response, radius: u8) {
+    if response.has_focus() {
+        let theme = Theme::of(ui);
+        ui.painter().rect_stroke(
+            response.rect,
+            radius,
+            Stroke::new(2.0, theme.focus),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// Multiline field with a visible resize handle and a caller-chosen resize axis.
+pub fn resizable_text_area(
+    ui: &mut Ui,
+    surface: Surface,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+    axes: egui::Vec2b,
+) -> Response {
+    let width = ui.available_width().max(1.0);
+    let key = id.with("area-size");
+    let stored = ui
+        .data(|data| data.get_temp::<egui::Vec2>(key))
+        .unwrap_or(egui::vec2(width * 0.87, 94.0));
+    let size = egui::vec2(
+        if axes.x {
+            stored.x.clamp(width.min(100.0), width)
+        } else {
+            width
+        },
+        if axes.y {
+            stored.y.clamp(74.0, 280.0)
+        } else {
+            94.0
+        },
+    );
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let theme = Theme::of(ui);
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let frame = input_frame(ui, surface, CONTROL_RADIUS);
+    let response = frame
+        .show(&mut child, |ui| {
+            let inner = ui.available_size();
+            egui::ScrollArea::vertical()
+                .id_salt(id.with("scroll"))
+                .auto_shrink([false, false])
+                .max_height(inner.y)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .id(id)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(ui.available_width())
+                            .min_size(egui::vec2(ui.available_width(), inner.y))
+                            .hint_text(egui::RichText::new(hint).color(theme.muted_text))
+                            .text_color(theme.text),
+                    )
+                })
+                .inner
+        })
+        .inner;
+    if response.has_focus() {
+        ui.painter_at(rect).rect_stroke(
+            rect,
+            CONTROL_RADIUS,
+            Stroke::new(2.0, theme.focus),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let (center, cursor) = match (axes.x, axes.y) {
+        (false, true) => (
+            rect.center_bottom() - egui::vec2(0.0, 4.0),
+            egui::CursorIcon::ResizeVertical,
+        ),
+        (true, false) => (
+            rect.right_center() - egui::vec2(4.0, 0.0),
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (true, true) => (
+            rect.right_bottom() - egui::Vec2::splat(6.0),
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        _ => return response,
+    };
+    let target = match (axes.x, axes.y) {
+        (true, false) => egui::vec2(20.0, 48.0),
+        (false, true) => egui::vec2(48.0, 20.0),
+        _ => egui::Vec2::splat(22.0),
+    };
+    let hit = egui::Rect::from_center_size(center, target).intersect(rect);
+    let grip = ui
+        .interact(hit, id.with("grip"), egui::Sense::drag())
+        .on_hover_cursor(cursor);
+    if grip.dragged() {
+        let delta = grip.drag_delta();
+        let next = egui::vec2(
+            if axes.x {
+                (size.x + delta.x).clamp(width.min(100.0), width)
+            } else {
+                size.x
+            },
+            if axes.y {
+                (size.y + delta.y).clamp(74.0, 280.0)
+            } else {
+                size.y
+            },
+        );
+        ui.data_mut(|data| data.insert_temp(key, next));
+    }
+    let direction = match (axes.x, axes.y) {
+        (true, true) => egui::vec2(3.5, -3.5),
+        (true, false) => egui::vec2(0.0, 16.0),
+        _ => egui::vec2(16.0, 0.0),
+    };
+    ui.painter().line_segment(
+        [center - direction, center + direction],
+        Stroke::new(2.0, theme.muted_text),
+    );
+    response
 }
 
 fn surface_frame(frame: egui::Frame, theme: Theme) -> egui::Frame {
@@ -1249,7 +1414,7 @@ pub fn icon_button(
         painter.rect(rect, CONTROL_RADIUS, fill, stroke, egui::StrokeKind::Inside);
 
         let color = icon_color.unwrap_or(visuals.fg_stroke.color);
-        let icon_size = rect.width().min(rect.height()).min(icons::SIZE);
+        let icon_size = rect.width().min(rect.height()).min(16.0);
         paint(
             ui,
             egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(icon_size)),
@@ -1707,5 +1872,87 @@ mod tests {
         let (_, hovered) = frame(0.30, vec![]);
         assert_ne!(transition, idle);
         assert_ne!(transition, hovered);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn gallery_palettes_have_readable_input_and_toggle_boundaries() {
+    for palette in [
+        theme::Theme::DARK,
+        theme::Theme::LIGHT,
+        theme::Theme::MONOKAI,
+        theme::Theme::BUBBLEGUM,
+        theme::Theme::high_contrast_dark(),
+        theme::Theme::high_contrast_light(),
+    ] {
+        let context = egui::Context::default();
+        UiTokens::install(&context, ThemeMode::Custom(palette), Density::Comfy);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let input = input_frame(ui, Surface::Card, CONTROL_RADIUS);
+            assert!(theme::contrast(input.stroke.color, palette.bg_surface()) >= 3.0);
+            assert!(theme::contrast(input.stroke.color, input.fill) >= 3.0);
+            assert!(theme::contrast(palette.text_muted, input.fill) >= 4.5);
+            let (fill, _, ink) = role_colors(Theme::of(ui), Surface::Card, Action::Toggle(true));
+            for amount in [0.0, 0.07, 0.16] {
+                assert!(theme::contrast(ink, button_feedback_fill(fill, ink, amount)) >= 4.5);
+            }
+        });
+        output.drop_without_applying_deltas();
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn diagonal_drags_only_move_enabled_text_area_edges() {
+    for axes in [
+        egui::Vec2b::new(false, true),
+        egui::Vec2b::new(true, false),
+        egui::Vec2b::TRUE,
+    ] {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("resize-axis-test");
+        let mut draft = String::from("Keep this draft");
+        let mut frame = |events| {
+            let mut start = egui::Pos2::ZERO;
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(300.0, 240.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_width(200.0);
+                    start = ui.next_widget_position();
+                    resizable_text_area(ui, Surface::Card, id, &mut draft, "", axes);
+                },
+            )
+            .drop_without_applying_deltas();
+            start
+        };
+        let origin = frame(vec![]);
+        let offset = match (axes.x, axes.y) {
+            (false, true) => egui::vec2(100.0, 90.0),
+            (true, false) => egui::vec2(170.0, 47.0),
+            _ => egui::vec2(168.0, 88.0),
+        };
+        let at = origin + offset;
+        frame(vec![egui::Event::PointerMoved(at)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]);
+        frame(vec![egui::Event::PointerMoved(at + egui::vec2(16.0, 18.0))]);
+        let size = ctx
+            .data(|d| d.get_temp::<egui::Vec2>(id.with("area-size")))
+            .expect("grip handles drag");
+        assert_eq!(size.x, if axes.x { 190.0 } else { 200.0 });
+        assert_eq!(size.y, if axes.y { 112.0 } else { 94.0 });
+        assert_eq!(draft, "Keep this draft");
     }
 }

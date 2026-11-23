@@ -309,6 +309,138 @@ pub(crate) struct AudioRange {
     logarithmic: bool,
 }
 
+/// Audio Level Trigger gives Hold and Reset margin the same dial on both surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioDial {
+    Hold,
+    Reset,
+}
+
+impl AudioDial {
+    pub(crate) fn for_setting(node: &NodeView, name: &str) -> Option<Self> {
+        if node.definition != "org.orange.audio/noise-level" {
+            return None;
+        }
+        match name {
+            "hold_ms" => Some(Self::Hold),
+            "reset_db" => Some(Self::Reset),
+            _ => None,
+        }
+    }
+
+    fn controls(self) -> (Option<f32>, orange_ui_controls::KnobStyle) {
+        match self {
+            Self::Hold => (Some(1.0), orange_ui_controls::KnobStyle::Notched),
+            Self::Reset => (None, orange_ui_controls::KnobStyle::Arc),
+        }
+    }
+}
+
+const AUDIO_DIAL_MARKS: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0];
+
+#[derive(Clone, Copy)]
+pub(crate) struct ThresholdEdit {
+    node: NodeId,
+    saved: f64,
+    range: AudioRange,
+}
+
+#[derive(Clone, Copy)]
+struct ThresholdPreview {
+    owner: egui::Id,
+    saved: f64,
+    value: f64,
+    frame: u64,
+}
+
+impl ThresholdEdit {
+    pub fn for_node(node: &NodeView) -> Option<Self> {
+        if !canvas::spectrum::is_noise(node) {
+            return None;
+        }
+        let schema = &node.schema.as_ref()?["properties"]["threshold_db"];
+        if schema["type"] != "number" || schema["readOnly"] == true {
+            return None;
+        }
+        let range = AudioRange::of(node, "threshold_db", schema)?;
+        let saved = node.settings["threshold_db"]
+            .as_f64()
+            .or_else(|| schema["default"].as_f64())?;
+        Some(Self {
+            node: node.id,
+            saved,
+            range,
+        })
+    }
+
+    fn key(self) -> egui::Id {
+        egui::Id::unique(("orange-threshold-preview", self.node))
+    }
+
+    fn preview(self, ctx: &egui::Context) -> Option<ThresholdPreview> {
+        let frame = ctx.cumulative_frame_nr();
+        ctx.data(|data| data.get_temp::<ThresholdPreview>(self.key()))
+            .filter(|draft| draft.saved == self.saved && frame.saturating_sub(draft.frame) <= 1)
+    }
+
+    pub fn shown(self, ctx: &egui::Context) -> f64 {
+        self.preview(ctx).map_or(self.saved, |draft| draft.value)
+    }
+
+    pub fn update(self, response: &egui::Response, value: f64) -> Option<f64> {
+        let ctx = &response.ctx;
+        let owner = response.id;
+        let value = value.clamp(self.range.min, self.range.max);
+        if response.dragged() {
+            if self.shown(ctx) != value {
+                ctx.request_repaint();
+            }
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    self.key(),
+                    ThresholdPreview {
+                        owner,
+                        saved: self.saved,
+                        value,
+                        frame,
+                    },
+                )
+            });
+            return None;
+        }
+        let owns_preview = self.preview(ctx).is_some_and(|draft| draft.owner == owner);
+        let commit = response.changed() || (owns_preview && response.drag_stopped());
+        if commit || owns_preview {
+            ctx.data_mut(|data| data.remove::<ThresholdPreview>(self.key()));
+        }
+        (commit && self.saved != value).then_some(value)
+    }
+
+    pub fn slider(self, ui: &mut egui::Ui, surface: Surface) -> Option<f64> {
+        let mut fraction = self.range.fraction(self.shown(ui.ctx()));
+        let response =
+            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.range.marks());
+        let value = (self.range.value(fraction) * 10.0).round() / 10.0;
+        self.update(&response, value)
+    }
+
+    pub fn number(self, ui: &mut egui::Ui) -> Option<f64> {
+        let mut value = self.shown(ui.ctx());
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut value)
+                    .range(self.range.min..=self.range.max)
+                    .speed(0.25)
+                    .max_decimals(3)
+                    .update_while_editing(false)
+                    .suffix(" dBFS"),
+            )
+            .accessible_name(t("audio-setting-threshold-db"));
+        self.update(&response, value)
+    }
+}
+
 impl AudioRange {
     pub(crate) fn of(node: &NodeView, name: &str, schema: &Json) -> Option<Self> {
         if !node.definition.starts_with("org.orange.audio/")
@@ -360,6 +492,82 @@ impl AudioRange {
         self.marked_slider(ui, surface, id, value)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded audio controls use f32 for painting and retain the typed editor"
+    )]
+    pub(crate) fn dial(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+        dial: AudioDial,
+    ) -> Option<f64> {
+        let (step, style) = dial.controls();
+        let key = id.with("rotary-draft");
+        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
+        let response = ui
+            .push_id(id, |ui| {
+                orange_ui_controls::rotary(
+                    ui,
+                    surface,
+                    &mut shown,
+                    self.min as f32..=self.max as f32,
+                    step,
+                    AUDIO_DIAL_MARKS,
+                    style,
+                )
+            })
+            .inner;
+        if response.dragged() {
+            ui.data_mut(|d| d.insert_temp(key, shown));
+            return None;
+        }
+        if response.drag_stopped() {
+            ui.data_mut(|d| d.remove::<f32>(key));
+        }
+        (shown != value as f32 && (response.changed() || response.drag_stopped()))
+            .then_some(f64::from(shown))
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded audio display values"
+    )]
+    pub(crate) fn paint_dial(self, ui: &egui::Ui, rect: egui::Rect, value: f64, dial: AudioDial) {
+        let (step, style) = dial.controls();
+        orange_ui_controls::rotary_preview(
+            ui,
+            rect,
+            Surface::Card,
+            value as f32,
+            self.min as f32..=self.max as f32,
+            step,
+            AUDIO_DIAL_MARKS,
+            style,
+        );
+    }
+
+    pub(crate) fn paint_slider(self, ui: &egui::Ui, rect: egui::Rect, value: f64) {
+        orange_ui_controls::marked_slider_preview(
+            ui,
+            rect,
+            Surface::Card,
+            self.fraction(value),
+            &self.marks(),
+        );
+    }
+
+    fn marks(self) -> [f32; 5] {
+        if self.logarithmic {
+            [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0].map(|at| self.fraction(at))
+        } else if self.min < 0.0 && self.max > 0.0 {
+            [0.0, 0.25, self.fraction(0.0), 0.75, 1.0]
+        } else {
+            [0.0, 0.25, 0.5, 0.75, 1.0]
+        }
+    }
+
     fn marked_slider(
         self,
         ui: &mut egui::Ui,
@@ -370,14 +578,7 @@ impl AudioRange {
         let mut fraction = ui
             .data(|data| data.get_temp::<f32>(id))
             .unwrap_or_else(|| self.fraction(value));
-        let marks = if self.logarithmic {
-            [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0].map(|at| self.fraction(at))
-        } else if self.min < 0.0 && self.max > 0.0 {
-            [0.0, 0.25, self.fraction(0.0), 0.75, 1.0]
-        } else {
-            [0.0, 0.25, 0.5, 0.75, 1.0]
-        };
-        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks);
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
         if response.dragged() {
             ui.data_mut(|data| data.insert_temp(id, fraction));
             return None;
@@ -387,7 +588,16 @@ impl AudioRange {
     }
 }
 
-pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'static str> {
+pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'static str> {
+    if node.definition == "org.orange.audio/noise-level" {
+        return Some(t(match setting {
+            "threshold_db" => "audio-setting-threshold-db",
+            "reset_db" => "audio-reset-margin",
+            "hold_ms" => "audio-setting-hold-ms",
+            "direction" => "when-mode",
+            _ => return None,
+        }));
+    }
     if node.definition != "org.orange.audio/noise-gate" {
         return None;
     }
@@ -400,6 +610,17 @@ pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'stati
         _ => return None,
     };
     Some(t(key))
+}
+
+pub(crate) fn audio_trigger_help(node: &NodeView, name: &str) -> Option<&'static str> {
+    if node.definition != "org.orange.audio/noise-level" {
+        return None;
+    }
+    Some(t(match name {
+        "hold_ms" => "audio-trigger-hold-help",
+        "reset_db" => "audio-trigger-reset-help",
+        _ => return None,
+    }))
 }
 
 /// Sets the value at a JSON `pointer` (such as `/variable`) in `settings`, making
@@ -445,6 +666,7 @@ enum Field<'a> {
     },
     /// A length of time, typed in milliseconds and kept as nanoseconds in digits.
     Time,
+    Json,
     Text,
 }
 
@@ -458,6 +680,7 @@ impl<'a> Field<'a> {
             (Some("integer"), _) => Self::Whole,
             (Some("number"), _) => Self::Number,
             (Some("string"), Some("duration-ns")) => Self::Time,
+            (Some("object" | "array"), _) => Self::Json,
             _ => Self::Text,
         }
     }
@@ -510,6 +733,9 @@ impl<'a> Field<'a> {
                     json!(nanos.to_string())
                 })
                 .ok_or_else(|| tf("not-milliseconds", &[("typed", typed.into())])),
+            Self::Json => {
+                serde_json::from_str(typed).map_err(|_| t("invalid-setting-json").to_owned())
+            }
             Self::Choice(_) | Self::Toggle | Self::Text => Ok(json!(typed)),
         }
     }
@@ -892,6 +1118,52 @@ impl Editor {
             ui.add_space(4.0);
             let _ = ui.add(egui::Label::new(description).wrap());
         }
+        if matches!(
+            node.definition.as_str(),
+            "org.orange.audio/noise-level" | "org.orange.audio/multiband-spectrum"
+        ) {
+            let has_reading = self.canvas.noise_readings.contains_key(&node.id)
+                || self
+                    .canvas
+                    .spectra
+                    .get(&node.id)
+                    .is_some_and(|bins| bins.len() > 1);
+            ui.weak(canvas::spectrum::audio_status(
+                &node,
+                self.canvas.audio_running,
+                has_reading,
+            ));
+            if let Some(level) = self.canvas.noise_readings.get(&node.id) {
+                ui.label(tf(
+                    "audio-display-level",
+                    &[("level", format!("{level:.1}").into())],
+                ));
+            }
+            if let Some(graph) = self.graph()
+                && let Some(wire) = graph
+                    .wires
+                    .iter()
+                    .find(|wire| wire.to.0 == node.id && wire.to.1 == "stream")
+                && let Some(source) = graph.nodes.iter().find(|source| source.id == wire.from.0)
+            {
+                let port = source
+                    .ports
+                    .iter()
+                    .find(|port| !port.input && port.id == wire.from.1);
+                let label = port
+                    .and_then(|port| port.label.as_deref())
+                    .map_or_else(|| port_label(&wire.from.1), str::to_owned);
+                let from = tf(
+                    "audio-display-source",
+                    &[
+                        ("node", self.canvas.display_name(source).into()),
+                        ("port", label.into()),
+                    ],
+                );
+                ui.add(egui::Label::new(&from).truncate())
+                    .on_hover_text(&from);
+            }
+        }
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
@@ -1082,6 +1354,9 @@ impl Editor {
         let watch = node.definition == "core/on-watch";
         let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
         for (name, schema) in fields {
+            if schema["readOnly"] == true {
+                continue;
+            }
             if name == "bands" && node.definition == "org.orange.audio/multiband-spectrum" {
                 continue;
             }
@@ -1101,8 +1376,8 @@ impl Editor {
                 watch_label(name).to_owned()
             } else if name == "max_iterations" {
                 t("max-iterations").to_owned()
-            } else if let Some(label) = noise_gate_label(node, name) {
-                if matches!(field, Field::Time) {
+            } else if let Some(label) = audio_setting_label(node, name) {
+                if matches!(field, Field::Time) || name == "hold_ms" {
                     tf("in-milliseconds", &[("name", label.into())])
                 } else {
                     label.to_owned()
@@ -1115,7 +1390,9 @@ impl Editor {
                 words(name)
             };
             let hover = Some(
-                if measurement_time {
+                if let Some(help) = audio_trigger_help(node, name) {
+                    help
+                } else if measurement_time {
                     t("audio-setting-window-help")
                 } else if name == "max_iterations" {
                     t("max-iterations-help")
@@ -1165,12 +1442,42 @@ impl Editor {
                 | Field::Number
                 | Field::WatchNumber { .. }
                 | Field::Time
+                | Field::Json
                 | Field::Text => {
+                    if name == "threshold_db"
+                        && let Some(threshold) = ThresholdEdit::for_node(node)
+                    {
+                        let width = (ui.available_width() - 102.0).max(28.0);
+                        let slider = ui
+                            .allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                                ui.set_width(width);
+                                threshold.slider(ui, Surface::Panel)
+                            })
+                            .inner;
+                        if let Some(value) = threshold.number(ui).or(slider) {
+                            changed = Some(Change::Setting(pointer.clone(), Some(json!(value))));
+                        }
+                        return;
+                    }
                     if let Some(range) = AudioRange::of(node, name, schema)
                         && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
                     {
                         let id = ui.make_persistent_id((&node.id, &pointer));
-                        if let Some(value) = range.slider(ui, Surface::Panel, id, value) {
+                        let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
+                            if let Some(value) = range.dial(ui, Surface::Panel, id, value, dial) {
+                                changed =
+                                    Some(Change::Setting(pointer.clone(), Some(json!(value))));
+                            }
+                            return;
+                        } else {
+                            let width = (ui.available_width() - 96.0).max(32.0);
+                            ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                                ui.set_width(width);
+                                range.slider(ui, Surface::Panel, id, value)
+                            })
+                            .inner
+                        };
+                        if let Some(value) = adjusted {
                             #[expect(
                                 clippy::cast_possible_truncation,
                                 reason = "an integer setting rounds the bounded slider position"
@@ -1659,22 +1966,18 @@ fn row(ui: &mut egui::Ui, label: &str, hover: Option<String>, field: impl FnOnce
 /// A No | Yes switch across the row; `None` chooses neither. Returns the half clicked
 /// when it is not the one chosen.
 fn yes_no(ui: &mut egui::Ui, on: Option<bool>) -> Option<bool> {
-    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-    let mut clicked = None;
-    for (value, label) in [(false, t("no")), (true, t("yes"))] {
-        let chosen = on == Some(value);
-        if ui
-            .add_sized(
-                egui::vec2(width, ui.spacing().interact_size.y),
-                egui::Button::selectable(chosen, label),
-            )
-            .clicked()
-            && !chosen
-        {
-            clicked = Some(value);
-        }
+    let (id, rect) = ui.allocate_space(egui::vec2(
+        ui.available_width(),
+        ui.spacing().interact_size.y,
+    ));
+    orange_ui_controls::BinaryChoice {
+        labels: [t("no"), t("yes")],
+        selected: on,
+        defaulted: false,
+        surface: Surface::Panel,
+        zoom: 1.0,
     }
-    clicked
+    .show(ui, rect, id)
 }
 
 /// A setting's name as a person reads it: `max_iterations` is "Max iterations".
@@ -1703,6 +2006,7 @@ pub fn port_label(id: &str) -> String {
 pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
     match (node.definition.as_str(), choice) {
         ("core/on-watch", _) => watch_label(choice),
+        ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
         ("core/for-each", "list") => t("for-each-list"),
         ("core/for-each", "map") => t("for-each-map"),
         ("org.orange.audio/filter", "low-pass") => t("audio-filter-low"),
@@ -1749,6 +2053,18 @@ mod tests {
         set_at(&mut settings, "/missing/one", None);
         set_at(&mut settings, "/variable", None);
         assert_eq!(settings, json!({"keep": 1, "deep": {}}));
+    }
+
+    #[test]
+    fn structured_settings_are_edited_as_json() {
+        for (schema, value) in [
+            (json!({"type": "object"}), json!({"nested": [true, 2]})),
+            (json!({"type": "array"}), json!([1, "text"])),
+        ] {
+            let field = Field::of(&schema);
+            assert_eq!(field.value(&field.typed(&value)).unwrap(), value);
+            assert!(field.value("{ incomplete").is_err());
+        }
     }
 
     #[test]

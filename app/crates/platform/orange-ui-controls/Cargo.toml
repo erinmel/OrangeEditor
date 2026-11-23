@@ -6,14 +6,26 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["icons"]
+icons = ["dep:egui-lucide", "dep:egui-phosphor", "dep:egui_extras", "dep:egui_material_icons"]
+native-dialogs = ["dep:rfd"]
+
 [dependencies]
 egui.workspace = true
-egui-lucide.workspace = true
-egui_extras.workspace = true
-egui_material_icons.workspace = true
+egui-lucide = { workspace = true, optional = true }
+egui-phosphor = { workspace = true, optional = true }
+egui_extras = { workspace = true, optional = true }
+egui_material_icons = { workspace = true, optional = true }
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+rfd = { workspace = true, optional = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+cpal.workspace = true
+hound.workspace = true
+rfd.workspace = true
+eframe.workspace = true
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0", features = ["ui"] }

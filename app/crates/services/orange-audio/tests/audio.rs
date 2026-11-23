@@ -814,7 +814,7 @@ fn spectrum_bands_send_separately_filtered_pcm_to_live_meters() {
             .filter(|port| !port.input)
             .map(|port| port.id.as_str())
             .collect::<Vec<_>>(),
-        ["band_stream#0", "band_stream#1"]
+        ["spectrum", "band_stream#0", "band_stream#1"]
     );
     for (from, output, to, input) in [
         (source, "stream", spectrum, "stream"),

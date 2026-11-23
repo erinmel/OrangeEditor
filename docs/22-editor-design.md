@@ -157,8 +157,16 @@ combination in the selected language.
   switches, simple and emphasized radios, text fields and text areas, shared
   dialog and popup frames, and reusable level-meter and chart representations.
   Notebooks support horizontal and vertical orientations with compact or
-  comfortable padding. Buttons expose solid, outline, ghost and subtle visual
+  comfortable padding. Editor dock tabs fill the available width and move to an
+  overflow menu when the labels no longer fit. The tab row and search field use
+  the visible panel width during resizing. Buttons expose solid, outline, ghost and subtle visual
   styles plus persistent toggle state, hover, pressed, focused and disabled states.
+  The editor owns card layout, port geometry, wiring, document settings and commit rules.
+  Both search and placement previews use the same card layout as the live canvas.
+  The normal template reads the host projection of typed ports, defaults, references,
+  and settings. A specialized renderer checks the projected shape it consumes and
+  falls back to the normal template for incompatible definitions. Presentation
+  does not change which ports the graph can wire.
   Geometry presets cover rounded, compact, pill, no-border and square buttons.
   Semantic tones cover neutral, info, success, warning and danger. Confirmation
   pairs keep Cancel neutral and Confirm on a selected semantic tone. Border,
@@ -182,19 +190,56 @@ combination in the selected language.
   Notebook padding is compact by default: text has a short inset, the frame
   has two to four units of inset, and tab height remains 28 units. Comfortable
   padding is an opt-in alternative for larger dialogs, never a narrow-dock default.
-  Two-option and multi-option selectors share an indicator that moves to the
-  selected segment using the same animation time. A short underline shows keyboard
-  focus while the indicator moves.
+  Two-option and multi-option selectors use an intrinsic pill track with an
+  animated active pill. Options stack when their measured labels and padding
+  exceed the panel width. A single pill carries the selection through the
+  entire transition. A small underline identifies keyboard focus.
   Every button family uses the same interaction precedence: disabled suppresses
   interaction and lowers contrast; selected or active is persistent; pressed is
   transient while held; focused has a visible outline independent of pointer
   hover; hovered lightens its fill; inactive uses the rest state. A boolean
   toggle exposes on/off; a segmented radio or radio list exposes one choice;
   a checklist or multi-select exposes several independent choices.
-  Continuous and stepped sliders share a thin rail and pill-shaped thumb. The
-  stepped control draws small borderless pills in the thumb's shape that blend
-  into the active or inactive rail, optionally labels values below it,
-  and changes by one step with the arrow keys. Grid spacing shows the labels.
+
+  The shared component theme supports System, Light, Dark and custom palettes,
+  plus High Contrast Light and High Contrast Dark. The high-contrast palettes
+  use text and semantic inks at 7:1 or higher against their surfaces, prominent
+  borders and two-point focus rings. Notes and validation states pair color with
+  a symbol or text. Hosts supply localized accessibility labels, and custom
+  actionable shapes expose egui widget roles and state. The component defaults
+  are Compact at 24 points and Comfy at 40 points, with spacing multiples
+  `[1, 2, 4, 6, 8]` of two and three points respectively. Editor desktop
+  defaults use Compact. The shared modal opts into Comfy.
+
+  Run `cargo run -p orange-ui-controls --locked --example gallery` to see all
+  component examples on one scrollable canvas. Appearance tiles follow the
+  Settings layout, including the split System preview, and apply the palette
+  to the whole gallery. Compact and Comfy apply the density across the page.
+  Button roles, continuous and stepped sliders, disabled controls and
+  validation examples appear inline. Gallery rows measure their tallest card
+  from child content. Menu lists use full-width borderless rows, a dedicated
+  icon column and muted shortcut hints. Structured dialogs use a fullscreen
+  dim backdrop, separate header, scrollable body and footer, and Escape close.
+  The WAV preview decodes on a worker and optionally plays a bounded mono
+  preview on the default playback device after explicit activation.
+  Section links live in the header so the canvas uses the full window width.
+  File fixtures browse or accept file drops and list selected names. Clock
+  wheels support focused arrow keys, scrolling and vertical pointer drags. They wrap hours at 24 and minutes and seconds at 60, independently.
+  Search has a pill-shaped inset field and leading icon. Plain inputs use a
+  rectangular inset, dropdowns add a chevron, and text areas offer resize grips.
+  Input borders and active toggle text meet the gallery contrast checks.
+  The gallery's audio preview uses four adjustable biquad bands, a logarithmic
+  20 Hz–20 kHz plot, a 2048-sample Hann FFT of a 48 kHz synthetic trumpet and a
+  post-EQ waveform. Its stereo dBFS meters use separate peak, RMS and held
+  values, 6 dB ticks, and per-channel clipping latches. The demonstration runs
+  on the UI side and uses a pausable signal. Visible signal displays target 60 Hz and the spectrum targets 30 Hz. Pausing or scrolling all live displays out of view suspends signal processing. EQ response samples are cached by band settings, sample rate and plot resolution.
+  Continuous and stepped sliders share a thin rail and circular thumb. The
+  stepped control blends its stops into the active or inactive rail, places
+  optional labels just below it and changes by one step with the arrow keys.
+  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound.
+  Drag up or right to increase the value, hold Shift for a fine adjustment,
+  focus the knob to nudge it with the wheel or arrow keys, or double-click the centered readout
+  to enter a number.
   Continuous marked sliders show guide notches without snapping. Canvas zoom
   uses guides at 50%, 75%, 100%, 125%, 150% and 175%, but accepts every value within 20–175%.
   A guided slider may hide guides, show only pills, show only labels, or show
@@ -505,14 +550,23 @@ Connect Audio Source to Frequency Splitter to view its live frequency line. Drag
 across the plot and release to add one filtered audio stream output to the card.
 Draw across another range to add another output. Each output row has editable
 name and frequency fields and a visible delete button. The rows sort by their
-lower frequency. Editing a band preserves its port keys and wires. Removing a band removes its wire connections in one
+lower frequency. The raw spectrum is also available as an output port.
+Editing a band preserves its port keys and wires. Removing a band removes its wire connections in one
 undoable edit. Drawing on an older spectrum card upgrades it in the same edit
 and preserves existing level and execution outputs and their wires.
 
 The plot, bands and ports use the card's zoom scale. The pointer shows the
 frequency under it. Collapse Frequency chart to stop painting the plot and
-preparing new display samples. The band controls and filtered outputs stay available.
+building the trace geometry. The latest display samples remain available when it reopens.
+The band controls and filtered outputs stay available. The splitter shares the
+EQ gallery’s plot frame, axes and cached trace painter. It supplies logarithmic
+analyzer buckets and editable band ranges. The gallery supplies FFT bins and
+response curves. Unchanged traces reuse the tessellated mesh.
 The spectrum, Audio Level Trigger and connection meters show -120 to 0 dBFS.
+The canvas and Properties distinguish disconnected, stopped preview, waiting for samples,
+and live input. Properties identifies the connected upstream node and output port.
+A connected stopped preview shows the chart or meter scale without audio.
+Silence is a valid live reading at the floor.
 
 The Audio group starts with Audio Source, Frequency Splitter, Audio Level Trigger
 and Audio Out when browsing or searching for audio. Audio Source uses the full
@@ -520,10 +574,20 @@ connection row for its device picker. Searching for Audio In finds Audio Source.
 Transient remains searchable for graphs that react to sudden hits, such as kicks.
 
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
-The vertical green, yellow and red meter rises immediately, decays smoothly and
-briefly holds the recent peak. The Level output shows the current reading beside
+The trigger and gallery use the same segmented RMS widget, including the level
+zones, held-peak animation and target marker. The trigger has one lane over
+-120 to 0 dBFS and clears the reading when the source is unavailable.
+The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold in the settings column.
-The direction and hold duration sit in the same column.
+The direction, hold duration and reset margin sit in the same column.
+Hold and Reset margin use the same rotary controls as Properties, with a smaller
+face on the canvas and a side-by-side layout. The knob face shows the value and can be double-clicked to type.
+The meter marker, slider and numeric threshold control mirror the active drag.
+Release commits one undoable edit. A typed threshold commits when editing ends.
+Threshold, Hold, and Reset margin configure the trigger's subscription.
+Hold requires
+continuous qualification. Reset margin is the amount the signal must move past the
+threshold in the opposite direction to rearm after a firing.
 Level and Condition met are live data outputs. Triggered continues execution
 after qualification.
 
@@ -589,3 +653,68 @@ The canvas indexes incoming wires once per frame for displayed values and formul
 Port value reads borrow their keys. Wire hit testing skips curves whose bounds do not
 reach the pointer. Frame timing and interaction latency still require measurement on
 dense graphs.
+
+### Portable control composition
+
+Simple fields expose their value, label and focus. An advanced field adds units,
+stepping or validation. A composite owns the interaction across its children,
+such as a calendar or media transport. The host owns persistent state, translated
+labels, media decoding, native pickers and permission lifetimes.
+
+- Give editable fields persistent labels. Icons identify a field purpose and
+  supplement its name. Put an actionable error beside its field. Preserve the
+  draft across resize, validation and theme changes. Single-line edits can use
+  platform IME input. Multiline editors retain vertical, horizontal or two-axis
+  resizing on desktop; narrow hosts should choose vertical resize.
+- Use 4.5:1 for normal text and 3:1 for large text and essential control
+  boundaries. Compare against the actual adjacent fill, including selected and
+  hovered states. Pair semantic colors with text or a recognizable symbol.
+- Voice previews group play/pause, a seekable waveform and elapsed/duration.
+  Equal fader travel represents equal dB increments, with silence at the lower
+  stop and unity at the top. The output callback receives linear amplitude.
+- Inline video integration reserves a stable aspect-ratio rectangle. Hosts can
+  present decoded frames as textures or delegate playback to a native player.
+  Route caption selection, full screen, audio focus and app suspension to the
+  host. Android Media3 PlayerView and Apple system players are native integration
+  options. The desktop WAV gallery demonstrates audio playback.
+- A mobile host can render portable egui controls and supply its own picker
+  on activation. The optional synchronous desktop file dialog is available on
+  Windows, Linux and macOS. Mobile resource handles, including content URIs,
+  belong to the host and need not have a filesystem path.
+- Spruce and Parchment are original color selections and introduce no external
+  theme assets. Theme installation is idempotent for an unchanged configuration.
+The gallery reserves the measured space of offscreen catalogue cards without
+laying out their previews on steady frames. Width and density changes remeasure
+the cards. Horizontal slider thumbs use the same pill silhouette as the notches,
+with a larger size to distinguish the active handle.
+The gallery offers a left section menu on wide windows and a compact navigation
+menu plus bottom shortcuts on narrow windows. Section navigation moves the
+single canvas. An ellipsis opens item actions. Search scopes remain optional.
+Calendar popups use the same elevated frame, radius and selected foreground as
+cards and menus. Semantic note accents follow the frame contour in both densities.
+
+Session tables retain authored order. In sortable tables the active column and
+direction are visible, and sorting changes a row-index array only on activation.
+Browsed folders load on expansion off the UI thread. Cache directory listings
+and failures until refresh or folder replacement. File-name filtering operates
+on expanded folders without recursively scanning the filesystem.
+Resize affordances occupy the edge that moves: bottom for height, right for
+width and the lower-right corner for both axes. Long text scrolls within the
+chosen height. A toast may carry supporting text and stay until dismissed.
+The shared lifetime policy accepts 2–120 seconds for timed notices. Persistent
+gallery errors have a dismissal action and schedule no timer repaints.
+Midnight Contrast shares the high-contrast palette checks for text, semantic
+inks, boundaries, focus and selected text. Volume uses the themed slider rail
+with travel linear in decibels and silence at its lower stop.
+Wide settings panes and gallery navigation use full-width rows. Selection is
+marked by a leading accent and background tint. Disclosure rows expose
+expanded state and group child destinations. Both text and icons remain
+visible on the selected surface. A single-axis textarea grip spans 32 points
+along its movable edge, and the sort indicator is drawn independently of fonts.
+The editor canvas retains one grid mesh per canvas. Viewport bounds, camera,
+grid configuration, palette colors and display scale determine reuse. Display
+elision measures at most 4096 UTF-8 bytes of a label; copying and inspecting
+values keep their original data. The calendar heading centers between equal
+navigation targets and opens month and year grids in the same fixed-size popup.
+Choosing a year or month moves to the next grid. Only choosing a day commits a date.
+On selection or Escape, focus returns to the date field.

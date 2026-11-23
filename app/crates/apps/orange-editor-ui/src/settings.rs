@@ -38,6 +38,9 @@ impl Section {
     }
 
     fn matches(self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
         let labels: &[&str] = match self {
             Self::Search => &[
                 "search-section-words",
@@ -312,16 +315,19 @@ impl Editor {
             for (section, found) in Section::ALL.into_iter().zip(matches) {
                 if found {
                     let selected = self.settings_tab == section;
-                    let width = nav.available_width();
-                    if controls::button(
+                    let glyph = match section {
+                        Section::Search => icons::SEARCH,
+                        Section::Display => icons::DISPLAY,
+                        Section::Shortcuts => icons::KEYBOARD,
+                    };
+                    if orange_ui_controls::navigation::sidebar_row(
                         nav,
-                        Surface::Panel,
-                        Action::Toggle(selected),
-                        true,
-                        egui::Button::new(())
-                            .left_text(section.title())
-                            .truncate()
-                            .min_size(egui::vec2(width, CONTROL_HEIGHT)),
+                        section.title(),
+                        selected,
+                        None,
+                        |ui, rect, ink| {
+                            icons::paint_centered(ui.painter(), rect.center(), glyph, 16.0, ink)
+                        },
                     )
                     .clicked()
                     {
@@ -391,6 +397,9 @@ impl Editor {
                         egui::Button::new(()).min_size(egui::vec2(width, 96.0)),
                     )
                     .labelled_by(label.id);
+                    if !ui.is_rect_visible(response.rect) {
+                        continue;
+                    }
                     let sample = egui::Rect::from_min_max(
                         response.rect.min + egui::vec2(5.0, 5.0),
                         response.rect.max - egui::vec2(5.0, 30.0),

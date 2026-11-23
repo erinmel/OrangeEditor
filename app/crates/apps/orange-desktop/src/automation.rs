@@ -431,6 +431,20 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     "missing card for {}",
                     found.definition
                 );
+                let node_view = &graph.nodes[0];
+                let mut positions = std::collections::HashSet::new();
+                for port in &node_view.ports {
+                    let offset =
+                        orange_editor_ui::canvas::port_offset(node_view, &port.id, port.input)
+                            .unwrap_or_else(|| {
+                                panic!("{} lacks a canvas anchor for {}", found.definition, port.id)
+                            });
+                    assert!(
+                        positions.insert((offset.x.to_bits(), offset.y.to_bits())),
+                        "{} has overlapping ports at {offset:?}",
+                        found.definition
+                    );
+                }
                 editor.canvas().focus(&graph, node);
                 let output = context.run_ui(
                     egui::RawInput {
@@ -442,6 +456,9 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     },
                     |ui| {
                         editor.ui_with_layout(ui, &mut host, |editor, ui, host| {
+                            egui::Panel::right("catalogue-audit-properties")
+                                .default_size(280.0)
+                                .show(ui, |ui| editor.right_panel(ui, host));
                             editor.canvas_panel(ui, host);
                         })
                     },

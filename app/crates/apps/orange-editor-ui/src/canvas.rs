@@ -179,7 +179,7 @@ pub use layout::auto_layout;
 mod geometry;
 mod groups;
 mod settings;
-mod spectrum;
+pub(crate) mod spectrum;
 use geometry::{Geometry, near_wire, wire_points, wire_visible};
 pub use groups::{GROUP_PAD, GROUP_TITLE, GroupEdit};
 pub(crate) use spectrum::BandEdit;
@@ -362,9 +362,23 @@ struct StepActivity {
 
 /// The view of one graph: where it is scrolled to, how far it is zoomed and where its
 /// nodes are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GridCacheKey {
+    area: Rect,
+    origin: Pos2,
+    zoom: f32,
+    scale: f32,
+    step: u16,
+    style: GridStyle,
+    background: Color32,
+    ink: Color32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Canvas {
+    grid_cache: Option<(GridCacheKey, std::sync::Arc<egui::Mesh>)>,
     pub(crate) waypoints: HashMap<WireEnds, [f32; 2]>,
+    pub(crate) audio_running: bool,
     pub(crate) spectra: BTreeMap<NodeId, Vec<f64>>,
     pub(crate) collapsed_spectra: BTreeSet<NodeId>,
     pub(crate) noise_readings: BTreeMap<NodeId, f64>,
@@ -448,6 +462,7 @@ pub struct Canvas {
 impl Default for Canvas {
     fn default() -> Self {
         Self {
+            audio_running: false,
             spectra: BTreeMap::new(),
             collapsed_spectra: BTreeSet::new(),
             noise_readings: BTreeMap::new(),
@@ -493,6 +508,7 @@ impl Default for Canvas {
             scroll_pans: false,
             snap: true,
             grid_step: DEFAULT_GRID_STEP,
+            grid_cache: None,
             grid_style: GridStyle::default(),
             groups: Vec::new(),
             selected_group_frame: None,
@@ -510,7 +526,6 @@ struct Palette {
     error: Color32,
     warning: Color32,
     background: Color32,
-    grid: Color32,
     card: Color32,
     header: Color32,
     outline: Color32,
@@ -559,7 +574,6 @@ impl Palette {
             error: visuals.error_fg_color,
             warning: visuals.warn_fg_color,
             background: visuals.extreme_bg_color,
-            grid: mix(visuals.extreme_bg_color, visuals.text_color(), 0.21),
             card: visuals.window_fill,
             header: visuals.faint_bg_color,
             outline: visuals.widgets.noninteractive.bg_stroke.color,
@@ -897,17 +911,30 @@ impl Canvas {
         self.zoom
     }
 
-    fn draw_grid(&self, painter: &egui::Painter, area: Rect, colors: &Palette) {
+    fn draw_grid(&mut self, painter: &egui::Painter, area: Rect, colors: &Palette) {
         if self.grid_style == GridStyle::Hidden {
             return;
         }
-        painter.add(egui::Shape::mesh(self.grid_mesh(
+        let key = GridCacheKey {
             area,
-            painter.ctx().pixels_per_point(),
-            colors,
-        )));
+            origin: self.origin,
+            zoom: self.zoom,
+            scale: painter.ctx().pixels_per_point(),
+            step: self.grid_step,
+            style: self.grid_style,
+            background: colors.background,
+            ink: colors.text,
+        };
+        if let Some((previous, mesh)) = &self.grid_cache
+            && *previous == key
+        {
+            painter.add(egui::Shape::Mesh(mesh.clone()));
+            return;
+        }
+        let mesh = std::sync::Arc::new(self.grid_mesh(area, key.scale, colors));
+        painter.add(egui::Shape::Mesh(mesh.clone()));
+        self.grid_cache = Some((key, mesh));
     }
-
     fn grid_mesh(&self, area: Rect, pixels_per_point: f32, colors: &Palette) -> egui::Mesh {
         const MAJOR: u32 = 4;
         let base_step = f32::from(self.grid_step) * self.zoom;
@@ -1319,6 +1346,7 @@ impl Canvas {
 
     /// A new run starts: nothing from an earlier one is shown.
     pub fn clear_run(&mut self) {
+        self.audio_running = false;
         self.spectra.clear();
         self.noise_readings.clear();
         self.activity.clear();
@@ -1329,6 +1357,7 @@ impl Canvas {
     }
 
     pub(crate) fn begin_run(&mut self) {
+        self.audio_running = true;
         self.spectra.clear();
         self.noise_readings.clear();
         self.activity.clear();
@@ -1701,21 +1730,19 @@ impl Canvas {
         let pointer = ui
             .input(|input| input.pointer.interact_pos())
             .filter(|at| area.contains(*at));
-        if let Some(wiring) = self.wiring.clone()
-            && ui.input(|input| input.pointer.any_released())
+        if ui.input(|input| input.pointer.any_released())
+            && let Some(wiring) = self.wiring.take()
+            && let Some(pointer) = pointer
         {
-            if let Some(pointer) = pointer {
-                let at = origin + (pointer - area.min) / zoom;
-                done.connect = self
-                    .input_at(graph, at, wiring.exec, wiring.from.0)
-                    .map(|to| (wiring.from.clone(), to));
-                // Let go on the background, not on a node: ask for a node to take it.
-                let on_node = self.nodes_in(graph, Rect::from_center_size(at, Vec2::splat(1.0)));
-                if done.connect.is_none() && on_node.is_empty() && area.contains(pointer) {
-                    done.loose = Some((wiring.from, [at.x, at.y], pointer));
-                }
+            let at = origin + (pointer - area.min) / zoom;
+            done.connect = self
+                .input_at(graph, at, wiring.exec, wiring.from.0)
+                .map(|to| (wiring.from.clone(), to));
+            // Let go on the background, not on a node: ask for a node to take it.
+            let on_node = self.nodes_in(graph, Rect::from_center_size(at, Vec2::splat(1.0)));
+            if done.connect.is_none() && on_node.is_empty() && area.contains(pointer) {
+                done.loose = Some((wiring.from, [at.x, at.y], pointer));
             }
-            self.wiring = None;
         }
         // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
         // selects everything, and copy, cut and paste go through the clipboard.
@@ -1723,7 +1750,7 @@ impl Canvas {
             && ui.input(|input| input.focused)
             && !ui.ctx().egui_wants_keyboard_input()
         {
-            let (delete, all, add, events) = ui.input(|input| {
+            let (delete, all, add) = ui.input(|input| {
                 if let Some(group) = self.selected_group() {
                     if self.keys.pressed(input, "ungroup") {
                         done.group = Some(GroupEdit::Ungroup(group.id.clone()));
@@ -1736,7 +1763,6 @@ impl Canvas {
                     self.keys.pressed(input, "delete"),
                     self.keys.pressed(input, "select-all"),
                     self.keys.pressed(input, "add"),
-                    input.events.clone(),
                 )
             });
             done.copy =
@@ -1761,14 +1787,16 @@ impl Canvas {
                 let every: Vec<NodeId> = graph.nodes.iter().map(|node| node.id).collect();
                 self.select_many(&every);
             }
-            for event in events {
-                match event {
-                    egui::Event::Copy => done.copy = !self.selection.is_empty(),
-                    egui::Event::Cut => done.cut = !self.selection.is_empty(),
-                    egui::Event::Paste(text) => done.paste = Some(text),
-                    _ => {}
+            ui.input(|input| {
+                for event in &input.events {
+                    match event {
+                        egui::Event::Copy => done.copy = !self.selection.is_empty(),
+                        egui::Event::Cut => done.cut = !self.selection.is_empty(),
+                        egui::Event::Paste(text) => done.paste = Some(text.clone()),
+                        _ => {}
+                    }
                 }
-            }
+            });
         }
 
         let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
@@ -1790,7 +1818,8 @@ impl Canvas {
             ) else {
                 continue;
             };
-            let mark = self.marks.wires.get(&(wire.from.clone(), wire.to.clone()));
+            let ends = (wire.from.clone(), wire.to.clone());
+            let mark = self.marks.wires.get(&ends);
             let ty = geometry
                 .port(wire.from.0, &wire.from.1, false)
                 .and_then(|port| port.ty);
@@ -1799,7 +1828,6 @@ impl Canvas {
             } else {
                 colors.port_color(ty, wire.exec)
             };
-            let ends = (wire.from.clone(), wire.to.clone());
             let mut waypoint = self.waypoints.get(&ends).copied();
             if let Some([x, y]) = waypoint {
                 let at = to_screen(Pos2::new(x, y));
@@ -2179,6 +2207,7 @@ impl Canvas {
                         self.spectra.get(&node.id).map(Vec::as_slice),
                         controls,
                         pointed,
+                        self.audio_running,
                     )
                 {
                     done.spectrum_edit = Some((node.id, edit));
@@ -2193,6 +2222,7 @@ impl Canvas {
                     zoom,
                     self.noise_readings.get(&node.id).copied(),
                     controls,
+                    self.audio_running,
                 )
             {
                 done.set_config = Some((node.id, "/threshold_db".to_owned(), threshold.into()));
@@ -2339,11 +2369,16 @@ impl Canvas {
                 if !area.intersects(slot) {
                     continue;
                 }
+                let id = response.id.with(("field", node.id));
                 let id = match field {
-                    card::FieldOf::TextArea(port, ..) => {
-                        response.id.with(("text-field", node.id, &port.id))
-                    }
-                    _ => response.id.with(("field", node.id, slot.min.y as i32 / 4)),
+                    card::FieldOf::TextArea(port, ..)
+                    | card::FieldOf::Input(port)
+                    | card::FieldOf::Path(port, _) => id.with(("port", &port.id)),
+                    card::FieldOf::Setting(name, ..) => id.with(("setting", name)),
+                    card::FieldOf::Variable(pointer) => id.with(("variable", pointer)),
+                    card::FieldOf::Connection => id.with("connection"),
+                    card::FieldOf::AddPort(variadic) => id.with(("add", &variadic.port)),
+                    card::FieldOf::AddSignalReceiver => id.with("add-signal"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -2496,8 +2531,9 @@ impl Canvas {
                     ui.scope_builder(UiBuilder::new().id_salt("placement-preview"), |ui| {
                         ui.disable();
                         if spectrum::is_noise(card) {
-                            let _ =
-                                spectrum::draw_noise(ui, &painter, card, rect, zoom, None, false);
+                            let _ = spectrum::draw_noise(
+                                ui, &painter, card, rect, zoom, None, false, false,
+                            );
                         } else if spectrum::combined(card) {
                             let _ = spectrum::chart_toggle(
                                 ui,
@@ -2508,7 +2544,7 @@ impl Canvas {
                                 true,
                             );
                             let _ = spectrum::draw_combined(
-                                ui, &painter, card, rect, zoom, None, false, None,
+                                ui, &painter, card, rect, zoom, None, false, None, false,
                             );
                         }
                     });
@@ -2652,25 +2688,34 @@ pub(crate) fn step_whole(base: i128, pixels: f32, ty: &str) -> i128 {
 
 /// `text` cut to fit in `width` with an ellipsis, and whether it was cut.
 fn elide(painter: &egui::Painter, text: &str, font: &FontId, width: f32) -> (String, bool) {
-    let fits = |text: &str| {
+    // Bound text submitted to the font cache even when a document has huge labels.
+    // Full values remain available to the inspector and copy actions.
+    let end = text.floor_char_boundary(text.len().min(4096));
+    let prefix = &text[..end];
+    let fits = |value: &str| {
         painter
-            .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+            .layout_no_wrap(value.to_owned(), font.clone(), Color32::WHITE)
             .size()
             .x
             <= width
     };
-    if fits(text) {
-        return (text.to_owned(), false);
+    if end == text.len() && fits(prefix) {
+        return (prefix.to_owned(), false);
     }
-    let mut chars: Vec<char> = text.chars().collect();
-    while !chars.is_empty() {
-        let _ = chars.pop();
-        let shorter = format!("{}\u{2026}", chars.iter().collect::<String>().trim_end());
-        if fits(&shorter) {
-            return (shorter, true);
+    let mut low = 0;
+    let mut high = prefix.len();
+    let mut best = String::from("…");
+    while low < high {
+        let mid = prefix.ceil_char_boundary(low + (high - low).div_ceil(2));
+        let candidate = format!("{}…", prefix[..mid].trim_end());
+        if fits(&candidate) {
+            low = mid;
+            best = candidate;
+        } else {
+            high = prefix.floor_char_boundary(mid - 1);
         }
     }
-    ("\u{2026}".to_owned(), true)
+    (best, true)
 }
 
 /// Whether a value of type `source` may go to an input of type `target`, as far as the
@@ -2795,9 +2840,10 @@ pub(crate) fn preview_card(ui: &mut egui::Ui, node: &NodeView, name: &str, rect:
     if zoom >= 0.45 {
         if spectrum::combined(node) {
             spectrum::chart_heading(&painter, rect, zoom, true, colors.text);
-            let _ = spectrum::draw_combined(ui, &painter, node, rect, zoom, None, false, None);
+            let _ =
+                spectrum::draw_combined(ui, &painter, node, rect, zoom, None, false, None, false);
         } else if spectrum::is_noise(node) {
-            let _ = spectrum::draw_noise(ui, &painter, node, rect, zoom, None, false);
+            let _ = spectrum::draw_noise(ui, &painter, node, rect, zoom, None, false, false);
         }
     }
 }
@@ -3042,7 +3088,10 @@ fn draw_node<'a>(
                         painter,
                         &label,
                         &font,
-                        left_room - (row.field_inset * zoom - pad),
+                        row.field_end
+                            .map_or(left_room - (row.field_inset * zoom - pad), |end| {
+                                (end - row.field_inset) * zoom
+                            }),
                     );
                     let _ = painter.text(
                         Pos2::new(rect.left() + row.field_inset * zoom, y),
@@ -3060,7 +3109,7 @@ fn draw_node<'a>(
                     if controls {
                         slots.push((editor, slot));
                     } else {
-                        fields::paint_still(painter, node, editor, slot, zoom, colors, profile);
+                        fields::paint_still(ui, painter, node, editor, slot, zoom, colors, profile);
                     }
                 }
             }
@@ -3934,7 +3983,7 @@ mod tests {
         let (initial, _, expanded, _) = frame(vec![egui::Event::PointerMoved(anchor)]);
         let trace_drawn = |shapes: &[egui::epaint::ClippedShape]| {
             shapes.iter().any(
-                |shape| matches!(&shape.shape, egui::Shape::Path(path) if path.points.len() == 17),
+                |shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.vertices.len() >= 17 && mesh.vertices.len() <= 68),
             )
         };
         assert!(trace_drawn(&initial));
@@ -4544,6 +4593,20 @@ mod snap_tests {
             let area = Rect::from_min_size(Pos2::ZERO, Vec2::splat(110.0));
             let mut canvas = Canvas::new();
             let colors = Palette::of(ui);
+            canvas.draw_grid(ui.painter(), area, &colors);
+            let first = canvas.grid_cache.as_ref().unwrap().1.clone();
+            canvas.draw_grid(ui.painter(), area, &colors);
+            assert!(std::sync::Arc::ptr_eq(
+                &first,
+                &canvas.grid_cache.as_ref().unwrap().1
+            ));
+            canvas.origin.x += 1.0;
+            canvas.draw_grid(ui.painter(), area, &colors);
+            assert!(!std::sync::Arc::ptr_eq(
+                &first,
+                &canvas.grid_cache.as_ref().unwrap().1
+            ));
+            canvas.origin.x -= 1.0;
             let near = canvas.grid_mesh(area, 2.0, &colors);
             let major = near.vertices[0].color;
             assert!(near.vertices.iter().any(|vertex| vertex.color != major));
@@ -4660,5 +4723,103 @@ mod formula_tests {
             "3 > b"
         );
         assert_eq!(fill_formula("min(a, b)", |_| None), "min(a, b)");
+    }
+
+    #[test]
+    #[ignore = "manual release rendering measurement"]
+    fn profile_audio_canvas() {
+        use super::{Canvas, Pos2, Rect, Vec2};
+        use std::time::Instant;
+        let (host, _) = orange_host::Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_audio::package()],
+        )
+        .unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let mut charts = Vec::new();
+        let mut meters = Vec::new();
+        for x in [30.0, 540.0] {
+            let chart = host
+                .add_node(&mut draft, orange_audio::MULTIBAND_SPECTRUM, [x, 30.0])
+                .unwrap();
+            host.add_audio_band(&mut draft, chart, [80, 240]).unwrap();
+            host.add_audio_band(&mut draft, chart, [400, 1200]).unwrap();
+            charts.push(chart);
+            meters.push(
+                host.add_node(&mut draft, orange_audio::NOISE_LEVEL, [x, 410.0])
+                    .unwrap(),
+            );
+        }
+        let mut graph = host.draft_view(&draft).unwrap();
+        for node in &mut graph.nodes {
+            std::sync::Arc::make_mut(node)
+                .ports
+                .iter_mut()
+                .filter(|port| port.id == "stream" && port.input)
+                .for_each(|port| port.connected = true);
+        }
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        crate::icons::install(&ctx);
+        let size = Vec2::new(1100.0, 850.0);
+        for workload in ["idle", "live", "collapsed", "offscreen"] {
+            let mut canvas = Canvas::new();
+            canvas.load(&graph);
+            canvas.fit = false;
+            canvas.size = size;
+            if workload == "collapsed" {
+                canvas.collapsed_spectra.extend(charts.iter().copied());
+            }
+            if workload == "offscreen" {
+                canvas.origin = Pos2::new(4000.0, 4000.0);
+            }
+            if workload != "idle" {
+                canvas.begin_run();
+            }
+            let mut times = Vec::new();
+            for frame in 0..400 {
+                if workload != "idle" && frame % 3 == 0 {
+                    for chart in &charts {
+                        let bins = canvas
+                            .spectra
+                            .entry(*chart)
+                            .or_insert_with(|| vec![0.0; 96]);
+                        for (bin, value) in (0..96).zip(bins) {
+                            *value = -20.0 - f64::from((bin + frame) % 73);
+                        }
+                    }
+                    for meter in &meters {
+                        canvas
+                            .noise_readings
+                            .insert(*meter, -20.0 - f64::from(frame % 40));
+                    }
+                }
+                let now = Instant::now();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        time: Some(f64::from(frame) / 60.0),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let _ = canvas.show(ui, &graph, &[]);
+                    },
+                );
+                std::hint::black_box(
+                    ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point),
+                );
+                let elapsed = now.elapsed().as_secs_f64() * 1000.0;
+                output.drop_without_applying_deltas();
+                if frame >= 40 {
+                    times.push(elapsed);
+                }
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "{workload}: median {:.3} ms p95 {:.3} ms",
+                times[times.len() / 2],
+                times[times.len() * 95 / 100]
+            );
+        }
     }
 }

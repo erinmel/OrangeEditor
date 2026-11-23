@@ -143,7 +143,7 @@ impl eframe::App for Desktop {
             self.editor.note(*level, text);
         }
         self.editor.notes_dropped(dropped);
-        if self.editor.take_events(&self.events) || !notes.is_empty() {
+        if self.editor.poll_events(&self.events) || !notes.is_empty() {
             // A bounded poll may leave a backlog, including events from retired flows.
             ui.ctx().request_repaint();
         }
