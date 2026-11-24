@@ -155,14 +155,14 @@ pub(crate) fn restore(
 
 /// What to store for `kept` given each variable's value now. An unset variable, or
 /// one whose value cannot be written as a literal, is left out.
-pub(crate) fn snapshot(
+pub(crate) fn snapshot<'a>(
     kept: &[Kept],
     types: &TypeRegistry,
-    mut value: impl FnMut(VariableId) -> Option<Value>,
+    mut value: impl FnMut(VariableId) -> Option<&'a Value>,
 ) -> Vec<StoredVariable> {
     kept.iter()
         .filter_map(|kept| {
-            let literal = literal_codec::encode(&kept.ty, &value(kept.id)?, types).ok()?;
+            let literal = literal_codec::encode(&kept.ty, value(kept.id)?, types).ok()?;
             Some(StoredVariable {
                 id: kept.id,
                 name: kept.name.clone(),

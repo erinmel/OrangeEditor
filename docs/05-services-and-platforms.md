@@ -64,7 +64,11 @@ HTTP Request and HTTP JSON Request accept optional wireable text maps for
 `header_fields` and `query`. Query names and values are UTF-8 percent-encoded
 and appended to any query supplied in the path. Requests accept at most 64 query
 pairs, a 16 KiB relative request target, and 32 additional headers bounded to
-32 KiB including the node's content type. Header names are case-insensitive.
+32 KiB including the node's content type. Text and map headers share the same
+budget, checked before copying each header. Header names are case-insensitive.
+HTTP, WebSocket and OAuth connection debug output shows the scheme, host and
+explicit port. Credentials, paths and query strings stay out of diagnostic
+formatting.
 Graph headers cannot override profile headers or set authorization or HTTP
 framing headers. Response header names are lowercase and each maps to a list
 of values in response order. Invalid UTF-8 in header values is replaced.

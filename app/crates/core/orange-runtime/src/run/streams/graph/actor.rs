@@ -93,13 +93,13 @@ impl Run {
             }
         };
         match outcome {
-            StreamRead::Pending(id) => Ok(ReadPoll::Waiting(id)),
-            StreamRead::Failed(fault) => Ok(ReadPoll::Finished(failure(node, fault))),
+            CheckedRead::Pending(id) => Ok(ReadPoll::Waiting(id)),
+            CheckedRead::Failed(fault) => Ok(ReadPoll::Finished(failure(node, fault))),
             outcome => match &read.work.mode {
                 ReadMode::Next { boxed } => {
                     let value = match outcome {
-                        StreamRead::End => Value::None,
-                        StreamRead::Item(value) => {
+                        CheckedRead::End => Value::None,
+                        CheckedRead::Item(CheckedItem { value, .. }) => {
                             if *boxed {
                                 Value::Some(Arc::new(value))
                             } else {
@@ -131,22 +131,23 @@ impl Run {
                         return Err(RunError::InvalidState);
                     };
                     match outcome {
-                        StreamRead::End => Ok(ReadPoll::Finished((
+                        CheckedRead::End => Ok(ReadPoll::Finished((
                             *completed,
                             ControlOutcome::Completed,
                             None,
                         ))),
-                        StreamRead::Item(value) => {
+                        CheckedRead::Item(item) => {
                             drop(read.work.hold.take());
                             if read.strand.stack.len() == self.options.limits.max_region_depth {
                                 return Err(RunError::ResourceLimit);
                             }
+                            // This read came from the run-owned handle supplied
+                            // through the iterator's checked stream input.
                             let frame = IterationFrame::stream(
-                                plan,
                                 shared,
                                 read.owner,
                                 *index,
-                                value,
+                                item,
                                 parent.clone(),
                                 self.options.limits.max_state_bytes,
                             )?;

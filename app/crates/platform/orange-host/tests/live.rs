@@ -16,6 +16,82 @@ const LEVEL: &str = "core/u64@1";
 const STRING: &str = "core/string@1";
 
 #[test]
+#[ignore = "manual release performance measurement"]
+fn composite_live_timing() {
+    use orange_bundled::MathPackage;
+    use orange_compiler::{CompileOptions, compile_control};
+    use orange_model::value::ListRepr;
+    use orange_runtime::{Run, RunOptions};
+
+    struct Inert;
+    impl LiveSource for Inert {
+        fn start(
+            &self,
+            _: Option<Arc<dyn Session>>,
+            _: &Map<String, Json>,
+            _: &Arguments,
+            _: Publisher,
+        ) -> Result<Box<dyn Send>, String> {
+            Ok(Box::new(()))
+        }
+    }
+
+    let definition = Definition::read(PACKAGE, "composite", "Composite")
+        .live("sample", "core/list@1<core/option@1<core/u64@1>>")
+        .build();
+    let package = ServicePackage::new(PACKAGE, "1.0.0")
+        .live(&definition, Inert)
+        .unwrap();
+    let (host, _) = Host::with_services(HostOptions::default(), vec![package]).unwrap();
+    let mut doc = GraphDocument::new("20000000-0000-4000-8000-0000000000a1".parse().unwrap());
+    let new = NewNode::new(
+        node(1),
+        DefinitionRef {
+            id: format!("{PACKAGE}/composite").parse().unwrap(),
+            version: 1,
+        },
+    );
+    let registry = host.registry();
+    let edit = new_node_edit(&doc, registry, new).unwrap();
+    let _ = doc.apply(edit.commands).unwrap();
+    let analysis = orange_model::analyze(&doc, registry);
+    let resolver = MathPackage::new(format!("sha256:{}", "0".repeat(64))).unwrap();
+    let plan = compile_control(
+        &doc,
+        registry.clone(),
+        &analysis,
+        &resolver,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let mut run = Run::start(Arc::new(plan), &doc, registry, 0, RunOptions::default()).unwrap();
+    let value = |last| {
+        Value::List(Arc::new(ListRepr::Values(
+            (0..1024)
+                .map(|index| {
+                    if index == 1023 {
+                        Value::U64(last)
+                    } else {
+                        Value::None
+                    }
+                })
+                .collect(),
+        )))
+    };
+    let values = [value(1), value(2)];
+    orange_testkit::measure_batches("512 composite live publications and pumps", || {
+        for index in 0..512 {
+            assert!(
+                run.publish_live(node(1), values[index % 2].clone())
+                    .unwrap()
+            );
+            run.pump(1).unwrap();
+        }
+    });
+    assert_eq!(run.live_value(node(1)), Some(&values[1]));
+}
+
+#[test]
 fn a_failed_staged_source_leaves_the_existing_run_and_can_be_retried() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -381,6 +457,10 @@ fn the_run_coalesces_live_ingress_and_only_reevaluates_dependent_watches() {
     for latest in 1..=20 {
         run.publish_live(node(1), Value::U64(latest)).unwrap();
     }
+    assert_eq!(
+        run.publish_live(node(1), Value::Bool(true)),
+        Err(IngressError::InvalidPayload)
+    );
     assert_eq!(run.live_value(node(1)), Some(&Value::U64(0)));
     pump(&mut run);
     assert_eq!(run.watch_evaluations(), before + 1);
@@ -388,6 +468,10 @@ fn the_run_coalesces_live_ingress_and_only_reevaluates_dependent_watches() {
     assert_eq!(
         run.variable(id(100).parse().unwrap()),
         Some(&Value::U64(20))
+    );
+    assert!(
+        run.variable_values()
+            .all(|(id, value)| value == run.variable(id))
     );
     assert!(!run.publish_live(node(1), Value::U64(20)).unwrap());
     assert!(run.publish_live(node(0), Value::U64(77)).unwrap());

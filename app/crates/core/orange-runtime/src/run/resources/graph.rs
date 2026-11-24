@@ -56,6 +56,9 @@ impl Resources {
         ids: &[RegionId],
         root: RegionId,
     ) -> Result<(), RunError> {
+        if self.owners.is_empty() {
+            return Ok(());
+        }
         for &owner in ids {
             if owner == root {
                 continue;

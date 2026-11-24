@@ -99,7 +99,7 @@ impl Space {
             return Ok(());
         };
         let now = state::snapshot(&keep.variables, keep.registry.types(), |id| {
-            snapshot.get(id).ok().flatten().cloned()
+            snapshot.get(id).ok().flatten()
         });
         state::save(&keep.directory, &keep.name, &now)
     }
@@ -527,7 +527,7 @@ pub(crate) fn drive(driver: RunDriver, cx: Context) {
 
 fn drive_inner(mut driver: RunDriver, mut cx: Context) {
     let me = thread::current();
-    let mut recorded = 0u64;
+    let mut trace_cursor = orange_runtime::TraceCursor::default();
     let mut last_state = None;
     let mut guest_work: Vec<(EffectLease, GuestCancellation)> = Vec::new();
     let mut errors = 0u8;
@@ -557,16 +557,28 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
             .take();
         if let Some(swap) = pending {
             let reply = swap.reply.clone();
+            let same_checkpoint = match (&cx.keep, &swap.keep) {
+                (None, None) => true,
+                (Some(old), Some(new)) => {
+                    old.variables == new.variables
+                        && Arc::ptr_eq(old.registry.types(), new.registry.types())
+                }
+                _ => false,
+            };
             let outcome = replace(&mut driver, &mut cx, swap);
             if let Ok(swapped) = &outcome {
                 // Work issued by the old run has nowhere to return to.
                 for (_, cancellation) in guest_work.drain(..) {
                     cancellation.cancel();
                 }
-                recorded = 0;
+                trace_cursor = orange_runtime::TraceCursor::default();
                 last_state = None;
                 reported.clear();
                 ports.clear();
+                // The new plan may retain different variables with the same values.
+                if !same_checkpoint {
+                    stored = None;
+                }
                 start_sources(&mut cx, &me, driver.run().id());
                 cx.sink.send(
                     cx.id,
@@ -815,24 +827,19 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
         // New trace entries since the last turn. The run keeps a bounded window, so a
         // burst larger than the window is reported as lost rather than replayed.
         let run = driver.run();
-        let total = run.trace_dropped() + run.trace().len() as u64;
-        let fresh = total.saturating_sub(recorded);
-        let kept = usize::try_from(fresh).map_or(run.trace().len(), |n| n.min(run.trace().len()));
-        if fresh > kept as u64 {
-            cx.sink
-                .send(cx.id, FlowEvent::TraceLost(fresh - kept as u64));
+        let (lost, events) = run.trace_since(&mut trace_cursor);
+        if lost != 0 {
+            cx.sink.send(cx.id, FlowEvent::TraceLost(lost));
         }
-        for event in run.trace().iter().skip(run.trace().len() - kept) {
+        for event in events {
             cx.sink.send(cx.id, FlowEvent::Node(event.clone()));
         }
-        recorded = total;
 
         if observed {
             let mut changed = Vec::new();
-            for cell in cx.plan.variables() {
-                let value = run.variable(cell.id()).cloned();
-                if reported.get(&cell.id()) != Some(&value) {
-                    changed.push((cell.id(), value));
+            for (id, value) in run.variable_values() {
+                if reported.get(&id).map(Option::as_ref) != Some(value) {
+                    changed.push((id, value.cloned()));
                 }
             }
             if !changed.is_empty() {
@@ -859,21 +866,27 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
         }
         let run = driver.run();
         if let Some(keep) = &cx.keep {
-            // Values are compared as they are; encoding and writing happen only when
-            // one differs from what was last stored.
-            let now: Vec<Option<Value>> = keep
-                .variables
-                .iter()
-                .map(|kept| run.variable(kept.id).cloned())
-                .collect();
-            if stored.as_ref() != Some(&now) {
-                let mut values = now.iter();
-                let encoded = state::snapshot(&keep.variables, keep.registry.types(), |_| {
-                    values.next().cloned().flatten()
+            let unchanged = stored.as_ref().is_some_and(|last| {
+                last.len() == keep.variables.len()
+                    && last
+                        .iter()
+                        .zip(&keep.variables)
+                        .all(|(value, kept)| value.as_ref() == run.variable(kept.id))
+            });
+            if !unchanged {
+                let encoded = state::snapshot(&keep.variables, keep.registry.types(), |id| {
+                    run.variable(id)
                 });
                 // A failed write is tried again at the next turn.
                 if state::save(&keep.directory, &keep.name, &encoded).is_ok() {
-                    stored = Some(now);
+                    let last =
+                        stored.get_or_insert_with(|| Vec::with_capacity(keep.variables.len()));
+                    last.clear();
+                    last.extend(
+                        keep.variables
+                            .iter()
+                            .map(|kept| run.variable(kept.id).cloned()),
+                    );
                 }
             }
         }

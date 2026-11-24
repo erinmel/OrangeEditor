@@ -165,11 +165,11 @@ pub(crate) struct OAuth {
     renew: Renew,
     token: Mutex<Option<(zeroize::Zeroizing<String>, Instant)>>,
 }
-/// Secrets and tokens are left out.
+/// Limit endpoint details to the origin and omit credential and token values.
 impl std::fmt::Debug for OAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuth")
-            .field("token_url", &self.token_url)
+            .field("endpoint", &crate::EndpointDebug(&self.token_url))
             .finish_non_exhaustive()
     }
 }

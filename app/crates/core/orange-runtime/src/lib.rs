@@ -32,6 +32,7 @@ pub use entropy::{
 };
 pub use run::PortValues;
 pub use run::SourceArguments;
+pub use run::TraceCursor;
 pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
     EffectResourceRefused, EffectStreamRefused, EventMetadata, EventOrigin, EventTarget,

@@ -1234,6 +1234,42 @@ fn panicking_inspector_does_not_stop_the_run() {
 }
 
 #[test]
+fn replacement_persists_new_variable_ids_even_when_the_values_are_equal() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-replace-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let (mut host, _) = Host::new(HostOptions {
+        state_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    })
+    .unwrap();
+    let original = persistent_graph(1);
+    let replacement = TOTAL + 2;
+    let edit = original.replace(&id(TOTAL), &id(replacement));
+    let graph = empty(1).graph_id();
+    let zero =
+        serde_json::from_value::<orange_host::Literal>(json!({"type": I64, "value": "0"})).unwrap();
+    let is_stored = |host: &Host, variable| {
+        let saved = host.stored_variables(Some(graph)).unwrap();
+        matches!(saved.as_slice(), [entry] if entry.id == variable && entry.literal == zero)
+    };
+    let flow = host.open(&original).unwrap();
+    until("the original variable to be stored", || {
+        is_stored(&host, total())
+    });
+    assert!(host.update(flow, &edit).unwrap().changed);
+    let replacement = id(replacement).parse().unwrap();
+    until("the replacement variable to be stored", || {
+        is_stored(&host, replacement)
+    });
+    host.close(flow).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn persistent_variables_survive_a_restart_and_can_be_edited() {
     let directory = std::env::temp_dir().join(format!(
         "orange-host-state-{}-{:?}",

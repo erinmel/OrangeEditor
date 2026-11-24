@@ -65,6 +65,10 @@ guards.
 
 - `orange-measure` reports allocations, peak bytes and per-pump wall time for core
   workloads: `cargo run --release -p orange-measure --locked -- --help`.
+- The `observe-variables`, `collect-composites` and `compile-watches` filters
+  measure the variable observation loop, stream collection, and control lowering.
+  Run the ignored `composite_live_timing` and `telemetry_poll_timing` tests in
+  release mode to measure live publication and editor event polling.
 - Set `ORANGE_EDIT_TIMING_PAIRS=2500` and run
   `cargo test --release -p orange-editor-ui edit_timing -- --nocapture` to time each
   step of an edit on a 5,000-node graph. The default test uses 64 pairs.

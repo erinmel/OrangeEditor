@@ -76,9 +76,11 @@ impl Host {
         };
         // The data inputs a source is armed with, by name, in the run's order.
         let arguments = |node: NodeId| -> Option<Vec<String>> {
-            plan.sources()
-                .iter()
-                .find(|source| source.node() == node)
+            let sources = plan.sources();
+            let index = sources.partition_point(|source| source.node() < node);
+            sources
+                .get(index)
+                .filter(|source| source.node() == node)
                 .map(|source| source.ports().iter().map(ToString::to_string).collect())
         };
         let mut armables = Vec::new();

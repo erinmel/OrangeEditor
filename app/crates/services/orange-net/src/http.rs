@@ -72,11 +72,11 @@ impl Drop for HttpSession {
         }
     }
 }
-/// Header values are left out: they can be credentials.
+/// Limit endpoint details to the origin and omit header values.
 impl std::fmt::Debug for HttpSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSession")
-            .field("base_url", &self.base_url)
+            .field("endpoint", &crate::EndpointDebug(&self.base_url))
             .field("headers", &self.headers.len())
             .finish_non_exhaustive()
     }
@@ -395,7 +395,7 @@ impl ServiceNode for HttpRequest {
             method,
             &request_path(path, query)?,
             content_type,
-            &headers,
+            &headers.fields,
             body.as_bytes(),
             false,
         )?;
@@ -419,13 +419,13 @@ impl ServiceNode for HttpRequestJson {
             return Err(BAD_REQUEST);
         };
         admit_body(call, body.as_str().len())?;
-        let mut headers = Vec::new();
+        let mut headers = RequestHeaders::default();
         append_header_fields(&mut headers, fields)?;
         let response = session.send(
             method,
             &request_path(path, query)?,
             "application/json",
-            &headers,
+            &headers.fields,
             body.as_str().as_bytes(),
             false,
         )?;
@@ -457,10 +457,7 @@ fn text_response(
     Ok(outputs)
 }
 
-fn append_header_fields(
-    headers: &mut Vec<(HeaderName, HeaderValue)>,
-    fields: &MapRepr,
-) -> Result<(), KernelFault> {
+fn append_header_fields(headers: &mut RequestHeaders, fields: &MapRepr) -> Result<(), KernelFault> {
     for (name, value) in fields.entries() {
         let (Value::Str(name), Value::Str(value)) = (name, value) else {
             return Err(BAD_REQUEST);
@@ -472,8 +469,8 @@ fn append_header_fields(
 
 fn parse_header_lines<'a>(
     lines: impl IntoIterator<Item = &'a str>,
-) -> Result<Vec<(HeaderName, HeaderValue)>, KernelFault> {
-    let mut headers = Vec::new();
+) -> Result<RequestHeaders, KernelFault> {
+    let mut headers = RequestHeaders::default();
     for line in lines.into_iter().filter(|line| !line.trim().is_empty()) {
         let (name, value) = line.split_once(':').ok_or(BAD_REQUEST)?;
         add_header(&mut headers, name.trim(), value.trim())?;
@@ -481,13 +478,28 @@ fn parse_header_lines<'a>(
     Ok(headers)
 }
 
-fn add_header(
-    headers: &mut Vec<(HeaderName, HeaderValue)>,
-    name: &str,
-    value: &str,
-) -> Result<(), KernelFault> {
+struct RequestHeaders {
+    fields: Vec<(HeaderName, HeaderValue)>,
+    remaining: usize,
+}
+
+impl Default for RequestHeaders {
+    fn default() -> Self {
+        Self {
+            fields: Vec::new(),
+            remaining: MAX_REQUEST_HEADER_BYTES,
+        }
+    }
+}
+
+fn add_header(headers: &mut RequestHeaders, name: &str, value: &str) -> Result<(), KernelFault> {
+    let remaining = headers
+        .remaining
+        .checked_sub(name.len())
+        .and_then(|rest| rest.checked_sub(value.len()))
+        .ok_or(BAD_REQUEST)?;
     let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| BAD_REQUEST)?;
-    if headers.len() >= MAX_HEADERS
+    if headers.fields.len() >= MAX_HEADERS
         || matches!(
             name.as_str(),
             "authorization"
@@ -499,12 +511,13 @@ fn add_header(
                 | "upgrade"
                 | "trailer"
         )
-        || headers.iter().any(|(existing, _)| *existing == name)
+        || headers.fields.iter().any(|(existing, _)| *existing == name)
     {
         return Err(BAD_REQUEST);
     }
     let value = HeaderValue::from_str(value).map_err(|_| BAD_REQUEST)?;
-    headers.push((name, value));
+    headers.fields.push((name, value));
+    headers.remaining = remaining;
     Ok(())
 }
 
@@ -598,7 +611,7 @@ fn send_binary(
         method,
         path,
         content_type,
-        &headers,
+        &headers.fields,
         body.as_slice(),
         streamed,
     )
@@ -957,7 +970,9 @@ mod tests {
                 "POST",
                 "/anything?test=1",
                 "application/json",
-                &parse_header_lines(["Accept: application/json", "X-Trace: sample"]).unwrap(),
+                &parse_header_lines(["Accept: application/json", "X-Trace: sample"])
+                    .unwrap()
+                    .fields,
                 json_body,
                 false,
             )
@@ -1047,7 +1062,14 @@ mod tests {
         assert!(parse_header_lines(["Transfer-Encoding: chunked"]).is_err());
         assert!(parse_header_lines(["Content-Length: 1"]).is_err());
         assert!(parse_header_lines(["X-Test: 1", "x-test: 2"]).is_err());
-        assert!(add_header(&mut Vec::new(), "X-Test", "value\r\nOther: 1").is_err());
+        assert!(
+            add_header(
+                &mut RequestHeaders::default(),
+                "X-Test",
+                "value\r\nOther: 1"
+            )
+            .is_err()
+        );
 
         let session = MockApi(Arc::default()).session(
             "http://127.0.0.1",
@@ -1056,8 +1078,52 @@ mod tests {
         let headers = parse_header_lines(["x-profile-key: replacement"]).unwrap();
         assert!(
             session
-                .build_request("GET", "/", "", &headers, &[], None)
+                .build_request("GET", "/", "", &headers.fields, &[], None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn text_and_map_headers_share_the_request_byte_limit() {
+        let line = format!(
+            "X-Pad: {}",
+            "a".repeat(MAX_REQUEST_HEADER_BYTES - "X-Pad".len())
+        );
+        let mut headers = parse_header_lines([line.as_str()]).unwrap();
+        assert_eq!(headers.remaining, 0);
+        let fields = MapRepr::new(vec![(
+            Value::Str(Arc::new("X-Extra".to_owned())),
+            Value::Str(Arc::new("a".to_owned())),
+        )])
+        .unwrap();
+        assert!(append_header_fields(&mut headers, &fields).is_err());
+        assert_eq!(headers.fields.len(), 1);
+        assert!(parse_header_lines([format!("{line}a").as_str()]).is_err());
+    }
+
+    #[test]
+    fn connection_debug_omits_url_paths_and_queries() {
+        let marker = "synthetic-private-endpoint";
+        let http = MockApi(Arc::default())
+            .session(&format!("https://example.invalid/{marker}"), Vec::new());
+        let oauth = oauth::OAuth::from_setting(
+            &serde_json::json!({
+                "token_url": format!("https://example.invalid/{marker}"),
+                "client_id": "example",
+                "client_secret": "synthetic-test-secret"
+            }),
+            Renew::none(),
+        )
+        .unwrap();
+        let ws = serde_json::json!({"url": format!("wss://example.invalid/socket?proof={marker}")});
+        let ws = crate::ws::WsAdapter.open(ws.as_object().unwrap()).unwrap();
+
+        let diagnostics = [format!("{http:?}"), format!("{oauth:?}"), format!("{ws:?}")];
+        for (diagnostic, scheme) in diagnostics.iter().zip(["https", "https", "wss"]) {
+            assert!(diagnostic.contains(&format!("scheme: \"{scheme}\"")));
+            assert!(diagnostic.contains("host: \"example.invalid\""));
+            assert!(!diagnostic.contains(marker));
+            assert!(!diagnostic.contains("synthetic-test-secret"));
+        }
     }
 }

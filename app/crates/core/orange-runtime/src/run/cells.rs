@@ -74,7 +74,7 @@ pub(super) struct Cells<'r> {
     /// Virtual time that `core/now` reads in an epoch prologue.
     pub now: u64,
     /// The latest value each live node published (11 §10.5).
-    pub lives: &'r [Option<Value>],
+    pub lives: &'r [Option<watch::LiveValue>],
 }
 impl Run {
     pub(super) fn cells(&mut self) -> Cells<'_> {
@@ -405,7 +405,7 @@ impl Cells<'_> {
                         })
                     }
                     HostSource::Live(live) => Some(match &self.lives[*live] {
-                        Some(value) => FoldedValue::Value(value.clone()),
+                        Some(value) => FoldedValue::Value(value.value.clone()),
                         None => FoldedValue::Fault(watch::no_value_yet(plan.lives()[*live].node())),
                     }),
                     HostSource::Clock => Some(match i64::try_from(self.now) {

@@ -99,6 +99,8 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
   telemetry. The host retries the latest changed values while the flow is active
   and prioritizes terminal notifications in the overflow queue. `Host::state`
   reports authoritative state while the flow is retained by the host.
+  Trace forwarding counts evicted and refused new events as lost. A trace cursor
+  belongs to one run and starts fresh on replacement.
 - **Effects** run on a worker pool that grows while every worker is busy, up to a
   bound, so a sound playing to its end or a slow server never stalls other nodes. The
   queue of waiting effects is bounded too. A single flow can occupy at most half
@@ -108,7 +110,8 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
   nodes name; graph-scoped sessions belong to the flow, shared ones to the host.
 - **Persistent variables** have one writer for each graph ID or workspace state
   directory. A second host or an offline edit must acquire the same file lock before
-  writing. A graph replacement transfers ownership to the new run.
+  writing. A replacement with persistent variables writes the new declarations even
+  when their current values equal the previous checkpoint's values.
 - **Packages** install, update and uninstall while the editor is open. A running flow
   keeps the provider it was compiled with until it stops ([04](04-expansion-plugins.md)).
 

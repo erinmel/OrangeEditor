@@ -5,9 +5,17 @@ use crate::budget::{Budget, Tally};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+/// Position in one run's bounded trace. Start with the default for each new run.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TraceCursor {
+    admitted: u64,
+    refused: u64,
+}
+
 pub(super) struct Trace {
     events: VecDeque<RunEvent>,
-    dropped: u64,
+    evicted: u64,
+    position: TraceCursor,
     text: Tally,
 }
 
@@ -15,7 +23,8 @@ impl Trace {
     pub(crate) fn new(budget: Arc<Budget>) -> Self {
         Self {
             events: VecDeque::new(),
-            dropped: 0,
+            evicted: 0,
+            position: TraceCursor::default(),
             text: Tally::new(Some(budget), 0),
         }
     }
@@ -35,30 +44,42 @@ impl Trace {
     /// Appends `event`, dropping the oldest once `max` events are kept.
     pub(crate) fn record(&mut self, event: RunEvent, max: usize) {
         if max == 0 {
-            self.dropped = self.dropped.saturating_add(1);
+            self.refuse();
             return;
         }
         if self.events.len() == max {
             if let Some(old) = self.events.pop_front() {
                 self.text.set(self.text.get() - Self::text_bytes(&old));
             }
-            self.dropped = self.dropped.saturating_add(1);
+            self.evicted = self.evicted.saturating_add(1);
         }
         let Some(bytes) = self.text.get().checked_add(Self::text_bytes(&event)) else {
-            self.dropped = self.dropped.saturating_add(1);
+            self.refuse();
             return;
         };
         if !self.text.try_set(bytes) {
-            self.dropped = self.dropped.saturating_add(1);
+            self.refuse();
             return;
         }
         self.events.push_back(event);
+        self.position.admitted = self.position.admitted.saturating_add(1);
+    }
+    fn refuse(&mut self) {
+        self.position.refused = self.position.refused.saturating_add(1);
     }
     pub(crate) fn events(&self) -> &VecDeque<RunEvent> {
         &self.events
     }
     pub(crate) fn dropped(&self) -> u64 {
-        self.dropped
+        self.evicted.saturating_add(self.position.refused)
+    }
+    pub(crate) fn since(&self, cursor: &mut TraceCursor) -> (u64, impl Iterator<Item = &RunEvent>) {
+        let previous = std::mem::replace(cursor, self.position);
+        let admitted = self.position.admitted.saturating_sub(previous.admitted);
+        let refused = self.position.refused.saturating_sub(previous.refused);
+        let kept = admitted.min(self.events.len() as u64) as usize;
+        let lost = refused.saturating_add(admitted - kept as u64);
+        (lost, self.events.iter().skip(self.events.len() - kept))
     }
     /// Drops the kept events and releases their storage; the dropped count stays.
     pub(crate) fn release(&mut self) {
@@ -72,6 +93,40 @@ mod tests {
     use super::*;
     use crate::ControlOutcome;
     use orange_compiler::{ConstantFault, FaultText, KernelFault};
+
+    #[test]
+    fn cursor_counts_refusals_and_evictions_without_repeating_old_events() {
+        let mut trace = Trace::new(Budget::new(0));
+        let mut cursor = TraceCursor::default();
+        let event = |activation, route| RunEvent {
+            route,
+            activation,
+            node: "10000000-0000-4000-8000-000000000001".parse().unwrap(),
+            outcome: ControlOutcome::Then,
+            fault: None,
+        };
+        trace.record(event(1, None), 2);
+        let (lost, events) = trace.since(&mut cursor);
+        assert_eq!(lost, 0);
+        assert_eq!(
+            events.map(|event| event.activation).collect::<Vec<_>>(),
+            [1]
+        );
+
+        trace.record(event(2, Some("then".parse().unwrap())), 2);
+        let (lost, events) = trace.since(&mut cursor);
+        assert_eq!((lost, events.count()), (1, 0));
+
+        for activation in 3..=5 {
+            trace.record(event(activation, None), 2);
+        }
+        let (lost, events) = trace.since(&mut cursor);
+        assert_eq!(lost, 1);
+        assert_eq!(
+            events.map(|event| event.activation).collect::<Vec<_>>(),
+            [4, 5]
+        );
+    }
 
     #[test]
     fn shared_trace_text_obeys_the_run_budget_and_releases_on_eviction() {

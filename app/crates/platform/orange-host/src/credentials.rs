@@ -28,7 +28,9 @@ pub(super) fn open_session(
     adapter: &dyn ConnectionAdapter,
     settings: &Map<String, Json>,
 ) -> Result<Arc<dyn Session>, String> {
-    let (resolved, renew, has_secrets) = with_secrets(store, settings, adapter.renewal_field())?;
+    let renewal_field =
+        effects::guard(|| adapter.renewal_field()).map_err(|fault| fault.message.to_string())?;
+    let (resolved, renew, has_secrets) = with_secrets(store, settings, renewal_field)?;
     effects::guard(|| adapter.open_renewing(&resolved.0, renew))
         .map_err(|fault| fault.message.to_string())?
         .map_err(|error| {
@@ -86,8 +88,8 @@ pub(super) fn references(
         }
         Ok(found)
     }
-    let fields = adapter
-        .texts()
+    let fields = effects::guard(|| adapter.texts())
+        .map_err(|fault| fault.message.to_string())?
         .into_iter()
         .filter(|field| field.secret)
         .map(|field| format!("/{}", field.setting.trim_matches('/')))
@@ -284,4 +286,36 @@ fn with_secrets(
         _ => Renew::none(),
     };
     Ok((resolved, renew, has_secrets))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_sdk::SettingText;
+
+    #[derive(Debug)]
+    struct PanickingMetadata;
+
+    impl ConnectionAdapter for PanickingMetadata {
+        fn open(&self, _: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+            panic!("unexpected open");
+        }
+        fn texts(&self) -> Vec<SettingText> {
+            panic!("synthetic metadata failure");
+        }
+        fn renewal_field(&self) -> Option<&'static str> {
+            panic!("synthetic renewal failure");
+        }
+    }
+
+    #[test]
+    fn adapter_metadata_panics_are_returned_as_generic_errors() {
+        let settings = Map::new();
+        let failure = references(&PanickingMetadata, &settings).unwrap_err();
+        assert_eq!(failure, "A service provider stopped unexpectedly.");
+        let Err(failure) = open_session(None, &PanickingMetadata, &settings) else {
+            panic!("expected the metadata fault");
+        };
+        assert_eq!(failure, "A service provider stopped unexpectedly.");
+    }
 }

@@ -54,7 +54,7 @@ use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
     StopMode, lines,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Lets a window without the system's frame be resized from its edges and corners,
 /// as a framed one is: the cursor shows the direction and a press hands the resize to
@@ -340,6 +340,7 @@ struct Document {
     names: Names,
     /// What the canvas draws.
     graph: GraphView,
+    node_indices: HashMap<NodeId, usize>,
     /// Its variables and connections.
     declared: Declarations,
     /// The layout changed since the document was opened or saved.
@@ -357,6 +358,23 @@ struct Document {
 }
 
 impl Document {
+    fn replace_graph(&mut self, graph: GraphView) -> GraphView {
+        self.node_indices.clear();
+        self.node_indices.extend(
+            graph
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index)),
+        );
+        std::mem::replace(&mut self.graph, graph)
+    }
+
+    fn node_view(&self, id: NodeId) -> Option<&orange_host::NodeView> {
+        let index = *self.node_indices.get(&id)?;
+        self.graph.nodes.get(index).map(AsRef::as_ref)
+    }
+
     /// The runnable copy omits draft cards while keeping them in the editor.
     fn runtime_text(&self, host: &Host) -> Result<String, HostError> {
         let text = self.draft.text()?;
@@ -621,6 +639,12 @@ impl Editor {
             },
             names: Names::of_document(host, draft.document()).without_ids(),
             draft,
+            node_indices: graph
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index))
+                .collect(),
             graph,
             unsaved: false,
             problems: Vec::new(),
@@ -681,8 +705,7 @@ impl Editor {
             return;
         };
         document.names = Names::of_document(host, document.draft.document()).without_ids();
-        let before = std::mem::take(&mut document.graph);
-        document.graph = host.draft_view(&document.draft).unwrap_or_default();
+        let before = document.replace_graph(host.draft_view(&document.draft).unwrap_or_default());
         // Only what the edit touched, and what follows it, can preview differently.
         let touched = touched_by_edit(&before, &document.graph);
         document.declared = host.declarations(&document.draft);
@@ -1455,7 +1478,7 @@ impl Editor {
                 | "org.orange.files/NotFound"
                 | "org.orange.files/ReadOnly"),
             )) = file_fault
-                && let Some(view) = document.graph.nodes.iter().find(|view| view.id == node)
+                && let Some(view) = document.node_view(node)
                 && let Some(folder) =
                     properties::connection_named(view, &document.declared.connections)
             {
@@ -1492,7 +1515,7 @@ impl Editor {
                 FlowEvent::Ports(values) => {
                     for (node, port, value) in values {
                         let id = port.to_string();
-                        let view = document.graph.nodes.iter().find(|view| view.id == *node);
+                        let view = document.node_view(*node);
                         if id == "spectrum"
                             && view.is_some_and(|view| {
                                 view.definition == "org.orange.audio/multiband-spectrum"
@@ -2764,6 +2787,80 @@ mod tests {
         // No renderer takes the textures of a frame drawn for a test.
         output.drop_without_applying_deltas();
         shapes
+    }
+
+    #[test]
+    #[ignore = "manual release performance measurement"]
+    fn telemetry_poll_timing() {
+        for count in [500, 5000] {
+            let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+            let seed = host.bind(&graph()).unwrap();
+            let flow = host.open(&seed).unwrap();
+            let mut text: serde_json::Value = serde_json::from_str(&seed).unwrap();
+            let nodes = text["nodes"].as_array_mut().unwrap();
+            nodes.extend((10..10 + count).map(|index| orange_testkit::core(index, "whole-number")));
+            let mut editor = Editor::new();
+            editor.open(&mut host, "telemetry.json", text.to_string());
+            let document = editor.document.as_mut().unwrap();
+            assert_eq!(document.graph.nodes.len(), count as usize + 2);
+            // Use the host's identity with synthetic events. The cards under
+            // measurement need no running producer.
+            document.flow = Some((flow, Vec::new()));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let receiver = orange_host::Events::from(receiver);
+            let mut next = 0;
+            let port = "result".parse::<orange_host::PortKey>().unwrap();
+            orange_testkit::measure_batches(
+                &format!("32 polls with 128 port samples on {count} extra cards"),
+                || {
+                    for _ in 0..32 {
+                        next += 1;
+                        let values = (10 + count - 128..10 + count)
+                            .map(|index| {
+                                (
+                                    orange_testkit::node(index),
+                                    port.clone(),
+                                    orange_host::Value::I64(next),
+                                )
+                            })
+                            .collect();
+                        sender
+                            .send(orange_host::HostEvent {
+                                flow,
+                                kind: FlowEvent::Ports(values),
+                            })
+                            .unwrap();
+                        assert!(!editor.poll_events(&receiver));
+                    }
+                },
+            );
+            assert!(
+                editor
+                    .canvas
+                    .shown_value(orange_testkit::node(10 + count - 1), "result")
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_card_lookup_tracks_reordered_and_removed_nodes() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "events.json", graph());
+        let document = editor.document.as_mut().unwrap();
+        let first = document.graph.nodes[0].id;
+        let second = document.graph.nodes[1].id;
+        let mut reordered = document.graph.clone();
+        reordered.nodes.reverse();
+        let original = document.replace_graph(reordered);
+        assert_eq!(document.node_view(first).unwrap().id, first);
+        let mut removed = document.graph.clone();
+        removed.nodes.retain(|node| node.id != second);
+        document.replace_graph(removed);
+        assert!(document.node_view(second).is_none());
+        document.replace_graph(original);
+        assert_eq!(document.node_view(second).unwrap().id, second);
     }
 
     #[test]

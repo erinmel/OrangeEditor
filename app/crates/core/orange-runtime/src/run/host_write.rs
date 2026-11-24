@@ -1,7 +1,6 @@
 //! A host's own write to a run variable, between two pumps.
 use super::{Run, RunError, RunState};
 use orange_model::Value;
-use orange_model::document::VarScope;
 use orange_model::id::VariableId;
 
 impl Run {
@@ -19,15 +18,8 @@ impl Run {
             return Err(RunError::InvalidState);
         }
         let plan = self.plan.clone().ok_or(RunError::InvalidState)?;
-        let index = plan
-            .variables()
-            .iter()
-            .position(|cell| cell.id() == id && cell.scope() == VarScope::Run)
-            .ok_or(RunError::InvalidState)?;
+        let index = plan.run_variable_index(id).ok_or(RunError::InvalidState)?;
         let cell_plan = &plan.variables()[index];
-        if !cell_plan.ty().accepts(&value) {
-            return Err(RunError::InvalidState);
-        }
         let new = cell_plan.charge(&value).ok_or(RunError::InvalidState)?;
         let cell = self.layout.variables[index];
         let old = self.variables[cell]

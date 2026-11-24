@@ -26,12 +26,7 @@ impl Run {
             selection,
             limits,
             |id| {
-                let (index, _) = plan
-                    .variables()
-                    .iter()
-                    .enumerate()
-                    .find(|(_, v)| v.id() == id && v.scope() == VarScope::Run)
-                    .ok_or(Error::Selection)?;
+                let index = plan.run_variable_index(id).ok_or(Error::Selection)?;
                 Ok(self.variables[self.layout.variables[index]].as_ref())
             },
         )

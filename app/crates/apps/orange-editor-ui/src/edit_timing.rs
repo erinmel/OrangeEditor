@@ -61,9 +61,8 @@ fn edit_timing() {
         document.names = time!("names", runs, {
             Names::of_document(&host, document.draft.document()).without_ids()
         });
-        let before = std::mem::take(&mut document.graph);
-        document.graph = time!("draft view", runs, {
-            host.draft_view(&document.draft).unwrap_or_default()
+        let before = time!("draft view", runs, {
+            document.replace_graph(host.draft_view(&document.draft).unwrap_or_default())
         });
         let touched = time!("touched", runs, {
             touched_by_edit(&before, &document.graph)

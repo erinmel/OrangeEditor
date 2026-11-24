@@ -90,7 +90,7 @@ impl Source {
     }
 
     /// Loads the saved graph and requires it to be ready for lowering.
-    fn checked(
+    pub(crate) fn checked(
         self,
     ) -> (
         MathPackage,

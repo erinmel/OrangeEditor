@@ -23,7 +23,7 @@ use std::sync::Arc;
 mod dependencies;
 mod dispatch;
 mod update;
-use dependencies::{UnionScratch, host_dependencies, union_inputs};
+use dependencies::{UnionScratch, entropy_dependencies, host_dependencies, union_inputs};
 #[derive(Debug, Clone, Copy)]
 pub enum IterationProjection {
     Index,
@@ -710,6 +710,7 @@ pub struct ControlPlan {
     timers: Box<[ControlTimer]>,
     changes: Box<[ControlChange]>,
     pub(crate) variables: Box<[ControlVariable]>,
+    variable_ids: BTreeMap<VariableId, usize>,
     dependents: Box<[VariableDependents]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
@@ -752,7 +753,7 @@ impl ControlPlan {
             .into_iter()
             .flat_map(|ports| ports.keys())
     }
-    /// Package entries and live nodes armed with arguments, in node order.
+    /// Package entries and live nodes armed with arguments, in ascending node ID order.
     pub fn sources(&self) -> &[ControlSource] {
         &self.sources
     }
@@ -788,6 +789,11 @@ impl ControlPlan {
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
+    }
+    /// Plan index of a referenced run-scoped variable.
+    pub fn run_variable_index(&self, id: VariableId) -> Option<usize> {
+        let index = *self.variable_ids.get(&id)?;
+        (self.variables[index].scope() == VarScope::Run).then_some(index)
     }
     /// What reads run variable `variable`.
     pub fn variable_dependents(&self, variable: usize) -> &VariableDependents {
@@ -947,7 +953,11 @@ fn compile_control_inner(
     let (events, event_ids) = prepare_events(&cx, &controls, &control_ix, &mut graph_items)?;
     let timers = prepare_timers(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
-    let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
+    let VariableLayout {
+        cells: variables,
+        by_node: variable_nodes,
+        by_id: variable_ids,
+    } = collect_variables(&cx, &mut bytes)?;
     let changes = prepare_changes(
         &cx,
         &controls,
@@ -1179,6 +1189,21 @@ fn compile_control_inner(
                 .ok_or(CompileError::ValidationIncomplete)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let entropy = if watch_roots.is_empty() && source_roots.iter().all(|(_, args)| args.is_empty())
+    {
+        Vec::new()
+    } else {
+        entropy_dependencies(&data, options)?
+    };
+    let root_has_entropy = |root| {
+        let node = data
+            .export_node(root)
+            .ok_or(CompileError::ValidationIncomplete)?;
+        entropy
+            .get(node.index())
+            .copied()
+            .ok_or(CompileError::ValidationIncomplete)
+    };
     let mut watches = Vec::new();
     for (key, root) in watch_roots {
         let ty = port_type(cx.snapshot, key.1, cx.port(key, "watch")?)?;
@@ -1201,20 +1226,8 @@ fn compile_control_inner(
                 _ => return Err(CompileError::UnsupportedNode { node: key.1 }),
             }
         }
-        let mut pending = vec![
-            data.export_node(root)
-                .ok_or(CompileError::ValidationIncomplete)?,
-        ];
-        let mut seen = BTreeSet::new();
-        while let Some(ix) = pending.pop() {
-            if !seen.insert(ix.index()) {
-                continue;
-            }
-            let node = &data.nodes()[ix.index()];
-            if matches!(node.operation(), DataOperation::Entropy(_)) {
-                return Err(CompileError::UnsupportedNode { node: key.1 });
-            }
-            pending.extend(node.inputs().iter().filter_map(|i| i.producer));
+        if root_has_entropy(root)? {
+            return Err(CompileError::UnsupportedNode { node: key.1 });
         }
         let (order, handler) = entry_handler(&cx, &control_ix, key, &mut graph_items)?;
         watches.push((
@@ -1257,7 +1270,7 @@ fn compile_control_inner(
                     _ => return Err(refused()),
                 }
             }
-            if root_cone_has_entropy(&data, *root)? {
+            if root_has_entropy(*root)? {
                 return Err(refused());
             }
             let descriptor = cx
@@ -1372,6 +1385,7 @@ fn compile_control_inner(
         changes: changes.into(),
         dependents: dependents.into(),
         variables: variables.into(),
+        variable_ids,
         states: states.into(),
         host_sources: host_sources.into(),
         root_inputs: root_inputs.into(),
@@ -1379,27 +1393,6 @@ fn compile_control_inner(
         index_targets: boxed(index_targets),
         error_targets: boxed(error_targets),
     })
-}
-
-/// Whether the cone behind demand root `root` draws entropy, which a value read at the
-/// root may not.
-fn root_cone_has_entropy(data: &DataPlan, root: usize) -> Result<bool, CompileError> {
-    let mut pending = vec![
-        data.export_node(root)
-            .ok_or(CompileError::ValidationIncomplete)?,
-    ];
-    let mut seen = BTreeSet::new();
-    while let Some(ix) = pending.pop() {
-        if !seen.insert(ix.index()) {
-            continue;
-        }
-        let node = &data.nodes()[ix.index()];
-        if matches!(node.operation(), DataOperation::Entropy(_)) {
-            return Ok(true);
-        }
-        pending.extend(node.inputs().iter().filter_map(|i| i.producer));
-    }
-    Ok(false)
 }
 
 /// Admit every executable control node before any table is built or callback runs.
@@ -1840,12 +1833,15 @@ fn prepare_changes(
         .collect())
 }
 
+struct VariableLayout {
+    cells: Vec<ControlVariable>,
+    by_node: BTreeMap<NodeId, usize>,
+    by_id: BTreeMap<VariableId, usize>,
+}
+
 /// Variable layouts for every Get/Set/Update, including unused or lazy call bodies,
 /// and the layout each such node uses.
-fn collect_variables(
-    cx: &Cx<'_>,
-    bytes: &mut usize,
-) -> Result<(Vec<ControlVariable>, BTreeMap<NodeId, usize>), CompileError> {
+fn collect_variables(cx: &Cx<'_>, bytes: &mut usize) -> Result<VariableLayout, CompileError> {
     let (document, calls, options) = (cx.document, cx.calls, cx.options);
     let mut variables = Vec::new();
     let mut variable_ids = BTreeMap::new();
@@ -1925,7 +1921,11 @@ fn collect_variables(
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
-    Ok((variables, variable_nodes))
+    Ok(VariableLayout {
+        cells: variables,
+        by_node: variable_nodes,
+        by_id: variable_ids,
+    })
 }
 
 /// Frame layout of each control function: its entry and the local variables it owns.

@@ -59,6 +59,45 @@ fn connection_uri(text: &str, schemes: [&str; 2]) -> Option<ureq::http::Uri> {
     .then_some(uri)
 }
 
+/// An endpoint summary for diagnostic formatting. Never formats the input URL.
+struct EndpointDebug<'a>(&'a str);
+
+impl std::fmt::Debug for EndpointDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Ok(uri) = self.0.parse::<ureq::http::Uri>() else {
+            return f.write_str("<invalid endpoint>");
+        };
+        if uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+        {
+            return f.write_str("<invalid endpoint>");
+        }
+        let (Some(scheme), Some(host)) = (uri.scheme_str(), uri.host()) else {
+            return f.write_str("<invalid endpoint>");
+        };
+        let mut endpoint = f.debug_struct("Endpoint");
+        endpoint.field("scheme", &scheme).field("host", &host);
+        if let Some(port) = uri.port_u16() {
+            endpoint.field("port", &port);
+        }
+        endpoint.finish()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn endpoint_debug_reports_port_and_redacts_user_info() {
+    let shown = format!("{:?}", EndpointDebug("https://example.invalid:8443/hidden"));
+    assert!(shown.contains("port: 8443"));
+    assert!(!shown.contains("hidden"));
+    let refused = format!(
+        "{:?}",
+        EndpointDebug("https://sample:private@example.invalid/")
+    );
+    assert_eq!(refused, "<invalid endpoint>");
+}
+
 #[cfg(test)]
 #[test]
 fn web_adapters_refuse_malformed_endpoints_before_network_io() {
