@@ -141,7 +141,8 @@ credential store and prints the `update.key` to put in a package's manifest; `fe
 read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
 store), `--grant-http` lets it send HTTPS requests, `--grant-http-local` lets it send HTTP
 or HTTPS requests to this computer and the local network, and `--grant-compute` gives
-each call more fuel and transfer room for heavy work. A package receives a grant
+each call more fuel and transfer room for heavy work, and `--grant-websocket` lets
+it send on the WebSocket connection its node names. A package receives a grant
 only if its manifest asks for it (`permissions`), and an install says what a package
 asked for and was not given. A grant is given to the
 packages installed by that command and is kept with them in the store.
@@ -223,6 +224,7 @@ fn arguments() -> Result<Arguments, String> {
             "--grant-http" => parsed.grants.http = true,
             "--grant-http-local" => parsed.grants.http_local = true,
             "--grant-compute" => parsed.grants.compute = true,
+            "--grant-websocket" => parsed.grants.websocket = true,
             "--state" => parsed.state = Some(words.next().ok_or("--state needs a directory")?),
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);

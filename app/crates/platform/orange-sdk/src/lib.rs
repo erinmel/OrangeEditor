@@ -133,7 +133,44 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
     /// should not begin before the first call: what arrives earlier has no trigger to
     /// reach and would be lost. The default does nothing.
     fn start(&self) {}
+    /// Queues one outbound message on a connection that carries messages, such as a
+    /// WebSocket: what a sandboxed package node sends through the host's own session,
+    /// whose address, credentials, reconnection and bounded queue stay with the host.
+    /// Queued is not delivered. The default refuses: the connection carries no messages.
+    fn send_message(&self, message: Message) -> Result<(), MessageError> {
+        let _ = message;
+        Err(MessageError::Unsupported)
+    }
 }
+
+/// One outbound message for [`Session::send_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Message {
+    Text(Arc<str>),
+    Binary(Arc<[u8]>),
+}
+
+/// Why [`Session::send_message`] did not queue a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MessageError {
+    /// The connection does not carry messages.
+    Unsupported,
+    /// The connection's queue is full; the host bounds what waits to be sent.
+    Full,
+    /// The message is larger than the connection allows.
+    TooLarge,
+}
+impl std::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unsupported => "the connection does not carry messages",
+            Self::Full => "the connection's queue is full",
+            Self::TooLarge => "the message is too large for the connection",
+        })
+    }
+}
+impl std::error::Error for MessageError {}
 
 /// Opens sessions of one adapter kind from declared settings.
 ///
@@ -1180,7 +1217,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 9",
+        "orange-plugin 10",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

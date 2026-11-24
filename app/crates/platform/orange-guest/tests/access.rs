@@ -121,6 +121,7 @@ const BOTH: Grants = Grants {
     http: true,
     http_local: false,
     compute: false,
+    websocket: false,
 };
 
 #[test]

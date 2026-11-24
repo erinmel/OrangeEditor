@@ -660,3 +660,46 @@ fn a_send_continues_on_a_step_shown_as_queued() {
     let label = send.presentation.unwrap().then_label.as_ref().unwrap();
     assert_eq!(label.fallback, "Queued");
 }
+
+/// A package node's message goes through the host's own session: the same bounded
+/// queue and socket as Send, with the address and credentials left with the host.
+#[test]
+fn a_session_queues_package_messages_on_its_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen, received) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        while let Ok(message) = socket.read() {
+            if matches!(message, Message::Text(_) | Message::Binary(_))
+                && seen.send(message).is_err()
+            {
+                break;
+            }
+        }
+    });
+    let package = orange_net::package();
+    let (_, adapter) = package
+        .adapters()
+        .iter()
+        .find(|(kind, _)| kind == orange_net::WS_ADAPTER)
+        .unwrap();
+    let settings = json!({"url": format!("ws://{address}")});
+    let session = adapter.open(settings.as_object().unwrap()).unwrap();
+    session.start();
+    session
+        .send_message(orange_sdk::Message::Text("from a package".into()))
+        .unwrap();
+    session
+        .send_message(orange_sdk::Message::Binary(vec![1, 2, 3].into()))
+        .unwrap();
+    assert_eq!(
+        received.recv_timeout(WAIT).unwrap(),
+        Message::text("from a package")
+    );
+    assert_eq!(
+        received.recv_timeout(WAIT).unwrap(),
+        Message::binary(vec![1, 2, 3])
+    );
+}

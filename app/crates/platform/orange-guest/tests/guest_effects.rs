@@ -121,6 +121,7 @@ fn looping_run(kind: &str, effect: &str) -> Run {
             http: false,
             http_local: false,
             compute: false,
+            websocket: false,
         },
     )
     .unwrap();

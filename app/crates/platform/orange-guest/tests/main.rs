@@ -5,6 +5,7 @@ mod archive_nodes;
 mod guest_effects;
 mod plugin;
 mod resource_limits;
+mod websocket;
 
 use orange_guest::{GuestEngine, GuestError, GuestInstance, GuestLimits, GuestTrap};
 

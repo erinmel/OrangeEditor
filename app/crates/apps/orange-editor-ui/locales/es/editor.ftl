@@ -644,6 +644,7 @@ package-grant-files = Leer y escribir sus propios archivos de datos
 package-grant-http = Hacer solicitudes HTTPS
 package-grant-http-local = Hacer solicitudes HTTP a este equipo y a la red local
 package-grant-compute = Usar más tiempo de proceso y transferencia de memoria por llamada
+package-grant-websocket = Enviar mensajes por la conexión WebSocket que indica su nodo
 package-access-changed = Se cambió lo que { $package } puede usar. Los grafos iniciados a partir de ahora usan el nuevo acceso.
 share-with-packages = Compartir con paquetes…
 share-with-packages-hint = Guarda este grafo en un solo archivo junto con los paquetes instalados que usa.

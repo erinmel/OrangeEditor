@@ -139,6 +139,7 @@ fn access(entry: &Json) -> PackageAccess {
             http: entry["http"] == true,
             http_local: entry["http-local"] == true,
             compute: entry["compute"] == true,
+            websocket: entry["websocket"] == true,
         },
         http_hosts: entry["http-hosts"].as_array().map(|hosts| {
             hosts
@@ -159,6 +160,7 @@ fn record(entry: &mut Map<String, Json>, access: &PackageAccess) {
         ("http", json!(grants.http)),
         ("http-local", json!(grants.http_local)),
         ("compute", json!(grants.compute)),
+        ("websocket", json!(grants.websocket)),
         ("http-hosts", json!(access.http_hosts)),
         ("data-quota", json!(access.data_quota)),
     ] {

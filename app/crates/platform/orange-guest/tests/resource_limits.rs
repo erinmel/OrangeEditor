@@ -232,6 +232,7 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
                 http: false,
                 http_local: false,
                 compute,
+                websocket: false,
             },
         )
         .unwrap();

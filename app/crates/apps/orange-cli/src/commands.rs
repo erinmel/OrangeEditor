@@ -221,6 +221,7 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
             ("http", asks.http, given.http),
             ("http-local", asks.http_local, given.http_local),
             ("compute", asks.compute, given.compute),
+            ("websocket", asks.websocket, given.websocket),
         ] {
             if asked && !granted {
                 notice(

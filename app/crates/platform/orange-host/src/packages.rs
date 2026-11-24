@@ -572,6 +572,7 @@ fn check_grants(given: Grants, asked: Grants) -> Result<(), HostError> {
         ("http", given.http, asked.http),
         ("http-local", given.http_local, asked.http_local),
         ("compute", given.compute, asked.compute),
+        ("websocket", given.websocket, asked.websocket),
     ] {
         if given && !wanted {
             return Err(HostError::Install(format!(

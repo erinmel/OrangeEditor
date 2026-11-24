@@ -10,9 +10,10 @@ use orange_kernel::{
     ResolveError,
 };
 use orange_model::Value;
+use orange_model::catalog::ReferenceKind;
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
 use orange_model::document::{NodeKind, PortDirection, PortKind};
-use orange_model::id::{PortKey, TypeExpr};
+use orange_model::id::{ConnectionId, PortKey, TypeExpr};
 use orange_packages::{Execution, MemorySink, VerifiedArchive};
 use thiserror::Error;
 
@@ -222,9 +223,20 @@ impl GuestPackage {
         {
             return Err(ResolveError::Unavailable);
         }
-        if !request.config().is_empty() {
-            return Err(ResolveError::Contract);
-        }
+        // Settings reach the instance as JSON (1.1); a connection they name is opened by
+        // the host, which hands its session to the node's effect calls.
+        let settings =
+            serde_json::to_string(request.config()).map_err(|_| ResolveError::Contract)?;
+        let connection = request
+            .snapshot()
+            .definition(request.definition())
+            .filter(|definition| {
+                definition
+                    .references
+                    .iter()
+                    .any(|field| field.kind == ReferenceKind::Connection)
+            })
+            .and_then(|_| request.config().get("connection")?.as_str()?.parse().ok());
         let (mut inputs, mut input_types) = (Vec::new(), Vec::new());
         let (mut outputs, mut output_types) = (Vec::new(), Vec::new());
         for port in &request.signature().ports {
@@ -258,8 +270,9 @@ impl GuestPackage {
         } else {
             GuestAccess::default()
         };
-        let plugin = GuestPlugin::with_access(&self.component, self.grants, access)
+        let mut plugin = GuestPlugin::with_access(&self.component, self.grants, access)
             .map_err(|_| ResolveError::Unavailable)?;
+        plugin.set_settings(settings);
         let cancellation = plugin.cancellation();
         Ok((
             inputs.into(),
@@ -271,6 +284,8 @@ impl GuestPackage {
                 definition: request.definition().id.as_str().to_owned(),
                 inputs: input_types,
                 outputs: output_types,
+                connection,
+                definition_ref: request.definition().clone(),
             },
         ))
     }
@@ -284,6 +299,9 @@ struct GuestNode {
     definition: String,
     inputs: Vec<TypeExpr>,
     outputs: Vec<TypeExpr>,
+    /// The connection the node's settings name, when its definition refers to one.
+    connection: Option<ConnectionId>,
+    definition_ref: orange_model::document::DefinitionRef,
 }
 
 impl std::fmt::Debug for GuestNode {
@@ -364,6 +382,35 @@ impl GuestEffect {
     /// host passes to `Run::complete_effect`.
     pub fn run(&self, inputs: &[Value]) -> Result<Vec<Value>, KernelFault> {
         self.0.call(true, inputs)
+    }
+
+    /// Runs the node once like [`run`](Self::run), with the host session of the
+    /// connection it names for its `websocket` import during this call only.
+    pub fn run_on(
+        &self,
+        inputs: &[Value],
+        session: Option<Arc<dyn orange_sdk::Session>>,
+    ) -> Result<Vec<Value>, KernelFault> {
+        self.0
+            .plugin
+            .lock()
+            .map_err(|_| guest_fault(GuestError::Poisoned))?
+            .set_session(session);
+        let result = self.0.call(true, inputs);
+        if let Ok(mut plugin) = self.0.plugin.lock() {
+            plugin.set_session(None);
+        }
+        result
+    }
+
+    /// The connection the node's settings name, which the host opens for it.
+    pub fn connection(&self) -> Option<ConnectionId> {
+        self.0.connection
+    }
+
+    /// The node's definition, for the host's connection policy.
+    pub fn definition(&self) -> &orange_model::document::DefinitionRef {
+        &self.0.definition_ref
     }
     /// Interrupts this node's instance, for an effect whose lease was cancelled.
     /// Cancellation is terminal for the instance.

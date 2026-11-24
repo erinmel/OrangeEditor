@@ -224,6 +224,7 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 http: false,
                 http_local: false,
                 compute: false,
+                websocket: false,
             }
         ),
         Err(HostError::Archive(_))
@@ -237,6 +238,7 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 http: false,
                 http_local: false,
                 compute: false,
+                websocket: false,
             },
         )
         .unwrap();
@@ -556,6 +558,7 @@ fn the_host_lists_every_node_a_document_can_use() {
                 http: false,
                 http_local: false,
                 compute: false,
+                websocket: false,
             },
         )
         .unwrap();
@@ -1693,6 +1696,7 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         http: false,
         http_local: false,
         compute: false,
+        websocket: false,
     };
     assert!(matches!(
         host.install(&probe, too_much),
@@ -1709,6 +1713,7 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         http: false,
         http_local: false,
         compute: false,
+        websocket: false,
     };
     assert!(matches!(
         host.install(&graph, logging),

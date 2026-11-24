@@ -1,5 +1,11 @@
 /// OrangeEditor package interface (ADR-03, K02b). Versioned with the host API.
-package orange:expansion@1.0.0;
+///
+/// 1.1 adds the `settings` and `websocket` imports and changes nothing that 1.0 has, so
+/// a component built against 1.0 links against a 1.1 host unchanged (component names
+/// resolve by semver compatibility). Values keep their 1.0 form: interface types cannot
+/// be recursive, so records, enums, lists and maps cross as `orange.value.v1` literals
+/// that the host checks against the registered type on both sides.
+package orange:expansion@1.1.0;
 
 /// Shared types.
 interface types {
@@ -106,11 +112,34 @@ interface effects {
     execute: func(definition: string, inputs: list<value>) -> result<list<value>, node-error>;
 }
 
+/// Always linked (1.1): the settings of the node being called, as the JSON text of its
+/// saved `config`. Settings name declarations, such as a connection by its ID, and
+/// never hold secrets: a connection's credentials stay in the host's credential store.
+interface settings {
+    /// The node's settings; `{}` when it has none.
+    get: func() -> string;
+}
+
+/// Granted only with the `websocket` permission (1.1): messages on the WebSocket
+/// connection the node's settings name (`connection`). The host owns the socket: it
+/// opens it with the connection's declared settings and the user's approved
+/// credentials, reconnects it and bounds what waits to be sent. The package never sees
+/// the address or a token. Only action and async nodes may send. Queued is not
+/// delivered. Errors are one of `unavailable` (the node names no open connection, or it
+/// carries no messages), `not-allowed`, `too-large` and `quota-exceeded` (the queue is
+/// full).
+interface websocket {
+    send-text: func(text: string) -> result<_, string>;
+    send-binary: func(data: list<u8>) -> result<_, string>;
+}
+
 world plugin {
     import host;
     import log;
     import files;
     import http;
+    import settings;
+    import websocket;
     export nodes;
     export effects;
 }

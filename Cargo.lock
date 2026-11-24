@@ -3455,6 +3455,7 @@ dependencies = [
  "orange-packages",
  "orange-runtime",
  "orange-sandbox",
+ "orange-sdk",
  "serde_json",
  "thiserror 2.0.21",
  "wasmtime",

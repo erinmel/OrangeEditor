@@ -25,8 +25,8 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 ## Contribution surface
 
 The table below is the selected extension contract. Current installed guest
-execution implements Pure, Action and Async nodes with concrete port types and empty
-config (K02c; effects 2026-11-10). The compiler and host also support package Entry
+execution implements Pure, Action and Async nodes with concrete port types (K02c;
+effects 2026-11-10); since 1.1 their settings reach the instance through `settings`. The compiler and host also support package Entry
 nodes fed by trusted native service sources, including incoming WebSocket text.
 Installed Wasm guests still lack host service imports, iterators and resource contributions. Trusted host type registration implements records, enums and handle kinds;
 arbitrary package scalar representations/codecs and complete archive contribution
@@ -181,6 +181,32 @@ written before these fields reads them as not granted and without own limits.
 `Host::requested_grants` returns what an installed package's manifest asks for and
 `Host::archive_key` names an archive without installing it.
 
+Plugin world 1.1 (2026-11-24; `sdk/wit`, `orange-guest`, `orange-sdk`, `orange-net`,
+`orange-host`): the package is `orange:expansion@1.1.0` and `host.api-version` answers
+(1, 1). It adds two imports and changes nothing 1.0 has, so components built against
+1.0 instantiate unchanged: Wasmtime 50 resolves component imports and exports by semver
+compatibility, and the 1.0 test components and `probe.wasm` run against the 1.1 host.
+`settings.get` (always linked) returns the JSON text of the node's saved `config`;
+package nodes may now have settings, which validation checks against their schema.
+Settings name declarations and never hold secrets. `websocket.send-text` and
+`send-binary` (the `"websocket"` permission, `Grants::websocket`, `--grant-websocket`)
+queue a message on the connection the node's settings name, for async nodes only. The
+host opens that connection like its own nodes' connections: the declared settings,
+credentials from the credential store after the graph's approval, the
+`ConnectionAuthorizer` policy for the graph and for each send, reconnection and the
+bounded outgoing queue all stay with the host, which hands the session to the guest for
+the one call (`Session::send_message`, `orange_sdk::Message`). The guest never sees the
+address or a token. A node that names no open connection gets `unavailable`, a full
+queue `quota-exceeded`, an oversized message `too-large`. Values keep their 1.0 form:
+interface types cannot be recursive, so records, enums, lists and maps cross as
+`orange.value.v1` literals the host checks against the registered type in both
+directions; changing the exported `value` variant would break every 1.0 component.
+Each node binding owns its instance, so a guest keeps per-instance state in its own
+memory between effect calls (`effects_keep_instance_state_and_report_their_own_errors`).
+Not yet in 1.1: messages arriving on a connection do not reach guest code, and guests
+cannot contribute entry (trigger) nodes; both need an `events` export and host source
+plumbing, planned as the next interface step.
+
 Full-access native plugins in the desktop (2026-11-24; `orange-desktop`): the desktop
 application loads `orange-native` libraries from `plugins` beside its preferences,
 only after the person allowed full access to that exact file. The approval keeps the
@@ -318,6 +344,7 @@ and fire a named outcome using `Emitter::emit_on`. The resolved port includes
 the stable counter for a variadic instance. The host binds these callbacks to
 the running provider guard and its checked ports. The native ABI identifier
 is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
+It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`

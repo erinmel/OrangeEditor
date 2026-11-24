@@ -20,12 +20,12 @@ wasmtime::component::bindgen!({
 
 use crate::access::{GuestAccess, HttpRequest};
 use orange::expansion::types::Value as Wire;
-use orange::expansion::{files, host, http, log};
+use orange::expansion::{files, host, http, log, settings, websocket};
 use orange_model::value::ListRepr;
 use std::sync::Arc;
 
 /// The host API version offered through `host.api-version` (04 SDK surface).
-pub const API_VERSION: (u16, u16) = (1, 0);
+pub const API_VERSION: (u16, u16) = (1, 1);
 /// Largest number of retained log entries per instance; later entries are dropped.
 pub const MAX_LOG_ENTRIES: usize = 64;
 /// Longest retained log entry in bytes; longer entries are cut at a character boundary.
@@ -46,6 +46,9 @@ pub struct Grants {
     /// Heavy compute: each call gets [`HEAVY_COMPUTE_FACTOR`] times the engine's fuel
     /// and transfer limits. Memory limits stay those of the engine.
     pub compute: bool,
+    /// Send messages on the WebSocket connection the node's settings name, through the
+    /// host's own session (1.1).
+    pub websocket: bool,
 }
 
 /// How many times the per-call fuel and transfer limits a `compute` grant gives.
@@ -66,6 +69,7 @@ impl Grants {
             http: self.http && allowed.http,
             http_local: self.http_local && allowed.http_local,
             compute: self.compute && allowed.compute,
+            websocket: self.websocket && allowed.websocket,
         }
     }
 }
@@ -75,6 +79,10 @@ struct PluginState {
     log: Vec<String>,
     access: GuestAccess,
     grants: Grants,
+    /// The JSON text of the node's settings, for the `settings` import.
+    settings: String,
+    /// The host session of the connection the node names, during one effect call.
+    session: Option<Arc<dyn orange_sdk::Session>>,
     effects_allowed: bool,
     /// Largest content one import call hands to the guest.
     transfer_bytes: usize,
@@ -122,7 +130,39 @@ impl http::Host for PluginState {
     }
 }
 
+impl settings::Host for PluginState {
+    fn get(&mut self) -> String {
+        self.settings.clone()
+    }
+}
+
+impl websocket::Host for PluginState {
+    fn send_text(&mut self, text: String) -> Result<(), String> {
+        self.send(orange_sdk::Message::Text(text.into()))
+    }
+    fn send_binary(&mut self, data: Vec<u8>) -> Result<(), String> {
+        self.send(orange_sdk::Message::Binary(data.into()))
+    }
+}
+
 impl PluginState {
+    /// Queues a message on the node's connection, through the host's session.
+    fn send(&mut self, message: orange_sdk::Message) -> Result<(), String> {
+        self.require_effect()?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| crate::access::UNAVAILABLE.to_owned())?;
+        session.send_message(message).map_err(|error| {
+            match error {
+                orange_sdk::MessageError::Full => crate::access::QUOTA,
+                orange_sdk::MessageError::TooLarge => crate::access::TOO_LARGE,
+                _ => crate::access::UNAVAILABLE,
+            }
+            .to_owned()
+        })
+    }
+
     fn require_effect(&self) -> Result<(), String> {
         if self.effects_allowed {
             Ok(())
@@ -295,6 +335,8 @@ impl GuestPlugin {
                 log: Vec::new(),
                 access,
                 grants,
+                settings: "{}".to_owned(),
+                session: None,
                 effects_allowed: false,
                 transfer_bytes: limits.transfer_bytes,
             },
@@ -308,6 +350,12 @@ impl GuestPlugin {
         let mut linker = Linker::<PluginState>::new(&engine.engine);
         host::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
             .map_err(|_| GuestError::Engine)?;
+        settings::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+            .map_err(|_| GuestError::Engine)?;
+        if grants.websocket {
+            websocket::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+                .map_err(|_| GuestError::Engine)?;
+        }
         if grants.log {
             log::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
                 .map_err(|_| GuestError::Engine)?;
@@ -353,6 +401,16 @@ impl GuestPlugin {
 
     /// Runs an action or async node once. Same value and error contract as
     /// `evaluate`, but the guest may keep state between calls on this instance.
+    /// Gives the instance its node's settings, as the JSON text of its saved `config`.
+    pub fn set_settings(&mut self, settings: String) {
+        self.store.data_mut().settings = settings;
+    }
+
+    /// The host session the next effect calls may send on; `None` takes it away.
+    pub fn set_session(&mut self, session: Option<Arc<dyn orange_sdk::Session>>) {
+        self.store.data_mut().session = session;
+    }
+
     pub fn execute(
         &mut self,
         types: &TypeRegistry,

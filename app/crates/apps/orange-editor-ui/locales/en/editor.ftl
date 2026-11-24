@@ -647,6 +647,7 @@ package-grant-files = Read and write its own data files
 package-grant-http = Make HTTPS requests
 package-grant-http-local = Make HTTP requests to this computer and the local network
 package-grant-compute = Use more processing time and memory transfer per call
+package-grant-websocket = Send messages on the WebSocket connection its node names
 package-access-changed = Changed what { $package } may use. Graphs started from now on use the new access.
 share-with-packages = Share with packages…
 share-with-packages-hint = Save this graph in one file together with the installed packages it uses.

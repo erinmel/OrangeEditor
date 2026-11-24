@@ -676,11 +676,36 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
                 ..
             } = request;
             if let Some(effect) = guest_effect(&context) {
+                // A package node that names a connection sends through the session the
+                // host opened for it, under the same policy as the host's own nodes.
+                let connection = effect.connection();
+                if connection.is_some()
+                    && !cx.gate.allows(
+                        node,
+                        effect.definition(),
+                        crate::ServiceOperation::Effect,
+                        connection,
+                        &inputs,
+                    )
+                {
+                    let _ = driver.run_mut().complete_effect(id, Err(DENIED));
+                    continue;
+                }
+                let session = match connection {
+                    None => None,
+                    Some(connection) => match cx.sessions.get(&connection) {
+                        Some(session) => Some(Arc::clone(session)),
+                        None => {
+                            let _ = driver.run_mut().complete_effect(id, Err(NO_CONNECTION));
+                            continue;
+                        }
+                    },
+                };
                 let cancellation = effect.cancellation();
                 let (inbox, flow) = (cx.inbox.clone(), me.clone());
                 let submitted = cx.pool.submit(move || {
-                    let outcome =
-                        crate::effects::guard(|| effect.run(&inputs)).and_then(|value| value);
+                    let outcome = crate::effects::guard(|| effect.run_on(&inputs, session))
+                        .and_then(|value| value);
                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                 });
                 // Work the host cannot hold now fails at once instead of queueing.

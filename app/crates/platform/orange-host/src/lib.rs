@@ -496,11 +496,12 @@ impl From<Grants> for PackageAccess {
 }
 
 /// The grants a manifest's `permissions` section asks for: a list of `"log"`,
-/// `"files"`, `"http"`, `"http-local"` and `"compute"`. No section asks for nothing.
+/// `"files"`, `"http"`, `"http-local"`, `"compute"` and `"websocket"`. No section asks
+/// for nothing.
 fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
     let refused = || {
         HostError::Install(
-            "`permissions` must be a list of `log`, `files`, `http`, `http-local` and `compute`"
+            "`permissions` must be a list of `log`, `files`, `http`, `http-local`, `compute` and `websocket`"
                 .to_owned(),
         )
     };
@@ -515,6 +516,7 @@ fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
             Some("http") => grants.http = true,
             Some("http-local") => grants.http_local = true,
             Some("compute") => grants.compute = true,
+            Some("websocket") => grants.websocket = true,
             _ => return Err(refused()),
         }
     }

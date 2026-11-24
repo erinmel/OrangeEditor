@@ -28,6 +28,7 @@ const LOG: Grants = Grants {
     http: false,
     http_local: false,
     compute: false,
+    websocket: false,
 };
 
 fn types() -> TypeRegistry {

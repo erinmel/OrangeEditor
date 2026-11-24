@@ -231,6 +231,24 @@ impl Session for WsSession {
     fn start(&self) {
         self.0.life.start();
     }
+    /// Queues a message on this socket for a package node, through the same bounded
+    /// queue as Send: the socket may be reconnecting, and queued is not delivered.
+    fn send_message(&self, message: orange_sdk::Message) -> Result<(), orange_sdk::MessageError> {
+        use orange_sdk::{Message as Outbound, MessageError};
+        let message = match message {
+            Outbound::Text(text) => Outgoing::Text(Arc::new(text.to_string())),
+            Outbound::Binary(data) => Outgoing::Binary(Arc::new(data.to_vec())),
+        };
+        if message.len() > MAX_QUEUED_BYTES {
+            return Err(MessageError::TooLarge);
+        }
+        self.0
+            .outgoing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(message)
+            .map_err(|_| MessageError::Full)
+    }
 }
 impl Drop for WsSession {
     fn drop(&mut self) {
