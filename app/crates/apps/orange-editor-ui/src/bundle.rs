@@ -341,6 +341,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sender_store);
     }
 
+    /// The dialog lists the carried package with its grant boxes, and Install and open
+    /// installs it and opens the graph.
+    #[test]
+    fn the_shared_graph_dialog_installs_and_opens() {
+        let sender_store = store("dialog");
+        let (mut sender, _) = Host::new(HostOptions {
+            package_dir: Some(sender_store.clone()),
+            ..HostOptions::default()
+        })
+        .unwrap();
+        let _ = sender
+            .install(&remember_archive(), Grants::default())
+            .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut sender, orange_host::new_document().unwrap());
+        let _ = editor
+            .add_node(&mut sender, "org.example.tools/remember")
+            .unwrap();
+        editor.share_with_packages(&sender);
+        let Some(FileRequest::ExportBundle { bundle, .. }) = editor.take_request() else {
+            panic!("sharing asks where to save the file");
+        };
+
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut opened = Editor::new();
+        opened
+            .review_bundle(&host, "shared.orangebundle".into(), &bundle)
+            .unwrap();
+        let context = egui::Context::default();
+        let mut frame = |editor: &mut Editor, events| {
+            context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| editor.bundle_import_dialog(ui.ctx(), &mut host),
+            )
+        };
+        let (mut listed, mut install) = (false, None);
+        for _ in 0..3 {
+            let output = frame(&mut opened, Vec::new());
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    listed |= text.galley.text() == "org.example.tools 1.0.0";
+                    if text.galley.text() == t("bundle-install-and-open") {
+                        install = Some(text.pos + text.galley.size() * 0.5);
+                    }
+                }
+            }
+            output.drop_without_applying_deltas();
+        }
+        assert!(listed, "the carried package is listed");
+        orange_testkit::ui::click(
+            install.expect("install button"),
+            egui::PointerButton::Primary,
+            |events| {
+                frame(&mut opened, events).drop_without_applying_deltas();
+            },
+        );
+        assert!(opened.pending_bundle.is_none());
+        assert!(opened.document.is_some());
+        assert!(
+            host.packages()
+                .any(|package| package.id == "org.example.tools")
+        );
+        let _ = std::fs::remove_dir_all(&sender_store);
+    }
+
     /// Properties of a node whose package is missing names the package and offers to
     /// install one, which asks the application for an archive.
     #[test]

@@ -187,7 +187,10 @@ only after the person allowed full access to that exact file. The approval keeps
 file name and SHA-256 in `plugins/full-access.json`; a changed file asks again. The
 dialog states the risk in plain words, including that a native plugin can read the
 operating system's credential store as the person, so the vault's protection does not
-apply to it. A library is never loaded to describe it. Native libraries still load at
+apply to it. A library is never loaded to describe it. The desktop also gives installed
+Wasm packages their data folders (`plugin-data` beside its preferences) and its network
+client (`orange_net::fetch_response`, no redirects), so the `files`, `http` and
+`http-local` grants reach something there. Native libraries still load at
 start (ADR-03 amendment 2026-11-11), so an approval or revocation applies from the next
 start. Graphs, exports and bundles still never hold secrets.
 

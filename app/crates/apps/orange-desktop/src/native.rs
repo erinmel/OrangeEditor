@@ -321,6 +321,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// The dialog opens at start for a waiting library, states the risk, and its button
+    /// records the approval for the next start.
+    #[test]
+    fn the_dialog_names_the_risk_and_its_button_allows_full_access() {
+        use eframe::egui;
+        let directory = folder("dialog");
+        let mut plugins = NativePlugins::open(directory.clone());
+        std::fs::write(
+            directory.join(format!("tool.{}", std::env::consts::DLL_EXTENSION)),
+            b"bytes",
+        )
+        .unwrap();
+        assert!(plugins.load().is_empty());
+        assert!(plugins.open);
+        let context = egui::Context::default();
+        let frame = |plugins: &mut NativePlugins, events| {
+            context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| plugins.dialog(ui.ctx()),
+            )
+        };
+        let (mut risk, mut allow) = (false, None);
+        for _ in 0..3 {
+            let output = frame(&mut plugins, Vec::new());
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    risk |= text.galley.text() == t("desktop-native-risk");
+                    if text.galley.text() == t("desktop-native-allow") {
+                        allow = Some(text.pos + text.galley.size() * 0.5);
+                    }
+                }
+            }
+            output.drop_without_applying_deltas();
+        }
+        assert!(risk, "the risk is stated");
+        orange_testkit::ui::click(
+            allow.expect("allow button"),
+            egui::PointerButton::Primary,
+            |events| {
+                frame(&mut plugins, events).drop_without_applying_deltas();
+            },
+        );
+        assert!(plugins.pending.is_empty());
+        assert!(plugins.restart_needed);
+        let mut restarted = NativePlugins::open(directory.clone());
+        assert_eq!(restarted.sort().len(), 1);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     #[test]
     fn an_unreadable_approval_file_approves_nothing() {
         let directory = folder("broken");
