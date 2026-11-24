@@ -38,6 +38,9 @@ pub struct QuickChoice {
     pub label: String,
     /// The input of the new node the wire goes to, when a wire was let go.
     pub input: Option<String>,
+    /// The output of the new node the wire comes from, when a wire dragged back from an
+    /// input was let go.
+    pub output: Option<String>,
     pub category: String,
     /// One line on what it does, or empty.
     pub purpose: String,
@@ -77,6 +80,15 @@ impl Editor {
         }
     }
 
+    /// Opens the search to add a node at `at` that feeds input `to`: it lists only the
+    /// kinds with an output that fits, and wires the chosen node's output into it.
+    pub fn open_quick_add_into(&mut self, to: (NodeId, String), at: [f32; 2], screen: egui::Pos2) {
+        self.open_quick_add(None, at, screen);
+        if let Some(quick) = &mut self.quick {
+            quick.into = Some(to);
+        }
+    }
+
     /// Whether the search is open.
     pub fn is_quick_add_open(&self) -> bool {
         self.quick.is_some()
@@ -87,6 +99,27 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return Vec::new();
         };
+        // Dragged back from an input: the kinds with an output that feeds it.
+        if let (None, Some(into), Some(document)) = (&quick.from, &quick.into, &self.document) {
+            let givers = host.givers(&document.draft, (into.0, &into.1));
+            return host
+                .search_nodes(search, self.language())
+                .into_iter()
+                .filter_map(|found| {
+                    let giver = givers
+                        .iter()
+                        .find(|giver| giver.definition == found.definition)?;
+                    Some(QuickChoice {
+                        output: Some(giver.output.clone()),
+                        definition: found.definition,
+                        label: found.label,
+                        input: None,
+                        category: found.category,
+                        purpose: found.purpose,
+                    })
+                })
+                .collect();
+        }
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
             // Into a wire: the kinds that take its output and go on into its input, with
             // the same type parameters on both sides.
@@ -101,6 +134,7 @@ impl Editor {
                     .filter_map(|found| {
                         let fit = fits.iter().find(|fit| fit.definition == found.definition)?;
                         Some(QuickChoice {
+                            output: None,
                             definition: found.definition,
                             label: found.label,
                             input: Some(fit.input.clone()),
@@ -120,6 +154,7 @@ impl Editor {
                             .iter()
                             .find(|taker| taker.definition == found.definition)?;
                         Some(QuickChoice {
+                            output: None,
                             definition: found.definition,
                             label: found.label,
                             input: Some(taker.input.clone()),
@@ -132,6 +167,7 @@ impl Editor {
             _ => palette::discover(host, search, self.language())
                 .into_iter()
                 .map(|found| QuickChoice {
+                    output: None,
                     definition: found.definition,
                     label: found.label,
                     input: None,
@@ -160,6 +196,7 @@ impl Editor {
                 palette::conversion_items(host, search, self.language(), from_type)
                     .into_iter()
                     .map(|item| QuickChoice {
+                        output: None,
                         definition: item.id,
                         label: item.label,
                         input: from_type.map(|_| "value".to_owned()),
@@ -183,6 +220,19 @@ impl Editor {
                 quick.at,
                 &(from.clone(), to.clone()),
             );
+        }
+        if let (None, Some(into), Some(output)) = (&quick.from, &quick.into, &choice.output) {
+            // Placing and wiring into the input are one action, as from an output.
+            let draft = self.editing()?;
+            let result = host.grouped(draft, |host, draft| {
+                let placed = place_node(host, draft, &choice.definition, quick.at)?;
+                if host.connect(draft, (placed.0, output), (into.0, &into.1))? {
+                    Ok(placed)
+                } else {
+                    Err(HostError::Document("the wire could not be made".to_owned()))
+                }
+            });
+            return self.placed(host, result);
         }
         let (Some(from), Some(input)) = (&quick.from, &choice.input) else {
             return self.add_node_at(host, &choice.definition, quick.at);
@@ -209,7 +259,7 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return;
         };
-        let wired = quick.from.is_some();
+        let wired = quick.from.is_some() || quick.into.is_some();
         let mut search = quick.search.clone();
         let mut focused = quick.focused;
         let mut highlighted = quick.highlighted;
@@ -479,6 +529,7 @@ mod staging_tests {
             definition: "core/sequence".to_owned(),
             label: "Sequence".to_owned(),
             input: Some("no-such-port".to_owned()),
+            output: None,
             category: String::new(),
             purpose: String::new(),
         };
@@ -486,5 +537,85 @@ mod staging_tests {
         assert_eq!(editor.graph().unwrap().nodes.len(), 1);
         assert_eq!(editor.canvas().selected(), Some(trigger));
         assert_eq!(editor.document.as_ref().unwrap().draft.can_undo(), before);
+    }
+    /// A wire dragged back from an input lists only kinds with an output that feeds it,
+    /// and the choice is placed and wired as one action.
+    #[test]
+    fn a_wire_dragged_back_from_an_input_offers_what_feeds_it() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+        let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
+        editor.open_quick_add_into(
+            (sequence, "in".to_owned()),
+            [-320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let all = editor.quick_choices(&host, "");
+        assert!(!all.is_empty() && all.iter().all(|choice| choice.output.is_some()));
+        let manual = all
+            .iter()
+            .find(|choice| choice.definition == "core/on-manual")
+            .cloned()
+            .expect("a trigger starts a step");
+        let node = editor.pick_quick(&mut host, &manual).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.from == (node, "then".to_owned()) && wire.to.0 == sequence)
+        );
+        assert_eq!(nodes(&editor), 2);
+        editor.undo(&mut host);
+        assert_eq!(nodes(&editor), 1);
+        assert!(editor.graph().unwrap().wires.is_empty());
+    }
+
+    /// A conversion chosen for a dropped value wire is placed and wired as one action.
+    #[test]
+    fn a_conversion_for_a_dropped_wire_is_one_undo_step() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let number = editor
+            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .unwrap();
+        editor.open_quick_add(
+            Some((number, "result".into())),
+            [300.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        let conversion = editor
+            .quick_choices(&host, "duration milliseconds")
+            .into_iter()
+            .find(|choice| {
+                choice
+                    .definition
+                    .starts_with("convert:core/f64-to-duration")
+            })
+            .unwrap();
+        let node = editor.pick_quick(&mut host, &conversion).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.from.0 == number && wire.to.0 == node)
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 1);
+        assert!(editor.graph().unwrap().wires.is_empty());
     }
 }

@@ -357,8 +357,13 @@ Names only on the left and Node cards on the right.
   (11 §5.3). A step goes on through `then`, else a loop's `completed`; failure,
   cancellation and loop-body ports and triggers are never offered as guessed
   continuations. Explicit conversions stay listed for a value wire let go on canvas.
-* **One action, one undo.** Choosing from a dropped wire places the node and wires it
-  as one edit (`Host::grouped`), like Insert node…: one undo takes both back. A choice
+* **Wires from inputs.** A wire can also be dragged back from an input. Let go on an
+  output of the same sort, it connects there. Let go on empty canvas, the search lists
+  the kinds with an output that feeds the input (`Host::givers`, same matching), with
+  triggers for a step input, and wires the choice's output into it.
+* **One action, one undo.** Choosing from a dropped wire, from either end, or a
+  conversion for it, places the node and wires it as one edit (`Host::grouped`), like
+  Insert node…: one undo takes both back. A choice
   the language refuses, or a graph that changed while the search was open, changes
   nothing: the graph, the selection and the undo and redo history stay as they were,
   and the Log says why.

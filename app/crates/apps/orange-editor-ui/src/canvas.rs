@@ -267,6 +267,9 @@ pub struct CanvasResponse {
     /// A wire was let go where no input takes it: the output it comes from and where,
     /// in graph units and on the screen, so a new node can be chosen to take it.
     pub loose: Option<((NodeId, String), [f32; 2], Pos2)>,
+    /// A wire dragged back from an input was let go on the background: the input, and
+    /// where (graph units and screen).
+    pub loose_into: Option<((NodeId, String), [f32; 2], Pos2)>,
     /// Tab or Space was pressed over the canvas to add a node at the pointer: where, in
     /// graph units and on the screen.
     pub quick_add: Option<([f32; 2], Pos2)>,
@@ -352,8 +355,11 @@ impl Marks {
 /// A wire being drawn from an output, not yet let go.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Wiring {
+    /// The port the drag started at: an output, or an input when `backward`.
     from: (NodeId, String),
     exec: bool,
+    /// Dragged back from an input, looking for an output to feed it.
+    backward: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -928,6 +934,20 @@ impl Canvas {
         exec: bool,
         from: NodeId,
     ) -> Option<(NodeId, String)> {
+        self.port_at(graph, at, exec, from, true)
+    }
+
+    /// The port of the same sort a wire let go at `at` lands on: an input's row on the
+    /// left of its card, or with `input` false an output's row on the right. A wire does
+    /// not land on the node it started from.
+    fn port_at(
+        &self,
+        graph: &GraphView,
+        at: Pos2,
+        exec: bool,
+        from: NodeId,
+        input: bool,
+    ) -> Option<(NodeId, String)> {
         for node in node_order(graph, self.front).rev() {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
@@ -938,16 +958,26 @@ impl Canvas {
             for port in node
                 .ports
                 .iter()
-                .filter(|port| port.input && port.exec == exec)
+                .filter(|port| port.input == input && port.exec == exec)
             {
                 let layout = self.card(node);
-                let Some(found) = layout.row_of(port) else {
+                let found = if input {
+                    layout.row_of(port)
+                } else {
+                    layout.row_of_output(port)
+                };
+                let Some(found) = found else {
                     continue;
                 };
-                // From a little left of the dot across the input's whole row.
+                // Across the port's whole row, a little past its dot.
+                let (left, right) = if input {
+                    (-14.0, layout.size.x)
+                } else {
+                    (0.0, layout.size.x + 14.0)
+                };
                 let row = Rect::from_min_max(
-                    place + Vec2::new(-14.0, found.top),
-                    place + Vec2::new(layout.size.x, found.top + found.height),
+                    place + Vec2::new(left, found.top),
+                    place + Vec2::new(right, found.top + found.height),
                 );
                 if row.contains(at) {
                     return Some((node.id, port.id.clone()));
@@ -1800,10 +1830,11 @@ impl Canvas {
                     response.id.with((node.id, port.id.as_str(), port.input)),
                     Sense::click_and_drag(),
                 );
-                if !port.input && touched.drag_started() {
+                if touched.drag_started() {
                     self.wiring = Some(Wiring {
                         from: (node.id, port.id.clone()),
                         exec: port.exec,
+                        backward: port.input,
                     });
                 }
                 if touched.secondary_clicked() {
@@ -1854,13 +1885,23 @@ impl Canvas {
             && let Some(pointer) = pointer
         {
             let at = origin + (pointer - area.min) / zoom;
-            done.connect = self
-                .input_at(graph, at, wiring.exec, wiring.from.0)
-                .map(|to| (wiring.from.clone(), to));
-            // Let go on the background, not on a node: ask for a node to take it.
+            done.connect = if wiring.backward {
+                self.port_at(graph, at, wiring.exec, wiring.from.0, false)
+                    .map(|from| (from, wiring.from.clone()))
+            } else {
+                self.input_at(graph, at, wiring.exec, wiring.from.0)
+                    .map(|to| (wiring.from.clone(), to))
+            };
+            // Let go on the background, not on a node: ask for a node to take it, or,
+            // dragged back from an input, for one to feed it.
             let on_node = self.nodes_in(graph, Rect::from_center_size(at, Vec2::splat(1.0)));
             if done.connect.is_none() && on_node.is_empty() && area.contains(pointer) {
-                done.loose = Some((wiring.from, [at.x, at.y], pointer));
+                let loose = Some((wiring.from, [at.x, at.y], pointer));
+                if wiring.backward {
+                    done.loose_into = loose;
+                } else {
+                    done.loose = loose;
+                }
             }
         }
         // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
@@ -2082,9 +2123,14 @@ impl Canvas {
 
         // The wire being drawn follows the pointer until it is let go.
         if let (Some(wiring), Some(to)) = (&self.wiring, pointer)
-            && let Some(from) = anchor(wiring.from.0, &wiring.from.1, false)
+            && let Some(from) = anchor(wiring.from.0, &wiring.from.1, wiring.backward)
         {
-            let points = wire_points(from, to, zoom);
+            // A wire runs from an output to an input, whichever end is held.
+            let points = if wiring.backward {
+                wire_points(to, from, zoom)
+            } else {
+                wire_points(from, to, zoom)
+            };
             let color = if wiring.exec {
                 colors.exec
             } else {
@@ -2581,8 +2627,8 @@ impl Canvas {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
-        // While a wire is drawn, the inputs it could go to are ringed.
-        if let Some(wiring) = &self.wiring {
+        // While a wire is drawn from an output, the inputs it could go to are ringed.
+        if let Some(wiring) = self.wiring.as_ref().filter(|wiring| !wiring.backward) {
             let source = geometry
                 .port(wiring.from.0, &wiring.from.1, false)
                 .and_then(|port| port.ty);
@@ -4316,6 +4362,88 @@ mod tests {
         }
     }
 
+    /// A wire dragged back from an input lands on an output, or, let go on the
+    /// background, asks for a node to feed the input.
+    #[test]
+    fn a_wire_dragged_back_from_an_input_connects_or_asks_for_a_feeder() {
+        let graph = GraphView {
+            nodes: vec![
+                node(1, vec![port("then", false, true)]).into(),
+                node(2, vec![port("in", true, true)]).into(),
+            ],
+            wires: Vec::new(),
+        };
+        let mut canvas = Canvas::new();
+        canvas.origin = Pos2::ZERO;
+        canvas.zoom = 1.0;
+        canvas.fit = false;
+        canvas.size = Vec2::new(900.0, 600.0);
+        canvas.places.insert(id(1), Pos2::new(0.0, 96.0));
+        canvas.places.insert(id(2), Pos2::new(460.0, 96.0));
+        // Where a port's dot is on its card, in graph units.
+        let dot = |n: usize, name: &str, place: Pos2| {
+            let view = &graph.nodes[n];
+            let found = view.ports.iter().find(|port| port.id == name).unwrap();
+            place + canvas.card(view).offset(found).unwrap()
+        };
+        // Just outside the card, where only the dot is.
+        let input = dot(1, "in", Pos2::new(460.0, 96.0)) - Vec2::new(4.0, 0.0);
+        let output = dot(0, "then", Pos2::new(0.0, 96.0)) - Vec2::new(4.0, 0.0);
+        let context = egui::Context::default();
+        let drag = |canvas: &mut Canvas, from: Pos2, to: Pos2| {
+            let input = from;
+            let mut response = CanvasResponse::default();
+            let mut frame = |events| {
+                let output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| response = canvas.show(ui, &graph, &[]),
+                );
+                output.drop_without_applying_deltas();
+            };
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![egui::Event::PointerMoved(input)]);
+            frame(vec![button(input, true)]);
+            frame(vec![egui::Event::PointerMoved(
+                input + Vec2::new(-20.0, 10.0),
+            )]);
+            frame(vec![egui::Event::PointerMoved(to)]);
+            frame(vec![button(to, false)]);
+            response
+        };
+        let forward = drag(
+            &mut canvas,
+            output + Vec2::new(8.0, 0.0),
+            Pos2::new(300.0, 450.0),
+        );
+        // A wire from an output still asks for a node to take it.
+        assert_eq!(
+            forward.loose.map(|(from, ..)| from),
+            Some((id(1), "then".to_owned()))
+        );
+        assert!(forward.loose_into.is_none());
+        let onto_output = drag(&mut canvas, input, output);
+        assert_eq!(
+            onto_output.connect,
+            Some(((id(1), "then".to_owned()), (id(2), "in".to_owned())))
+        );
+        let background = Pos2::new(300.0, 450.0);
+        let loose = drag(&mut canvas, input, background);
+        assert!(loose.connect.is_none() && loose.loose.is_none());
+        let Some((to, _, screen)) = loose.loose_into else {
+            panic!("letting go on the background asks for a feeder");
+        };
+        assert_eq!(to, (id(2), "in".to_owned()));
+        assert_eq!(screen, background);
+    }
     #[test]
     fn dragging_a_palette_item_previews_it_and_both_payloads_can_be_dropped() {
         let context = egui::Context::default();

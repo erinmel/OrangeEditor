@@ -1626,3 +1626,32 @@ fn a_grouped_action_is_one_undo_step_and_a_refused_one_leaves_history_alone() {
     assert_eq!(draft.can_undo(), (undo, redo));
     assert!(redo, "the redo history survives a refused action");
 }
+
+#[test]
+fn givers_offer_only_outputs_that_fit_the_input_and_triggers_for_steps() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, _nums, _value, _count, keep) = lists(&host);
+    let into_list = host.givers(&draft, (keep, "value"));
+    let reverse = into_list
+        .iter()
+        .find(|giver| giver.definition == "org.orange.collections/list-reverse")
+        .expect("a reversed list of whole numbers fits");
+    assert_eq!(reverse.output, "result");
+    assert!(
+        into_list
+            .iter()
+            .all(|giver| giver.definition != "org.orange.collections/list-length")
+    );
+    // A step input can be started by a trigger, never from a failure route.
+    let into_step = host.givers(&draft, (keep, "in"));
+    let manual = into_step
+        .iter()
+        .find(|giver| giver.definition == "core/on-manual")
+        .expect("a trigger starts a step");
+    assert_eq!(manual.output, "then");
+    assert!(
+        into_step
+            .iter()
+            .all(|giver| !["failed", "cancelled", "error", "body"].contains(&giver.output.as_str()))
+    );
+}

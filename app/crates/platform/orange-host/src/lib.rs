@@ -120,7 +120,7 @@ pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
 pub use search::{CONCEPTS, Found, Match, fold_search};
 pub use state::StoredVariable;
-pub use suggest::{SpliceSuggestion, Suggestion};
+pub use suggest::{Giver, SpliceSuggestion, Suggestion};
 pub use view::{
     AuthoringView, EnumChoice, FailureRoutes, GraphView, MissingPackage, NodeView, PortView,
     TypeChoice, VariadicView, WireView, formula,

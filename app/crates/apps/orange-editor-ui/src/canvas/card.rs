@@ -533,6 +533,13 @@ impl<'a> Card<'a> {
     pub fn row_of(&self, port: &PortView) -> Option<&Row<'a>> {
         self.rows.iter().find(|row| row.holds_input(port))
     }
+
+    /// The row an output sits on, where a wire dragged back from an input lands on it.
+    pub fn row_of_output(&self, port: &PortView) -> Option<&Row<'a>> {
+        self.rows
+            .iter()
+            .find(|row| row.right.is_some_and(|right| std::ptr::eq(right, port)))
+    }
 }
 
 #[cfg(test)]

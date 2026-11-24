@@ -41,6 +41,17 @@ pub struct SpliceSuggestion {
     pub output: String,
 }
 
+/// A node kind that can feed one input: what a wire dragged back from an input lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Giver {
+    /// The definition, such as `core/text`.
+    pub definition: String,
+    /// What the kind is called.
+    pub label: String,
+    /// The output of a new node of this kind the wire would come from.
+    pub output: String,
+}
+
 /// Outputs that never carry the flow on by guess: a failure or cancellation route, its
 /// error value, and a loop's body, which runs per item rather than after the loop.
 pub(crate) const NOT_A_CONTINUATION: [&str; 4] = ["failed", "cancelled", "error", "body"];
@@ -132,6 +143,8 @@ fn continuation(
                 .contains(&"then")
                 .then(|| "then".to_owned());
         }
+        // A trigger starts a step through `then`.
+        Ports::Manual | Ports::Timer if exec => return Some("then".to_owned()),
         _ => return None,
     };
     let outputs = declared
@@ -184,6 +197,39 @@ impl Host {
                     definition: info.definition.definition.id.as_str().to_owned(),
                     label: info.label().into_owned(),
                     input,
+                })
+            })
+            .collect();
+        found.sort_by(|a, b| a.label.cmp(&b.label).then(a.definition.cmp(&b.definition)));
+        found.dedup_by(|a, b| a.definition == b.definition);
+        found
+    }
+
+    /// The node kinds that can feed input `to` (a node of the draft's top level and one
+    /// of its inputs), with the output the wire would come from, sorted by what they are
+    /// called: what a wire dragged back from an input lists. Triggers are offered for a
+    /// step input. Empty when the input is not found.
+    pub fn givers(&self, draft: &Draft, to: (NodeId, &str)) -> Vec<Giver> {
+        let document = draft.document();
+        let Some(target) = self.wire_node_view(document, to.0).and_then(|view| {
+            view.ports
+                .into_iter()
+                .find(|port| port.input && port.id == to.1)
+        }) else {
+            return Vec::new();
+        };
+        let registry = self.registry_for(document);
+        let mut found: Vec<Giver> = self
+            .nodes()
+            .filter(|info| target.exec || info.definition.kind != NodeKind::Entry)
+            .filter_map(|info| {
+                let mut fit = PortFit::new(info.definition, &registry);
+                let output =
+                    continuation(info.definition, target.exec, target.ty.as_deref(), &mut fit)?;
+                Some(Giver {
+                    definition: info.definition.definition.id.as_str().to_owned(),
+                    label: info.label().into_owned(),
+                    output,
                 })
             })
             .collect();

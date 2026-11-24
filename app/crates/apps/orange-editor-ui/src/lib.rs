@@ -2819,6 +2819,9 @@ impl Editor {
         if let Some((from, at, screen)) = done.loose {
             self.open_quick_add(Some(from), at, screen);
         }
+        if let Some((to, at, screen)) = done.loose_into {
+            self.open_quick_add_into(to, at, screen);
+        }
         if let Some((at, screen)) = done.quick_add {
             self.open_quick_add(None, at, screen);
         }
