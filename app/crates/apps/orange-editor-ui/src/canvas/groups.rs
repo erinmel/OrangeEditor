@@ -2,7 +2,7 @@
 //! and collapsed to a small card that hides them; and arranging selected nodes along
 //! their wires. The groups themselves belong to the document ([`Group`]);
 //! the canvas draws them and says what a person asked of them.
-use super::{CanvasResponse, NODE_WIDTH, Palette, TITLE_ZOOM, auto_layout, node_size, snapped};
+use super::{CanvasResponse, NODE_WIDTH, Palette, TITLE_ZOOM, snapped};
 use crate::canvas::Canvas;
 use crate::i18n::{t, tf};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -88,7 +88,7 @@ impl Canvas {
             .filter_map(|id| {
                 Some(Rect::from_min_size(
                     *self.places.get(id)?,
-                    node_size(nodes.get(id)?),
+                    self.card(nodes.get(id)?).size,
                 ))
             })
             .reduce(|all, rect| all.union(rect))?;
@@ -502,7 +502,7 @@ impl Canvas {
                 .collect(),
         };
         let mut moved = false;
-        for (node, at) in auto_layout(&part) {
+        for (node, at) in self.auto_layout(&part) {
             let at = start + at.to_vec2();
             if let Some(place) = self.places.get_mut(&node)
                 && *place != at

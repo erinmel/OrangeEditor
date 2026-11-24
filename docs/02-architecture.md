@@ -83,6 +83,9 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
    only what an edit touched ([16](16-incremental-validation.md)).
 3. **Show.** `Host::draft_view` turns the draft into a `GraphView` of cards and wires.
    It rebuilds only the cards of nodes the edits changed; unchanged cards are shared.
+   `Host::draft_authoring_view` also includes unwired implicit failure ports and a
+   map of their identities by node, so a front end can offer them for wiring.
+   Connection edits use the current graph contract regardless of port visibility.
    Previews compute the values of pure outputs that the edit touched, never running an
    effect.
 4. **Compile.** `Host::open` resolves every node to its exact provider, validates the

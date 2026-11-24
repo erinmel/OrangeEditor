@@ -281,6 +281,13 @@ other code places anything on a card.
   it reaches its most; removing one is in Properties.
 * **A wired input keeps its name line only**, with the value it received in a pill
   at the right while a run reports it. Unwiring brings its field back.
+* **Failure routes** are available below the primary rows on cards with implicit
+  failure or cancellation ports. Expand the section with its button, with Enter or
+  Space while focused, from Properties, or with the selected card shortcut
+  (Alt+O by default). Wired routes, a pending wire's source and the focused
+  diagnostic port stay visible when collapsed. A wired Error also keeps Failed
+  visible. Error is available only on the Failed path. The disclosure is view state
+  and leaves primary port positions and graph edits intact.
 * **Edit card values in place.** Controls such as the color picker can open an
   anchored popup. Tuning settings such as the analysis window live in Properties
   under Advanced.

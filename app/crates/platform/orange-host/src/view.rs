@@ -8,6 +8,7 @@ use orange_model::document::{
 };
 use orange_model::id::{ConnectionId, EdgeId, EventDeclId, FunctionId, SignatureKey};
 use serde_json::{Value as Json, json};
+use std::collections::HashMap;
 
 fn spectrum_band_label(node: &NodeInstance, key: &PortKey) -> Option<String> {
     if node.definition.id.as_str() != "org.orange.audio/multiband-spectrum" {
@@ -288,13 +289,50 @@ pub struct GraphView {
     pub wires: Vec<WireView>,
 }
 
+/// The top-level graph with all implicit failure ports available for authoring.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AuthoringView {
+    pub graph: GraphView,
+    /// Only nodes with implicit failure ports are listed. A UI may collapse
+    /// these ports while they are unwired.
+    pub failure_routes: HashMap<NodeId, FailureRoutes>,
+}
+
+/// Implicit failure ports supplied by the language for a node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FailureRoutes(u8);
+
+impl FailureRoutes {
+    fn bit(port: &str) -> u8 {
+        match port {
+            "failed" => 1,
+            "error" => 2,
+            "cancelled" => 4,
+            _ => 0,
+        }
+    }
+
+    /// Whether this port is implicit. A declared port such as Match Result's
+    /// `error` is not in this set.
+    pub fn contains(self, port: &str) -> bool {
+        self.0 & Self::bit(port) != 0
+    }
+}
+
+#[derive(Clone)]
+struct CachedCard {
+    view: Arc<NodeView>,
+    failure_routes: FailureRoutes,
+}
+
 /// The cards of a draft's last view and the nodes edited since, so the next view
 /// builds only those again (docs/10 "Performance").
 #[derive(Default)]
 pub(crate) struct ViewCache {
     /// What every card was drawn with; a change to any of it draws every card again.
     shared: Option<SharedKey>,
-    nodes: std::collections::HashMap<NodeId, Arc<NodeView>>,
+    nodes: HashMap<NodeId, CachedCard>,
+    complete_outcomes: bool,
     /// Each top-level wire's ends, to find the cards a wire added or removed changes.
     edges: std::collections::HashMap<EdgeId, (NodeId, NodeId)>,
     /// Nodes edited since the last view.
@@ -330,7 +368,11 @@ impl ViewCache {
 
     /// Forgets every card when what all of them were drawn with changed, and the cards
     /// of nodes edited, or whose wires changed, since the last view.
-    fn forget_changed(&mut self, context: &ViewContext<'_>) {
+    fn forget_changed(&mut self, context: &ViewContext<'_>, complete_outcomes: bool) {
+        if self.complete_outcomes != complete_outcomes {
+            self.nodes.clear();
+            self.complete_outcomes = complete_outcomes;
+        }
         if !self
             .shared
             .as_ref()
@@ -447,7 +489,16 @@ impl Host {
         // Keep package definitions and saved settings in the editor. Runtime linking
         // replaces them with internal calls and can expand hidden implementation nodes.
         let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(self.view_with(draft.document(), Some(&mut cache)))
+        Ok(self
+            .view_with(draft.document(), Some(&mut cache), false)
+            .graph)
+    }
+
+    /// Like [`Host::draft_view`], with unwired implicit failure and cancellation ports
+    /// included so they can be offered for wiring.
+    pub fn draft_authoring_view(&self, draft: &Draft) -> Result<AuthoringView, HostError> {
+        let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(self.view_with(draft.document(), Some(&mut cache), true))
     }
 
     fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {
@@ -488,7 +539,7 @@ impl Host {
         document: &GraphDocument,
         from: (NodeId, &str),
     ) -> Option<PortView> {
-        self.node_view(document, from.0)?
+        self.wire_node_view(document, from.0)?
             .ports
             .into_iter()
             .find(|port| !port.input && port.id == from.1)
@@ -496,53 +547,86 @@ impl Host {
 
     /// One top-level node as the canvas draws it; `None` when the document has no such node.
     pub(crate) fn node_view(&self, document: &GraphDocument, node: NodeId) -> Option<NodeView> {
+        self.lookup_node_view(document, node, false)
+    }
+
+    /// Includes unwired implicit outcomes so editing can connect their first wires.
+    pub(crate) fn wire_node_view(
+        &self,
+        document: &GraphDocument,
+        node: NodeId,
+    ) -> Option<NodeView> {
+        self.lookup_node_view(document, node, true)
+    }
+
+    fn lookup_node_view(
+        &self,
+        document: &GraphDocument,
+        node: NodeId,
+        complete_outcomes: bool,
+    ) -> Option<NodeView> {
+        let node = document.root().nodes.get(&node)?;
         let context = self.view_context(document);
-        document
-            .root()
-            .nodes
-            .get(&node)
-            .map(|node| self.node_view_in(&context, node))
+        Some(self.node_view_in(&context, node, complete_outcomes).0)
     }
 
     fn view_of(&self, document: &GraphDocument) -> GraphView {
-        self.view_with(document, None)
+        self.view_with(document, None, false).graph
     }
 
-    fn view_with(&self, document: &GraphDocument, cache: Option<&mut ViewCache>) -> GraphView {
+    fn view_with(
+        &self,
+        document: &GraphDocument,
+        cache: Option<&mut ViewCache>,
+        complete_outcomes: bool,
+    ) -> AuthoringView {
         let context = self.view_context(document);
         let body = document.root();
+        let project = |node| {
+            let (view, failure_routes) = self.node_view_in(&context, node, complete_outcomes);
+            CachedCard {
+                view: Arc::new(view),
+                failure_routes,
+            }
+        };
+        let mut failure_routes = HashMap::new();
+        let mut into_view = |card: CachedCard| {
+            if card.failure_routes != FailureRoutes::default() {
+                let _ = failure_routes.insert(card.view.id, card.failure_routes);
+            }
+            card.view
+        };
         let nodes: Vec<Arc<NodeView>> = match cache {
-            None => body
-                .nodes
-                .values()
-                .map(|node| Arc::new(self.node_view_in(&context, node)))
-                .collect(),
+            None => body.nodes.values().map(project).map(into_view).collect(),
             Some(cache) => {
-                cache.forget_changed(&context);
+                cache.forget_changed(&context, complete_outcomes);
                 body.nodes
                     .values()
                     .map(|node| {
                         let kept = cache
                             .nodes
                             .get(&node.id)
-                            .filter(|kept| kept.name == context.names.called(&node.id));
-                        let view = match kept {
+                            .filter(|kept| kept.view.name == context.names.called(&node.id));
+                        let card = match kept {
                             // Moving a node is a layout edit, which names no node.
                             Some(kept) => {
                                 let position = position_in(context.places, node.id);
-                                if kept.position == position {
-                                    Arc::clone(kept)
+                                if kept.view.position == position {
+                                    kept.clone()
                                 } else {
-                                    Arc::new(NodeView {
-                                        position,
-                                        ..NodeView::clone(kept)
-                                    })
+                                    CachedCard {
+                                        view: Arc::new(NodeView {
+                                            position,
+                                            ..NodeView::clone(&kept.view)
+                                        }),
+                                        failure_routes: kept.failure_routes,
+                                    }
                                 }
                             }
-                            None => Arc::new(self.node_view_in(&context, node)),
+                            None => project(node),
                         };
-                        let _ = cache.nodes.insert(node.id, Arc::clone(&view));
-                        view
+                        let _ = cache.nodes.insert(node.id, card.clone());
+                        into_view(card)
                     })
                     .collect()
             }
@@ -571,10 +655,18 @@ impl Host {
                 }
             })
             .collect();
-        GraphView { nodes, wires }
+        AuthoringView {
+            graph: GraphView { nodes, wires },
+            failure_routes,
+        }
     }
 
-    fn node_view_in(&self, context: &ViewContext<'_>, node: &NodeInstance) -> NodeView {
+    fn node_view_in(
+        &self,
+        context: &ViewContext<'_>,
+        node: &NodeInstance,
+        complete_outcomes: bool,
+    ) -> (NodeView, FailureRoutes) {
         let ViewContext {
             document,
             registry,
@@ -665,10 +757,11 @@ impl Host {
                 })
         };
         // The ports a kind has without declaring them (11 §4.1): the way in and
-        // the way on come first; the routes for failure and cancelling are shown
-        // only once something is wired to them, so a card stays short.
+        // the way on come first; the compact view includes failure ports only
+        // when wired. The complete view lets the editor choose how to show them.
         let mut ports = Vec::with_capacity(declared.len() + 2);
         let mut after = Vec::new();
+        let mut failure_routes = FailureRoutes::default();
         // A node that is not set up yet (a variable node that names no variable)
         // has no contract; its kind still says which of these it has.
         let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
@@ -691,13 +784,20 @@ impl Host {
                 if declares(name, input) {
                     continue;
                 }
+                let connected = wired(node.id, name, input);
+                let route = FailureRoutes::bit(name);
+                if complete_outcomes {
+                    failure_routes.0 |= route;
+                } else if route != 0 && !connected {
+                    continue;
+                }
                 let port = PortView {
                     id: name.to_owned(),
                     input,
                     exec: name != "error",
                     ty: (name == "error").then(|| "core/error@1".to_owned()),
                     value: None,
-                    connected: wired(node.id, name, input),
+                    connected,
                     default: None,
                     label: (name == "then")
                         .then(|| shown?.then_label.as_ref())
@@ -706,9 +806,7 @@ impl Host {
                 };
                 match name {
                     "in" | "then" => ports.push(port),
-                    "body" | "completed" => after.push(port),
-                    _ if port.connected => after.push(port),
-                    _ => {}
+                    _ => after.push(port),
                 }
             }
         }
@@ -756,7 +854,7 @@ impl Host {
             })
             // A trigger shows what fires it.
             .or_else(|| trigger_detail(node.definition.id.as_str(), &node.config));
-        NodeView {
+        let view = NodeView {
             id: node.id,
             detail,
             name: names.called(&node.id),
@@ -787,7 +885,8 @@ impl Host {
                 .collect(),
             types,
             paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
-        }
+        };
+        (view, failure_routes)
     }
 }
 

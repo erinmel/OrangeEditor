@@ -205,6 +205,7 @@ action-select-all = Select all
 action-fit = Fit graph
 action-delete = Delete selection
 action-add = Find node
+action-failure-routes = Toggle failure routes for selected node
 action-run = Run graph
 action-stop = Stop graph
 action-settings = Settings
@@ -395,6 +396,11 @@ shortcuts-section-words = keymap keyboard shortcuts
 settings-empty = No matching settings
 show-left-panel = Show left panel
 show-right-panel = Show right panel
+failure-routes = Failure routes
+show-failure-routes = Show failure routes
+hide-failure-routes = Hide failure routes
+failure-routes-hint = Show or hide unwired failure routes. Wired routes stay visible.
+failure-error-hint = Available only after the Failed route runs.
 
 # Messages with arguments
 failed-last-run = Failed in the last run: { $why }

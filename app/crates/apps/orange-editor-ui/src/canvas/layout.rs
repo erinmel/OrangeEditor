@@ -1,13 +1,20 @@
 //! Layout is a topology operation, independent of painting and input handling.
 use super::{LAYOUT_GAP, NODE_WIDTH, node_size};
-use egui::Pos2;
-use orange_host::{GraphView, NodeId};
+use egui::{Pos2, Vec2};
+use orange_host::{GraphView, NodeId, NodeView};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// Places unsaved nodes in columns along the wires, keeping every saved position.
 /// Cycles and their blocked descendants use the columns reached from acyclic roots;
 /// nodes sharing a column are stacked in document order. Dangling wires are ignored.
 pub fn auto_layout(graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
+    auto_layout_with(graph, node_size)
+}
+
+pub(super) fn auto_layout_with(
+    graph: &GraphView,
+    size: impl Fn(&NodeView) -> Vec2,
+) -> BTreeMap<NodeId, Pos2> {
     if graph.nodes.iter().all(|node| node.position.is_some()) {
         return graph
             .nodes
@@ -45,8 +52,9 @@ pub fn auto_layout(graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
         }
     }
     let mut widths = vec![NODE_WIDTH; graph.nodes.len()];
-    for (index, node) in graph.nodes.iter().enumerate() {
-        widths[column[index]] = widths[column[index]].max(node_size(node).x);
+    let sizes: Vec<_> = graph.nodes.iter().map(|node| size(node)).collect();
+    for (index, size) in sizes.iter().enumerate() {
+        widths[column[index]] = widths[column[index]].max(size.x);
     }
     let mut starts = vec![0.0; graph.nodes.len()];
     for index in 1..starts.len() {
@@ -57,7 +65,7 @@ pub fn auto_layout(graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
     for (index, node) in graph.nodes.iter().enumerate() {
         let at = column[index];
         let placed = Pos2::new(starts[at], next_y[at]);
-        next_y[at] += node_size(node).y + LAYOUT_GAP.y;
+        next_y[at] += sizes[index].y + LAYOUT_GAP.y;
         let place = node.position.map_or(placed, |[x, y]| Pos2::new(x, y));
         let _ = places.insert(node.id, place);
     }

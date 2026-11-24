@@ -42,6 +42,12 @@ const ACTION_GROUPS: &[(&str, &[Action])] = &[
             ("group", "action-group", Key::G, CMD),
             ("ungroup", "action-ungroup", Key::G, CMD_SHIFT),
             ("snap", "action-snap", Key::G, Modifiers::ALT),
+            (
+                "failure-routes",
+                "action-failure-routes",
+                Key::O,
+                Modifiers::ALT,
+            ),
             ("select-all", "action-select-all", Key::A, CMD),
             ("fit", "action-fit", Key::Home, BARE),
             ("delete", "action-delete", Key::Delete, BARE),
@@ -394,6 +400,15 @@ impl crate::Editor {
                 "function" if !self.canvas.selection().is_empty() => self.preview_function(host),
                 "fit" => self.canvas.fit(),
                 "snap" => self.canvas.snap = !self.canvas.snap,
+                "failure-routes"
+                    if self.quick.is_none()
+                        && self.menu.is_none()
+                        && self.node_config_menu.is_none() =>
+                {
+                    if let Some(node) = self.canvas.selected() {
+                        self.canvas.toggle_failure_routes(node);
+                    }
+                }
                 "left-panel" => self.toggle_left_panel(),
                 "right-panel" => self.toggle_right_panel(),
                 "run" => self.run_asked = true,

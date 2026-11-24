@@ -50,11 +50,10 @@ impl<'a> Geometry<'a> {
                     }
                 }
             }
-            let _ = cards.insert(node.id, layout);
-            let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
-            if let (Some(port), None) = (exec.next(), exec.next()) {
-                let _ = sole_exec_outputs.insert(node.id, port.id.as_str());
+            if let Some(port) = layout.sole_primary_exit {
+                let _ = sole_exec_outputs.insert(node.id, port);
             }
+            let _ = cards.insert(node.id, layout);
         }
         let mut incoming = HashMap::with_capacity(graph.wires.len());
         for wire in &graph.wires {

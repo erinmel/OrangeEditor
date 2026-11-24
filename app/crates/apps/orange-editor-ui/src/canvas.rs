@@ -386,6 +386,9 @@ struct GridCacheKey {
 #[derive(Debug, Clone)]
 pub struct Canvas {
     grid_cache: Option<(GridCacheKey, std::sync::Arc<egui::Mesh>)>,
+    failure_routes: HashMap<NodeId, orange_host::FailureRoutes>,
+    expanded_failure_routes: HashSet<NodeId>,
+    focused_failure_port: Option<(NodeId, String)>,
     pub(crate) waypoints: HashMap<WireEnds, [f32; 2]>,
     pub(crate) audio_running: bool,
     pub(crate) spectra: BTreeMap<NodeId, Vec<f64>>,
@@ -472,6 +475,9 @@ pub struct Canvas {
 impl Default for Canvas {
     fn default() -> Self {
         Self {
+            failure_routes: HashMap::new(),
+            expanded_failure_routes: HashSet::new(),
+            focused_failure_port: None,
             audio_running: false,
             spectra: BTreeMap::new(),
             collapsed_spectra: BTreeSet::new(),
@@ -728,12 +734,14 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.expanded_failure_routes.clear();
+        self.focused_failure_port = None;
         self.expanded_text = None;
         self.text_heights.clear();
         self.selected_group_frame = None;
         self.collapsed_spectra.clear();
         self.titles = titles(graph);
-        self.places = auto_layout(graph);
+        self.places = self.auto_layout(graph);
         self.forget_missing();
         self.fit = true;
     }
@@ -760,7 +768,7 @@ impl Canvas {
             .nodes
             .iter()
             .any(|node| !self.places.contains_key(&node.id) && node.position.is_none());
-        let automatic = needs_layout.then(|| auto_layout(graph));
+        let automatic = needs_layout.then(|| self.auto_layout(graph));
         let retained: HashSet<_> = graph.nodes.iter().map(|node| node.id).collect();
         self.places.retain(|id, _| retained.contains(id));
         for node in &graph.nodes {
@@ -798,6 +806,42 @@ impl Canvas {
         }
     }
 
+    pub(crate) fn set_failure_routes(
+        &mut self,
+        routes: HashMap<NodeId, orange_host::FailureRoutes>,
+    ) {
+        self.expanded_failure_routes
+            .retain(|node| routes.contains_key(node));
+        if self
+            .focused_failure_port
+            .as_ref()
+            .is_some_and(|(node, port)| {
+                !routes.get(node).is_some_and(|routes| routes.contains(port))
+            })
+        {
+            self.focused_failure_port = None;
+        }
+        self.failure_routes = routes;
+    }
+
+    pub(crate) fn has_failure_routes(&self, node: NodeId) -> bool {
+        self.failure_routes.contains_key(&node)
+    }
+
+    pub(crate) fn failure_routes_expanded(&self, node: NodeId) -> bool {
+        self.expanded_failure_routes.contains(&node)
+    }
+
+    pub(crate) fn toggle_failure_routes(&mut self, node: NodeId) {
+        if self.has_failure_routes(node) && !self.expanded_failure_routes.remove(&node) {
+            self.expanded_failure_routes.insert(node);
+        }
+    }
+
+    fn auto_layout(&self, graph: &GraphView) -> BTreeMap<NodeId, Pos2> {
+        layout::auto_layout_with(graph, |node| self.card(node).size)
+    }
+
     /// The size of the canvas when it was last shown, in points.
     pub fn size(&self) -> [f32; 2] {
         [self.size.x, self.size.y]
@@ -826,6 +870,13 @@ impl Canvas {
             1 => self.selection.first().copied(),
             _ => None,
         };
+        if self
+            .focused_failure_port
+            .as_ref()
+            .is_some_and(|(node, _)| Some(*node) != self.selected)
+        {
+            self.focused_failure_port = None;
+        }
         if self.selected.is_some() {
             self.front = self.selected;
         }
@@ -1056,9 +1107,29 @@ impl Canvas {
     }
 
     fn card<'a>(&self, node: &'a NodeView) -> card::Card<'a> {
-        card::Card::with_controls(node, !self.collapsed_spectra.contains(&node.id), |port| {
-            self.text_heights.get(&node.id)?.get(&port.id).copied()
-        })
+        let failure = self
+            .failure_routes
+            .get(&node.id)
+            .map(|&ports| card::FailureRows {
+                ports,
+                expanded: self.failure_routes_expanded(node.id),
+                pending: self
+                    .wiring
+                    .as_ref()
+                    .filter(|wire| wire.from.0 == node.id)
+                    .map(|wire| wire.from.1.as_str()),
+                diagnostic: self
+                    .focused_failure_port
+                    .as_ref()
+                    .filter(|(id, _)| *id == node.id)
+                    .map(|(_, port)| port.as_str()),
+            });
+        card::Card::with_controls(
+            node,
+            !self.collapsed_spectra.contains(&node.id),
+            failure,
+            |port| self.text_heights.get(&node.id)?.get(&port.id).copied(),
+        )
     }
 
     fn bounds(&self, graph: &GraphView) -> Option<Rect> {
@@ -1401,9 +1472,20 @@ impl Canvas {
         ) else {
             return;
         };
+        self.select(Some(node));
         let middle = place + self.card(shown).size / 2.0;
         self.origin = middle - self.size / (2.0 * self.zoom);
-        self.select(Some(node));
+    }
+
+    pub(crate) fn focus_problem(&mut self, graph: &GraphView, node: NodeId, port: Option<String>) {
+        self.focused_failure_port = port
+            .filter(|port| {
+                self.failure_routes
+                    .get(&node)
+                    .is_some_and(|routes| routes.contains(port))
+            })
+            .map(|port| (node, port));
+        self.focus(graph, node);
     }
 
     /// Draws the graph into the space left in `ui` and applies panning, zooming,
@@ -1694,7 +1776,12 @@ impl Canvas {
             )) {
                 continue;
             }
-            for port in &node.ports {
+            for port in geometry
+                .card(node.id)
+                .rows
+                .iter()
+                .flat_map(|row| [row.input(), row.right].into_iter().flatten())
+            {
                 let Some(port_geometry) = geometry.port(node.id, &port.id, port.input) else {
                     continue;
                 };
@@ -1744,6 +1831,16 @@ impl Canvas {
                     let hint = match detail {
                         Some(ty) => format!("{label} · {ty}"),
                         None => label,
+                    };
+                    let hint = if port.id == "error"
+                        && self
+                            .failure_routes
+                            .get(&node.id)
+                            .is_some_and(|routes| routes.contains(&port.id))
+                    {
+                        format!("{hint}\n{}", t("failure-error-hint"))
+                    } else {
+                        hint
                     };
                     let _ = touched.on_hover_text(hint);
                 }
@@ -2128,7 +2225,7 @@ impl Canvas {
             } else {
                 self.display_name(node)
             };
-            let (pressed, slots) = draw_node(
+            let (pressed, toggle_failure_routes, slots) = draw_node(
                 ui,
                 &painter,
                 node,
@@ -2167,8 +2264,17 @@ impl Canvas {
             if pressed {
                 done.trigger = Some(node.id);
             }
+            if toggle_failure_routes {
+                self.toggle_failure_routes(node.id);
+                ui.ctx().request_repaint();
+            }
             // A way out a step just left through glows, whether a wire takes it or not.
-            for port in node.ports.iter().filter(|port| port.exec && !port.input) {
+            for port in layout
+                .rows
+                .iter()
+                .filter_map(|row| row.right)
+                .filter(|port| port.exec)
+            {
                 let glow = self.exit_glow(&geometry, node.id, &port.id);
                 if glow <= 0.0 {
                     continue;
@@ -2897,7 +3003,7 @@ pub(crate) fn preview_card(ui: &mut egui::Ui, node: &NodeView, name: &str, rect:
     }
 }
 
-/// Draws one card. Returns whether its trigger button was pressed.
+/// Draws one card. Returns whether its trigger or failure routes button was pressed.
 /// `flags` are whether the card is selected, has a trigger button and shows controls
 /// for its values. Also returns where each input's control goes.
 #[expect(clippy::too_many_arguments, reason = "one card's drawing state")]
@@ -2915,7 +3021,7 @@ fn draw_node<'a>(
     formula: Option<&str>,
     description: Option<&str>,
     (connection, profile): (Option<&str>, Option<&str>),
-) -> (bool, Vec<(card::FieldOf<'a>, Rect)>) {
+) -> (bool, bool, Vec<(card::FieldOf<'a>, Rect)>) {
     let radius = CARD_RADIUS * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
@@ -2952,6 +3058,7 @@ fn draw_node<'a>(
     let pad = CARD_PADDING * zoom;
     let font = FontId::proportional(12.5 * zoom);
     let mut pressed = false;
+    let mut toggle_failure_routes = false;
     let mut slots = Vec::new();
     if zoom >= TITLE_ZOOM {
         let title = FontId::proportional((14.0 * zoom).max(9.0));
@@ -3056,6 +3163,22 @@ fn draw_node<'a>(
             }
         }
         match row.left {
+            Some(card::Left::FailureRoutes { expanded }) if readable => {
+                let height = (row.height - 4.0) * zoom;
+                let button = Rect::from_center_size(
+                    Pos2::new(rect.center().x, y),
+                    Vec2::new(rect.width() - 2.0 * pad, height),
+                );
+                toggle_failure_routes = failure_routes_button(
+                    ui,
+                    painter,
+                    button,
+                    zoom,
+                    colors,
+                    canvas.with(("failure-routes", node.id)),
+                    expanded,
+                );
+            }
             Some(card::Left::Fire) => {
                 let Some(live) = fire else { continue };
                 let size = Vec2::new(64.0, 22.0) * zoom;
@@ -3178,10 +3301,61 @@ fn draw_node<'a>(
                     }
                 }
             }
-            None => {}
+            Some(card::Left::FailureRoutes { .. }) | None => {}
         }
     }
-    (pressed, slots)
+    (pressed, toggle_failure_routes, slots)
+}
+
+fn failure_routes_button(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    zoom: f32,
+    colors: &Palette,
+    id: egui::Id,
+    expanded: bool,
+) -> bool {
+    let response = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_text(t("failure-routes-hint"))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            ui.is_enabled(),
+            expanded,
+            t("failure-routes"),
+        )
+    });
+    let tint = if response.hovered() || response.has_focus() {
+        colors.selected
+    } else {
+        colors.text
+    };
+    if response.has_focus() {
+        painter.rect_stroke(rect, 4.0 * zoom, Stroke::new(1.0, tint), StrokeKind::Inside);
+    }
+    let left = rect.left_center() + Vec2::X * (4.0 * zoom);
+    painter.text(
+        left,
+        Align2::LEFT_CENTER,
+        if expanded {
+            crate::icons::COLLAPSE
+        } else {
+            crate::icons::EXPAND
+        },
+        FontId::new(14.0 * zoom, crate::icons::family()),
+        tint,
+    );
+    painter.text(
+        left + Vec2::X * (18.0 * zoom),
+        Align2::LEFT_CENTER,
+        t("failure-routes"),
+        FontId::proportional(12.0 * zoom),
+        tint,
+    );
+    response.clicked()
 }
 
 /// Draws a connector shape, filled when wired.

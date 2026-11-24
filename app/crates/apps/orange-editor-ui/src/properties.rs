@@ -1177,6 +1177,20 @@ impl Editor {
                 if http {
                     self.values_section(ui, &node);
                 }
+                if self.canvas.has_failure_routes(node.id) {
+                    let label = if self.canvas.failure_routes_expanded(node.id) {
+                        t("hide-failure-routes")
+                    } else {
+                        t("show-failure-routes")
+                    };
+                    if ui
+                        .button(label)
+                        .on_hover_text(t("failure-routes-hint"))
+                        .clicked()
+                    {
+                        self.canvas.toggle_failure_routes(node.id);
+                    }
+                }
                 let has_settings = node
                     .schema
                     .as_ref()

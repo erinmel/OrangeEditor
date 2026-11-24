@@ -120,7 +120,8 @@ pub use search::{CONCEPTS, Found, Match, fold_search};
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
 pub use view::{
-    EnumChoice, GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula,
+    AuthoringView, EnumChoice, FailureRoutes, GraphView, NodeView, PortView, TypeChoice,
+    VariadicView, WireView, formula,
 };
 
 /// Identifies one flow for the life of its host. Never reused.

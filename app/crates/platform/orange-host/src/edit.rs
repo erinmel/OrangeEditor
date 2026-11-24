@@ -1017,7 +1017,7 @@ impl Host {
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
         let exec = |end: PortEnd<'_>, input: bool| {
-            self.node_view(draft.document(), end.0)
+            self.wire_node_view(draft.document(), end.0)
                 .and_then(|node| {
                     node.ports
                         .into_iter()
@@ -1072,17 +1072,11 @@ impl Host {
             return Ok(false);
         };
         // Problems that name the new wire are the reason it cannot be made.
-        let against: Vec<Diagnostic> = self
-            .problems(draft)?
-            .into_iter()
-            .filter(|diagnostic| diagnostic.subject.edge == Some(edge_id))
-            .collect();
-        if against.is_empty() {
-            Ok(true)
-        } else {
+        if let Err(error) = self.check_splice(draft, &[edge_id]) {
             draft.withdraw(redo);
-            Err(HostError::Invalid(against))
+            return Err(error);
         }
+        Ok(true)
     }
 
     /// A For Each follows what is wired into its `items`: a map switches it to map mode

@@ -61,15 +61,24 @@ fn edit_timing() {
         document.names = time!("names", runs, {
             Names::of_document(&host, document.draft.document()).without_ids()
         });
-        let before = time!("draft view", runs, {
-            document.replace_graph(host.draft_view(&document.draft).unwrap_or_default())
+        let (before, failure_routes) = time!("draft view", runs, {
+            let orange_host::AuthoringView {
+                graph,
+                failure_routes,
+            } = host
+                .draft_authoring_view(&document.draft)
+                .unwrap_or_default();
+            (document.replace_graph(graph), failure_routes)
         });
         let touched = time!("touched", runs, {
             touched_by_edit(&before, &document.graph)
         });
         document.declared = time!("declarations", runs, { host.declarations(&document.draft) });
         let graph = document.graph.clone();
-        time!("canvas update", runs, editor.canvas.update(&graph));
+        time!("canvas update", runs, {
+            editor.canvas.set_failure_routes(failure_routes);
+            editor.canvas.update(&graph);
+        });
         let document = editor.document.as_ref().unwrap();
         let enums = time!("enums", runs, {
             canvas::enums_of(&host, &document.draft, &document.graph, &document.declared)

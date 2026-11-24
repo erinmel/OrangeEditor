@@ -204,6 +204,7 @@ action-select-all = Seleccionar todo
 action-fit = Ajustar grafo
 action-delete = Eliminar selección
 action-add = Buscar nodo
+action-failure-routes = Mostrar u ocultar las rutas de fallo del nodo seleccionado
 action-run = Ejecutar grafo
 action-stop = Detener grafo
 action-settings = Ajustes
@@ -394,6 +395,11 @@ shortcuts-section-words = atajos teclado keymap keyboard shortcuts
 settings-empty = No hay ajustes que coincidan
 show-left-panel = Mostrar panel izquierdo
 show-right-panel = Mostrar panel derecho
+failure-routes = Rutas de fallo
+show-failure-routes = Mostrar rutas de fallo
+hide-failure-routes = Ocultar rutas de fallo
+failure-routes-hint = Muestra u oculta las rutas de fallo sin conexión. Las rutas conectadas siguen visibles.
+failure-error-hint = Disponible solo después de que se ejecute la ruta Falló.
 
 # Mensajes con argumentos
 failed-last-run = Falló en la última ejecución: { $why }

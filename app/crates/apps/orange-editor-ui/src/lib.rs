@@ -624,7 +624,11 @@ impl Editor {
                 return;
             }
         };
-        let graph = host.draft_view(&draft).unwrap_or_default();
+        let orange_host::AuthoringView {
+            graph,
+            failure_routes,
+        } = host.draft_authoring_view(&draft).unwrap_or_default();
+        self.canvas.set_failure_routes(failure_routes);
         self.canvas.load(&graph);
         self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
         self.canvas.set_groups(draft.groups());
@@ -705,12 +709,19 @@ impl Editor {
             return;
         };
         document.names = Names::of_document(host, document.draft.document()).without_ids();
-        let before = document.replace_graph(host.draft_view(&document.draft).unwrap_or_default());
+        let orange_host::AuthoringView {
+            graph,
+            failure_routes,
+        } = host
+            .draft_authoring_view(&document.draft)
+            .unwrap_or_default();
+        let before = document.replace_graph(graph);
         // Only what the edit touched, and what follows it, can preview differently.
         let touched = touched_by_edit(&before, &document.graph);
         document.declared = host.declarations(&document.draft);
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
+        self.canvas.set_failure_routes(failure_routes);
         self.canvas.update(&document.graph);
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);

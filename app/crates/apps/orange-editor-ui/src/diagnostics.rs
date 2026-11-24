@@ -139,6 +139,7 @@ impl ProblemLevel {
 pub(super) struct ProblemLocation {
     pub(super) node: Option<NodeId>,
     pub(super) level: ProblemLevel,
+    output: Option<orange_host::PortKey>,
     code: &'static str,
 }
 
@@ -273,6 +274,7 @@ impl Document {
                 self.problems.push(other.to_string());
                 self.problem_locations.push(ProblemLocation {
                     node: None,
+                    output: None,
                     level: ProblemLevel::Blocker,
                     code: "",
                 });
@@ -313,6 +315,14 @@ impl Document {
         }
         self.problem_locations.push(ProblemLocation {
             node,
+            output: diagnostic
+                .subject
+                .port
+                .as_ref()
+                .filter(|_| {
+                    diagnostic.subject.port_direction != Some(orange_host::PortDirection::Input)
+                })
+                .cloned(),
             level,
             code: diagnostic.code.as_str(),
         });
@@ -730,15 +740,16 @@ impl Editor {
                                 egui::WidgetInfo::labeled(egui::Role::Button, true, label)
                             });
                             if response.clicked() {
-                                focus = Some(node);
+                                focus =
+                                    Some((node, location.output.as_ref().map(ToString::to_string)));
                             }
                         }
                         ui.add(egui::Label::new(text).wrap().selectable(true));
                     });
                 }
             });
-        if let Some(node) = focus {
-            self.canvas.focus(&document.graph, node);
+        if let Some((node, port)) = focus {
+            self.canvas.focus_problem(&document.graph, node, port);
         }
     }
 }
@@ -875,6 +886,7 @@ mod tests {
         ]
         .map(|(level, code)| ProblemLocation {
             node: Some(node),
+            output: None,
             level,
             code,
         })

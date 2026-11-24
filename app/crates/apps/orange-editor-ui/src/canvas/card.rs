@@ -70,10 +70,16 @@ impl<'a> FieldOf<'a> {
 pub(super) enum Left<'a> {
     /// On manual's Fire button.
     Fire,
+    FailureRoutes {
+        expanded: bool,
+    },
     /// A port with only its name: the way in, a wired input, or an input nobody types.
     Port(&'a PortView),
     /// An editable value: a name line, unless `named` is false, and its control.
-    Field { editor: FieldOf<'a>, named: bool },
+    Field {
+        editor: FieldOf<'a>,
+        named: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,8 +152,17 @@ impl<'a> Row<'a> {
 pub(super) struct Card<'a> {
     pub size: Vec2,
     pub rows: Vec<Row<'a>>,
+    pub sole_primary_exit: Option<&'a str>,
     /// The node has nothing to show yet: its body says to set it up.
     pub empty: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FailureRows<'a> {
+    pub ports: orange_host::FailureRoutes,
+    pub expanded: bool,
+    pub pending: Option<&'a str>,
+    pub diagnostic: Option<&'a str>,
 }
 
 /// Whether `ty` is a stream: a connection between nodes, never a value to type or show.
@@ -189,17 +204,21 @@ pub(super) fn literal(node: &NodeView) -> bool {
 
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
-        Self::with_controls(node, true, |_| None)
+        Self::with_controls(node, true, None, |_| None)
     }
 
     pub fn with_controls(
         node: &'a NodeView,
         chart_open: bool,
+        failure: Option<FailureRows<'_>>,
         text_height: impl Fn(&PortView) -> Option<f32>,
     ) -> Self {
         if spectrum::is_noise(node) {
             return Self::meter(node);
         }
+        let primary = |port: &&PortView| {
+            port.input || failure.is_none_or(|routes| !routes.ports.contains(&port.id))
+        };
         let literal = literal(node);
         let width = if literal {
             LITERAL_WIDTH
@@ -250,7 +269,12 @@ impl<'a> Card<'a> {
             .ports
             .iter()
             .filter(|port| port.exec && !port.input)
+            .filter(primary)
             .collect();
+        let sole_primary_exit = match outs.as_slice() {
+            [port] => Some(port.id.as_str()),
+            _ => None,
+        };
         for index in 0..ins.len().max(outs.len()) {
             push(&mut rows, ins.get(index).copied(), outs.get(index).copied());
         }
@@ -340,6 +364,7 @@ impl<'a> Card<'a> {
             .ports
             .iter()
             .filter(|port| !port.exec && !port.input)
+            .filter(primary)
             .collect();
         // A splitter's band outputs read from low to high frequency, whatever order the
         // bands were drawn in.
@@ -377,9 +402,42 @@ impl<'a> Card<'a> {
         if empty {
             push(&mut rows, None, None);
         }
+        if let Some(routes) = failure {
+            push(
+                &mut rows,
+                Some(Left::FailureRoutes {
+                    expanded: routes.expanded,
+                }),
+                None,
+            );
+            let mut auxiliary = [None; 3];
+            for port in node.ports.iter().filter(|port| !port.input) {
+                if !routes.ports.contains(&port.id) {
+                    continue;
+                }
+                match port.id.as_str() {
+                    "failed" => auxiliary[0] = Some(port),
+                    "cancelled" => auxiliary[1] = Some(port),
+                    "error" => auxiliary[2] = Some(port),
+                    _ => {}
+                }
+            }
+            let error_wired = auxiliary[2].is_some_and(|port| port.connected);
+            for port in auxiliary.into_iter().flatten() {
+                if routes.expanded
+                    || port.connected
+                    || routes.pending == Some(port.id.as_str())
+                    || routes.diagnostic == Some(port.id.as_str())
+                    || (error_wired && port.id == "failed")
+                {
+                    push(&mut rows, None, Some(port));
+                }
+            }
+        }
         Self {
             size: Vec2::new(width, y + END),
             rows,
+            sole_primary_exit,
             empty,
         }
     }
@@ -448,6 +506,7 @@ impl<'a> Card<'a> {
         Self {
             size: Vec2::new(METER_WIDTH, y.max(stream_y) + END),
             rows,
+            sole_primary_exit: None,
             empty: false,
         }
     }

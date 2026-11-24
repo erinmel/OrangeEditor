@@ -98,6 +98,137 @@ fn view_connectivity_matches_edges_after_disconnect_and_reconnect() {
 }
 
 #[test]
+fn authoring_view_exposes_implicit_outcomes_without_changing_the_compact_view() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let wait = host.add_node(&mut draft, "core/wait", [0.0, 0.0]).unwrap();
+    let result = host
+        .add_node(&mut draft, "core/match-result", [320.0, 0.0])
+        .unwrap();
+    let ports = |view: &orange_host::GraphView, id| {
+        view.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .ports
+            .iter()
+            .map(|port| port.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let compact = host.draft_view(&draft).unwrap();
+    assert_eq!(ports(&compact, wait), ["then", "in", "duration"]);
+    let complete = host.draft_authoring_view(&draft).unwrap();
+    assert_eq!(
+        ports(&complete.graph, wait),
+        ["then", "in", "duration", "failed", "error", "cancelled"]
+    );
+    let routes = complete.failure_routes[&wait];
+    assert!(routes.contains("failed") && routes.contains("error") && routes.contains("cancelled"));
+    assert!(!routes.contains("then"));
+    let routes = complete.failure_routes[&result];
+    assert!(routes.contains("failed") && !routes.contains("error"));
+    assert!(ports(&complete.graph, result).contains(&"error".to_owned()));
+    let repeated = host.draft_authoring_view(&draft).unwrap();
+    assert!(
+        complete
+            .graph
+            .nodes
+            .iter()
+            .zip(&repeated.graph.nodes)
+            .all(|(before, after)| std::sync::Arc::ptr_eq(before, after))
+    );
+    assert_eq!(host.draft_view(&draft).unwrap(), compact);
+    assert_eq!(host.view(&draft.text().unwrap()).unwrap(), compact);
+}
+
+#[test]
+fn first_failure_and_cancellation_wires_connect_and_error_uses_the_failure_path() {
+    use orange_host::Connected;
+    use orange_model::validation::DiagnosticCode;
+    use orange_sdk::Definition;
+
+    let read = Definition::node("acme.kit", "read-failure", "Read failure")
+        .input("fault", "core/error@1")
+        .build();
+    let package = orange_host::ServicePackage::new("acme.kit", "1.0.0")
+        .node(&read, Nothing)
+        .unwrap();
+    let (host, _) = Host::with_services(HostOptions::default(), vec![package]).unwrap();
+    let (mut draft, trigger, cancelled) = built(&host);
+    let wait = host
+        .add_node(&mut draft, "core/wait", [320.0, 0.0])
+        .unwrap();
+    let read = host
+        .add_node(&mut draft, "acme.kit/read-failure", [640.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_input(&mut draft, (wait, "duration"), Some("1000000"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (trigger, "then"), (wait, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (wait, "then"), (read, "in"))
+            .unwrap()
+    );
+    let content = |draft: &Draft| {
+        let mut saved: Json = serde_json::from_str(&draft.text().unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("revision");
+        saved
+    };
+    let before = content(&draft);
+    match host.connect(&mut draft, (wait, "error"), (read, "fault")) {
+        Err(HostError::Invalid(issues)) => {
+            assert!(
+                issues
+                    .iter()
+                    .any(|issue| issue.code == DiagnosticCode::UnavailableValue)
+            );
+        }
+        other => panic!("Expected the success path to refuse the error value, got {other:?}"),
+    }
+    assert_eq!(content(&draft), before);
+    assert!(
+        host.disconnect_wire(&mut draft, (wait, "then"), (read, "in"))
+            .unwrap()
+    );
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "failed"), (read, "in"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "error"), (read, "fault"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    let without_cancelled = content(&draft);
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "cancelled"), (cancelled, "in"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let wired = content(&draft);
+    let reopened = host.draft(&draft.text().unwrap()).unwrap();
+    let legacy = host.draft_view(&reopened).unwrap();
+    for (route, exec) in [("failed", true), ("error", false), ("cancelled", true)] {
+        assert!(
+            legacy
+                .wires
+                .iter()
+                .any(|edge| edge.from == (wait, route.to_owned()) && edge.exec == exec)
+        );
+    }
+    assert!(draft.undo());
+    assert_eq!(content(&draft), without_cancelled);
+    assert!(draft.redo());
+    assert_eq!(content(&draft), wired);
+}
+
+#[test]
 fn a_graph_is_built_from_an_empty_document_and_runs() {
     let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     // Half built, the document says what it still needs instead of being refused.
