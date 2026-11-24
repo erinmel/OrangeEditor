@@ -215,14 +215,7 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
             .permissions(&bytes)
             .map_err(|error| format!("{path}: {error}"))?;
         let given = asks.within(arguments.grants);
-        for (name, asked, granted) in [
-            ("log", asks.log, given.log),
-            ("files", asks.files, given.files),
-            ("http", asks.http, given.http),
-            ("http-local", asks.http_local, given.http_local),
-            ("compute", asks.compute, given.compute),
-            ("websocket", asks.websocket, given.websocket),
-        ] {
+        for ((name, asked), (_, granted)) in asks.named().into_iter().zip(given.named()) {
             if asked && !granted {
                 notice(
                     arguments,

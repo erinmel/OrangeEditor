@@ -195,12 +195,31 @@ fn first_failure_and_cancellation_wires_connect_and_error_uses_the_failure_path(
             .unwrap()
     );
     assert_eq!(
-        host.connect_through(&mut draft, (wait, "failed"), (read, "in"), None)
+        host.connect_through(&mut draft, (wait, "error"), (read, "fault"), None)
             .unwrap(),
         Connected::Wired
     );
+    let mut cancellation_consumes_error = host.draft(&draft.text().unwrap()).unwrap();
+    // The wire itself is a valid continuation. The existing data edge becomes
+    // unavailable once this continuation owns the consumer.
     assert_eq!(
-        host.connect_through(&mut draft, (wait, "error"), (read, "fault"), None)
+        host.connect_through(
+            &mut cancellation_consumes_error,
+            (wait, "cancelled"),
+            (read, "in"),
+            None,
+        )
+        .unwrap(),
+        Connected::Wired
+    );
+    assert!(
+        host.problems(&mut cancellation_consumes_error)
+            .unwrap()
+            .iter()
+            .any(|issue| issue.code == DiagnosticCode::UnavailableValue)
+    );
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "failed"), (read, "in"), None)
             .unwrap(),
         Connected::Wired
     );
@@ -1458,6 +1477,13 @@ fn for_each_follows_a_wired_map_or_list() {
             .unwrap()
     );
     let value = output(host, &draft, names);
+    let impact = host
+        .for_each_wire_impact(&draft, (names, &value), (each, "items"))
+        .unwrap();
+    assert_eq!(
+        (impact.mode, impact.items_wire, impact.body_wires),
+        ("list", true, 1)
+    );
     assert!(matches!(
         host.connect_through(&mut draft, (names, &value), (each, "items"), None)
             .unwrap(),

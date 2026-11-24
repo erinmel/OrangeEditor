@@ -1,6 +1,41 @@
 //! The life of a flow: preparing a document, starting it on its own thread, editing it
 //! while it runs, controlling and observing it, and closing it.
 use super::*;
+
+/// A typed manual input captured from one incarnation of a running flow.
+/// The type and its codec stay tied to that run while a front end edits a sample.
+#[derive(Debug, Clone)]
+pub struct ManualPayload {
+    flow: FlowId,
+    node: NodeId,
+    generation: Arc<()>,
+    pub ty: TypeExpr,
+    pub editor: LiteralEditor,
+}
+
+fn manual_types(prepared: &Prepared) -> BTreeMap<NodeId, TypeExpr> {
+    prepared
+        .manual_entries
+        .iter()
+        .filter_map(|(id, payload)| {
+            if !payload {
+                return None;
+            }
+            let node = prepared.document.root().nodes.get(id)?;
+            let contract = prepared
+                .registry
+                .contract(&prepared.document, node)
+                .ok()??;
+            let ty = contract
+                .ports
+                .iter()
+                .find(|port| port.port_id.as_str() == "payload")?
+                .ty
+                .as_ref()?;
+            Some((*id, ty.clone()))
+        })
+        .collect()
+}
 use orange_runtime::RunInbox;
 use std::sync::atomic::AtomicU8;
 
@@ -214,7 +249,7 @@ impl Host {
     pub(crate) fn stage_feeds(
         sink: &Sink,
         id: FlowId,
-        shared: &Arc<flow::Shared>,
+        shared: &Arc<Shared>,
         inbox: &RunInbox,
         thread: &thread::Thread,
         feeds: Vec<Feed>,
@@ -349,6 +384,7 @@ impl Host {
         let now = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let (mut driver, inbox) = RunDriver::new(run, self.options.inbox_capacity.max(1), now);
         let sources = flow::event_sources(&mut driver, &prepared.plan);
+        let manual_types = manual_types(&prepared);
         let info = FlowInfo {
             graph: prepared.document.graph_id(),
             manual_entries: prepared.manual_entries,
@@ -432,6 +468,9 @@ impl Host {
             .insert(id, thread.thread().clone());
         let flow = Flow {
             info,
+            manual_types,
+            manual_registry: Arc::clone(&prepared.registry),
+            manual_generation: Arc::new(()),
             inbox,
             sources,
             shared,
@@ -485,6 +524,8 @@ impl Host {
             ));
         }
         let prepared = self.prepare(document, semantic, Some(&previous))?;
+        let payload_types = manual_types(&prepared);
+        let payload_registry = Arc::clone(&prepared.registry);
         let keep = self.keep(&prepared.document, &prepared.registry);
         let (reply, answer) = channel();
         let swap = flow::Swap {
@@ -533,6 +574,9 @@ impl Host {
         // Sources of the old graph fed its mailbox; replace them with the new graph's.
         current.feeds.clear();
         current.inbox = swapped.inbox;
+        current.manual_types = payload_types;
+        current.manual_registry = payload_registry;
+        current.manual_generation = Arc::new(());
         current.info.manual_entries = prepared.manual_entries;
         current.info.events = swapped.sources.keys().copied().collect();
         current.sources = swapped.sources;
@@ -604,6 +648,45 @@ impl Host {
                 wall_ns: wall_ns(),
             },
         )
+    }
+
+    /// Gets a typed sample request from the running plan, including its exact codec.
+    pub fn manual_payload(&self, flow: FlowId, node: NodeId) -> Option<ManualPayload> {
+        let running = self.flows.get(&flow)?;
+        let ty = running.manual_types.get(&node)?.clone();
+        Some(ManualPayload {
+            flow,
+            node,
+            generation: Arc::clone(&running.manual_generation),
+            editor: literals::literal_editor(&running.manual_registry, &ty),
+            ty,
+        })
+    }
+
+    /// Validates and fires a transient sample using the pinned run registry.
+    pub fn fire_manual_literal(
+        &self,
+        request: &ManualPayload,
+        literal: &Literal,
+    ) -> Result<(), HostError> {
+        let flow = self
+            .flows
+            .get(&request.flow)
+            .ok_or(HostError::UnknownFlow)?;
+        if !Arc::ptr_eq(&request.generation, &flow.manual_generation) {
+            return Err(HostError::FlowEnded);
+        }
+        if request.ty != literal.ty || flow.manual_types.get(&request.node) != Some(&literal.ty) {
+            return Err(HostError::Variable(
+                "the sample must match the entry payload type".into(),
+            ));
+        }
+        let value = orange_model::value::literal_codec::decode(
+            literal,
+            flow.manual_registry.types().as_ref(),
+        )
+        .map_err(|error| HostError::Variable(error.to_string()))?;
+        self.trigger(request.flow, request.node, Some(value))
     }
     /// Raises a declared event in the flow, as an external source would.
     pub fn emit(&self, flow: FlowId, event: EventDeclId, payload: Value) -> Result<(), HostError> {

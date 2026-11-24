@@ -370,7 +370,12 @@ impl crate::Editor {
     }
 
     pub(crate) fn keyboard(&mut self, ui: &egui::Ui, host: &mut orange_host::Host) {
-        if self.settings_open || !ui.input(|i| i.focused) || ui.ctx().egui_wants_keyboard_input() {
+        if self.settings_open
+            || self.has_node_ergonomics_modal()
+            || self.value_form.is_some()
+            || !ui.input(|i| i.focused)
+            || ui.ctx().egui_wants_keyboard_input()
+        {
             return;
         }
         let actions: Vec<_> = ui.input(|i| {

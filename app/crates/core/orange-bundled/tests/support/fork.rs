@@ -606,7 +606,6 @@ proptest::proptest! {
 }
 
 #[test]
-#[ignore = "manual release Fork scaling; not an NFR or RSS acceptance gate"]
 fn fork_owner_scaling() {
     use std::time::{Duration, Instant};
     for join in ["all", "race"] {

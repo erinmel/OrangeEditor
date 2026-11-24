@@ -541,6 +541,7 @@ enum InputDriver {
         thread: Option<JoinHandle<()>>,
     },
     #[cfg(any(target_os = "linux", test))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     App(apps::Recording),
     /// One application on Windows, through process loopback.
     #[cfg(windows)]
@@ -728,9 +729,9 @@ mod tests {
     }
 
     /// Asks the operating system, so it is not part of the normal run:
-    /// `cargo test -p orange-audio -- --ignored`. Opens nothing and makes no sound.
+    /// `cargo test -p orange-audio --features audio-device-tests every_listed_device`. Opens nothing and makes no sound.
     #[test]
-    #[ignore = "needs the machine's audio devices"]
+    #[cfg(feature = "audio-device-tests")]
     fn every_listed_device_is_found_again_by_what_its_setting_holds() {
         let found = devices().unwrap();
         for (listed, input) in found

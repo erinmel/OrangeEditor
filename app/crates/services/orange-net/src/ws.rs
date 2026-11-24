@@ -255,10 +255,7 @@ impl Session for WsSession {
     }
     /// Hands every incoming message to `emitter` until the guard is dropped, through
     /// the same listener list as the Message and Binary triggers.
-    fn listen_messages(
-        &self,
-        emitter: orange_sdk::Emitter,
-    ) -> Result<Box<dyn Send>, orange_sdk::MessageError> {
+    fn listen_messages(&self, emitter: Emitter) -> Result<Box<dyn Send>, orange_sdk::MessageError> {
         Ok(Listeners::listen(
             Arc::clone(&self.0),
             |shared| &shared.listeners,

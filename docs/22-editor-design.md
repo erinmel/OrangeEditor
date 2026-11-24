@@ -281,6 +281,23 @@ other code places anything on a card.
   it reaches its most; removing one is in Properties.
 * **A wired input keeps its name line only**, with the value it received in a pill
   at the right while a run reports it. Unwiring brings its field back.
+* **Typed input details** are shared between the card and Properties. A port's
+  help distinguishes an inherited default, an implicit None, a required value,
+  a saved literal, and a wire shadowing a saved literal. Option and aggregate
+  controls edit canonical values and apply one validated edit. Make Record can
+  explicitly omit schema-optional fields. Build Map offers paired rows while
+  both typed input lists are unwired.
+* **Loop cards** identify begin, end and result. Before an authoring gesture
+  changes a For Each between list and map, the editor shows the affected Items
+  value or wire, type pins and body wires. A confirmed change is one undoable edit.
+* **Fire With Value** opens a transient typed sample for a running root manual
+  entry that accepts a payload. The host validates it against that running
+  incarnation and rejects submissions after the flow is replaced.
+* **Saved ports** remain available for inspection and existing wires when their
+  provider is unavailable. A wire whose saved endpoint has no matching port
+  has a repair marker. Backward wiring highlights matching live outputs using
+  matches computed for the active drag. A converter chosen for a splice is one
+  edit, with the original wire and waypoint restored on undo.
 * **Failure routes** are available below the primary rows on cards with implicit
   failure or cancellation ports. Expand the section with its button, with Enter or
   Space while focused, from Properties, or with the selected card shortcut
@@ -622,7 +639,8 @@ input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane. For
 more than two channels, the display uses aggregate RMS and the highest channel
 peak. Each red light latches when a measured sample reaches full scale and
 clears when the stream is lost or the analyzer restarts. With a stopped or
-unavailable input, the meter shows its empty scale without channel labels.
+unavailable input, the meter shows empty L/R lanes with unlit clip indicators
+and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold in the settings column.
 The direction, hold duration and reset margin sit in the same column.

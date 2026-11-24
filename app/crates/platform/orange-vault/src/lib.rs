@@ -181,9 +181,9 @@ mod tests {
     }
 
     /// Writes to the real store of the machine it runs on, so it runs only on request:
-    /// `cargo test -p orange-vault -- --ignored`.
+    /// `cargo test -p orange-vault --features os-vault-tests the_operating_system_store_keeps_a_secret`.
     #[test]
-    #[ignore = "uses the operating system's credential store"]
+    #[cfg(feature = "os-vault-tests")]
     fn the_operating_system_store_keeps_a_secret() {
         let vault = OsVault::new("orange-editor-test");
         let name = format!("test/{}", std::process::id());

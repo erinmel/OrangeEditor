@@ -302,7 +302,7 @@ fn an_https_connection_opens_and_a_failed_handshake_takes_the_failed_route() {
 
 /// Needs the public internet and sends a synthetic request to an echo API.
 #[test]
-#[ignore = "contacts https://httpbin.org and https://wrong.host.badssl.com"]
+#[cfg(feature = "network-service-tests")]
 fn a_real_https_endpoint_is_reached_with_certificate_verification() {
     let mut host = host();
     let body = json!({"message": "hello from OrangeEditor"});

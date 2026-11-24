@@ -85,7 +85,11 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
    It rebuilds only the cards of nodes the edits changed; unchanged cards are shared.
    `Host::draft_authoring_view` also includes unwired implicit failure ports and a
    map of their identities by node, so a front end can offer them for wiring.
-   Connection edits use the current graph contract regardless of port visibility.
+   `Host::draft_authoring_view_in` projects localized port captions, help and literal
+   controls. Connection edits use the fresh graph contract regardless of port
+   visibility. A missing exact provider leaves its saved signature available to
+   draw existing wires and repair the graph. Host edits cannot use that signature
+   to add a connection or write a literal.
    Previews compute the values of pure outputs that the edit touched, never running an
    effect.
 4. **Compile.** `Host::open` resolves every node to its exact provider, validates the

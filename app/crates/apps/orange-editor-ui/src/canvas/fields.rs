@@ -7,7 +7,7 @@ use super::settings;
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
-    choose_http_method, http_request_variant, input_label, watch_label, watch_number_value,
+    choose_http_method, http_request_variant, input_caption, watch_label, watch_number_value,
 };
 
 /// What a field changed.
@@ -15,6 +15,7 @@ use crate::properties::{
 pub(super) enum FieldEdit {
     /// An input's value, typed as a person types it.
     Input(String, String),
+    Literal(String),
     /// A setting at a JSON pointer.
     Setting(String, serde_json::Value),
     /// "New variable…" was chosen for the setting at a JSON pointer.
@@ -28,6 +29,7 @@ pub(super) enum FieldEdit {
     /// One more instance of this variadic port.
     AddPort(String),
     AddSignalReceiver,
+    MapPairs,
     /// The devices of this adapter are to be listed again.
     RefreshDevices(String),
 }
@@ -182,6 +184,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
         FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
+        FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
 
@@ -199,9 +202,7 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
         FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            crate::properties::log_part_label(node, &port.id).unwrap_or_else(|| {
-                input_label(node, &port.id).map_or_else(|| port_title(port), str::to_owned)
-            })
+            input_caption(node, port)
         }
         FieldOf::Setting(name, schema, _) => {
             if node.definition == "core/on-watch" {
@@ -216,6 +217,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
         FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
+        FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
 
@@ -488,6 +490,35 @@ impl Canvas {
                 None
             }
             FieldOf::Input(port) => {
+                let details = self.port_details(node.id, &port.id, true);
+                let editor = port.literal_editor(details);
+                let enum_picker = port
+                    .ty
+                    .as_deref()
+                    .and_then(|ty| self.enums.get(ty))
+                    .is_some_and(|choices| choices.iter().any(|choice| !choice.payload));
+                if matches!(
+                    editor,
+                    orange_host::LiteralEditor::Option { .. }
+                        | orange_host::LiteralEditor::Structured
+                ) && !enum_picker
+                {
+                    let state = crate::port_values::state_text(port.input_state(details));
+                    let current = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .unwrap_or(state);
+                    let touch = ui
+                        .interact(slot, id, Sense::click())
+                        .on_hover_text(t("edit-literal"));
+                    frame(ui.painter(), slot, zoom, &colors, touch.hovered());
+                    let _ = field_text_in(ui.painter(), slot, zoom, current, colors.text, None);
+                    touch.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, t("edit-literal"))
+                    });
+                    return touch.clicked().then(|| FieldEdit::Literal(port.id.clone()));
+                }
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
                 if port.ty.as_deref() == Some("core/duration@1") {
                     return self
@@ -776,7 +807,7 @@ impl Canvas {
                 edit
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
-            action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver) => {
+            action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver | FieldOf::MapPairs) => {
                 let label = name(node, action, None);
                 let touched = ui
                     .interact(slot, id, Sense::click())
@@ -811,6 +842,7 @@ impl Canvas {
                 );
                 touched.clicked().then(|| match action {
                     FieldOf::AddPort(variadic) => FieldEdit::AddPort(variadic.port.clone()),
+                    FieldOf::MapPairs => FieldEdit::MapPairs,
                     _ => FieldEdit::AddSignalReceiver,
                 })
             }

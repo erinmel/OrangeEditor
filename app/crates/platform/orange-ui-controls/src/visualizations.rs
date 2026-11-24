@@ -376,7 +376,7 @@ pub fn paint_vertical_meter(
         painter.hline(
             rect.x_range(),
             egui::lerp(rect.y_range(), 1.0 - peak),
-            egui::Stroke::new(1.5, peak_color),
+            Stroke::new(1.5, peak_color),
         );
     }
 }

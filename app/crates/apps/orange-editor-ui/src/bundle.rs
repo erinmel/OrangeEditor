@@ -134,19 +134,7 @@ impl Editor {
     /// install is reported and the graph still opens, keeping its nodes.
     pub(super) fn install_bundle(&mut self, host: &mut Host, import: BundleImport) {
         for package in import.packages.iter().filter(|package| !package.installed) {
-            match host.install(&package.archive, package.approved) {
-                Ok(key) => self.say(tf(
-                    "package-imported",
-                    &[("name", key.id.to_string().into())],
-                )),
-                Err(error) => self.say_at(
-                    NoteLevel::Error,
-                    tf(
-                        "package-import-failed",
-                        &[("error", error.to_string().into())],
-                    ),
-                ),
-            }
+            self.install_approved_package(host, &package.archive, package.approved);
         }
         self.previews.invalidate();
         self.open_untitled(host, import.document);
@@ -196,7 +184,7 @@ impl Editor {
                 ui.separator();
                 let open = controls::button(
                     ui,
-                    crate::controls::Surface::Dialog,
+                    Surface::Dialog,
                     Action::Secondary,
                     true,
                     egui::Button::new(t("bundle-open-only")),

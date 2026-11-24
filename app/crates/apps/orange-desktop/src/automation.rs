@@ -551,9 +551,10 @@ fn a_catalogue_gate_keeps_a_connected_entry_alias_visible() {
 
 /// Export palette snapshots in screen-sized batches for desktop screenshot review.
 #[test]
-#[ignore = "writes catalogue audit fixtures"]
 fn export_desktop_catalogue_audit_graphs() {
-    let out = PathBuf::from(std::env::var_os("ORANGE_CATALOGUE_AUDIT_DIR").unwrap());
+    let fixture = Fixture::new();
+    let out = std::env::var_os("ORANGE_CATALOGUE_AUDIT_DIR")
+        .map_or_else(|| fixture.0.join("catalogue"), PathBuf::from);
     std::fs::create_dir_all(&out).unwrap();
     let (host, _) = desktop_host();
     let template = typed_template();
@@ -716,6 +717,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.0.join("sample.json"));
+        let _ = std::fs::remove_dir_all(self.0.join("catalogue"));
         let _ = std::fs::remove_dir(&self.0);
     }
 }

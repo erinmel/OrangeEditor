@@ -3,6 +3,8 @@ use super::{Capturing, Levels, Meter};
 use std::sync::Arc;
 
 #[cfg(any(target_os = "linux", test))]
+// Windows and macOS build it only for its parser tests, so its live capture is unused there.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 mod pipewire;
 #[cfg(any(target_os = "linux", test))]
 pub(super) use pipewire::Recording;

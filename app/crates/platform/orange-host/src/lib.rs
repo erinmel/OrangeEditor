@@ -28,10 +28,12 @@ pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
 mod flows;
 mod graphs;
 pub mod i18n;
+mod literals;
 mod names;
 mod organise;
 mod packages;
 mod persist;
+mod port_authority;
 mod preview;
 mod search;
 mod services;
@@ -84,9 +86,11 @@ pub use documents::{
     save_document,
 };
 pub use draft::{Draft, MAX_UNDO, OpenReport};
-pub use edit::{NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
+pub use edit::{ForEachModeImpact, NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
+pub use flows::ManualPayload;
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
+pub use literals::{InputState, LiteralEditor, PortDetails};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
@@ -98,9 +102,9 @@ pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
-pub use orange_model::document::literal::Literal;
+pub use orange_model::document::literal::{Literal, LiteralPayload};
 pub use orange_model::document::{FieldDecl, LocalTypeDecl, TypeShape, VariantDecl};
-pub use orange_model::id::{ConnectionId, PortKey};
+pub use orange_model::id::{ConnectionId, EdgeId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, TypeDeclId, TypeExpr, VariableId};
 pub use orange_model::validation::{Diagnostic, EditStats, SessionWork, Severity};
 pub use orange_packages::{
@@ -510,14 +514,8 @@ fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
         return Ok(grants);
     };
     for permission in section.as_array().ok_or_else(refused)? {
-        match permission.as_str() {
-            Some("log") => grants.log = true,
-            Some("files") => grants.files = true,
-            Some("http") => grants.http = true,
-            Some("http-local") => grants.http_local = true,
-            Some("compute") => grants.compute = true,
-            Some("websocket") => grants.websocket = true,
-            _ => return Err(refused()),
+        if !permission.as_str().is_some_and(|name| grants.grant(name)) {
+            return Err(refused());
         }
     }
     Ok(grants)
@@ -542,6 +540,9 @@ impl std::fmt::Debug for SharedConnection {
 
 struct Flow {
     info: FlowInfo,
+    manual_types: BTreeMap<NodeId, TypeExpr>,
+    manual_registry: Arc<RegistrySnapshot>,
+    manual_generation: Arc<()>,
     inbox: orange_runtime::RunInbox,
     sources: BTreeMap<EventDeclId, RunEventSource>,
     shared: Arc<Shared>,

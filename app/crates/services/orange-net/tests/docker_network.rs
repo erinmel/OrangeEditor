@@ -1,18 +1,25 @@
 //! The graph a user can open in the editor, exercised against the Docker lab.
-use orange_host::{Host, HostOptions, SecretError, SecretStore, Value};
+#[cfg(feature = "network-service-tests")]
+use orange_host::Value;
+use orange_host::{Host, HostOptions, SecretError, SecretStore};
+#[cfg(feature = "network-service-tests")]
 use orange_model::value::ListRepr;
+#[cfg(feature = "network-service-tests")]
 use orange_testkit::until;
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
 const GRAPH: &str = include_str!("../../../apps/orange-cli/graphs/network-lab.json");
+#[cfg(feature = "network-service-tests")]
 const BYTES: [u8; 4] = [0, 255, 128, 10];
+#[cfg(feature = "network-service-tests")]
 const HTTP_BODY: &str = r#"{"source":"orange-network-lab","ok":true}"#;
 
 // Deliberately synthetic values for the local fixtures only.
 #[derive(Debug)]
 struct LabSecrets;
 
+#[cfg(feature = "network-service-tests")]
 fn open(host: &mut Host, graph: &str) -> orange_host::FlowId {
     let draft = host.draft(graph).unwrap();
     for connection in host.declarations(&draft).connections {
@@ -109,6 +116,7 @@ fn id(n: u32) -> String {
     format!("4e657477-6f72-4000-8000-{n:012x}")
 }
 
+#[cfg(feature = "network-service-tests")]
 fn text(text: &str) -> Value {
     Value::Str(Arc::new(text.to_owned()))
 }
@@ -132,7 +140,7 @@ fn the_saved_lab_and_its_authenticated_profiles_validate_without_docker() {
 }
 
 #[test]
-#[ignore = "requires the Docker network lab and access to the published loopback ports"]
+#[cfg(feature = "network-service-tests")]
 fn the_saved_lab_exchanges_messages_with_and_without_explicit_authentication() {
     let mut host = host();
     let bytes = Value::Bytes(Arc::new(BYTES.to_vec()));

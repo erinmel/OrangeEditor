@@ -28,10 +28,10 @@ A requested TCP pass exits nonzero when loopback is blocked.
 To exercise the public HTTPS fixture separately:
 
 ```sh
-cargo test --locked -p orange-net --test http a_real_https_endpoint_is_reached_with_certificate_verification -- --ignored --exact
+cargo test --locked -p orange-net --features network-service-tests --test http a_real_https_endpoint_is_reached_with_certificate_verification -- --exact
 ```
 
-The MQTT and RabbitMQ integration tests are also opt-in. Configure a
+The MQTT and RabbitMQ integration tests use the same network-service-tests feature. Configure a
 dedicated test broker for `a_real_broker_delivers_what_the_graph_publishes`
 or `real_rabbitmq_delivers_confirmed_publish`. Their setup and environment
 variable names are documented with the tests. Catalog coverage is an
@@ -46,7 +46,7 @@ same graph with authenticated profiles and checks credential rejection.
 
 ```sh
 docker compose -f tools/network-lab/compose.yaml up --build --wait
-cargo test --locked -p orange-net --test docker_network -- --ignored --nocapture
+cargo test --locked -p orange-net --features network-service-tests --test docker_network -- --nocapture
 ```
 
 Open [network-lab.json](../app/crates/apps/orange-cli/graphs/network-lab.json)

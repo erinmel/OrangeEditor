@@ -212,6 +212,10 @@ jobs:
             cat "$RUNNER_TEMP/row.md"
             grep -E '^test .* FAILED$' "$RUNNER_TEMP/test.log" | sed 's/^/- /' || true
           } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eq '^test result: .*; [1-9][0-9]* ignored;' "$RUNNER_TEMP/test.log"; then
+            echo "::error::Workspace tests reported ignored tests."
+            exit 1
+          fi
 
   optimized:
     name: 2 · behavior / release + examples

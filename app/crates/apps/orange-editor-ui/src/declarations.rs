@@ -138,7 +138,7 @@ impl ConnectionForm {
         {
             if text_at(&settings, &field.setting)
                 .and_then(Json::as_str)
-                .is_some_and(|text| text.starts_with(orange_host::SECRET_PREFIX))
+                .is_some_and(|text| text.starts_with(SECRET_PREFIX))
             {
                 set_text(
                     &mut settings,
@@ -1333,7 +1333,7 @@ impl Editor {
                     });
                 ui.horizontal_wrapped(|ui| {
                     let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
-                    let label = if form.settings.contains(orange_host::SECRET_PREFIX)
+                    let label = if form.settings.contains(SECRET_PREFIX)
                         || form.secrets.0.values().any(|secret| !secret.is_empty())
                     {
                         t("save-and-approve-credentials")

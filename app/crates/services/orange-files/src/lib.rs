@@ -886,11 +886,7 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
-    #[cfg(any(unix, windows))]
-    #[cfg_attr(
-        windows,
-        ignore = "requires a Windows directory that permits creating junctions"
-    )]
+    #[cfg(any(unix, all(windows, feature = "windows-junction-tests")))]
     #[test]
     fn recursive_actions_and_enumeration_do_not_follow_a_real_escape_link() {
         use std::fs;

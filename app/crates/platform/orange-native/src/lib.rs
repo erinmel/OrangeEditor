@@ -145,16 +145,10 @@ pub fn replace(
     Ok(new)
 }
 
-/// One library of a directory and what loading it gave.
-pub type Loaded = (PathBuf, Result<ServicePackage, LoadError>);
-
-/// Loads every library in a directory, in file-name order: files with the platform's
-/// library extension (`.dll`, `.so`, `.dylib`). Other files are ignored. Each library
-/// is reported with its own result, so one bad plugin does not hide the others.
-pub fn load_directory(directory: &Path) -> Result<Vec<Loaded>, LoadError> {
-    let entries = std::fs::read_dir(directory)
-        .map_err(|error| LoadError::Directory(format!("{:?}", error.kind())))?;
-    let mut libraries: Vec<PathBuf> = entries
+/// The library files of a directory, in file-name order, without loading them: files
+/// with the platform's library extension (`.dll`, `.so`, `.dylib`).
+pub fn libraries(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut libraries: Vec<PathBuf> = std::fs::read_dir(directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
@@ -165,6 +159,18 @@ pub fn load_directory(directory: &Path) -> Result<Vec<Loaded>, LoadError> {
         })
         .collect();
     libraries.sort();
+    Ok(libraries)
+}
+
+/// One library of a directory and what loading it gave.
+pub type Loaded = (PathBuf, Result<ServicePackage, LoadError>);
+
+/// Loads every library in a directory, in file-name order: files with the platform's
+/// library extension (`.dll`, `.so`, `.dylib`). Other files are ignored. Each library
+/// is reported with its own result, so one bad plugin does not hide the others.
+pub fn load_directory(directory: &Path) -> Result<Vec<Loaded>, LoadError> {
+    let libraries = libraries(directory)
+        .map_err(|error| LoadError::Directory(format!("{:?}", error.kind())))?;
     Ok(libraries
         .into_iter()
         .map(|path| {

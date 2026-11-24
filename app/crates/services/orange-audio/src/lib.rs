@@ -1586,9 +1586,9 @@ mod tests {
 
     /// Captures what the default output plays (WASAPI loopback), first while this test
     /// plays nothing, then while it plays a quiet 0.6 s tone. Makes a faint sound, so
-    /// it is not part of the normal run: `cargo test -p orange-audio --lib -- --ignored`.
+    /// qualify it on a machine with a default output device: `cargo test -p orange-audio --features audio-device-tests the_default_microphone_is_measured_livefeatures audio-device-tests --lib what_the_default_output_plays`.
     #[test]
-    #[ignore = "needs an audio output device and makes a faint sound"]
+    #[cfg(feature = "audio-device-tests")]
     fn what_the_default_output_plays_is_captured_by_loopback() {
         let input = InputSession(
             spawn_input(&settings(serde_json::json!({"device": LOOPBACK_PREFIX}))).unwrap(),
@@ -1636,7 +1636,7 @@ mod tests {
 
     /// Records one second of the default microphone through Audio in's ring.
     #[test]
-    #[ignore = "needs an audio input device"]
+    #[cfg(feature = "audio-device-tests")]
     fn the_default_microphone_is_recorded_to_a_file() {
         let input = InputSession(spawn_input(&Map::new()).unwrap());
         let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
@@ -1656,9 +1656,9 @@ mod tests {
     }
 
     /// Needs a microphone, so it is not part of the normal run:
-    /// `cargo test -p orange-audio -- --ignored`.
+    /// `cargo test -p orange-audio --features audio-device-tests the_default_microphone_is_measured_live`.
     #[test]
-    #[ignore = "needs an audio input device"]
+    #[cfg(feature = "audio-device-tests")]
     fn the_default_microphone_is_measured_live() {
         let probe = InputAdapter.probe(&Map::new()).unwrap().unwrap();
         let mut loudest = SILENCE_DB;

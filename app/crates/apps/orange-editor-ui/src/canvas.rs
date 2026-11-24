@@ -206,6 +206,8 @@ struct ExpandedText {
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CanvasResponse {
+    pub(crate) edit_literal: Option<(NodeId, String)>,
+    pub(crate) edit_map_pairs: Option<NodeId>,
     pub(crate) add_signal_receiver: Option<NodeId>,
     pub(crate) waypoint: Option<(WireEnds, [f32; 2])>,
     /// The trigger whose button was pressed.
@@ -391,6 +393,8 @@ struct GridCacheKey {
 
 #[derive(Debug, Clone)]
 pub struct Canvas {
+    port_details: HashMap<NodeId, std::sync::Arc<[orange_host::PortDetails]>>,
+    manual_values: HashSet<NodeId>,
     grid_cache: Option<(GridCacheKey, std::sync::Arc<egui::Mesh>)>,
     failure_routes: HashMap<NodeId, orange_host::FailureRoutes>,
     expanded_failure_routes: HashSet<NodeId>,
@@ -442,6 +446,7 @@ pub struct Canvas {
     /// the center, so an untouched graph stays whole.
     fitted: Option<(f32, Pos2)>,
     wiring: Option<Wiring>,
+    inbound_givers: Option<HashMap<NodeId, Vec<String>>>,
     /// The wire under the pointer at the last frame, and the selected wire.
     hover_wire: Option<WireEnds>,
     selected_wire: Option<WireEnds>,
@@ -481,6 +486,8 @@ pub struct Canvas {
 impl Default for Canvas {
     fn default() -> Self {
         Self {
+            port_details: HashMap::new(),
+            manual_values: HashSet::new(),
             failure_routes: HashMap::new(),
             expanded_failure_routes: HashSet::new(),
             focused_failure_port: None,
@@ -510,6 +517,7 @@ impl Default for Canvas {
             fit: true,
             fitted: None,
             wiring: None,
+            inbound_givers: None,
             hover_wire: None,
             selected_wire: None,
             marks: Marks::default(),
@@ -740,6 +748,7 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.inbound_givers = None;
         self.expanded_failure_routes.clear();
         self.focused_failure_port = None;
         self.expanded_text = None;
@@ -756,6 +765,7 @@ impl Canvas {
     /// gives them or an automatic one, nodes that are gone are forgotten, and every
     /// other node stays where it is. The view is not moved.
     pub fn update(&mut self, graph: &GraphView) {
+        self.inbound_givers = None;
         if let Some(edit) = &self.expanded_text
             && !graph.nodes.iter().any(|node| {
                 node.id == edit.node
@@ -832,6 +842,36 @@ impl Canvas {
 
     pub(crate) fn has_failure_routes(&self, node: NodeId) -> bool {
         self.failure_routes.contains_key(&node)
+    }
+
+    pub(crate) fn set_port_details(
+        &mut self,
+        details: HashMap<NodeId, std::sync::Arc<[orange_host::PortDetails]>>,
+    ) {
+        self.port_details = details;
+    }
+
+    pub(crate) fn port_details(
+        &self,
+        node: NodeId,
+        port: &str,
+        input: bool,
+    ) -> Option<&orange_host::PortDetails> {
+        self.port_details
+            .get(&node)?
+            .iter()
+            .find(|detail| detail.id == port && detail.input == input)
+    }
+
+    pub(crate) fn set_manual_values(&mut self, flow: Option<&orange_host::FlowInfo>) {
+        self.manual_values.clear();
+        if let Some(flow) = flow {
+            self.manual_values.extend(
+                flow.manual_entries
+                    .iter()
+                    .filter_map(|(id, typed)| typed.then_some(*id)),
+            );
+        }
     }
 
     pub(crate) fn failure_routes_expanded(&self, node: NodeId) -> bool {
@@ -937,6 +977,16 @@ impl Canvas {
         self.port_at(graph, at, exec, from, true)
     }
 
+    pub(crate) fn pending_inbound_givers(&self) -> Option<(NodeId, &str)> {
+        let wiring = self.wiring.as_ref()?;
+        (wiring.backward && self.inbound_givers.is_none())
+            .then_some((wiring.from.0, wiring.from.1.as_str()))
+    }
+
+    pub(crate) fn set_inbound_givers(&mut self, matches: HashMap<NodeId, Vec<String>>) {
+        self.inbound_givers = Some(matches);
+    }
+
     /// The port of the same sort a wire let go at `at` lands on: an input's row on the
     /// left of its card, or with `input` false an output's row on the right. A wire does
     /// not land on the node it started from.
@@ -952,15 +1002,15 @@ impl Canvas {
             let Some(place) = self.places.get(&node.id).copied() else {
                 continue;
             };
-            if node.id == from || self.hidden.contains(&node.id) {
+            if node.id == from || node.missing.is_some() || self.hidden.contains(&node.id) {
                 continue;
             }
+            let layout = self.card(node);
             for port in node
                 .ports
                 .iter()
                 .filter(|port| port.input == input && port.exec == exec)
             {
-                let layout = self.card(node);
                 let found = if input {
                     layout.row_of(port)
                 } else {
@@ -1158,6 +1208,7 @@ impl Canvas {
             node,
             !self.collapsed_spectra.contains(&node.id),
             failure,
+            self.port_details.get(&node.id).map_or(&[], AsRef::as_ref),
             |port| self.text_heights.get(&node.id)?.get(&port.id).copied(),
         )
     }
@@ -1201,18 +1252,17 @@ impl Canvas {
         failed: bool,
         outcome: orange_host::ControlOutcome,
     ) {
-        use orange_host::ControlOutcome::{Body, Completed, False, Then, True};
-        let route = if failed {
-            None
-        } else {
-            match outcome {
-                Then => Some(PulseRoute::Default("then")),
-                Completed => Some(PulseRoute::Default("completed")),
-                True => Some(PulseRoute::Port("true")),
-                False => Some(PulseRoute::Port("false")),
-                Body => Some(PulseRoute::Port("body")),
-                _ => None,
-            }
+        use orange_host::ControlOutcome::{Body, Cancelled, Completed, Failed, False, Then, True};
+        let route = match outcome {
+            Failed => Some(PulseRoute::Port("failed")),
+            Cancelled => Some(PulseRoute::Port("cancelled")),
+            _ if failed => None,
+            Then => Some(PulseRoute::Default("then")),
+            Completed => Some(PulseRoute::Default("completed")),
+            True => Some(PulseRoute::Port("true")),
+            False => Some(PulseRoute::Port("false")),
+            Body => Some(PulseRoute::Port("body")),
+            _ => None,
         };
         let _ = self.activity.insert(
             node,
@@ -1462,6 +1512,7 @@ impl Canvas {
 
     /// A new run starts: nothing from an earlier one is shown.
     pub fn clear_run(&mut self) {
+        self.manual_values.clear();
         self.audio_running = false;
         self.spectra.clear();
         self.noise_readings.clear();
@@ -1503,7 +1554,19 @@ impl Canvas {
             return;
         };
         self.select(Some(node));
-        let middle = place + self.card(shown).size / 2.0;
+        let card = self.card(shown);
+        let offset = self
+            .focused_failure_port
+            .as_ref()
+            .and_then(|(_, key)| {
+                shown
+                    .ports
+                    .iter()
+                    .find(|port| !port.input && port.id == *key)
+            })
+            .and_then(|port| card.offset(port))
+            .unwrap_or(card.size / 2.0);
+        let middle = place + offset;
         self.origin = middle - self.size / (2.0 * self.zoom);
     }
 
@@ -1830,7 +1893,8 @@ impl Canvas {
                     response.id.with((node.id, port.id.as_str(), port.input)),
                     Sense::click_and_drag(),
                 );
-                if touched.drag_started() {
+                if touched.drag_started() && node.missing.is_none() {
+                    self.inbound_givers = None;
                     self.wiring = Some(Wiring {
                         from: (node.id, port.id.clone()),
                         exec: port.exec,
@@ -1847,7 +1911,12 @@ impl Canvas {
                     done.context = Some((target, at, screen));
                 }
                 if touched.hovered() && self.wiring.is_none() {
-                    let label = port_title(port);
+                    let label = if port.input && !port.exec {
+                        crate::properties::input_caption(node, port)
+                    } else {
+                        crate::node_ergonomics::loop_result(node, port)
+                            .map_or_else(|| port_title(port), str::to_owned)
+                    };
                     let detail = if port.exec {
                         Some(t("port-execution").to_owned())
                     } else {
@@ -1873,6 +1942,22 @@ impl Canvas {
                     } else {
                         hint
                     };
+                    let additional = self.port_details(node.id, &port.id, port.input);
+                    let hint = if let Some(description) =
+                        additional.and_then(|detail| detail.description.as_deref())
+                    {
+                        format!("{hint}\n{description}")
+                    } else {
+                        hint
+                    };
+                    let hint = if port.input && !port.exec {
+                        format!(
+                            "{hint}\n{}",
+                            crate::port_values::state_text(port.input_state(additional))
+                        )
+                    } else {
+                        hint
+                    };
                     let _ = touched.on_hover_text(hint);
                 }
             }
@@ -1880,7 +1965,11 @@ impl Canvas {
         let pointer = ui
             .input(|input| input.pointer.interact_pos())
             .filter(|at| area.contains(*at));
-        if ui.input(|input| input.pointer.any_released())
+        let released = ui.input(|input| input.pointer.any_released());
+        if released {
+            self.inbound_givers = None;
+        }
+        if released
             && let Some(wiring) = self.wiring.take()
             && let Some(pointer) = pointer
         {
@@ -1959,12 +2048,19 @@ impl Canvas {
             });
         }
 
-        let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
+        let anchor = |node: NodeId, port: &str, input: bool| -> Option<(Pos2, bool)> {
             if self.hidden.contains(&node) {
-                return self.hidden_anchor(&collapsed, node, input).map(to_screen);
+                return self
+                    .hidden_anchor(&collapsed, node, input)
+                    .map(|at| (to_screen(at), false));
             }
             let place = *self.places.get(&node)?;
-            Some(to_screen(place + geometry.port(node, port, input)?.offset))
+            if let Some(port) = geometry.port(node, port, input) {
+                return Some((to_screen(place + port.offset), false));
+            }
+            let size = geometry.card_if_present(node)?.size;
+            let x = if input { 0.0 } else { size.x };
+            Some((to_screen(place + Vec2::new(x, size.y - 7.0)), true))
         };
         let mut nearest: Option<(f32, WireEnds)> = None;
         let mut pulsing = false;
@@ -1972,7 +2068,7 @@ impl Canvas {
             if self.wire_hidden(wire) {
                 continue;
             }
-            let (Some(from), Some(to)) = (
+            let (Some((from, orphan_from)), Some((to, orphan_to))) = (
                 anchor(wire.from.0, &wire.from.1, false),
                 anchor(wire.to.0, &wire.to.1, true),
             ) else {
@@ -1980,10 +2076,33 @@ impl Canvas {
             };
             let ends = (wire.from.clone(), wire.to.clone());
             let mark = self.marks.wires.get(&ends);
+            let orphan = orphan_from || orphan_to;
+            for (at, port, input) in [
+                (orphan_from.then_some(from), &wire.from, false),
+                (orphan_to.then_some(to), &wire.to, true),
+            ] {
+                let Some(at) = at.filter(|at| area.contains(*at)) else {
+                    continue;
+                };
+                painter.circle_stroke(at, 5.0 * zoom.max(0.6), Stroke::new(1.5, colors.warning));
+                let stub = ui
+                    .interact(
+                        Rect::from_center_size(at, Vec2::splat(16.0)),
+                        response.id.with(("orphan-wire", &ends, input)),
+                        Sense::click(),
+                    )
+                    .on_hover_text(tf("orphan-port-hint", &[("port", port.1.as_str().into())]));
+                if stub.secondary_clicked() {
+                    let (at, screen) = menu_at(at, origin, zoom);
+                    done.context = Some((crate::MenuTarget::Wire(ends.clone()), at, screen));
+                }
+            }
             let ty = geometry
                 .port(wire.from.0, &wire.from.1, false)
                 .and_then(|port| port.ty);
-            let color = if let Some(mark) = mark {
+            let color = if orphan {
+                colors.warning
+            } else if let Some(mark) = mark {
                 colors.problem(mark.error)
             } else {
                 colors.port_color(ty, wire.exec)
@@ -2094,7 +2213,7 @@ impl Canvas {
                 }
                 if alive
                     && mark.is_none()
-                    && card::stream_type(ty)
+                    && stream_type(ty)
                     && !self.failures.contains_key(&wire.from.0)
                     && self
                         .output_sample(wire.from.0, &wire.from.1)
@@ -2123,7 +2242,7 @@ impl Canvas {
 
         // The wire being drawn follows the pointer until it is let go.
         if let (Some(wiring), Some(to)) = (&self.wiring, pointer)
-            && let Some(from) = anchor(wiring.from.0, &wiring.from.1, wiring.backward)
+            && let Some((from, false)) = anchor(wiring.from.0, &wiring.from.1, wiring.backward)
         {
             // A wire runs from an output to an input, whichever end is held.
             let points = if wiring.backward {
@@ -2201,7 +2320,7 @@ impl Canvas {
             if let Some(found) = geometry.diagnostic_port(*node, port, *direction) {
                 port_marks.entry(*node).or_default().push((
                     found.offset,
-                    (found.exec, card::stream_type(found.ty)),
+                    (found.exec, stream_type(found.ty)),
                     self.mark_level(*node, mark),
                 ));
             }
@@ -2234,8 +2353,17 @@ impl Canvas {
             let ui = &mut card_ui;
             let selected = self.selection.contains(&node.id);
             // On manual always has its button; it fires only while the graph runs.
-            let fire = (node.definition == "core/on-manual" || triggers.contains(&node.id))
-                .then(|| triggers.contains(&node.id));
+            let live = node.missing.is_none() && triggers.contains(&node.id);
+            let fire = (node.definition == "core/on-manual" || live).then(|| {
+                let typed = if live {
+                    self.manual_values.contains(&node.id)
+                } else {
+                    node.ports
+                        .iter()
+                        .any(|port| !port.input && port.id == "payload")
+                };
+                (live, typed)
+            });
             let controls = zoom >= CONTROLS_ZOOM;
             // An operator says what it computes, with values in place of names.
             let formula = comparison_formula(&node.definition).map(|formula| {
@@ -2313,6 +2441,24 @@ impl Canvas {
             if toggle_failure_routes {
                 self.toggle_failure_routes(node.id);
                 ui.ctx().request_repaint();
+            }
+            if let Some(givers) = self
+                .inbound_givers
+                .as_ref()
+                .and_then(|givers| givers.get(&node.id))
+            {
+                for port in givers {
+                    if let Some(found) = geometry.port(node.id, port, false) {
+                        let at = to_screen(place + found.offset);
+                        if area.contains(at) {
+                            painter.circle_stroke(
+                                at,
+                                (PORT_RADIUS + 3.0) * zoom.max(0.6),
+                                Stroke::new(2.0 * zoom.max(0.6), colors.selected),
+                            );
+                        }
+                    }
+                }
             }
             // A way out a step just left through glows, whether a wire takes it or not.
             for port in layout
@@ -2459,7 +2605,7 @@ impl Canvas {
                     };
                     // A stream carries no value to show, and an empty one draws no box.
                     if zoom < 0.6
-                        || card::stream_type(port.ty.as_deref())
+                        || stream_type(port.ty.as_deref())
                         || value.shown.short.trim().is_empty()
                     {
                         continue;
@@ -2556,6 +2702,7 @@ impl Canvas {
                     card::FieldOf::Connection => id.with("connection"),
                     card::FieldOf::AddPort(variadic) => id.with(("add", &variadic.port)),
                     card::FieldOf::AddSignalReceiver => id.with("add-signal"),
+                    card::FieldOf::MapPairs => id.with("map-pairs"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -2566,6 +2713,10 @@ impl Canvas {
                     fields::FieldEdit::Input(port, text) => {
                         done.set_input = Some((node.id, port, text));
                     }
+                    fields::FieldEdit::Literal(port) => {
+                        done.edit_literal = Some((node.id, port));
+                    }
+                    fields::FieldEdit::MapPairs => done.edit_map_pairs = Some(node.id),
                     fields::FieldEdit::Setting(pointer, value) => {
                         done.set_config = Some((node.id, pointer, value));
                     }
@@ -2690,7 +2841,7 @@ impl Canvas {
                     &colors,
                     (
                         true,
-                        (card.definition == "core/on-manual").then_some(false),
+                        (card.definition == "core/on-manual").then_some((false, false)),
                         false,
                         false,
                     ),
@@ -3062,7 +3213,7 @@ fn draw_node<'a>(
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    (selected, fire, controls, marked): (bool, Option<bool>, bool, bool),
+    (selected, fire, controls, marked): (bool, Option<(bool, bool)>, bool, bool),
     canvas: egui::Id,
     formula: Option<&str>,
     description: Option<&str>,
@@ -3185,7 +3336,8 @@ fn draw_node<'a>(
                 };
                 let (label, _) = elide(
                     painter,
-                    &port_title(port),
+                    &crate::node_ergonomics::loop_result(node, port)
+                        .map_or_else(|| port_title(port), str::to_owned),
                     &font,
                     (half - reserved).max(0.0),
                 );
@@ -3214,6 +3366,17 @@ fn draw_node<'a>(
             }
         }
         match row.left {
+            Some(card::Left::LoopRole(role)) => {
+                if readable {
+                    painter.text(
+                        Pos2::new(rect.left() + pad, y),
+                        Align2::LEFT_CENTER,
+                        role,
+                        font.clone(),
+                        colors.weak,
+                    );
+                }
+            }
             Some(card::Left::FailureRoutes { expanded }) if readable => {
                 let height = (row.height - 4.0) * zoom;
                 let button = Rect::from_center_size(
@@ -3231,8 +3394,13 @@ fn draw_node<'a>(
                 );
             }
             Some(card::Left::Fire) => {
-                let Some(live) = fire else { continue };
-                let size = Vec2::new(64.0, 22.0) * zoom;
+                let Some((live, typed)) = fire else { continue };
+                let size = Vec2::new(if typed { 124.0 } else { 64.0 }, 22.0) * zoom;
+                let caption = if typed {
+                    t("fire-with-value")
+                } else {
+                    t("fire")
+                };
                 let button =
                     Rect::from_center_size(Pos2::new(rect.left() + pad + size.x / 2.0, y), size);
                 let sense = if live { Sense::click() } else { Sense::hover() };
@@ -3253,13 +3421,18 @@ fn draw_node<'a>(
                     let _ = painter.text(
                         button.center(),
                         Align2::CENTER_CENTER,
-                        t("fire"),
+                        caption,
                         FontId::proportional(11.5 * zoom),
                         if live { colors.card } else { colors.weak },
                     );
                 }
                 touched.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::Button, live, t("fire-manual-trigger"))
+                    let label = if typed {
+                        caption
+                    } else {
+                        t("fire-manual-trigger")
+                    };
+                    egui::WidgetInfo::labeled(egui::Role::Button, live, label)
                 });
                 pressed = live && touched.clicked();
             }
@@ -3271,9 +3444,10 @@ fn draw_node<'a>(
                 }
                 let label = if node.definition == "core/gate" && port.id == "enter" {
                     t("port-enter-alias").to_owned()
+                } else if !port.exec {
+                    crate::properties::input_caption(node, port)
                 } else {
-                    crate::properties::log_part_label(node, &port.id)
-                        .unwrap_or_else(|| port_title(port))
+                    port_title(port)
                 };
                 if port.exec {
                     // The way in is a tinted chip inside the card.
@@ -3406,7 +3580,11 @@ fn failure_routes_button(
         FontId::proportional(12.0 * zoom),
         tint,
     );
-    response.clicked()
+    if !response.clicked() {
+        return false;
+    }
+    response.request_focus();
+    true
 }
 
 /// Draws a connector shape, filled when wired.
@@ -3423,7 +3601,7 @@ fn draw_dot(painter: &egui::Painter, port: &PortView, at: Pos2, zoom: f32, color
         painter,
         at,
         radius,
-        (port.exec, card::stream_type(port.ty.as_deref())),
+        (port.exec, stream_type(port.ty.as_deref())),
         fill,
         outline,
     );
@@ -3748,6 +3926,25 @@ mod tests {
             ],
             wires: vec![wire(1, 2), wire(2, 3), wire(1, 3)],
         }
+    }
+
+    #[test]
+    fn a_backward_drag_reuses_matching_outputs_until_the_graph_changes() {
+        let graph = graph();
+        let mut canvas = Canvas {
+            wiring: Some(Wiring {
+                from: (id(3), "in".into()),
+                exec: true,
+                backward: true,
+            }),
+            ..Canvas::default()
+        };
+        assert_eq!(canvas.pending_inbound_givers(), Some((id(3), "in")));
+        canvas.set_inbound_givers(HashMap::from([(id(1), vec!["then".into()])]));
+        assert!(canvas.pending_inbound_givers().is_none());
+        assert_eq!(canvas.inbound_givers.as_ref().unwrap()[&id(1)], ["then"]);
+        canvas.update(&graph);
+        assert_eq!(canvas.pending_inbound_givers(), Some((id(3), "in")));
     }
 
     #[test]
@@ -4591,7 +4788,10 @@ mod tests {
         assert_eq!(kind("core/f64@1"), fields::Kind::Number);
         assert_eq!(kind("core/string@1"), fields::Kind::Text);
         // A type nobody types gets no field at all.
-        assert!(!card::typed(&port("core/list@1<core/i64@1>")));
+        assert_eq!(
+            port("core/list@1<core/i64@1>").literal_editor(None),
+            orange_host::LiteralEditor::Unavailable
+        );
     }
 
     #[test]
@@ -5099,7 +5299,6 @@ mod formula_tests {
     }
 
     #[test]
-    #[ignore = "manual release rendering measurement"]
     fn profile_audio_canvas() {
         use super::{Canvas, Pos2, Rect, Vec2};
         use std::time::Instant;

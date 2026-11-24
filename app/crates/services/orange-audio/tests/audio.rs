@@ -1085,9 +1085,9 @@ fn remote_file_plays_before_http_response_finishes() {
 }
 
 /// Plays a short tone on the real default device. Run by hand:
-/// `cargo test -p orange-audio --test audio -- --ignored`.
+/// `cargo test -p orange-audio --features audio-device-tests --test audio a_tone_plays`.
 #[test]
-#[ignore = "needs an audio output device and makes a sound"]
+#[cfg(feature = "audio-device-tests")]
 fn a_tone_plays_on_the_default_device() {
     let mut host = host();
     let path = tone("beep.wav", 300);

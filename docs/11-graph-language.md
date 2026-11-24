@@ -203,6 +203,10 @@ Order: connected edge → instance literal → definition default → `None` for
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
 - Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces a diagnostic. Edges to vanished ports become **orphan edges**: preserved, displayed and not compiled. An edge is orphaned when its endpoint is not a port of the node: an undeclared port, a variadic instance missing from the node's variadic state, or a bare variadic base port. `DocIndex::orphan_edges` applies the same rule as `E-PORT-UNKNOWN`, given the node and its fresh resolved signature, so editors and the validator agree.
+- Saved snapshots support inspection and detaching existing wires. New connections
+  and literal edits require the current contract. A missing exact provider leaves
+  a passive rendering whose implicit ports follow its saved kind and saved
+  declared outcomes. Orphan markers supply neither a port nor type evidence.
 
 ## 5. Types
 
@@ -308,8 +312,8 @@ Bit And/Or/Xor/Not operate on exact-width two's-complement bits.
 
 Shift `count` is always `core/u32@1`, independent of T. Left shift discards high
 bits; signed right shift extends the sign, unsigned right shift inserts zeros.
-Only checked(default) and wrapping `int_overflow` are supported: checked count
->= bit width faults with `core/OutOfRange`, wrapping uses count modulo width.
+Only checked(default) and wrapping `int_overflow` are supported: a checked count
+at or above the bit width faults with `core/OutOfRange`, wrapping uses count modulo width.
 Checked shift does not promise preservation of high value bits. Saturating shift
 config is rejected, rather than inventing a saturation rule. All other new nodes
 have empty config. Kernel errors carry safe static text and no operand values.
@@ -1324,10 +1328,12 @@ A document declares the external services its nodes talk to, beside its variable
 events:
 
 ```json
-"connections": [
-  {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
-   "settings": {"base_url": "http://127.0.0.1:4455"}}
-]
+{
+  "connections": [
+    {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
+     "settings": {"base_url": "http://127.0.0.1:4455"}}
+  ]
+}
 ```
 
 `adapter` is a namespaced adapter kind that the host must have. `scope` is `graph` or

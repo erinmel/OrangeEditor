@@ -212,7 +212,6 @@ fn catalog_ids_are_unique_and_entries_fit_preview_widths() {
 }
 
 #[test]
-#[ignore = "manual full-gallery palette switch timing"]
 fn profile_theme_switch() {
     let ctx = context();
     let mut gallery = Gallery::default();

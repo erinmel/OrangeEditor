@@ -77,6 +77,10 @@ impl<'a> Geometry<'a> {
         &self.cards[&node]
     }
 
+    pub fn card_if_present(&self, node: NodeId) -> Option<&Card<'a>> {
+        self.cards.get(&node)
+    }
+
     pub fn source(&self, node: NodeId, port: &str) -> Option<(NodeId, &'a str)> {
         self.incoming.get(&(node, port)).copied()
     }

@@ -531,12 +531,12 @@ pub fn button_with(
     let border = if geometry.border {
         border
     } else {
-        egui::Stroke::NONE.color
+        Stroke::NONE.color
     };
     let background = ui.painter().add(egui::Shape::Noop);
     let response = with_style(ui, surface, role, |ui| {
         for state in widget_states(&mut ui.visuals_mut().widgets) {
-            state.bg_stroke = egui::Stroke::NONE;
+            state.bg_stroke = Stroke::NONE;
             state.bg_fill = egui::Color32::TRANSPARENT;
             state.weak_bg_fill = egui::Color32::TRANSPARENT;
             state.fg_stroke.color = ink;
@@ -553,11 +553,11 @@ pub fn button_with(
         };
         let muted = button_feedback_fill(base, ink, hover * 0.07 + press * 0.09);
         let stroke = if response.has_focus() {
-            egui::Stroke::new(2.0, theme.focus)
+            Stroke::new(2.0, theme.focus)
         } else if geometry.border {
-            egui::Stroke::new(geometry.border_width, border)
+            Stroke::new(geometry.border_width, border)
         } else {
-            egui::Stroke::NONE
+            Stroke::NONE
         };
         let fade = if enabled { 1.0 } else { 0.45 };
         ui.painter().set(
@@ -566,7 +566,7 @@ pub fn button_with(
                 response.rect,
                 geometry.radius,
                 muted.gamma_multiply(fade),
-                egui::Stroke::new(stroke.width, stroke.color.gamma_multiply(fade)),
+                Stroke::new(stroke.width, stroke.color.gamma_multiply(fade)),
                 egui::StrokeKind::Inside,
             ),
         );
@@ -717,7 +717,7 @@ fn role_colors(
             (
                 fill,
                 theme.focus,
-                crate::theme::ensure_contrast(theme.text, fill, 5.3),
+                theme::ensure_contrast(theme.text, fill, 5.3),
             )
         }
         Action::Secondary => {
@@ -729,7 +729,7 @@ fn role_colors(
             (
                 fill,
                 theme.border,
-                crate::theme::ensure_contrast(theme.text, fill, 4.5),
+                theme::ensure_contrast(theme.text, fill, 4.5),
             )
         }
         Action::Outline => (background, theme.border, theme.text),
@@ -741,7 +741,7 @@ fn role_colors(
 
 fn button_feedback_fill(fill: egui::Color32, ink: egui::Color32, amount: f32) -> egui::Color32 {
     let feedback = fill.lerp_to_gamma(ink, amount);
-    if crate::theme::contrast(ink, feedback) >= 4.5 {
+    if theme::contrast(ink, feedback) >= 4.5 {
         feedback
     } else {
         fill
@@ -798,7 +798,7 @@ pub fn radio<T: Copy + PartialEq>(
                     Action::Toggle(false)
                 },
                 true,
-                egui::Button::new(label).truncate(),
+                Button::new(label).truncate(),
             );
             if response.clicked() {
                 *value = choice;
@@ -819,7 +819,7 @@ pub fn select<T: Copy + PartialEq>(
     options: &[(T, &str)],
 ) -> Response {
     let mut changed = false;
-    let mut response = egui::ComboBox::from_id_salt(id)
+    let mut response = ComboBox::from_id_salt(id)
         .selected_text(selected_label)
         .show_select(ui, surface, |ui| {
             for (value, label) in options {
@@ -1176,7 +1176,7 @@ pub(crate) fn input_frame(ui: &Ui, surface: Surface, radius: u8) -> egui::Frame 
     } else {
         (theme.inset, theme.border)
     };
-    let border = crate::theme::ensure_contrast(ink, theme.background(surface), 3.0);
+    let border = theme::ensure_contrast(ink, theme.background(surface), 3.0);
     egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, border))

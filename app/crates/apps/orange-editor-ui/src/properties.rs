@@ -49,6 +49,13 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
         .chain(inputs.filter(move |port| !first(port)))
 }
 
+pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
+    log_part_label(node, &port.id)
+        .or_else(|| port.label.clone())
+        .or_else(|| input_label(node, &port.id).map(str::to_owned))
+        .unwrap_or_else(|| port_label(&port.id))
+}
+
 pub(crate) fn log_part_label(node: &NodeView, id: &str) -> Option<String> {
     (node.definition == "org.orange.logging/log-message" && id.starts_with("argument#"))
         .then(|| {
@@ -1244,7 +1251,9 @@ impl Editor {
                 }
                 if node.ports.iter().any(|port| port.input && !port.exec) {
                     section(ui, t("inputs"));
-                    if let Some(asked) = self.input_fields(ui, &node, host) {
+                    if !self.build_map_pair_control(ui, &node)
+                        && let Some(asked) = self.input_fields(ui, &node, host)
+                    {
                         change = Some(asked);
                     }
                 }
@@ -1283,7 +1292,7 @@ impl Editor {
         };
         match change {
             Change::Setting(pointer, value) => {
-                let _ = self.set_setting(host, node.id, &pointer, value);
+                let _ = self.setting_with_mode_preview(host, node.id, &pointer, value);
             }
             Change::Type(param, ty) => {
                 let _ = self.choose_type(host, node.id, &param, ty.as_deref());
@@ -1291,6 +1300,7 @@ impl Editor {
             Change::Input(port, typed) => {
                 let _ = self.set_input(host, (node.id, &port), typed.as_deref());
             }
+            Change::OmitRecordField(port, ty) => self.omit_record_field(host, node.id, &port, ty),
             Change::AddPort(port) => {
                 let _ = self.add_port(host, node.id, &port);
             }
@@ -1655,18 +1665,27 @@ impl Editor {
 
     /// Fields for the values on the node's inputs.
     fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
+        let record_omissions = self
+            .document
+            .as_ref()
+            .filter(|_| node.missing.is_none())
+            .map_or_else(Default::default, |document| {
+                host.record_omissions(&document.draft, node.id)
+            });
+        let mut omit = None;
         let mut write = None;
         for port in input_ports(node) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
+            let details = self.canvas.port_details(node.id, &port.id, true);
+            let editor = port.literal_editor(details);
+            let state = port_values::state_text(port.input_state(details));
+            let mut help = format!("{ty}\n{state}");
+            if let Some(description) = details.and_then(|detail| detail.description.as_deref()) {
+                help.push('\n');
+                help.push_str(description);
+            }
             let multiline = TextInput::for_port(node, port).filter(|kind| *kind != TextInput::Text);
-            let label = input_label(node, &port.id).map_or_else(
-                || {
-                    log_part_label(node, &port.id)
-                        .or_else(|| port.label.clone())
-                        .unwrap_or_else(|| port_label(&port.id))
-                },
-                str::to_owned,
-            );
+            let label = input_caption(node, port);
             if node.definition == "org.orange.logging/log-message"
                 && port.id == "message"
                 && node.variadic.iter().any(|port| port.port == "argument")
@@ -1683,9 +1702,49 @@ impl Editor {
             } else {
                 label
             };
-            row(ui, &label, Some(ty.clone()), |ui| {
+            row(ui, &label, Some(help), |ui| {
                 if port.connected {
-                    ui.weak(t("from-a-wire"));
+                    ui.weak(state);
+                    return;
+                }
+                match record_omissions.get(&port.id) {
+                    Some(true) => {
+                        ui.weak(t("record-field-omitted"));
+                    }
+                    Some(false) if ui.small_button(t("record-omit-field")).clicked() => {
+                        if let Some(ty) = port.ty.as_deref().and_then(|ty| ty.parse().ok()) {
+                            omit = Some(Change::OmitRecordField(port.id.clone(), ty));
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+                let enum_picker = port
+                    .ty
+                    .as_deref()
+                    .and_then(|ty| self.canvas.enums.get(ty))
+                    .is_some_and(|choices| choices.iter().any(|choice| !choice.payload));
+                if multiline.is_none()
+                    && !enum_picker
+                    && matches!(
+                        editor,
+                        orange_host::LiteralEditor::Option { .. }
+                            | orange_host::LiteralEditor::Structured
+                    )
+                {
+                    let shown = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .unwrap_or(state);
+                    let response = ui.button(shown).on_hover_text(t("edit-literal"));
+                    if response.clicked() {
+                        self.begin_value_input(node.id, &port.id);
+                    }
+                    return;
+                }
+                if editor == orange_host::LiteralEditor::Unavailable {
+                    ui.weak(t("literal-unavailable"));
                     return;
                 }
                 if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
@@ -1885,7 +1944,7 @@ impl Editor {
                 }
             });
         }
-        write
+        omit.or(write)
     }
 }
 
@@ -1947,6 +2006,7 @@ enum Change {
     Setting(String, Option<Json>),
     Type(String, Option<String>),
     Input(String, Option<String>),
+    OmitRecordField(String, orange_host::TypeExpr),
     AddPort(String),
     RemovePort(String),
     EventTiming(Option<EventTiming>),
@@ -2075,7 +2135,7 @@ pub(crate) fn setting_choice_label<'a>(
     choice: &'a str,
 ) -> std::borrow::Cow<'a, str> {
     if choice.starts_with("local/") {
-        return crate::type_name(choice).into();
+        return type_name(choice).into();
     }
     setting_choice_caption(node, choice).into()
 }
@@ -2520,22 +2580,22 @@ impl Editor {
             );
         }
         for (port, shown, stale) in ports {
+            let caption = node_ergonomics::loop_result(node, port)
+                .map(str::to_owned)
+                .or_else(|| port.label.clone())
+                .unwrap_or_else(|| port_label(&port.id));
             let side = if port.input { "in" } else { "out" };
             let freshness = if stale { t("previous-suffix") } else { "" };
             let response = http && !port.input && port.id == "response";
             let title = if response {
-                format!("{}{freshness}", port_label(&port.id))
+                format!("{caption}{freshness}")
             } else if shown.short == shown.full
                 && shown.short.chars().take(17).count() <= 16
                 && !shown.short.contains(['\n', '\r'])
             {
-                format!(
-                    "{} ({side}) = {}{freshness}",
-                    port_label(&port.id),
-                    shown.short
-                )
+                format!("{caption} ({side}) = {}{freshness}", shown.short)
             } else {
-                format!("{} ({side}){freshness}", port_label(&port.id))
+                format!("{caption} ({side}){freshness}")
             };
             let id = ui.make_persistent_id(("orange-value", node.id, port.id.as_str(), port.input));
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -2552,7 +2612,12 @@ impl Editor {
                     icons::paint_centered(ui.painter(), rect.center(), icons::WATCH, 15.0, ink);
                 },
             )
-            .on_hover_text(title);
+            .on_hover_text(
+                self.canvas
+                    .port_details(node.id, &port.id, port.input)
+                    .and_then(|detail| detail.description.as_deref())
+                    .map_or(title.clone(), |help| format!("{title}\n{help}")),
+            );
             if row.clicked() {
                 state.toggle(ui);
                 state.store(ui.ctx());

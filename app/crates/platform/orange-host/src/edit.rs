@@ -23,6 +23,23 @@ pub type PortEnd<'a> = (NodeId, &'a str);
 /// Both ends of a wire with owned port names.
 pub type WireEnds = ((NodeId, String), (NodeId, String));
 
+/// Work a For Each mode change would discard from this draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForEachModeImpact {
+    pub mode: &'static str,
+    pub items_wire: bool,
+    pub items_literal: bool,
+    pub type_pins: bool,
+    pub body_wires: usize,
+}
+
+impl ForEachModeImpact {
+    /// Whether a For Each can switch modes without discarding existing authoring.
+    pub fn is_empty(&self) -> bool {
+        !self.items_wire && !self.items_literal && !self.type_pins && self.body_wires == 0
+    }
+}
+
 pub(crate) fn collection_mode(ty: &str) -> Option<&'static str> {
     if ty.starts_with("core/list@1<") {
         Some("list")
@@ -40,9 +57,9 @@ fn loop_mode(config: &ConfigValue) -> Option<&str> {
 fn reconfigure_for_each(
     draft: &Draft,
     instance: &NodeInstance,
-    wanted: &str,
+    wanted: &'static str,
     disconnect_items: bool,
-) -> Result<Vec<DocCommand>, HostError> {
+) -> Result<(Vec<DocCommand>, ForEachModeImpact), HostError> {
     let stale: &[&str] = if wanted == "map" {
         &["element"]
     } else {
@@ -50,30 +67,37 @@ fn reconfigure_for_each(
     };
     let node = instance.id;
     let items = port_ref((node, "items"))?;
-    let mut edits = draft
-        .document()
-        .root()
-        .edges
-        .values()
-        .filter(|edge| {
-            (disconnect_items && edge.to == items)
-                || (edge.from.node == node && stale.contains(&edge.from.port.port().as_str()))
-        })
-        .map(|edge| DocCommand::Disconnect { edge: edge.id })
-        .collect::<Vec<_>>();
-    if instance.inputs.contains_key(&items.port) {
+    let mut impact = ForEachModeImpact {
+        mode: wanted,
+        items_wire: false,
+        items_literal: instance.inputs.contains_key(&items.port),
+        type_pins: !instance.type_pins.is_empty(),
+        body_wires: 0,
+    };
+    let mut edits = Vec::new();
+    for edge in draft.document().root().edges.values() {
+        let items_wire = edge.to == items;
+        let old_body_wire =
+            edge.from.node == node && stale.contains(&edge.from.port.port().as_str());
+        impact.items_wire |= items_wire;
+        impact.body_wires += usize::from(old_body_wire);
+        if (disconnect_items && items_wire) || old_body_wire {
+            edits.push(DocCommand::Disconnect { edge: edge.id });
+        }
+    }
+    if impact.items_literal {
         edits.push(DocCommand::SetLiteral {
             port: items,
             literal: None,
         });
     }
-    if !instance.type_pins.is_empty() {
+    if impact.type_pins {
         edits.push(DocCommand::SetTypePins {
             node,
             pins: Default::default(),
         });
     }
-    Ok(edits)
+    Ok((edits, impact))
 }
 
 impl Host {
@@ -1052,7 +1076,7 @@ impl Host {
             .collect();
         if let Some(wanted) = self.for_each_wire_mode(draft, from, to) {
             let instance = &draft.document().root().nodes[&to.0];
-            commands.extend(reconfigure_for_each(draft, instance, wanted, false)?);
+            commands.extend(reconfigure_for_each(draft, instance, wanted, false)?.0);
             let mut config = instance.config.clone();
             let _ = config.insert("mode".to_owned(), json!(wanted));
             commands.push(DocCommand::SetConfig {
@@ -1099,6 +1123,75 @@ impl Host {
             .find(|port| !port.input && port.id == from.1)?
             .ty?;
         collection_mode(&source).filter(|wanted| Some(*wanted) != loop_mode(&instance.config))
+    }
+
+    /// Describes what wiring a different collection kind to For Each would remove.
+    pub fn for_each_wire_impact(
+        &self,
+        draft: &Draft,
+        from: PortEnd<'_>,
+        to: PortEnd<'_>,
+    ) -> Option<ForEachModeImpact> {
+        let wanted = self.for_each_wire_mode(draft, from, to)?;
+        self.for_each_mode_impact(draft, to.0, wanted)
+    }
+
+    /// Describes what choosing a different For Each mode would remove or replace.
+    pub fn for_each_mode_impact(
+        &self,
+        draft: &Draft,
+        node: NodeId,
+        mode: &str,
+    ) -> Option<ForEachModeImpact> {
+        let wanted = match mode {
+            "list" => "list",
+            "map" => "map",
+            _ => return None,
+        };
+        let instance = draft.document().root().nodes.get(&node)?;
+        if instance.definition.id.as_str() != intrinsic::FOR_EACH
+            || loop_mode(&instance.config) == Some(wanted)
+        {
+            return None;
+        }
+        reconfigure_for_each(draft, instance, wanted, true)
+            .ok()
+            .map(|(_, impact)| impact)
+    }
+
+    /// Schema-optional inputs of a Make Record, with whether each has an explicit
+    /// None literal. A required field may itself have an Option type.
+    pub fn record_omissions(&self, draft: &Draft, node: NodeId) -> BTreeMap<String, bool> {
+        use orange_model::catalog::nominal::{NominalTarget, nominal_target};
+        use orange_model::document::literal::LiteralPayload;
+
+        let Some(instance) = draft.document().root().nodes.get(&node).filter(|instance| {
+            instance.definition.id.as_str() == "org.orange.collections/make-record"
+        }) else {
+            return Default::default();
+        };
+        let registry = self.registry_for(draft.document());
+        let Ok(NominalTarget::Record { fields, .. }) = nominal_target(
+            NominalAccess::MakeRecord,
+            &instance.config,
+            registry.types(),
+        ) else {
+            return Default::default();
+        };
+        fields
+            .iter()
+            .filter(|field| field.optional)
+            .filter_map(|field| {
+                let port: PortKey = field.field_id.as_str().parse().ok()?;
+                let omitted = match instance.inputs.get(&port).map(|literal| &literal.payload) {
+                    Some(LiteralPayload::Value(Json::Object(fields))) => {
+                        fields.len() == 1 && fields.get("none") == Some(&Json::Bool(true))
+                    }
+                    _ => false,
+                };
+                Some((field.field_id.clone(), omitted))
+            })
+            .collect()
     }
 
     /// Removes the wires at one port: those into an input, or those out of an output.
@@ -1150,10 +1243,15 @@ impl Host {
         let mut commands = Vec::new();
         if let Some(instance) = draft.document().root().nodes.get(&node)
             && instance.definition.id.as_str() == intrinsic::FOR_EACH
-            && let Some(wanted @ ("list" | "map")) = loop_mode(&config)
-            && Some(wanted) != loop_mode(&instance.config)
         {
-            commands = reconfigure_for_each(draft, instance, wanted, true)?;
+            let wanted = match loop_mode(&config) {
+                Some("list") => Some("list"),
+                Some("map") => Some("map"),
+                _ => None,
+            };
+            if let Some(wanted) = wanted.filter(|mode| Some(*mode) != loop_mode(&instance.config)) {
+                commands = reconfigure_for_each(draft, instance, wanted, true)?.0;
+            }
         }
         commands.push(DocCommand::SetConfig {
             node,
@@ -1172,6 +1270,7 @@ impl Host {
         at: PortEnd<'_>,
         typed: Option<&str>,
     ) -> Result<bool, HostError> {
+        self.require_port_authority(draft.document(), at.0)?;
         let port = port_ref(at)?;
         let literal = match typed {
             None => {
@@ -1322,7 +1421,7 @@ impl Host {
         node: NodeId,
         from: PortEnd<'_>,
         to: PortEnd<'_>,
-    ) -> Result<(Vec<DocCommand>, Vec<orange_model::id::EdgeId>), HostError> {
+    ) -> Result<(Vec<DocCommand>, Vec<EdgeId>), HostError> {
         let ends = |id: NodeId| self.node_view(draft.document(), id);
         let source = ends(from.0)
             .and_then(|view| view.ports.into_iter().find(|p| !p.input && p.id == from.1))
@@ -1372,7 +1471,7 @@ impl Host {
             .ports
             .iter()
             .filter(|port| !port.input && port.exec == target.exec)
-            .filter(|port| !crate::suggest::NOT_A_CONTINUATION.contains(&port.id.as_str()))
+            .filter(|port| !suggest::NOT_A_CONTINUATION.contains(&port.id.as_str()))
             .collect();
         outputs.sort_by_key(rank);
         let out = outputs
@@ -1405,11 +1504,7 @@ impl Host {
         Ok((commands, made))
     }
 
-    fn check_splice(
-        &self,
-        draft: &mut Draft,
-        made: &[orange_model::id::EdgeId],
-    ) -> Result<(), HostError> {
+    fn check_splice(&self, draft: &mut Draft, made: &[EdgeId]) -> Result<(), HostError> {
         let against: Vec<Diagnostic> = self
             .problems(draft)?
             .into_iter()

@@ -320,10 +320,23 @@ pub(crate) fn conversion_items(
     language: &str,
     from: Option<&str>,
 ) -> Vec<PaletteItem> {
+    let conversions = host.conversions();
+    matching_conversions(
+        conversions
+            .iter()
+            .filter(|conversion| from.is_none_or(|ty| conversion.from == ty)),
+        search,
+        language,
+    )
+}
+
+pub(crate) fn matching_conversions<'a>(
+    conversions: impl Iterator<Item = &'a orange_host::Conversion>,
+    search: &str,
+    language: &str,
+) -> Vec<PaletteItem> {
     let wanted = search.to_lowercase();
-    host.conversions()
-        .iter()
-        .filter(|conversion| from.is_none_or(|ty| conversion.from == ty))
+    conversions
         .map(|conversion| conversion_item(conversion, language))
         .filter(|item| {
             let terms = format!(

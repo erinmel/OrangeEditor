@@ -70,7 +70,7 @@ impl BinaryChoice<'_> {
             5.0 * zoom,
             fill,
             theme.control_border(),
-            egui::StrokeKind::Inside,
+            StrokeKind::Inside,
         );
         let (no, yes) = rect.split_left_right_at_fraction(0.5);
         for (index, half) in [no, yes].into_iter().enumerate() {
@@ -97,12 +97,7 @@ impl BinaryChoice<'_> {
                 ink,
             );
             if response.is_some_and(Response::has_focus) {
-                painter.rect_stroke(
-                    bounds,
-                    4.0 * zoom,
-                    theme.focus_ring,
-                    egui::StrokeKind::Inside,
-                );
+                painter.rect_stroke(bounds, 4.0 * zoom, theme.focus_ring, StrokeKind::Inside);
             }
         }
     }
@@ -338,7 +333,7 @@ fn notebook_tab(
         } else {
             Stroke::NONE
         };
-        painter.rect(rect, 4, fill, stroke, egui::StrokeKind::Inside);
+        painter.rect(rect, 4, fill, stroke, StrokeKind::Inside);
     }
     let ink = if selected {
         theme.on_primary
@@ -443,7 +438,7 @@ pub fn notebook_sized<T: Copy + PartialEq>(
                 CONTROL_RADIUS,
                 theme.background(surface).lerp_to_gamma(theme.inset, 0.35),
                 Stroke::new(1.0, theme.border),
-                egui::StrokeKind::Inside,
+                StrokeKind::Inside,
             );
             let mut left = inner.left();
             for (index, (option, text)) in options
@@ -1486,7 +1481,7 @@ mod tests {
             .rect;
         })
         .drop_without_applying_deltas();
-        assert!(zoom == 1.37);
+        assert_eq!(zoom, 1.37);
         assert!(rect.width() > 0.0);
     }
 

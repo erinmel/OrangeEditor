@@ -8,7 +8,8 @@
 //! refused. Identities are generated once, here, and the plan records the document content
 //! state and registry snapshot it was made against.
 
-use crate::catalog::intrinsic_id as ids;
+use crate::catalog::language::active_port_key;
+use crate::catalog::{ProviderKey, intrinsic_id as ids};
 use std::collections::BTreeMap;
 
 use thiserror::Error;
@@ -381,7 +382,19 @@ fn endpoint_type(
         port: port.port.clone(),
     };
     let contract = registry.contract(document, node).ok().flatten();
+    if !node.definition.id.is_core()
+        && node.provider.as_ref().is_some_and(|binding| {
+            ProviderKey::of(document, binding).is_none_or(|provider| {
+                !registry.provides(&node.definition, node.config_version, &provider)
+            })
+        })
+    {
+        return Err(not_data());
+    }
     let declared = declared_port(document, registry, port).ok_or_else(not_data)?;
+    if !active_port_key(node, &port.port, declared.variadic.is_some()) {
+        return Err(not_data());
+    }
     let ty = declared
         .ty
         .as_ref()

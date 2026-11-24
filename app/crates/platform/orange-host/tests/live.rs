@@ -16,7 +16,6 @@ const LEVEL: &str = "core/u64@1";
 const STRING: &str = "core/string@1";
 
 #[test]
-#[ignore = "manual release performance measurement"]
 fn composite_live_timing() {
     use orange_bundled::MathPackage;
     use orange_compiler::{CompileOptions, compile_control};

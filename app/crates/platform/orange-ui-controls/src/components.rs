@@ -645,7 +645,7 @@ pub fn video_frame(
     texture: egui::load::SizedTexture,
     max_size: egui::Vec2,
     label: &str,
-) -> egui::Response {
+) -> Response {
     let bounds = max_size.min(ui.available_size()).max(egui::Vec2::ZERO);
     let scale = if texture.size.x > 0.0 && texture.size.y > 0.0 {
         (bounds.x / texture.size.x).min(bounds.y / texture.size.y)
@@ -665,8 +665,8 @@ fn video_frame_fits_wide_and_portrait_sources_without_stretching() {
     let ctx = egui::Context::default();
     ctx.run_ui(Default::default(), |ui| {
         for (source, expected) in [
-            (egui::vec2(1920.0, 1080.0), egui::vec2(160.0, 90.0)),
-            (egui::vec2(1080.0, 1920.0), egui::vec2(90.0, 160.0)),
+            (vec2(1920.0, 1080.0), vec2(160.0, 90.0)),
+            (vec2(1080.0, 1920.0), vec2(90.0, 160.0)),
         ] {
             let texture = egui::load::SizedTexture::new(egui::TextureId::User(1), source);
             let response = video_frame(ui, texture, egui::Vec2::splat(160.0), "Video");

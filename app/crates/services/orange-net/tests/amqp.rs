@@ -382,7 +382,7 @@ fn an_unroutable_mandatory_publish_uses_failed() {
 }
 
 #[test]
-#[ignore = "requires RabbitMQ with a dedicated, existing queue"]
+#[cfg(feature = "network-service-tests")]
 fn real_rabbitmq_delivers_confirmed_publish() {
     let url = std::env::var("ORANGE_AMQP_BROKER").expect("AMQP broker endpoint");
     let queue = std::env::var("ORANGE_AMQP_QUEUE").expect("dedicated pre-created queue");

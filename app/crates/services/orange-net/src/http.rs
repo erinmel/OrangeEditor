@@ -213,9 +213,6 @@ impl Session for HttpSession {
 #[derive(Debug)]
 pub(crate) struct HttpAdapter;
 impl ConnectionAdapter for HttpAdapter {
-    fn renewal_field(&self) -> Option<&'static str> {
-        Some("/oauth/refresh_token")
-    }
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
         self.open_renewing(settings, Renew::none())
     }
@@ -262,6 +259,9 @@ impl ConnectionAdapter for HttpAdapter {
             ),
         ]);
         texts
+    }
+    fn renewal_field(&self) -> Option<&'static str> {
+        Some("/oauth/refresh_token")
     }
     fn open_renewing(
         &self,

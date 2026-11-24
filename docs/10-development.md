@@ -2,7 +2,7 @@
 
 ## Toolchain
 
-- Rust **1.99.1** through rustup, pinned in `rust-toolchain.toml` (rustfmt, clippy).
+- Rust **1.99.1** through rustup, pinned in `rust-toolchain.toml` (rustfmt, clippy, rust-src).
   The workspace declares MSRV **1.97.1**; CI derives and checks it from Cargo metadata.
 - Edition 2024, resolver 3, one `Cargo.lock`. Every dependency is pinned to an exact
   version in the root `Cargo.toml`; check a new one against its versioned rustdoc or
@@ -46,7 +46,14 @@ each regression found. There is no upfront fixture suite and no coverage target.
 - Unit tests sit beside the code; integration tests in each crate's `tests/`.
 - Property tests (`proptest`) cover invariants such as round trips and orderings.
 - `orange-testkit` holds stable IDs and small graph builders for host and service tests.
-- Hardware tests (audio devices, capture, global keys) are `#[ignore]`d and run by hand.
+- Audio device checks use the `audio-device-tests` feature. Select the test by name
+  for the input, output or application capture being qualified. The Linux
+  per-application check also requires `ORANGE_AUDIO_TEST_APP`.
+- The OS credential store round trip uses the `os-vault-tests` feature.
+- Socket fixtures with local servers run in the automated suite. Checks that need
+  a public endpoint or running broker use the `network-service-tests` feature.
+- Windows junction qualification uses the `windows-junction-tests` feature on a volume
+  where the test can create a junction. Unix runs the symlink test by default.
 - Network tests that need brokers run against the [Docker network lab](../tools/README.md).
 
 ## Panic policy
@@ -67,8 +74,9 @@ guards.
   workloads: `cargo run --release -p orange-measure --locked -- --help`.
 - The `observe-variables`, `collect-composites` and `compile-watches` filters
   measure the variable observation loop, stream collection, and control lowering.
-  Run the ignored `composite_live_timing` and `telemetry_poll_timing` tests in
-  release mode to measure live publication and editor event polling.
+  Run the `composite_live_timing` and `telemetry_poll_timing` tests in
+  release mode to measure live publication and editor event polling. Debug runs use
+  smaller workloads for the larger model timing probes.
 - Set `ORANGE_EDIT_TIMING_PAIRS=2500` and run
   `cargo test --release -p orange-editor-ui edit_timing -- --nocapture` to time each
   step of an edit on a 5,000-node graph. The default test uses 64 pairs.

@@ -6,7 +6,6 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use orange_host::{FlowId, Host, HostOptions, Value, VariableId};
 use orange_model::binding::{NewNode, new_node_edit};
@@ -215,7 +214,7 @@ impl orange_host::SecretStore for Secrets {
     }
 }
 
-fn open(host: &mut Host, text: &str) -> orange_host::FlowId {
+fn open(host: &mut Host, text: &str) -> FlowId {
     let draft = host.draft(text).unwrap();
     host.approve_connection_credentials_for_session(&draft, CONNECTION)
         .unwrap();
@@ -402,9 +401,9 @@ fn an_unacknowledged_message_is_sent_again_after_reconnecting() {
 }
 
 /// Runs against a real broker when one is named:
-/// `ORANGE_MQTT_BROKER=mqtt://localhost:1883 cargo test -p orange-net --test mqtt -- --ignored`.
+/// `ORANGE_MQTT_BROKER=mqtt://localhost:1883 cargo test -p orange-net --features network-service-tests --test mqtt a_real_broker`.
 #[test]
-#[ignore = "needs a real MQTT broker in ORANGE_MQTT_BROKER"]
+#[cfg(feature = "network-service-tests")]
 fn a_real_broker_delivers_what_the_graph_publishes() {
     let url = std::env::var("ORANGE_MQTT_BROKER").expect("ORANGE_MQTT_BROKER is set");
     let mut host = host();
@@ -431,12 +430,12 @@ fn a_real_broker_delivers_what_the_graph_publishes() {
     let flow = open(&mut host, &text);
     if wrong {
         host.trigger(flow, node(2), None).unwrap();
-        std::thread::sleep(Duration::from_secs(4));
+        std::thread::sleep(std::time::Duration::from_secs(4));
         assert_eq!(text_pair(&host, flow), None);
         return;
     }
     // Publishing waits in the queue until the session is connected and subscribed.
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(std::time::Duration::from_secs(2));
     host.trigger(flow, node(2), None).unwrap();
     until("the text message", || text_pair(&host, flow).is_some());
     assert_eq!(text_pair(&host, flow).unwrap(), ["orange/test", "hello"]);

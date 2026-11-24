@@ -175,10 +175,9 @@ pub const LOCAL_NAMESPACE: &str = "local";
 /// The type expression of local type `id`.
 pub fn local_type(id: TypeDeclId) -> TypeExpr {
     let text = format!("{LOCAL_NAMESPACE}/t{}@1", id.as_uuid().simple());
-    match text.parse() {
-        Ok(ty) => ty,
-        Err(_) => unreachable!("a namespace, a letter and hex digits form a type expression"),
-    }
+    text.parse().unwrap_or_else(|_| {
+        unreachable!("a namespace, a letter and hex digits form a type expression")
+    })
 }
 
 impl Keyed for LocalTypeDecl {

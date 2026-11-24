@@ -1606,15 +1606,10 @@ fn error_as_data_inside_successful_try_is_not_an_outer_failure() {
 }
 
 #[test]
-#[ignore = "manual release control timing; no NFR or allocation threshold"]
 fn headless_control_timing_baseline() {
     use orange_runtime::{Run, RunOptions};
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-    assert!(
-        !black_box(cfg!(debug_assertions)),
-        "run this probe with --release"
-    );
     let (doc, plan) = state_plan(
         vec![
             core(1, "on-start"),
@@ -1663,8 +1658,9 @@ fn headless_control_timing_baseline() {
         run.dispose().unwrap();
         black_box(operations)
     };
+    let warmup_seconds = if cfg!(debug_assertions) { 0 } else { 10 };
     let warmup = Instant::now();
-    while warmup.elapsed() < Duration::from_secs(10) {
+    while warmup.elapsed() < Duration::from_secs(warmup_seconds) {
         black_box(execute());
     }
     let mut samples = vec![];
@@ -1678,7 +1674,7 @@ fn headless_control_timing_baseline() {
     }
     samples.sort_by(f64::total_cmp);
     println!(
-        "Count1000 release: warmup=10s samples=30 batch=8; start/run/stop/dispose included; trace disabled; operations/run={operations}; ns/run median={:.1} p95={:.1} max={:.1}",
+        "Count1000: warmup={warmup_seconds}s samples=30 batch=8; start/run/stop/dispose included; trace disabled; operations/run={operations}; ns/run median={:.1} p95={:.1} max={:.1}",
         (samples[14] + samples[15]) / 2.0,
         samples[28],
         samples[29]

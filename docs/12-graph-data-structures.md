@@ -1188,8 +1188,10 @@ Raising a format version is one change that adds the step, raises the constant a
 A definition file may say which older definition versions it takes the place of:
 
 ```json
-"replaces": [{"definition_id": "org.orange.audio/on-level", "definition_version": 1,
+{
+  "replaces": [{"definition_id": "org.orange.audio/on-level", "definition_version": 1,
   "ports": {"level": "value"}, "config": {"window": "window_ms"}}]
+}
 ```
 
 `ports` maps renamed port IDs and `config` renamed top-level config fields, old to new; anything not listed keeps its name. The replacement is the file's own definition. A host collects these into one `Replacements` table from built-in packages at start and from archives when they install. Two different replacements for one definition version refuse the package, so the table never depends on install order.
@@ -1201,10 +1203,12 @@ When a document opens (`Host::draft`, and every path that checks, previews or ru
 A document may declare its own record and enum types in an optional top-level `types` array, so a graph can have choices (Mood: calm, happy) and structures without a package:
 
 ```json
-"types": [{"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name": "Mood", "kind": "enum",
+{
+  "types": [{"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name": "Mood", "kind": "enum",
   "variants": [{"id": "calm", "name": "Calm"}, {"id": "level", "name": "Level", "payload": "core/f64@1"}]},
  {"id": "7d1f5b63-9c20-4b6f-8d4e-2f3a4b5c6d7e", "name": "Point", "kind": "record",
   "fields": [{"id": "x", "name": "X", "type": "core/f64@1"}, {"id": "label", "name": "Label", "type": "core/string@1", "optional": true}]}]
+}
 ```
 
 - **Identity:** a type is the nominal `local/t<id without hyphens>@1`, fixed by its UUID; values store member IDs (`[a-z][a-z0-9_-]{0,63}`), so names change freely. The `local` and `core` namespaces are reserved: no package may take them.
@@ -1457,7 +1461,7 @@ pub struct EventEnvelope {
 Kernel contract (internal Rust; guests use the versioned component interface from WU-03, which carries the same outcomes):
 
 ```rust
-pub type PureKernel = fn(inputs: &[Value], outputs: &mut [Value], cfg: &CompiledConfig) -> Result<, NodeError>;
+pub type PureKernel = fn(inputs: &[Value], outputs: &mut [Value], cfg: &CompiledConfig) -> Result<(), NodeError>;
 pub trait ActionKernel { fn run(&self, cx: &mut ActionCx<'_>) -> ActionOutcome; }
 pub enum ActionOutcome { Outcome(OutcomeIx), Suspend(PendingOp), Fail(NodeError) }
 pub trait IteratorKernel {

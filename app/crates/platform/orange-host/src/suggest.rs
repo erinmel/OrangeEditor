@@ -16,6 +16,7 @@ use super::*;
 use orange_model::catalog::{Ports, VariableAccess, implicit_port_names};
 use orange_model::document::{NodeKind, PortDirection, PortKind};
 use orange_model::fit::PortFit;
+use std::collections::HashMap;
 
 /// A node kind that can take a wire from one output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +179,91 @@ fn continuation(
 }
 
 impl Host {
+    /// Actual outputs that can feed the input of a backward wire drag. Candidate
+    /// nodes and their ports come from the current graph projection. The document
+    /// registry checks open types and confirms that passive repair cards cannot wire.
+    pub fn output_givers(
+        &self,
+        draft: &Draft,
+        graph: &GraphView,
+        to: PortEnd<'_>,
+    ) -> HashMap<NodeId, Vec<String>> {
+        let document = draft.document();
+        if self.require_port_authority(document, to.0).is_err() {
+            return HashMap::new();
+        }
+        let Some(input) = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == to.0)
+            .and_then(|node| node.ports.iter().find(|port| port.input && port.id == to.1))
+        else {
+            return HashMap::new();
+        };
+        let registry = self.registry_for(document);
+        let target_definition = document
+            .node(to.0)
+            .and_then(|instance| registry.definition(&instance.definition));
+        let target_type = input
+            .ty
+            .as_deref()
+            .and_then(|ty| ty.parse::<TypeExpr>().ok());
+        graph
+            .nodes
+            .iter()
+            .filter(|node| node.id != to.0)
+            .filter_map(|node| {
+                let instance = document.node(node.id)?;
+                let authority = port_authority::port_resolution(document, instance, &registry);
+                if authority.missing.is_some()
+                    || (instance.signature.is_some() && authority.contract.is_none())
+                {
+                    return None;
+                }
+                let source_definition = registry.definition(&instance.definition);
+                let outputs: Vec<_> = node
+                    .ports
+                    .iter()
+                    .filter(|port| !port.input && port.exec == input.exec)
+                    .filter(|port| {
+                        if port.exec {
+                            return true;
+                        }
+                        let (Some(source), Some(target)) =
+                            (port.ty.as_deref(), target_type.as_ref())
+                        else {
+                            return false;
+                        };
+                        if source.starts_with("core/stream@1<") && port.connected {
+                            return false;
+                        }
+                        if source == target.as_str() {
+                            return true;
+                        }
+                        if !source.contains('$') && !target.as_str().contains('$') {
+                            return false;
+                        }
+                        let Ok(source) = source.parse::<TypeExpr>() else {
+                            return false;
+                        };
+                        if source.as_str().contains('$') && source_definition.is_none()
+                            || target.as_str().contains('$') && target_definition.is_none()
+                        {
+                            return false;
+                        }
+                        source_definition.is_none_or(|definition| {
+                            PortFit::new(definition, &registry).meets(&source, target)
+                        }) && target_definition.is_none_or(|definition| {
+                            PortFit::new(definition, &registry).meets(target, &source)
+                        })
+                    })
+                    .map(|port| port.id.clone())
+                    .collect();
+                (!outputs.is_empty()).then_some((node.id, outputs))
+            })
+            .collect()
+    }
+
     /// The node kinds a wire from `from` (a node of the draft's top level and one of its
     /// outputs) can go into, with the input it would take, sorted by what they are
     /// called. Empty when the output is not found.
@@ -211,11 +297,7 @@ impl Host {
     /// step input. Empty when the input is not found.
     pub fn givers(&self, draft: &Draft, to: (NodeId, &str)) -> Vec<Giver> {
         let document = draft.document();
-        let Some(target) = self.wire_node_view(document, to.0).and_then(|view| {
-            view.ports
-                .into_iter()
-                .find(|port| port.input && port.id == to.1)
-        }) else {
+        let Some(target) = self.input_view(document, to) else {
             return Vec::new();
         };
         let registry = self.registry_for(document);
@@ -252,11 +334,7 @@ impl Host {
         let Some(source) = self.output_view(document, from) else {
             return Vec::new();
         };
-        let Some(target) = self.wire_node_view(document, to.0).and_then(|view| {
-            view.ports
-                .into_iter()
-                .find(|port| port.input && port.id == to.1)
-        }) else {
+        let Some(target) = self.input_view(document, to) else {
             return Vec::new();
         };
         if source.exec != target.exec {
@@ -283,5 +361,40 @@ impl Host {
         found.sort_by(|a, b| a.label.cmp(&b.label).then(a.definition.cmp(&b.definition)));
         found.dedup_by(|a, b| a.definition == b.definition);
         found
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inbound_drag_matches_actual_typed_outputs() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&new_document().unwrap()).unwrap();
+        let whole = host
+            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .unwrap();
+        let number = host
+            .add_node(&mut draft, "core/number", [0.0, 0.0])
+            .unwrap();
+        let list = host
+            .add_node(&mut draft, "org.orange.collections/build-list", [0.0, 0.0])
+            .unwrap();
+        let generic = host
+            .add_node(&mut draft, "org.orange.math/absolute", [0.0, 0.0])
+            .unwrap();
+        let into = host
+            .add_node(&mut draft, "org.orange.math/absolute", [0.0, 0.0])
+            .unwrap();
+        host.choose_type(&mut draft, into, "T", Some("core/i64@1"))
+            .unwrap();
+        let view = host.draft_authoring_view(&draft).unwrap();
+        let matches = host.output_givers(&draft, &view.graph, (into, "value"));
+        assert_eq!(matches[&whole], ["result"]);
+        assert_eq!(matches[&generic], ["result"]);
+        for node in [number, list, into] {
+            assert!(!matches.contains_key(&node));
+        }
     }
 }

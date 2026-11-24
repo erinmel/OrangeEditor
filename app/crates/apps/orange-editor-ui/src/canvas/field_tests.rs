@@ -95,8 +95,8 @@ fn diagnostic_marks_use_the_requested_connector_when_port_names_match() {
             geometry.port(id(1), "shared", false).unwrap().offset * zoom
         );
     }
-    assert!(card::stream_type(output.ty));
-    assert!(!card::stream_type(input.ty));
+    assert!(stream_type(output.ty));
+    assert!(!stream_type(input.ty));
 }
 
 /// A branch-like node: a way in, two ways out, a true-or-false input, a number and
@@ -207,6 +207,143 @@ impl Session {
         let _ = self.frame(vec![button(true)]);
         self.frame(vec![button(false)])
     }
+}
+
+#[test]
+fn failure_disclosure_accepts_keyboard_and_preserves_primary_anchors() {
+    let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let id = host
+        .add_node(&mut draft, "core/wait", [40.0, 40.0])
+        .unwrap();
+    let handler = host
+        .add_node(&mut draft, "core/wait", [480.0, 40.0])
+        .unwrap();
+    let view = host.draft_authoring_view(&draft).unwrap();
+    let mut session = Session::new();
+    crate::icons::install(&session.context);
+    session.graph = view.graph;
+    session.canvas.set_failure_routes(view.failure_routes);
+    session.canvas.load(&session.graph);
+    session.canvas.origin = Pos2::ZERO;
+    session.canvas.fit = false;
+    let _ = session.frame(vec![]);
+
+    // Represent a provider with one named success exit to exercise the pulse fallback.
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
+    node.ports
+        .iter_mut()
+        .find(|port| port.id == "then")
+        .unwrap()
+        .id = "success".into();
+    let layout = session.canvas.card(node);
+    let disclosure = layout
+        .rows
+        .iter()
+        .find(|row| matches!(row.left, Some(card::Left::FailureRoutes { .. })))
+        .unwrap();
+    let at = session.corner
+        + (session.canvas.places[&id] + Vec2::new(60.0, disclosure.anchor())
+            - session.canvas.origin)
+            * session.canvas.zoom;
+    let anchor = |session: &Session, key: &str, input: bool| {
+        let geometry = Geometry::with_cards(&session.graph, |node| session.canvas.card(node));
+        geometry.port(id, key, input).map(|port| port.offset)
+    };
+    let primary = [
+        anchor(&session, "in", true),
+        anchor(&session, "success", false),
+    ];
+    assert!(primary.iter().all(Option::is_some));
+    assert_eq!(anchor(&session, "failed", false), None);
+
+    let _ = session.click(at);
+    assert!(session.canvas.failure_routes_expanded(id));
+    assert!(anchor(&session, "failed", false).is_some());
+    assert!(anchor(&session, "cancelled", false).is_some());
+    assert!(anchor(&session, "error", false).is_some());
+    let key = |key, pressed| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    for (keyboard, expanded) in [(egui::Key::Enter, false), (egui::Key::Space, true)] {
+        let _ = session.frame(vec![key(keyboard, true)]);
+        let _ = session.frame(vec![key(keyboard, false)]);
+        assert_eq!(session.canvas.failure_routes_expanded(id), expanded);
+        assert_eq!(
+            [
+                anchor(&session, "in", true),
+                anchor(&session, "success", false)
+            ],
+            primary
+        );
+    }
+    session
+        .canvas
+        .record_step(id, false, orange_host::ControlOutcome::Then);
+    let geometry = Geometry::with_cards(&session.graph, |node| session.canvas.card(node));
+    assert!(session.canvas.exit_glow(&geometry, id, "success") > 0.0);
+    assert_eq!(session.canvas.exit_glow(&geometry, id, "failed"), 0.0);
+    for (outcome, route, other) in [
+        (orange_host::ControlOutcome::Failed, "failed", "cancelled"),
+        (
+            orange_host::ControlOutcome::Cancelled,
+            "cancelled",
+            "failed",
+        ),
+    ] {
+        session.canvas.record_step(id, route == "failed", outcome);
+        assert!(session.canvas.exit_glow(&geometry, id, route) > 0.0);
+        assert_eq!(session.canvas.exit_glow(&geometry, id, other), 0.0);
+        assert_eq!(session.canvas.exit_glow(&geometry, id, "success"), 0.0);
+    }
+    let screen = |node, port, margin| {
+        session.corner
+            + (session.canvas.places[&node]
+                + geometry.port(node, port, node == handler).unwrap().offset
+                - session.canvas.origin)
+                * session.canvas.zoom
+            + Vec2::new(margin, 0.0)
+    };
+    let from = screen(id, "failed", 4.0);
+    let to = screen(handler, "in", 4.0);
+    let mouse = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = session.frame(vec![egui::Event::PointerMoved(from)]);
+    let _ = session.frame(vec![mouse(from, true)]);
+    let _ = session.frame(vec![egui::Event::PointerMoved(from + Vec2::X * 20.0)]);
+
+    session.canvas.toggle_failure_routes(id);
+    assert!(anchor(&session, "failed", false).is_some());
+    assert_eq!(anchor(&session, "cancelled", false), None);
+    let _ = session.frame(vec![egui::Event::PointerMoved(to)]);
+    let drag = session.frame(vec![mouse(to, false)]);
+    assert_eq!(
+        drag.connect,
+        Some(((id, "failed".into()), (handler, "in".into())))
+    );
+    session
+        .canvas
+        .focus_problem(&session.graph, id, Some("cancelled".to_owned()));
+    let focus = anchor(&session, "cancelled", false).unwrap();
+    let centered = session.canvas.places[&id] + focus - session.canvas.origin;
+    assert_eq!(centered * session.canvas.zoom, session.canvas.size / 2.0);
+    assert_eq!(anchor(&session, "failed", false), None);
+    let node = std::sync::Arc::make_mut(&mut session.graph.nodes[0]);
+    node.ports
+        .iter_mut()
+        .find(|port| port.id == "error")
+        .unwrap()
+        .connected = true;
+    assert!(anchor(&session, "error", false).is_some());
+    assert!(anchor(&session, "failed", false).is_some());
 }
 
 #[test]
@@ -583,7 +720,7 @@ fn durations_show_milliseconds_and_step_in_exact_nanoseconds() {
         fields::shown(&node(), card::FieldOf::Input(&duration)),
         ("10 ms".into(), true)
     );
-    let stepped = super::stepped(Some("10.000001"), 12.0, false, "core/duration@1");
+    let stepped = stepped(Some("10.000001"), 12.0, false, "core/duration@1");
     assert_eq!(
         fields::duration_nanos(&stepped).as_deref(),
         Some("13000001")
@@ -748,6 +885,99 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
             if circle.center.distance(center) < 0.5 && (circle.radius - radius).abs() < 0.1)
     }));
     canvas.drop_without_applying_deltas();
+}
+
+#[test]
+fn audio_trigger_keeps_stereo_lanes_and_clears_clip_lights_when_stopped() {
+    use orange_ui_controls::{UiTokens, audio_meter::ChannelReading};
+
+    let (host, _) = orange_host::Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_audio::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let source = host
+        .add_node(&mut draft, orange_audio::AUDIO_SOURCE, [20.0, 40.0])
+        .unwrap();
+    let trigger = host
+        .add_node(&mut draft, orange_audio::NOISE_LEVEL, [330.0, 40.0])
+        .unwrap();
+    host.connect(&mut draft, (source, "stream"), (trigger, "stream"))
+        .unwrap();
+    let mut session = Session::new();
+    UiTokens::install(
+        &session.context,
+        orange_ui_controls::ThemeMode::Dark,
+        orange_ui_controls::Density::Compact,
+    );
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.load(&session.graph);
+    session.canvas.fit = false;
+    session.canvas.begin_run();
+    session.canvas.noise_readings.insert(trigger, -16.0);
+    session.canvas.noise_channels.insert(
+        trigger,
+        spectrum::ChannelLevels::Stereo([
+            ChannelReading {
+                rms: -12.0,
+                peak: 0.0,
+                clipped: true,
+            },
+            ChannelReading {
+                rms: -24.0,
+                peak: -18.0,
+                clipped: false,
+            },
+        ]),
+    );
+    let meter_frame = |session: &mut Session, status| {
+        let (_, output) = session.frame_output(vec![]);
+        let theme = UiTokens::resolve(&session.context).theme;
+        let red = theme.meter_zone_inks()[2];
+        let unlit = theme.bg_canvas().lerp_to_gamma(red, 0.25);
+        let labels = ["L", "R"].map(|label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|item| match &item.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
+                    _ => None,
+                })
+                .expect("channel label")
+        });
+        let mut lights: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|item| match &item.shape {
+                egui::Shape::Circle(dot) if [red, unlit].contains(&dot.fill) => {
+                    Some((dot.center, dot.fill == red))
+                }
+                _ => None,
+            })
+            .collect();
+        lights.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+        assert!(output.shapes.iter().any(
+            |item| matches!(&item.shape, egui::Shape::Text(text) if text.galley.text() == status)
+        ));
+        output.drop_without_applying_deltas();
+        (labels, lights)
+    };
+    let (live_labels, live_lights) = meter_frame(&mut session, t("audio-display-live"));
+    assert!(
+        matches!(live_lights.as_slice(), [(_, true), (_, false)]),
+        "{live_lights:?}"
+    );
+
+    session.canvas.audio_running = false;
+    session.canvas.mark_stale();
+    let (preview_labels, preview_lights) =
+        meter_frame(&mut session, t("audio-display-preview-short"));
+    assert_eq!(preview_labels, live_labels);
+    assert_eq!(
+        preview_lights,
+        [(live_lights[0].0, false), (live_lights[1].0, false)]
+    );
 }
 
 #[test]

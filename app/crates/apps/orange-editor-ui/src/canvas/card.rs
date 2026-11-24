@@ -45,6 +45,7 @@ pub(super) enum FieldOf<'a> {
     /// a Fork's branches.
     AddPort(&'a orange_host::VariadicView),
     AddSignalReceiver,
+    MapPairs,
 }
 
 impl<'a> FieldOf<'a> {
@@ -70,6 +71,7 @@ impl<'a> FieldOf<'a> {
 pub(super) enum Left<'a> {
     /// On manual's Fire button.
     Fire,
+    LoopRole(&'static str),
     FailureRoutes {
         expanded: bool,
     },
@@ -177,22 +179,11 @@ pub(crate) fn stream_type(ty: Option<&str>) -> bool {
 }
 
 /// Whether a value of this input's type is typed on the card.
-pub(super) fn typed(port: &PortView) -> bool {
-    !port.exec
-        && port.ty.as_deref().is_some_and(|ty| {
-            matches!(
-                ty.split('@').next().unwrap_or_default(),
-                "core/string"
-                    | "core/i64"
-                    | "core/u64"
-                    | "core/i32"
-                    | "core/u32"
-                    | "core/f64"
-                    | "core/f32"
-                    | "core/bool"
-                    | "core/duration"
-            ) || (!ty.starts_with("core/") && !ty.starts_with('$') && !stream_type(Some(ty)))
-        })
+fn typed(port: &PortView, details: &[orange_host::PortDetails]) -> bool {
+    let details = details
+        .iter()
+        .find(|detail| detail.input && detail.id == port.id);
+    port.literal_editor(details) != orange_host::LiteralEditor::Unavailable
 }
 
 pub(super) fn literal(node: &NodeView) -> bool {
@@ -204,13 +195,14 @@ pub(super) fn literal(node: &NodeView) -> bool {
 
 impl<'a> Card<'a> {
     pub fn new(node: &'a NodeView) -> Self {
-        Self::with_controls(node, true, None, |_| None)
+        Self::with_controls(node, true, None, &[], |_| None)
     }
 
     pub fn with_controls(
         node: &'a NodeView,
         chart_open: bool,
         failure: Option<FailureRows<'_>>,
+        details: &[orange_host::PortDetails],
         text_height: impl Fn(&PortView) -> Option<f32>,
     ) -> Self {
         if spectrum::is_noise(node) {
@@ -248,6 +240,9 @@ impl<'a> Card<'a> {
                 });
                 y += height;
             };
+        if let Some(role) = crate::node_ergonomics::loop_role(node) {
+            push(&mut rows, Some(Left::LoopRole(role)), None);
+        }
 
         // Flow: the way in and the first way out share the first row.
         let mut ins: Vec<Left<'a>> = Vec::new();
@@ -296,8 +291,14 @@ impl<'a> Card<'a> {
                 named: true,
             });
         }
+        let paired_map = crate::node_ergonomics::paired_map_available(node);
         for port in crate::properties::input_ports(node) {
-            if !port.connected
+            if paired_map && matches!(port.id.as_str(), "keys" | "values") {
+                lefts.push(Left::Port(port));
+                continue;
+            }
+            if node.missing.is_none()
+                && !port.connected
                 && let Some(kind) = crate::properties::TextInput::for_port(node, port)
             {
                 lefts.push(Left::Field {
@@ -324,12 +325,12 @@ impl<'a> Card<'a> {
             }
             let path = node.paths.iter().find(|path| path.port == port.id);
             lefts.push(match path {
-                _ if port.connected => Left::Port(port),
+                _ if port.connected || node.missing.is_some() => Left::Port(port),
                 Some(path) => Left::Field {
                     editor: FieldOf::Path(port, path),
                     named: true,
                 },
-                None if typed(port) => Left::Field {
+                None if typed(port, details) => Left::Field {
                     editor: FieldOf::Input(port),
                     named: !literal,
                 },
@@ -340,6 +341,12 @@ impl<'a> Card<'a> {
             editor: FieldOf::Setting(name, schema, None),
             named: true,
         }));
+        if paired_map {
+            lefts.push(Left::Field {
+                editor: FieldOf::MapPairs,
+                named: false,
+            });
+        }
         // A port the node may have more of ends the card with a button that adds one;
         // a chart card adds its band ports from its chart instead.
         let growing: Vec<Left<'a>> = node

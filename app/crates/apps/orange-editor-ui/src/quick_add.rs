@@ -13,6 +13,7 @@ pub(crate) struct QuickAdd {
     from: Option<(NodeId, String)>,
     /// The input the new node's output is wired to, when it goes into a wire.
     into: Option<(NodeId, String)>,
+    splice: Option<orange_host::EdgeId>,
     /// Where the node goes, in graph units.
     at: [f32; 2],
     /// Where the search is drawn, on the screen.
@@ -23,11 +24,13 @@ pub(crate) struct QuickAdd {
     highlighted: usize,
     choices_key: Option<(String, String, u64)>,
     choices: Vec<QuickChoice>,
+    splice_conversions: Option<(u64, Vec<orange_host::Conversion>)>,
 }
 
 impl QuickAdd {
     pub(crate) fn invalidate(&mut self) {
         self.choices_key = None;
+        self.splice_conversions = None;
     }
 }
 
@@ -61,6 +64,7 @@ impl Editor {
         self.quick = Some(QuickAdd {
             from,
             into: None,
+            splice: None,
             at,
             screen,
             search: String::new(),
@@ -68,15 +72,24 @@ impl Editor {
             highlighted: 0,
             choices_key: None,
             choices: Vec::new(),
+            splice_conversions: None,
         });
     }
 
     /// Opens the search to put a node into the wire `wire` at `at`: the chosen node
     /// takes the wire's output and its own output goes on to the wire's input.
     pub fn open_insert_node(&mut self, wire: canvas::WireEnds, at: [f32; 2], screen: egui::Pos2) {
+        let splice = self.document.as_ref().and_then(|document| {
+            Host::splice_edge(
+                &document.draft,
+                (wire.0.0, &wire.0.1),
+                (wire.1.0, &wire.1.1),
+            )
+        });
         self.open_quick_add(Some(wire.0), at, screen);
         if let Some(quick) = &mut self.quick {
             quick.into = Some(wire.1);
+            quick.splice = splice;
         }
     }
 
@@ -99,6 +112,14 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return Vec::new();
         };
+        if quick.from.iter().chain(&quick.into).any(|(node, _)| {
+            self.document
+                .as_ref()
+                .and_then(|doc| doc.node_view(*node))
+                .is_none_or(|node| node.missing.is_some())
+        }) {
+            return Vec::new();
+        }
         // Dragged back from an input: the kinds with an output that feeds it.
         if let (None, Some(into), Some(document)) = (&quick.from, &quick.into, &self.document) {
             let givers = host.givers(&document.draft, (into.0, &into.1));
@@ -127,14 +148,22 @@ impl Editor {
                 let Some(into) = &quick.into else {
                     return Vec::new();
                 };
+                let Some(wire) = quick.splice else {
+                    return Vec::new();
+                };
                 let fits =
                     host.splice_takers(&document.draft, (from.0, &from.1), (into.0, &into.1));
-                host.search_nodes(search, self.language())
+                let fits: HashMap<_, _> = fits
+                    .iter()
+                    .map(|fit| (fit.definition.as_str(), fit))
+                    .collect();
+                let mut choices: Vec<_> = host
+                    .search_nodes(search, self.language())
                     .into_iter()
                     .filter_map(|found| {
-                        let fit = fits.iter().find(|fit| fit.definition == found.definition)?;
+                        let fit = fits.get(found.definition.as_str())?;
                         Some(QuickChoice {
-                            output: None,
+                            output: Some(fit.output.clone()),
                             definition: found.definition,
                             label: found.label,
                             input: Some(fit.input.clone()),
@@ -142,7 +171,28 @@ impl Editor {
                             purpose: found.purpose,
                         })
                     })
-                    .collect()
+                    .collect();
+                let converters = match &quick.splice_conversions {
+                    Some((generation, conversions))
+                        if *generation == host.registry().generation() =>
+                    {
+                        std::borrow::Cow::Borrowed(conversions.as_slice())
+                    }
+                    _ => std::borrow::Cow::Owned(host.splice_conversions(&document.draft, wire)),
+                };
+                choices.extend(
+                    palette::matching_conversions(converters.iter(), search, self.language())
+                        .into_iter()
+                        .map(|item| QuickChoice {
+                            output: Some("result".into()),
+                            definition: item.id,
+                            label: item.label,
+                            input: Some("value".into()),
+                            category: t("conversions").to_owned(),
+                            purpose: item.purpose,
+                        }),
+                );
+                choices
             }
             (Some(from), Some(document)) => {
                 let takers = host.takers(&document.draft, (from.0, &from.1));
@@ -180,11 +230,9 @@ impl Editor {
             return choices;
         }
         let from_type = quick.from.as_ref().and_then(|(id, port)| {
-            let graph = self.graph()?;
-            graph
-                .nodes
-                .iter()
-                .find(|node| node.id == *id)?
+            self.document
+                .as_ref()?
+                .node_view(*id)?
                 .ports
                 .iter()
                 .find(|output| !output.input && output.id == *port)?
@@ -208,12 +256,45 @@ impl Editor {
         choices
     }
 
-    /// Adds the chosen kind where the search was opened and, when a wire was let go,
-    /// wires it in; put into a wire, its first fitting output goes on to the wire's
-    /// input. Closes the search. Returns the new node.
+    /// Adds the chosen kind where the search was opened, wiring it in when requested.
+    /// A successful placement closes the search and returns the new node.
     pub fn pick_quick(&mut self, host: &mut Host, choice: &QuickChoice) -> Option<NodeId> {
         let quick = self.quick.take()?;
+        let placed = self.place_quick(host, choice, &quick);
+        if placed.is_none() {
+            self.quick = Some(quick);
+        }
+        placed
+    }
+
+    fn place_quick(
+        &mut self,
+        host: &mut Host,
+        choice: &QuickChoice,
+        quick: &QuickAdd,
+    ) -> Option<NodeId> {
         if let (Some(from), Some(to)) = (quick.from.as_ref(), quick.into.as_ref()) {
+            let current = Host::splice_edge(self.editing()?, (from.0, &from.1), (to.0, &to.1));
+            if current.is_none() || current != quick.splice {
+                let _ = self.edited(
+                    host,
+                    Err(HostError::Document(t("splice-wire-changed").into())),
+                );
+                return None;
+            }
+            if choice.definition.starts_with(palette::CONVERSION) {
+                let draft = self.editing()?;
+                let wire = current?;
+                let available = match &quick.splice_conversions {
+                    Some((_, conversions)) => std::borrow::Cow::Borrowed(conversions.as_slice()),
+                    None => std::borrow::Cow::Owned(host.splice_conversions(draft, wire)),
+                };
+                let converter = available
+                    .iter()
+                    .find(|candidate| palette::conversion_id(candidate) == choice.definition)?;
+                let result = host.splice_conversion(draft, wire, converter, quick.at);
+                return self.placed(host, result.map(|node| (node, None)));
+            }
             return self.add_node_into_wire(
                 host,
                 &choice.definition,
@@ -301,6 +382,16 @@ impl Editor {
                     self.language().to_owned(),
                     host.registry().generation(),
                 );
+                if let Some(quick) = &mut self.quick
+                    && let (Some(wire), Some(document)) = (quick.splice, &self.document)
+                    && quick
+                        .splice_conversions
+                        .as_ref()
+                        .is_none_or(|(generation, _)| *generation != key.2)
+                {
+                    quick.splice_conversions =
+                        Some((key.2, host.splice_conversions(&document.draft, wire)));
+                }
                 if self
                     .quick
                     .as_ref()
@@ -351,7 +442,12 @@ impl Editor {
                         }
                         for (index, choice) in choices.iter().take(SHOWN).enumerate() {
                             let on = index == highlighted;
-                            let target = choice.input.as_deref().map(port_label);
+                            let target = match (choice.input.as_deref(), choice.output.as_deref()) {
+                                (Some(input), Some(output)) => {
+                                    Some(format!("{} → {}", port_label(input), port_label(output)))
+                                }
+                                (input, output) => input.or(output).map(port_label),
+                            };
                             let detail = if choice.purpose.is_empty() {
                                 choice.category.clone()
                             } else {
@@ -371,7 +467,7 @@ impl Editor {
                                 card,
                                 Some(&choice.definition),
                             );
-                            if row.drag_started() {
+                            if !wired && row.drag_started() {
                                 let card =
                                     self.previews.card(host, draft, &choice.definition).cloned();
                                 row.dnd_set_drag_payload(palette::PaletteDrag {
@@ -617,5 +713,44 @@ mod staging_tests {
         editor.undo(&mut host);
         assert_eq!(editor.graph().unwrap().nodes.len(), 1);
         assert!(editor.graph().unwrap().wires.is_empty());
+    }
+
+    #[test]
+    fn a_converter_can_be_selected_for_a_generic_splice() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let whole = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let target = editor
+            .add_node(&mut host, "org.orange.math/absolute")
+            .unwrap();
+        assert!(editor.connect(&mut host, (whole, "result"), (target, "value")));
+        let wire = ((whole, "result".into()), (target, "value".into()));
+        editor.open_insert_node(wire.clone(), [150.0, 0.0], egui::Pos2::ZERO);
+        let conversion = editor
+            .quick_choices(&host, "convert")
+            .into_iter()
+            .find(|choice| choice.definition.starts_with("convert:core/i64-to-f64"))
+            .expect("a generic numeric destination can re-infer as a decimal");
+        let node = editor.pick_quick(&mut host, &conversion).unwrap();
+        assert_eq!(editor.canvas().selected(), Some(node));
+        assert_eq!(editor.graph().unwrap().wires.len(), 2);
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().wires.len(), 1);
+
+        editor.open_insert_node(wire, [150.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.disconnect_wire(&mut host, (whole, "result"), (target, "value")));
+        assert!(editor.connect(&mut host, (whole, "result"), (target, "value")));
+        let before = editor.document.as_ref().unwrap().draft.text().unwrap();
+        assert!(editor.pick_quick(&mut host, &conversion).is_none());
+        assert!(editor.is_quick_add_open());
+        assert_eq!(
+            editor.document.as_ref().unwrap().draft.text().unwrap(),
+            before
+        );
     }
 }

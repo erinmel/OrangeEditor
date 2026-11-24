@@ -25,6 +25,9 @@ profile:
 # proc-macro2, ...) fails, the Cargo project model loads degraded, and Qodana reports
 # the code it can no longer resolve as "possible project misconfiguration". cpal needs
 # the ALSA headers on Linux, as in .github/workflows/checks.yml.
+# Require the locked workspace to compile before Rust inspections run.
 bootstrap: >-
   apt-get update &&
-  apt-get install --yes --no-install-recommends build-essential pkg-config libasound2-dev
+  apt-get install --yes --no-install-recommends build-essential pkg-config libasound2-dev &&
+  rustup show &&
+  cargo check --locked --workspace --all-targets --all-features

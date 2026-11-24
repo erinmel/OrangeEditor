@@ -132,15 +132,14 @@ fn write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
 /// What an index entry lets its package reach. A field an older index lacks reads as
 /// not granted, and as no limit of the package's own.
 fn access(entry: &Json) -> PackageAccess {
+    let mut grants = Grants::default();
+    for (name, _) in Grants::default().named() {
+        if entry[name] == true {
+            grants.grant(name);
+        }
+    }
     PackageAccess {
-        grants: Grants {
-            log: entry["log"] == true,
-            files: entry["files"] == true,
-            http: entry["http"] == true,
-            http_local: entry["http-local"] == true,
-            compute: entry["compute"] == true,
-            websocket: entry["websocket"] == true,
-        },
+        grants,
         http_hosts: entry["http-hosts"].as_array().map(|hosts| {
             hosts
                 .iter()
@@ -153,17 +152,11 @@ fn access(entry: &Json) -> PackageAccess {
 
 /// Writes `access` into an index entry, leaving its other fields alone.
 fn record(entry: &mut Map<String, Json>, access: &PackageAccess) {
-    let grants = access.grants;
-    for (field, value) in [
-        ("log", json!(grants.log)),
-        ("files", json!(grants.files)),
-        ("http", json!(grants.http)),
-        ("http-local", json!(grants.http_local)),
-        ("compute", json!(grants.compute)),
-        ("websocket", json!(grants.websocket)),
+    let grants = access.grants.named().map(|(name, on)| (name, json!(on)));
+    for (field, value) in grants.into_iter().chain([
         ("http-hosts", json!(access.http_hosts)),
         ("data-quota", json!(access.data_quota)),
-    ] {
+    ]) {
         if value.is_null() {
             let _ = entry.remove(field);
         } else {

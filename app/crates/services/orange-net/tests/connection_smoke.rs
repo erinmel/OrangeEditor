@@ -37,7 +37,6 @@ fn saved_connection_graph_runs_json_feedback_and_failure_routes_without_a_server
 }
 
 #[test]
-#[ignore = "requires permission to connect to loopback TCP"]
 fn the_same_graph_parses_http_and_websocket_responses() {
     use serde_json::Value as Json;
     use std::io::{BufRead, BufReader, Write};

@@ -383,3 +383,16 @@ fn effects_keep_instance_state_and_report_their_own_errors() {
         "org.example.probe/UnknownDefinition"
     );
 }
+
+#[test]
+fn every_grant_name_gives_exactly_its_own_grant() {
+    let names = Grants::default().named().map(|(name, _)| name);
+    for (index, name) in names.into_iter().enumerate() {
+        let mut grants = Grants::default();
+        assert!(grants.grant(name), "{name}");
+        let granted: Vec<_> = grants.named().iter().map(|&(_, on)| on).collect();
+        let expected: Vec<_> = (0..names.len()).map(|at| at == index).collect();
+        assert_eq!(granted, expected, "{name}");
+    }
+    assert!(!Grants::default().grant("network"));
+}

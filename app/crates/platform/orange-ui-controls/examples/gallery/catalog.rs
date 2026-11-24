@@ -518,7 +518,7 @@ fn render(
                                 "Choose file"
                             },
                         ));
-                        ui.add(egui::Label::new(display).wrap()).on_hover_text(full);
+                        ui.add(Label::new(display).wrap()).on_hover_text(full);
                         response
                     });
                     return result.inner;

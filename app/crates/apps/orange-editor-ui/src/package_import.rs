@@ -100,19 +100,7 @@ impl Editor {
         let (cancel, install) = &modal.inner;
         if install.clicked() {
             if let Some(import) = self.pending_package.take() {
-                match host.install(&import.archive, import.approved) {
-                    Ok(key) => self.say(tf(
-                        "package-imported",
-                        &[("name", key.id.to_string().into())],
-                    )),
-                    Err(error) => self.say_at(
-                        NoteLevel::Error,
-                        tf(
-                            "package-import-failed",
-                            &[("error", error.to_string().into())],
-                        ),
-                    ),
-                }
+                self.install_approved_package(host, &import.archive, import.approved);
                 self.previews.invalidate();
                 self.check(host);
                 self.panels.log = true;
@@ -120,6 +108,27 @@ impl Editor {
             }
         } else if cancel.clicked() || modal.should_close() {
             self.pending_package = None;
+        }
+    }
+
+    pub(super) fn install_approved_package(
+        &mut self,
+        host: &mut Host,
+        archive: &[u8],
+        grants: Grants,
+    ) {
+        match host.install(archive, grants) {
+            Ok(key) => self.say(tf(
+                "package-imported",
+                &[("name", key.id.to_string().into())],
+            )),
+            Err(error) => self.say_at(
+                NoteLevel::Error,
+                tf(
+                    "package-import-failed",
+                    &[("error", error.to_string().into())],
+                ),
+            ),
         }
     }
 }
@@ -156,7 +165,7 @@ pub(super) fn grant_choices(ui: &mut egui::Ui, requested: Grants, approved: &mut
     }
     orange_ui_controls::check_list(
         ui,
-        crate::controls::Surface::Dialog,
+        Surface::Dialog,
         orange_ui_controls::CheckStyle::Emphasis,
         &mut choices,
     )

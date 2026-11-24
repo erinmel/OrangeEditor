@@ -76,10 +76,33 @@ fn an_exported_function_survives_removal_and_comes_back_when_reinstalled() {
     assert!(consumer.check(&reopened).unwrap().is_empty());
     assert_eq!(computed(&mut consumer, &reopened), Value::I64(21));
 
+    let card = |host: &Host, draft: &orange_host::Draft| {
+        host.draft_authoring_view(draft)
+            .unwrap()
+            .graph
+            .nodes
+            .into_iter()
+            .find(|shown| shown.id == node)
+            .unwrap()
+    };
+    assert!(card(&consumer, &draft).missing.is_none());
+
     // Removed, the saved node stays on the canvas and says its provider is gone.
     consumer.uninstall(&key).unwrap();
-    let view = consumer.view(&saved).unwrap();
-    assert!(view.nodes.iter().any(|shown| shown.id == node));
+    let missing = card(&consumer, &draft);
+    assert!(missing.missing.is_some());
+    assert!(
+        missing
+            .ports
+            .iter()
+            .any(|port| port.id == "b" && port.input)
+    );
+    assert!(
+        consumer
+            .set_input(&mut draft, (node, "b"), Some("3"))
+            .is_err()
+    );
+    assert_eq!(draft.text().unwrap(), saved);
     let problems = consumer.check(&saved).unwrap();
     assert!(
         problems
@@ -91,6 +114,12 @@ fn an_exported_function_survives_removal_and_comes_back_when_reinstalled() {
 
     // The exact archive installed again restores it.
     let _ = consumer.install(&archive, Grants::default()).unwrap();
+    assert!(card(&consumer, &draft).missing.is_none());
     assert!(consumer.check(&saved).unwrap().is_empty());
     assert_eq!(computed(&mut consumer, &saved), Value::I64(21));
+    assert!(
+        consumer
+            .set_input(&mut draft, (node, "b"), Some("3"))
+            .unwrap()
+    );
 }

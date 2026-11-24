@@ -209,7 +209,7 @@ impl Host {
 /// to the adapter and never stored, logged or compared.
 fn with_secrets(
     secrets: Option<&Arc<dyn SecretStore>>,
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &Map<String, serde_json::Value>,
     renewal_field: Option<&'static str>,
 ) -> Result<(ResolvedSettings, Renew, bool), String> {
     use serde_json::Value as Json;

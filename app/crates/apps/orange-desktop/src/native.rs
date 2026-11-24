@@ -52,18 +52,11 @@ pub struct NativePlugins {
 /// The libraries of a folder, in file-name order, with their digests. A file that
 /// cannot be read is left out.
 pub fn scan(directory: &Path) -> Vec<Library> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
+    let Ok(paths) = orange_native::libraries(directory) else {
         return Vec::new();
     };
-    let mut libraries: Vec<Library> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == std::env::consts::DLL_EXTENSION)
-        })
+    paths
+        .into_iter()
         .filter_map(|path| {
             let size = std::fs::metadata(&path).ok()?.len();
             if size > MAX_LIBRARY_BYTES {
@@ -76,9 +69,7 @@ pub fn scan(directory: &Path) -> Vec<Library> {
                 path,
             })
         })
-        .collect();
-    libraries.sort_by(|a, b| a.file.cmp(&b.file));
-    libraries
+        .collect()
 }
 
 fn read_approvals(directory: &Path) -> BTreeMap<String, String> {

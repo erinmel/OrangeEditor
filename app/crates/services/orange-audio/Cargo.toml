@@ -11,6 +11,9 @@ build = "../../../build/locales.rs"
 windows.workspace = true
 windows-core.workspace = true
 
+[features]
+audio-device-tests = []
+
 [dependencies]
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
 orange-net = { path = "../orange-net", version = "=0.0.0" }

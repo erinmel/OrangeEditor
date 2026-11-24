@@ -80,7 +80,7 @@ impl Editor {
                     .push((id.clone(), connection.name.clone()));
             }
         }
-        let adapters: std::collections::HashMap<_, _> = host
+        let adapters: HashMap<_, _> = host
             .nodes()
             .filter_map(|node| {
                 Some((

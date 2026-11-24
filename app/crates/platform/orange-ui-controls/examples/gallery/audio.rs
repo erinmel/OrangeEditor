@@ -533,7 +533,6 @@ mod scheduling_tests {
         assert_eq!(frame(0.8, false, false, true), (second.0, None));
     }
     #[test]
-    #[ignore = "manual chart CPU timing"]
     fn profile_audio_panel() {
         for dragging in [false, true] {
             measure_panel(dragging);
@@ -550,10 +549,7 @@ mod scheduling_tests {
             }
             let mut output = ctx.run_ui(
                 egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        vec2(960.0, 1000.0),
-                    )),
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(960.0, 1000.0))),
                     time: Some(f64::from(frame) / 60.0),
                     ..Default::default()
                 },
@@ -574,7 +570,6 @@ mod scheduling_tests {
         );
     }
     #[test]
-    #[ignore = "manual signal math timing"]
     fn profile_audio_math() {
         let mut brass = Brass::default();
         let filters = BANDS.map(|band| Biquad::new(RATE, band));

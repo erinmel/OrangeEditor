@@ -98,24 +98,19 @@ pub(crate) fn instance_port(
     key: &PortKey,
 ) -> Option<PortDescriptor> {
     let base = key.port();
-    if let Some(index) = key.instance() {
-        let active = node
-            .variadic
-            .get(base)
-            .is_some_and(|state| state.order.contains(&index));
+    if key.instance().is_some() {
         return snapshot
             .ports
             .iter()
             .find(|candidate| candidate.port_id == *base && candidate.variadic.is_some())
-            .filter(|_| active)
+            .filter(|_| active_port_key(node, key, true))
             .cloned();
     }
-    let variadic_base = node.variadic.contains_key(base)
-        || snapshot
-            .ports
-            .iter()
-            .any(|port| port.port_id == *base && port.variadic.is_some());
-    if variadic_base {
+    let variadic = snapshot
+        .ports
+        .iter()
+        .any(|port| port.port_id == *base && port.variadic.is_some());
+    if !active_port_key(node, key, variadic) {
         return None;
     }
     snapshot
@@ -124,6 +119,15 @@ pub(crate) fn instance_port(
         .find(|port| port.port_id == *base)
         .cloned()
         .or_else(|| implicit_port(node.definition.id.as_str(), snapshot, base))
+}
+
+/// Whether a known base descriptor admits this bare or variadic endpoint key.
+pub(crate) fn active_port_key(node: &NodeInstance, key: &PortKey, variadic: bool) -> bool {
+    let instances = node.variadic.get(key.port());
+    match key.instance() {
+        Some(index) => variadic && instances.is_some_and(|state| state.order.contains(&index)),
+        None => !variadic && instances.is_none(),
+    }
 }
 
 /// One language intrinsic.

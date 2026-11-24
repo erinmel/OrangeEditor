@@ -435,7 +435,7 @@ impl Host {
         }
         if let Some(adapter) = self.adapters.get(&connection.adapter) {
             if let Some(settings) = connection.settings.as_object() {
-                crate::credentials::references(adapter.as_ref(), settings)
+                credentials::references(adapter.as_ref(), settings)
                     .map_err(|error| HostError::Connection(connection.name.clone(), error))?;
             }
         } else if let Some(at) = plain_secret(&connection.settings, "") {

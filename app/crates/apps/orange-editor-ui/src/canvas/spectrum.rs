@@ -738,14 +738,15 @@ pub(super) fn draw_noise(
     let lanes = stereo
         .as_ref()
         .map_or(single.as_slice(), |pair| pair.as_slice());
-    meter.show_channels(
-        ui,
-        painter,
-        id.with("meter"),
-        UiTokens::for_surface(ui, orange_ui_controls::Surface::Card),
-        lanes,
-    );
-    if !lanes.is_empty() {
+    let meter_id = id.with("meter");
+    let tokens = UiTokens::for_surface(ui, orange_ui_controls::Surface::Card);
+    let preview = reading.is_none() && lanes.is_empty();
+    if preview {
+        meter.show_stereo_preview(ui, painter, meter_id, tokens, ["L", "R"]);
+    } else {
+        meter.show_channels(ui, painter, meter_id, tokens, lanes);
+    }
+    if preview || !lanes.is_empty() {
         let lights = Rect::from_min_max(bar.min - Vec2::new(0.0, 15.0) * zoom, bar.right_top());
         ui.interact(lights, id.with("clip-status"), Sense::hover())
             .on_hover_text(t("meter-clip-hint"));
@@ -776,7 +777,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual release rendering measurement"]
     fn profile_trace_geometry() {
         use std::time::Instant;
         let ctx = egui::Context::default();

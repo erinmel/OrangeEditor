@@ -471,7 +471,7 @@ impl Files {
 
     fn fixture_file(&mut self, ui: &mut Ui, index: usize, name: &str) {
         ui.horizontal(|ui| {
-            let glyph = super::advanced::icon(ui, super::advanced::Glyph::Wave);
+            let glyph = super::advanced::icon(ui, Glyph::Wave);
             glyph.on_hover_text("WAV audio");
             ui.checkbox(&mut self.checked[index], name);
             if icon_button(ui, Glyph::Play, &format!("Preview {name}")).clicked() {
@@ -537,7 +537,7 @@ impl Files {
                         .show(ui, |ui| self.path_tree(ui, path, depth + 1));
                 } else if !directory {
                     ui.horizontal(|ui| {
-                        super::advanced::icon(ui, super::advanced::Glyph::Wave);
+                        super::advanced::icon(ui, Glyph::Wave);
                         let id = ui.scope_id().with("selected");
                         let mut selected = ui.ctx().data(|data| data.get_temp(id)).unwrap_or(false);
                         if ui.checkbox(&mut selected, name).changed() {

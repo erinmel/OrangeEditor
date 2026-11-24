@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+os-vault-tests = []
+
 [dependencies]
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
 # Windows Credential Manager, macOS Keychain and the Linux Secret Service. The D-Bus

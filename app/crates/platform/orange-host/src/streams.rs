@@ -60,12 +60,9 @@ impl PullStream for Pulled {
             if demand.is_closed() {
                 return;
             }
-            let pulled = match crate::effects::guard(|| {
-                items.lock().ok().and_then(|mut items| items.next())
-            }) {
-                Ok(pulled) => pulled,
-                Err(fault) => Some(Err(fault)),
-            };
+            let pulled =
+                crate::effects::guard(|| items.lock().ok().and_then(|mut items| items.next()))
+                    .unwrap_or_else(|fault| Some(Err(fault)));
             // A stream closed while this waited has no one to give the item to.
             if demand.is_closed() {
                 return;

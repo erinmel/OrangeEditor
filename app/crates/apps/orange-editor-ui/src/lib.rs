@@ -36,8 +36,10 @@ pub mod icons;
 mod interaction_regressions;
 mod keymap;
 mod menu;
+mod node_ergonomics;
 mod organise;
 mod package_import;
+mod port_values;
 mod properties;
 mod quick_add;
 mod settings;
@@ -473,6 +475,7 @@ impl std::fmt::Debug for Probing {
 /// The state of the editor between frames.
 #[derive(Debug, Default)]
 pub struct Editor {
+    value_form: Option<port_values::ValueForm>,
     function_export: Option<organise::FunctionExport>,
     search: String,
     palette_highlighted: usize,
@@ -500,6 +503,8 @@ pub struct Editor {
     package_search: String,
     /// A wire let go between two kinds of value, waiting for its conversion.
     conversion_choice: Option<ConversionChoice>,
+    pending_for_each: Option<node_ergonomics::ForEachConfirmation>,
+    build_map_rows: Option<node_ergonomics::BuildMapRows>,
     palette: palette::PaletteCache,
     previews: palette::PreviewCache,
     settings_open: bool,
@@ -564,7 +569,7 @@ pub struct Editor {
 /// Returns the node and, for a loop, its end.
 fn place_node(
     host: &Host,
-    draft: &mut orange_host::Draft,
+    draft: &mut Draft,
     definition: &str,
     at: [f32; 2],
 ) -> Result<(NodeId, Option<NodeId>), HostError> {
@@ -641,6 +646,8 @@ impl Editor {
     /// checked at once; a flow of the previous document is closed.
     /// A text that is not a document opens nothing, and the log says why.
     pub fn open(&mut self, host: &mut Host, path: impl Into<String>, text: String) {
+        self.pending_for_each = None;
+        self.build_map_rows = None;
         self.node_config_menu = None;
         self.renaming_node = None;
         self.inspected_port = None;
@@ -665,8 +672,13 @@ impl Editor {
         let orange_host::AuthoringView {
             graph,
             failure_routes,
-        } = host.draft_authoring_view(&draft).unwrap_or_default();
+            port_details,
+        } = host
+            .draft_authoring_view_in(&draft, self.language())
+            .unwrap_or_default();
+        self.value_form = None;
         self.canvas.set_failure_routes(failure_routes);
+        self.canvas.set_port_details(port_details);
         self.canvas.load(&graph);
         self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
         self.canvas.set_groups(draft.groups());
@@ -743,6 +755,7 @@ impl Editor {
         if let Some(quick) = &mut self.quick {
             quick.invalidate();
         }
+        let locale = self.language().to_owned();
         let Some(document) = &mut self.document else {
             return;
         };
@@ -750,8 +763,9 @@ impl Editor {
         let orange_host::AuthoringView {
             graph,
             failure_routes,
+            port_details,
         } = host
-            .draft_authoring_view(&document.draft)
+            .draft_authoring_view_in(&document.draft, &locale)
             .unwrap_or_default();
         let before = document.replace_graph(graph);
         // Only what the edit touched, and what follows it, can preview differently.
@@ -760,6 +774,7 @@ impl Editor {
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
         self.canvas.set_failure_routes(failure_routes);
+        self.canvas.set_port_details(port_details);
         self.canvas.update(&document.graph);
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
@@ -776,16 +791,13 @@ impl Editor {
                 .runtime_text(host)
                 .and_then(|text| host.update(flow, &text))
             {
-                Ok(_) => {
+                Ok(updated) => {
+                    if updated.changed {
+                        self.canvas.set_manual_values(host.info(flow));
+                    }
                     let entries = host
                         .info(flow)
-                        .map(|info| {
-                            info.manual_entries
-                                .iter()
-                                .filter(|(_, payload)| !payload)
-                                .map(|(node, _)| *node)
-                                .collect()
-                        })
+                        .map(|info| info.manual_entries.iter().map(|(node, _)| *node).collect())
                         .unwrap_or_default();
                     document.flow = Some((flow, entries));
                 }
@@ -1369,16 +1381,10 @@ impl Editor {
             Ok(flow) => {
                 self.canvas.begin_run();
                 let _ = host.observe(flow, true);
+                self.canvas.set_manual_values(host.info(flow));
                 let entries = host
                     .info(flow)
-                    .map(|info| {
-                        info.manual_entries
-                            .iter()
-                            // An entry that takes a payload needs a value to fire.
-                            .filter(|(_, payload)| !payload)
-                            .map(|(node, _)| *node)
-                            .collect()
-                    })
+                    .map(|info| info.manual_entries.iter().map(|(node, _)| *node).collect())
                     .unwrap_or_default();
                 document.flow = Some((flow, entries));
                 let line = tf(
@@ -1404,6 +1410,7 @@ impl Editor {
 
     /// Stops and closes the flow of the open document.
     pub fn stop(&mut self, host: &mut Host) {
+        self.clear_manual_value_form();
         let Some((flow, _)) = self
             .document
             .as_mut()
@@ -1428,6 +1435,10 @@ impl Editor {
         else {
             return;
         };
+        if let Some(payload) = host.manual_payload(*flow, node) {
+            self.begin_manual_payload(payload);
+            return;
+        }
         if let Err(error) = host.trigger(*flow, node, None) {
             self.say_at(NoteLevel::Error, format!("[{flow}] {error}"));
         }
@@ -1465,6 +1476,7 @@ impl Editor {
             return false;
         }
         document.flow = None;
+        self.clear_manual_value_form();
         self.canvas.audio_running = false;
         self.canvas.mark_stale();
         true
@@ -1680,6 +1692,7 @@ impl Editor {
                 FlowEvent::Updated { .. } => self.canvas.mark_stale(),
                 FlowEvent::Finished => {
                     document.flow = None;
+                    self.clear_manual_value_form();
                     self.canvas.audio_running = false;
                     self.canvas.mark_stale();
                 }
@@ -1729,6 +1742,14 @@ impl Editor {
         self.preferred_scale = Some(ui.ctx().zoom_factor());
         self.canvas.update_help(host, &self.language);
         if self.refresh_problem_text {
+            let locale = self.language().to_owned();
+            if let Some(document) = self.document.as_mut()
+                && let Ok(view) = host.draft_authoring_view_in(&document.draft, &locale)
+            {
+                document.replace_graph(view.graph);
+                self.canvas.set_failure_routes(view.failure_routes);
+                self.canvas.set_port_details(view.port_details);
+            }
             self.check(host);
         }
         if let Some(clip) = self.clip_out.take() {
@@ -1738,7 +1759,8 @@ impl Editor {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
-        self.canvas.shortcuts_enabled = !self.settings_open;
+        self.canvas.shortcuts_enabled =
+            !self.settings_open && !self.has_node_ergonomics_modal() && self.value_form.is_none();
         self.keyboard(ui, host);
         layout(self, ui, host);
         if self.window_toolbar {
@@ -1749,6 +1771,9 @@ impl Editor {
         self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
         self.function_export_dialog(ui.ctx(), host);
+        self.value_dialog(ui.ctx(), host);
+        self.for_each_mode_dialog(ui.ctx(), host);
+        self.build_map_rows_dialog(ui.ctx(), host);
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -1790,6 +1815,8 @@ impl Editor {
             && self.quick.is_none()
             && self.menu.is_none()
             && self.node_config_menu.is_none()
+            && !self.has_node_ergonomics_modal()
+            && self.value_form.is_none()
             && !self.canvas.keys.0.values().flatten().any(|binding| {
                 binding.logical_key == key && modifiers.matches_logically(binding.modifiers)
             })
@@ -2703,6 +2730,11 @@ impl Editor {
             self.file_dialogs,
             Some(&stored_text),
         );
+        if let Some(target) = self.canvas.pending_inbound_givers() {
+            let matches = host.output_givers(&document.draft, &document.graph, target);
+            self.canvas.set_inbound_givers(matches);
+            ui.ctx().request_repaint();
+        }
         if let Some((node, port)) = done.browse_path
             && let Some(view) = document.graph.nodes.iter().find(|view| view.id == node)
             && let Some(path) = view.paths.iter().find(|path| path.port == port)
@@ -2758,8 +2790,8 @@ impl Editor {
         if let Some(node) = done.trigger {
             self.trigger(host, node);
         }
-        if let Some((from, to)) = done.connect {
-            let _ = self.connect(host, (from.0, &from.1), (to.0, &to.1));
+        if let Some(ends) = done.connect {
+            self.wire_with_mode_preview(host, ends);
         }
         self.conversion_menu(ui.ctx(), host);
         if let Some(node) = done.add_signal_receiver {
@@ -2782,6 +2814,12 @@ impl Editor {
         }
         if let Some((node, port, typed)) = done.set_input {
             let _ = self.set_input(host, (node, &port), Some(&typed));
+        }
+        if let Some((node, port)) = done.edit_literal {
+            self.begin_value_input(node, &port);
+        }
+        if let Some(node) = done.edit_map_pairs {
+            self.open_map_pairs(node);
         }
         if let Some((node, port)) = done.remove_port {
             let _ = self.remove_port(host, (node, &port));
@@ -2840,7 +2878,7 @@ impl Editor {
         self.menu_popup(ui.ctx(), host);
         self.quick_add_popup(ui.ctx(), host);
         if let Some((node, pointer, value)) = done.set_config
-            && self.set_setting(host, node, &pointer, Some(value))
+            && self.setting_with_mode_preview(host, node, &pointer, Some(value))
         {
             ui.ctx().request_repaint();
         }
@@ -2911,7 +2949,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual release performance measurement"]
     fn telemetry_poll_timing() {
         for count in [500, 5000] {
             let (mut host, _) = Host::new(HostOptions::default()).unwrap();
@@ -4330,6 +4367,7 @@ impl Editor {
             .filter(|node| scope.is_none_or(|scope| scope.contains(&node.id)))
             .filter(|node| {
                 !node.entry
+                    && node.missing.is_none()
                     && node.ports.iter().all(|port| {
                         !port.exec && port.ty.as_deref().is_none_or(|ty| !ty.contains('$'))
                     })
@@ -4364,7 +4402,7 @@ impl Editor {
         let found = match whole {
             Some(found) => found,
             None => {
-                let mut upstream = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
+                let mut upstream = HashMap::<NodeId, Vec<NodeId>>::new();
                 for wire in &document.graph.wires {
                     upstream.entry(wire.to.0).or_default().push(wire.from.0);
                 }
@@ -4415,9 +4453,8 @@ impl Editor {
 }
 
 /// Each node's incoming wires.
-fn incoming(graph: &GraphView) -> std::collections::HashMap<NodeId, Vec<&orange_host::WireView>> {
-    let mut wires: std::collections::HashMap<NodeId, Vec<&orange_host::WireView>> =
-        std::collections::HashMap::new();
+fn incoming(graph: &GraphView) -> HashMap<NodeId, Vec<&orange_host::WireView>> {
+    let mut wires: HashMap<NodeId, Vec<&orange_host::WireView>> = HashMap::new();
     for wire in &graph.wires {
         wires.entry(wire.to.0).or_default().push(wire);
     }
@@ -4469,7 +4506,7 @@ fn touched_by_edit(
 /// validates and compiles the projection, including the original providers and types.
 fn preview_dependencies(
     saved: &serde_json::Value,
-    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    upstream: &HashMap<NodeId, Vec<NodeId>>,
     outputs: impl Iterator<Item = NodeId>,
 ) -> Option<serde_json::Value> {
     let mut scoped = saved.clone();
@@ -4478,7 +4515,7 @@ fn preview_dependencies(
 
 /// The `outputs` nodes and every node they read, through any number of wires.
 fn dependencies(
-    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    upstream: &HashMap<NodeId, Vec<NodeId>>,
     outputs: impl Iterator<Item = NodeId>,
 ) -> std::collections::BTreeSet<NodeId> {
     let mut nodes = std::collections::BTreeSet::new();
@@ -4497,7 +4534,7 @@ fn dependencies(
 /// false when it has no node or edge list.
 fn keep_dependencies(
     document: &mut serde_json::Value,
-    upstream: &std::collections::HashMap<NodeId, Vec<NodeId>>,
+    upstream: &HashMap<NodeId, Vec<NodeId>>,
     outputs: impl Iterator<Item = NodeId>,
 ) -> bool {
     let nodes = dependencies(upstream, outputs);

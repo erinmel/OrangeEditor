@@ -4,7 +4,6 @@
 //
 //   node tools/package-archive.mjs   prints the vector set as JSON
 import {createHash} from 'node:crypto';
-import {pathToFileURL} from 'node:url';
 
 const MAGIC = Buffer.from([0x89, 0x4f, 0x50, 0x4b, 0x47, 0x0d, 0x0a, 0x1a]);
 const DOMAIN = Buffer.from('orange.plugin/content/v1\0', 'latin1');

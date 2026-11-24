@@ -566,14 +566,7 @@ impl Host {
 /// Refuses a grant the package does not ask for, so a package never holds more than
 /// it declared and the user approved.
 fn check_grants(given: Grants, asked: Grants) -> Result<(), HostError> {
-    for (name, given, wanted) in [
-        ("log", given.log, asked.log),
-        ("files", given.files, asked.files),
-        ("http", given.http, asked.http),
-        ("http-local", given.http_local, asked.http_local),
-        ("compute", given.compute, asked.compute),
-        ("websocket", given.websocket, asked.websocket),
-    ] {
+    for ((name, given), (_, wanted)) in given.named().into_iter().zip(asked.named()) {
         if given && !wanted {
             return Err(HostError::Install(format!(
                 "the package does not ask for the `{name}` grant"
@@ -593,7 +586,7 @@ impl Host {
         provider: &ProviderKey,
         definition: &DefinitionRef,
         registry: &Arc<RegistrySnapshot>,
-    ) -> Option<(Arc<dyn orange_sdk::ServiceSource>, bool)> {
+    ) -> Option<(Arc<dyn ServiceSource>, bool)> {
         let guest = self
             .guests
             .iter()

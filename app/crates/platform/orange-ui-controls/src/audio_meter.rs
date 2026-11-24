@@ -280,6 +280,31 @@ impl RmsMeter {
         tokens: UiTokens,
         channels: &[(&str, ChannelReading)],
     ) {
+        self.show_lanes(ui, painter, id, tokens, channels, None);
+    }
+
+    /// Draws empty stereo lanes and clears their peak history. The target remains
+    /// visible so the meter can still be used to edit its threshold.
+    pub fn show_stereo_preview(
+        self,
+        ui: &Ui,
+        painter: &egui::Painter,
+        id: egui::Id,
+        tokens: UiTokens,
+        labels: [&str; 2],
+    ) {
+        self.show_lanes(ui, painter, id, tokens, &[], Some(labels));
+    }
+
+    fn show_lanes(
+        self,
+        ui: &Ui,
+        painter: &egui::Painter,
+        id: egui::Id,
+        tokens: UiTokens,
+        channels: &[(&str, ChannelReading)],
+        preview: Option<[&str; 2]>,
+    ) {
         if !ui.is_rect_visible(self.lane) {
             return;
         }
@@ -299,12 +324,16 @@ impl RmsMeter {
             Rect::from_min_max(lanes.min, pos2(middle - gap, lanes.bottom())),
             Rect::from_min_max(pos2(middle + gap, lanes.top()), lanes.max),
         ];
-        let draw = |channel: usize, lane: Rect, label: &str, reading: ChannelReading| {
-            let level = Self::advance(ui, id.with(channel), Some((reading.rms, reading.peak)));
+        let draw = |channel: usize, lane: Rect, label: &str, reading: Option<ChannelReading>| {
+            let level = Self::advance(
+                ui,
+                id.with(channel),
+                reading.map(|reading| (reading.rms, reading.peak)),
+            );
             face.lane(lane, level);
             face.clip_light(
                 lane.center_top() - vec2(0.0, 7.0 * self.zoom),
-                reading.clipped,
+                reading.is_some_and(|reading| reading.clipped),
             );
             let _ = painter.text(
                 lane.center_bottom() + vec2(0.0, 7.0 * self.zoom),
@@ -314,14 +343,19 @@ impl RmsMeter {
                 tokens.theme.text_primary(),
             );
         };
-        match channels {
-            [(left, first), (right, second)] => {
-                draw(0, split[0], left, *first);
-                draw(1, split[1], right, *second);
+        match (channels, preview) {
+            ([(left, first), (right, second)], _) => {
+                draw(0, split[0], left, Some(*first));
+                draw(1, split[1], right, Some(*second));
             }
-            [(name, reading)] => {
-                draw(0, lanes, name, *reading);
+            ([(name, reading)], _) => {
+                draw(0, lanes, name, Some(*reading));
                 ui.data_mut(|data| data.remove::<RmsMotion>(id.with(1)));
+            }
+            (_, Some([left, right])) => {
+                draw(0, split[0], left, None);
+                draw(1, split[1], right, None);
+                ui.data_mut(|data| data.remove::<RmsMotion>(id));
             }
             _ => {
                 face.lane(

@@ -61,14 +61,15 @@ fn edit_timing() {
         document.names = time!("names", runs, {
             Names::of_document(&host, document.draft.document()).without_ids()
         });
-        let (before, failure_routes) = time!("draft view", runs, {
+        let (before, failure_routes, port_details) = time!("draft view", runs, {
             let orange_host::AuthoringView {
                 graph,
                 failure_routes,
+                port_details,
             } = host
                 .draft_authoring_view(&document.draft)
                 .unwrap_or_default();
-            (document.replace_graph(graph), failure_routes)
+            (document.replace_graph(graph), failure_routes, port_details)
         });
         let touched = time!("touched", runs, {
             touched_by_edit(&before, &document.graph)
@@ -77,6 +78,7 @@ fn edit_timing() {
         let graph = document.graph.clone();
         time!("canvas update", runs, {
             editor.canvas.set_failure_routes(failure_routes);
+            editor.canvas.set_port_details(port_details);
             editor.canvas.update(&graph);
         });
         let document = editor.document.as_ref().unwrap();

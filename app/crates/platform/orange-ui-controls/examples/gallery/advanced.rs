@@ -208,7 +208,7 @@ impl Shell {
                 for (index, &(label, glyph)) in SECTIONS.iter().enumerate() {
                     if ui
                         .add(
-                            egui::Button::new((glyph.atom(), label))
+                            Button::new((glyph.atom(), label))
                                 .frame(false)
                                 .selected(index == self.active),
                         )
@@ -336,9 +336,7 @@ impl Shell {
                 for index in [0, 2, 3] {
                     let (label, glyph) = SECTIONS[index];
                     if ui
-                        .add(
-                            egui::Button::new((glyph.atom(), label)).selected(self.active == index),
-                        )
+                        .add(Button::new((glyph.atom(), label)).selected(self.active == index))
                         .clicked()
                     {
                         self.destination = Some(index);

@@ -124,25 +124,6 @@ fn text_clipboard_command(event: &eframe::egui::Event) -> Option<eframe::egui::K
 }
 
 impl eframe::App for Desktop {
-    fn raw_input_hook(&mut self, ctx: &eframe::egui::Context, input: &mut eframe::egui::RawInput) {
-        use eframe::egui::{Event, Key, ViewportCommand};
-        if self.editor.is_recording_shortcut() || !ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        input.events.retain_mut(|event| {
-            match text_clipboard_command(event) {
-                Some(Key::Copy) => *event = Event::Copy,
-                Some(Key::Cut) => *event = Event::Cut,
-                Some(Key::Paste) => {
-                    ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
-                    return false;
-                }
-                _ => {}
-            }
-            true
-        });
-    }
-
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         // What the graph logged, between frames, then the run's own events.
         let (notes, dropped) = self.logbook.take();
@@ -220,6 +201,25 @@ impl eframe::App for Desktop {
             }
             ui.ctx().request_repaint();
         }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &eframe::egui::Context, input: &mut eframe::egui::RawInput) {
+        use eframe::egui::{Event, Key, ViewportCommand};
+        if self.editor.is_recording_shortcut() || !ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        input.events.retain_mut(|event| {
+            match text_clipboard_command(event) {
+                Some(Key::Copy) => *event = Event::Copy,
+                Some(Key::Cut) => *event = Event::Cut,
+                Some(Key::Paste) => {
+                    ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
     }
 }
 
@@ -622,7 +622,7 @@ fn start(
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
-        let text = orange_host::read_document(std::path::Path::new(&path))
+        let text = orange_host::read_document(Path::new(&path))
             .map_err(|error| format!("{path}: {error}"))?;
         if canvas_only && screenshot.is_none() {
             let graph = host

@@ -60,6 +60,33 @@ impl Grants {
         self.http || self.http_local
     }
 
+    /// Each grant with its manifest `permissions` name, in a fixed order.
+    pub const fn named(self) -> [(&'static str, bool); 6] {
+        [
+            ("log", self.log),
+            ("files", self.files),
+            ("http", self.http),
+            ("http-local", self.http_local),
+            ("compute", self.compute),
+            ("websocket", self.websocket),
+        ]
+    }
+
+    /// Gives the grant with this manifest name; `false` when no grant has it.
+    pub fn grant(&mut self, name: &str) -> bool {
+        let field = match name {
+            "log" => &mut self.log,
+            "files" => &mut self.files,
+            "http" => &mut self.http,
+            "http-local" => &mut self.http_local,
+            "compute" => &mut self.compute,
+            "websocket" => &mut self.websocket,
+            _ => return false,
+        };
+        *field = true;
+        true
+    }
+
     /// Every grant that is in both.
     #[must_use]
     pub const fn within(self, allowed: Self) -> Self {
@@ -492,33 +519,34 @@ impl GuestPlugin {
             classify(&error)
         })?;
         match result {
-            Err(error) => {
-                if !namespaced(&error.code) || !namespaced(&error.message_key) {
-                    return Err(GuestError::OutputContract);
-                }
-                Ok(Err(GuestNodeError {
-                    code: error.code,
-                    message_key: error.message_key,
-                }))
-            }
-            Ok(values) => {
-                if values.len() != outputs.len() {
-                    return Err(GuestError::OutputContract);
-                }
-                let mut decoded = Vec::with_capacity(values.len());
-                let mut remaining = self.transfer_bytes;
-                for (wire, ty) in values.into_iter().zip(outputs) {
-                    let value = from_wire(wire, ty, types, remaining)?;
-                    let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
-                        .ok_or(GuestError::OutputContract)?
-                        .checked_charge(&value, remaining)
-                        .map_err(|_| GuestError::OutputContract)?;
-                    remaining -= charge;
-                    decoded.push(value);
-                }
-                Ok(Ok(decoded))
-            }
+            Err(error) => node_error(error).map(Err),
+            Ok(values) => self.decode(values, types, outputs).map(Ok),
         }
+    }
+
+    /// Decodes a call's outputs, each checked against `outputs` and all of them together
+    /// within the instance's transfer limit.
+    fn decode(
+        &self,
+        values: Vec<Wire>,
+        types: &TypeRegistry,
+        outputs: &[TypeExpr],
+    ) -> Result<Vec<Value>, GuestError> {
+        if values.len() != outputs.len() {
+            return Err(GuestError::OutputContract);
+        }
+        let mut decoded = Vec::with_capacity(values.len());
+        let mut remaining = self.transfer_bytes;
+        for (wire, ty) in values.into_iter().zip(outputs) {
+            let value = from_wire(wire, ty, types, remaining)?;
+            let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
+                .ok_or(GuestError::OutputContract)?
+                .checked_charge(&value, remaining)
+                .map_err(|_| GuestError::OutputContract)?;
+            remaining -= charge;
+            decoded.push(value);
+        }
+        Ok(decoded)
     }
 
     /// The `receive` function of the optional `events` export, when the component has it.
@@ -579,33 +607,9 @@ impl GuestPlugin {
                 classify(&error)
             })?;
         match result {
-            Err(error) => {
-                if !namespaced(&error.code) || !namespaced(&error.message_key) {
-                    return Err(GuestError::OutputContract);
-                }
-                Ok(Err(GuestNodeError {
-                    code: error.code,
-                    message_key: error.message_key,
-                }))
-            }
+            Err(error) => node_error(error).map(Err),
             Ok(None) => Ok(Ok(None)),
-            Ok(Some(values)) => {
-                if values.len() != outputs.len() {
-                    return Err(GuestError::OutputContract);
-                }
-                let mut decoded = Vec::with_capacity(values.len());
-                let mut remaining = self.transfer_bytes;
-                for (wire, ty) in values.into_iter().zip(outputs) {
-                    let value = from_wire(wire, ty, types, remaining)?;
-                    let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
-                        .ok_or(GuestError::OutputContract)?
-                        .checked_charge(&value, remaining)
-                        .map_err(|_| GuestError::OutputContract)?;
-                    remaining -= charge;
-                    decoded.push(value);
-                }
-                Ok(Ok(Some(decoded)))
-            }
+            Ok(Some(values)) => self.decode(values, types, outputs).map(|v| Ok(Some(v))),
         }
     }
 
@@ -621,4 +625,15 @@ impl GuestPlugin {
     pub fn take_log(&mut self) -> Vec<String> {
         std::mem::take(&mut self.store.data_mut().log)
     }
+}
+
+/// A node error the guest returned, when its code and message key are namespaced.
+fn node_error(error: orange::expansion::types::NodeError) -> Result<GuestNodeError, GuestError> {
+    if !namespaced(&error.code) || !namespaced(&error.message_key) {
+        return Err(GuestError::OutputContract);
+    }
+    Ok(GuestNodeError {
+        code: error.code,
+        message_key: error.message_key,
+    })
 }

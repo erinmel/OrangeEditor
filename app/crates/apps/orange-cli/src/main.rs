@@ -219,12 +219,9 @@ fn arguments() -> Result<Arguments, String> {
                     .ok_or("--approve-connection needs a connection ID")?,
             ),
             "--json" if parsed.command == "nodes" => parsed.catalog_json = true,
-            "--grant-log" => parsed.grants.log = true,
-            "--grant-files" => parsed.grants.files = true,
-            "--grant-http" => parsed.grants.http = true,
-            "--grant-http-local" => parsed.grants.http_local = true,
-            "--grant-compute" => parsed.grants.compute = true,
-            "--grant-websocket" => parsed.grants.websocket = true,
+            flag if flag
+                .strip_prefix("--grant-")
+                .is_some_and(|name| parsed.grants.grant(name)) => {}
             "--state" => parsed.state = Some(words.next().ok_or("--state needs a directory")?),
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
