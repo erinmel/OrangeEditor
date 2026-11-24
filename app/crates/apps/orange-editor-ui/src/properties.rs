@@ -1117,6 +1117,27 @@ impl Editor {
             ui.add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
                 .on_hover_text(node.definition.as_str());
         }
+        if let Some(missing) = &node.missing {
+            ui.add_space(4.0);
+            let warning = ui.visuals().warn_fg_color;
+            let _ = ui.add(
+                egui::Label::new(egui::RichText::new(missing_package_text(missing)).color(warning))
+                    .wrap(),
+            );
+            let _ = ui.add(egui::Label::new(t("missing-package-hint")).wrap());
+            if self.file_dialogs
+                && controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Primary,
+                    true,
+                    egui::Button::new((icons::text(icons::ADD), t("install-missing-package"))),
+                )
+                .clicked()
+            {
+                self.ask(FileRequest::ImportPackage);
+            }
+        }
         if let Some(description) = self.canvas.description(&node.definition) {
             ui.add_space(4.0);
             let _ = ui.add(egui::Label::new(description).wrap());
@@ -2092,6 +2113,24 @@ fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
     }
 }
 
+/// What a node of a package this host lacks says it needs: the package and, when the
+/// document records it, the version.
+pub(crate) fn missing_package_text(missing: &orange_host::MissingPackage) -> String {
+    if missing.version.is_empty() {
+        tf(
+            "node-needs-package-any",
+            &[("package", missing.package.clone().into())],
+        )
+    } else {
+        tf(
+            "node-needs-package",
+            &[
+                ("package", missing.package.clone().into()),
+                ("version", missing.version.clone().into()),
+            ],
+        )
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

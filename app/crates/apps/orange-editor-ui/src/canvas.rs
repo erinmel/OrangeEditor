@@ -3081,9 +3081,14 @@ fn draw_node<'a>(
             title,
             node_title_color(ui.visuals()),
         );
-        let detail = node
-            .detail
+        // A node whose package is missing says which one first.
+        let needs = node
+            .missing
+            .as_ref()
+            .map(crate::properties::missing_package_text);
+        let detail = needs
             .as_deref()
+            .or(node.detail.as_deref())
             .or_else(|| (node.name != node.kind).then_some(kind));
         if cut || detail.is_some() || description.is_some() || formula.is_some() {
             let _ = ui

@@ -22,6 +22,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod bundle;
 pub mod canvas;
 mod card_sources;
 pub mod controls;
@@ -428,6 +429,13 @@ pub enum FileRequest {
     ImportPackage,
     /// Choose where to write a validated expansion package archive.
     ExportPackage { name: String, archive: Vec<u8> },
+    /// Choose where to write a graph shared with its packages
+    /// ([`bundle::BUNDLE_EXTENSION`]).
+    ExportBundle { name: String, bundle: Vec<u8> },
+    /// Choose a shared graph to open and hand to [`Editor::review_bundle`].
+    ImportBundle,
+    /// Show the native plugin libraries and the full access each was given.
+    NativePlugins,
     /// Choose the root directory for the open folder connection form.
     ChooseConnectionFolder { current: String },
     /// Choose a file or folder for a node's text input that holds a path, such as the
@@ -485,6 +493,7 @@ pub struct Editor {
     declaration_search: [String; 3],
     node_search_previews: bool,
     pending_package: Option<package_import::PackageImport>,
+    pending_bundle: Option<bundle::BundleImport>,
     pending_package_removal: Option<orange_host::PackageKey>,
     packages_tab: bool,
     /// What the Packages tab is filtered by.
@@ -521,6 +530,9 @@ pub struct Editor {
     /// Whether the application shows file dialogs: the toolbar then has New, Open and
     /// Save as, which it hands over through [`Editor::take_request`].
     pub file_dialogs: bool,
+    /// Whether the application loads native plugin libraries: the Packages panel then
+    /// offers [`FileRequest::NativePlugins`].
+    pub native_plugins: bool,
     /// Draw native window commands and a drag region in the toolbar. Opt in only
     /// when the embedding window disables its own decorations.
     pub window_toolbar: bool,
@@ -1714,6 +1726,7 @@ impl Editor {
         }
         let _ = self.settings_window(ui.ctx());
         self.package_import_dialog(ui.ctx(), host);
+        self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
         self.function_export_dialog(ui.ctx(), host);
         if std::mem::take(&mut self.run_asked) {
@@ -2480,6 +2493,46 @@ impl Editor {
         {
             self.ask(FileRequest::ImportPackage);
         }
+        if self.file_dialogs {
+            ui.horizontal_wrapped(|ui| {
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Secondary,
+                    self.document.is_some(),
+                    egui::Button::new(t("share-with-packages")),
+                )
+                .on_hover_text(t("share-with-packages-hint"))
+                .clicked()
+                {
+                    self.share_with_packages(host);
+                }
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Secondary,
+                    true,
+                    egui::Button::new((icons::text(icons::OPEN), t("open-shared-graph-ellipsis"))),
+                )
+                .clicked()
+                {
+                    self.ask(FileRequest::ImportBundle);
+                }
+                if self.native_plugins
+                    && controls::button(
+                        ui,
+                        Surface::Panel,
+                        controls::Action::Secondary,
+                        true,
+                        egui::Button::new((icons::text(icons::WARNING), t("native-plugins"))),
+                    )
+                    .on_hover_text(t("native-plugins-hint"))
+                    .clicked()
+                {
+                    self.ask(FileRequest::NativePlugins);
+                }
+            });
+        }
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         let _ = controls::search(
             ui,
@@ -2491,6 +2544,7 @@ impl Editor {
         let wanted = self.package_search.trim().to_lowercase();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut shown = 0;
+            let mut access_change = None;
             for package in host.packages() {
                 let name = package.name().unwrap_or(package.id);
                 let about = package.description().unwrap_or_default();
@@ -2550,6 +2604,27 @@ impl Editor {
                                 ("active", if package.active { "yes" } else { "no" }.into()),
                             ],
                         ));
+                        // What the package may reach: unticking a box revokes it for
+                        // graphs started from now on.
+                        if let (Ok(id), Ok(version)) = (package.id.parse(), package.version.parse())
+                        {
+                            let key = orange_host::PackageKey { id, version };
+                            if let (Some(requested), Some(access)) =
+                                (host.requested_grants(&key), host.access(&key))
+                                && requested != orange_host::Grants::default()
+                            {
+                                let mut grants = access.grants;
+                                if package_import::grant_choices(ui, requested, &mut grants) {
+                                    access_change = Some((
+                                        key,
+                                        orange_host::PackageAccess {
+                                            grants,
+                                            ..access.clone()
+                                        },
+                                    ));
+                                }
+                            }
+                        }
                         if matches!(package.kind, PackageKind::Installed)
                             && let (Ok(id), Ok(version)) =
                                 (package.id.parse(), package.version.parse())
@@ -2569,6 +2644,18 @@ impl Editor {
                                 Some(orange_host::PackageKey { id, version });
                         }
                     });
+            }
+            if let Some((key, access)) = access_change.take() {
+                match host.set_access(&key, access) {
+                    Ok(()) => {
+                        self.previews.invalidate();
+                        self.say(tf(
+                            "package-access-changed",
+                            &[("package", key.to_string().into())],
+                        ));
+                    }
+                    Err(error) => self.say_at(NoteLevel::Error, error.to_string()),
+                }
             }
             if shown == 0 {
                 ui.weak(t("no-package-matches"));

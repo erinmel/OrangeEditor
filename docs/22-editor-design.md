@@ -550,6 +550,22 @@ the shared-control and editor tests before adopting the change more broadly.
   providers stay in the list. Removing a version preserves running flows and the
   saved provider bindings of graphs that use it. The host refuses removal while
   another installed package depends on that version.
+* **Access per package.** An installed package that asks for grants shows them as
+  boxes in its row; unticking one revokes it for graphs started afterwards
+  (`Host::set_access`, 04). Nothing is ticked for the person at import.
+* **Share with packages** saves the open graph with the stored archives of the
+  packages it is locked to as one `.orangebundle` file (`Host::export`); packages
+  without a stored archive are named in the Log. **Open shared graph** lists what the
+  file carries, marks what is installed, asks for each missing package's grants and
+  names what the file lacks. It can install and open, or open without installing; the
+  graph opens as a new, unsaved document.
+* **A node whose package is missing** keeps its card, settings and wires: its ports
+  come from the saved signature, its title tooltip and Properties name the package and
+  version, and Properties offers Install package. The node runs once the package is
+  installed.
+* **Full-access plugins** (desktop only) lists native plugin libraries waiting for a
+  decision and the ones allowed, with the risk in plain words, and opens at start
+  when a new or changed library waits.
 
 ## 6. Audio
 

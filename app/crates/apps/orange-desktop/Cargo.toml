@@ -20,6 +20,7 @@ orange-audio = { path = "../../services/orange-audio", version = "=0.0.0" }
 orange-editor-ui = { path = "../../apps/orange-editor-ui", version = "=0.0.0" }
 orange-files = { path = "../../services/orange-files", version = "=0.0.0" }
 orange-host = { path = "../../platform/orange-host", version = "=0.0.0" }
+orange-native = { path = "../../platform/orange-native", version = "=0.0.0" }
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
 orange-net = { path = "../../services/orange-net", version = "=0.0.0" }
 orange-vault = { path = "../../platform/orange-vault", version = "=0.0.0" }

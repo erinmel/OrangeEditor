@@ -3409,6 +3409,7 @@ dependencies = [
  "orange-editor-ui",
  "orange-files",
  "orange-host",
+ "orange-native",
  "orange-net",
  "orange-sdk",
  "orange-testkit",

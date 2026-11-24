@@ -88,28 +88,7 @@ impl Editor {
                 ui.set_max_width(420.0);
                 ui.heading(t("import-package"));
                 ui.label(&import.name);
-                if import.requested != Grants::default() {
-                    ui.separator();
-                    ui.label(t("package-permissions"));
-                    let mut choices = Vec::new();
-                    if import.requested.log {
-                        choices.push((&mut import.approved.log, t("package-grant-log")));
-                    }
-                    if import.requested.files {
-                        choices.push((&mut import.approved.files, t("package-grant-files")));
-                    }
-                    if import.requested.http {
-                        choices.push((&mut import.approved.http, t("package-grant-http")));
-                    }
-                    let _ = orange_ui_controls::check_list(
-                        ui,
-                        crate::controls::Surface::Dialog,
-                        orange_ui_controls::CheckStyle::Emphasis,
-                        &mut choices,
-                    );
-                } else {
-                    ui.label(t("package-no-permissions"));
-                }
+                grant_choices(ui, import.requested, &mut import.approved);
                 controls::dialog_actions(
                     ui,
                     Action::Primary,
@@ -143,6 +122,45 @@ impl Editor {
             self.pending_package = None;
         }
     }
+}
+
+/// The grants a package asks for, each a box the person ticks to allow it; nothing is
+/// ticked for them. Says so when the package asks for nothing. Returns whether a box
+/// changed.
+pub(super) fn grant_choices(ui: &mut egui::Ui, requested: Grants, approved: &mut Grants) -> bool {
+    if requested == Grants::default() {
+        ui.label(t("package-no-permissions"));
+        return false;
+    }
+    ui.separator();
+    ui.label(t("package-permissions"));
+    let mut choices = Vec::new();
+    for (asked, given, label) in [
+        (requested.log, &mut approved.log, "package-grant-log"),
+        (requested.files, &mut approved.files, "package-grant-files"),
+        (requested.http, &mut approved.http, "package-grant-http"),
+        (
+            requested.http_local,
+            &mut approved.http_local,
+            "package-grant-http-local",
+        ),
+        (
+            requested.compute,
+            &mut approved.compute,
+            "package-grant-compute",
+        ),
+    ] {
+        if asked {
+            choices.push((given, t(label)));
+        }
+    }
+    orange_ui_controls::check_list(
+        ui,
+        crate::controls::Surface::Dialog,
+        orange_ui_controls::CheckStyle::Emphasis,
+        &mut choices,
+    )
+    .changed()
 }
 
 #[cfg(test)]

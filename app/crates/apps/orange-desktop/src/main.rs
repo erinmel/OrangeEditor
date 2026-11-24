@@ -10,6 +10,7 @@ mod automation;
 mod gallery;
 mod keyboard;
 mod logbook;
+mod native;
 mod picture;
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
@@ -57,6 +58,8 @@ struct Desktop {
     capture_canvas_only: bool,
     shot: Option<Shot>,
     title: String,
+    /// Native plugin libraries and the full access the person gave each.
+    native: native::NativePlugins,
 }
 
 fn preferences_path() -> Option<std::path::PathBuf> {
@@ -177,6 +180,9 @@ impl eframe::App for Desktop {
                     .ui_with_layout(ui, &mut self.host, Editor::canvas_panel);
             }
             None => self.editor.ui(ui, &mut self.host),
+        }
+        if self.bare.is_none() && self.shot.is_none() {
+            self.native.dialog(ui.ctx());
         }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
         let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
@@ -365,7 +371,62 @@ impl Desktop {
         }
     }
 
+    /// Reads a shared graph the person chooses and hands it to the editor's review.
+    fn import_bundle(&mut self) {
+        use std::io::Read;
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(t("open-shared-graph"))
+            .add_filter(
+                t("desktop-bundle-filter"),
+                &[orange_editor_ui::bundle::BUNDLE_EXTENSION],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(&path).and_then(|file| {
+            file.take(orange_host::MAX_DOCUMENT_BYTES + 1)
+                .read_to_end(&mut bytes)
+        });
+        if let Err(error) = read {
+            trouble(t("desktop-bundle-error"), &error.to_string());
+            return;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        if let Err(error) = self.editor.review_bundle(&self.host, name, &bytes) {
+            trouble(t("desktop-bundle-error"), &error.to_string());
+        }
+    }
+
     fn carry_out(&mut self, request: FileRequest) {
+        if let FileRequest::ExportBundle { name, bundle } = request {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter(
+                    t("desktop-bundle-filter"),
+                    &[orange_editor_ui::bundle::BUNDLE_EXTENSION],
+                )
+                .set_file_name(name)
+                .save_file()
+                && let Err(error) = std::fs::write(path, bundle)
+            {
+                trouble(t("desktop-not-saved"), &error.to_string());
+            }
+            return;
+        }
+        if request == FileRequest::ImportBundle {
+            self.import_bundle();
+            return;
+        }
+        if request == FileRequest::NativePlugins {
+            self.native.open = true;
+            return;
+        }
         if let FileRequest::ExportPackage { name, archive } = request {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter(t("desktop-package-filter"), &["orangeplug"])
@@ -448,7 +509,10 @@ impl Desktop {
             FileRequest::ChoosePath { .. }
             | FileRequest::ChooseConnectionFolder { .. }
             | FileRequest::ImportPackage
-            | FileRequest::ExportPackage { .. } => {}
+            | FileRequest::ExportPackage { .. }
+            | FileRequest::ExportBundle { .. }
+            | FileRequest::ImportBundle
+            | FileRequest::NativePlugins => {}
             FileRequest::SaveAs => {
                 let name = current
                     .and_then(Path::file_name)
@@ -499,7 +563,15 @@ fn start(
     };
     let keyboard = keyboard::Keyboard::default();
     let logbook = logbook::LogBook::default();
-    let services = built_in_services(&keyboard, &logbook)?;
+    let mut services = built_in_services(&keyboard, &logbook)?;
+    // Native plugin libraries load only with the full access the person gave each.
+    let mut native = preferences_path()
+        .and_then(|path| path.parent().map(|dir| dir.join("plugins")))
+        .map(native::NativePlugins::open)
+        .unwrap_or_default();
+    if screenshot.is_none() {
+        services.extend(native.load());
+    }
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();
@@ -514,6 +586,7 @@ fn start(
         editor.restore_preferences(&saved);
     }
     editor.file_dialogs = true;
+    editor.native_plugins = screenshot.is_none();
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
@@ -550,6 +623,7 @@ fn start(
         bare,
         capture_canvas_only: canvas_only && screenshot.is_some(),
         title,
+        native,
         shot: screenshot.map(|path| Shot {
             path,
             frames: 0,

@@ -19,3 +19,15 @@ desktop-outside-named-folder = Esta ruta está fuera de { $folder }. Elige una r
 desktop-package-filter = Paquete de OrangeEditor
 desktop-package-error = No se pudo leer el paquete
 desktop-package-too-large = El archivo excede el límite de tamaño del paquete.
+
+desktop-bundle-filter = Grafo compartido de OrangeEditor
+desktop-bundle-error = No se pudo abrir el grafo compartido
+desktop-native-title = Complementos con acceso total
+desktop-native-risk = Un complemento nativo se ejecuta dentro de OrangeEditor con todos tus permisos. Puede leer y cambiar tus archivos, usar la red y tus dispositivos, y cerrar el programa. Instala uno solo si confías en su origen; lo haces bajo tu propio riesgo.
+desktop-native-vault = También puede leer el almacén de credenciales del sistema operativo como tú, así que la protección de credenciales de OrangeEditor no se aplica a él. Los grafos, las exportaciones y los archivos compartidos nunca contienen secretos.
+desktop-native-folder = Las bibliotecas de complementos van en { $folder }.
+desktop-native-allow = Permitir acceso total
+desktop-native-allowed = Con acceso total:
+desktop-native-revoke = Revocar
+desktop-native-failed = { $file } tenía permiso pero no se cargó: { $error }
+desktop-native-restart = Los cambios se aplican la próxima vez que se inicie OrangeEditor.
