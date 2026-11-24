@@ -86,12 +86,39 @@ pub fn fetch(
     body: &[u8],
     max_bytes: u64,
 ) -> Result<(u16, Vec<u8>), String> {
-    if !url.starts_with("https://") {
+    fetch_response(method, url, headers, body, max_bytes, false)
+        .map(|response| (response.status, response.body))
+}
+
+/// The answer to [`fetch_response`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchResponse {
+    pub status: u16,
+    /// Headers in the order received. A value that is not UTF-8 is converted lossily.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// Sends one request like [`fetch`] and also returns the response headers. With
+/// `plain_http` an `http://` URL is sent too: the caller has checked that its address
+/// is one the request may reach in plain text, as the `http-local` plugin grant does.
+/// Redirects are never followed, so that check holds for the whole request. Headers and
+/// body together must fit `max_bytes`.
+pub fn fetch_response(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    max_bytes: u64,
+    plain_http: bool,
+) -> Result<FetchResponse, String> {
+    let secure = url.starts_with("https://");
+    if !secure && !(plain_http && url.starts_with("http://")) {
         return Err("the URL must start with https://".into());
     }
     let agent: Agent = Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)))
-        .https_only(true)
+        .https_only(secure)
         .max_redirects(0)
         .http_status_as_error(false)
         .build()
@@ -108,13 +135,33 @@ pub fn fetch(
         .run(request)
         .map_err(|_| "the request could not be completed".to_owned())?;
     let status = response.status().as_u16();
+    let mut header_bytes = 0u64;
+    let headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            let pair = (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            );
+            header_bytes = header_bytes.saturating_add((pair.0.len() + pair.1.len()) as u64);
+            pair
+        })
+        .collect();
+    let Some(left) = max_bytes.checked_sub(header_bytes) else {
+        return Err("the response is too large or was cut short".to_owned());
+    };
     let body = response
         .body_mut()
         .with_config()
-        .limit(max_bytes)
+        .limit(left)
         .read_to_vec()
         .map_err(|_| "the response is too large or was cut short".to_owned())?;
-    Ok((status, body))
+    Ok(FetchResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

@@ -1,11 +1,12 @@
 //! Installed packages on disk, so a host started on the same directory has them again.
 //!
 //! The directory holds each installed archive under the name of its SHA-256 and an
-//! index, `installed.json`, listing them in installation order with the capabilities
-//! the user granted. Starting a host installs the listed archives again, in order,
+//! index, `installed.json`, listing them in installation order with what the user let
+//! each reach: its grants, and its own host list and data quota when it has them. Starting a host installs the listed archives again, in order,
 //! through the same checks as a first installation. Both kinds of file are written to
 //! a temporary name and renamed, so a crash leaves the previous index or the new one.
 //! `disabled.json` lists the IDs of packages a host started on the directory leaves out.
+use crate::PackageAccess;
 use orange_guest::Grants;
 use orange_model::format::History;
 use orange_packages::PackageKey;
@@ -22,7 +23,7 @@ const INSTALLED: History = History::new("orange.installed-packages", 1, &[]);
 /// One archive the index lists.
 pub(crate) struct Saved {
     pub file: String,
-    pub grants: Grants,
+    pub access: PackageAccess,
     /// The package ID and version the index recorded for the archive.
     pub key: Option<(String, String)>,
     /// The archive bytes, or why they could not be read.
@@ -75,11 +76,7 @@ pub(crate) fn load(directory: &Path) -> Result<Vec<Saved>, String> {
             fs::read(directory.join(&file)).map_err(|error| io("read the archive", &error));
         saved.push(Saved {
             file,
-            grants: Grants {
-                log: entry["log"] == true,
-                files: entry["files"] == true,
-                http: entry["http"] == true,
-            },
+            access: access(&entry),
             key: entry["id"]
                 .as_str()
                 .zip(entry["version"].as_str())
@@ -132,20 +129,88 @@ fn write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| io("replace a package file", &error))
 }
 
+/// What an index entry lets its package reach. A field an older index lacks reads as
+/// not granted, and as no limit of the package's own.
+fn access(entry: &Json) -> PackageAccess {
+    PackageAccess {
+        grants: Grants {
+            log: entry["log"] == true,
+            files: entry["files"] == true,
+            http: entry["http"] == true,
+            http_local: entry["http-local"] == true,
+            compute: entry["compute"] == true,
+        },
+        http_hosts: entry["http-hosts"].as_array().map(|hosts| {
+            hosts
+                .iter()
+                .filter_map(|host| host.as_str().map(str::to_owned))
+                .collect()
+        }),
+        data_quota: entry["data-quota"].as_u64(),
+    }
+}
+
+/// Writes `access` into an index entry, leaving its other fields alone.
+fn record(entry: &mut Map<String, Json>, access: &PackageAccess) {
+    let grants = access.grants;
+    for (field, value) in [
+        ("log", json!(grants.log)),
+        ("files", json!(grants.files)),
+        ("http", json!(grants.http)),
+        ("http-local", json!(grants.http_local)),
+        ("compute", json!(grants.compute)),
+        ("http-hosts", json!(access.http_hosts)),
+        ("data-quota", json!(access.data_quota)),
+    ] {
+        if value.is_null() {
+            let _ = entry.remove(field);
+        } else {
+            let _ = entry.insert(field.to_owned(), value);
+        }
+    }
+}
+
 /// Adds an installed archive to the directory and to the end of its index.
 pub(crate) fn save(
     directory: &Path,
     archive: &[u8],
-    grants: Grants,
+    access: &PackageAccess,
     key: &PackageKey,
 ) -> Result<(), String> {
     let name = format!("{}.orangeplug", crate::hex(&Sha256::digest(archive)));
     let mut packages = entries(directory)?;
     packages.retain(|entry| entry["archive"] != name.as_str());
-    packages.push(json!({"archive": name, "log": grants.log,
-        "files": grants.files, "http": grants.http,
-        "id": key.id.as_str(), "version": key.version.as_str()}));
+    let mut entry = Map::new();
+    let _ = entry.insert("archive".to_owned(), json!(name));
+    let _ = entry.insert("id".to_owned(), json!(key.id.as_str()));
+    let _ = entry.insert("version".to_owned(), json!(key.version.as_str()));
+    record(&mut entry, access);
+    packages.push(Json::Object(entry));
     write(directory, &name, archive)?;
+    write(directory, INDEX, index(packages).to_string().as_bytes())
+}
+
+/// Replaces what the index lets package `key` reach. A package the index does not list
+/// is left alone.
+pub(crate) fn set_access(
+    directory: &Path,
+    key: &PackageKey,
+    access: &PackageAccess,
+) -> Result<(), String> {
+    let mut packages = entries(directory)?;
+    let mut found = false;
+    for entry in &mut packages {
+        if entry["id"] == key.id.as_str()
+            && entry["version"] == key.version.as_str()
+            && let Some(entry) = entry.as_object_mut()
+        {
+            record(entry, access);
+            found = true;
+        }
+    }
+    if !found {
+        return Ok(());
+    }
     write(directory, INDEX, index(packages).to_string().as_bytes())
 }
 

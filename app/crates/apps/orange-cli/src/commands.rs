@@ -120,7 +120,9 @@ pub(crate) fn devices() -> Done {
     Ok(())
 }
 
-/// The network client of installed packages that hold the `http` grant.
+/// The network client of installed packages that hold the `http` or `http-local` grant.
+/// The plugin engine has already checked each address; an `http://` URL reaches it only
+/// for a local address under `http-local`.
 #[derive(Debug)]
 struct PluginHttp;
 impl orange_host::HttpClient for PluginHttp {
@@ -129,14 +131,19 @@ impl orange_host::HttpClient for PluginHttp {
         request: &orange_host::HttpRequest,
     ) -> Result<orange_host::HttpResponse, String> {
         let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch(
+        orange_net::fetch_response(
             &request.method,
             &request.url,
             &request.headers,
             &request.body,
             limit,
+            request.url.starts_with("http://"),
         )
-        .map(|(status, body)| orange_host::HttpResponse { status, body })
+        .map(|response| orange_host::HttpResponse {
+            status: response.status,
+            headers: response.headers,
+            body: response.body,
+        })
     }
 }
 
@@ -207,15 +214,13 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         let asks = host
             .permissions(&bytes)
             .map_err(|error| format!("{path}: {error}"))?;
-        let given = Grants {
-            log: asks.log && arguments.grants.log,
-            files: asks.files && arguments.grants.files,
-            http: asks.http && arguments.grants.http,
-        };
+        let given = asks.within(arguments.grants);
         for (name, asked, granted) in [
             ("log", asks.log, given.log),
             ("files", asks.files, given.files),
             ("http", asks.http, given.http),
+            ("http-local", asks.http_local, given.http_local),
+            ("compute", asks.compute, given.compute),
         ] {
             if asked && !granted {
                 notice(

@@ -90,7 +90,9 @@ pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
-pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
+pub use orange_guest::{
+    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, is_local,
+};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
@@ -120,8 +122,8 @@ pub use search::{CONCEPTS, Found, Match, fold_search};
 pub use state::StoredVariable;
 pub use suggest::Suggestion;
 pub use view::{
-    AuthoringView, EnumChoice, FailureRoutes, GraphView, NodeView, PortView, TypeChoice,
-    VariadicView, WireView, formula,
+    AuthoringView, EnumChoice, FailureRoutes, GraphView, MissingPackage, NodeView, PortView,
+    TypeChoice, VariadicView, WireView, formula,
 };
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -276,10 +278,12 @@ pub struct HostOptions {
     /// The network client for packages holding the `http` grant. `None` leaves that
     /// grant with nothing to reach.
     pub plugin_http: Option<Arc<dyn HttpClient>>,
-    /// Most bytes each package's data directory may hold. `None` is no limit.
+    /// Most bytes each package's data directory may hold, for a package whose
+    /// [`PackageAccess::data_quota`] sets none. `None` is no limit.
     pub plugin_data_quota: Option<u64>,
-    /// The hosts packages holding the `http` grant may reach; a name starting with
-    /// `.` allows every host under that domain. `None` allows any host.
+    /// The hosts packages holding the `http` grant may reach, for a package whose
+    /// [`PackageAccess::http_hosts`] sets none; a name starting with `.` allows every
+    /// host under that domain. `None` allows any host.
     pub plugin_http_hosts: Option<Vec<String>>,
     /// Where connection settings' `credential://<name>` references are read from.
     /// `None` refuses a connection that names a credential.
@@ -465,11 +469,40 @@ pub struct Updated {
     pub reset_variables: usize,
 }
 
+/// What the user lets one installed package's code reach: its grants and its own
+/// limits. It is kept with the package between sessions, and
+/// [`Host::set_access`] changes or revokes it. Flows opened afterwards use the new
+/// access; running flows keep the instances they started with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageAccess {
+    /// Capabilities the user approved; never more than the package asks for.
+    pub grants: Grants,
+    /// The hosts its `http` grant may reach (a name starting with `.` allows every host
+    /// under that domain). `None` uses [`HostOptions::plugin_http_hosts`]. Local
+    /// addresses reached through `http-local` are not limited by it.
+    pub http_hosts: Option<Vec<String>>,
+    /// Most bytes its data directory may hold. `None` uses
+    /// [`HostOptions::plugin_data_quota`].
+    pub data_quota: Option<u64>,
+}
+
+impl From<Grants> for PackageAccess {
+    fn from(grants: Grants) -> Self {
+        Self {
+            grants,
+            ..Self::default()
+        }
+    }
+}
+
 /// The grants a manifest's `permissions` section asks for: a list of `"log"`,
-/// `"files"` and `"http"`. No section asks for nothing.
+/// `"files"`, `"http"`, `"http-local"` and `"compute"`. No section asks for nothing.
 fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
     let refused = || {
-        HostError::Install("`permissions` must be a list of `log`, `files` and `http`".to_owned())
+        HostError::Install(
+            "`permissions` must be a list of `log`, `files`, `http`, `http-local` and `compute`"
+                .to_owned(),
+        )
     };
     let mut grants = Grants::default();
     let Some(section) = manifest.permissions() else {
@@ -480,6 +513,8 @@ fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
             Some("log") => grants.log = true,
             Some("files") => grants.files = true,
             Some("http") => grants.http = true,
+            Some("http-local") => grants.http_local = true,
+            Some("compute") => grants.compute = true,
             _ => return Err(refused()),
         }
     }
@@ -716,6 +751,8 @@ pub struct Host {
     /// The words the node search finds nodes by.
     catalogs: Catalogs,
     not_restored: Vec<(String, HostError)>,
+    /// What the user lets each installed package reach, by package ID and version.
+    access: BTreeMap<(String, String), PackageAccess>,
     /// The base nodes and each service package the application was started with.
     built_in: Vec<BuiltIn>,
     /// IDs of the packages a host started like this one leaves out.
@@ -1044,6 +1081,7 @@ impl Host {
             local_registries: Mutex::new(Vec::new()),
             catalogs,
             not_restored: Vec::new(),
+            access: BTreeMap::new(),
             built_in,
             disabled,
             inactive: Vec::new(),
@@ -1072,7 +1110,7 @@ impl Host {
             let installed = package
                 .archive
                 .map_err(HostError::Storage)
-                .and_then(|archive| host.install_archive(&archive, package.grants, None));
+                .and_then(|archive| host.install_archive(&archive, &package.access, None));
             if let Err(error) = installed {
                 host.not_restored.push((package.file, error));
             }

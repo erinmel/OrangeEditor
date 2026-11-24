@@ -86,6 +86,19 @@ pub struct NodeView {
     /// Text inputs that hold a path on this machine, from the node's definition file,
     /// so the editor can offer the system's file or folder chooser beside them.
     pub paths: Vec<PathInput>,
+    /// The package the node needs when this host does not have its definition, so a
+    /// front end can say which one to install. The node, its settings and its wires
+    /// stay in the document; its ports come from its saved signature.
+    pub missing: Option<MissingPackage>,
+}
+
+/// The package a node needs and this host lacks: the one its provider was bound to, or,
+/// for a node written without a provider, its definition's namespace with no version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingPackage {
+    pub package: String,
+    /// Empty when the document does not say which version.
+    pub version: String,
 }
 
 /// A variadic port of a node, such as the branches of a fork: its instances are
@@ -746,11 +759,44 @@ impl Host {
                 });
             }
         }
+        // A node whose definition this host lacks keeps the ports its saved signature
+        // lists, so its wires still have somewhere to end while it waits for its package.
+        let saved = contract
+            .is_none()
+            .then_some(node.signature.as_ref())
+            .flatten()
+            .and_then(|key| document.signatures().get(key));
+        for port in saved.iter().flat_map(|saved| saved.ports.iter()) {
+            let input = port.direction == PortDirection::Input;
+            let instances: Vec<Option<u16>> = match port.variadic {
+                Some(_) => node
+                    .variadic
+                    .get(&port.port_id)
+                    .map_or_else(Vec::new, |state| {
+                        state.order.iter().copied().map(Some).collect()
+                    }),
+                None => vec![None],
+            };
+            for instance in instances {
+                let id = PortKey::new(port.port_id.clone(), instance).to_string();
+                declared.push(PortView {
+                    connected: wired(node.id, &id, input),
+                    input,
+                    exec: port.kind != PortKind::Data,
+                    ty: port.ty.as_ref().map(ToString::to_string),
+                    value: None,
+                    default: None,
+                    id,
+                    label: None,
+                });
+            }
+        }
         // Names the contract declares itself, so an implicit port is not shown twice.
         let declares = |name: &str, input: bool| {
             contract
                 .iter()
                 .flat_map(|contract| contract.ports.iter())
+                .chain(saved.iter().flat_map(|saved| saved.ports.iter()))
                 .any(|port| {
                     port.port_id.as_str() == name
                         && (port.direction == PortDirection::Input) == input
@@ -764,11 +810,15 @@ impl Host {
         let mut failure_routes = FailureRoutes::default();
         // A node that is not set up yet (a variable node that names no variable)
         // has no contract; its kind still says which of these it has.
-        let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
-            registry
-                .definition(&node.definition)
-                .map(|found| found.kind)
-        });
+        let kind = contract
+            .as_ref()
+            .map(|contract| contract.kind)
+            .or_else(|| {
+                registry
+                    .definition(&node.definition)
+                    .map(|found| found.kind)
+            })
+            .or_else(|| saved.map(|saved| saved.kind));
         if let Some(kind) = kind {
             let outcomes = contract.as_ref().is_some_and(|contract| {
                 contract.ports.iter().any(|port| {
@@ -814,6 +864,19 @@ impl Host {
         ports.extend(after);
         let definition = node.definition.id.as_str().to_owned();
         let known = registry.definition(&node.definition);
+        let missing = (known.is_none()
+            && !node.definition.id.is_core()
+            && call_contract(document, node, registry).is_none())
+        .then(|| match &node.provider {
+            Some(provider) => MissingPackage {
+                package: provider.package.clone(),
+                version: provider.version.clone(),
+            },
+            None => MissingPackage {
+                package: node.definition.id.namespace().to_owned(),
+                version: String::new(),
+            },
+        });
         let types = known
             .iter()
             .flat_map(|found| found.type_params.iter())
@@ -885,6 +948,7 @@ impl Host {
                 .collect(),
             types,
             paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
+            missing,
         };
         (view, failure_routes)
     }

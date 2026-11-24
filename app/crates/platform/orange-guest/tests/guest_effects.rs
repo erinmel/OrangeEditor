@@ -119,6 +119,8 @@ fn looping_run(kind: &str, effect: &str) -> Run {
             log: true,
             files: false,
             http: false,
+            http_local: false,
+            compute: false,
         },
     )
     .unwrap();

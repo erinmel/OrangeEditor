@@ -55,6 +55,14 @@ pub struct GuestPackage {
 }
 
 impl GuestPackage {
+    /// Replaces the grants of instances made from now on, so a revoked grant is not
+    /// linked into them. Instances already made keep theirs.
+    #[must_use]
+    pub fn with_grants(mut self, grants: Grants) -> Self {
+        self.grants = grants;
+        self
+    }
+
     /// Sets what the package's instances reach with their `files` and `http` grants.
     #[must_use]
     pub fn with_access(mut self, access: GuestAccess) -> Self {

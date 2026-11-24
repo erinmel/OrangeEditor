@@ -26,6 +26,8 @@ const LOG: Grants = Grants {
     log: true,
     files: false,
     http: false,
+    http_local: false,
+    compute: false,
 };
 
 fn types() -> TypeRegistry {

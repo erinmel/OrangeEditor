@@ -14,7 +14,7 @@ mod limits;
 mod nodes;
 mod plugin;
 
-pub use access::{GuestAccess, HttpClient, HttpRequest, HttpResponse};
+pub use access::{GuestAccess, HttpClient, HttpRequest, HttpResponse, is_local};
 pub use cancellation::GuestCancellation;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +24,8 @@ pub use nodes::{
     WithGuests, guest_effect,
 };
 pub use plugin::{
-    API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,
+    API_VERSION, Grants, GuestNodeError, GuestPlugin, HEAVY_COMPUTE_FACTOR, MAX_LOG_BYTES,
+    MAX_LOG_ENTRIES,
 };
 
 use limits::{Aggregate, InstanceLimits};

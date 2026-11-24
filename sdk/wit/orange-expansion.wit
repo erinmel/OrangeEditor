@@ -59,21 +59,25 @@ interface files {
     remove: func(path: string) -> result<_, string>;
 }
 
-/// Granted only with the `http` permission: HTTPS requests through the application's
-/// network client. A call blocks the node until the answer arrives, so it belongs in an
-/// async node. Errors are one of `invalid-request`, `not-allowed`, `too-large`,
-/// `unavailable` and `failed`.
+/// Granted with the `http` permission (HTTPS to any host the application allows), the
+/// `http-local` permission (HTTP or HTTPS to this computer or the local network: an
+/// address such as `127.0.0.1`, `192.168.1.20` or `[::1]`, `localhost`, or a `.local`
+/// name), or both. Requests go through the application's network client. A call blocks
+/// the node until the answer arrives, so it belongs in an async node. Errors are one of
+/// `invalid-request`, `not-allowed`, `too-large`, `unavailable` and `failed`.
 interface http {
     record request {
         /// `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`.
         method: string,
-        /// An `https://` URL.
+        /// An `https://` URL, or an `http://` URL to a local address.
         url: string,
         headers: list<tuple<string, string>>,
         body: list<u8>,
     }
     record response {
         status: u16,
+        /// Response headers in the order received; names as the server sent them.
+        headers: list<tuple<string, string>>,
         body: list<u8>,
     }
     send: func(request: request) -> result<response, string>;

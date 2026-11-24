@@ -148,6 +148,50 @@ aggregate table elements through `GuestLimits`. The defaults are 256 stores,
 capacity. Plugin calls check the combined input budget before copying values
 into the component and the output budget before returning them to a graph.
 
+Local HTTP, response headers and heavy compute (2026-11-24; `orange-guest`, `sdk/wit`,
+`orange-host`): a manifest's `permissions` may also list `"http-local"` and
+`"compute"`. `http-local` (`Grants::http_local`) links the same `http` import and
+reaches this computer and the local network over `http://` or `https://`:
+`localhost` and names under it, `.local` names, and loopback, private (10/8,
+172.16/12, 192.168/16) and link-local IPv4 and IPv6 literals, including unique-local
+`fc00::/7` (`orange_guest::is_local`). Other names are never resolved for this check,
+so a public name pointing at a local address is not local. `http` alone still reaches
+only `https://`, and the host list never limits local addresses. A request the grants
+do not reach is `not-allowed`; a scheme other than HTTP(S) or a malformed address is
+`invalid-request`. The `http.response` record carries `headers` (in the order received)
+before `body`; headers and body together must fit the transfer limit. An application's
+client must not follow redirects, or must check each new address the same way;
+`orange_net::fetch_response` follows none and sends `http://` only when asked.
+`compute` (`Grants::compute`) gives each call of that package's instances
+`HEAVY_COMPUTE_FACTOR` (16) times the engine's per-call fuel, transfer and input
+limits; memory and the engine's aggregate limits are unchanged. The `orange` command
+takes `--grant-http-local` and `--grant-compute`.
+
+Per-package access (2026-11-24; `orange-host`): what a package may reach is a
+`PackageAccess`: its `grants`, its own `http_hosts` and its own `data_quota`. A
+package's own list or quota replaces `HostOptions::plugin_http_hosts` or
+`HostOptions::plugin_data_quota` for it; without one the application's applies.
+`Host::install_with` installs with an access, `Host::access` reads it, and
+`Host::set_access` changes it later: a grant the manifest does not ask for is refused,
+and a revoked grant is not linked into instances made afterwards, so flows and
+previews opened afterwards cannot use it while running flows keep the instances they
+started with. The access is saved in `installed.json` beside the archive (`log`,
+`files`, `http`, `http-local`, `compute`, `http-hosts`, `data-quota`); an index
+written before these fields reads them as not granted and without own limits.
+`Host::requested_grants` returns what an installed package's manifest asks for and
+`Host::archive_key` names an archive without installing it.
+
+Full-access native plugins in the desktop (2026-11-24; `orange-desktop`): the desktop
+application loads `orange-native` libraries from `plugins` beside its preferences,
+only after the person allowed full access to that exact file. The approval keeps the
+file name and SHA-256 in `plugins/full-access.json`; a changed file asks again. The
+dialog states the risk in plain words, including that a native plugin can read the
+operating system's credential store as the person, so the vault's protection does not
+apply to it. A library is never loaded to describe it. Native libraries still load at
+start (ADR-03 amendment 2026-11-11), so an approval or revocation applies from the next
+start. Graphs, exports and bundles still never hold secrets.
+
+
 Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
 its tier, can be switched off by ID and on again without removing it; the switch is
 saved beside the stored archives and applies from the next start (02, "Package

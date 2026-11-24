@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use orange_host::{BASE_PACKAGE, PackageKind};
 use orange_host::{
-    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, RunState,
-    StopMode, Value, VariableId,
+    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions,
+    PackageAccess, RunState, StopMode, Value, VariableId,
 };
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
@@ -222,6 +222,8 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
             }
         ),
         Err(HostError::Archive(_))
@@ -233,6 +235,8 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
             },
         )
         .unwrap();
@@ -550,6 +554,8 @@ fn the_host_lists_every_node_a_document_can_use() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
             },
         )
         .unwrap();
@@ -1685,6 +1691,8 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         log: true,
         files: true,
         http: false,
+        http_local: false,
+        compute: false,
     };
     assert!(matches!(
         host.install(&probe, too_much),
@@ -1699,6 +1707,8 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         log: true,
         files: false,
         http: false,
+        http_local: false,
+        compute: false,
     };
     assert!(matches!(
         host.install(&graph, logging),
@@ -1765,4 +1775,149 @@ fn a_document_written_by_hand_is_bound_and_then_runs() {
         panic!("an unknown definition is refused");
     };
     assert!(reason.contains(&id(3)), "{reason}");
+}
+
+/// A document whose On Start calls the probe package's node once.
+fn probe_document(host: &Host) -> String {
+    let definition = DefinitionRef {
+        id: ACCUMULATE.parse().unwrap(),
+        version: 1,
+    };
+    let mut document = empty(3);
+    let mut call = NewNode::new(node(3), definition);
+    call.inputs = serde_json::from_value(json!({"amount": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    with_total(
+        saved,
+        vec![core(1, "on-start")],
+        json!([edge(1, 1, "then", 3, "in")]),
+    )
+}
+
+#[test]
+fn package_access_is_kept_per_package_and_can_be_revoked() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-access-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        plugin_http_hosts: Some(vec!["app-wide.example".into()]),
+        ..HostOptions::default()
+    };
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let own = PackageAccess {
+        grants: logging,
+        http_hosts: Some(vec!["api.example.org".into(), ".example.net".into()]),
+        data_quota: Some(4096),
+    };
+    let key = {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        let key = host.install_with(&probe_archive(), own.clone()).unwrap();
+        assert_eq!(host.access(&key), Some(&own));
+        key
+    };
+    // The package's own limits and grants come back after a restart.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert!(host.not_restored().is_empty());
+    assert_eq!(host.access(&key), Some(&own));
+    let flow = host.open(&probe_document(&host)).unwrap();
+
+    // A grant the package does not ask for is refused and changes nothing.
+    let too_much = PackageAccess {
+        grants: Grants {
+            files: true,
+            ..logging
+        },
+        ..own.clone()
+    };
+    assert!(matches!(
+        host.set_access(&key, too_much),
+        Err(HostError::Install(_))
+    ));
+    assert_eq!(host.access(&key), Some(&own));
+
+    // Revoking `log`: the probe imports it, so a flow opened now cannot bind its node,
+    // while the flow opened before keeps the instance it started with.
+    let revoked = PackageAccess::default();
+    host.set_access(&key, revoked.clone()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    assert!(host.flows().any(|id| id == flow));
+    host.close(flow).unwrap();
+    drop(host);
+
+    // The revocation is stored, and granting again works without reinstalling.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    host.set_access(&key, own.clone()).unwrap();
+    let flow = host.open(&probe_document(&host)).unwrap();
+    host.close(flow).unwrap();
+
+    // An uninstalled package has no access left to change.
+    host.uninstall(&key).unwrap();
+    assert_eq!(host.access(&key), None);
+    assert!(host.set_access(&key, own).is_err());
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_node_of_a_missing_package_names_it_and_keeps_its_wired_ports() {
+    let (mut with, _events) = Host::new(HostOptions::default()).unwrap();
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let _ = with.install(&probe_archive(), logging).unwrap();
+    let text = probe_document(&with);
+    let installed = with.view(&text).unwrap();
+    let card = |graph: &orange_host::GraphView| {
+        graph
+            .nodes
+            .iter()
+            .find(|card| card.id == node(3))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(card(&installed).missing, None);
+
+    let (without, _events) = Host::new(HostOptions::default()).unwrap();
+    let shown = without.view(&text).unwrap();
+    let missing = card(&shown);
+    assert_eq!(
+        missing.missing,
+        Some(orange_host::MissingPackage {
+            package: "org.example.probe".into(),
+            version: "1.0.0".into(),
+        })
+    );
+    // The saved signature gives the card its ports, and the wire into it is kept.
+    let ports: Vec<_> = missing.ports.iter().map(|port| port.id.as_str()).collect();
+    for port in ["in", "amount", "result"] {
+        assert!(ports.contains(&port), "{ports:?}");
+    }
+    assert!(
+        missing
+            .ports
+            .iter()
+            .any(|port| port.id == "in" && port.connected)
+    );
+    assert_eq!(shown.wires.len(), installed.wires.len());
+    // Built-in nodes never count as missing.
+    assert!(
+        shown
+            .nodes
+            .iter()
+            .filter(|card| card.id != node(3))
+            .all(|card| card.missing.is_none())
+    );
 }

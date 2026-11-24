@@ -40,12 +40,41 @@ pub struct Grants {
     pub files: bool,
     /// Send HTTPS requests through the application's network client.
     pub http: bool,
+    /// Send HTTP or HTTPS requests to this computer and the local network
+    /// ([`is_local`](crate::access::is_local)) through the application's network client.
+    pub http_local: bool,
+    /// Heavy compute: each call gets [`HEAVY_COMPUTE_FACTOR`] times the engine's fuel
+    /// and transfer limits. Memory limits stay those of the engine.
+    pub compute: bool,
+}
+
+/// How many times the per-call fuel and transfer limits a `compute` grant gives.
+pub const HEAVY_COMPUTE_FACTOR: u32 = 16;
+
+impl Grants {
+    /// Whether the `http` import is linked: either network grant.
+    pub const fn links_http(self) -> bool {
+        self.http || self.http_local
+    }
+
+    /// Every grant that is in both.
+    #[must_use]
+    pub const fn within(self, allowed: Self) -> Self {
+        Self {
+            log: self.log && allowed.log,
+            files: self.files && allowed.files,
+            http: self.http && allowed.http,
+            http_local: self.http_local && allowed.http_local,
+            compute: self.compute && allowed.compute,
+        }
+    }
 }
 
 struct PluginState {
     limits: InstanceLimits,
     log: Vec<String>,
     access: GuestAccess,
+    grants: Grants,
     effects_allowed: bool,
     /// Largest content one import call hands to the guest.
     transfer_bytes: usize,
@@ -83,9 +112,10 @@ impl http::Host for PluginState {
             max_response_bytes: self.transfer_bytes,
         };
         self.access
-            .send(&request)
+            .send(&request, self.grants.http, self.grants.http_local)
             .map(|response| http::Response {
                 status: response.status,
+                headers: response.headers,
                 body: response.body,
             })
             .map_err(str::to_owned)
@@ -249,13 +279,22 @@ impl GuestPlugin {
         access: GuestAccess,
     ) -> Result<Self, GuestError> {
         let engine = &component.engine;
-        let limits = engine.limits;
+        let mut limits = engine.limits;
+        if grants.compute {
+            let factor = HEAVY_COMPUTE_FACTOR as usize;
+            limits.fuel_per_call = limits
+                .fuel_per_call
+                .saturating_mul(u64::from(HEAVY_COMPUTE_FACTOR));
+            limits.transfer_bytes = limits.transfer_bytes.saturating_mul(factor);
+            limits.input_bytes = limits.input_bytes.saturating_mul(factor);
+        }
         let mut store = Store::new(
             &engine.engine,
             PluginState {
                 limits: InstanceLimits::new(limits, &engine.aggregate)?,
                 log: Vec::new(),
                 access,
+                grants,
                 effects_allowed: false,
                 transfer_bytes: limits.transfer_bytes,
             },
@@ -277,7 +316,7 @@ impl GuestPlugin {
             files::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
                 .map_err(|_| GuestError::Engine)?;
         }
-        if grants.http {
+        if grants.links_http() {
             http::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
                 .map_err(|_| GuestError::Engine)?;
         }

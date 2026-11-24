@@ -213,7 +213,11 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
       (export "orange:expansion/effects@1.0.0" (instance $effects)))"#;
     let types = TypeRegistryBuilder::core().build().unwrap();
     let message = "x".repeat(4096);
-    for (transfer_bytes, allowed) in [(1024, false), (8192, true)] {
+    for (transfer_bytes, compute, allowed) in [
+        (1024, false, false),
+        (8192, false, true),
+        (1024, true, true),
+    ] {
         let engine = GuestEngine::new(GuestLimits {
             transfer_bytes,
             ..Default::default()
@@ -226,6 +230,8 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute,
             },
         )
         .unwrap();
@@ -238,4 +244,55 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
             assert!(plugin.take_log().is_empty());
         }
     }
+}
+
+/// The `compute` grant multiplies the per-call fuel limit for one instance (its transfer
+/// limit is checked with the log import above); the engine's limits for other instances stay as they were.
+#[test]
+fn the_compute_grant_raises_fuel_and_transfer_for_its_instance_only() {
+    let busy = r#"(component
+      (core module $m
+        (memory (export "mem") 1)
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32) i32.const 32768)
+        (func (export "evaluate") (param i32 i32 i32 i32) (result i32) (local $n i32)
+          i32.const 200000 local.set $n
+          (loop $spin local.get $n i32.const 1 i32.sub local.tee $n br_if $spin)
+          i32.const 0))
+      (core instance $i (instantiate $m))
+      (type $value (variant (case "literal" string) (case "bytes" (list u8))
+        (case "i32-list" (list s32)) (case "i64-list" (list s64))
+        (case "u32-list" (list u32)) (case "u64-list" (list u64))
+        (case "f32-list" (list f32)) (case "f64-list" (list f64))))
+      (type $values (list $value))
+      (type $error (record (field "code" string) (field "message-key" string)))
+      (type $out (result $values (error $error)))
+      (func $evaluate (param "definition" string) (param "inputs" $values) (result $out)
+        (canon lift (core func $i "evaluate") (memory (core memory $i "mem")) (realloc (core func $i "realloc"))))
+      (instance $nodes (export "value" (type $value)) (export "node-error" (type $error))
+        (export "evaluate" (func $evaluate)))
+      (export "orange:expansion/nodes@1.0.0" (instance $nodes))
+      (instance $effects (export "value" (type $value)) (export "node-error" (type $error))
+        (export "execute" (func $evaluate)))
+      (export "orange:expansion/effects@1.0.0" (instance $effects)))"#;
+    let types = TypeRegistryBuilder::core().build().unwrap();
+    // About five instructions per turn of the loop: a million units of fuel.
+    let engine = GuestEngine::new(GuestLimits {
+        fuel_per_call: 200_000,
+        transfer_bytes: 1024,
+        ..Default::default()
+    })
+    .unwrap();
+    let component = engine.compile(busy.as_bytes()).unwrap();
+    let mut plain = GuestPlugin::new(&component, Grants::default()).unwrap();
+    assert_eq!(
+        plain.evaluate(&types, "x", &[], &[]),
+        Err(GuestError::Trap(GuestTrap::OutOfFuel))
+    );
+    let heavy = Grants {
+        compute: true,
+        ..Grants::default()
+    };
+    let mut heavy = GuestPlugin::new(&component, heavy).unwrap();
+    assert_eq!(heavy.evaluate(&types, "x", &[], &[]), Ok(Ok(vec![])));
+    assert_eq!(engine.limits().fuel_per_call, 200_000);
 }

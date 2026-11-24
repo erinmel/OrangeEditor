@@ -3668,6 +3668,7 @@ mod tests {
             types: Vec::new(),
             variadic: Vec::new(),
             paths: Vec::new(),
+            missing: None,
         }
     }
     fn wire(from: u32, to: u32) -> WireView {

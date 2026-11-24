@@ -41,8 +41,8 @@ the foundation.
 | Editor and desktop application | Working on Windows; Linux and macOS build in CI but are not used day to day |
 | Network, files, credentials | Working, with a Docker lab for HTTP, WebSocket, MQTT and AMQP |
 | Audio | File sources and stream processors are exercised in automated tests. Output routing and capture need release qualification on each advertised platform. Linux per-application capture requires PipeWire. macOS per-application capture is still open. |
-| Wasm packages | Pure, action and async nodes run. Granted files and HTTPS access are available to async nodes when the host supplies the service. |
-| Native plugins | Load at start; not sandboxed |
+| Wasm packages | Pure, action and async nodes run. Granted files, HTTPS and local-network HTTP are available to async nodes when the host supplies the service; grants and limits are per package and revocable. |
+| Native plugins | Load at start; not sandboxed. The desktop loads one only after the person allows full access to that exact file. |
 | File format | Version 1, the first release; later versions upgrade it on open (12 §6.3) |
 | Releases | The release workflow and receipt checks exist. Native packaging adapters and clean-install qualification are pending. See the [desktop release contract](../tools/release/README.md). |
 
