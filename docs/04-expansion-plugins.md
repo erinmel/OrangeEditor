@@ -203,9 +203,26 @@ interface types cannot be recursive, so records, enums, lists and maps cross as
 directions; changing the exported `value` variant would break every 1.0 component.
 Each node binding owns its instance, so a guest keeps per-instance state in its own
 memory between effect calls (`effects_keep_instance_state_and_report_their_own_errors`).
-Not yet in 1.1: messages arriving on a connection do not reach guest code, and guests
-cannot contribute entry (trigger) nodes; both need an `events` export and host source
-plumbing, planned as the next interface step.
+Package triggers (2026-11-24): a package targeting the `plugin-events` world (`include
+plugin; export events`) contributes entry nodes. Its manifest lists them like other
+nodes, each a definition of kind `entry` that names a connection adapter and has at most
+one data output, `payload`, of a concrete type. Components of the `plugin` world, and
+every 1.0 component, simply contribute no trigger. The host starts a package trigger the
+way it starts its own: on the session of the connection the node's settings name,
+opened with the stored credentials after the graph's approval and allowed by the
+`ConnectionAuthorizer` (`ServiceOperation::Entry`). It is started only when the user
+granted the package `websocket`; without the grant the flow does not open. Each trigger
+node gets its own instance with its settings and no file, network or connection access,
+and the host registers it with `Session::listen_messages`. For each text or binary
+message, the host calls `events.receive` on that instance under the instance's fuel and
+input limits (a message over the input limit is refused before the guest sees it). The
+answer fires the node with its payload through the entry's bounded mailbox (a full
+mailbox drops that message, as for the host's own triggers), lets the message pass, or
+reports a fault on the node. A trapped instance stops listening. Closing or stopping the
+flow drops the listener, and the host closes the socket once nothing uses it. Messages
+are decided on the connection's own thread, so a slow package slows only its own
+connection, within its fuel. `Session::listen_messages` is part of the native ABI
+revision 10 (`orange_net`'s WebSocket session implements it).
 
 Full-access native plugins in the desktop (2026-11-24; `orange-desktop`): the desktop
 application loads `orange-native` libraries from `plugins` beside its preferences,

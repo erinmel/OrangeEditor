@@ -128,6 +128,7 @@ impl Host {
                 .native
                 .1
                 .source(&provider, &node.definition)
+                .or_else(|| self.guest_trigger(&provider, &node.definition, &registry))
                 .ok_or_else(|| refused("no service provides this entry"))?;
             let session = if uses_connection {
                 session_of(node, &refused)?

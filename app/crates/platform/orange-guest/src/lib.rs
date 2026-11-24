@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use nodes::{
-    GuestEffect, GuestLoadError, GuestPackage, MAX_FAULT_TEXT_BYTES, PLUGIN_WORLD_PREFIX,
-    WithGuests, guest_effect,
+    GuestEffect, GuestLoadError, GuestPackage, GuestSource, MAX_FAULT_TEXT_BYTES,
+    PLUGIN_WORLD_PREFIX, WithGuests, guest_effect,
 };
 pub use plugin::{
     API_VERSION, Grants, GuestNodeError, GuestPlugin, HEAVY_COMPUTE_FACTOR, MAX_LOG_BYTES,

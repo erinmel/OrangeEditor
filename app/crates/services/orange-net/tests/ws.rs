@@ -703,3 +703,182 @@ fn a_session_queues_package_messages_on_its_socket() {
         Message::binary(vec![1, 2, 3])
     );
 }
+
+/// A 1.1 component whose trigger hands each text message on as its bytes payload, and
+/// lets an empty message pass. Its nodes and effects exports are unused.
+const FEED_COMPONENT: &str = r#"(component
+  (core module $m
+    (memory (export "mem") 1)
+    (global $next (mut i32) (i32.const 32768))
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32) (local $at i32)
+      global.get $next local.set $at
+      global.get $next local.get 3 i32.add i32.const 8 i32.add i32.const -8 i32.and
+      global.set $next
+      local.get $at)
+    (func (export "none") (param i32 i32 i32 i32) (result i32) i32.const 0)
+    (func (export "receive") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
+      (local $ptr i32) (local $len i32)
+      (if (local.get 2)
+        (then (local.set $ptr (local.get 3)) (local.set $len (local.get 4)))
+        (else (local.set $ptr (local.get 6)) (local.set $len (local.get 7))))
+      (i32.store8 (i32.const 200) (i32.const 0))
+      (if (i32.eqz (local.get $len))
+        (then (i32.store8 (i32.const 204) (i32.const 0)) (return (i32.const 200))))
+      (i32.store8 (i32.const 204) (i32.const 1))
+      (i32.store (i32.const 208) (i32.const 100))
+      (i32.store (i32.const 212) (i32.const 1))
+      (i32.store8 (i32.const 100) (i32.const 1))
+      (i32.store (i32.const 104) (local.get $ptr))
+      (i32.store (i32.const 108) (local.get $len))
+      i32.const 200))
+  (core instance $i (instantiate $m))
+  (type $value (variant (case "literal" string) (case "bytes" (list u8))
+    (case "i32-list" (list s32)) (case "i64-list" (list s64))
+    (case "u32-list" (list u32)) (case "u64-list" (list u64))
+    (case "f32-list" (list f32)) (case "f64-list" (list f64))))
+  (type $values (list $value))
+  (type $error (record (field "code" string) (field "message-key" string)))
+  (type $out (result $values (error $error)))
+  (type $received (result (option $values) (error $error)))
+  (func $none (param "definition" string) (param "inputs" $values) (result $out)
+    (canon lift (core func $i "none") (memory (core memory $i "mem")) (realloc (core func $i "realloc"))))
+  (func $receive (param "definition" string) (param "text" (option string))
+    (param "binary" (option (list u8))) (result $received)
+    (canon lift (core func $i "receive") (memory (core memory $i "mem")) (realloc (core func $i "realloc"))))
+  (instance $nodes (export "value" (type $value)) (export "node-error" (type $error))
+    (export "evaluate" (func $none)))
+  (export "orange:expansion/nodes@1.1.0" (instance $nodes))
+  (instance $effects (export "value" (type $value)) (export "node-error" (type $error))
+    (export "execute" (func $none)))
+  (export "orange:expansion/effects@1.1.0" (instance $effects))
+  (instance $events (export "value" (type $value)) (export "node-error" (type $error))
+    (export "receive" (func $receive)))
+  (export "orange:expansion/events@1.1.0" (instance $events)))"#;
+
+const FRAME: &str = "org.example.feed/on-frame";
+
+/// The feed package: one trigger node on a WebSocket connection, carried out by
+/// `FEED_COMPONENT`, asking for the `websocket` grant.
+fn feed_package() -> Vec<u8> {
+    let definition = orange_sdk::Definition::entry("org.example.feed", "on-frame", "On frame")
+        .uses(orange_net::WS_ADAPTER)
+        .payload("core/bytes@1")
+        .build();
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.feed", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 1},
+        "execution": {"kind": "wasm-component", "entry": "component.wasm",
+            "world": "orange:expansion/plugin-events@1.1.0"},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [FRAME],
+            "providers": [{"slot": format!("node:{FRAME}@1"), "id": "guest"}]
+        },
+        "permissions": ["websocket"],
+        "integrity": {"algorithm": "sha256", "content_digest": "0".repeat(64)},
+        "license": "MIT"
+    });
+    let files = [
+        (
+            "component.wasm".to_owned(),
+            wat::parse_str(FEED_COMPONENT).unwrap(),
+        ),
+        ("nodes/on-frame.json".to_owned(), definition.into_bytes()),
+    ];
+    orange_host::pack(manifest.to_string().as_bytes(), &files).unwrap()
+}
+
+/// The feed graph: the package trigger on a WebSocket connection to `address`, its
+/// payload kept in `frame`.
+fn feed_graph(host: &Host, address: std::net::SocketAddr) -> String {
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-0000000000f1".parse().unwrap());
+    let connection = json!({"id": CONNECTION, "name": "feed", "adapter": orange_net::WS_ADAPTER,
+        "scope": "graph", "settings": {"url": format!("ws://{address}")}});
+    let _ = document
+        .apply([DocCommand::UpsertConnection(
+            serde_json::from_value(connection).unwrap(),
+        )])
+        .unwrap();
+    let mut new = NewNode::new(
+        node(1),
+        DefinitionRef {
+            id: FRAME.parse().unwrap(),
+            version: 1,
+        },
+    );
+    new.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), new).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        if entry["definition_id"] == FRAME {
+            entry["activation"] = activation();
+        }
+    }
+    let mut keep = core(2, "set-variable");
+    keep["config"] = json!({"variable": id(100)});
+    saved["nodes"].as_array_mut().unwrap().push(keep);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 1, "payload", 2, "value"),
+    ]);
+    saved["variables"] =
+        json!([{"id": id(100), "name": "frame", "type": "core/bytes@1", "scope": "run"}]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+/// A package trigger fires from messages arriving on the host's own connection: the
+/// package decides what each one carries, the host keeps the socket, and nothing starts
+/// without the `websocket` grant.
+#[test]
+fn a_package_trigger_fires_from_the_hosts_websocket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (closed, ended) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let closed = closed.clone();
+            let _ = std::thread::spawn(move || {
+                let mut socket = tungstenite::accept(stream.unwrap()).unwrap();
+                for text in ["", "frame-1"] {
+                    socket.send(Message::text(text)).unwrap();
+                }
+                while socket.read().is_ok() {}
+                let _ = closed.send(());
+            });
+        }
+    });
+
+    // Without the grant the trigger has no source, and the graph does not start.
+    let mut ungranted = host();
+    let _ = ungranted
+        .install(&feed_package(), orange_host::Grants::default())
+        .unwrap();
+    let text = feed_graph(&ungranted, address);
+    assert!(ungranted.check(&text).unwrap().is_empty());
+    assert!(ungranted.open(&text).is_err());
+
+    let mut host = host();
+    let grants = orange_host::Grants {
+        websocket: true,
+        ..orange_host::Grants::default()
+    };
+    let _ = host.install(&feed_package(), grants).unwrap();
+    let text = feed_graph(&host, address);
+    let flow = host.open(&text).unwrap();
+    let variable: VariableId = id(100).parse().unwrap();
+    let received = || {
+        host.inspect(flow, move |run| run.variable(variable).cloned())
+            .unwrap()
+    };
+    // The empty message passed; the next one fired the trigger with its bytes.
+    until("the trigger's payload", || received().is_some());
+    assert_eq!(
+        received(),
+        Some(Value::Bytes(std::sync::Arc::new(b"frame-1".to_vec())))
+    );
+    // Closing the flow stops the trigger and lets the host close its socket.
+    host.close(flow).unwrap();
+    ended.recv_timeout(WAIT).unwrap();
+}

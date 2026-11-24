@@ -133,6 +133,22 @@ interface websocket {
     send-binary: func(data: list<u8>) -> result<_, string>;
 }
 
+/// Exported by a package that contributes trigger (entry) nodes (1.1): its manifest
+/// names them and the world it targets is `plugin-events`. The host owns the
+/// connection a trigger's settings name and calls `receive` once for each message that
+/// arrives on it, under the same fuel and transfer limits as other calls, with nothing
+/// but the message: the instance cannot reach files, the network or the connection
+/// from here. A package without this export still loads; its triggers do not start.
+interface events {
+    use types.{value, node-error};
+
+    /// A message arrived for trigger `definition`: exactly one of `text` and `binary`
+    /// is set. Return the trigger's outputs to fire it (its `payload`, or nothing for a
+    /// trigger without one), `none` to let the message pass, or an error to report a
+    /// fault on the trigger without firing it.
+    receive: func(definition: string, text: option<string>, binary: option<list<u8>>) -> result<option<list<value>>, node-error>;
+}
+
 world plugin {
     import host;
     import log;
@@ -142,4 +158,10 @@ world plugin {
     import websocket;
     export nodes;
     export effects;
+}
+
+/// The plugin world of a package that also contributes trigger nodes (1.1).
+world plugin-events {
+    include plugin;
+    export events;
 }

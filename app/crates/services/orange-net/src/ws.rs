@@ -60,6 +60,8 @@ pub(crate) enum Listen {
     Connected,
     /// An open socket has closed or failed.
     Disconnected,
+    /// Every text or binary message: a package trigger reads both.
+    Messages,
 }
 
 /// One message waiting to be sent.
@@ -216,8 +218,10 @@ impl Shared {
     /// Fires every entry listening for `what`. A flow that has ended is forgotten; one
     /// whose mailbox is full misses this firing, as its bounded mailbox requires.
     fn deliver(&self, what: Listen, payload: &Value) {
-        self.listeners
-            .emit(|listens| (*listens == what).then(|| payload.clone()));
+        let message = matches!(what, Listen::Text | Listen::Binary);
+        self.listeners.emit(|listens| {
+            (*listens == what || (message && *listens == Listen::Messages)).then(|| payload.clone())
+        });
     }
 }
 
@@ -248,6 +252,19 @@ impl Session for WsSession {
             .unwrap_or_else(PoisonError::into_inner)
             .push(message)
             .map_err(|_| MessageError::Full)
+    }
+    /// Hands every incoming message to `emitter` until the guard is dropped, through
+    /// the same listener list as the Message and Binary triggers.
+    fn listen_messages(
+        &self,
+        emitter: orange_sdk::Emitter,
+    ) -> Result<Box<dyn Send>, orange_sdk::MessageError> {
+        Ok(Listeners::listen(
+            Arc::clone(&self.0),
+            |shared| &shared.listeners,
+            Listen::Messages,
+            emitter,
+        ))
     }
 }
 impl Drop for WsSession {

@@ -582,3 +582,24 @@ fn check_grants(given: Grants, asked: Grants) -> Result<(), HostError> {
     }
     Ok(())
 }
+
+impl Host {
+    /// The trigger source of a package entry node, from the loaded component that is
+    /// its exact provider: started on the session of the connection its settings name
+    /// (1.1 `events`). `None` when no loaded package provides it, the user did not grant
+    /// it `websocket`, or the entry's outputs are not ones a trigger can have.
+    pub(crate) fn guest_trigger(
+        &self,
+        provider: &ProviderKey,
+        definition: &DefinitionRef,
+        registry: &Arc<RegistrySnapshot>,
+    ) -> Option<(Arc<dyn orange_sdk::ServiceSource>, bool)> {
+        let guest = self
+            .guests
+            .iter()
+            .find(|guest| guest.provider() == provider)?;
+        let definition = registry.definition(definition)?;
+        let source = guest.trigger(definition, Arc::clone(registry))?;
+        Some((Arc::new(source), true))
+    }
+}

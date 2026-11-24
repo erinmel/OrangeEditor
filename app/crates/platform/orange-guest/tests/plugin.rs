@@ -70,6 +70,19 @@ fn typed_values_cross_the_boundary_and_node_errors_stay_data() {
     );
     // A guest-reported node error does not poison the instance.
     assert!(!probe.is_poisoned());
+    // A 1.0 component has no `events` export: it contributes no trigger, and asking it
+    // to receive is refused without poisoning it.
+    assert!(!probe.receives_events());
+    assert_eq!(
+        probe.receive(
+            &types,
+            "org.example.probe/add",
+            &orange_sdk::Message::Text("x".into()),
+            &[]
+        ),
+        Err(GuestError::Export)
+    );
+    assert!(!probe.is_poisoned());
 }
 
 #[test]

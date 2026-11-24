@@ -3542,6 +3542,7 @@ dependencies = [
  "serde_json",
  "tungstenite",
  "ureq",
+ "wat",
  "webpki-roots 1.0.12",
  "zeroize",
 ]

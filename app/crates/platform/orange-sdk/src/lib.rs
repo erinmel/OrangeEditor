@@ -141,6 +141,16 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
         let _ = message;
         Err(MessageError::Unsupported)
     }
+    /// Starts handing every message that arrives on the connection to `emitter`, as
+    /// `Value::Str` for text and `Value::Bytes` for binary, until the returned guard is
+    /// dropped: how the host feeds a sandboxed package's trigger nodes. `emitter` is
+    /// called on the connection's own thread and must not block; a `Busy` answer drops
+    /// that message, as an entry's bounded mailbox requires. The default refuses: the
+    /// connection carries no messages.
+    fn listen_messages(&self, emitter: Emitter) -> Result<Box<dyn Send>, MessageError> {
+        let _ = emitter;
+        Err(MessageError::Unsupported)
+    }
 }
 
 /// One outbound message for [`Session::send_message`].

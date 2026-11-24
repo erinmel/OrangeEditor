@@ -66,6 +66,7 @@ uuid = { version = "=1.29.2", features = ["serde"] }
 zeroize = "=1.9.1"
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
 webpki-roots = "=1.0.12"
+wat = "=1.263.0"
 wasmtime = { version = "=50.0.2", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 [workspace.lints.rust]
