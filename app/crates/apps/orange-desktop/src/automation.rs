@@ -294,7 +294,9 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
         .filter(|port| !port.input && !port.exec)
         .map(|port| port.id.as_str())
         .collect();
-    assert_eq!(outputs, ["value"]);
+    // The function's result, then the implicit `error` the authoring view offers on the
+    // failure route of a call that can fail.
+    assert_eq!(outputs, ["value", "error"]);
     assert!(
         graph
             .wires

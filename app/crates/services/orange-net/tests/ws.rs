@@ -102,6 +102,18 @@ fn reply(host: &Host, flow: FlowId) -> Option<String> {
         _ => None,
     }
 }
+/// A credential store holding the test connection's password.
+#[derive(Debug)]
+struct Secrets;
+impl orange_host::SecretStore for Secrets {
+    fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
+        match name {
+            "feed/password" => Ok("generated-test-value".to_owned()),
+            _ => Err(orange_host::SecretError::NotFound),
+        }
+    }
+}
+
 fn host() -> Host {
     Host::with_services(HostOptions::default(), vec![orange_net::package()])
         .unwrap()
@@ -413,12 +425,17 @@ fn binary_messages_cross_both_ways_and_the_handshake_is_authorized() {
         }
     });
 
-    let mut host = host();
+    // The password stays in the credential store; the document names it.
+    let options = HostOptions {
+        secrets: Some(std::sync::Arc::new(Secrets)),
+        ..HostOptions::default()
+    };
+    let (mut host, _events) = Host::with_services(options, vec![orange_net::package()]).unwrap();
     let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000009".parse().unwrap());
     // user "orange", password "generated-test-value"
     let connection = json!({"id": CONNECTION, "name": "feed", "adapter": orange_net::WS_ADAPTER,
         "scope": "graph", "settings": {"url": format!("ws://{address}"),
-            "basic": {"user": "orange", "password": "generated-test-value"}}});
+            "basic": {"user": "orange", "password": "credential://feed/password"}}});
     let _ = document
         .apply([DocCommand::UpsertConnection(
             serde_json::from_value(connection).unwrap(),
@@ -464,6 +481,9 @@ fn binary_messages_cross_both_ways_and_the_handshake_is_authorized() {
     saved["variables"] = json!([{"id": id(100), "name": "reply", "type": BYTES, "scope": "run"}]);
     let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
     assert!(host.check(&text).unwrap().is_empty());
+    let draft = host.draft(&text).unwrap();
+    host.approve_connection_credentials_for_session(&draft, CONNECTION)
+        .unwrap();
 
     let flow = host.open(&text).unwrap();
     assert_eq!(

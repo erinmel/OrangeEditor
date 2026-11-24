@@ -3766,19 +3766,34 @@ mod tests {
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
         let fork = editor.add_node(&mut host, "core/fork").unwrap();
+        // The variadic count and the branch ports the card shows. The authoring view also
+        // offers the fork's failure route (`failed`, `error`), which adding or removing a
+        // branch leaves alone.
         let branches = |editor: &Editor| {
             let graph = editor.graph().unwrap();
             let node = graph.nodes.iter().find(|found| found.id == fork).unwrap();
-            (node.variadic[0].count, node.ports.len())
+            let shown = node
+                .ports
+                .iter()
+                .filter(|port| port.id.starts_with("branch#"))
+                .count();
+            let others: Vec<&str> = node
+                .ports
+                .iter()
+                .filter(|port| !port.id.starts_with("branch#"))
+                .map(|port| port.id.as_str())
+                .collect();
+            assert_eq!(others, ["in", "completed", "failed", "error"]);
+            (node.variadic[0].count, shown)
         };
-        assert_eq!(branches(&editor), (1, 3));
+        assert_eq!(branches(&editor), (1, 1));
         assert_eq!(
             editor.add_port(&mut host, fork, "branch").as_deref(),
             Some("branch#1")
         );
-        assert_eq!(branches(&editor), (2, 4));
+        assert_eq!(branches(&editor), (2, 2));
         assert!(editor.remove_port(&mut host, (fork, "branch#1")));
-        assert_eq!(branches(&editor), (1, 3));
+        assert_eq!(branches(&editor), (1, 1));
         // The last one a fork needs stays, and the log says why.
         assert!(!editor.remove_port(&mut host, (fork, "branch#0")));
         assert!(editor.log().any(|line| line.contains("at least 1")));
