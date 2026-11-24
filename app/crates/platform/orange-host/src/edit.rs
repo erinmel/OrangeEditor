@@ -1273,6 +1273,18 @@ impl Host {
             .ok_or_else(|| refused(&"the new node could not be previewed"))
     }
 
+    /// Runs several editing operations on `draft` as one action, such as placing a node
+    /// and wiring it in: on success they are one undo step; on failure, including a
+    /// document that changed since the action was planned, every edit they made is
+    /// taken back and the undo and redo history is as it was.
+    pub fn grouped<T>(
+        &self,
+        draft: &mut Draft,
+        edit: impl FnOnce(&Self, &mut Draft) -> Result<T, HostError>,
+    ) -> Result<T, HostError> {
+        draft.as_one_edit(|draft| edit(self, draft))
+    }
+
     /// Creates a node and replaces a wire with its two links as one undoable edit.
     pub fn add_node_into_wire(
         &self,
@@ -1319,24 +1331,55 @@ impl Host {
             .and_then(|view| view.ports.into_iter().find(|p| p.input && p.id == to.1))
             .ok_or_else(|| refused(&"the wire's input is not there"))?;
         let middle = ends(node).ok_or_else(|| refused(&"the document has no such node"))?;
-        let fits = |output: &PortView, input: &PortView| {
-            output.exec == input.exec
-                && (output.exec
-                    || input.ty.as_deref().is_none_or(|ty| {
-                        output.ty.as_deref().is_none_or(|from| from == ty)
-                            || ty.contains('$')
-                            || from_open(output.ty.as_deref())
-                    }))
+        // The node's own parameters are bound by the wire it takes and must agree on the
+        // way out (`orange_model::fit`). A node without a registered definition, such as
+        // a function call, is matched on its ports' types as they are.
+        let registry = self.registry_for(draft.document());
+        let definition = draft
+            .document()
+            .root()
+            .nodes
+            .get(&node)
+            .and_then(|instance| registry.definition(&instance.definition));
+        let mut fit =
+            definition.map(|definition| orange_model::fit::PortFit::new(definition, &registry));
+        let meets = |fit: &mut Option<orange_model::fit::PortFit<'_>>,
+                     declared: Option<&str>,
+                     wire: Option<&str>| {
+            let (Some(declared), Some(wire)) = (declared, wire) else {
+                return declared.is_none() || wire.is_none();
+            };
+            match (fit, declared.parse::<TypeExpr>(), wire.parse::<TypeExpr>()) {
+                (Some(fit), Ok(declared), Ok(wire)) => fit.meets(&declared, &wire),
+                (None, ..) => declared == wire || declared.contains('$') || from_open(Some(wire)),
+                _ => false,
+            }
         };
         let into = middle
             .ports
             .iter()
-            .find(|port| port.input && fits(&source, port))
+            .filter(|port| port.input && port.exec == source.exec)
+            .find(|port| source.exec || meets(&mut fit, port.ty.as_deref(), source.ty.as_deref()))
             .ok_or_else(|| refused(&"the node has no input this wire fits"))?;
-        let out = middle
+        // A step goes on through `then`, else a loop's `completed`; never by guess through
+        // a failure or cancellation route or a loop's body.
+        let rank = |port: &&PortView| match port.id.as_str() {
+            "then" => 0,
+            "completed" => 1,
+            _ => 2,
+        };
+        let mut outputs: Vec<&PortView> = middle
             .ports
             .iter()
-            .find(|port| !port.input && fits(port, &target))
+            .filter(|port| !port.input && port.exec == target.exec)
+            .filter(|port| !crate::suggest::NOT_A_CONTINUATION.contains(&port.id.as_str()))
+            .collect();
+        outputs.sort_by_key(rank);
+        let out = outputs
+            .into_iter()
+            .find(|port| {
+                target.exec || meets(&mut fit.clone(), port.ty.as_deref(), target.ty.as_deref())
+            })
             .ok_or_else(|| refused(&"the node has no output to go on with"))?;
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
         let mut commands: Vec<DocCommand> = disconnect_commands(draft, &from_ref, &to_ref);

@@ -560,6 +560,32 @@ pub struct Editor {
     paste_asked: bool,
 }
 
+/// Places a node of `definition` at `at`: a conversion, a loop with its end, or one node.
+/// Returns the node and, for a loop, its end.
+fn place_node(
+    host: &Host,
+    draft: &mut orange_host::Draft,
+    definition: &str,
+    at: [f32; 2],
+) -> Result<(NodeId, Option<NodeId>), HostError> {
+    if definition.starts_with(palette::CONVERSION) {
+        return match palette::conversion_named(host, definition) {
+            Some(conversion) => host
+                .add_conversion(draft, &conversion, at)
+                .map(|node| (node, None)),
+            None => Err(HostError::Document(format!("no conversion `{definition}`"))),
+        };
+    }
+    let end = [at[0] + canvas::NODE_WIDTH + 120.0, at[1]];
+    host.place_loop(draft, definition, at, end)
+        .and_then(|pair| match pair {
+            Some([begin, end]) => Ok((begin, Some(end))),
+            None => host
+                .add_node(draft, definition, at)
+                .map(|node| (node, None)),
+        })
+}
+
 fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
     let _ = controls::search(ui, id, query, hint);
 }
@@ -840,23 +866,17 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
-        let result = if definition.starts_with(palette::CONVERSION) {
-            match palette::conversion_named(host, definition) {
-                Some(conversion) => host
-                    .add_conversion(draft, &conversion, at)
-                    .map(|node| (node, None)),
-                None => Err(HostError::Document(format!("no conversion `{definition}`"))),
-            }
-        } else {
-            let end = [at[0] + canvas::NODE_WIDTH + 120.0, at[1]];
-            host.place_loop(draft, definition, at, end)
-                .and_then(|pair| match pair {
-                    Some([begin, end]) => Ok((begin, Some(end))),
-                    None => host
-                        .add_node(draft, definition, at)
-                        .map(|node| (node, None)),
-                })
-        };
+        let result = place_node(host, draft, definition, at);
+        self.placed(host, result)
+    }
+
+    /// Selects what a placement made, or reports why it was refused, leaving the
+    /// selection as it was.
+    fn placed(
+        &mut self,
+        host: &mut Host,
+        result: Result<(NodeId, Option<NodeId>), HostError>,
+    ) -> Option<NodeId> {
         match result {
             Ok((node, companion)) => {
                 let _ = self.edited(host, Ok(true));
@@ -3858,9 +3878,17 @@ mod quick_add_tests {
             [300.0, 0.0],
             egui::Pos2::ZERO,
         );
-        assert!(editor.quick_choices(&host, "equal").iter().any(|choice| {
-            choice.definition == "org.orange.math/equal" && choice.input.as_deref() == Some("a")
+        // A decimal has an order but no exact equality (11 §5.3): Greater takes it,
+        // Equal does not.
+        assert!(editor.quick_choices(&host, "greater").iter().any(|choice| {
+            choice.definition == "org.orange.math/greater" && choice.input.as_deref() == Some("a")
         }));
+        assert!(
+            editor
+                .quick_choices(&host, "equal")
+                .iter()
+                .all(|choice| choice.definition != "org.orange.math/equal")
+        );
         let choices = editor.quick_choices(&host, "duration milliseconds");
         let conversion = choices
             .iter()
@@ -3907,17 +3935,16 @@ mod quick_add_tests {
                 .position,
             Some([600.0, 0.0])
         );
-        // One step back takes the wire off, another the node.
+        // Placing and wiring were one action: one step back takes off both.
         editor.undo(&mut host);
         assert!(
             editor
                 .graph()
                 .unwrap()
-                .nodes
+                .wires
                 .iter()
-                .any(|found| found.id == node)
+                .all(|wire| wire.to.0 != node)
         );
-        editor.undo(&mut host);
         assert!(
             !editor
                 .graph()

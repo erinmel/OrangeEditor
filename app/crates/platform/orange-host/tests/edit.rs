@@ -1477,3 +1477,152 @@ fn for_each_follows_a_wired_map_or_list() {
     assert_eq!(ports(&draft), ["index", "key", "value"]);
     assert_eq!(host.draft_view(&draft).unwrap().wires.len(), 2);
 }
+
+/// A draft with `nums` (list of whole numbers) and `count` read by Get Variable nodes,
+/// `nums` wired into a Set Variable of another list of whole numbers.
+fn lists(host: &Host) -> (Draft, NodeId, String, NodeId, NodeId) {
+    let mut doc: Json = serde_json::from_str(&empty()).unwrap();
+    doc["variables"] = json!([
+        {"id": id(100), "name": "count", "type": "core/i64@1",
+            "scope": "run", "persistent": false, "conflict": "reject"},
+        {"id": id(101), "name": "nums", "type": "core/list@1<core/i64@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"},
+        {"id": id(102), "name": "kept", "type": "core/list@1<core/i64@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"}]);
+    let mut draft = host.draft(&doc.to_string()).unwrap();
+    let read = |draft: &mut Draft, variable| {
+        let node = host
+            .add_node(draft, "core/get-variable", [0.0, 0.0])
+            .unwrap();
+        assert!(
+            host.set_config(draft, node, &json!({"variable": id(variable)}))
+                .unwrap()
+        );
+        node
+    };
+    let nums = read(&mut draft, 101);
+    let count = read(&mut draft, 100);
+    let keep = host
+        .add_node(&mut draft, "core/set-variable", [640.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, keep, &json!({"variable": id(102)}))
+            .unwrap()
+    );
+    let value = output(host, &draft, nums);
+    assert!(
+        host.connect(&mut draft, (nums, &value), (keep, "value"))
+            .unwrap()
+    );
+    (draft, nums, value, count, keep)
+}
+
+#[test]
+fn suggestions_bind_parameters_instead_of_matching_any_open_type() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, nums, value, count, keep) = lists(&host);
+    let offered = |from: (NodeId, &str)| -> Vec<String> {
+        host.takers(&draft, from)
+            .into_iter()
+            .map(|taker| taker.definition)
+            .collect()
+    };
+    let length = "org.orange.collections/list-length";
+    let reverse = "org.orange.collections/list-reverse";
+    // A whole number is not a list: no list node takes it, whatever its parameter.
+    let whole = output(&host, &draft, count);
+    let from_whole = offered((count, &whole));
+    assert!(!from_whole.iter().any(|definition| definition == length));
+    assert!(!from_whole.iter().any(|definition| definition == reverse));
+    // A list is taken by both.
+    let from_list = offered((nums, &value));
+    assert!(from_list.iter().any(|definition| definition == length));
+    assert!(from_list.iter().any(|definition| definition == reverse));
+
+    // Into the list wire: Reverse gives the list on, Length's count cannot go on.
+    let splice = host.splice_takers(&draft, (nums, &value), (keep, "value"));
+    let reversing = splice
+        .iter()
+        .find(|candidate| candidate.definition == reverse)
+        .expect("reverse fits the wire");
+    assert_eq!(
+        (reversing.input.as_str(), reversing.output.as_str()),
+        ("items", "result")
+    );
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| candidate.definition != length)
+    );
+    // Nothing is offered that goes on through a failure route or a loop body.
+    for candidate in &splice {
+        assert!(!["failed", "cancelled", "error", "body"].contains(&candidate.output.as_str()));
+    }
+}
+
+#[test]
+fn a_step_wire_is_spliced_through_then_or_completed_never_a_body() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, trigger, set) = built(&host);
+    let splice = host.splice_takers(&draft, (trigger, "then"), (set, "in"));
+    let each = splice
+        .iter()
+        .find(|candidate| candidate.definition == "core/for-each")
+        .expect("a loop can be put into a step wire");
+    assert_eq!(each.output, "completed");
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| !["failed", "cancelled", "body"].contains(&candidate.output.as_str()))
+    );
+    // A trigger never goes into a wire.
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| candidate.definition != "core/on-manual")
+    );
+}
+
+#[test]
+fn a_grouped_action_is_one_undo_step_and_a_refused_one_leaves_history_alone() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, _set) = built(&host);
+    // The content, without the revision counter, which every edit and undo advances.
+    let content = |draft: &Draft| {
+        let mut text: Json = serde_json::from_str(&draft.text().unwrap()).unwrap();
+        let _ = text.as_object_mut().unwrap().remove("revision");
+        text
+    };
+    let before = content(&draft);
+
+    // Place a node and wire it in: one action.
+    let node = host
+        .grouped(&mut draft, |host, draft| {
+            let node = host.add_node(draft, "core/sequence", [320.0, 200.0])?;
+            let _ = host.disconnect(draft, (trigger, "then"), false)?;
+            assert!(host.connect(draft, (trigger, "then"), (node, "in"))?);
+            Ok(node)
+        })
+        .unwrap();
+    assert!(draft.document().root().nodes.contains_key(&node));
+    assert!(draft.undo());
+    assert_eq!(
+        content(&draft),
+        before,
+        "one undo takes back the whole action"
+    );
+    assert!(draft.redo());
+    assert!(draft.document().root().nodes.contains_key(&node));
+    assert!(draft.undo());
+
+    // A refused action leaves the document and both histories as they were.
+    let (undo, redo) = draft.can_undo();
+    let refused = host.grouped(&mut draft, |host, draft| {
+        let node = host.add_node(draft, "core/sequence", [320.0, 200.0])?;
+        host.connect(draft, (node, "no-such-port"), (trigger, "in"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(content(&draft), before);
+    assert_eq!(draft.can_undo(), (undo, redo));
+    assert!(redo, "the redo history survives a refused action");
+}

@@ -25,6 +25,7 @@ pub mod conversion;
 pub mod document;
 pub mod edit;
 pub mod error;
+pub mod fit;
 pub mod format;
 pub mod id;
 pub mod index;

@@ -180,6 +180,18 @@ impl Inverse {
     pub fn applies_to_state(&self) -> u64 {
         self.applies_to
     }
+
+    /// One inverse that takes back this edit and then `earlier`, the edit made just
+    /// before it: what turns several transactions of one action into one undo step.
+    /// `None` when `earlier` did not leave the state this edit started from.
+    pub fn then(self, earlier: Inverse) -> Option<Inverse> {
+        (self.restores == earlier.applies_to).then(|| Inverse {
+            applies_to: self.applies_to,
+            restores: earlier.restores,
+            restores_semantic: earlier.restores_semantic,
+            patches: self.patches.into_iter().chain(earlier.patches).collect(),
+        })
+    }
 }
 
 impl GraphDocument {
@@ -899,6 +911,36 @@ mod tests {
             "definition_version": 1, "config_version": 1, "config": {}
         }))
         .unwrap()
+    }
+
+    /// Two edits composed into one inverse go back in one step, and its own inverse
+    /// does both again.
+    #[test]
+    fn composed_inverses_undo_and_redo_two_edits_as_one() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let start = (document.state_id(), document.semantic_state_id());
+        let add = |document: &mut GraphDocument, n| {
+            document
+                .apply([DocCommand::AddNode {
+                    body: BodyRef::Root,
+                    node: branch(n),
+                }])
+                .unwrap()
+        };
+        let first = add(&mut document, 1);
+        let second = add(&mut document, 2);
+        let after = document.state_id();
+        // Out of order they do not compose.
+        assert!(first.inverse.clone().then(second.inverse.clone()).is_none());
+        let both = second.inverse.then(first.inverse).unwrap();
+        assert_eq!(both.applies_to_state(), after);
+        let undone = document.revert(both).unwrap();
+        assert!(document.root().nodes.is_empty());
+        assert_eq!((document.state_id(), document.semantic_state_id()), start);
+        let _ = document.revert(undone.inverse).unwrap();
+        assert_eq!(document.root().nodes.len(), 2);
+        assert_eq!(document.state_id(), after);
     }
 
     #[test]

@@ -88,6 +88,28 @@ impl Editor {
             return Vec::new();
         };
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
+            // Into a wire: the kinds that take its output and go on into its input, with
+            // the same type parameters on both sides.
+            (Some(from), Some(document)) if quick.into.is_some() => {
+                let Some(into) = &quick.into else {
+                    return Vec::new();
+                };
+                let fits =
+                    host.splice_takers(&document.draft, (from.0, &from.1), (into.0, &into.1));
+                host.search_nodes(search, self.language())
+                    .into_iter()
+                    .filter_map(|found| {
+                        let fit = fits.iter().find(|fit| fit.definition == found.definition)?;
+                        Some(QuickChoice {
+                            definition: found.definition,
+                            label: found.label,
+                            input: Some(fit.input.clone()),
+                            category: found.category,
+                            purpose: found.purpose,
+                        })
+                    })
+                    .collect()
+            }
             (Some(from), Some(document)) => {
                 let takers = host.takers(&document.draft, (from.0, &from.1));
                 // The search's order, keeping the kinds that take the wire.
@@ -162,12 +184,22 @@ impl Editor {
                 &(from.clone(), to.clone()),
             );
         }
-        let node = self.add_node_at(host, &choice.definition, quick.at)?;
-        if let (Some(from), Some(input)) = (&quick.from, &choice.input) {
-            let _ = self.connect(host, (from.0, &from.1), (node, input));
-        }
-        self.canvas.select(Some(node));
-        Some(node)
+        let (Some(from), Some(input)) = (&quick.from, &choice.input) else {
+            return self.add_node_at(host, &choice.definition, quick.at);
+        };
+        // Placing and wiring are one action: one undo takes both back, and a wire the
+        // language refuses, or a document changed since the search opened, leaves the
+        // graph, the selection and the history as they were.
+        let draft = self.editing()?;
+        let result = host.grouped(draft, |host, draft| {
+            let placed = place_node(host, draft, &choice.definition, quick.at)?;
+            if host.connect(draft, (from.0, &from.1), (placed.0, input))? {
+                Ok(placed)
+            } else {
+                Err(HostError::Document("the wire could not be made".to_owned()))
+            }
+        });
+        self.placed(host, result)
     }
 
     /// Draws the open search over the canvas: a field to type in and the matching
@@ -389,5 +421,70 @@ mod presentation_tests {
             before
         );
         assert_eq!(editor.can_undo(), (false, false));
+    }
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    fn editor_with(host: &mut Host) -> (Editor, NodeId) {
+        let mut editor = Editor::new();
+        editor.open(host, "graph.json", orange_host::new_document().unwrap());
+        let trigger = editor.add_node(host, "core/on-manual").unwrap();
+        (editor, trigger)
+    }
+
+    /// Letting a wire go and choosing a kind places and wires the node as one action:
+    /// one undo takes both back.
+    #[test]
+    fn a_dropped_wire_and_its_choice_are_one_undo_step() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (mut editor, trigger) = editor_with(&mut host);
+        let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
+        let wires = |editor: &Editor| editor.graph().unwrap().wires.len();
+        editor.open_quick_add(
+            Some((trigger, "then".to_owned())),
+            [320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let choice = editor
+            .quick_choices(&host, "sequence")
+            .into_iter()
+            .find(|choice| choice.definition == "core/sequence")
+            .expect("a sequence takes a step");
+        let node = editor.pick_quick(&mut host, &choice).unwrap();
+        assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
+        assert_eq!(editor.canvas().selected(), Some(node));
+        editor.undo(&mut host);
+        assert_eq!((nodes(&editor), wires(&editor)), (1, 0));
+        editor.redo(&mut host);
+        assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
+    }
+
+    /// A choice whose wire is refused leaves the graph, the selection and the history
+    /// as they were.
+    #[test]
+    fn a_refused_choice_changes_nothing() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (mut editor, trigger) = editor_with(&mut host);
+        editor.canvas().select(Some(trigger));
+        let before = editor.document.as_ref().unwrap().draft.can_undo();
+        editor.open_quick_add(
+            Some((trigger, "then".to_owned())),
+            [320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let refused = QuickChoice {
+            definition: "core/sequence".to_owned(),
+            label: "Sequence".to_owned(),
+            input: Some("no-such-port".to_owned()),
+            category: String::new(),
+            purpose: String::new(),
+        };
+        assert!(editor.pick_quick(&mut host, &refused).is_none());
+        assert_eq!(editor.graph().unwrap().nodes.len(), 1);
+        assert_eq!(editor.canvas().selected(), Some(trigger));
+        assert_eq!(editor.document.as_ref().unwrap().draft.can_undo(), before);
     }
 }

@@ -348,6 +348,20 @@ Names only on the left and Node cards on the right.
   Enter adds.
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
+* **What a wire offers** (2026-11-24). A wire let go on empty canvas lists the kinds
+  that take it (`Host::takers`); Insert node… on a wire lists the kinds that take its
+  output and go on into its input (`Host::splice_takers`). Matching binds each kind's
+  type parameters once and checks their constraints (`orange_model::fit::PortFit`), so
+  a whole number never offers List Length, a `list<i64>` wire into a `list<i64>` input
+  offers List Reverse but not List Length, and a decimal offers Greater but not Equal
+  (11 §5.3). A step goes on through `then`, else a loop's `completed`; failure,
+  cancellation and loop-body ports and triggers are never offered as guessed
+  continuations. Explicit conversions stay listed for a value wire let go on canvas.
+* **One action, one undo.** Choosing from a dropped wire places the node and wires it
+  as one edit (`Host::grouped`), like Insert node…: one undo takes both back. A choice
+  the language refuses, or a graph that changed while the search was open, changes
+  nothing: the graph, the selection and the undo and redo history stay as they were,
+  and the Log says why.
 * The right-click menu is the command centre: on the canvas (Add node… with search,
   Paste, Group, Arrange, Snap), on a card (Properties, Rename, Duplicate, Disable,
   Group, Make function, Delete, Help), on a wire (Insert node…, Delete), on a port
