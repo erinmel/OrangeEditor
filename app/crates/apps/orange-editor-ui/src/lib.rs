@@ -585,6 +585,49 @@ fn place_node(
     definition: &str,
     at: [f32; 2],
 ) -> Result<(NodeId, Option<NodeId>), HostError> {
+    // A Bridge In bound to an existing Bridge Out in one step.
+    if let Some(out) = definition.strip_prefix(palette::BIND_BRIDGE_IN) {
+        let out: NodeId = out
+            .parse()
+            .map_err(|_| HostError::Document(format!("no Bridge Out `{out}`")))?;
+        let channel = draft
+            .document()
+            .node(out)
+            .and_then(|node| {
+                node.config
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        let node = host.add_node(draft, palette::BRIDGE_IN, at)?;
+        let _ = host.set_config(draft, node, &serde_json::json!({ "channel": channel }))?;
+        let _ = host.connect(draft, (out, "result"), (node, "value"))?;
+        return Ok((node, None));
+    }
+    // A new Bridge Out gets a channel name no other one has.
+    if definition == palette::BRIDGE_OUT {
+        let taken: Vec<String> = draft
+            .document()
+            .root()
+            .nodes
+            .values()
+            .filter(|node| node.definition.id.as_str() == palette::BRIDGE_OUT)
+            .filter_map(|node| {
+                node.config
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let channel = (1..)
+            .map(|n| format!("Bridge {n}"))
+            .find(|name| !taken.contains(name))
+            .unwrap_or_default();
+        let node = host.add_node(draft, definition, at)?;
+        let _ = host.set_config(draft, node, &serde_json::json!({ "channel": channel }))?;
+        return Ok((node, None));
+    }
     // A Listen bound to an existing channel in one step.
     if let Some(event) = definition.strip_prefix(palette::BIND_LISTEN) {
         let node = host.add_node(draft, "core/on-event", at)?;
@@ -893,6 +936,48 @@ impl Editor {
         self.add_node_at(host, definition, at)
     }
 
+    /// Binds a Bridge In to a Bridge Out: the edge that carries the value, and the
+    /// channel name the Bridge In keeps should its Bridge Out go.
+    pub(crate) fn bind_bridge(&mut self, host: &mut Host, reading: NodeId, out: NodeId) -> bool {
+        let Some(channel) = self.graph().and_then(|graph| {
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == out)
+                .and_then(|node| palette::bridge_channel(node).map(str::to_owned))
+        }) else {
+            return false;
+        };
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host
+            .connect(draft, (out, "result"), (reading, "value"))
+            .and_then(|_| {
+                host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))
+            });
+        self.edited(host, result)
+    }
+
+    /// The graph's Bridge Outs (node, channel name).
+    pub(crate) fn bridge_outs(&self) -> Vec<(NodeId, String)> {
+        self.graph()
+            .map(|graph| {
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.definition == palette::BRIDGE_OUT)
+                    .map(|node| {
+                        (
+                            node.id,
+                            palette::bridge_channel(node).unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The channels (event ID, name) that a Dispatch in the open graph sends on.
     pub(crate) fn dispatch_channels(&self) -> Vec<(String, String)> {
         let (Some(declared), Some(graph)) = (self.declarations(), self.graph()) else {
@@ -984,9 +1069,41 @@ impl Editor {
 
     /// Removes nodes with their wires, as one edit.
     pub fn remove_nodes(&mut self, host: &mut Host, nodes: &[NodeId]) -> bool {
+        // A deleted Bridge Out leaves its Bridge Ins Unbound, naming its channel as it
+        // is now, so they can be rebound or the emitter recreated.
+        let keep: Vec<(NodeId, String)> = self
+            .graph()
+            .map(|graph| {
+                graph
+                    .wires
+                    .iter()
+                    .filter(|wire| {
+                        nodes.contains(&wire.from.0)
+                            && wire.from.1 == "result"
+                            && wire.to.1 == "value"
+                    })
+                    .filter_map(|wire| {
+                        let out = graph.nodes.iter().find(|node| node.id == wire.from.0)?;
+                        let reading = graph.nodes.iter().find(|node| node.id == wire.to.0)?;
+                        (out.definition == palette::BRIDGE_OUT
+                            && reading.definition == palette::BRIDGE_IN
+                            && !nodes.contains(&reading.id))
+                        .then(|| {
+                            (
+                                reading.id,
+                                palette::bridge_channel(out).unwrap_or_default().to_owned(),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let Some(draft) = self.editing() else {
             return false;
         };
+        for (reading, channel) in keep {
+            let _ = host.set_config(draft, reading, &serde_json::json!({ "channel": channel }));
+        }
         let result = host.remove_nodes(draft, nodes);
         self.edited(host, result)
     }
@@ -2536,7 +2653,14 @@ impl Editor {
                 self.language.as_str()
             };
             let channels = self.dispatch_channels();
-            let results = self.palette.get(host, &self.search, language, &channels);
+            let bridges: Vec<(String, String)> = self
+                .bridge_outs()
+                .into_iter()
+                .map(|(node, channel)| (node.to_string(), channel))
+                .collect();
+            let results = self
+                .palette
+                .get(host, &self.search, language, &channels, &bridges);
             let found = results.groups;
             if searching && found.is_empty() {
                 ui.weak(t("no-node-matches"));
@@ -2891,6 +3015,9 @@ impl Editor {
         self.conversion_menu(ui.ctx(), host);
         if let Some((node, sender)) = done.add_signal_peer {
             self.add_signal_endpoint(host, node, sender);
+        }
+        if let Some((reading, out)) = done.bind_bridge {
+            let _ = self.bind_bridge(host, reading, out);
         }
         if let Some((node, port)) = done.add_port {
             let _ = self.add_port(host, node, &port);

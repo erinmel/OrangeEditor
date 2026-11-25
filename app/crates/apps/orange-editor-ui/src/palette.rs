@@ -161,6 +161,7 @@ pub(crate) struct PaletteCache {
     search: String,
     language: String,
     channels: Vec<(String, String)>,
+    bridges: Vec<(String, String)>,
     groups: Vec<(String, Vec<PaletteItem>)>,
 }
 
@@ -175,6 +176,27 @@ pub(crate) fn channel_items(
     listen_found: bool,
     listen: &str,
 ) -> Vec<PaletteItem> {
+    subscriber_items(
+        channels,
+        search,
+        listen_found,
+        listen,
+        BIND_LISTEN,
+        "listen-bound-help",
+    )
+}
+
+/// Quick-bind items for subscribers of either kind: Listen on a channel or Bridge In
+/// on a Bridge Out, placed as `prefix` + the emitter's key.
+fn subscriber_items(
+    channels: &[(String, String)],
+    search: &str,
+    subscriber_found: bool,
+    subscriber: &str,
+    prefix: &str,
+    help: &str,
+) -> Vec<PaletteItem> {
+    let (listen_found, listen) = (subscriber_found, subscriber);
     let query = orange_host::fold_search(search.trim());
     channels
         .iter()
@@ -186,10 +208,10 @@ pub(crate) fn channel_items(
                         .all(|word| orange_host::fold_search(name).contains(word)))
         })
         .map(|(id, name)| PaletteItem {
-            id: format!("{BIND_LISTEN}{id}"),
+            id: format!("{prefix}{id}"),
             label: format!("{listen} · {name}"),
             package: String::new(),
-            purpose: crate::i18n::tf("listen-bound-help", &[("channel", name.clone().into())]),
+            purpose: crate::i18n::tf(help, &[("channel", name.clone().into())]),
         })
         .collect()
 }
@@ -205,12 +227,14 @@ impl PaletteCache {
         search: &str,
         language: &str,
         channels: &[(String, String)],
+        bridges: &[(String, String)],
     ) -> PaletteResults<'_> {
         let generation = host.registry().generation();
         if self.generation != Some(generation)
             || self.search != search
             || self.language != language
             || self.channels != channels
+            || self.bridges != bridges
         {
             self.groups = palette_in(host, search, language);
             // Existing channels follow Listen, so finding a subscriber also pairs it.
@@ -250,6 +274,35 @@ impl PaletteCache {
                 }
             }
             self.channels = channels.to_vec();
+            // The same for Bridge In, under it, with each Bridge Out's channel.
+            let bridge_in = self
+                .groups
+                .iter()
+                .flat_map(|(_, items)| items)
+                .find(|item| item.id == BRIDGE_IN)
+                .map(|item| item.label.clone());
+            let bound = subscriber_items(
+                bridges,
+                search,
+                bridge_in.is_some(),
+                &bridge_in.unwrap_or_else(|| text_in(language, "bridge-in-node", "Bridge In")),
+                BIND_BRIDGE_IN,
+                "bridge-bound-help",
+            );
+            if !bound.is_empty()
+                && let Some(group) = self
+                    .groups
+                    .iter()
+                    .position(|(_, items)| items.iter().any(|item| item.id == BRIDGE_IN))
+            {
+                let items = &mut self.groups[group].1;
+                let at = items
+                    .iter()
+                    .position(|item| item.id == BRIDGE_IN)
+                    .map_or(items.len(), |at| at + 1);
+                let _ = items.splice(at..at, bound);
+            }
+            self.bridges = bridges.to_vec();
             self.search.clear();
             self.search.push_str(search);
             self.language.clear();
@@ -427,6 +480,24 @@ pub(crate) fn matching_conversions<'a>(
             wanted.split_whitespace().all(|word| terms.contains(word))
         })
         .collect()
+}
+
+pub(crate) const BRIDGE_OUT: &str = "core/bridge-out";
+pub(crate) const BRIDGE_IN: &str = "core/bridge-in";
+/// What a palette item places when it binds a Bridge In to an existing Bridge Out.
+pub(crate) const BIND_BRIDGE_IN: &str = "bind:bridge-in:";
+
+/// The port a bridge's wireless link uses, which its card does not show: Bridge Out's
+/// result and Bridge In's value.
+pub(crate) fn bridge_link_port(node: &NodeView, port: &orange_host::PortView) -> bool {
+    (node.definition == BRIDGE_OUT && !port.input && port.id == "result")
+        || (node.definition == BRIDGE_IN && port.input && port.id == "value")
+}
+
+/// A node's bridge channel name, when it is a bridge.
+pub(crate) fn bridge_channel(node: &NodeView) -> Option<&str> {
+    matches!(node.definition.as_str(), BRIDGE_OUT | BRIDGE_IN)
+        .then(|| node.settings["channel"].as_str().unwrap_or_default())
 }
 
 pub(crate) fn signal(node: &NodeView) -> Option<(bool, &str)> {
@@ -829,17 +900,8 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                     "Dispatch without payload",
                     "event no payload pulse wireless dispatch pulso inalambrico",
                 );
-            let wireless_value = found.definition == "core/get-variable"
-                && preset_match(
-                    &query,
-                    language,
-                    "wireless-value-preset",
-                    "Wireless Value",
-                    "store read shared value",
-                );
             if (alias
                 || wireless_pulse
-                || wireless_value
                 || catalog
                 || signal
                 || deadband
@@ -927,13 +989,6 @@ pub(crate) fn search_with_presets(
                     "wireless-pulse-preset",
                     "Dispatch without payload",
                     "Start receivers with no payload value.",
-                ),
-                (
-                    "core/get-variable",
-                    "preset:wireless-value",
-                    "wireless-value-preset",
-                    "Wireless Value",
-                    "Write and read a shared run value without starting a flow.",
                 ),
                 (
                     "core/branch",
@@ -1309,33 +1364,100 @@ mod tests {
         );
     }
 
+    /// A Bridge Out gets a channel of its own; + Add Subscriber binds a Bridge In to it;
+    /// deleting the Bridge Out keeps the Bridge In Unbound with the channel it had, and
+    /// Create Emitter binds a new Bridge Out on that channel.
     #[test]
-    fn wireless_value_creates_a_writer_and_reader_without_an_event() {
+    fn bridges_spawn_bound_survive_their_emitter_and_rebind() {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
-        assert!(
-            discover(&host, "valor inalámbrico", "es")
-                .iter()
-                .any(|node| node.definition == "preset:wireless-value")
-        );
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let writer = editor
-            .add_node_at(&mut host, "preset:wireless-value", [0.0, 0.0])
+        let out = editor
+            .add_node_at(&mut host, BRIDGE_OUT, [0.0, 0.0])
             .unwrap();
+        let second = editor
+            .add_node_at(&mut host, BRIDGE_OUT, [0.0, 300.0])
+            .unwrap();
+        let channel = |editor: &crate::Editor, id| {
+            let graph = editor.graph().unwrap();
+            let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+            bridge_channel(node).unwrap().to_owned()
+        };
+        assert_eq!(channel(&editor, out), "Bridge 1");
+        assert_eq!(channel(&editor, second), "Bridge 2");
+        assert!(editor.add_signal_endpoint(&mut host, out, false));
+        let reading = {
+            let graph = editor.graph().unwrap();
+            let node = graph
+                .nodes
+                .iter()
+                .find(|node| node.definition == BRIDGE_IN)
+                .unwrap();
+            assert!(
+                graph
+                    .wires
+                    .iter()
+                    .any(|wire| wire.from.0 == out && wire.to.0 == node.id)
+            );
+            node.id
+        };
+        assert_eq!(channel(&editor, reading), "Bridge 1");
+        assert!(editor.remove_nodes(&mut host, &[out]));
+        assert_eq!(
+            channel(&editor, reading),
+            "Bridge 1",
+            "the channel name is kept"
+        );
+        assert!(
+            !editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.to.0 == reading)
+        );
+        // Create Emitter, from the Unbound tag.
+        assert!(editor.add_signal_endpoint(&mut host, reading, true));
         let graph = editor.graph().unwrap();
-        assert_eq!(graph.nodes.len(), 2);
-        let set = graph.nodes.iter().find(|node| node.id == writer).unwrap();
-        let get = graph.nodes.iter().find(|node| node.id != writer).unwrap();
-        assert_eq!(get.definition, "core/get-variable");
-        assert_eq!(set.definition, "core/set-variable");
-        assert_eq!(set.settings["variable"], get.settings["variable"]);
-        assert!(!get.entry);
-        assert!(graph.wires.is_empty());
-        let document = editor.document.as_ref().unwrap().draft.document();
-        assert!(document.events().is_empty());
-        assert_eq!(document.variables().len(), 1);
-        editor.undo(&mut host);
-        assert!(editor.graph().unwrap().nodes.is_empty());
+        let created = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == BRIDGE_OUT && node.id != second)
+            .unwrap();
+        assert_eq!(bridge_channel(created), Some("Bridge 1"));
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from.0 == created.id && wire.to.0 == reading)
+        );
+    }
+
+    /// A value shared without a wire is a bridge, not a variable: searching for one finds
+    /// Bridge Out and Bridge In, and the retired Wireless Value preset is not offered.
+    #[test]
+    fn a_wireless_value_is_a_bridge_not_a_variable() {
+        let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        for (search, language) in [
+            ("valor inalámbrico", "es"),
+            ("wireless value", "en"),
+            ("pull value", "en"),
+        ] {
+            let found = discover(&host, search, language);
+            assert!(
+                found.iter().any(|node| node.definition == BRIDGE_OUT),
+                "{search}"
+            );
+            assert!(
+                found.iter().any(|node| node.definition == BRIDGE_IN),
+                "{search}"
+            );
+            assert!(
+                !found
+                    .iter()
+                    .any(|node| node.definition == "preset:wireless-value")
+            );
+        }
     }
 
     #[test]
@@ -1630,20 +1752,31 @@ mod tests {
     fn cached_palette_tracks_search_language_and_registry_and_keeps_the_current_allocation() {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut cache = PaletteCache::default();
-        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
-        let allocation = cache.get(&host, "", "en", &[]).groups.as_ptr();
-        assert_eq!(cache.get(&host, "", "en", &[]).groups.as_ptr(), allocation);
+        assert_eq!(
+            cache.get(&host, "", "en", &[], &[]).groups,
+            palette(&host, "")
+        );
+        let allocation = cache.get(&host, "", "en", &[], &[]).groups.as_ptr();
+        assert_eq!(
+            cache.get(&host, "", "en", &[], &[]).groups.as_ptr(),
+            allocation
+        );
         for search in ["MATH add", "unmatched-xyz", ""] {
             assert_eq!(
-                cache.get(&host, search, "en", &[]).groups,
+                cache.get(&host, search, "en", &[], &[]).groups,
                 palette(&host, search)
             );
         }
         assert_eq!(
-            cache.get(&host, "disparador", "es", &[]).groups,
+            cache.get(&host, "disparador", "es", &[], &[]).groups,
             palette_in(&host, "disparador", "es")
         );
-        assert!(cache.get(&host, "disparador", "en", &[]).groups.is_empty());
+        assert!(
+            cache
+                .get(&host, "disparador", "en", &[], &[])
+                .groups
+                .is_empty()
+        );
         // Registry generations are process-unique, including when one editor is
         // reused with another host. Old provider labels must not survive that switch.
         let (core, _events) = Host::new(HostOptions {
@@ -1653,7 +1786,13 @@ mod tests {
         .unwrap();
         assert_ne!(core.registry().generation(), host.registry().generation());
         assert_ne!(palette(&core, ""), palette(&host, ""));
-        assert_eq!(cache.get(&core, "", "en", &[]).groups, palette(&core, ""));
-        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
+        assert_eq!(
+            cache.get(&core, "", "en", &[], &[]).groups,
+            palette(&core, "")
+        );
+        assert_eq!(
+            cache.get(&host, "", "en", &[], &[]).groups,
+            palette(&host, "")
+        );
     }
 }

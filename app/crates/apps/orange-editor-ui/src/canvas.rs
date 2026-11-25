@@ -212,6 +212,8 @@ pub struct CanvasResponse {
     pub(crate) edit_literal: Option<(NodeId, String)>,
     pub(crate) edit_map_pairs: Option<NodeId>,
     pub(crate) add_signal_peer: Option<(NodeId, bool)>,
+    /// A Bridge In is to read from a Bridge Out: (Bridge In, Bridge Out).
+    pub(crate) bind_bridge: Option<(NodeId, NodeId)>,
     pub(crate) waypoint: Option<(WireEnds, [f32; 2])>,
     /// The trigger whose button was pressed.
     pub trigger: Option<NodeId>,
@@ -415,6 +417,10 @@ pub struct Canvas {
     pub(crate) variables: Vec<(String, String, orange_host::VarScope)>,
     /// Event channels by ID, with their names, for the Unbound badge of a Listen.
     pub(crate) channels: HashMap<String, String>,
+    /// The graph's Bridge Outs with their channel names, for a Bridge In's picker.
+    pub(crate) bridges: Vec<(NodeId, String)>,
+    /// Each bound Bridge In's channel, as its Bridge Out names it now.
+    bridge_bound: HashMap<NodeId, String>,
     /// The choices of the enum types the document's inputs take.
     pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
@@ -514,6 +520,8 @@ impl Default for Canvas {
             device_pickers: BTreeMap::new(),
             variables: Vec::new(),
             channels: HashMap::new(),
+            bridges: Vec::new(),
+            bridge_bound: HashMap::new(),
             enums: Enums::new(),
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
@@ -1646,6 +1654,30 @@ impl Canvas {
     ) -> CanvasResponse {
         crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
+        // A Bridge In's picker lists the Bridge Outs; a bound one shows its Bridge Out's
+        // current channel name.
+        self.bridges = graph
+            .nodes
+            .iter()
+            .filter(|node| node.definition == crate::palette::BRIDGE_OUT)
+            .map(|node| {
+                (
+                    node.id,
+                    crate::palette::bridge_channel(node)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        self.bridge_bound = graph
+            .wires
+            .iter()
+            .filter(|wire| wire.from.1 == "result" && wire.to.1 == "value")
+            .filter_map(|wire| {
+                let (_, channel) = self.bridges.iter().find(|(out, _)| *out == wire.from.0)?;
+                Some((wire.to.0, channel.clone()))
+            })
+            .collect();
         let alive = !self.stale;
         let animation_time = ui.input(|input| animation_phase(input.time));
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -2171,8 +2203,21 @@ impl Canvas {
         };
         let mut nearest: Option<(f32, WireEnds)> = None;
         let mut pulsing = false;
+        // A bridge's binding edge is drawn as a wireless link, not as a wire.
+        let bridge_ends: HashSet<NodeId> = graph
+            .nodes
+            .iter()
+            .filter(|node| crate::palette::bridge_channel(node).is_some())
+            .map(|node| node.id)
+            .collect();
+        let bridge_link = |wire: &orange_host::WireView| {
+            bridge_ends.contains(&wire.from.0)
+                && bridge_ends.contains(&wire.to.0)
+                && wire.from.1 == "result"
+                && wire.to.1 == "value"
+        };
         for wire in &graph.wires {
-            if self.wire_hidden(wire) {
+            if self.wire_hidden(wire) || bridge_link(wire) {
                 continue;
             }
             let (Some((from, orphan_from)), Some((to, orphan_to))) = (
@@ -2405,6 +2450,15 @@ impl Canvas {
             let hovered_card =
                 card_at_pointer.filter(|_| ui.input(|input| !input.pointer.any_down()));
             let mut links = Vec::new();
+            for wire in graph.wires.iter().filter(|wire| bridge_link(wire)) {
+                if let (Some(from), Some(to)) =
+                    (edge_of(wire.from.0, true), edge_of(wire.to.0, false))
+                    && !self.hidden.contains(&wire.from.0)
+                    && !self.hidden.contains(&wire.to.0)
+                {
+                    links.push((wire.from.0, wire.to.0, wire_points(from, to, zoom)));
+                }
+            }
             for sender in &graph.nodes {
                 let Some((true, event)) = crate::palette::signal(sender) else {
                     continue;
@@ -2506,18 +2560,43 @@ impl Canvas {
             }
             // A Listen no Dispatch sends to is Unbound: a tag above it names the
             // channel, and a click creates its emitter.
-            if zoom >= 0.45 && node.definition == "core/on-event" {
-                let event = node.settings["event"].as_str();
-                let bound = event.is_some_and(|event| {
-                    graph
-                        .nodes
+            let unbound = match node.definition.as_str() {
+                "core/on-event" => {
+                    let event = node.settings["event"].as_str();
+                    let bound = event.is_some_and(|event| {
+                        graph
+                            .nodes
+                            .iter()
+                            .any(|peer| crate::palette::signal(peer) == Some((true, event)))
+                    });
+                    (!bound).then(|| {
+                        event
+                            .and_then(|event| self.channels.get(event).cloned())
+                            .unwrap_or_default()
+                    })
+                }
+                crate::palette::BRIDGE_IN => {
+                    let bound = graph
+                        .wires
                         .iter()
-                        .any(|peer| crate::palette::signal(peer) == Some((true, event)))
-                });
-                if !bound {
-                    let channel = event
-                        .and_then(|event| self.channels.get(event))
-                        .map_or_else(|| t("unbound-no-channel").to_owned(), Clone::clone);
+                        .any(|wire| wire.to.0 == node.id && bridge_link(wire));
+                    (!bound).then(|| {
+                        crate::palette::bridge_channel(node)
+                            .unwrap_or_default()
+                            .to_owned()
+                    })
+                }
+                _ => None,
+            };
+            if zoom >= 0.45
+                && let Some(channel) = unbound
+            {
+                {
+                    let channel = if channel.is_empty() {
+                        t("unbound-no-channel").to_owned()
+                    } else {
+                        channel
+                    };
                     let text = tf("unbound-badge", &[("channel", channel.into())]);
                     let font = FontId::proportional(11.0 * zoom);
                     let galley = painter.layout_no_wrap(text, font, colors.warning);
@@ -2550,7 +2629,8 @@ impl Canvas {
                     );
                     painter.galley(tag.min + Vec2::new(6.0, 3.0) * zoom, galley, colors.warning);
                     if touched.clicked() {
-                        done.add_signal_peer = Some((node.id, node.entry));
+                        // Create Emitter: a Dispatch or Bridge Out on this channel.
+                        done.add_signal_peer = Some((node.id, true));
                     }
                 }
             }
@@ -2958,6 +3038,7 @@ impl Canvas {
                     card::FieldOf::AddPort(variadic) => id.with(("add", &variadic.port)),
                     card::FieldOf::AddSignalReceiver => id.with("add-signal"),
                     card::FieldOf::MapPairs => id.with("map-pairs"),
+                    card::FieldOf::BridgeChannel => id.with("bridge-channel"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -2987,6 +3068,7 @@ impl Canvas {
                     fields::FieldEdit::AddSignalReceiver => {
                         done.add_signal_peer = Some((node.id, node.entry))
                     }
+                    fields::FieldEdit::BindBridge(out) => done.bind_bridge = Some((node.id, out)),
                     fields::FieldEdit::RefreshDevices(adapter) => {
                         done.refresh_devices = Some(adapter);
                     }

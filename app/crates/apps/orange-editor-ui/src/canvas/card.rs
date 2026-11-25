@@ -50,6 +50,8 @@ pub(super) enum FieldOf<'a> {
     AddPort(&'a orange_host::VariadicView),
     AddSignalReceiver,
     MapPairs,
+    /// The Bridge Out channel a Bridge In reads from.
+    BridgeChannel,
 }
 
 impl<'a> FieldOf<'a> {
@@ -315,7 +317,17 @@ impl<'a> Card<'a> {
             });
         }
         let paired_map = crate::node_ergonomics::paired_map_available(node);
+        // A Bridge In chooses its channel instead of showing the port its link uses.
+        if node.definition == crate::palette::BRIDGE_IN {
+            lefts.push(Left::Field {
+                editor: FieldOf::BridgeChannel,
+                named: true,
+            });
+        }
         for port in crate::properties::input_ports(node) {
+            if crate::palette::bridge_link_port(node, port) {
+                continue;
+            }
             if paired_map && matches!(port.id.as_str(), "keys" | "values") {
                 lefts.push(Left::Port(port));
                 continue;
@@ -416,6 +428,7 @@ impl<'a> Card<'a> {
             .iter()
             .filter(|port| !port.exec && !port.input)
             .filter(primary)
+            .filter(|port| !crate::palette::bridge_link_port(node, port))
             .collect();
         // A splitter's band outputs read from low to high frequency, whatever order the
         // bands were drawn in.
@@ -476,7 +489,7 @@ impl<'a> Card<'a> {
         for add in growing {
             push(&mut rows, Some(add), None);
         }
-        if crate::palette::signal(node).is_some() {
+        if crate::palette::signal(node).is_some() || node.definition == crate::palette::BRIDGE_OUT {
             push(
                 &mut rows,
                 Some(Left::Field {

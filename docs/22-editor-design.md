@@ -31,13 +31,28 @@ channel (following the pointer), and choosing another channel in Properties rebi
 it. A Dispatch with no listeners still continues on its normal exit. Pass shared
 information as the event payload or through a declared variable.
 
-Wireless links run from each Dispatch to each Listen on its channel with the same
+Bridge Out (`core/bridge-out`, ES "Puente salida") shares a value without a wire,
+and each Bridge In (`core/bridge-in`, ES "Puente entrada") on its channel reads it
+when pulled: one to many, with no execution flow, and unlike a variable nothing is
+stored or written. A new Bridge Out gets an unused channel name ("Bridge 1",
+"Bridge 2", …) that can be renamed in Properties. On a Bridge Out, + Add Subscriber
+creates a Bridge In bound to it that follows the pointer. A Bridge In placed on its
+own chooses its Bridge Out from a searchable channel picker on its card, or comes
+bound from the node search as "Bridge In · channel". The binding is the data edge
+from Bridge Out `result` to Bridge In `value`, drawn as a wireless link rather than
+a wire, so those two ports are not shown. Deleting a Bridge Out keeps its Bridge Ins
+with the channel name they had and an "Unbound · channel" tag; clicking the tag
+creates a Bridge Out on that channel, and the picker rebinds it.
+
+Wireless links run from each Dispatch to each Listen on its channel, and from each
+Bridge Out to its Bridge Ins, with the same
 spline as ordinary wires, dashed. Settings > Canvas > Wireless link opacity (0–100 %,
 default 10 %) sets how visible they are at rest on a perceptual curve: 0 % hides
-them, 1 % is faint but visible, 100 % is opaque. Above 0 %, hovering a Dispatch or
-Listen shows its links fully, and resting the pointer on a faint link for one second
+them, 1 % is faint but visible, 100 % is opaque. Above 0 %, hovering a wireless
+node shows its links fully, and resting the pointer on a faint link for one second
 shows every link; leaving earlier cancels it. Links fade in and out. At 0 % they stay
-hidden on hover. The links are saved only through the event references on the nodes.
+hidden on hover. Event links are saved only through the event references on the
+nodes, and bridge links as their data edges.
 
 For a typed payload, place Emit, On Event or Await Event, then open its Event
 picker in Properties. Choose New event, select a payload type, and create it.
@@ -47,9 +62,7 @@ Event continues an existing one when the event arrives or its timeout expires.
 
 Dispatch without payload starts listeners with an optional payload initialized to None.
 Idle Watchdog places Emit, On Event, and Wait from left to right with an empty
-heartbeat payload. Wireless Value places a Set and Get for one run variable
-without an event handler. Change the variable's type and initial value in
-Variables. Newly placed presets are selected together so they can move as a set.
+heartbeat payload. Newly placed presets are selected together so they can move as a set.
 
 Collect starts with a limit of 1,024 items. Tee starts with buffers of 32 items
 and 1 MiB per output, with backpressure when either bound is reached. Configure

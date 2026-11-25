@@ -463,7 +463,16 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let size = orange_editor_ui::canvas::node_size(node_view);
                 let mut positions = std::collections::HashSet::new();
                 for port in &node_view.ports {
-                    if found.definition == "core/gate" && port.input && port.id == "enter" {
+                    // A bridge's link port is drawn as a wireless link, never as an anchor.
+                    let bridge_link = (found.definition == "core/bridge-out"
+                        && !port.input
+                        && port.id == "result")
+                        || (found.definition == "core/bridge-in"
+                            && port.input
+                            && port.id == "value");
+                    if bridge_link
+                        || found.definition == "core/gate" && port.input && port.id == "enter"
+                    {
                         assert!(
                             orange_editor_ui::canvas::port_offset(node_view, &port.id, true)
                                 .is_none()

@@ -406,13 +406,43 @@ impl Editor {
                 y = bottom + 24.0;
             }
         }
+        let bridge = graph
+            .nodes
+            .iter()
+            .find(|card| card.id == node)
+            .and_then(|card| {
+                crate::palette::bridge_channel(card)
+                    .map(|channel| (card.definition.clone(), channel.to_owned()))
+            });
         let Some(draft) = self.editing() else {
             return false;
         };
-        let result = if sender {
-            host.add_signal_sender(draft, node, [x, y])
-        } else {
-            host.add_signal_receiver(draft, node, [x, y])
+        let result = match bridge {
+            // A Bridge Out spawns a Bridge In on its channel; an unbound Bridge In gets a
+            // Bridge Out on its own.
+            Some((definition, channel)) => {
+                let spawn = if definition == crate::palette::BRIDGE_OUT {
+                    crate::palette::BRIDGE_IN
+                } else {
+                    crate::palette::BRIDGE_OUT
+                };
+                host.add_node(draft, spawn, [x, y]).and_then(|spawned| {
+                    let _ = host.set_config(
+                        draft,
+                        spawned,
+                        &serde_json::json!({ "channel": channel }),
+                    )?;
+                    let (out, reading) = if spawn == crate::palette::BRIDGE_IN {
+                        (node, spawned)
+                    } else {
+                        (spawned, node)
+                    };
+                    let _ = host.connect(draft, (out, "result"), (reading, "value"))?;
+                    Ok(spawned)
+                })
+            }
+            None if sender => host.add_signal_sender(draft, node, [x, y]),
+            None => host.add_signal_receiver(draft, node, [x, y]),
         };
         match result {
             Ok(endpoint) => {

@@ -30,6 +30,8 @@ pub(super) enum FieldEdit {
     AddPort(String),
     AddSignalReceiver,
     MapPairs,
+    /// The Bridge In is to read from this Bridge Out.
+    BindBridge(NodeId),
     /// The devices of this adapter are to be listed again.
     RefreshDevices(String),
 }
@@ -194,6 +196,10 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
         FieldOf::AddSignalReceiver => (signal_peer_label(node).to_owned(), true),
+        FieldOf::BridgeChannel => match node.settings["channel"].as_str() {
+            Some(channel) if !channel.is_empty() => (channel.to_owned(), false),
+            _ => (t("choose-channel").to_owned(), true),
+        },
         FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
@@ -236,6 +242,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
         FieldOf::AddSignalReceiver => signal_peer_label(node).to_owned(),
+        FieldOf::BridgeChannel => t("bridge-channel").to_owned(),
         FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
@@ -1032,6 +1039,28 @@ impl Canvas {
                         .and_then(|text| set(text.into()))
                     }
                 }
+            }
+            FieldOf::BridgeChannel => {
+                let (text, dim) = match self.bridge_bound.get(&node.id) {
+                    Some(channel) => (channel.clone(), false),
+                    None => shown(node, field),
+                };
+                let mut chosen = None;
+                let current = node.settings["channel"].as_str();
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    if self.bridges.is_empty() {
+                        ui.weak(t("no-bridge-outs"));
+                    }
+                    for (out, channel) in &self.bridges {
+                        if ui
+                            .selectable_label(current == Some(channel.as_str()), channel)
+                            .clicked()
+                        {
+                            chosen = Some(*out);
+                        }
+                    }
+                });
+                chosen.map(FieldEdit::BindBridge)
             }
             FieldOf::Variable(pointer) => {
                 let named = node
