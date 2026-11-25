@@ -682,7 +682,9 @@ unavailable input, the meter shows empty L/R lanes with unlit clip indicators
 and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold under the meter.
-Beside the meter sit the outputs and, under them, Hold and Reset margin as dials side
+The card is built from the definition's control hints (ADR-33): the level-meter visual,
+the `aside` row and the `body` fields. Beside the meter sit the outputs and, under
+them, Hold and Reset margin as dials side
 by side; each dial carries its own name. Under the meter, the stream input, Condition
 and Threshold run the full width of the card. In Properties the row label names each
 dial. Double-click a dial's value to type.

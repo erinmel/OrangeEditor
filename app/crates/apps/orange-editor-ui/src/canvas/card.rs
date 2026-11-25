@@ -36,7 +36,7 @@ pub(super) enum FieldOf<'a> {
     Setting(
         &'a str,
         &'a serde_json::Value,
-        Option<crate::properties::AudioDial>,
+        Option<&'a orange_host::controls::Control>,
     ),
     /// The variable named by the setting at this JSON pointer.
     Variable(&'a str),
@@ -474,9 +474,8 @@ impl<'a> Card<'a> {
         // Beside the meter: the outputs, then the dials side by side. Under it, the
         // stream input and every other setting, across the whole card.
         let middle = f32::midpoint(METER_FIELDS_X, METER_WIDTH - CARD_PADDING);
-        let dial_top = y;
+        let mut dial_top = y;
         let mut beside = y;
-        let mut dial_count = 0;
         let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
         let mut inputs = Vec::new();
         for port in node.ports.iter().filter(|port| port.input) {
@@ -491,24 +490,38 @@ impl<'a> Card<'a> {
             stream_y += LINE;
         }
         let mut under = stream_y;
+        // Fields hinted `aside` (or `header`) sit beside the meter, in pairs when the
+        // region is a row; every other field runs the card's width under it (ADR-33).
+        let mut beside_column = 0;
         for (name, schema) in settings::fields(node) {
-            let dial = crate::properties::AudioDial::for_setting(node, name);
+            use orange_host::controls::{Arrange, Region};
+            let dial = crate::properties::dial_of(node, name);
             let editor = FieldOf::Setting(name, schema, dial);
             // A dial names itself, so it needs no name line.
             let name_line = if dial.is_some() { 0.0 } else { NAME };
             let height = name_line + editor.control_height() + GAP;
-            let (top, inset, end) = if dial.is_some() {
-                dial_count += 1;
-                beside = beside.max(dial_top + height);
-                if dial_count % 2 == 1 {
-                    (dial_top, METER_FIELDS_X, Some(middle - 6.0))
-                } else {
-                    (dial_top, middle, None)
+            let (top, inset, end) = match node.controls.region_of(name) {
+                Some((Region::Aside | Region::Header, arrange)) => {
+                    let paired = arrange != Arrange::Column;
+                    if !paired || beside_column == 0 {
+                        dial_top = beside;
+                    }
+                    beside = beside.max(dial_top + height);
+                    let placed = if !paired {
+                        (dial_top, METER_FIELDS_X, None)
+                    } else if beside_column == 0 {
+                        (dial_top, METER_FIELDS_X, Some(middle - 6.0))
+                    } else {
+                        (dial_top, middle, None)
+                    };
+                    beside_column = if paired { 1 - beside_column } else { 0 };
+                    placed
                 }
-            } else {
-                let top = under;
-                under += height;
-                (top, CARD_PADDING, None)
+                _ => {
+                    let top = under;
+                    under += height;
+                    (top, CARD_PADDING, None)
+                }
             };
             rows.push(Row {
                 top,

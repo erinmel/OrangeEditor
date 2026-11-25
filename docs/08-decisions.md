@@ -978,3 +978,30 @@ for graphs that start playback using an execution wire.
 
 **Contracts.** 04 native sources, 05 capture and level analysis, 11 package
 entries and §10.5, 12 §4, 22 §6.
+
+## ADR-33 - Definitions describe how their fields are shown
+
+**Decision.** A definition's `editor` object may carry control hints: `controls`, one
+hint per setting or data input naming a widget (`slider`, `dial`, `toggle`,
+`segmented`, `dropdown`, `stepper` or the default `field`) with its unit, range,
+step, scale, decimals, marks, notch or knob style and caption, and `layout`, which
+places fields in card regions (`header`, `aside`, `body`, `advanced`, arranged in a
+column, a row or a grid) and may name a built-in visual (`level-meter`, `spectrum`,
+`waveform`). The editor turns hints into the shared controls of
+`orange-ui-controls`, on cards and in Properties alike, so a package node gets a dial
+or a slider without editor code.
+
+Hints are presentation only. Validation, inference, compilation and execution never
+read them; they never change a value, an ID or a lock, and a hint's range may narrow
+what a control offers but not what the value may be. A hint that does not fit its
+field, or uses a word this version does not know, is dropped and reported in
+`Presentation::hint_problems`; it never stops a definition from loading. An editor
+that does not know a hint shows its usual field. Packages cannot draw their own UI:
+they can only choose among these words and name built-in visuals.
+
+Audio Level Trigger was the first node moved onto hints: its meter, dials and
+regions come from its definition, and the editor no longer recognizes it by ID.
+Every bounded number setting of the audio package asks for a slider with a typed box.
+
+**Contracts.** 04 (SDK builders, `orange-plugin 11`), 12 §4, 22.
+

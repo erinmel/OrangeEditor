@@ -30,7 +30,9 @@ pub(crate) struct Setting(pub &'static str, pub f64, pub f64, pub f64);
 
 impl Setting {
     pub(crate) fn add(self, definition: Definition) -> Definition {
-        definition.setting(self.0, number_setting(self.1, self.2, self.3))
+        definition
+            .setting(self.0, number_setting(self.1, self.2, self.3))
+            .setting_control(self.0, orange_sdk::Control::slider().number())
     }
 
     pub(crate) fn read(self, config: &Map<String, Json>) -> Result<f64, String> {

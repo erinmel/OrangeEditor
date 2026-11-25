@@ -1505,3 +1505,38 @@ fn every_stream_processor_changes_the_level_it_should() {
     host.close(flow).unwrap();
     std::fs::remove_file(path).unwrap();
 }
+
+/// Every control hint the audio package gives fits its field, so none is dropped
+/// (ADR-33), and Audio Level Trigger asks for its meter, dials and regions.
+#[test]
+fn audio_control_hints_all_fit_and_shape_the_level_trigger() {
+    use orange_host::controls::{Region, Visual, Widget};
+    let host = host();
+    for info in host.nodes() {
+        if let Some(shown) = info.presentation {
+            assert!(
+                shown.hint_problems.is_empty(),
+                "{}: {:?}",
+                info.definition.definition.id.as_str(),
+                shown.hint_problems
+            );
+        }
+    }
+    let trigger = host
+        .nodes()
+        .find(|info| info.definition.definition.id.as_str() == orange_audio::NOISE_LEVEL)
+        .and_then(|info| info.presentation)
+        .map(|shown| shown.controls.clone())
+        .unwrap();
+    assert_eq!(trigger.visual, Some(Visual::LevelMeter));
+    assert_eq!(trigger.settings["hold_ms"].widget, Widget::Dial);
+    assert_eq!(trigger.settings["threshold_db"].widget, Widget::Slider);
+    assert_eq!(
+        trigger.region_of("reset_db").map(|(region, _)| region),
+        Some(Region::Aside)
+    );
+    assert_eq!(
+        trigger.region_of("direction").map(|(region, _)| region),
+        Some(Region::Body)
+    );
+}

@@ -109,8 +109,10 @@ pub(super) fn plot_fraction(hz: f64) -> f32 {
     frequency_fraction(hz, MIN_HZ, MAX_HZ)
 }
 
+/// A node whose definition asks for the level meter and has the stream input and level
+/// output it draws.
 pub(crate) fn is_noise(node: &NodeView) -> bool {
-    node.definition == "org.orange.audio/noise-level"
+    node.controls.visual == Some(orange_host::controls::Visual::LevelMeter)
         && has_stream_input(node)
         && node.ports.iter().filter(|port| port.input).count() == 1
         && node.ports.iter().any(|port| {

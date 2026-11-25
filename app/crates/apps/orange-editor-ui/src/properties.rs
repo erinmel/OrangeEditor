@@ -2,6 +2,7 @@
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
+use orange_host::controls::{Control, Scale, Widget};
 use orange_host::{Connection, EventTiming, NodeView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
@@ -313,47 +314,37 @@ pub const COMMON_TYPES: [&str; 6] = [
 /// Nanoseconds in a millisecond: lengths of time are typed in milliseconds.
 const NANOS_PER_MILLI: f64 = 1_000_000.0;
 
-/// Display scaling for bounded audio settings. The provider schema owns the valid range.
+/// The range a slider or dial setting offers and how it spreads it, from the node's
+/// control hint (ADR-33). The provider schema still owns the valid range.
 #[derive(Clone, Copy)]
-pub(crate) struct AudioRange {
+pub(crate) struct NumberRange {
     min: f64,
     max: f64,
     logarithmic: bool,
 }
 
-/// Audio Level Trigger gives Hold and Reset margin the same dial on both surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioDial {
-    Hold,
-    Reset,
+/// The dial hint of setting `name`, when the node's definition asks for a dial.
+pub(crate) fn dial_of<'a>(node: &'a NodeView, name: &str) -> Option<&'a Control> {
+    node.controls
+        .settings
+        .get(name)
+        .filter(|control| control.widget == Widget::Dial)
 }
 
-impl AudioDial {
-    pub(crate) fn for_setting(node: &NodeView, name: &str) -> Option<Self> {
-        if node.definition != "org.orange.audio/noise-level" {
-            return None;
-        }
-        match name {
-            "hold_ms" => Some(Self::Hold),
-            "reset_db" => Some(Self::Reset),
-            _ => None,
-        }
-    }
-
-    /// The dial's step and the unit shown inside it.
-    fn controls(self) -> (Option<f32>, &'static str) {
-        match self {
-            Self::Hold => (Some(1.0), "ms"),
-            Self::Reset => (None, "dB"),
-        }
-    }
+/// The step a dial moves by and the unit it shows.
+#[expect(clippy::cast_possible_truncation, reason = "a display step")]
+fn dial_face(dial: &Control) -> (Option<f32>, &str) {
+    (
+        dial.step.map(|step| step as f32),
+        dial.unit.as_deref().unwrap_or_default(),
+    )
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct ThresholdEdit {
     node: NodeId,
     saved: f64,
-    range: AudioRange,
+    range: NumberRange,
 }
 
 #[derive(Clone, Copy)]
@@ -373,7 +364,7 @@ impl ThresholdEdit {
         if schema["type"] != "number" || schema["readOnly"] == true {
             return None;
         }
-        let range = AudioRange::of(node, "threshold_db", schema)?;
+        let range = NumberRange::of(node, "threshold_db", schema)?;
         let saved = node.settings["threshold_db"]
             .as_f64()
             .or_else(|| schema["default"].as_f64())?;
@@ -455,18 +446,23 @@ impl ThresholdEdit {
     }
 }
 
-impl AudioRange {
+impl NumberRange {
+    /// The range of a setting whose definition asks for a slider or a dial: the hint's
+    /// own range, else the schema's bounds.
     pub(crate) fn of(node: &NodeView, name: &str, schema: &Json) -> Option<Self> {
-        if !node.definition.starts_with("org.orange.audio/")
+        let control = node.controls.settings.get(name)?;
+        if !matches!(control.widget, Widget::Slider | Widget::Dial)
             || !matches!(schema["type"].as_str(), Some("number" | "integer"))
         {
             return None;
         }
-        let (min, max) = (schema["minimum"].as_f64()?, schema["maximum"].as_f64()?);
+        let [min, max] = control
+            .range
+            .or_else(|| Some([schema["minimum"].as_f64()?, schema["maximum"].as_f64()?]))?;
         (min < max && min.is_finite() && max.is_finite()).then_some(Self {
             min,
             max,
-            logarithmic: min > 0.0 && name.ends_with("_hz"),
+            logarithmic: control.scale == Scale::Log && min > 0.0,
         })
     }
 
@@ -531,12 +527,12 @@ impl AudioRange {
         surface: Surface,
         id: egui::Id,
         value: f64,
-        dial: AudioDial,
+        dial: &Control,
         label: &str,
         caption: &str,
         diameter: Option<f32>,
     ) -> Option<f64> {
-        let (step, unit) = dial.controls();
+        let (step, unit) = dial_face(dial);
         let key = id.with("rotary-draft");
         let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
         let response = ui
@@ -576,10 +572,10 @@ impl AudioRange {
         ui: &egui::Ui,
         rect: egui::Rect,
         value: f64,
-        dial: AudioDial,
+        dial: &Control,
         caption: &str,
     ) {
-        let (step, unit) = dial.controls();
+        let (step, unit) = dial_face(dial);
         orange_ui_controls::dial_preview(
             ui,
             rect,
@@ -1480,7 +1476,7 @@ impl Editor {
             }
             let pointer = format!("/{name}");
             if node.references.iter().any(|(at, _)| *at == pointer)
-                || canvas::advanced_setting(name) != tuning
+                || canvas::advanced_setting(node, name) != tuning
             {
                 continue;
             }
@@ -1598,11 +1594,11 @@ impl Editor {
                         }
                         return;
                     }
-                    if let Some(range) = AudioRange::of(node, name, schema)
+                    if let Some(range) = NumberRange::of(node, name, schema)
                         && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
                     {
                         let id = ui.make_persistent_id((&node.id, &pointer));
-                        let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
+                        let adjusted = if let Some(dial) = dial_of(node, name) {
                             if let Some(value) =
                                 range.dial(ui, Surface::Panel, id, value, dial, &label, "", None)
                             {
@@ -1666,7 +1662,11 @@ impl Editor {
         node.schema
             .as_ref()
             .and_then(|schema| schema["properties"].as_object())
-            .is_some_and(|fields| fields.keys().any(|name| canvas::advanced_setting(name)))
+            .is_some_and(|fields| {
+                fields
+                    .keys()
+                    .any(|name| canvas::advanced_setting(node, name))
+            })
     }
 
     /// Choosers of the types of a generic node's parameters.

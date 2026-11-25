@@ -1217,19 +1217,29 @@ fn number_setting(minimum: f64, maximum: f64, default: f64) -> Json {
     serde_json::json!({"type": "number", "minimum": minimum, "maximum": maximum, "default": default})
 }
 
+/// A bounded number setting an editor shows as a slider with a typed box (ADR-33).
+fn slider_setting(
+    definition: Definition,
+    name: &str,
+    (minimum, maximum, default): (f64, f64, f64),
+) -> Definition {
+    definition
+        .setting(name, number_setting(minimum, maximum, default))
+        .setting_control(name, orange_sdk::Control::slider().number())
+}
+
 /// The band and window settings every analyzer entry has.
 fn band_settings(definition: Definition, low: f64, high: f64, window: f64) -> Definition {
-    definition
-        .setting("low_hz", number_setting(0.0, 24_000.0, low))
-        .setting("high_hz", number_setting(0.0, 24_000.0, high))
-        .setting("window_ms", number_setting(5.0, 1_000.0, window))
+    let definition = slider_setting(definition, "low_hz", (0.0, 24_000.0, low));
+    let definition = slider_setting(definition, "high_hz", (0.0, 24_000.0, high));
+    slider_setting(definition, "window_ms", (5.0, 1_000.0, window))
 }
 
 fn transient_settings(definition: Definition) -> Definition {
-    band_settings(definition, 45.0, 120.0, 10.0)
-        .setting("sensitivity", number_setting(0.0, 1.0, 0.5))
-        .setting("floor_db", number_setting(SILENCE_DB, 0.0, -50.0))
-        .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
+    let definition = band_settings(definition, 45.0, 120.0, 10.0);
+    let definition = slider_setting(definition, "sensitivity", (0.0, 1.0, 0.5));
+    let definition = slider_setting(definition, "floor_db", (SILENCE_DB, 0.0, -50.0));
+    slider_setting(definition, "min_gap_ms", (0.0, 10_000.0, 120.0))
 }
 
 fn stream_input(definition: Definition) -> Definition {

@@ -5,10 +5,10 @@ use crate::{
     INPUT_ADAPTER, InputShared, KernelFault, Lifecycle, Listening, Map, OUTPUT_ADAPTER,
     OutputSession, PACKAGE, RecordRepr, SILENCE_DB, STREAM_TYPE, ServiceNode, ServicePackage,
     ServiceSource, Session, SourceControl, Stop, Value, input_of, number_setting, play_stream,
-    source, stream_gain, stream_input, stream_value, transient, transient_settings, unit_gain,
-    watch_windows, when_finished,
+    slider_setting, source, stream_gain, stream_input, stream_value, transient, transient_settings,
+    unit_gain, watch_windows, when_finished,
 };
-use orange_sdk::{Arguments, DefinitionError, LiveSource, Publisher};
+use orange_sdk::{Arguments, DefinitionError, Layout, LiveSource, Publisher};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 use std::thread;
@@ -387,9 +387,12 @@ fn action(name: &str, label: &str, description: &str) -> Definition {
 }
 
 fn meter(name: &str, label: &str, description: &str) -> Definition {
-    stream_input(live(name, label, description))
-        .setting("window_ms", number_setting(5.0, 1_000.0, LEVEL_WINDOW_MS))
-        .live("level", F64)
+    slider_setting(
+        stream_input(live(name, label, description)),
+        "window_ms",
+        (5.0, 1_000.0, LEVEL_WINDOW_MS),
+    )
+    .live("level", F64)
 }
 
 pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionError> {
@@ -450,7 +453,26 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     )
     .setting("threshold_db", number_setting(-120.0, 0.0, -35.0))
     .setting("hold_ms", number_setting(0.0, 10_000.0, 150.0))
-    .setting("reset_db", number_setting(0.0, 24.0, 4.0));
+    .setting("reset_db", number_setting(0.0, 24.0, 4.0))
+    // The meter, with the dials beside it and the rule across the card under it.
+    .setting_control(
+        "threshold_db",
+        orange_sdk::Control::slider()
+            .number()
+            .unit("dBFS")
+            .precision(1),
+    )
+    .setting_control("hold_ms", orange_sdk::Control::dial().unit("ms").step(1.0))
+    .setting_control(
+        "reset_db",
+        orange_sdk::Control::dial().unit("dB").precision(1),
+    )
+    .layout(
+        Layout::new()
+            .visual("level-meter")
+            .aside_row(&["hold_ms", "reset_db"])
+            .body(&["direction", "threshold_db"]),
+    );
     let gate = crate::processors::gate_settings(stream_input(live(
         "noise-gate",
         "Noise Gate",

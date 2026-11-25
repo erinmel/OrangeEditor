@@ -298,7 +298,7 @@ pub(super) fn paint_still(
     profile: Option<&str>,
 ) {
     if let FieldOf::Setting(name, schema, dial) = field
-        && let Some(range) = crate::properties::AudioRange::of(node, name, schema)
+        && let Some(range) = crate::properties::NumberRange::of(node, name, schema)
         && let Some(value) = setting_value(node, name, schema).as_f64()
     {
         let number = if let Some(dial) = dial {
@@ -757,7 +757,7 @@ impl Canvas {
                         let key = pointer_of(name);
                         let ty = if whole { "core/i64@1" } else { "core/f64@1" };
                         let (slider, number_slot) = if let Some(range) =
-                            crate::properties::AudioRange::of(node, name, schema)
+                            crate::properties::NumberRange::of(node, name, schema)
                             && let Some(value) = value.as_f64()
                         {
                             if let Some(dial) = dial {
