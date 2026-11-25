@@ -1207,104 +1207,115 @@ impl Editor {
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let http = http_request_variant(&node);
-                if http {
-                    self.values_section(ui, &node);
-                }
-                if self.canvas.has_failure_routes(node.id) {
-                    let label = if self.canvas.failure_routes_expanded(node.id) {
-                        t("hide-failure-routes")
-                    } else {
-                        t("show-failure-routes")
-                    };
-                    if ui
-                        .button(label)
-                        .on_hover_text(t("failure-routes-hint"))
-                        .clicked()
-                    {
-                        self.canvas.toggle_failure_routes(node.id);
-                    }
-                }
-                let has_settings = node
-                    .schema
-                    .as_ref()
-                    .and_then(|schema| schema["properties"].as_object())
-                    .is_some_and(|fields| !fields.is_empty());
-                let references = node
-                    .references
-                    .iter()
-                    .filter(|(_, kind)| *kind != ReferenceKind::Connection);
-                let setup =
-                    references.clone().next().is_some() || has_settings || !node.types.is_empty();
-                if setup {
-                    section(ui, t("set-up"));
-                    for (pointer, kind) in references {
-                        if let Some(asked) = self.reference_field(ui, &node, pointer, *kind) {
-                            change = Some(asked);
+        // Delete stays in the panel's bottom right corner while the fields scroll.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+            ui.add_space(4.0);
+            if controls::button(
+                ui,
+                Surface::Panel,
+                controls::Action::Destructive,
+                true,
+                egui::Button::new(t("delete-node")),
+            )
+            .clicked()
+            {
+                change = Some(Change::Delete);
+            }
+            ui.separator();
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let http = http_request_variant(&node);
+                        if http {
+                            self.values_section(ui, &node);
                         }
-                    }
-                    if let Some(asked) = self.settings_fields(ui, &node, false) {
-                        change = Some(asked);
-                    }
-                }
-                if !node.variadic.is_empty()
-                    && node.definition != "org.orange.audio/multiband-spectrum"
-                {
-                    section(ui, t("ports"));
-                    if let Some(asked) = Self::variadic_fields(ui, &node) {
-                        change = Some(asked);
-                    }
-                }
-                if node.ports.iter().any(|port| port.input && !port.exec) {
-                    section(ui, t("inputs"));
-                    if !self.build_map_pair_control(ui, &node)
-                        && let Some(asked) = self.input_fields(ui, &node, host)
-                    {
-                        change = Some(asked);
-                    }
-                }
-                // Tuning settings and type pins: rarely changed, never on the card.
-                let tuning = Self::has_tuning(&node);
-                if tuning || !node.types.is_empty() {
-                    egui::CollapsingHeader::new(egui::RichText::new(t("advanced")).strong())
-                        .id_salt(("orange-advanced", node.id))
-                        .show(ui, |ui| {
-                            if tuning && let Some(asked) = self.settings_fields(ui, &node, true) {
+                        if self.canvas.has_failure_routes(node.id) {
+                            let label = if self.canvas.failure_routes_expanded(node.id) {
+                                t("hide-failure-routes")
+                            } else {
+                                t("show-failure-routes")
+                            };
+                            if ui
+                                .button(label)
+                                .on_hover_text(t("failure-routes-hint"))
+                                .clicked()
+                            {
+                                self.canvas.toggle_failure_routes(node.id);
+                            }
+                        }
+                        let has_settings = node
+                            .schema
+                            .as_ref()
+                            .and_then(|schema| schema["properties"].as_object())
+                            .is_some_and(|fields| !fields.is_empty());
+                        let references = node
+                            .references
+                            .iter()
+                            .filter(|(_, kind)| *kind != ReferenceKind::Connection);
+                        let setup = references.clone().next().is_some()
+                            || has_settings
+                            || !node.types.is_empty();
+                        if setup {
+                            section(ui, t("set-up"));
+                            for (pointer, kind) in references {
+                                if let Some(asked) = self.reference_field(ui, &node, pointer, *kind)
+                                {
+                                    change = Some(asked);
+                                }
+                            }
+                            if let Some(asked) = self.settings_fields(ui, &node, false) {
                                 change = Some(asked);
                             }
-                            if let Some(asked) = Self::type_fields(ui, &node) {
+                        }
+                        if !node.variadic.is_empty()
+                            && node.definition != "org.orange.audio/multiband-spectrum"
+                        {
+                            section(ui, t("ports"));
+                            if let Some(asked) = Self::variadic_fields(ui, &node) {
                                 change = Some(asked);
                             }
-                        });
-                }
-                if !http {
-                    self.values_section(ui, &node);
-                }
-                Self::outputs_section(ui, &node);
-                if let Some(current) = self
-                    .document
-                    .as_ref()
-                    .and_then(|doc| host.entry_timing(&doc.draft, node.id))
-                    && let Some(timing) = event_timing_fields(ui, node.id, current)
-                {
-                    change = Some(Change::EventTiming(timing));
-                }
-                ui.add_space(10.0);
-                if controls::button(
-                    ui,
-                    Surface::Panel,
-                    controls::Action::Destructive,
-                    true,
-                    egui::Button::new(t("delete-node")),
-                )
-                .clicked()
-                {
-                    change = Some(Change::Delete);
-                }
+                        }
+                        if node.ports.iter().any(|port| port.input && !port.exec) {
+                            section(ui, t("inputs"));
+                            if !self.build_map_pair_control(ui, &node)
+                                && let Some(asked) = self.input_fields(ui, &node, host)
+                            {
+                                change = Some(asked);
+                            }
+                        }
+                        // Tuning settings and type pins: rarely changed, never on the card.
+                        let tuning = Self::has_tuning(&node);
+                        if tuning || !node.types.is_empty() {
+                            egui::CollapsingHeader::new(
+                                egui::RichText::new(t("advanced")).strong(),
+                            )
+                            .id_salt(("orange-advanced", node.id))
+                            .show(ui, |ui| {
+                                if tuning && let Some(asked) = self.settings_fields(ui, &node, true)
+                                {
+                                    change = Some(asked);
+                                }
+                                if let Some(asked) = Self::type_fields(ui, &node) {
+                                    change = Some(asked);
+                                }
+                            });
+                        }
+                        if !http {
+                            self.values_section(ui, &node);
+                        }
+                        Self::outputs_section(ui, &node);
+                        if let Some(current) = self
+                            .document
+                            .as_ref()
+                            .and_then(|doc| host.entry_timing(&doc.draft, node.id))
+                            && let Some(timing) = event_timing_fields(ui, node.id, current)
+                        {
+                            change = Some(Change::EventTiming(timing));
+                        }
+                    });
             });
+        });
         let Some(change) = change else {
             return;
         };
