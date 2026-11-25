@@ -46,10 +46,11 @@ pub struct PlotAxes {
 }
 
 impl PlotAxes {
+    /// The plot area. Square, like the grid and data drawn to its edges.
     pub fn frame(&self, painter: &egui::Painter, outer: Rect) {
         painter.rect(
             outer,
-            f32::from(self.theme.radius) * self.zoom,
+            0.0,
             self.theme.bg_canvas(),
             self.theme.border_subtle(),
             StrokeKind::Inside,

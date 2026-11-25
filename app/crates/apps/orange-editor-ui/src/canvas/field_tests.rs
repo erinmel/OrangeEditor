@@ -960,7 +960,7 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
     let (_, canvas) = session.frame_output(vec![]);
     let slot = session.control(hold);
     let center = Pos2::new(slot.left() + slot.height() * 0.5, slot.center().y);
-    let radius = slot.height() * 0.35 * 0.76;
+    let radius = slot.height() * 0.3 * 0.76;
     assert!(canvas.shapes.iter().any(|item| {
         matches!(&item.shape, egui::Shape::Circle(circle)
             if circle.center.distance(center) < 0.5 && (circle.radius - radius).abs() < 0.1)
