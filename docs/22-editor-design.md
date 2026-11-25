@@ -254,11 +254,15 @@ combination in the selected language.
   post-EQ waveform. Its stereo dBFS meters use separate peak, RMS and held
   values, 6 dB ticks, and per-channel clipping latches. The demonstration runs
   on the UI side and uses a pausable signal. Visible signal displays target 60 Hz and the spectrum targets 30 Hz. Pausing or scrolling all live displays out of view suspends signal processing. EQ response samples are cached by band settings, sample rate and plot resolution.
-  Continuous and stepped sliders share a thin rail and circular thumb. Stops and
-  guides are thin notches under the rail, never marks on it: taller where a label
-  sits, lit once the value has passed them, so a dense range reads as a ruler. Labels
-  sit below the notches. A logarithmic slider notches 1, 2 and 5 of each decade, the
-  powers of ten taller. A stepped slider changes by one step with the arrow keys.
+  Continuous and stepped sliders share a thin rail and a thumb. `SliderStyle` sets
+  how they look, for the whole application (`install`) or a group of sliders (`scope`):
+  notches are pills on the rail (the house style), ticks under it, or dots, and the
+  thumb is a capsule (the house style), a circle or an upright bar. Notches light once
+  the value has passed them. Pill stops closer than a pill's width become ticks, so a
+  dense range reads as a ruler; ticks are taller where a label sits. A logarithmic
+  slider marks 1, 2 and 5 of each decade, the powers of ten as major stops. Labels sit
+  below the rail and its notches. A stepped slider changes by one step with the arrow
+  keys.
   Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound. A dial (`orange_ui_controls::dial`) is the self-contained form: a ring of fine ticks lit up to the value, the value and unit inside, and its name in the ring's open bottom quarter, so it needs no label row.
   Drag up or right to increase the value; a full sweep takes 200 points, Shift is ten
   times finer and Ctrl (Command on macOS) a hundred times. Focus the knob to nudge it one

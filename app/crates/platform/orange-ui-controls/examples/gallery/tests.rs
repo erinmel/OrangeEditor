@@ -109,7 +109,7 @@ fn comfy_card_covers_rotary_knobs_and_reserves_height_for_the_next_row() {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(780.0, 1000.0),
+                egui::vec2(780.0, 1600.0),
             )),
             ..Default::default()
         },

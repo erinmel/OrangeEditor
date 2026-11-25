@@ -634,7 +634,7 @@ pub fn continuous_slider(
     } else {
         ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
     };
-    SliderTrack::new(response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
+    SliderTrack::new(ui, response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
     response
 }
 
@@ -660,7 +660,7 @@ pub fn logarithmic_slider(
         reason = "normalized screen coordinate"
     )]
     let fraction = ((f64::from(*value).clamp(start, end) / start).ln() / (end / start).ln()) as f32;
-    let track = SliderTrack::new(response.rect, fraction);
+    let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         // 1, 2 and 5 of every decade, the powers of ten taller.
         let mut decade = 10f64.powf(start.log10().floor());
@@ -711,7 +711,7 @@ pub fn continuous_marked_slider(
     } else {
         ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
     };
-    let track = SliderTrack::new(response.rect, fraction);
+    let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         for (index, mark) in marks.iter().enumerate() {
             let x = egui::lerp(track.travel, mark.clamp(0.0, 1.0));
@@ -755,7 +755,7 @@ pub fn guided_slider(
     } else {
         ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
     };
-    let track = SliderTrack::new(response.rect, fraction);
+    let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         if matches!(marks, SliderMarks::Notches | SliderMarks::NotchesAndValues) {
             for guide in guides {
@@ -784,7 +784,7 @@ pub fn guided_slider(
                 .clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
                 ui.painter().galley(
-                    pos2(x, track.thumb.y + LABEL_DROP),
+                    pos2(x, track.thumb.y + track.label_drop()),
                     galley,
                     theme.muted_text,
                 );
@@ -803,13 +803,13 @@ pub fn marked_slider(ui: &mut Ui, surface: Surface, fraction: &mut f32, marks: &
         Slider::new(fraction, 0.0..=1.0).smart_aim(false),
         height,
     );
-    SliderTrack::new(response.rect, *fraction).marked(ui, surface, Some(&response), marks);
+    SliderTrack::new(ui, response.rect, *fraction).marked(ui, surface, Some(&response), marks);
     response
 }
 
 /// Paints a marked track in a read-only preview, with no input registration.
 pub fn marked_slider_preview(ui: &Ui, rect: Rect, surface: Surface, fraction: f32, marks: &[f32]) {
-    SliderTrack::new(rect, fraction).marked(ui, surface, None, marks);
+    SliderTrack::new(ui, rect, fraction).marked(ui, surface, None, marks);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1401,12 +1401,24 @@ pub fn stepped_slider(
             .smart_aim(false),
         22.0,
     );
-    let track = SliderTrack::new(
+    let mut track = SliderTrack::new(
+        ui,
         response.rect,
         f32::from(value.saturating_sub(start)) / f32::from((end - start).max(1)),
     );
+    // Pills closer than their own width would run together, so dense stops are ticks.
+    if track.style.notch == NotchStyle::Pill
+        && track.travel.span() / f32::from(stops.max(1)) < PILL.x * 1.6
+    {
+        track.style.notch = NotchStyle::Tick;
+    }
     let theme = Theme::of(ui);
-    let stride = tick_stride(stops, track.travel.span(), 6.0);
+    let gap = if track.style.notch == NotchStyle::Tick {
+        6.0
+    } else {
+        12.0
+    };
+    let stride = tick_stride(stops, track.travel.span(), gap);
     let x_at = |tick| egui::lerp(track.travel, f32::from(tick) / f32::from(stops.max(1)));
     let mut font = egui::TextStyle::Monospace.resolve(ui.style());
     font.size *= 0.85;
@@ -1452,7 +1464,7 @@ pub fn stepped_slider(
                 (x_at(tick) - width * 0.5).clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
                 ui.painter()
-                    .galley(pos2(x, track.thumb.y + LABEL_DROP), galley, color);
+                    .galley(pos2(x, track.thumb.y + track.label_drop()), galley, color);
                 right = x + width;
             }
         }
@@ -1473,21 +1485,80 @@ fn mark_indices(stops: u16, stride: usize) -> impl Iterator<Item = u16> {
 }
 
 const HANDLE_ASPECT: f32 = 0.72;
-/// From the rail's middle to the top of its notches.
+/// From the rail's middle to the top of tick notches.
 const NOTCH_GAP: f32 = 4.5;
 const NOTCH_MAJOR: f32 = 5.0;
 const NOTCH_MINOR: f32 = 3.0;
-/// From the rail's middle to the top of its value labels, below the notches.
-const LABEL_DROP: f32 = NOTCH_GAP + NOTCH_MAJOR + 2.0;
+/// The pill a stop draws on the rail in the default style.
+const PILL: egui::Vec2 = vec2(10.5, 7.0);
+
+/// How a slider marks its stops and guides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotchStyle {
+    /// A pill on the rail, lit with it: the house style.
+    #[default]
+    Pill,
+    /// A thin tick under the rail, taller where labeled, for dense rulers.
+    Tick,
+    /// A small dot on the rail.
+    Dot,
+}
+
+/// The shape of a slider's handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThumbStyle {
+    /// A wide rounded capsule: the house style.
+    #[default]
+    Capsule,
+    /// A circle.
+    Round,
+    /// A narrow upright bar, for precise reading of the position.
+    Bar,
+}
+
+/// The look of every slider drawn in a scope. Set it for the whole application with
+/// [`SliderStyle::install`], or for some sliders with [`SliderStyle::scope`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliderStyle {
+    pub notch: NotchStyle,
+    pub thumb: ThumbStyle,
+}
+
+impl SliderStyle {
+    fn id() -> egui::Id {
+        egui::Id::unique("orange-ui-controls-slider-style")
+    }
+
+    /// The style sliders use now.
+    pub fn of(ui: &Ui) -> Self {
+        ui.data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default()
+    }
+
+    /// Makes `style` the style of every slider from now on.
+    pub fn install(ctx: &egui::Context, style: Self) {
+        ctx.data_mut(|data| data.insert_temp(Self::id(), style));
+    }
+
+    /// Draws `add` with sliders in `style`, then restores the previous style.
+    pub fn scope<R>(ui: &mut Ui, style: Self, add: impl FnOnce(&mut Ui) -> R) -> R {
+        let previous = Self::of(ui);
+        ui.data_mut(|data| data.insert_temp(Self::id(), style));
+        let result = add(ui);
+        ui.data_mut(|data| data.insert_temp(Self::id(), previous));
+        result
+    }
+}
 
 struct SliderTrack {
     rect: Rect,
     travel: egui::Rangef,
     thumb: egui::Pos2,
+    style: SliderStyle,
 }
 
 impl SliderTrack {
-    fn new(rect: Rect, fraction: f32) -> Self {
+    fn new(ui: &Ui, rect: Rect, fraction: f32) -> Self {
         // egui 0.37 uses this inset for the rectangular handle's input travel.
         let inset = (rect.height() / 2.5 * HANDLE_ASPECT).min(rect.width() * 0.5);
         let travel = rect.x_range().shrink(inset);
@@ -1496,6 +1567,15 @@ impl SliderTrack {
             rect,
             travel,
             thumb,
+            style: SliderStyle::of(ui),
+        }
+    }
+
+    /// From the rail's middle to the top of the value labels: below tick notches.
+    fn label_drop(&self) -> f32 {
+        match self.style.notch {
+            NotchStyle::Tick => NOTCH_GAP + NOTCH_MAJOR + 2.0,
+            NotchStyle::Pill | NotchStyle::Dot => 7.0,
         }
     }
 
@@ -1510,13 +1590,30 @@ impl SliderTrack {
         });
     }
 
-    /// One stop: a thin tick under the rail, taller for a major stop and lit once the
-    /// value has passed it, so the rail itself stays clean however many stops there are.
+    /// One stop in the slider's notch style, lit once the value has passed it. A major
+    /// stop, such as a labeled one, is taller as a tick.
     fn notch(&self, painter: &egui::Painter, x: f32, major: bool, color: egui::Color32) {
-        let top = self.thumb.y + NOTCH_GAP;
-        let length = if major { NOTCH_MAJOR } else { NOTCH_MINOR };
-        let bottom = (top + length).min(self.rect.bottom() + LABEL_DROP - NOTCH_GAP - 1.0);
-        painter.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.5, color));
+        match self.style.notch {
+            NotchStyle::Pill => {
+                painter.rect_filled(
+                    Rect::from_center_size(pos2(x, self.thumb.y), PILL),
+                    CONTROL_RADIUS - 2,
+                    color,
+                );
+            }
+            NotchStyle::Tick => {
+                let top = self.thumb.y + NOTCH_GAP;
+                let length = if major { NOTCH_MAJOR } else { NOTCH_MINOR };
+                painter.line_segment(
+                    [pos2(x, top), pos2(x, top + length)],
+                    Stroke::new(1.5, color),
+                );
+            }
+            NotchStyle::Dot => {
+                // Wider than the rail, so a dot reads against it lit or not.
+                painter.circle_filled(pos2(x, self.thumb.y), if major { 4.0 } else { 3.4 }, color);
+            }
+        }
     }
 
     fn paint(
@@ -1564,8 +1661,12 @@ impl SliderTrack {
         let size = (self.rect.height() * 0.38)
             .clamp(9.0, 14.0)
             .min(self.rect.width());
-        let thumb =
-            Rect::from_center_size(self.thumb, vec2((size * 1.5).min(self.rect.width()), size));
+        let (shape, radius) = match self.style.thumb {
+            ThumbStyle::Capsule => (vec2((size * 1.5).min(self.rect.width()), size), 255),
+            ThumbStyle::Round => (vec2(size * 1.15, size * 1.15), 255),
+            ThumbStyle::Bar => (vec2((size * 0.45).max(4.0), size * 1.6), 2),
+        };
+        let thumb = Rect::from_center_size(self.thumb, shape.min(self.rect.size()));
         if response.is_some_and(Response::has_focus) {
             painter.rect_stroke(
                 thumb.expand(2.0),
@@ -1574,7 +1675,7 @@ impl SliderTrack {
                 StrokeKind::Outside,
             );
         }
-        painter.rect_filled(thumb, 255, fill);
+        painter.rect_filled(thumb, radius, fill);
     }
 }
 
@@ -1875,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn stepped_slider_marks_stops_under_the_rail_and_keeps_labels_optional() {
+    fn stepped_slider_centers_pill_stops_on_the_rail_and_keeps_labels_optional() {
         for labels in [StepLabels::Hidden, StepLabels::Values] {
             let ctx = egui::Context::default();
             let mut value = 24;
@@ -1899,6 +2000,90 @@ mod tests {
                     NonZeroU16::new(12).unwrap(),
                     labels,
                 )
+                .rect;
+            });
+            let track = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(stop) if stop.rect.size() == vec2(10.5, 7.0) => {
+                        assert_eq!(stop.stroke, Stroke::NONE);
+                        Some((stop.rect.center(), stop.fill))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(track.len(), 4);
+            assert!(
+                track
+                    .iter()
+                    .all(|(p, _)| (p.y - rect.center().y).abs() < 0.01)
+            );
+            let (active, idle) = colors.unwrap();
+            assert_eq!(
+                track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
+                [active, active, idle, idle]
+            );
+            let thumb = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(thumb.rect.center().y, rect.center().y);
+            assert!((thumb.rect.center().x - track[1].0.x).abs() < 0.01);
+            let values = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => {
+                        assert!((text.pos.y - rect.center().y - 7.0).abs() < 0.01);
+                        Some(text.galley.text())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            match labels {
+                StepLabels::Hidden => assert!(values.is_empty()),
+                StepLabels::Values => assert_eq!(values, ["12", "24", "36", "48"]),
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn tick_notches_sit_under_the_rail_with_labels_below_them() {
+        for labels in [StepLabels::Hidden, StepLabels::Values] {
+            let ctx = egui::Context::default();
+            let mut value = 24;
+            let mut rect = Rect::NOTHING;
+            let mut colors = None;
+            let output = ctx.run_ui(input(200.0, vec![]), |ui| {
+                let theme = Theme::of(ui);
+                colors = Some((
+                    theme.primary,
+                    crate::theme::ensure_contrast(
+                        theme.panel.lerp_to_gamma(theme.text, 0.23),
+                        theme.panel,
+                        3.0,
+                    ),
+                ));
+                let tick = SliderStyle {
+                    notch: NotchStyle::Tick,
+                    ..SliderStyle::default()
+                };
+                rect = SliderStyle::scope(ui, tick, |ui| {
+                    stepped_slider(
+                        ui,
+                        Surface::Panel,
+                        &mut value,
+                        12..=48,
+                        NonZeroU16::new(12).unwrap(),
+                        labels,
+                    )
+                })
                 .rect;
             });
             let track = output
@@ -1935,7 +2120,10 @@ mod tests {
                 .iter()
                 .filter_map(|shape| match &shape.shape {
                     egui::Shape::Text(text) => {
-                        assert!((text.pos.y - rect.center().y - LABEL_DROP).abs() < 0.01);
+                        assert!(
+                            (text.pos.y - rect.center().y - (NOTCH_GAP + NOTCH_MAJOR + 2.0)).abs()
+                                < 0.01
+                        );
                         Some(text.galley.text())
                     }
                     _ => None,
