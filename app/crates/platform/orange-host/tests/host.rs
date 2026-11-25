@@ -1926,3 +1926,34 @@ fn a_node_of_a_missing_package_names_it_and_keeps_its_wired_ports() {
             .all(|card| card.missing.is_none())
     );
 }
+
+#[test]
+fn an_unwired_variable_update_output_is_reported_once_it_completes() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../apps/orange-cli/graphs/counter-with-reset.json"
+    ))
+    .unwrap();
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    let increment = node(1);
+    let add_one = node(2);
+    host.trigger(flow, increment, None).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    until("Add one's old and new", || {
+        for event in events.try_iter() {
+            if let FlowEvent::Ports(values) = event.kind {
+                for (node, port, value) in values {
+                    if node == add_one {
+                        seen.insert(port.to_string(), value);
+                    }
+                }
+            }
+        }
+        seen.len() == 2
+    });
+    assert!(matches!(seen["old"], Value::I64(0)), "{seen:?}");
+    assert!(matches!(seen["new"], Value::I64(1)), "{seen:?}");
+    host.close(flow).unwrap();
+}

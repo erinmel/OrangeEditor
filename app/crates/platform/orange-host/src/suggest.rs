@@ -5,7 +5,7 @@
 //! The answer comes from each kind's declared ports, before a node exists. A step output
 //! fits any kind with a way in. A value output fits a value input of the same type, or
 //! of a declared type over the kind's own parameters once they are bound
-//! ([`orange_model::fit::PortFit`]): `list<$T>` takes `list<i64>` and binds `T`, never a
+//! ([`PortFit`]): `list<$T>` takes `list<i64>` and binds `T`, never a
 //! bare `i64`, and the bound type must satisfy the parameter's constraints. Put into a
 //! wire, the kind must also go on into the wire's input: a step through `then` (or a
 //! loop's `completed`), never through a failure or cancellation route or a loop body,

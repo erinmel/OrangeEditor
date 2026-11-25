@@ -2244,11 +2244,23 @@ impl Run {
                 }
             }
             ControlOperation::Update { .. } => {
+                let observe = self.port_values.is_some();
                 match self
                     .cells()
-                    .execute_update(plan, activation, shared, ix, budget)?
+                    .execute_update(plan, activation, shared, ix, budget, observe)?
                 {
-                    Some(step) => step,
+                    Some((step, seen)) => {
+                        // An update has a result even when no graph wire reads it.
+                        if let Some(values) = &mut self.port_values {
+                            let node = plan.nodes()[ix.index()].node();
+                            for (port, value) in seen {
+                                if let Ok(port) = port.parse() {
+                                    record_port(values, node, &port, &value);
+                                }
+                            }
+                        }
+                        step
+                    }
                     None => return Ok(()),
                 }
             }

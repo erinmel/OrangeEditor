@@ -9,6 +9,10 @@ profile:
     # Disable license audit (Cargo is not supported by Qodana's license audit)
     - inspection: CheckDependencyLicenses
       enabled: false
+    # Every `http://` in the code is a scheme check, an error message, a test that a
+    # plain URL is refused, or a loopback test server.
+    - inspection: HttpUrlsUsage
+      enabled: false
     # Enable duplicated code detection
     - inspection: DuplicatedCode
       enabled: true

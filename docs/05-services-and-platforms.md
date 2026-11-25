@@ -553,10 +553,17 @@ its voice on the shared mixer. The `playing` output reports that the voice is
 active. A stream, enable or gain change re-arms the source. Version 1 remains
 available to saved graphs with execution wires.
 
-Frequency Splitter uses one capture cursor and worker per node. Its chart uses 96
-logarithmic peak-amplitude buckets from 20 Hz to 24 kHz in dBFS, measured over
-4,096 Hann-windowed frames and published at most once per 50 ms. Buckets between
-measured Fourier bins are interpolated for display. Versions 2 and 3
+Frequency Splitter uses one capture cursor and worker per node. Its chart uses 246
+logarithmic (1/24 octave) peak-amplitude buckets from 20 Hz to 24 kHz in dBFS,
+published at most once per 33 ms from the latest samples, so snapshots overlap.
+Buckets narrower than two bins of a 4,096-frame transform (below about 800 Hz)
+are measured over 8,192 frames, and the rest over 4,096 frames, both with a
+4-term Blackman-Harris window. A tone's level is estimated from the
+log-parabola through its loudest bin and their neighbors and credited to the
+bucket of the estimated frequency. Buckets with no Fourier bin read the line
+between the neighboring bins. Until 8,192 frames have arrived, all buckets use
+the short transform. Each snapshot stands alone, with no hold or decay, so the
+line rises and falls with the sound. Versions 2 and 3
 publishes a distinct audio stream for each selected band. A derived ring keeps
 the input sample rate and channel count, with each channel filtered independently
 by two cascaded band-pass sections, with a high-pass fallback when the upper

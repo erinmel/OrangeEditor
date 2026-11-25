@@ -1579,7 +1579,9 @@ impl Editor {
                         {
                             let bins = self.canvas.spectra.entry(*node).or_default();
                             bins.clear();
-                            bins.extend((0..values.len().min(96)).filter_map(|index| {
+                            // The chart spreads however many logarithmic buckets
+                            // arrive (246 today) across 20 Hz to 24 kHz.
+                            bins.extend((0..values.len().min(1024)).filter_map(|index| {
                                 match values.get(index) {
                                     Some(orange_host::Value::F64(db)) => Some(db),
                                     _ => None,
@@ -4437,13 +4439,26 @@ impl Editor {
         };
         for previewed in found {
             if let Ok(value) = &previewed.value {
+                let port = previewed.port.to_string();
+                // The same text a running flow shows: enum choices by name.
+                let ty = self
+                    .document
+                    .as_ref()
+                    .and_then(|document| {
+                        document
+                            .graph
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == previewed.node)
+                    })
+                    .and_then(|node| node.ports.iter().find(|p| !p.input && p.id == port))
+                    .and_then(|port| port.ty.as_deref());
+                let (short, full) = presented_value(&self.canvas.enums, ty, value)
+                    .unwrap_or_else(|| (orange_host::plain(value), orange_host::inspect(value)));
                 self.canvas.show_observed_value(
                     previewed.node,
-                    previewed.port.to_string(),
-                    canvas::Shown {
-                        short: orange_host::plain(value),
-                        full: orange_host::inspect(value),
-                    },
+                    port,
+                    canvas::Shown { short, full },
                     value,
                     true,
                 );

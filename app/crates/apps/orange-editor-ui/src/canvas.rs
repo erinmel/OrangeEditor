@@ -123,12 +123,15 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
     if matches!(value, orange_host::Value::Json(_)) {
         return orange_host::inspect(value);
     }
-    if let orange_host::Value::Enum { tag, payload: None } = value
+    if let orange_host::Value::Enum { tag, payload } = value
         && let Some(choice) = ty
             .and_then(|ty| enums.get(ty))
             .and_then(|choices| choices.get(usize::try_from(*tag).ok()?))
     {
-        return choice.name.clone();
+        return match payload {
+            None => choice.name.clone(),
+            Some(payload) => format!("{}({})", choice.name, orange_host::plain(payload)),
+        };
     }
     orange_host::plain(value)
 }
@@ -3004,6 +3007,9 @@ fn number_field(
         (None, Some(default)) => (default, colors.weak),
         (None, None) => ("—", colors.weak),
     };
+    // 0.7071067811865476 reads 0.70711; typing still starts from the exact number.
+    let compact = compact_decimal(text);
+    let text = compact.as_deref().unwrap_or(text);
     let touched = ui
         .interact(slot, id, Sense::click_and_drag())
         .on_hover_text(t("number-drag-hint"));
@@ -3016,6 +3022,23 @@ fn number_field(
     let suffix = (!unit.is_empty()).then(|| (unit, colors.weak, FontId::proportional(11.5 * zoom)));
     let _ = fields::field_text_in(painter, slot, zoom, text, ink, suffix);
     touched
+}
+
+/// A decimal with more than five places, rounded to five without trailing zeros; `None`
+/// for anything shorter or not a plain decimal.
+fn compact_decimal(text: &str) -> Option<String> {
+    let (_, places) = text.split_once('.')?;
+    if places.len() <= 5 || !places.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let number: f64 = text.parse().ok()?;
+    let rounded = format!("{number:.5}");
+    Some(
+        rounded
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned(),
+    )
 }
 
 /// A whole number typed as text, if it is one that `ty` holds.
@@ -5053,6 +5076,19 @@ mod whole_tests {
         assert_eq!(step_whole(0, -50.0, "core/u32@1"), 0);
         assert_eq!(parse_whole("2147483648", "core/i32@1"), None);
         assert_eq!(parse_whole("1.5", "core/i64@1"), None);
+    }
+
+    #[test]
+    fn long_decimals_show_five_places_and_short_numbers_stay_as_typed() {
+        use super::compact_decimal;
+        assert_eq!(
+            compact_decimal("0.7071067811865476").as_deref(),
+            Some("0.70711")
+        );
+        assert_eq!(compact_decimal("1000.0000001").as_deref(), Some("1000"));
+        assert_eq!(compact_decimal("0.25"), None);
+        assert_eq!(compact_decimal("1000"), None);
+        assert_eq!(compact_decimal("1e-7"), None);
     }
 }
 

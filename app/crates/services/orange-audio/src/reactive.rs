@@ -19,7 +19,8 @@ use std::{
 
 pub(crate) const MAX_BANDS: u16 = 12;
 const WINDOW: Duration = Duration::from_millis(25);
-const PLOT_INTERVAL: Duration = Duration::from_millis(50);
+/// About 30 snapshots a second, the rate the editor draws the spectrum at.
+const PLOT_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone, Copy)]
 struct Rule {
@@ -335,9 +336,8 @@ pub(crate) fn spectrum(
             };
             while let Ok(ring) = input.wait_ring(None, &|| running.stopped()) {
                 let channels = usize::from(ring.channels.max(1));
-                let size = spectrum::FRAMES * channels;
-                let mut samples = Vec::with_capacity(size);
-                let mut last_plot = None;
+                let mut history = spectrum::History::new(spectrum::FRAMES * channels);
+                let mut last_plot: Option<Instant> = None;
                 let new_trackers = || {
                     specs
                         .iter()
@@ -382,7 +382,8 @@ pub(crate) fn spectrum(
                             return;
                         }
                         trackers = new_trackers();
-                        samples.clear();
+                        history.clear();
+                        last_plot = None;
                     }
                     if !trackers
                         .iter_mut()
@@ -390,29 +391,19 @@ pub(crate) fn spectrum(
                     {
                         return;
                     }
-                    let mut remaining = &block[..read];
-                    while !remaining.is_empty() {
-                        let count = (size - samples.len()).min(remaining.len());
-                        samples.extend_from_slice(&remaining[..count]);
-                        remaining = &remaining[count..];
-                        if samples.len() == size {
-                            let now = Instant::now();
-                            if last_plot.is_none_or(|last| now - last >= PLOT_INTERVAL) {
-                                let values = transform.measure(&samples, channels, ring.rate);
-                                if emitter
-                                    .publish(
-                                        &plot,
-                                        Some(Value::List(Arc::new(ListRepr::F64(Box::new(
-                                            values,
-                                        ))))),
-                                    )
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                                last_plot = Some(now);
+                    history.push(&block[..read]);
+                    let now = Instant::now();
+                    if last_plot.is_none_or(|last| now - last >= PLOT_INTERVAL) {
+                        let latest = history.latest();
+                        if let Some(values) = transform.measure(latest, channels, ring.rate) {
+                            let values = ListRepr::F64(values.into_boxed_slice());
+                            if emitter
+                                .publish(&plot, Some(Value::List(Arc::new(values))))
+                                .is_err()
+                            {
+                                return;
                             }
-                            samples.clear();
+                            last_plot = Some(now);
                         }
                     }
                 }
