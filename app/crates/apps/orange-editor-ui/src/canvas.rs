@@ -5321,7 +5321,9 @@ mod tests {
                 },
             );
             let button = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == t("signal-add-receiver") => {
+                egui::Shape::Text(text)
+                    if t("signal-add-receiver").ends_with(text.galley.text()) =>
+                {
                     Some(text.pos + text.galley.size() / 2.0)
                 }
                 _ => None,

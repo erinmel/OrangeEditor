@@ -39,7 +39,11 @@ pub(crate) fn http_request_variant(node: &NodeView) -> bool {
 }
 
 pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host::PortView> {
-    let inputs = node.ports.iter().filter(|port| port.input && !port.exec);
+    // A bridge's link port carries its binding, shown as the channel, not as an input.
+    let inputs = node
+        .ports
+        .iter()
+        .filter(|port| port.input && !port.exec && !crate::palette::bridge_link_port(node, port));
     let first = |port: &&orange_host::PortView| {
         node.definition == "org.orange.logging/log-message"
             && matches!(port.id.as_str(), "level" | "severity")
@@ -3197,7 +3201,9 @@ impl Editor {
         let outputs: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| !port.input && !port.exec)
+            .filter(|port| {
+                !port.input && !port.exec && !crate::palette::bridge_link_port(node, port)
+            })
             .collect();
         if outputs.is_empty() {
             return;

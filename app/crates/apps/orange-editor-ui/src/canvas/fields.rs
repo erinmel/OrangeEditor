@@ -1102,7 +1102,9 @@ impl Canvas {
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
             action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver | FieldOf::MapPairs) => {
+                // The button draws its own plus, so a label's leading "+ " is dropped.
                 let label = name(node, action, None);
+                let label = label.strip_prefix("+ ").unwrap_or(&label).to_owned();
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
