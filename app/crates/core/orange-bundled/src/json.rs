@@ -38,12 +38,16 @@ pub enum JsonOperation {
     FromU64,
     FromF64,
     Null,
+    ReadText,
+    ReadInt,
+    ReadNumber,
+    ReadBool,
 }
 
 const JSON: &str = "core/json@1";
 
 impl JsonOperation {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 26] = [
         Self::Parse,
         Self::Kind,
         Self::IsNull,
@@ -66,6 +70,10 @@ impl JsonOperation {
         Self::FromU64,
         Self::FromF64,
         Self::Null,
+        Self::ReadText,
+        Self::ReadInt,
+        Self::ReadNumber,
+        Self::ReadBool,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -92,6 +100,10 @@ impl JsonOperation {
             Self::FromU64 => "org.orange.json/from-u64",
             Self::FromF64 => "org.orange.json/from-f64",
             Self::Null => "org.orange.json/null",
+            Self::ReadText => "org.orange.json/read-text",
+            Self::ReadInt => "org.orange.json/read-int",
+            Self::ReadNumber => "org.orange.json/read-number",
+            Self::ReadBool => "org.orange.json/read-bool",
         }
     }
 
@@ -115,6 +127,26 @@ impl JsonOperation {
             Self::FromI64 => &[("value", "core/i64@1")],
             Self::FromU64 => &[("value", "core/u64@1")],
             Self::FromF64 => &[("value", "core/f64@1")],
+            Self::ReadText => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/string@1"),
+            ],
+            Self::ReadInt => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/i64@1"),
+            ],
+            Self::ReadNumber => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/f64@1"),
+            ],
+            Self::ReadBool => &[
+                ("value", JSON),
+                ("path", "core/string@1"),
+                ("fallback", "core/bool@1"),
+            ],
             _ => &[("value", JSON)],
         }
     }
@@ -132,7 +164,10 @@ impl JsonOperation {
             | Self::FromU64
             | Self::FromF64
             | Self::Null => JSON,
-            Self::Kind => "core/string@1",
+            Self::Kind | Self::ReadText => "core/string@1",
+            Self::ReadInt => "core/i64@1",
+            Self::ReadNumber => "core/f64@1",
+            Self::ReadBool => "core/bool@1",
             Self::IsNull => "core/bool@1",
             Self::Get | Self::GetPath | Self::At => "core/option@1<core/json@1>",
             Self::Length => "core/u64@1",
@@ -391,6 +426,72 @@ fn get_path(text: &str, path: &str) -> Result<Value, KernelError> {
     Err(KernelError::OutOfRange)
 }
 
+/// One step from JSON to a typed value: the value at `path` (the whole value when the
+/// path is empty) read as the node's type, or `fallback` when it is missing, of
+/// another kind, not in integer form or out of range. Invalid path syntax still faults.
+fn read(
+    op: JsonOperation,
+    text: &str,
+    path: &Value,
+    fallback: &Value,
+) -> Result<Value, KernelError> {
+    use JsonOperation as Op;
+    let Value::Str(path) = path else {
+        return Err(KernelError::InputContract);
+    };
+    let fits = matches!(
+        (op, fallback),
+        (Op::ReadText, Value::Str(_))
+            | (Op::ReadInt, Value::I64(_))
+            | (Op::ReadNumber, Value::F64(_))
+            | (Op::ReadBool, Value::Bool(_))
+    );
+    if !fits {
+        return Err(KernelError::InputContract);
+    }
+    let found = if path.trim().is_empty() {
+        Some(text.to_owned())
+    } else {
+        match get_path(text, path)? {
+            Value::Json(found) => Some(found.as_str().to_owned()),
+            _ => None,
+        }
+    };
+    let Some(found) = found else {
+        return Ok(fallback.clone());
+    };
+    let mut scan = Scan::new(&found);
+    let first = scan.peek().ok_or(KernelError::InputContract)?;
+    let number = matches!(first, b'-' | b'0'..=b'9');
+    let read = match op {
+        Op::ReadText if first == b'"' => {
+            let span = scan.value();
+            serde_json::from_str::<String>(scan.slice(span))
+                .ok()
+                .map(|text| Value::Str(Arc::new(text)))
+        }
+        Op::ReadBool => match first {
+            b't' => Some(Value::Bool(true)),
+            b'f' => Some(Value::Bool(false)),
+            _ => None,
+        },
+        Op::ReadInt if number => {
+            let span = scan.value();
+            scan.slice(span).parse::<i64>().ok().map(Value::I64)
+        }
+        Op::ReadNumber if number => {
+            let span = scan.value();
+            scan.slice(span)
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .map(Value::F64)
+        }
+        _ => None,
+    };
+    Ok(read.unwrap_or_else(|| fallback.clone()))
+}
+
 fn json_value(text: &str) -> Result<Value, KernelError> {
     let text = JsonText::try_from(text).map_err(|_| KernelError::InputContract)?;
     Ok(Value::Json(Arc::new(text)))
@@ -596,9 +697,18 @@ impl ResolvedJson {
         let Value::Json(text) = &inputs[0] else {
             return Err(KernelError::InputContract);
         };
+        if matches!(
+            self.operation,
+            Op::ReadText | Op::ReadInt | Op::ReadNumber | Op::ReadBool
+        ) {
+            return read(self.operation, text.as_str(), &inputs[1], &inputs[2]);
+        }
         let mut scan = Scan::new(text.as_str());
         let first = scan.peek().ok_or(KernelError::InputContract)?;
         Ok(match self.operation {
+            Op::ReadText | Op::ReadInt | Op::ReadNumber | Op::ReadBool => {
+                return Err(KernelError::InputContract);
+            }
             Op::Parse
             | Op::BuildObject
             | Op::BuildArray

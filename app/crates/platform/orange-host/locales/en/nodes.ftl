@@ -62,3 +62,7 @@ port-from-min = Source start
 port-from-max = Source end
 port-to-min = Target start
 port-to-max = Target end
+name-org-orange-json-read-text = Read JSON Text
+name-org-orange-json-read-int = Read JSON Whole Number
+name-org-orange-json-read-number = Read JSON Number
+name-org-orange-json-read-bool = Read JSON True or False

@@ -295,3 +295,7 @@ port-from-min = Inicio de origen
 port-from-max = Fin de origen
 port-to-min = Inicio de destino
 port-to-max = Fin de destino
+name-org-orange-json-read-text = Leer texto JSON
+name-org-orange-json-read-int = Leer entero JSON
+name-org-orange-json-read-number = Leer número JSON
+name-org-orange-json-read-bool = Leer verdadero o falso JSON

@@ -508,6 +508,13 @@ index is None, and reading the wrong kind is an error.
   another kind. Integer reads need integer form (an optional `-` and digits; `1.0`
   and `1e2` are `core/Domain`) and must fit (`core/OutOfRange`). `as-f64` rounds
   once to nearest and reports overflow as `core/OutOfRange`.
+- `read-text`, `read-int`, `read-number` and `read-bool` take `value`, `path` and a
+  `fallback` of their type (`core/string@1`, `core/i64@1`, `core/f64@1`,
+  `core/bool@1`) and go from JSON to that type in one step. They read the value at
+  `path` like `get-path`, or the whole value for an empty path, and return
+  `fallback` when it is absent, null, of another kind, not in integer form or out of
+  range. Invalid path syntax still faults with `core/Domain`. Use `get-path` with
+  Match Option when a missing field needs its own branch.
 
 Core converters `core/string-to-json` (checked: `core/Parse`, or
 `core/LimitExceeded` beyond the 1 MiB / nesting limits of `JsonText`) and

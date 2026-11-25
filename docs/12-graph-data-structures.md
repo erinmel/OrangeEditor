@@ -937,6 +937,7 @@ Semantics: [11 §5.10](11-graph-language.md).
 | `at` | `value`, `index: core/u64@1` | `core/option@1<core/json@1>` |
 | `length` | `value` | `core/u64@1` |
 | `as-bool`, `as-string`, `as-i64`, `as-u64`, `as-f64` | `value` | `core/option@1<T>` of that type |
+| `read-text`, `read-int`, `read-number`, `read-bool` | `value`, `path: core/string@1`, `fallback: T` | `T`: `core/string@1`, `core/i64@1`, `core/f64@1`, `core/bool@1` |
 | `build-object` | `fields: map<string,json>` | json |
 | `build-array` | `items: list<json>` | json |
 | `set-field` | `object: json`, `key: string`, `value: json` | json |

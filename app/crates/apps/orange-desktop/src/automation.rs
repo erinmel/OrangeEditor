@@ -644,15 +644,15 @@ fn check_round_trip(host: &Host, draft: &orange_host::Draft, label: &str) -> Str
 }
 
 #[test]
-fn the_saved_json_example_extracts_fields_and_uses_its_fallbacks() {
+fn the_saved_json_example_reads_fields_in_one_step_and_uses_its_fallback() {
     let (mut host, _) = desktop_host();
     let example = include_str!("../../orange-cli/graphs/json-extraction.json");
     let mut editor = Editor::new();
     for (path, expected) in [
         ("items[0].name", "Studio mic"),
         (r#"headers["Content-Type"]"#, "application/json"),
-        ("items[0].missing", "(field missing)"),
-        ("items[0].level", "(field is not text)"),
+        ("items[0].missing", "(missing or not text)"),
+        ("items[0].level", "(missing or not text)"),
     ] {
         editor.open_untitled(&mut host, example.to_owned());
         let graph = editor.graph().unwrap();
@@ -665,7 +665,7 @@ fn the_saved_json_example_extracts_fields_and_uses_its_fallbacks() {
         let extract = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "org.orange.json/get-path")
+            .find(|node| node.definition == "org.orange.json/read-text")
             .unwrap()
             .id;
         let variable: orange_host::VariableId = editor.declarations().unwrap().variables[0]
