@@ -637,3 +637,28 @@ fn archive_errors_hide_package_paths() {
         assert!(error.message_key().starts_with("packages/archive-"));
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    /// An archive is untrusted bytes: any single changed byte or truncation is refused
+    /// with a typed error, never a panic and never a different package.
+    #[test]
+    fn any_changed_or_truncated_archive_is_refused(
+        at in proptest::prelude::any::<proptest::sample::Index>(),
+        flip in 1u8..=255,
+        cut in proptest::prelude::any::<bool>(),
+    ) {
+        let (_, archive) = sample();
+        let mut bytes = archive.clone();
+        let index = at.index(bytes.len());
+        if cut {
+            bytes.truncate(index);
+        } else {
+            bytes[index] ^= flip;
+        }
+        let mut sink = MemorySink::new();
+        let outcome = read_archive(bytes.as_slice(), &ArchiveLimits::default(), &mut sink);
+        proptest::prop_assert!(outcome.is_err(), "byte {index} accepted (cut: {cut})");
+    }
+}
