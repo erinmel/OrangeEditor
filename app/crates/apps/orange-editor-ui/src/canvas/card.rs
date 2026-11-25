@@ -6,7 +6,7 @@ use super::*;
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
 pub(super) const WIDTH: f32 = 272.0;
-const METER_WIDTH: f32 = 354.0;
+const METER_WIDTH: f32 = 320.0;
 pub(super) const METER_FIELDS_X: f32 = 116.0;
 const LITERAL_WIDTH: f32 = 180.0;
 const CHART_WIDTH: f32 = 400.0;
@@ -471,9 +471,26 @@ impl<'a> Card<'a> {
             });
             y += LINE;
         }
-        let mut dial_count = 0;
-        let mut dial_y = y;
+        // Beside the meter: the outputs, then the dials side by side. Under it, the
+        // stream input and every other setting, across the whole card.
         let middle = f32::midpoint(METER_FIELDS_X, METER_WIDTH - CARD_PADDING);
+        let dial_top = y;
+        let mut beside = y;
+        let mut dial_count = 0;
+        let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
+        let mut inputs = Vec::new();
+        for port in node.ports.iter().filter(|port| port.input) {
+            inputs.push(Row {
+                top: stream_y,
+                height: LINE,
+                left: Some(Left::Port(port)),
+                right: None,
+                field_inset: CARD_PADDING,
+                field_end: None,
+            });
+            stream_y += LINE;
+        }
+        let mut under = stream_y;
         for (name, schema) in settings::fields(node) {
             let dial = crate::properties::AudioDial::for_setting(node, name);
             let editor = FieldOf::Setting(name, schema, dial);
@@ -481,20 +498,17 @@ impl<'a> Card<'a> {
             let name_line = if dial.is_some() { 0.0 } else { NAME };
             let height = name_line + editor.control_height() + GAP;
             let (top, inset, end) = if dial.is_some() {
-                if dial_count == 0 {
-                    dial_y = y;
-                    y += height;
-                }
                 dial_count += 1;
-                if dial_count == 1 {
-                    (dial_y, METER_FIELDS_X, Some(middle - 6.0))
+                beside = beside.max(dial_top + height);
+                if dial_count % 2 == 1 {
+                    (dial_top, METER_FIELDS_X, Some(middle - 6.0))
                 } else {
-                    (dial_y, middle, None)
+                    (dial_top, middle, None)
                 }
             } else {
-                let top = y;
-                y += height;
-                (top, METER_FIELDS_X, None)
+                let top = under;
+                under += height;
+                (top, CARD_PADDING, None)
             };
             rows.push(Row {
                 top,
@@ -508,20 +522,10 @@ impl<'a> Card<'a> {
                 field_end: end,
             });
         }
-        let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
-        for port in node.ports.iter().filter(|port| port.input) {
-            rows.push(Row {
-                top: stream_y,
-                height: LINE,
-                left: Some(Left::Port(port)),
-                right: None,
-                field_inset: CARD_PADDING,
-                field_end: None,
-            });
-            stream_y += LINE;
-        }
+        rows.extend(inputs);
+        let y = beside.max(under);
         Self {
-            size: Vec2::new(METER_WIDTH, y.max(stream_y) + END),
+            size: Vec2::new(METER_WIDTH, y + END),
             rows,
             sole_primary_exit: None,
             empty: false,

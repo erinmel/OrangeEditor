@@ -681,11 +681,11 @@ clears when the stream is lost or the analyzer restarts. With a stopped or
 unavailable input, the meter shows empty L/R lanes with unlit clip indicators
 and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
-the meter. Drag the threshold line or type a threshold in the settings column.
-The direction, hold duration and reset margin sit in the same column.
-Hold and Reset margin are dials, side by side. On the card each dial carries its
-own name, so the pair takes one row; in Properties the row label names it. Double-click
-the value to type.
+the meter. Drag the threshold line or type a threshold under the meter.
+Beside the meter sit the outputs and, under them, Hold and Reset margin as dials side
+by side; each dial carries its own name. Under the meter, the stream input, Condition
+and Threshold run the full width of the card. In Properties the row label names each
+dial. Double-click a dial's value to type.
 The meter marker, slider and numeric threshold control mirror the active drag.
 Release commits one undoable edit. A typed threshold commits when editing ends.
 Threshold, Hold, and Reset margin configure the trigger's subscription.
