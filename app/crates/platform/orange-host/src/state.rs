@@ -127,10 +127,8 @@ pub(crate) fn save(
     let _ = body.insert("variables".to_owned(), Json::Array(entries));
     let text = VARIABLES.wrap(body);
     let target = file(directory, name);
-    let temporary = directory.join(format!("{name}.variables.json.tmp"));
-    std::fs::write(&temporary, format!("{text:#}\n"))
-        .map_err(|e| io("write the stored variables", &e))?;
-    std::fs::rename(&temporary, &target).map_err(|e| io("replace the stored variables", &e))
+    orange_sandbox::replace_file(&target, format!("{text:#}\n").as_bytes())
+        .map_err(|e| io("replace the stored variables", &e))
 }
 
 /// The stored values that still fit `kept`: same ID and same declared type, decoding

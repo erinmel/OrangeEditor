@@ -5,38 +5,12 @@ use orange_sandbox::FsError;
 use orange_sdk::{Arguments, EmitError, Emitter, Lifecycle, ServiceSource, Session, Value};
 use serde_json::{Map, Value as Json};
 use std::collections::BTreeMap;
-use std::fs::Metadata;
 use std::sync::Arc;
 use std::thread;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Identity(u64, u64, u64);
-
-fn identity(metadata: &Metadata) -> Option<Identity> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some(Identity(metadata.dev(), metadata.ino(), 0))
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        let created = metadata.creation_time();
-        // Stable std does not expose the NTFS file index. Require all three
-        // attributes to match before inferring a one-to-one rename.
-        (created != 0).then_some(Identity(
-            created,
-            metadata.last_write_time(),
-            metadata.len(),
-        ))
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = metadata;
-        None
-    }
-}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Stamp {
@@ -47,14 +21,14 @@ struct Stamp {
     readonly: bool,
 }
 
-impl From<Metadata> for Stamp {
-    fn from(metadata: Metadata) -> Self {
+impl From<orange_sandbox::Info> for Stamp {
+    fn from(info: orange_sandbox::Info) -> Self {
         Self {
-            identity: identity(&metadata),
-            directory: metadata.is_dir(),
-            bytes: metadata.len(),
-            modified: metadata.modified().ok(),
-            readonly: metadata.permissions().readonly(),
+            identity: info.identity().map(|(a, b, c)| Identity(a, b, c)),
+            directory: info.is_dir(),
+            bytes: info.bytes(),
+            modified: info.modified(),
+            readonly: info.read_only(),
         }
     }
 }
@@ -73,7 +47,7 @@ fn snapshot(
         .map(|entries| {
             entries
                 .into_iter()
-                .map(|entry| (entry.path, Stamp::from(entry.metadata)))
+                .map(|entry| (entry.path, Stamp::from(entry.info)))
                 .collect()
         })
 }
@@ -90,7 +64,7 @@ impl Change<'_> {
     fn name(&self) -> &'static str {
         match self {
             Self::Created => "created",
-            Self::Modified => "modified",
+            Self::Modified => "changed",
             Self::Deleted => "deleted",
             Self::Renamed(_) => "renamed",
         }
@@ -317,7 +291,7 @@ mod tests {
         fs::write(root.join("chosen/second"), "x").unwrap();
         fs::write(root.join("chosen/third"), "x").unwrap();
         let folder = Folder {
-            files: orange_sandbox::Folder::new(root.canonicalize().unwrap(), false),
+            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false),
             poll: Duration::from_millis(10),
         };
         let (events, observed) = mpsc::channel();
@@ -364,12 +338,26 @@ mod tests {
     }
 
     #[test]
+    fn change_kinds_use_the_names_the_record_documents() {
+        let names: Vec<_> = [
+            Change::Created,
+            Change::Modified,
+            Change::Deleted,
+            Change::Renamed("a"),
+        ]
+        .iter()
+        .map(Change::name)
+        .collect();
+        assert_eq!(names, ["created", "changed", "deleted", "renamed"]);
+    }
+
+    #[test]
     fn a_real_directory_rename_reports_the_old_and_new_paths() {
         let root = std::env::temp_dir().join(format!("orange-watch-rename-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("old")).unwrap();
         let folder = Folder {
-            files: orange_sandbox::Folder::new(root.canonicalize().unwrap(), false),
+            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false),
             poll: Duration::from_millis(10),
         };
         let life = Lifecycle::new();

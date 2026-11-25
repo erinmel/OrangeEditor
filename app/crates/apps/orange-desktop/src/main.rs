@@ -87,10 +87,9 @@ impl Drop for Desktop {
             return;
         };
         let Some(parent) = path.parent() else { return };
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        let preferences = self.editor.preferences().to_string();
         let result = std::fs::create_dir_all(parent)
-            .and_then(|()| std::fs::write(&temporary, self.editor.preferences().to_string()))
-            .and_then(|()| std::fs::rename(&temporary, &path));
+            .and_then(|()| orange_sandbox::replace_file(&path, preferences.as_bytes()));
         if let Err(error) = result {
             eprintln!("Could not save editor preferences: {error}");
         }

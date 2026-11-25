@@ -123,9 +123,7 @@ pub(crate) fn set_disabled(directory: &Path, ids: &BTreeSet<String>) -> Result<(
 }
 
 fn write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
-    let temporary = directory.join(format!("{name}.tmp"));
-    fs::write(&temporary, bytes).map_err(|error| io("write a package file", &error))?;
-    fs::rename(&temporary, directory.join(name))
+    orange_sandbox::replace_file(&directory.join(name), bytes)
         .map_err(|error| io("replace a package file", &error))
 }
 

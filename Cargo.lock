@@ -3464,6 +3464,7 @@ dependencies = [
  "orange-host",
  "orange-native",
  "orange-net",
+ "orange-sandbox",
  "orange-sdk",
  "orange-testkit",
  "orange-vault",
@@ -3527,6 +3528,7 @@ dependencies = [
  "orange-model",
  "orange-packages",
  "orange-runtime",
+ "orange-sandbox",
  "orange-sdk",
  "orange-testkit",
  "serde_json",
@@ -3635,7 +3637,7 @@ dependencies = [
 name = "orange-sandbox"
 version = "0.0.0"
 dependencies = [
- "libc",
+ "rustix 1.1.6",
 ]
 
 [[package]]

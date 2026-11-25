@@ -205,37 +205,113 @@ to be sent, so a normal stop does not publish the will. Not provided: MQTT 5,
 client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
 to the connection), and messages over 8 MiB.
 
-Files (2026-11-12; `orange-files`, package `org.orange.files`). A
-`org.orange.files/folder` connection has settings `path` (an existing directory),
-`read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
-`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`,
-`move`, `copy`, `make-directory`, `remove-directory` (empty directories only),
-`size` (output `bytes`), `read-range` (`offset`, `length`; fewer bytes at the end of
-the file, none past it), `append-bytes`
-and the entry `on-change` (payload: the change kind, relative path, previous path
-for a rename and directory flag). A watcher takes a baseline of the selected tree
-before emitting changes. With `wait_for_folder` enabled, a missing subfolder at
-startup is polled until it appears. Its first snapshot becomes the baseline.
-Paths are relative to
-the folder with `/` between plain names; `..`, absolute and drive forms, device names
-and links leading out of the folder are refused. Windows 10 device forms (`nul .txt`,
-`COM¹`, `CONIN$`) count as device names. A file is opened without following a link at
-its own name and the opened handle is checked again. On Windows every directory on the
-path is held open without delete sharing until the operation ends, so none can be
-renamed or replaced by a junction after it was checked. Other systems do not hold
-directories in place: a process that can write to the folder can still race an
-intermediate directory. Hard-linked files are ordinary files; creating a link to
-another user's file needs write access to it on Windows and is refused by default on
-Linux. A write goes to a temporary file in
-the same directory, is flushed and renamed over the target. A read or write of a
-whole file, and one piece read or appended, is at most 64 MiB; a larger file is walked
-with `size`, `read-range` and `append-bytes`, and `copy` and `move` have no size limit
-because they never hold the content. Listings, recursive operations and watcher snapshots
-are bounded to 10,000 descendants. `copy-directory` also caps copied bytes at 1 GiB.
-`copy-directory` and `move-directory` require a new destination under an existing
-parent, and a move stays on the same filesystem. `delete-directory` cannot remove
-the connected root. Tree mutations refuse links and reparse points and tree listings
-skip them. Concurrent external mutation can interrupt an operation.
+Files (2026-11-12, revised 2026-11-25; `orange-files` on `orange-sandbox`, package
+`org.orange.files`). A `org.orange.files/folder` connection has settings `path` (an
+existing directory), `read_only` and `poll_ms` (50 to 60,000, default 500). Nodes:
+`read-text`, `write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`,
+`exists`, `delete`, `move`, `copy`, `make-directory`, `copy-directory`,
+`move-directory`, `delete-directory`, `file-info`, `read-range` (`offset`, `length`;
+fewer bytes at the end of the file, none past it), `append-bytes` and the entry
+`on-change`. A watcher takes a baseline of the selected tree before emitting changes.
+With `wait_for_folder` enabled, a missing subfolder at startup is polled until it
+appears. Its first snapshot becomes the baseline.
+
+Paths are relative to the folder with `/` between plain names; `..`, absolute and
+drive forms, device names and links leading out of the folder are refused. Windows 10
+device forms (`nul .txt`, `COM¹`, `CONIN$`) count as device names on every system, so a
+graph stays portable. Every operation walks from the folder to the directory it works
+in one name at a time through held directory handles, then acts on one name in the
+last of them:
+
+- Linux and macOS: each directory is opened with `openat(O_NOFOLLOW | O_DIRECTORY)`
+  relative to the previous one, and the final call is the `*at` form relative to the
+  last (`openat`, `mkdirat`, `renameat`, `unlinkat`, `fstatat` without following).
+  Renaming a checked directory or replacing it with a link afterwards cannot redirect
+  the operation outside the folder; a later walk refuses the link. The calls go through
+  `rustix`, so `orange-sandbox` keeps the workspace's `forbid(unsafe_code)`.
+- Windows: every directory from the folder down is held open without delete sharing
+  and with `FILE_FLAG_OPEN_REPARSE_POINT`, so none can be renamed, removed or replaced
+  by a junction until the operation ends; the final call is made on the path they pin.
+
+On both, a file is opened without following a link at its own name and the opened
+handle is checked to be a regular file. Copy and move check source and destination
+this way. Hard-linked files are ordinary files; creating a link to another user's file
+needs write access to it on Windows and is refused by default on Linux.
+
+A folder the user chose that goes missing (removed, renamed, a drive disconnected)
+fails every node with `org.orange.files/folder-missing` and is never created again, so
+an unmounted drive is not replaced by an empty directory on another one. A package data
+directory (`orange-guest`) is still created by its first write.
+
+Writes, `copy` and replacement: the content goes to a new temporary file
+`.orange-<pid>-<n>-<random>.tmp` in the target's directory, created exclusively (a file
+or link already at the name is never written through), flushed, and renamed over the
+target. Any failure removes the temporary file and leaves the previous file untouched.
+Listings skip these names. The rename is atomic on every supported local filesystem.
+Crash durability also needs the directory entry flushed: Linux and macOS `fsync` the
+held directory; Windows cannot through std, so NTFS's journal finds the old or the new
+file after a crash, but a crash right after a successful write may still find the old
+one. macOS uses `fsync`, not `F_FULLFSYNC`. `append` locks the file and is not a
+multi-writer transaction. `move` and `move-directory` are one rename on one volume: a
+destination on another volume (a mount point or another drive inside the folder) fails
+with `org.orange.files/cross-device` and changes nothing; a graph that means to cross
+volumes copies and then deletes. `copy-directory` removes what it copied if it fails.
+
+Names: Unicode names round-trip; macOS HFS+ stores names decomposed (NFD), so a listing
+there can return another normalization than was written, while APFS and NTFS keep the
+form written. A case-only rename (`a.txt` to `A.txt`, or a folder) works on
+case-insensitive filesystems: a destination that resolves to the source itself is
+accepted. A name that is not valid UTF-8 (possible on Linux) cannot be addressed by a
+graph: listings, the watcher and `exists` skip it, and `copy-directory`,
+`move-directory` and `delete-directory` refuse a tree containing one rather than change
+part of it.
+
+Failures are typed so the editor can say what to do: `not-found`, `path-invalid`,
+`too-large`, `read-only` (the connection), `folder-missing`, `permission-denied`
+(permissions, access lists or a read-only file), `in-use` (Windows sharing or lock
+violation, `EBUSY`, `ETXTBSY`), `read-only-location` (read-only mount, write-protected
+media), `no-space` (disk or quota full), `cross-device`, `unsupported`, `tree-changed`,
+`operation-cancelled` and `io-failed` for anything else, each with English and Spanish
+text. No fault carries a path or system text. On Windows, replacing or deleting a file
+another program holds without delete sharing is refused as `in-use` or
+`permission-denied`, as the system reports it; the previous file is kept. Package
+guests (`orange-guest`) keep their fixed error words, with the new refusals as `failed`.
+
+Limits: a read or write of a whole file, and one piece read or appended, is at most
+64 MiB; a larger file is walked with `file-info`, `read-range` and `append-bytes`, and
+`copy` and `move` have no size limit because they never hold the content. Listings,
+recursive operations and watcher snapshots are bounded to 10,000 descendants.
+`copy-directory` also caps copied bytes at 1 GiB. `copy-directory` and `move-directory`
+require a new destination under an existing parent, outside the source.
+`delete-directory` cannot remove the connected root. Tree mutations refuse links and
+reparse points and tree listings skip them.
+
+Network and removable volumes: SMB and NFS resolve links on the server, so the handle
+checks apply to what the client sees; SMB honours Windows share modes, while NFS
+`O_EXCL` and rename atomicity depend on the server version. FAT and exFAT have no
+journal and no links: renames replace in place, but after a crash a temporary file can
+remain beside the target. None of these volumes has been qualified.
+
+Host-owned files outside any folder (saved documents and their `.bak` and `.autosave`,
+`installed.json`, `disabled.json`, stored variables, editor preferences, native
+library approvals) are replaced the same way through `orange_sandbox::replace_file`:
+exclusive temporary beside the target, flushed, renamed, directory flushed on Unix,
+temporary removed on failure. The package journal keeps its own writer-locked log.
+
+| Family | Linux | macOS | Windows | Verified |
+| --- | --- | --- | --- | --- |
+| Walk and containment | `openat` chain, `O_NOFOLLOW` + `O_DIRECTORY` | same | held handles without delete sharing, reparse points refused | Linux: tests on ext4 (WSL Debian, rustc 1.99.1); Windows: tests on NTFS; macOS: compiled and Clippy-checked locally, suite in CI on `macos-15` |
+| Read, read range, file info | `openat(O_NOFOLLOW)`, `fstat` type check | same | `OPEN_REPARSE_POINT` open, handle check | automated, Linux and Windows |
+| Write, copy (replace) | exclusive temporary, `fsync`, `renameat`, directory `fsync` | same | exclusive temporary, `FlushFileBuffers`, `MoveFileEx`, no directory flush | automated: a failed replace keeps the previous file (directory in the way, over the limit, Linux denied directory, Windows locked file) |
+| Append | `O_APPEND`, `File::lock` | same | `File::lock` | automated concurrency test, Linux and Windows |
+| Delete, make and remove directory | `unlinkat`, `mkdirat` | same | path under held parents | automated |
+| Move and rename | `renameat` with both directories held; `EXDEV` is `cross-device` | same | `MoveFileEx`; `ERROR_NOT_SAME_DEVICE` is `cross-device` | error mapping automated; a real cross-volume move reviewed only |
+| Tree copy, move, delete | strict enumeration through held handles; copy rolls back | same | same | automated; junctions refused on Windows, symlinks on Linux |
+| Listing and watch | `rustix::fs::Dir`; non-UTF-8 names skipped | same; NFD on HFS+ | `FindFirstFile`; identity is creation time, write time and size | automated: rename, overflow and rebaseline |
+| Errors | `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `EXDEV`, `EBUSY`, `ELOOP` typed | same | sharing and lock violation, write protect, disk full typed | mapping automated; real denial on Linux, real locked file on Windows |
+
+Not yet verified on a real system: macOS beyond CI, read-only and write-protected
+media, a full disk, network shares, and a crash during a write.
 
 `list` accepts a relative `path`, an optional `pattern` and a `recursive` switch.
 Patterns are case-sensitive. `*` and `?` match within a path component, and a

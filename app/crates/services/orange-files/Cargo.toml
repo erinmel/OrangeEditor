@@ -7,9 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 build = "../../../build/locales.rs"
 
-[features]
-windows-junction-tests = []
-
 [dependencies]
 orange-sandbox = { path = "../../platform/orange-sandbox", version = "=0.0.0" }
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }

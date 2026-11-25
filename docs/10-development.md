@@ -52,8 +52,9 @@ each regression found. There is no upfront fixture suite and no coverage target.
 - The OS credential store round trip uses the `os-vault-tests` feature.
 - Socket fixtures with local servers run in the automated suite. Checks that need
   a public endpoint or running broker use the `network-service-tests` feature.
-- Windows junction qualification uses the `windows-junction-tests` feature on a volume
-  where the test can create a junction. Unix runs the symlink test by default.
+- File containment tests create Windows junctions (no privilege needed) and Unix symlinks
+  by default. Linux checks can run from Windows in WSL with `CARGO_TARGET_DIR` and
+  `TMPDIR` on the WSL ext4 disk, not on `/mnt/c`, which is not a Linux filesystem.
 - Network tests that need brokers run against the [Docker network lab](../tools/README.md).
 
 ## Panic policy
