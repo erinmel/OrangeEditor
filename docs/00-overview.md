@@ -61,8 +61,9 @@ These are the gaps between the vision and the repository today, most important f
 3. **Plugin walkthrough.** [04](04-expansion-plugins.md) is the package contract.
    [02](02-architecture.md#embedding-surface) documents the supported Rust and UI
    integration surface.
-4. **Flow-started subscriptions.** Event outputs on actions (11 §10.4) are specified but
-   not implemented; triggers are always armed while a graph runs.
+4. **Flow-started subscriptions are deferred beyond v1.** The design for event outputs
+   on actions appears in [11 §10.4](11-graph-language.md#104-subscriptions). V1 supports
+   registered triggers and typed run events through On Event, Emit and Await Event.
 5. **Audio tuning surface.** Frequency Splitter offers a live spectrum and editable
    bands. Transient hit markers on the chart and wireable When thresholds are still open.
 6. **Platform qualification.** Frame time, memory and latency targets are measured on

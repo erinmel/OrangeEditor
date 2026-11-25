@@ -412,7 +412,7 @@ pub struct Canvas {
     pub(crate) shortcuts_enabled: bool,
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
     /// The document's variables, as (ID, name), for the pickers on cards.
-    pub(crate) variables: Vec<(String, String)>,
+    pub(crate) variables: Vec<(String, String, orange_host::VarScope)>,
     /// The choices of the enum types the document's inputs take.
     pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
@@ -449,6 +449,7 @@ pub struct Canvas {
     /// the center, so an untouched graph stays whole.
     fitted: Option<(f32, Pos2)>,
     wiring: Option<Wiring>,
+    keyboard_wiring: Option<Wiring>,
     inbound_givers: Option<HashMap<NodeId, Vec<String>>>,
     /// The wire under the pointer at the last frame, and the selected wire.
     hover_wire: Option<WireEnds>,
@@ -520,6 +521,7 @@ impl Default for Canvas {
             fit: true,
             fitted: None,
             wiring: None,
+            keyboard_wiring: None,
             inbound_givers: None,
             hover_wire: None,
             selected_wire: None,
@@ -751,6 +753,7 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.keyboard_wiring = None;
         self.inbound_givers = None;
         self.expanded_failure_routes.clear();
         self.focused_failure_port = None;
@@ -1612,6 +1615,7 @@ impl Canvas {
         let alive = !self.stale;
         let animation_time = ui.input(|input| animation_phase(input.time));
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+        let response = response.accessible_name(t("canvas"));
         let area = response.rect;
         let previous_size = std::mem::replace(&mut self.size, area.size());
         let colors = Palette::of(ui);
@@ -1655,11 +1659,8 @@ impl Canvas {
         if response.clicked() {
             self.select(None);
         }
-        // A right-click on the background; a wire under it is found as wires are drawn.
-        let background_menu = response
-            .secondary_clicked()
-            .then(|| response.interact_pointer_pos())
-            .flatten();
+        // A background context menu may also target a wire.
+        let background_menu = context_position(&response);
         let menu_at = |screen: Pos2, origin: Pos2, zoom: f32| {
             let at = graph_point(screen, origin, zoom);
             ([at.x, at.y], screen)
@@ -1717,31 +1718,6 @@ impl Canvas {
 
         painter.rect_filled(area, 0.0, colors.background);
         self.draw_grid(&painter, area, &colors);
-        // An empty graph says how to begin, where the work happens.
-        if graph.nodes.is_empty() {
-            painter.rect_filled(
-                Rect::from_center_size(
-                    area.center() + Vec2::new(0.0, 1.0),
-                    Vec2::new(460.0_f32.min(area.width()), 64.0),
-                ),
-                8.0,
-                colors.background,
-            );
-            let _ = painter.text(
-                area.center() - Vec2::new(0.0, 12.0),
-                Align2::CENTER_CENTER,
-                t("canvas-empty-title"),
-                FontId::proportional(16.0),
-                colors.text,
-            );
-            let _ = painter.text(
-                area.center() + Vec2::new(0.0, 14.0),
-                Align2::CENTER_CENTER,
-                t("canvas-empty-hint"),
-                FontId::proportional(12.5),
-                colors.weak,
-            );
-        }
 
         // Groups: their title bars are handled under the cards, and their frames drawn
         // behind them.
@@ -1775,6 +1751,14 @@ impl Canvas {
                 continue;
             }
             let touched = ui.interact(rect, response.id.with(node.id), Sense::click_and_drag());
+            touched.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::Role::Button,
+                    touched.enabled(),
+                    self.selection.contains(&node.id),
+                    self.display_name(node),
+                )
+            });
             if touched.drag_started() && !self.selection.contains(&node.id) {
                 self.select(Some(node.id));
             }
@@ -1836,9 +1820,7 @@ impl Canvas {
                 self.node_rename = Some(NodeRename::new(node.id, node.name.clone()));
                 done.rename_node = Some(node.id);
             }
-            if touched.secondary_clicked()
-                && let Some(screen) = touched.interact_pointer_pos()
-            {
+            if let Some(screen) = context_position(&touched) {
                 let (at, screen) = menu_at(screen, self.origin, self.zoom);
                 self.front = Some(node.id);
                 done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
@@ -1858,6 +1840,19 @@ impl Canvas {
         // Keep a 20-point target even when the connector is drawn small. Below
         // that spacing, constrain targets to their own row so neighbours stay usable.
         let grab = ((PORT_RADIUS + 5.0) * zoom).max(10.0);
+        if self.keyboard_wiring.as_ref().is_some_and(|pending| {
+            self.hidden.contains(&pending.from.0)
+                || geometry
+                    .port(pending.from.0, &pending.from.1, pending.backward)
+                    .is_none()
+                || graph
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == pending.from.0 && node.missing.is_some())
+                || ui.input(|input| input.key_pressed(egui::Key::Escape))
+        }) {
+            self.keyboard_wiring = None;
+        }
         let front = self.front;
         let card_pointer = ui.input(|input| {
             input
@@ -1921,7 +1916,28 @@ impl Canvas {
                     response.id.with((node.id, port.id.as_str(), port.input)),
                     Sense::click_and_drag(),
                 );
+                let source = self.keyboard_wiring.as_ref().is_some_and(|pending| {
+                    pending.from.0 == node.id
+                        && pending.from.1 == port.id
+                        && pending.backward == port.input
+                });
+                touched.widget_info(|| {
+                    let label = tf(
+                        if port.input {
+                            "canvas-input-port"
+                        } else {
+                            "canvas-output-port"
+                        },
+                        &[
+                            ("node", self.display_name(node).into()),
+                            ("port", canvas_port_name(node, port).into()),
+                            ("type", canvas_port_type(node, port).into()),
+                        ],
+                    );
+                    egui::WidgetInfo::selected(egui::Role::Button, touched.enabled(), source, label)
+                });
                 if touched.drag_started() && node.missing.is_none() {
+                    self.keyboard_wiring = None;
                     self.inbound_givers = None;
                     self.wiring = Some(Wiring {
                         from: (node.id, port.id.clone()),
@@ -1929,37 +1945,46 @@ impl Canvas {
                         backward: port.input,
                     });
                 }
-                if touched.secondary_clicked() {
+                if touched.clicked()
+                    && !touched.clicked_by(egui::PointerButton::Primary)
+                    && node.missing.is_none()
+                {
+                    match self.keyboard_wiring.take() {
+                        None => {
+                            self.keyboard_wiring = Some(Wiring {
+                                from: (node.id, port.id.clone()),
+                                exec: port.exec,
+                                backward: port.input,
+                            });
+                        }
+                        Some(_) if source => {}
+                        Some(pending)
+                            if pending.from.0 != node.id
+                                && pending.exec == port.exec
+                                && pending.backward != port.input =>
+                        {
+                            let here = (node.id, port.id.clone());
+                            done.connect = Some(if port.input {
+                                (pending.from, here)
+                            } else {
+                                (here, pending.from)
+                            });
+                        }
+                        Some(pending) => self.keyboard_wiring = Some(pending),
+                    }
+                }
+                if let Some(screen) = context_position(&touched) {
                     let target = crate::MenuTarget::Port {
                         node: node.id,
                         port: port.id.clone(),
                         input: port.input,
                     };
-                    let (at, screen) = menu_at(at, origin, zoom);
+                    let (at, screen) = menu_at(screen, origin, zoom);
                     done.context = Some((target, at, screen));
                 }
                 if touched.hovered() && self.wiring.is_none() {
-                    let label = if port.input && !port.exec {
-                        crate::properties::input_caption(node, port)
-                    } else {
-                        crate::node_ergonomics::loop_result(node, port)
-                            .map_or_else(|| port_title(port), str::to_owned)
-                    };
-                    let detail = if port.exec {
-                        Some(t("port-execution").to_owned())
-                    } else {
-                        port.ty.as_deref().map(|ty| {
-                            if ty.starts_with('$') {
-                                port_type_label(&node.definition, ty)
-                            } else {
-                                crate::type_name(ty)
-                            }
-                        })
-                    };
-                    let hint = match detail {
-                        Some(ty) => format!("{label} · {ty}"),
-                        None => label,
-                    };
+                    let label = canvas_port_name(node, port);
+                    let hint = format!("{label} · {}", canvas_port_type(node, port));
                     let hint = if port.id == "error"
                         && self
                             .failure_routes
@@ -2442,6 +2467,42 @@ impl Canvas {
                 self.descriptions.get(&node.definition).map(String::as_str),
                 (connection, self.connection_selection(node)),
             );
+            let focused = ui.memory(|memory| memory.focused());
+            if focused == Some(response.id.with(node.id)) {
+                painter.rect_stroke(
+                    rect,
+                    6.0 * zoom,
+                    Stroke::new(2.0, colors.selected),
+                    StrokeKind::Inside,
+                );
+            }
+            for port in layout
+                .rows
+                .iter()
+                .flat_map(|row| [row.input(), row.right].into_iter().flatten())
+            {
+                let port_focus =
+                    focused == Some(response.id.with((node.id, port.id.as_str(), port.input)));
+                let pending = self.keyboard_wiring.as_ref().is_some_and(|wire| {
+                    wire.from.0 == node.id && wire.from.1 == port.id && wire.backward == port.input
+                });
+                if (port_focus || pending)
+                    && let Some(placed) = geometry.port(node.id, &port.id, port.input)
+                {
+                    painter.circle_stroke(
+                        to_screen(place + placed.offset),
+                        PORT_RADIUS * zoom + 4.0,
+                        Stroke::new(
+                            2.0,
+                            if pending {
+                                colors.exec
+                            } else {
+                                colors.selected
+                            },
+                        ),
+                    );
+                }
+            }
             if let Some(rename) = self
                 .node_rename
                 .as_mut()
@@ -3043,7 +3104,7 @@ fn number_field(
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     let painter = ui.painter();
-    fields::frame(painter, slot, zoom, &colors, active);
+    fields::frame(painter, slot, zoom, &colors, active || touched.has_focus());
     let suffix = (!unit.is_empty()).then(|| (unit, colors.weak, FontId::proportional(11.5 * zoom)));
     let _ = fields::field_text_in(painter, slot, zoom, text, ink, suffix);
     touched
@@ -3591,6 +3652,40 @@ fn draw_node<'a>(
         }
     }
     (pressed, toggle_failure_routes, slots)
+}
+
+fn context_position(response: &egui::Response) -> Option<Pos2> {
+    if response.secondary_clicked() {
+        return response.interact_pointer_pos();
+    }
+    (response.has_focus()
+        && response
+            .ctx
+            .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)))
+    .then(|| response.rect.center())
+}
+
+fn canvas_port_name(node: &NodeView, port: &PortView) -> String {
+    if port.input && !port.exec {
+        crate::properties::input_caption(node, port)
+    } else {
+        crate::node_ergonomics::loop_result(node, port)
+            .map_or_else(|| port_title(port), str::to_owned)
+    }
+}
+
+fn canvas_port_type(node: &NodeView, port: &PortView) -> String {
+    if port.exec {
+        t("port-execution").to_owned()
+    } else if let Some(ty) = port.ty.as_deref() {
+        if ty.starts_with('$') {
+            port_type_label(&node.definition, ty)
+        } else {
+            crate::type_name(ty)
+        }
+    } else {
+        t("canvas-unresolved-port-type").to_owned()
+    }
 }
 
 fn failure_routes_button(

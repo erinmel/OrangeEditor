@@ -12,6 +12,13 @@ It is pre-1.0: the core, editor and base services work; see
 
 ## Starter workflows
 
+Use the **Nodes** tab to search for a node and **Properties** to choose its
+inputs, types, or declarations. To send a typed value between branches, place
+**Emit** and **On Event**, create a typed event from the Event picker, and
+select the same event on both nodes. Use **Await Event** when an existing
+branch should wait for the value. The [editor guide](docs/22-editor-design.md)
+describes typed events, variable scopes, and stream bounds.
+
 | Graph | What it demonstrates |
 | --- | --- |
 | [Counter with reset](app/crates/apps/orange-cli/graphs/counter-with-reset.json) | Increment, decrement and reset the same initialized variable. Search for Increment or Bump + in the editor to add a preconfigured update. |

@@ -146,16 +146,18 @@ pub fn password(
     let outline = ui.painter().add(egui::Shape::Noop);
     let content = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        let width = ui.available_width().min(240.0);
+        let width = ui.available_width();
         let eye = row.min(width);
+        let inset = (2.0 * spacing.sm).min((width - eye).max(0.0));
+        ui.add_space(inset);
         let field = ui
             .add(
                 egui::TextEdit::singleline(value)
                     .password(!*revealed)
                     .align(egui::Align2::LEFT_CENTER)
                     .frame(Frame::NONE)
-                    .margin(Margin::symmetric(spacing.sm as i8, 0))
-                    .desired_width((width - eye - 2.0 * spacing.sm).max(0.0))
+                    .margin(Margin::ZERO)
+                    .desired_width((width - eye - inset).max(0.0))
                     .min_size(vec2(0.0, row)),
             )
             .accessible_name(labels.field);

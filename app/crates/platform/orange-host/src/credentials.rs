@@ -115,6 +115,32 @@ fn approval_key(graph: GraphId, decl: &ConnectionDecl) -> String {
 }
 
 impl Host {
+    /// Reports whether a credential reference can be read from the local store.
+    /// This returns no secret value and does not approve or test a connection.
+    pub fn credential_available(&self, reference: &str) -> Result<bool, SecretError> {
+        use zeroize::Zeroize as _;
+        let name = reference
+            .strip_prefix(SECRET_PREFIX)
+            .filter(|name| is_secret_name(name) && !name.starts_with(APPROVAL_PREFIX))
+            .ok_or(SecretError::InvalidName)?;
+        let store = self
+            .options
+            .secrets
+            .as_ref()
+            .ok_or(SecretError::Unavailable(
+                "no credential store is configured",
+            ))?;
+        match store.get(name) {
+            Ok(mut secret) => {
+                let present = !secret.is_empty();
+                secret.zeroize();
+                Ok(present)
+            }
+            Err(SecretError::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Authorizes the current graph-scoped profile to use its credential references.
     /// Call after the operator or embedding application approves the exact settings.
     /// The approval is local to the vault and does not enter the graph or an export.

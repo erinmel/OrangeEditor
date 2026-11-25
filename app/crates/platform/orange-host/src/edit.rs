@@ -227,6 +227,14 @@ fn new_config(
         "core/on-timeout" => {
             let _ = config.insert("delay".to_owned(), json!("1000000000"));
         }
+        "core/collect" => {
+            let _ = config.insert("max_items".to_owned(), json!(1024));
+        }
+        "core/tee" => {
+            let _ = config.insert("capacity".to_owned(), json!(32));
+            let _ = config.insert("max_bytes".to_owned(), json!(1_048_576));
+            let _ = config.insert("overflow".to_owned(), json!("backpressure"));
+        }
         _ => {}
     }
     if let Ports::Nominal(access) = found.ports {

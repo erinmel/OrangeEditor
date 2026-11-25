@@ -2,7 +2,7 @@
 use super::{Typed, set_text, text_at, text_fields};
 use crate::controls::{Dropdown as _, Surface};
 use crate::i18n::t;
-use orange_host::SettingText;
+use orange_host::{Host, SettingText};
 use serde_json::Value as Json;
 
 pub(crate) const HTTP: &str = "org.orange.net/http";
@@ -31,6 +31,10 @@ fn modes(adapter: &str) -> &'static [Auth] {
         AMQP => &[Guest, Password],
         _ => &[],
     }
+}
+
+pub(super) fn uses_auth(adapter: &str) -> bool {
+    !modes(adapter).is_empty()
 }
 
 impl Auth {
@@ -120,18 +124,24 @@ fn choose(auth: Auth, settings: &mut Json, secrets: &mut Typed) {
     if auth == Auth::OAuthClient {
         set_text(settings, "oauth/refresh_token", None);
     }
-    secrets.0.retain(|path, _| auth.shows(path));
+    secrets.values.retain(|path, _| auth.shows(path));
+    secrets.revealed.clear();
 }
 
-fn localized(field: &SettingText) -> SettingText {
+fn localized(adapter: &str, field: &SettingText) -> SettingText {
     let label = match field.setting.as_str() {
         "base_url" => "connection-base-url",
-        "url" => "connection-address",
+        "url" => match adapter {
+            WS => "connection-websocket-url",
+            MQTT | AMQP => "connection-broker-url",
+            _ => "connection-address",
+        },
         "basic/user" | "username" => "connection-username",
+        "password" if adapter == MQTT => "connection-password-optional",
         "basic/password" | "password" => "connection-password",
         "bearer" => "connection-token",
         "api_key/header" => "connection-key-header",
-        "api_key/token" => "auth-api-key",
+        "api_key/token" => "connection-key-value",
         "oauth/token_url" => "connection-oauth-url",
         "oauth/client_id" => "connection-oauth-id",
         "oauth/client_secret" => "connection-oauth-secret",
@@ -145,6 +155,18 @@ fn localized(field: &SettingText) -> SettingText {
     }
 }
 
+pub(super) fn advanced_texts(texts: &[SettingText]) -> Vec<SettingText> {
+    texts
+        .iter()
+        .filter(|field| !auth_field(&field.setting) && !endpoint(field))
+        .cloned()
+        .collect()
+}
+
+fn endpoint(field: &SettingText) -> bool {
+    matches!(field.setting.as_str(), "url" | "base_url")
+}
+
 /// Reports changes that are separate from the saved settings, including a new
 /// mode with no fields filled and changes to masked drafts.
 pub(super) fn fields(
@@ -154,29 +176,35 @@ pub(super) fn fields(
     settings: &mut Json,
     secrets: &mut Typed,
     selected: &mut Option<Auth>,
+    host: &Host,
 ) -> bool {
     let Some(mut auth) = selected.or_else(|| infer(adapter, settings)) else {
-        return text_fields(ui, texts, settings, secrets);
+        return text_fields(ui, texts, settings, secrets, host);
     };
     let before = auth;
-    let (endpoints, advanced): (Vec<_>, Vec<_>) = texts
+    let endpoints: Vec<_> = texts
         .iter()
-        .filter(|field| !auth_field(&field.setting))
-        .map(localized)
-        .partition(|field| matches!(field.setting.as_str(), "url" | "base_url"));
-    text_fields(ui, &endpoints, settings, secrets);
-    ui.small(t("authentication"));
-    egui::ComboBox::from_id_salt("connection-authentication")
+        .filter(|field| endpoint(field))
+        .map(|field| localized(adapter, field))
+        .collect();
+    text_fields(ui, &endpoints, settings, secrets, host);
+    let caption = ui.label(t("authentication"));
+    let _ = egui::ComboBox::from_id_salt("connection-authentication")
         .selected_text(auth.label())
         .width(ui.available_width())
-        .show_select(ui, Surface::Panel, |ui| {
+        .show_select(ui, Surface::Dialog, |ui| {
             for mode in modes(adapter) {
                 let _ = ui.selectable_value(&mut auth, *mode, mode.label());
             }
-        });
+        })
+        .response
+        .labelled_by(caption.id);
     if auth != before {
         choose(auth, settings, secrets);
         *selected = Some(auth);
+    }
+    if auth == Auth::Guest {
+        ui.weak(t("connection-amqp-guest-hint"));
     }
     let credentials: Vec<_> = texts
         .iter()
@@ -184,15 +212,10 @@ pub(super) fn fields(
         .map(|field| SettingText {
             required: auth.required().contains(&field.setting.as_str())
                 || (adapter == AMQP && field.setting == "password"),
-            ..localized(field)
+            ..localized(adapter, field)
         })
         .collect();
-    let secret_changed = text_fields(ui, &credentials, settings, secrets);
-    if !advanced.is_empty() {
-        egui::CollapsingHeader::new(t("advanced"))
-            .id_salt("connection-network-advanced")
-            .show(ui, |ui| text_fields(ui, &advanced, settings, secrets));
-    }
+    let secret_changed = text_fields(ui, &credentials, settings, secrets, host);
     auth != before || secret_changed
 }
 
@@ -226,7 +249,10 @@ pub(super) fn validate(
     }
 
     let has = |key: &str| {
-        secrets.0.get(key).is_some_and(|value| !value.is_empty())
+        secrets
+            .values
+            .get(key)
+            .is_some_and(|value| !value.is_empty())
             || text_at(settings, key)
                 .and_then(Json::as_str)
                 .is_some_and(|value| !value.is_empty())
@@ -250,10 +276,12 @@ mod tests {
         let mut settings = json!({"base_url": "https://example.test", "timeout_ms": 1000,
             "basic": {"user": "user", "password": "credential://example/password"}});
         let mut secrets = Typed::default();
-        secrets.0.insert("basic/password".into(), "draft".into());
+        secrets
+            .values
+            .insert("basic/password".into(), "draft".into());
         assert_eq!(infer(HTTP, &settings), Some(Auth::Basic));
         choose(Auth::Bearer, &mut settings, &mut secrets);
-        assert!(secrets.0.is_empty());
+        assert!(secrets.values.is_empty());
         assert_eq!(
             settings,
             json!({"base_url": "https://example.test", "timeout_ms": 1000})
@@ -262,7 +290,7 @@ mod tests {
             validate(HTTP, &settings, &secrets, Some(Auth::Bearer)),
             Err("connection-auth-required")
         );
-        secrets.0.insert("bearer".into(), "draft".into());
+        secrets.values.insert("bearer".into(), "draft".into());
         assert_eq!(
             validate(HTTP, &settings, &secrets, Some(Auth::Bearer)),
             Ok(())

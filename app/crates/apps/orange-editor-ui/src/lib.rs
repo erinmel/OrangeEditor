@@ -2915,6 +2915,7 @@ impl Editor {
             ui.ctx().request_repaint();
         }
         self.node_config_window(ui.ctx(), host);
+        self.event_dialog(ui.ctx(), host);
         self.port_inspector_window(ui.ctx());
         self.function_window(ui.ctx(), host);
     }

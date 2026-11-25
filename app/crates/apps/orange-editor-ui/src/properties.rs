@@ -191,7 +191,7 @@ pub(crate) fn text_area_height(text: &str, width: f32, kind: TextInput) -> f32 {
 
 pub(crate) fn text_resize_grip(ui: &egui::Ui, rect: egui::Rect, id: egui::Id) -> f32 {
     let grip = ui
-        .interact(rect, id, egui::Sense::drag())
+        .interact(rect, id, egui::Sense::DRAG)
         .on_hover_cursor(egui::CursorIcon::ResizeVertical)
         .on_hover_text(t("resize-text-area"));
     let color = if grip.hovered() || grip.dragged() {
@@ -434,6 +434,9 @@ impl ThresholdEdit {
         let response =
             orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.range.marks());
         let value = (self.range.value(fraction) * 10.0).round() / 10.0;
+        response.widget_info(|| {
+            egui::WidgetInfo::slider(response.enabled(), value, t("audio-setting-threshold-db"))
+        });
         self.update(&response, value)
     }
 
@@ -499,9 +502,21 @@ impl AudioRange {
         surface: Surface,
         id: egui::Id,
         value: f64,
+        label: &str,
     ) -> Option<f64> {
         let id = id.with("audio-drag");
-        self.marked_slider(ui, surface, id, value)
+        let mut fraction = ui
+            .data(|data| data.get_temp::<f32>(id))
+            .unwrap_or_else(|| self.fraction(value));
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
+        let value = self.value(fraction);
+        response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), value, label));
+        if response.dragged() {
+            ui.data_mut(|data| data.insert_temp(id, fraction));
+            return None;
+        }
+        ui.data_mut(|data| data.remove::<f32>(id));
+        (response.changed() || response.drag_stopped()).then_some(value)
     }
 
     #[expect(
@@ -515,6 +530,7 @@ impl AudioRange {
         id: egui::Id,
         value: f64,
         dial: AudioDial,
+        label: &str,
     ) -> Option<f64> {
         let (step, style) = dial.controls();
         let key = id.with("rotary-draft");
@@ -532,6 +548,8 @@ impl AudioRange {
                 )
             })
             .inner;
+        response
+            .widget_info(|| egui::WidgetInfo::slider(response.enabled(), f64::from(shown), label));
         if response.dragged() {
             ui.data_mut(|d| d.insert_temp(key, shown));
             return None;
@@ -578,25 +596,6 @@ impl AudioRange {
         } else {
             [0.0, 0.25, 0.5, 0.75, 1.0]
         }
-    }
-
-    fn marked_slider(
-        self,
-        ui: &mut egui::Ui,
-        surface: Surface,
-        id: egui::Id,
-        value: f64,
-    ) -> Option<f64> {
-        let mut fraction = ui
-            .data(|data| data.get_temp::<f32>(id))
-            .unwrap_or_else(|| self.fraction(value));
-        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
-        if response.dragged() {
-            ui.data_mut(|data| data.insert_temp(id, fraction));
-            return None;
-        }
-        ui.data_mut(|data| data.remove::<f32>(id));
-        (response.changed() || response.drag_stopped()).then(|| self.value(fraction))
     }
 }
 
@@ -929,13 +928,13 @@ impl Editor {
     }
 
     /// The declared variables as (ID, name).
-    pub(crate) fn variable_choices(&self) -> Vec<(String, String)> {
+    pub(crate) fn variable_choices(&self) -> Vec<(String, String, orange_host::VarScope)> {
         self.declarations()
             .into_iter()
             .flat_map(|declared| &declared.variables)
             .filter_map(|variable| {
                 let label = format!("{} ({})", variable.name, type_name(&variable.ty));
-                Some((variable.id.clone()?, label))
+                Some((variable.id.clone()?, label, variable.scope))
             })
             .collect()
     }
@@ -1351,10 +1350,27 @@ impl Editor {
             .pointer(pointer)
             .and_then(Json::as_str)
             .map(str::to_owned);
-        let declared = if kind == ReferenceKind::Variable {
-            self.variable_choices()
-        } else {
-            Vec::new()
+        let declared: Vec<_> = match kind {
+            ReferenceKind::Variable => self
+                .variable_choices()
+                .into_iter()
+                .filter(|(_, _, scope)| {
+                    declarations::variable_scope_allowed(&node.definition, *scope)
+                })
+                .map(|(id, label, _)| (id, label))
+                .collect(),
+            ReferenceKind::Event => self
+                .declarations()
+                .into_iter()
+                .flat_map(|declared| &declared.events)
+                .map(|event| {
+                    (
+                        event.id.to_string(),
+                        format!("{} ({})", event.name, type_name(event.payload.as_str())),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
         };
         let what = match kind {
             ReferenceKind::Variable => "variable",
@@ -1384,20 +1400,27 @@ impl Editor {
                             chosen = Some(Change::Setting(pointer.to_owned(), Some(json!(id))));
                         }
                     }
-                    if kind == ReferenceKind::Variable {
+                    if matches!(kind, ReferenceKind::Variable | ReferenceKind::Event) {
                         if !declared.is_empty() {
                             ui.separator();
                         }
-                        quick = ui
-                            .selectable_label(false, tf("new-reference", &[("kind", what.into())]))
-                            .clicked();
+                        let new = if kind == ReferenceKind::Event {
+                            t("event-new").to_owned()
+                        } else {
+                            tf("new-reference", &[("kind", what.into())])
+                        };
+                        quick = ui.selectable_label(false, new).clicked();
                     } else if declared.is_empty() {
                         ui.weak(tf("no-references", &[("kind", what.into())]));
                     }
                 });
         });
         if quick {
-            self.new_variable_for_node(node.id, pointer);
+            match kind {
+                ReferenceKind::Event => self.new_event_for_node(node.id),
+                ReferenceKind::Variable => self.new_variable_for_node(node.id, pointer),
+                _ => {}
+            }
         }
         chosen
     }
@@ -1439,8 +1462,25 @@ impl Editor {
                 || (watch && matches!(name.as_str(), "threshold" | "low" | "high"));
             let measurement_time =
                 name == "window_ms" && node.definition.starts_with("org.orange.audio/");
+            let stream = match (node.definition.as_str(), name.as_str()) {
+                ("core/collect", "max_items") => {
+                    Some(("stream-max-items", "stream-max-items-help"))
+                }
+                ("core/tee", "capacity") => {
+                    Some(("stream-tee-capacity", "stream-tee-capacity-help"))
+                }
+                ("core/tee", "max_bytes") => {
+                    Some(("stream-tee-max-bytes", "stream-tee-max-bytes-help"))
+                }
+                ("core/tee", "overflow") => {
+                    Some(("stream-tee-overflow", "stream-tee-overflow-help"))
+                }
+                _ => None,
+            };
             let label = if watch {
                 watch_label(name).to_owned()
+            } else if let Some((label, _)) = stream {
+                t(label).to_owned()
             } else if name == "max_iterations" {
                 t("max-iterations").to_owned()
             } else if let Some(label) = audio_setting_label(node, name) {
@@ -1459,6 +1499,8 @@ impl Editor {
             let hover = Some(
                 if let Some(help) = audio_trigger_help(node, name) {
                     help
+                } else if let Some((_, help)) = stream {
+                    t(help)
                 } else if measurement_time {
                     t("audio-setting-window-help")
                 } else if name == "max_iterations" {
@@ -1533,7 +1575,9 @@ impl Editor {
                     {
                         let id = ui.make_persistent_id((&node.id, &pointer));
                         let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
-                            if let Some(value) = range.dial(ui, Surface::Panel, id, value, dial) {
+                            if let Some(value) =
+                                range.dial(ui, Surface::Panel, id, value, dial, &label)
+                            {
                                 changed =
                                     Some(Change::Setting(pointer.clone(), Some(json!(value))));
                             }
@@ -1542,7 +1586,7 @@ impl Editor {
                             let width = (ui.available_width() - 96.0).max(32.0);
                             ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
                                 ui.set_width(width);
-                                range.slider(ui, Surface::Panel, id, value)
+                                range.slider(ui, Surface::Panel, id, value, &label)
                             })
                             .inner
                         };

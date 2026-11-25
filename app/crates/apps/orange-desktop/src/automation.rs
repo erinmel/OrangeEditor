@@ -391,6 +391,29 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let (mut host, _) = desktop_host();
     let template = typed_template();
     let nodes = host.search_nodes("", "en");
+    let listed: std::collections::BTreeSet<_> = nodes
+        .iter()
+        .map(|found| found.definition.as_str())
+        .collect();
+    let registered_core: std::collections::BTreeSet<_> = host
+        .nodes()
+        .map(|info| &info.definition.definition.id)
+        .filter(|id| id.is_core())
+        .map(|id| id.as_str().to_owned())
+        .collect();
+    let hidden: Vec<_> = registered_core
+        .iter()
+        .filter(|id| !listed.contains(id.as_str()))
+        .collect();
+    eprintln!(
+        "Core definitions in the desktop catalogue: {}/{}; outside the catalogue: {hidden:?}",
+        registered_core.len() - hidden.len(),
+        registered_core.len()
+    );
+    assert!(
+        hidden.is_empty(),
+        "core definitions missing from the palette: {hidden:?}"
+    );
     for locale in ["en", "es"] {
         let mut labels = std::collections::BTreeMap::new();
         for found in host.search_nodes("", locale) {
@@ -412,6 +435,7 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let mut blocking_cards = Vec::new();
     let mut editor = Editor::new();
     let context = egui::Context::default();
+    context.enable_accesskit();
     for found in &nodes {
         let mut draft = host.draft(&template).unwrap();
         match host.add_node(&mut draft, &found.definition, [50.0, 100.0]) {
@@ -484,6 +508,48 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let visible = output.shapes.iter().any(|shape| {
                     matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&prefix))
                 });
+                let named = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .is_some_and(|tree| {
+                        tree.nodes.iter().any(|(_, accessible)| {
+                            [Some(found.label.as_str()), Some(node_view.name.as_str())]
+                                .contains(&accessible.label())
+                        })
+                    });
+                use egui::Role::{ComboBox, RadioButton, Slider};
+                let fields: &[(&str, egui::Role)] = match found.definition.as_str() {
+                    "core/and" => &[
+                        ("a, No", RadioButton),
+                        ("a, Yes", RadioButton),
+                        ("b, No", RadioButton),
+                        ("b, Yes", RadioButton),
+                    ],
+                    orange_audio::FILTER => {
+                        &[("Cutoff", Slider), ("Q", Slider), ("Mode", ComboBox)]
+                    }
+                    orange_audio::NOISE_LEVEL => &[
+                        ("Threshold", Slider),
+                        ("Hold", Slider),
+                        ("Reset margin", Slider),
+                    ],
+                    _ => &[],
+                };
+                let named_fields = fields.iter().all(|(name, role)| {
+                    output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .is_some_and(|tree| {
+                            tree.nodes.iter().any(|(_, node)| {
+                                node.role() == *role
+                                    && node
+                                        .label()
+                                        .is_some_and(|label| label.eq_ignore_ascii_case(name))
+                            })
+                        })
+                });
                 if matches!(
                     found.definition.as_str(),
                     orange_audio::NOISE_LEVEL
@@ -496,6 +562,16 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     }), "{} needs the Draft icon", found.definition);
                 }
                 output.drop_without_applying_deltas();
+                assert!(
+                    named_fields,
+                    "missing accessible field in {}: {fields:?}",
+                    found.definition
+                );
+                assert!(
+                    named,
+                    "the card needs its full accessible name: {}",
+                    found.definition
+                );
                 assert!(visible, "the canvas did not paint {}", found.definition);
             }
             Err(error) => rejected.push(format!("{}: {error}", found.definition)),

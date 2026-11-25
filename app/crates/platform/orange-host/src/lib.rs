@@ -55,7 +55,9 @@ use orange_kernel::{
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::ConnectionDecl;
-pub use orange_model::document::{ConnectionScope, EventTiming, PortDirection, VarScope};
+pub use orange_model::document::{
+    ConnectionScope, EventDecl, EventTiming, PortDirection, VarScope,
+};
 use orange_model::replace::{Replaced, Replacements, replace_definitions};
 use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};

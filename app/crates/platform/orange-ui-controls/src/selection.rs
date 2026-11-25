@@ -30,6 +30,11 @@ pub struct BinaryChoice<'a> {
 
 impl BinaryChoice<'_> {
     pub fn show(self, ui: &Ui, rect: Rect, id: egui::Id) -> Option<bool> {
+        self.show_named(ui, rect, id, self.labels)
+    }
+
+    /// Draws the same choices with names that identify their field to assistive tools.
+    pub fn show_named(self, ui: &Ui, rect: Rect, id: egui::Id, names: [&str; 2]) -> Option<bool> {
         let (no, yes) = rect.split_left_right_at_fraction(0.5);
         let mut picked = None;
         let responses = [(0, no), (1, yes)].map(|(index, half)| {
@@ -40,7 +45,7 @@ impl BinaryChoice<'_> {
                     egui::Role::RadioButton,
                     response.enabled(),
                     self.selected == Some(value),
-                    self.labels[index],
+                    names[index],
                 )
             });
             if response.clicked() && (self.defaulted || self.selected != Some(value)) {

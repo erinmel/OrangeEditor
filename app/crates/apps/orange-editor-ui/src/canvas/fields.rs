@@ -384,6 +384,7 @@ impl Canvas {
     ) -> Option<FieldEdit> {
         let zoom = slot.height() / field.control_height();
         let colors = Palette::of(ui);
+        let label = || self::name(node, field, None);
         match field {
             FieldOf::TextArea(port, kind, height) => {
                 let (preview, dim) = shown(node, field);
@@ -394,8 +395,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            &preview,
-                            dim,
+                            (&preview, dim, &label()),
                             zoom,
                             port.value.as_deref().map(field_text),
                         )
@@ -435,7 +435,8 @@ impl Canvas {
                         kind.hint(),
                         zoom,
                         &colors,
-                    );
+                    )
+                    .accessible_name(label());
                     if !edit.focused {
                         edited.request_focus();
                         edit.focused = true;
@@ -461,7 +462,16 @@ impl Canvas {
                                 t("edit-text-hint")
                             },
                         );
-                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label())
+                    });
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        response.hovered() || response.has_focus(),
+                    );
                     let content = slot.shrink2(Vec2::new(6.0, 4.0) * zoom);
                     let tint = if dim { colors.weak } else { colors.text };
                     let galley = ui.painter().layout(
@@ -512,10 +522,16 @@ impl Canvas {
                     let touch = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_text(t("edit-literal"));
-                    frame(ui.painter(), slot, zoom, &colors, touch.hovered());
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        touch.hovered() || touch.has_focus(),
+                    );
                     let _ = field_text_in(ui.painter(), slot, zoom, current, colors.text, None);
                     touch.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Button, true, t("edit-literal"))
+                        egui::WidgetInfo::labeled(egui::Role::Button, touch.enabled(), label())
                     });
                     return touch.clicked().then(|| FieldEdit::Literal(port.id.clone()));
                 }
@@ -530,7 +546,16 @@ impl Canvas {
                     let response = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_text(t("color-picker"));
-                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label())
+                    });
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        response.hovered() || response.has_focus(),
+                    );
                     let chip = slot.shrink(4.0 * zoom);
                     let side = chip.height().min(18.0 * zoom);
                     let chip = Rect::from_center_size(
@@ -555,7 +580,7 @@ impl Canvas {
                 if http_request_variant(node) && port.id == "method" {
                     let (text, _) = shown(node, field);
                     let mut chosen = None;
-                    dropdown(ui, slot, id, &text, false, |ui| {
+                    dropdown(ui, slot, id, (&text, false, &label()), |ui| {
                         chosen = choose_http_method(ui, &text);
                     });
                     return chosen.and_then(|method| input(method.to_owned()));
@@ -564,14 +589,14 @@ impl Canvas {
                     Kind::Switch => {
                         let value = port.value.as_deref().or(port.default.as_deref());
                         let on = value.map(|value| value == "true");
-                        self.switch_control(ui, slot, id, (on, port.value.is_none()))
+                        self.switch_control(ui, slot, id, (on, port.value.is_none()), &label())
                             .and_then(|on| input(on.to_string()))
                     }
                     Kind::Choice => {
                         let choices = self.enums.get(port.ty.as_deref()?)?.clone();
                         let (text, dim) = shown(node, field);
                         let mut chosen = None;
-                        dropdown(ui, slot, id, &text, dim, |ui| {
+                        dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
                             for choice in choices.iter().filter(|choice| !choice.payload) {
                                 let current = port.value.as_deref().or(port.default.as_deref())
                                     == Some(choice.name.as_str());
@@ -597,7 +622,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            (port.value.as_deref(), port.default.as_deref()),
+                            (port.value.as_deref(), port.default.as_deref(), &label()),
                             (whole, &ty, ""),
                         )
                         .and_then(input)
@@ -610,8 +635,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            &text,
-                            dim,
+                            (&text, dim, &label()),
                             zoom,
                             current,
                         )
@@ -624,6 +648,9 @@ impl Canvas {
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_text(port.value.as_deref().map_or(t("choose-path"), |v| v));
+                touched.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label())
+                });
                 let painter = ui.painter();
                 frame(painter, slot, zoom, &colors, touched.hovered());
                 let _ = field_text_in(
@@ -645,8 +672,16 @@ impl Canvas {
             FieldOf::Path(port, _) => {
                 let current = port.value.as_deref().map(field_text);
                 let (text, dim) = shown(node, field);
-                self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, zoom, current)
-                    .map(|text| FieldEdit::Input(port.id.clone(), text))
+                self.text_control(
+                    ui,
+                    (node.id, &port.id),
+                    slot,
+                    id,
+                    (&text, dim, &label()),
+                    zoom,
+                    current,
+                )
+                .map(|text| FieldEdit::Input(port.id.clone(), text))
             }
             FieldOf::Setting(name, schema, dial) => {
                 let value = setting_value(node, name, schema);
@@ -659,13 +694,14 @@ impl Canvas {
                             slot,
                             id,
                             (value.as_bool(), node.settings.get(name).is_none()),
+                            &label(),
                         )
                         .and_then(|on| set(on.into())),
                     Kind::Choice => {
                         let options = schema["enum"].as_array().cloned().unwrap_or_default();
                         let (text, dim) = shown(node, field);
                         let mut chosen = None;
-                        dropdown(ui, slot, id, &text, dim, |ui| {
+                        dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
                             for option in &options {
                                 let label = option.as_str().map_or_else(
                                     || option.to_string(),
@@ -725,7 +761,7 @@ impl Canvas {
                                         |ui| {
                                             ui.set_clip_rect(ui.clip_rect().intersect(knob));
                                             ui.spacing_mut().interact_size.y = card::CONTROL * zoom;
-                                            range.dial(ui, Surface::Card, id, value, dial)
+                                            range.dial(ui, Surface::Card, id, value, dial, &label())
                                         },
                                     )
                                     .inner;
@@ -738,7 +774,7 @@ impl Canvas {
                                         |ui| {
                                             ui.set_clip_rect(ui.clip_rect().intersect(track));
                                             ui.spacing_mut().interact_size.y = track.height();
-                                            range.slider(ui, Surface::Card, id, value)
+                                            range.slider(ui, Surface::Card, id, value, &label())
                                         },
                                     )
                                     .inner;
@@ -756,7 +792,7 @@ impl Canvas {
                             (node.id, &key),
                             number_slot,
                             id,
-                            (current.as_deref(), None),
+                            (current.as_deref(), None, &label()),
                             (whole, ty, unit(name)),
                         )?;
                         setting_number(node, name, schema, &typed).and_then(set)
@@ -765,8 +801,16 @@ impl Canvas {
                         let current = value.as_str().map(str::to_owned);
                         let (text, dim) = shown(node, field);
                         let key = pointer_of(name);
-                        self.text_control(ui, (node.id, &key), slot, id, &text, dim, zoom, current)
-                            .and_then(|text| set(text.into()))
+                        self.text_control(
+                            ui,
+                            (node.id, &key),
+                            slot,
+                            id,
+                            (&text, dim, &label()),
+                            zoom,
+                            current,
+                        )
+                        .and_then(|text| set(text.into()))
                     }
                 }
             }
@@ -775,14 +819,16 @@ impl Canvas {
                     .settings
                     .pointer(pointer)
                     .and_then(serde_json::Value::as_str);
-                let variables = &self.variables;
+                let variables = self.variables.iter().filter(|(_, _, scope)| {
+                    crate::declarations::variable_scope_allowed(&node.definition, *scope)
+                });
                 let (text, dim) = variables
-                    .iter()
-                    .find(|(id, _)| named == Some(id.as_str()))
-                    .map_or_else(|| shown(node, field), |(_, name)| (name.clone(), false));
+                    .clone()
+                    .find(|(id, _, _)| named == Some(id.as_str()))
+                    .map_or_else(|| shown(node, field), |(_, name, _)| (name.clone(), false));
                 let mut edit = None;
-                dropdown(ui, slot, id, &text, dim, |ui| {
-                    for (variable, name) in variables {
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    for (variable, name, _) in variables.clone() {
                         let current = named == Some(variable.as_str());
                         if ui.selectable_label(current, name.as_str()).clicked() && !current {
                             edit = Some(FieldEdit::Setting(
@@ -791,7 +837,7 @@ impl Canvas {
                             ));
                         }
                     }
-                    if !variables.is_empty() {
+                    if variables.clone().next().is_some() {
                         ui.separator();
                     }
                     if ui
@@ -874,8 +920,11 @@ impl Canvas {
                 ui,
                 slot,
                 id,
-                label.unwrap_or_else(|| t("choose-connection")),
-                label.is_none(),
+                (
+                    label.unwrap_or_else(|| t("choose-connection")),
+                    label.is_none(),
+                    t("connection"),
+                ),
                 |ui| {
                     if profiles.is_empty() {
                         ui.weak(t("no-compatible-connections"));
@@ -893,53 +942,59 @@ impl Canvas {
         let mut chosen = picker.selected.clone();
         let mut picked = false;
         let mut refresh = false;
-        dropdown(ui, slot, id, picker.label(), false, |ui| {
-            refresh = ui.small_button(t("refresh-devices")).clicked();
-            if let Some(problem) = &picker.problem {
-                ui.weak(problem);
-            }
-            picked |= ui
-                .selectable_value(&mut chosen, None, &picker.default_label)
-                .clicked();
-            ui.separator();
-            // Devices, what an output plays, then applications.
-            let group = |id: &str| {
-                if id.starts_with("loopback:") {
-                    1
-                } else if id.starts_with("app:") {
-                    2
-                } else {
-                    0
+        dropdown(
+            ui,
+            slot,
+            id,
+            (picker.label(), false, t("connection")),
+            |ui| {
+                refresh = ui.small_button(t("refresh-devices")).clicked();
+                if let Some(problem) = &picker.problem {
+                    ui.weak(problem);
                 }
-            };
-            for kind in 0..3 {
-                let options: Vec<_> = picker
-                    .options
-                    .iter()
-                    .filter(|(id, _)| group(id) == kind)
-                    .collect();
-                if options.is_empty() {
-                    if kind == 2
-                        && picker.group_label == t("recording-devices")
-                        && picker.problem.is_none()
-                    {
-                        ui.weak(t("no-audio-applications"));
-                    }
-                    continue;
-                }
-                ui.small(match kind {
-                    1 => t("playback-capture"),
-                    2 => t("applications"),
-                    _ => &picker.group_label,
-                });
-                for (value, label) in options {
-                    picked |= ui
-                        .selectable_value(&mut chosen, Some(value.clone()), label)
-                        .clicked();
-                }
+                picked |= ui
+                    .selectable_value(&mut chosen, None, &picker.default_label)
+                    .clicked();
                 ui.separator();
-            }
-        });
+                // Devices, what an output plays, then applications.
+                let group = |id: &str| {
+                    if id.starts_with("loopback:") {
+                        1
+                    } else if id.starts_with("app:") {
+                        2
+                    } else {
+                        0
+                    }
+                };
+                for kind in 0..3 {
+                    let options: Vec<_> = picker
+                        .options
+                        .iter()
+                        .filter(|(id, _)| group(id) == kind)
+                        .collect();
+                    if options.is_empty() {
+                        if kind == 2
+                            && picker.group_label == t("recording-devices")
+                            && picker.problem.is_none()
+                        {
+                            ui.weak(t("no-audio-applications"));
+                        }
+                        continue;
+                    }
+                    ui.small(match kind {
+                        1 => t("playback-capture"),
+                        2 => t("applications"),
+                        _ => &picker.group_label,
+                    });
+                    for (value, label) in options {
+                        picked |= ui
+                            .selectable_value(&mut chosen, Some(value.clone()), label)
+                            .clicked();
+                    }
+                    ui.separator();
+                }
+            },
+        );
         if refresh {
             return Some(FieldEdit::RefreshDevices(picker.adapter.clone()));
         }
@@ -954,9 +1009,16 @@ impl Canvas {
         slot: Rect,
         id: egui::Id,
         (on, dim): (Option<bool>, bool),
+        label: &str,
     ) -> Option<bool> {
         let zoom = slot.height() / card::CONTROL;
-        binary_choice(on, dim, zoom).show(ui, slot, id)
+        let names = [t("no"), t("yes")].map(|choice| {
+            tf(
+                "canvas-choice-name",
+                &[("field", label.into()), ("choice", choice.into())],
+            )
+        });
+        binary_choice(on, dim, zoom).show_named(ui, slot, id, names.each_ref().map(String::as_str))
     }
 
     /// A text field: the value painted in its frame; a click types a new one, kept on
@@ -968,8 +1030,7 @@ impl Canvas {
         (node, key): (NodeId, &str),
         slot: Rect,
         id: egui::Id,
-        text: &str,
-        dim: bool,
+        (text, dim, label): (&str, bool, &str),
         zoom: f32,
         current: Option<String>,
     ) -> Option<String> {
@@ -980,7 +1041,16 @@ impl Canvas {
         let Some((_, _, typed, focused)) = typing else {
             let colors = Palette::of(ui);
             let touched = ui.interact(slot, id, Sense::click());
-            frame(ui.painter(), slot, zoom, &colors, touched.hovered());
+            touched.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label)
+            });
+            frame(
+                ui.painter(),
+                slot,
+                zoom,
+                &colors,
+                touched.hovered() || touched.has_focus(),
+            );
             let cut = field_text_in(
                 ui.painter(),
                 slot,
@@ -1002,7 +1072,7 @@ impl Canvas {
             }
             return None;
         };
-        let edited = typing_field(ui, slot, id, typed, false, zoom);
+        let edited = typing_field(ui, slot, id, typed, false, zoom).accessible_name(label);
         if !*focused {
             edited.request_focus();
             *focused = true;
@@ -1024,7 +1094,7 @@ impl Canvas {
         (node, key): (NodeId, &str),
         slot: Rect,
         id: egui::Id,
-        (value, default): (Option<&str>, Option<&str>),
+        (value, default, label): (Option<&str>, Option<&str>, &str),
         (whole, ty, unit): (bool, &str, &str),
     ) -> Option<String> {
         let typing = self
@@ -1032,7 +1102,8 @@ impl Canvas {
             .as_mut()
             .filter(|(at, name, _, _)| *at == node && name == key);
         if let Some((_, _, typed, focused)) = typing {
-            let edited = typing_field(ui, slot, id, typed, true, slot.height() / card::CONTROL);
+            let edited = typing_field(ui, slot, id, typed, true, slot.height() / card::CONTROL)
+                .accessible_name(label);
             if !*focused {
                 edited.request_focus();
                 *focused = true;
@@ -1058,6 +1129,9 @@ impl Canvas {
             None => value.map(str::to_owned),
         };
         let touched = number_field(ui, slot, id, shown.as_deref(), default, unit);
+        touched.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label)
+        });
         if touched.clicked() {
             self.number_drag = None;
             let typed = if ty == "core/duration@1" {
@@ -1102,7 +1176,7 @@ impl Canvas {
             key,
             slot,
             id,
-            (value.as_deref(), default.as_deref()),
+            (value.as_deref(), default.as_deref(), &port_title(port)),
             (false, "core/duration@1", "ms"),
         )
         .and_then(|ms| duration_nanos(&ms))
@@ -1246,8 +1320,7 @@ fn dropdown(
     ui: &mut egui::Ui,
     slot: Rect,
     id: egui::Id,
-    text: &str,
-    dim: bool,
+    (text, dim, label): (&str, bool, &str),
     list: impl FnOnce(&mut egui::Ui),
 ) {
     let zoom = slot.height() / card::CONTROL;
@@ -1272,7 +1345,7 @@ fn dropdown(
                 list(ui);
             })
             .response;
-        response.on_hover_text(text);
+        response.on_hover_text(text).accessible_name(label);
     });
 }
 

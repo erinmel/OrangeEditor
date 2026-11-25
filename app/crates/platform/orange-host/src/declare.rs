@@ -3,7 +3,7 @@
 //! model transaction on a [`Draft`].
 use super::*;
 use orange_model::DocCommand;
-use orange_model::document::{ConnectionDecl, LocalTypeDecl, VariableDecl};
+use orange_model::document::{ConnectionDecl, EventScope, LocalTypeDecl, VariableDecl};
 use orange_model::id::{ConnectionId, TypeDeclId, TypeExpr, VariableId};
 use orange_sdk::{SECRET_PREFIX, SettingText, SettingToggle};
 use serde_json::{Value as Json, json};
@@ -43,6 +43,7 @@ pub struct Connection {
 pub struct Declarations {
     pub variables: Vec<Variable>,
     pub connections: Vec<Connection>,
+    pub events: Vec<EventDecl>,
     /// The record and enum types the document declares itself.
     pub types: Vec<LocalTypeDecl>,
 }
@@ -163,8 +164,64 @@ impl Host {
         Declarations {
             variables,
             connections,
+            events: document.events().values().cloned().collect(),
             types: document.types().values().cloned().collect(),
         }
+    }
+
+    /// Declares a typed run event and assigns it to a node in the same undoable edit.
+    pub fn declare_run_event_for(
+        &self,
+        draft: &mut Draft,
+        node: NodeId,
+        name: &str,
+        payload: TypeExpr,
+    ) -> Result<EventDeclId, HostError> {
+        let document = draft.document();
+        let registry = self.registry_for(document);
+        let instance = document
+            .node(node)
+            .ok_or_else(|| refused(&"the document has no such node"))?;
+        if !registry
+            .references(instance)
+            .any(|(field, _)| field.kind == ReferenceKind::Event && field.pointer == "/event")
+        {
+            return Err(refused(&"the node does not use an event"));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refused(&"enter an event name"));
+        }
+        if orange_model::value::shape::ValueShape::of_in(&payload, registry.types().as_ref())
+            .is_none()
+        {
+            return Err(refused(&"the event payload type is unavailable"));
+        }
+        let id: EventDeclId = draft
+            .fresh_id("event")
+            .parse()
+            .map_err(|error| refused(&error))?;
+        let mut config = instance.config.clone();
+        let _ = config.insert("event".to_owned(), json!(id));
+        let config_version = instance.config_version;
+        let _ = draft.commit(
+            &registry,
+            [
+                DocCommand::UpsertEvent(EventDecl {
+                    id,
+                    name: name.to_owned(),
+                    payload,
+                    scope: EventScope::Run,
+                    extensions: Default::default(),
+                }),
+                DocCommand::SetConfig {
+                    node,
+                    config_version,
+                    config,
+                },
+            ],
+        )?;
+        Ok(id)
     }
 
     /// What the connection a node of `definition` uses is called by its adapter, such

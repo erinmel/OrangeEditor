@@ -1001,6 +1001,10 @@ Run-scope Await Event resumes the same strand rather than creating a causal root
 
 ### 10.4 Subscriptions
 
+**V1 scope.** Action-owned subscriptions are deferred. The v1 compiler rejects event
+outputs on extension actions and async nodes. Registered entry triggers and typed run
+events through On Event, Emit and Await Event have the executable contracts below.
+
 An action or async with `event` outputs (a subscription) is allowed **only in the top-level graph**, never in functions (`E-SUBSCRIPTION-IN-FUNCTION`). Its subscription is owned by the run. It ends when the run stops, or through its `handle` output and a close node. Each event starts an activation of the region rooted at that event port, and that region may read the event's payload outputs only (§7.2).
 
 **Event intrinsic contracts (V4).** `core/on-event@1` (entry, `payload` output `source: payload`), `core/emit@1` (action, `suspends: never`, required `payload` input) and `core/await-event@1` (async, `suspends: always`, optional `timeout: option<duration>`, outcomes `then`/`timed_out`, `payload` output available on `then`) use `config.event` and take the payload type from the event declaration; edits to the declaration invalidate its consumers. An unknown or malformed reference reports `E-EVENT-UNKNOWN`. Entries persist an `activation` policy (`capacity` ≥ 1; `max_parallel` ≥ 1 only with `parallel`; host-owned entries reject `backpressure`); violations, and policies on non-entries, report `E-ACTIVATION-POLICY`.

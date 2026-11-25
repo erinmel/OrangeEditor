@@ -27,6 +27,17 @@ to reveal dashed links. Each receiver starts a separate activation through the r
 variable. The links describe event routing on the canvas and are saved through
 the event references on the nodes.
 
+For a typed payload, place Emit, On Event or Await Event, then open its Event
+picker in Properties. Choose New event, select a payload type, and create it.
+Creation assigns the event to that node in one undoable edit. Select the same
+named event on the other nodes. On Event starts a new activation, while Await
+Event continues an existing one when the event arrives or its timeout expires.
+
+Collect starts with a limit of 1,024 items. Tee starts with buffers of 32 items
+and 1 MiB per output, with backpressure when either bound is reached. Configure
+the limits in Properties for the input stream. With backpressure, drain both
+branches concurrently or close the branch that will not be used.
+
 For a larger automation, group the trigger, data preparation, and effects where
 each can be inspected independently. For example, a timer can start an HTTP JSON
 request, route its success through JSON Field and a typed conversion, and use
@@ -574,18 +585,22 @@ the shared-control and editor tests before adopting the change more broadly.
   declares them in the host. The node tree also lists
   draggable Get variable and Set variable nodes. Each picks the variable by name and
   type. Declaring from a node opens the same Variables form and selects the new
-  variable on the originating node.
+  variable on the originating node. Shared writes offer only workspace variables.
+  Ordinary writes offer local and run variables. On Variable Changed uses an
+  initialized run variable with equality support.
 * **Types** filters records and enums by name or kind. Larger lists start collapsed
   so their declarations can be scanned before opening individual types.
-* **Connections** filter by name or protocol and group by adapter. They use the adapters the host has (network, WebSocket,
-  audio, files, any package), listed by name and purpose, not by package ID. Each
-  adapter's settings are drawn from its schema; a secret field (password, token, key)
-  is entered in a masked field and stored in the operating system's credential store,
-  and the document keeps only the `credential://` reference (12, ADR-21). A connection
-  shows whether it is in use, by which nodes (clicking the count selects and shows
-  them), and can be tested (open, ping, list
-  devices). Saving edits to an existing connection keeps its form open and
-  reloads the persisted values and credential references. Done closes the form.
+* **Connections** filter by name or protocol and group by adapter. The connection
+  dialog describes each adapter by name and purpose and shows its schema-defined
+  settings. Network tuning is under Advanced. The fields scroll independently of
+  the save, cancel and settings check actions. Passwords, tokens and keys start
+  masked and can be revealed while entering a new value. On save the operating
+  system's credential store keeps the secret and the graph keeps its
+  `credential://` reference (12, ADR-21). A separate local check reports whether a
+  referenced credential is available without opening a connection or approving it.
+  Check settings does not read saved credentials. Clicking a connection's usage
+  count selects its nodes. Saving edits keeps the form open and reloads the
+  persisted settings and credential references. Done closes the form.
 * Text, binary and streamed HTTP requests use the same Method dropdown on the
   canvas and in Properties. A wired method is read from its source. HTTP
   Properties places the observed status and response under Results, before
@@ -717,6 +732,13 @@ Verify tracing and recording with actual devices if an audio change affects rout
 Headless egui tests cover drawn shapes and synthetic events; visual and hardware checks
 need their own evidence.
 ### Visual hierarchy and feedback
+
+Canvas cards announce their full names when focused. Connector names include the
+card, port, direction, and type. Enter or Space on one connector starts a wire.
+Activate the opposite end to make the same edit as a pointer drag. Escape or
+activating the first connector again cancels the pending wire. Shift+F10 opens
+the focused card's or connector's context menu. Audio settings and Boolean
+choices expose field names to assistive tools.
 
 - Give the canvas the largest area. Group related controls into stable docks and keep
   the active graph, run state and problems visible. Use a neutral canvas and reserve

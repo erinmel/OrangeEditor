@@ -210,6 +210,87 @@ impl Session {
 }
 
 #[test]
+fn keyboard_can_wire_from_either_end_or_cancel_without_editing() {
+    let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let start = host
+        .add_node(&mut draft, "core/on-manual", [40.0, 40.0])
+        .unwrap();
+    let wait = host
+        .add_node(&mut draft, "core/wait", [440.0, 40.0])
+        .unwrap();
+    let mut session = Session::new();
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.load(&session.graph);
+    session.canvas.origin = Pos2::ZERO;
+    session.canvas.fit = false;
+    let _ = session.frame(vec![]);
+
+    let port_at = |node, key, input| {
+        let geometry = Geometry::with_cards(&session.graph, |node| session.canvas.card(node));
+        session.corner
+            + (session.canvas.places[&node] + geometry.port(node, key, input).unwrap().offset
+                - session.canvas.origin)
+                * session.canvas.zoom
+    };
+    let out = port_at(start, "then", false);
+    let into = port_at(wait, "in", true);
+    let press = |session: &mut Session, key, modifiers| {
+        let event = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let result = session.frame(vec![event(true)]);
+        let _ = session.frame(vec![event(false)]);
+        result
+    };
+    let focus_port = |session: &mut Session, at: Pos2| {
+        for _ in 0..24 {
+            let focused = session.context.memory(|memory| memory.focused());
+            if focused
+                .and_then(|id| session.context.read_response(id))
+                .is_some_and(|response| response.rect.center().distance(at) < 1.0)
+            {
+                return;
+            }
+            let _ = press(session, egui::Key::Tab, egui::Modifiers::NONE);
+        }
+        panic!("could not reach connector at {at:?} with Tab");
+    };
+    for (first, second) in [(out, into), (into, out)] {
+        focus_port(&mut session, first);
+        assert!(
+            press(&mut session, egui::Key::Enter, egui::Modifiers::NONE)
+                .connect
+                .is_none()
+        );
+        assert!(session.canvas.keyboard_wiring.is_some());
+        focus_port(&mut session, second);
+        assert_eq!(
+            press(&mut session, egui::Key::Space, egui::Modifiers::NONE).connect,
+            Some(((start, "then".to_owned()), (wait, "in".to_owned())))
+        );
+        assert!(session.canvas.keyboard_wiring.is_none());
+    }
+    focus_port(&mut session, into);
+    let _ = press(&mut session, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(
+        press(&mut session, egui::Key::Escape, egui::Modifiers::NONE)
+            .connect
+            .is_none()
+    );
+    assert!(session.canvas.keyboard_wiring.is_none());
+    focus_port(&mut session, into);
+    assert!(matches!(
+        press(&mut session, egui::Key::F10, egui::Modifiers::SHIFT).context,
+        Some((crate::MenuTarget::Port { node, input: true, .. }, _, _)) if node == wait
+    ));
+}
+
+#[test]
 fn failure_disclosure_accepts_keyboard_and_preserves_primary_anchors() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
