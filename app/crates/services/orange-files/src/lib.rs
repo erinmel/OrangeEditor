@@ -323,7 +323,14 @@ impl ConnectionAdapter for FolderAdapter {
                 .ok_or("`poll_ms` must be an integer from 50 to 60000")?,
         };
         Ok(Arc::new(Folder {
-            files: orange_sandbox::Folder::existing(root, read_only),
+            files: orange_sandbox::Folder::existing(root, read_only).map_err(
+                |error| match error {
+                    FsError::FolderMissing => "the selected folder is missing or was replaced",
+                    FsError::PermissionDenied => "permission denied opening the selected folder",
+                    FsError::Busy => "the selected folder is in use",
+                    _ => "cannot open the selected folder",
+                },
+            )?,
             poll: Duration::from_millis(poll),
         }))
     }
@@ -950,7 +957,7 @@ mod tests {
             folder.files.remove_tree("", 10, &|| false),
             Err(FsError::InvalidPath)
         );
-        let locked = orange_sandbox::Folder::existing(root.canonicalize().unwrap(), true);
+        let locked = orange_sandbox::Folder::existing(root.canonicalize().unwrap(), true).unwrap();
         assert_eq!(
             locked.copy_tree("from", "copy", 4, 6, &|| false),
             Err(FsError::ReadOnly)

@@ -291,7 +291,7 @@ mod tests {
         fs::write(root.join("chosen/second"), "x").unwrap();
         fs::write(root.join("chosen/third"), "x").unwrap();
         let folder = Folder {
-            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false),
+            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false).unwrap(),
             poll: Duration::from_millis(10),
         };
         let (events, observed) = mpsc::channel();
@@ -357,7 +357,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("old")).unwrap();
         let folder = Folder {
-            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false),
+            files: orange_sandbox::Folder::existing(root.canonicalize().unwrap(), false).unwrap(),
             poll: Duration::from_millis(10),
         };
         let life = Lifecycle::new();

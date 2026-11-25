@@ -561,6 +561,27 @@ impl Draft {
     }
 }
 
+/// A new run event without a payload, named `base`, `base 2`, … whichever is free.
+fn new_pulse_event(
+    draft: &Draft,
+    base: &str,
+) -> Result<orange_model::document::EventDecl, HostError> {
+    let name = std::iter::once(base.to_owned())
+        .chain((2..).map(|index| format!("{base} {index}")))
+        .find(|name| {
+            draft
+                .document()
+                .events()
+                .values()
+                .all(|event| event.name != *name)
+        })
+        .ok_or_else(|| refused(&"no channel name is available"))?;
+    serde_json::from_value(json!({
+        "id": draft.fresh_id("signal-event"), "name": name, "scope": "run"
+    }))
+    .map_err(|error| refused(&error))
+}
+
 fn event_config(node: NodeId, event: &str) -> DocCommand {
     DocCommand::SetConfig {
         node,
@@ -625,14 +646,12 @@ impl Host {
             })
             .ok_or_else(|| refused(&"no signal name is available"))?;
         let event = draft.fresh_id("signal-event");
-        let payload = if pulse {
-            "core/option@1<core/bool@1>"
+        // A pulse is an event-only channel: no payload port on either end.
+        let declaration = serde_json::from_value(if pulse {
+            json!({"id": event, "name": name, "scope": "run"})
         } else {
-            "core/bool@1"
-        };
-        let declaration = serde_json::from_value(json!({
-            "id": event, "name": name, "payload": payload, "scope": "run"
-        }))
+            json!({"id": event, "name": name, "payload": "core/bool@1", "scope": "run"})
+        })
         .map_err(|error| refused(&error))?;
         let (emit, emission) = self.node_commands(draft, intrinsic::EMIT, [x, y], "signal-emit")?;
         let (entry, reception) =
@@ -643,17 +662,15 @@ impl Host {
         for node in [emit, entry] {
             commands.push(event_config(node, &event));
         }
-        commands.push(DocCommand::SetLiteral {
-            port: port_ref((emit, "payload"))?,
-            literal: Some(Literal::value(
-                payload.parse().map_err(|error| refused(&error))?,
-                if pulse {
-                    json!({"none": true})
-                } else {
-                    json!(true)
-                },
-            )),
-        });
+        if !pulse {
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((emit, "payload"))?,
+                literal: Some(Literal::value(
+                    "core/bool@1".parse().map_err(|error| refused(&error))?,
+                    json!(true),
+                )),
+            });
+        }
         Ok(([emit, entry], commands))
     }
 
@@ -696,30 +713,39 @@ impl Host {
                 )
             })
             .ok_or_else(|| refused(&"choose an Emit or On Event node"))?;
-        let event = source
+        let source_id = source.id;
+        let declared = source
             .config
             .get("event")
             .and_then(Json::as_str)
             .and_then(|id| id.parse::<EventDeclId>().ok())
             .and_then(|id| draft.document().events().get(&id))
-            .ok_or_else(|| refused(&"choose an event before adding a signal endpoint"))?;
-        let (node, mut commands) = self.node_commands(draft, definition, at, "signal-endpoint")?;
-        commands.push(event_config(node, &event.id.to_string()));
-        if definition == intrinsic::EMIT {
-            let ty = event.payload.as_str();
-            let value = if ty == "core/bool@1" {
-                Some(json!(true))
-            } else if ty.starts_with("core/option@1<") {
-                Some(json!({"none": true}))
-            } else {
-                None
-            };
-            if let Some(value) = value {
-                commands.push(DocCommand::SetLiteral {
-                    port: port_ref((node, "payload"))?,
-                    literal: Some(Literal::value(event.payload.clone(), value)),
-                });
+            .cloned();
+        let mut commands = Vec::new();
+        // A node with no channel yet gets a new event-only one, bound to it and to the
+        // new endpoint in the same edit.
+        let event = match declared {
+            Some(event) => event,
+            None => {
+                let event = new_pulse_event(draft, "Signal")?;
+                commands.push(DocCommand::UpsertEvent(event.clone()));
+                commands.push(event_config(source_id, &event.id.to_string()));
+                event
             }
+        };
+        let (node, made) = self.node_commands(draft, definition, at, "signal-endpoint")?;
+        commands.extend(made);
+        commands.push(event_config(node, &event.id.to_string()));
+        // A bool payload starts as true. An optional one is left unset, which sends None,
+        // and an event-only channel has no payload port at all.
+        if definition == intrinsic::EMIT
+            && let Some(payload) = event.payload.as_ref()
+            && payload.as_str() == "core/bool@1"
+        {
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((node, "payload"))?,
+                literal: Some(Literal::value(payload.clone(), json!(true))),
+            });
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)

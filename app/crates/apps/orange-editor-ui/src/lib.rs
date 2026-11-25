@@ -951,11 +951,11 @@ impl Editor {
         let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host
-            .connect(draft, (out, "result"), (reading, "value"))
-            .and_then(|_| {
-                host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))
-            });
+        // Rebinding replaces the old edge; edge and channel name are one undo step.
+        let result = host.grouped(draft, |host, draft| {
+            let _ = host.connect(draft, (out, "result"), (reading, "value"))?;
+            host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))
+        });
         self.edited(host, result)
     }
 
@@ -1018,7 +1018,9 @@ impl Editor {
                 .copied()
                 .collect::<HashSet<_>>()
         });
-        let result = place_node(host, draft, definition, at);
+        // A placement that binds (a Bridge In to its Bridge Out, a new channel name) is
+        // one undo step, and a refused one leaves nothing behind.
+        let result = host.grouped(draft, |host, draft| place_node(host, draft, definition, at));
         let created = before.map(|before| {
             draft
                 .document()
@@ -1101,10 +1103,14 @@ impl Editor {
         let Some(draft) = self.editing() else {
             return false;
         };
-        for (reading, channel) in keep {
-            let _ = host.set_config(draft, reading, &serde_json::json!({ "channel": channel }));
-        }
-        let result = host.remove_nodes(draft, nodes);
+        // Keeping the channel names and removing the nodes is one undo step.
+        let result = host.grouped(draft, |host, draft| {
+            for (reading, channel) in keep {
+                let _ =
+                    host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))?;
+            }
+            host.remove_nodes(draft, nodes)
+        });
         self.edited(host, result)
     }
 

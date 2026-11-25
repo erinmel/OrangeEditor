@@ -50,8 +50,7 @@ pub enum FsError {
     Cancelled,
     /// A directory changed while its contents were being enumerated.
     Changed,
-    /// The folder itself is missing: removed, renamed, or on a drive that is not
-    /// connected. A folder made with [`Folder::existing`] is never created again.
+    /// The original folder is missing from its configured path.
     FolderMissing,
     /// The system denied access: permissions, an access list, or a read-only file.
     PermissionDenied,
@@ -178,7 +177,7 @@ fn split(path: &str) -> Result<(Vec<&str>, &str), FsError> {
 pub struct Folder {
     root: PathBuf,
     read_only: bool,
-    create_root: bool,
+    original_root: Option<os::RootIdentity>,
     temporary: AtomicU64,
 }
 
@@ -189,7 +188,7 @@ impl Folder {
         Self {
             root: root.into(),
             read_only,
-            create_root: true,
+            original_root: None,
             temporary: AtomicU64::new(0),
         }
     }
@@ -197,11 +196,10 @@ impl Folder {
     /// A folder the user chose, which must exist. When it goes missing every method
     /// fails with [`FsError::FolderMissing`] and nothing creates it again, so a drive
     /// that was disconnected is not replaced by an empty directory on another one.
-    pub fn existing(root: impl Into<PathBuf>, read_only: bool) -> Self {
-        Self {
-            create_root: false,
-            ..Self::new(root, read_only)
-        }
+    pub fn existing(root: impl Into<PathBuf>, read_only: bool) -> Result<Self, FsError> {
+        let mut folder = Self::new(root, read_only);
+        folder.original_root = Some(Dir::identify_root(&folder.root).map_err(missing_root)?);
+        Ok(folder)
     }
 
     /// The directory itself.
@@ -225,12 +223,18 @@ impl Folder {
     /// The root, held. A missing root is created first when `create` and the folder
     /// allows it.
     fn open_root(&self, create: bool) -> Result<Dir, FsError> {
-        if create && self.create_root {
+        if create && self.original_root.is_none() {
             std::fs::create_dir_all(&self.root).map_err(|error| io(&error))?;
         }
-        match Dir::root(&self.root) {
-            Err(FsError::NotFound) if !self.create_root => Err(FsError::FolderMissing),
-            other => other,
+        let opened = Dir::root(&self.root);
+        let Some(original) = &self.original_root else {
+            return opened;
+        };
+        let opened = opened.map_err(missing_root)?;
+        if opened.matches_root(original)? {
+            Ok(opened)
+        } else {
+            Err(FsError::FolderMissing)
         }
     }
 
@@ -404,7 +408,11 @@ impl Folder {
         }
         let (directory, name) = self.target(path)?;
         let mut file = directory.open(name, Access::Append)?;
-        file.lock().map_err(|error| io(&error))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(FsError::Busy),
+            Err(std::fs::TryLockError::Error(error)) => return Err(io(&error)),
+        }
         let size = file.metadata().map_err(|error| io(&error))?.len();
         if size.saturating_add(data.len() as u64) > max_bytes {
             return Err(FsError::TooLarge);
@@ -417,30 +425,31 @@ impl Folder {
     /// A name that is not valid UTF-8 cannot be addressed and is left out.
     pub fn list(&self, path: &str, max_entries: usize) -> Result<Vec<String>, FsError> {
         let path_names = names(path, true)?;
-        if path.is_empty() && self.create_root && !os::exists(&self.root) {
+        if path.is_empty() && self.original_root.is_none() && !os::exists(&self.root) {
             return Ok(Vec::new());
         }
         let directory = self.walk(&path_names)?;
         let mut names = Vec::new();
-        for name in directory.names()? {
+        let mut remaining = max_entries;
+        directory.visit_names(|name| {
+            remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
             let Ok(mut name) = name.into_string() else {
-                continue;
+                return Ok(());
             };
-            if Self::is_temporary(&name) {
-                continue;
+            if Self::is_temporary(&name)
+                || !self::names(&name, false).is_ok_and(|parts| parts.len() == 1)
+            {
+                return Ok(());
             }
             match directory.stat(&name) {
                 Ok(info) if info.is_dir() => name.push('/'),
-                Ok(_) | Err(FsError::InvalidPath) => {}
-                // Removed since the directory was read.
-                Err(FsError::NotFound) => continue,
+                Ok(_) => {}
+                Err(FsError::NotFound | FsError::InvalidPath) => return Ok(()),
                 Err(error) => return Err(error),
             }
-            if names.len() >= max_entries {
-                return Err(FsError::TooLarge);
-            }
             names.push(name);
-        }
+            Ok(())
+        })?;
         names.sort();
         Ok(names)
     }
@@ -525,6 +534,13 @@ impl Folder {
 }
 
 /// Enters each name below `directory` in turn.
+fn missing_root(error: FsError) -> FsError {
+    match error {
+        FsError::NotFound | FsError::InvalidPath => FsError::FolderMissing,
+        other => other,
+    }
+}
+
 fn descend(mut directory: Dir, names: &[&str]) -> Result<Dir, FsError> {
     for name in names {
         directory = directory.child(name)?;

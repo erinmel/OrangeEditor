@@ -179,37 +179,94 @@ pub(crate) fn channel_items(
     subscriber_items(
         channels,
         search,
-        listen_found,
-        listen,
+        (listen_found, listen),
+        LISTEN_TERMS,
         BIND_LISTEN,
         "listen-bound-help",
     )
 }
+
+/// Words that name a Listen in either language rather than a channel, so `listen door
+/// bell` and `escuchar puerta` look for the channels `door bell` and `puerta`.
+const LISTEN_TERMS: &[&str] = &[
+    "listen",
+    "escuchar",
+    "on",
+    "al",
+    "event",
+    "evento",
+    "receive",
+    "recibir",
+    "subscribe",
+    "suscribir",
+    "subscriber",
+    "suscriptor",
+    "receiver",
+    "receptor",
+    "signal",
+    "señal",
+    "wireless",
+    "inalámbrico",
+    "channel",
+    "canal",
+];
+/// The same for a Bridge In.
+const BRIDGE_IN_TERMS: &[&str] = &[
+    "bridge",
+    "puente",
+    "in",
+    "entrada",
+    "read",
+    "leer",
+    "value",
+    "valor",
+    "get",
+    "obtener",
+    "wireless",
+    "inalámbrico",
+    "channel",
+    "canal",
+];
 
 /// Quick-bind items for subscribers of either kind: Listen on a channel or Bridge In
 /// on a Bridge Out, placed as `prefix` + the emitter's key.
 fn subscriber_items(
     channels: &[(String, String)],
     search: &str,
-    subscriber_found: bool,
-    subscriber: &str,
+    (subscriber_found, subscriber): (bool, &str),
+    terms: &[&str],
     prefix: &str,
     help: &str,
 ) -> Vec<PaletteItem> {
-    let (listen_found, listen) = (subscriber_found, subscriber);
     let query = orange_host::fold_search(search.trim());
+    let words: Vec<&str> = query.split_whitespace().collect();
+    // The words that name the subscriber kind, in either language and with a typo,
+    // are not part of the channel name looked for.
+    let names_kind = |word: &str| {
+        terms.iter().any(|term| {
+            orange_host::fold_search(term) == word
+                || (word.chars().count() >= 4 && orange_host::word_finds(word, term))
+        })
+    };
+    let rest: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|word| !names_kind(word))
+        .collect();
+    let kind_named = subscriber_found || rest.len() < words.len();
     channels
         .iter()
         .filter(|(_, name)| {
-            !query.is_empty()
-                && (listen_found
-                    || query
-                        .split_whitespace()
-                        .all(|word| orange_host::fold_search(name).contains(word)))
+            !words.is_empty()
+                && if rest.is_empty() {
+                    kind_named
+                } else {
+                    rest.iter().all(|word| orange_host::word_finds(word, name))
+                }
         })
         .map(|(id, name)| PaletteItem {
             id: format!("{prefix}{id}"),
-            label: format!("{listen} · {name}"),
+            label: format!("{subscriber} · {name}"),
             package: String::new(),
             purpose: crate::i18n::tf(help, &[("channel", name.clone().into())]),
         })
@@ -284,8 +341,11 @@ impl PaletteCache {
             let bound = subscriber_items(
                 bridges,
                 search,
-                bridge_in.is_some(),
-                &bridge_in.unwrap_or_else(|| text_in(language, "bridge-in-node", "Bridge In")),
+                (
+                    bridge_in.is_some(),
+                    &bridge_in.unwrap_or_else(|| text_in(language, "bridge-in-node", "Bridge In")),
+                ),
+                BRIDGE_IN_TERMS,
                 BIND_BRIDGE_IN,
                 "bridge-bound-help",
             );
@@ -1483,8 +1543,9 @@ mod tests {
         assert_eq!(doc.events().len(), 1);
         assert_eq!(body.nodes.len(), 3);
         assert_eq!(
-            doc.events().values().next().unwrap().payload.as_str(),
-            "core/option@1<core/bool@1>"
+            doc.events().values().next().unwrap().payload,
+            None,
+            "a heartbeat is an event-only channel"
         );
         let edge = body.edges.values().next().unwrap();
         let entry = &body.nodes[&edge.from.node];

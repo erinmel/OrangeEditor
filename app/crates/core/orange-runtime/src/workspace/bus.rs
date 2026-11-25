@@ -322,7 +322,7 @@ impl WorkspaceBus {
             if events.len() >= limits.max_events {
                 return Err(WorkspaceBusError::Limit);
             }
-            let shape = ValueShape::of_in(&declaration.payload, registry.types().as_ref())
+            let shape = ValueShape::of_in(&declaration.carried(), registry.types().as_ref())
                 .ok_or(WorkspaceBusError::Contract)?;
             bytes = bytes
                 .checked_add(

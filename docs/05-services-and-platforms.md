@@ -238,21 +238,21 @@ handle is checked to be a regular file. Copy and move check source and destinati
 this way. Hard-linked files are ordinary files; creating a link to another user's file
 needs write access to it on Windows and is refused by default on Linux.
 
-A folder the user chose that goes missing (removed, renamed, a drive disconnected)
-fails every node with `org.orange.files/folder-missing` and is never created again, so
-an unmounted drive is not replaced by an empty directory on another one. A package data
+An active connection retains the selected directory's identity and compares it with
+the root opened for each operation. A missing or replaced directory produces
+`org.orange.files/folder-missing`. Reopening the connection resolves the configured
+path again. Windows identity checks rely on the volume and file index reported by
+the filesystem. The folder is never recreated by a node. A package data
 directory (`orange-guest`) is still created by its first write.
 
 Writes, `copy` and replacement: the content goes to a new temporary file
 `.orange-<pid>-<n>-<random>.tmp` in the target's directory, created exclusively (a file
 or link already at the name is never written through), flushed, and renamed over the
-target. Any failure removes the temporary file and leaves the previous file untouched.
-Listings skip these names. The rename is atomic on every supported local filesystem.
-Crash durability also needs the directory entry flushed: Linux and macOS `fsync` the
-held directory; Windows cannot through std, so NTFS's journal finds the old or the new
-file after a crash, but a crash right after a successful write may still find the old
-one. macOS uses `fsync`, not `F_FULLFSYNC`. `append` locks the file and is not a
-multi-writer transaction. `move` and `move-directory` are one rename on one volume: a
+target. A failure before rename leaves the previous file in place and attempts to
+remove the temporary file. Listings skip these names. Success reports that the rename
+committed. On Linux and macOS the service attempts to flush the directory after the
+rename using `fsync`. A failed or unavailable directory flush leaves crash durability
+unconfirmed. Windows does not flush the directory through std. `append` takes a nonblocking file lock and reports `in-use` when the lock is held. `move` and `move-directory` are one rename on one volume: a
 destination on another volume (a mount point or another drive inside the folder) fails
 with `org.orange.files/cross-device` and changes nothing; a graph that means to cross
 volumes copies and then deletes. `copy-directory` removes what it copied if it fails.

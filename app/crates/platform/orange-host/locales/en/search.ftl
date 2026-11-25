@@ -6,7 +6,8 @@
 # alias-<node key>      more words for one node; the key is its ID with "/" and "." as "-"
 # purpose-<node key>    one line on what one node does
 #
-# IDs never change with the language; a locale only adds words.
+# IDs never change with the language; a locale only adds words. Wireless nodes also carry
+# their names in the other language, so either works in any interface language.
 
 language-name = English
 
@@ -166,9 +167,9 @@ purpose-core-update-variable = Changes a variable from its current value, such a
 purpose-core-set-shared = Replaces the value of a variable shared by all graphs, then continues.
 purpose-core-update-shared = Changes a variable shared by all graphs from its current value, then continues with the old and new values.
 purpose-core-emit = Dispatches an event on a channel to every Listen, with an optional payload, and continues.
-alias-core-emit = emit, send, broadcast, fan out, event, payload, wireless, signal, emitter, publish
-alias-core-on-event = on event, receive, subscribe, subscriber, event, trigger, payload, wireless, signal, receiver
+alias-core-emit = emit, send, broadcast, fan out, event, payload, wireless, signal, emitter, publish, pulse, despachar, emitir, enviar, emisor, inalámbrico, señal
+alias-core-on-event = on event, receive, subscribe, subscriber, event, trigger, payload, wireless, signal, receiver, pulse, escuchar, recibir, suscriptor, inalámbrico, señal
 purpose-core-bridge-out = Exposes a value on a named channel for every Bridge In, without a wire and without starting a flow.
 purpose-core-bridge-in = Reads its Bridge Out's value when something pulls it. It never starts a flow and is not a variable.
-alias-core-bridge-out = bridge, value, pull, wireless, send value, share, expose, emitter, out
-alias-core-bridge-in = bridge, value, pull, wireless, read value, receive, get, subscriber, in
+alias-core-bridge-out = bridge, value, pull, wireless, send value, share, expose, emitter, out, puente, salida, inalámbrico
+alias-core-bridge-in = bridge, value, pull, wireless, read value, receive, get, subscriber, in, puente, entrada, inalámbrico

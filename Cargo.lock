@@ -3638,6 +3638,7 @@ name = "orange-sandbox"
 version = "0.0.0"
 dependencies = [
  "rustix 1.1.6",
+ "same-file",
 ]
 
 [[package]]

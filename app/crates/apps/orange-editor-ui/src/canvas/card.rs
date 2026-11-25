@@ -52,6 +52,8 @@ pub(super) enum FieldOf<'a> {
     MapPairs,
     /// The Bridge Out channel a Bridge In reads from.
     BridgeChannel,
+    /// The Dispatch channel a Listen starts on.
+    ListenChannel,
 }
 
 impl<'a> FieldOf<'a> {
@@ -317,10 +319,17 @@ impl<'a> Card<'a> {
             });
         }
         let paired_map = crate::node_ergonomics::paired_map_available(node);
-        // A Bridge In chooses its channel instead of showing the port its link uses.
+        // A Bridge In chooses its channel instead of showing the port its link uses, and
+        // a Listen picks its Dispatch channel the same way.
         if node.definition == crate::palette::BRIDGE_IN {
             lefts.push(Left::Field {
                 editor: FieldOf::BridgeChannel,
+                named: true,
+            });
+        }
+        if node.definition == "core/on-event" {
+            lefts.push(Left::Field {
+                editor: FieldOf::ListenChannel,
                 named: true,
             });
         }

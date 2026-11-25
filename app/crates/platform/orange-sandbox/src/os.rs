@@ -71,6 +71,12 @@ pub(crate) struct Dir {
     held: Vec<File>,
 }
 
+/// Keeps the original directory alive, so its filesystem identity cannot be reused.
+#[cfg(unix)]
+pub(crate) type RootIdentity = Dir;
+#[cfg(windows)]
+pub(crate) type RootIdentity = same_file::Handle;
+
 /// How [`Dir::open`] opens an existing or new regular file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
@@ -235,20 +241,29 @@ mod unix {
             rustix::fs::unlinkat(&self.fd, name, AtFlags::REMOVEDIR).map_err(errno)
         }
 
-        pub(crate) fn names(&self) -> Result<Vec<OsString>, FsError> {
-            let mut names = Vec::new();
+        pub(crate) fn visit_names(
+            &self,
+            mut visit: impl FnMut(OsString) -> Result<(), FsError>,
+        ) -> Result<(), FsError> {
             for entry in rustix::fs::Dir::read_from(&self.fd).map_err(errno)? {
                 let entry = entry.map_err(errno)?;
                 let name = entry.file_name().to_bytes();
                 if name != b"." && name != b".." {
-                    names.push(std::ffi::OsStr::from_bytes(name).to_owned());
+                    visit(std::ffi::OsStr::from_bytes(name).to_owned())?;
                 }
             }
-            Ok(names)
+            Ok(())
         }
 
-        /// Flushes the directory's entries, so a rename in it survives a crash.
-        /// Some filesystems do not support it; the rename is still atomic there.
+        pub(crate) fn identify_root(root: &Path) -> Result<Dir, FsError> {
+            Self::root(root)
+        }
+
+        pub(crate) fn matches_root(&self, original: &Dir) -> Result<bool, FsError> {
+            self.same(original)
+        }
+
+        /// Attempts to flush the directory's entries after a committed rename.
         pub(crate) fn sync(&self) {
             let _ = rustix::fs::fsync(&self.fd);
         }
@@ -277,14 +292,19 @@ mod unix {
 
 #[cfg(windows)]
 impl Dir {
-    fn hold(path: &Path) -> Result<File, FsError> {
+    fn hold(path: &Path, share_delete: bool) -> Result<File, FsError> {
         use flags::*;
         use std::os::windows::fs::OpenOptionsExt;
-        // Listing access takes part in share checks; attribute access alone would not,
-        // so a rename of the directory would not be refused.
+        // Listing access takes part in share checks; attribute access alone would
+        // not pin the directory against rename during an operation.
+        const FILE_SHARE_DELETE: u32 = 0x0004;
+        let mut share = FILE_SHARE_READ | FILE_SHARE_WRITE;
+        if share_delete {
+            share |= FILE_SHARE_DELETE;
+        }
         let handle = std::fs::OpenOptions::new()
             .access_mode(FILE_LIST_DIRECTORY)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .share_mode(share)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
             .map_err(|error| io(&error))?;
@@ -305,13 +325,13 @@ impl Dir {
     pub(crate) fn root(root: &Path) -> Result<Self, FsError> {
         Ok(Self {
             path: root.to_path_buf(),
-            held: vec![Self::hold(root)?],
+            held: vec![Self::hold(root, false)?],
         })
     }
 
     pub(crate) fn child(&self, name: &str) -> Result<Self, FsError> {
         let path = self.path.join(name);
-        let handle = Self::hold(&path)?;
+        let handle = Self::hold(&path, false)?;
         let mut child = self.duplicate()?;
         child.held.push(handle);
         child.path = path;
@@ -391,15 +411,28 @@ impl Dir {
         std::fs::remove_dir(self.path.join(name)).map_err(|error| io(&error))
     }
 
-    pub(crate) fn names(&self) -> Result<Vec<OsString>, FsError> {
-        let mut names = Vec::new();
+    pub(crate) fn visit_names(
+        &self,
+        mut visit: impl FnMut(OsString) -> Result<(), FsError>,
+    ) -> Result<(), FsError> {
         for entry in std::fs::read_dir(&self.path).map_err(|error| io(&error))? {
-            names.push(entry.map_err(|error| io(&error))?.file_name());
+            visit(entry.map_err(|error| io(&error))?.file_name())?;
         }
-        Ok(names)
+        Ok(())
     }
 
-    /// Windows offers no directory flush through std; NTFS journals the rename.
+    pub(crate) fn identify_root(root: &Path) -> Result<RootIdentity, FsError> {
+        same_file::Handle::from_file(Self::hold(root, true)?).map_err(|error| io(&error))
+    }
+
+    pub(crate) fn matches_root(&self, original: &RootIdentity) -> Result<bool, FsError> {
+        let file = self.held.last().ok_or(FsError::Failed)?;
+        let handle = same_file::Handle::from_file(file.try_clone().map_err(|error| io(&error))?)
+            .map_err(|error| io(&error))?;
+        Ok(&handle == original)
+    }
+
+    /// Windows offers no directory flush through std.
     pub(crate) fn sync(&self) {}
 
     /// Whether both name the same directory. Every directory on both paths is held, so

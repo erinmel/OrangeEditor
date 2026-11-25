@@ -182,10 +182,11 @@ pub enum ControlOperation {
         cases: Box<[SwitchCase]>,
         default: Option<ExecTarget>,
     },
-    /// Enqueues a run-scope event after evaluating its payload demand root.
+    /// Enqueues a run-scope event after evaluating its payload demand root. Without a
+    /// root (an event-only channel, or an optional payload left unset) it sends None.
     Emit {
         event: usize,
-        payload: usize,
+        payload: Option<usize>,
     },
     /// Suspends this strand until its next matching run-scoped emission, or its
     /// optional timeout; it never creates a new activation.
@@ -974,6 +975,7 @@ fn compile_control_inner(
         sources: Vec::new(),
         cx: &cx,
         edges: &edges,
+        producers: &producers,
         control_ix: &control_ix,
         event_ids: &event_ids,
         variables: &variables,
@@ -1594,7 +1596,7 @@ fn prepare_events(
             .events()
             .get(&event_id)
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
-        let payload_type = ValueShape::of_in(&declaration.payload, cx.snapshot.types().as_ref())
+        let payload_type = ValueShape::of_in(&declaration.carried(), cx.snapshot.types().as_ref())
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
         payload_types.entry(event_id).or_insert(payload_type);
         // Charge before retaining executable event metadata. The type is a bounded
@@ -2091,6 +2093,7 @@ struct NodeLowering<'a, 'c> {
     sources: Vec<(ControlKey, Vec<(orange_model::id::PortKey, usize)>)>,
     cx: &'a Cx<'c>,
     edges: &'a BTreeMap<PortSite, ExecTarget>,
+    producers: &'a BTreeMap<PortSite, NodeId>,
     control_ix: &'a BTreeMap<ControlKey, ControlIx>,
     event_ids: &'a BTreeMap<EventDeclId, usize>,
     variables: &'a [ControlVariable],
@@ -2150,9 +2153,11 @@ impl NodeLowering<'_, '_> {
             .iter()
             .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
         {
-            let optional_await_timeout = node.definition.id.as_str() == ids::AWAIT_EVENT
-                && port.port_id.as_str() == "timeout";
-            if (port.is_optional() && !optional_await_timeout)
+            let supports_optional = matches!(
+                (node.definition.id.as_str(), port.port_id.as_str()),
+                (ids::AWAIT_EVENT, "timeout") | (ids::EMIT, "payload")
+            );
+            if (port.is_optional() && !supports_optional)
                 || port.is_lazy()
                 || (port.variadic.is_some()
                     && !matches!(operation, ControlOperation::Effect { .. }))
@@ -2457,12 +2462,20 @@ impl NodeLowering<'_, '_> {
                     Ok(DeclId::Event(id)) => id,
                     _ => return Err(CompileError::UnsupportedNode { node: id }),
                 };
+                let payload_port =
+                    orange_model::id::PortKey::new(orange_model::port_id!("payload"), None);
+                // No port (an event-only channel) or an optional payload with neither a
+                // literal nor a wire: the emission carries None.
+                let payload_provided = cx.port(key, "payload").is_ok()
+                    && (node.inputs.contains_key(&payload_port)
+                        || self.producers.contains_key(&(scope, id, payload_port)));
                 ControlOperation::Emit {
                     event: *self
                         .event_ids
                         .get(&event_id)
                         .ok_or(CompileError::ValidationIncomplete)?,
-                    payload: self.input(key, orange_model::port_id!("payload")),
+                    payload: payload_provided
+                        .then(|| self.input(key, orange_model::port_id!("payload"))),
                 }
             }
             ids::AWAIT_EVENT => {

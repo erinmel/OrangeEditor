@@ -2,7 +2,7 @@
 //! point: each directory is entered through its held parent (see `os.rs`).
 
 use super::os::{Access, Dir};
-use super::{Folder, FsError, Info, io, names, split};
+use super::{Folder, FsError, Info, MAX_PATH_BYTES, io, names, split};
 use std::io::{Read, Write};
 
 /// One addressable regular file or directory, relative to the directory that was listed.
@@ -254,37 +254,47 @@ fn collect(
     while let Some(prefix) = pending.pop() {
         let directory = below(start, &prefix).map_err(changed)?;
         let before = directory.info().map_err(changed)?;
-        for name in directory.names().map_err(changed)? {
-            check_cancelled(cancelled)?;
-            remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
-            let Ok(name) = name.into_string() else {
-                if strict {
-                    return Err(FsError::InvalidPath);
-                }
-                continue;
-            };
-            if !strict && Folder::is_temporary(&name) {
-                continue;
-            }
-            // A name the path rules refuse cannot be addressed afterwards.
-            let plain = names(&name, false).is_ok_and(|parts| parts.len() == 1);
-            let info = if plain {
-                directory.stat(&name)
-            } else {
-                Err(FsError::InvalidPath)
-            };
-            match info {
-                Ok(info) => {
-                    let path = join(&prefix, &name);
-                    if recursive && info.is_dir() {
-                        pending.push(path.clone());
+        directory
+            .visit_names(|name| {
+                check_cancelled(cancelled)?;
+                remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
+                let Ok(name) = name.into_string() else {
+                    if strict {
+                        return Err(FsError::InvalidPath);
                     }
-                    entries.push(TreeEntry { path, info });
+                    return Ok(());
+                };
+                if !strict && Folder::is_temporary(&name) {
+                    return Ok(());
                 }
-                Err(FsError::InvalidPath) if !strict => {}
-                Err(error) => return Err(changed(error)),
-            }
-        }
+                // A name the path rules refuse cannot be addressed afterwards.
+                let plain = names(&name, false).is_ok_and(|parts| parts.len() == 1);
+                let info = if plain {
+                    directory.stat(&name)
+                } else {
+                    Err(FsError::InvalidPath)
+                };
+                match info {
+                    Ok(info) => {
+                        let path = join(&prefix, &name);
+                        if path.len() > MAX_PATH_BYTES {
+                            return if strict {
+                                Err(FsError::InvalidPath)
+                            } else {
+                                Ok(())
+                            };
+                        }
+                        if recursive && info.is_dir() {
+                            pending.push(path.clone());
+                        }
+                        entries.push(TreeEntry { path, info });
+                    }
+                    Err(FsError::InvalidPath) if !strict => {}
+                    Err(error) => return Err(error),
+                }
+                Ok(())
+            })
+            .map_err(changed)?;
         let after = directory.info().map_err(changed)?;
         if before.modified() != after.modified() {
             return Err(FsError::Changed);

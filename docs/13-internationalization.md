@@ -121,7 +121,7 @@ kernel envelope. Route IDs, operation/demand/resource identities, Watch mode, Eq
 event order and counters are semantic metadata and never translated. No UI locale,
 catalogue or saved-format change is introduced.
 
-Status: **normative planning proposal**, 2026-10-20; no implementation or localization tests have run. This document owns presentation text, catalogues and locale selection. [11](11-graph-language.md) owns graph semantics; [12](12-graph-data-structures.md) owns persisted and wire layouts. Their contracts must agree. Requirement and ADR-17 apply from feasibility through release, including expansion SDK design before G2.
+Status: **partially implemented**. The editor and host ship English and Spanish Fluent catalogues, locale fallback and localization tests. The release acceptance fixtures below track broader coverage and platform verification. This document owns presentation text, catalogues and locale selection. [11](11-graph-language.md) owns graph semantics; [12](12-graph-data-structures.md) owns persisted and wire layouts. Their contracts must agree. Requirement and ADR-17 apply from feasibility through release, including expansion SDK design before G2.
 
 ## 1. Scope and ownership
 

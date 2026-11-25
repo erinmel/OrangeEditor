@@ -126,7 +126,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
-pub use search::{CONCEPTS, Found, Match, UNLISTED, fold_search};
+pub use search::{CONCEPTS, Found, Match, UNLISTED, fold_search, word_finds};
 pub use state::StoredVariable;
 pub use suggest::{Giver, SpliceSuggestion, Suggestion};
 pub use view::{

@@ -15,6 +15,16 @@ pub(crate) mod network;
 pub(crate) use network::HTTP;
 const FOLDER_ADAPTER: &str = "org.orange.files/folder";
 
+/// How an event's payload is named in lists: its type, or "No payload" for an
+/// event-only channel (an empty type).
+pub(crate) fn payload_name(ty: &str) -> String {
+    if ty.is_empty() {
+        t("event-no-payload").to_owned()
+    } else {
+        type_name(ty)
+    }
+}
+
 pub(crate) fn variable_scope_allowed(definition: &str, scope: VarScope) -> bool {
     match definition {
         "core/set-shared" | "core/update-shared" => scope == VarScope::Workspace,
@@ -684,9 +694,15 @@ impl Editor {
                 .labelled_by(label.id);
                 let label = ui.label(t("event-payload-type"));
                 let _ = egui::ComboBox::from_id_salt("event-payload-type")
-                    .selected_text(type_name(&form.payload))
+                    .selected_text(payload_name(&form.payload))
                     .width(ui.available_width())
                     .show_select(ui, Surface::Dialog, |ui| {
+                        // An event-only channel: its nodes have no payload port.
+                        let _ = ui.selectable_value(
+                            &mut form.payload,
+                            String::new(),
+                            t("event-no-payload"),
+                        );
                         for ty in COMMON_TYPES.into_iter().chain([
                             "core/json@1",
                             "core/timestamp@1",
@@ -720,7 +736,12 @@ impl Editor {
         if shown.inner.1.clicked() {
             let target = form.target;
             let name = form.name.clone();
-            if let Ok(payload) = form.payload.parse()
+            let payload = if form.payload.is_empty() {
+                Ok(None)
+            } else {
+                form.payload.parse().map(Some)
+            };
+            if let Ok(payload) = payload
                 && let Some(draft) = self.editing()
             {
                 let result = host.declare_run_event_for(draft, target, &name, payload);
@@ -2631,7 +2652,7 @@ mod tests {
         editor.open_untitled(&mut host, text);
         let declared = &editor.declarations().unwrap().events[0];
         assert_eq!(declared.name, "Reading received");
-        assert_eq!(declared.payload.as_str(), "core/i64@1");
+        assert_eq!(declared.payload.as_ref().unwrap().as_str(), "core/i64@1");
         for node in &editor.graph().unwrap().nodes {
             assert_eq!(node.settings["event"], event);
             assert!(

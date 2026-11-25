@@ -225,9 +225,14 @@ impl LocalValidation {
         }
         for event in document.events().values() {
             work.declarations_visited += 1;
+            let Some(payload) = &event.payload else {
+                // An event-only channel has no type to check.
+                let _ = self.declarations.insert(DeclId::Event(event.id), None);
+                continue;
+            };
             self.declaration(
                 DeclId::Event(event.id),
-                &event.payload,
+                payload,
                 Subject::default().with_event(event.id),
                 registry,
                 &mut work,

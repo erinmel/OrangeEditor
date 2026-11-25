@@ -200,6 +200,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
             Some(channel) if !channel.is_empty() => (channel.to_owned(), false),
             _ => (t("choose-channel").to_owned(), true),
         },
+        FieldOf::ListenChannel => (t("choose-channel").to_owned(), true),
         FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
@@ -242,7 +243,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
         FieldOf::AddSignalReceiver => signal_peer_label(node).to_owned(),
-        FieldOf::BridgeChannel => t("bridge-channel").to_owned(),
+        FieldOf::BridgeChannel | FieldOf::ListenChannel => t("bridge-channel").to_owned(),
         FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
@@ -1046,21 +1047,27 @@ impl Canvas {
                     None => shown(node, field),
                 };
                 let mut chosen = None;
-                let current = node.settings["channel"].as_str();
+                let current = self
+                    .bridges
+                    .iter()
+                    .find(|(_, channel)| node.settings["channel"].as_str() == Some(channel))
+                    .map(|(out, _)| *out);
                 dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
-                    if self.bridges.is_empty() {
-                        ui.weak(t("no-bridge-outs"));
-                    }
-                    for (out, channel) in &self.bridges {
-                        if ui
-                            .selectable_label(current == Some(channel.as_str()), channel)
-                            .clicked()
-                        {
-                            chosen = Some(*out);
-                        }
-                    }
+                    chosen = pick_channel(ui, &self.bridges, current, t("no-bridge-outs"));
                 });
                 chosen.map(FieldEdit::BindBridge)
+            }
+            FieldOf::ListenChannel => {
+                let current = node.settings["event"].as_str().map(str::to_owned);
+                let (text, dim) = current
+                    .as_ref()
+                    .and_then(|event| self.channels.get(event))
+                    .map_or_else(|| shown(node, field), |name| (name.clone(), false));
+                let mut chosen = None;
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    chosen = pick_channel(ui, &self.listen_channels, current, t("no-dispatches"));
+                });
+                chosen.map(|event| FieldEdit::Setting("/event".to_owned(), event.into()))
             }
             FieldOf::Variable(pointer) => {
                 let named = node
@@ -1597,6 +1604,56 @@ fn dropdown(
             .response;
         response.on_hover_text(text).accessible_name(label);
     });
+}
+
+/// A searchable list of channels inside a card's dropdown: typing narrows it (in any case,
+/// without accents and with one typo per word), Enter takes the first match, and a
+/// click takes any. `empty` says what to do when there is no channel at all.
+fn pick_channel<K: Clone + PartialEq>(
+    ui: &mut egui::Ui,
+    channels: &[(K, String)],
+    current: Option<K>,
+    empty: &str,
+) -> Option<K> {
+    if channels.is_empty() {
+        ui.weak(empty);
+        return None;
+    }
+    let id = ui.scope_id().with("channel-search");
+    let mut search: String = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut search)
+            .hint_text(t("search-channels"))
+            .desired_width(f32::INFINITY),
+    );
+    if !field.has_focus() && search.is_empty() {
+        field.request_focus();
+    }
+    let matching: Vec<&(K, String)> = channels
+        .iter()
+        .filter(|(_, name)| {
+            search
+                .split_whitespace()
+                .all(|word| orange_host::word_finds(word, name))
+        })
+        .collect();
+    let mut chosen = None;
+    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        chosen = matching.first().map(|(key, _)| key.clone());
+    }
+    if matching.is_empty() {
+        ui.weak(t("no-matching-channels"));
+    }
+    for (key, name) in matching {
+        if ui
+            .selectable_label(current.as_ref() == Some(key), name)
+            .clicked()
+        {
+            chosen = Some(key.clone());
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(id, search));
+    chosen.filter(|key| current.as_ref() != Some(key))
 }
 
 /// The spacing and type size of egui widgets drawn in a card's chart body at `zoom`.

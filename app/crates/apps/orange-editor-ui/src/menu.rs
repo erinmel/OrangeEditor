@@ -426,7 +426,9 @@ impl Editor {
                 } else {
                     crate::palette::BRIDGE_OUT
                 };
-                host.add_node(draft, spawn, [x, y]).and_then(|spawned| {
+                // One undo step; a refused bind leaves no node, edge or channel behind.
+                host.grouped(draft, |host, draft| {
+                    let spawned = host.add_node(draft, spawn, [x, y])?;
                     let _ = host.set_config(
                         draft,
                         spawned,

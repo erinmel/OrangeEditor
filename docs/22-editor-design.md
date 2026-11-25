@@ -21,14 +21,15 @@ Each Listen starts its own activation and shows the payload output only when the
 channel has a payload type. Place Dispatch and Listen to create a channel with one of
 each. On a Dispatch, + Add Subscriber creates a Listen on the same channel that
 follows the pointer until a click places it; Escape leaves it where it is. A Listen
-placed on its own picks its channel in Properties, or comes bound from the node
+placed on its own picks its channel from a searchable picker on the card, or comes bound from the node
 search: searching for Listen, or for a channel's name, lists each channel a Dispatch
 sends on as "Listen · channel", placed bound in one step.
 
 Deleting a Dispatch never deletes its subscribers. A Listen no Dispatch sends to shows
 an "Unbound · channel" tag above its card; clicking it creates a Dispatch on that
-channel (following the pointer), and choosing another channel in Properties rebinds
-it. A Dispatch with no listeners still continues on its normal exit. Pass shared
+channel (following the pointer), and choosing another channel rebinds it. Creating
+an emitter from a Listen with no channel creates a pulse channel in the same edit.
+Edit the shared channel name in Properties. A Dispatch with no listeners still continues on its normal exit. Pass shared
 information as the event payload or through a declared variable.
 
 Bridge Out (`core/bridge-out`, ES "Puente salida") shares a value without a wire,
@@ -54,15 +55,15 @@ shows every link; leaving earlier cancels it. Links fade in and out. At 0 % they
 hidden on hover. Event links are saved only through the event references on the
 nodes, and bridge links as their data edges.
 
-For a typed payload, place Emit, On Event or Await Event, then open its Event
+For a typed payload, place Dispatch, Listen or Await Event, then open its Event
 picker in Properties. Choose New event, select a payload type, and create it.
 Creation assigns the event to that node in one undoable edit. Select the same
-named event on the other nodes. On Event starts a new activation, while Await
+named event on the other nodes. Listen starts a new activation, while Await
 Event continues an existing one when the event arrives or its timeout expires.
 
-Dispatch without payload starts listeners with an optional payload initialized to None.
-Idle Watchdog places Emit, On Event, and Wait from left to right with an empty
-heartbeat payload. Newly placed presets are selected together so they can move as a set.
+Choose No payload (pulse) to create an event-only channel. Dispatch and Listen
+then have no payload ports. Idle Watchdog places Dispatch, Listen, and Wait from
+left to right on an event-only heartbeat channel. Newly placed presets are selected together so they can move as a set.
 
 Collect starts with a limit of 1,024 items. Tee starts with buffers of 32 items
 and 1 MiB per output, with backpressure when either bound is reached. Configure

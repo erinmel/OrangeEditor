@@ -492,6 +492,15 @@ pub fn fold_search(text: &str) -> String {
         .collect()
 }
 
+/// Whether one search word finds `text`, a name the user gave such as a channel: folded
+/// like the node search, it is part of the text or, from four letters on, one typo off a
+/// word of it or the start of one.
+pub fn word_finds(word: &str, text: &str) -> bool {
+    let word = fold_search(word);
+    let text = fold_search(text);
+    !word.is_empty() && (text.contains(&word) || one_typo_from_any(&word, &text, &[], &[]))
+}
+
 /// Whether a word of `text` (split at spaces and dashes) starts with `search`.
 fn starts_a_word(text: &str, search: &str) -> bool {
     text.split([' ', '-'])
@@ -549,6 +558,17 @@ fn within_one(a: &[char], b: &[char]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_channel_name_is_found_with_one_typo_and_without_accents() {
+        assert!(word_finds("door", "Door bell"));
+        assert!(word_finds("bel", "Door bell"));
+        assert!(word_finds("doro", "Door bell"));
+        assert!(word_finds("puerta", "Timbre de la puérta"));
+        assert!(word_finds("puetra", "Timbre de la puerta"));
+        assert!(!word_finds("window", "Door bell"));
+        assert!(!word_finds("", "Door bell"));
+    }
 
     #[test]
     fn typos_are_one_edit() {

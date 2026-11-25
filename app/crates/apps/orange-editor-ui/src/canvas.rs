@@ -417,6 +417,9 @@ pub struct Canvas {
     pub(crate) variables: Vec<(String, String, orange_host::VarScope)>,
     /// Event channels by ID, with their names, for the Unbound badge of a Listen.
     pub(crate) channels: HashMap<String, String>,
+    /// The channels (event ID, name) a Dispatch in the graph sends on, for a Listen's
+    /// picker.
+    pub(crate) listen_channels: Vec<(String, String)>,
     /// The graph's Bridge Outs with their channel names, for a Bridge In's picker.
     pub(crate) bridges: Vec<(NodeId, String)>,
     /// Each bound Bridge In's channel, as its Bridge Out names it now.
@@ -497,8 +500,9 @@ pub struct Canvas {
     follow: Option<NodeId>,
     /// Wireless Link Opacity, 0–100 %: how visible links are at rest (0 hides them).
     pub wireless_opacity: u8,
-    /// When the pointer came to rest on a wireless link, to reveal all after a second.
-    wireless_rest: Option<f64>,
+    /// The wireless link (sender, receiver) the pointer rests on and since when, to reveal
+    /// all after a second on that same link.
+    wireless_rest: Option<((NodeId, NodeId), f64)>,
     renaming: Option<(String, String, bool)>,
     node_rename: Option<NodeRename>,
 }
@@ -521,6 +525,7 @@ impl Default for Canvas {
             variables: Vec::new(),
             channels: HashMap::new(),
             bridges: Vec::new(),
+            listen_channels: Vec::new(),
             bridge_bound: HashMap::new(),
             enums: Enums::new(),
             origin: Pos2::new(-40.0, -40.0),
@@ -1678,6 +1683,23 @@ impl Canvas {
                 Some((wire.to.0, channel.clone()))
             })
             .collect();
+        // A Listen's picker lists the channels some Dispatch sends on, by name.
+        let mut listen_channels: Vec<(String, String)> = graph
+            .nodes
+            .iter()
+            .filter_map(|node| match crate::palette::signal(node) {
+                Some((true, event)) => Some(event.to_owned()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|event| {
+                let name = self.channels.get(&event).cloned().unwrap_or_default();
+                (event, name)
+            })
+            .collect();
+        listen_channels.sort_by(|a, b| a.1.cmp(&b.1));
+        self.listen_channels = listen_channels;
         let alive = !self.stale;
         let animation_time = ui.input(|input| animation_phase(input.time));
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -2474,32 +2496,35 @@ impl Canvas {
                     }
                 }
             }
-            // Resting on a faint link for a second reveals every link.
+            // Resting on one faint link for a second reveals every link. The time
+            // belongs to that link: leaving it, or moving straight onto another, restarts it.
             let now = ui.input(|input| input.time);
-            let on_link = pointer.is_some_and(|at| {
-                self.wiring.is_none()
-                    && hovered_card.is_none()
-                    && links.iter().any(|(_, _, points)| {
-                        Rect::from_points(points)
-                            .expand(WIRE_GRAB * zoom.max(0.6))
-                            .contains(at)
-                            && bezier_distance(points, at) <= WIRE_GRAB * zoom.max(0.6)
-                    })
-            });
-            if on_link {
-                let since = *self.wireless_rest.get_or_insert(now);
-                if now - since < WIRELESS_REST_SECONDS {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs_f64(
-                            WIRELESS_REST_SECONDS - (now - since),
-                        ));
-                }
-            } else {
-                self.wireless_rest = None;
+            let grab = WIRE_GRAB * zoom.max(0.6);
+            let under = pointer
+                .filter(|_| self.wiring.is_none() && hovered_card.is_none())
+                .and_then(|at| {
+                    links
+                        .iter()
+                        .filter(|(_, _, points)| {
+                            Rect::from_points(points).expand(grab).contains(at)
+                        })
+                        .map(|(sender, receiver, points)| {
+                            (bezier_distance(points, at), (*sender, *receiver))
+                        })
+                        .filter(|(away, _)| *away <= grab)
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .map(|(_, link)| link)
+                });
+            let (rest, all) = link_dwell(self.wireless_rest.take(), under, now);
+            if let Some((_, since)) = rest
+                && !all
+            {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(
+                        WIRELESS_REST_SECONDS - (now - since),
+                    ));
             }
-            let all = self
-                .wireless_rest
-                .is_some_and(|since| now - since >= WIRELESS_REST_SECONDS);
+            self.wireless_rest = rest;
             let (_, color, _) = crate::palette::badge("core/emit");
             for (sender, receiver, points) in links {
                 let shown =
@@ -2592,6 +2617,15 @@ impl Canvas {
                 && let Some(channel) = unbound
             {
                 {
+                    // What the tag says depends on the node: a Listen is missing a
+                    // Dispatch, a Bridge In its Bridge Out, and a new one any channel.
+                    let bridge = node.definition == crate::palette::BRIDGE_IN;
+                    let help = match (bridge, channel.is_empty()) {
+                        (true, true) => t("unbound-bridge-new-help"),
+                        (true, false) => t("unbound-bridge-help"),
+                        (false, true) => t("unbound-listen-new-help"),
+                        (false, false) => t("unbound-listen-help"),
+                    };
                     let channel = if channel.is_empty() {
                         t("unbound-no-channel").to_owned()
                     } else {
@@ -2613,7 +2647,7 @@ impl Canvas {
                             ui.scope_id().with(("unbound", node.id)),
                             Sense::click(),
                         )
-                        .on_hover_text(t("unbound-help"));
+                        .on_hover_text(help);
                     touched.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::Role::Button, true, galley.text())
                     });
@@ -3039,6 +3073,7 @@ impl Canvas {
                     card::FieldOf::AddSignalReceiver => id.with("add-signal"),
                     card::FieldOf::MapPairs => id.with("map-pairs"),
                     card::FieldOf::BridgeChannel => id.with("bridge-channel"),
+                    card::FieldOf::ListenChannel => id.with("listen-channel"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -4063,6 +4098,23 @@ const WIRELESS_FADE_SECONDS: f32 = 0.18;
 /// The alpha of a wireless link at rest for an opacity setting of 0–100 %: nothing at 0,
 /// then a perceptual curve that starts at a clearly visible but faint 0.1 at 1 % and
 /// grows smoothly to fully opaque at 100 %.
+/// The dwell on one wireless link: it starts when the pointer comes onto a link,
+/// restarts when the pointer moves straight onto another, and ends when it leaves.
+/// Returns the new dwell and whether a second has passed on that same link.
+fn link_dwell<K: PartialEq + Copy>(
+    rest: Option<(K, f64)>,
+    under: Option<K>,
+    now: f64,
+) -> (Option<(K, f64)>, bool) {
+    let rest = match (rest, under) {
+        (Some((link, since)), Some(under)) if link == under => Some((link, since)),
+        (_, Some(under)) => Some((under, now)),
+        (_, None) => None,
+    };
+    let all = rest.is_some_and(|(_, since)| now - since >= WIRELESS_REST_SECONDS);
+    (rest, all)
+}
+
 pub(crate) fn wireless_alpha(opacity: u8) -> f32 {
     match opacity {
         0 => 0.0,
@@ -5422,6 +5474,27 @@ mod tests {
             resting < hovered && hovered == accent.a(),
             "{resting} {hovered}"
         );
+    }
+
+    #[test]
+    fn the_reveal_dwell_belongs_to_one_link_and_restarts_on_another() {
+        let (a, b) = (1, 2);
+        // Coming onto a link starts its own second.
+        let (rest, all) = link_dwell(None, Some(a), 10.0);
+        assert_eq!((rest, all), (Some((a, 10.0)), false));
+        // Staying on it for a second reveals every link.
+        let (rest, all) = link_dwell(rest, Some(a), 11.0);
+        assert_eq!((rest, all), (Some((a, 10.0)), true));
+        // Moving straight onto another link starts again from zero.
+        let (rest, all) = link_dwell(Some((a, 10.0)), Some(b), 10.9);
+        assert_eq!((rest, all), (Some((b, 10.9)), false));
+        let (_, all) = link_dwell(rest, Some(b), 11.5);
+        assert!(!all, "half a second on the second link is not enough");
+        // Leaving early forgets the dwell.
+        let (rest, all) = link_dwell(Some((a, 10.0)), None, 10.5);
+        assert_eq!((rest, all), (None, false));
+        let (_, all) = link_dwell(rest, Some(a), 10.8);
+        assert!(!all);
     }
 
     #[test]

@@ -169,13 +169,14 @@ impl Host {
         }
     }
 
-    /// Declares a typed run event and assigns it to a node in the same undoable edit.
+    /// Declares a run event and assigns it to a node in the same undoable edit. Without
+    /// a payload type the event is a pulse: its nodes have no payload port.
     pub fn declare_run_event_for(
         &self,
         draft: &mut Draft,
         node: NodeId,
         name: &str,
-        payload: TypeExpr,
+        payload: Option<TypeExpr>,
     ) -> Result<EventDeclId, HostError> {
         let document = draft.document();
         let registry = self.registry_for(document);
@@ -192,9 +193,10 @@ impl Host {
         if name.is_empty() {
             return Err(refused(&"enter an event name"));
         }
-        if orange_model::value::shape::ValueShape::of_in(&payload, registry.types().as_ref())
-            .is_none()
-        {
+        if payload.as_ref().is_some_and(|payload| {
+            orange_model::value::shape::ValueShape::of_in(payload, registry.types().as_ref())
+                .is_none()
+        }) {
             return Err(refused(&"the event payload type is unavailable"));
         }
         let id: EventDeclId = draft
@@ -222,6 +224,40 @@ impl Host {
             ],
         )?;
         Ok(id)
+    }
+
+    /// Renames an event, the channel its Dispatch and Listen nodes show, as one undoable
+    /// edit. The name is trimmed and may not be empty or another event's name. Its ID,
+    /// payload and the nodes bound to it do not change.
+    pub fn rename_event(
+        &self,
+        draft: &mut Draft,
+        event: EventDeclId,
+        name: &str,
+    ) -> Result<bool, HostError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(refused(&"enter a channel name"));
+        }
+        let document = draft.document();
+        let mut declared = document
+            .events()
+            .get(&event)
+            .cloned()
+            .ok_or_else(|| refused(&"the document has no such event"))?;
+        if declared.name == name {
+            return Ok(false);
+        }
+        if document
+            .events()
+            .values()
+            .any(|other| other.id != event && other.name == name)
+        {
+            return Err(refused(&"another channel already has this name"));
+        }
+        name.clone_into(&mut declared.name);
+        let registry = self.registry_for(document);
+        draft.commit(&registry, [DocCommand::UpsertEvent(declared)])
     }
 
     /// What the connection a node of `definition` uses is called by its adapter, such

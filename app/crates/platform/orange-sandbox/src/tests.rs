@@ -101,7 +101,7 @@ fn a_folder_that_does_not_exist_yet_is_empty_and_made_by_the_first_write() {
 fn a_chosen_folder_that_goes_missing_is_reported_and_never_made_again() {
     let above = scratch("missing");
     let root = above.join("folder");
-    let folder = Folder::existing(&root, false);
+    let folder = Folder::existing(&root, false).unwrap();
     folder.write("a.txt", b"a").unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(folder.read("a.txt", 16), Err(FsError::FolderMissing));
@@ -110,6 +110,38 @@ fn a_chosen_folder_that_goes_missing_is_reported_and_never_made_again() {
     assert_eq!(folder.write("a.txt", b"b"), Err(FsError::FolderMissing));
     assert_eq!(folder.make_directory("d"), Err(FsError::FolderMissing));
     assert!(!root.exists());
+    let _ = std::fs::remove_dir_all(&above);
+}
+
+#[test]
+fn a_replacement_directory_does_not_inherit_the_grant() {
+    let above = scratch("replaced-root");
+    let root = above.join("folder");
+    let original = above.join("original");
+    let folder = Folder::existing(&root, false).unwrap();
+    folder.write("a", b"original").unwrap();
+    std::fs::rename(&root, &original).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("a"), b"replacement").unwrap();
+    assert_eq!(folder.read("a", 32), Err(FsError::FolderMissing));
+    assert_eq!(folder.write("a", b"changed"), Err(FsError::FolderMissing));
+    assert_eq!(std::fs::read(root.join("a")).unwrap(), b"replacement");
+    drop(folder);
+    let _ = std::fs::remove_dir_all(&above);
+}
+
+#[test]
+fn listing_limits_include_entries_that_are_skipped() {
+    let above = scratch("entry-limit");
+    let root = above.join("folder");
+    let folder = Folder::new(&root, false);
+    std::fs::write(root.join(".orange-skipped.tmp"), b"").unwrap();
+    assert_eq!(folder.list("", 0), Err(FsError::TooLarge));
+    assert_eq!(folder.list("", 1), Ok(vec![]));
+    assert!(matches!(
+        folder.tree("", true, 0, &never),
+        Err(FsError::TooLarge)
+    ));
     let _ = std::fs::remove_dir_all(&above);
 }
 
@@ -131,8 +163,25 @@ fn concurrent_appends_enforce_the_same_limit_across_folder_instances() {
         [first.join().unwrap(), second]
     });
     assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-    assert!(outcomes.contains(&Err(FsError::TooLarge)));
+    assert!(outcomes.contains(&Err(FsError::TooLarge)) || outcomes.contains(&Err(FsError::Busy)));
     assert_eq!(folder.read("shared", 4).unwrap(), b"1234");
+    let _ = std::fs::remove_dir_all(&above);
+}
+
+#[test]
+fn append_reports_a_held_file_lock_as_busy() {
+    let above = scratch("append-busy");
+    let root = above.join("folder");
+    let folder = Folder::new(&root, false);
+    folder.write("shared", b"").unwrap();
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("shared"))
+        .unwrap();
+    held.try_lock().unwrap();
+    assert_eq!(folder.append("shared", b"a", 1), Err(FsError::Busy));
+    drop(held);
+    assert_eq!(folder.append("shared", b"a", 1), Ok(()));
     let _ = std::fs::remove_dir_all(&above);
 }
 
@@ -272,6 +321,9 @@ fn replace_file_swaps_whole_files_and_keeps_the_previous_one_on_failure() {
         .collect();
     assert_eq!(names.len(), 2, "{names:?}");
     assert!(replace_file(Path::new(""), b"x").is_err());
+    let long_name = above.join("a".repeat(240));
+    replace_file(&long_name, b"long filename").unwrap();
+    assert_eq!(std::fs::read(long_name).unwrap(), b"long filename");
     let _ = std::fs::remove_dir_all(&above);
 }
 
