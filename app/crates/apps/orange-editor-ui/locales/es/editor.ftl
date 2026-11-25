@@ -828,6 +828,7 @@ node-family-files = Lee o escribe archivos en una carpeta conectada.
 node-family-log = Escribe mensajes para inspeccionarlos.
 node-family-data = Extrae campos, construye valores y trabaja con colecciones.
 node-family-flow = Decide qué pasos se ejecutan y en qué orden.
+node-family-logic = Combina condiciones verdaderas o falsas.
 node-family-package = Explora las operaciones de esta categoría.
 shortcut-files-help = Crea, abre y guarda grafos.
 shortcut-editing-help = Deshaz o rehace acciones y edita la selección o el portapapeles.

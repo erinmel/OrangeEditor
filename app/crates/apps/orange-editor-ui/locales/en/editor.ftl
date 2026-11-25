@@ -831,6 +831,7 @@ node-family-files = Read or write files in a connected folder.
 node-family-log = Write messages for inspection.
 node-family-data = Extract fields, build values and work with collections.
 node-family-flow = Choose which steps run and in what order.
+node-family-logic = Combine true or false conditions.
 node-family-package = Browse operations in this category.
 shortcut-files-help = Create, open and save graphs.
 shortcut-editing-help = Undo, redo and edit the selection or clipboard.

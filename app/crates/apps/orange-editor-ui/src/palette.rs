@@ -386,6 +386,10 @@ pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
         ("core", "call" | "function-entry" | "function-outputs" | "return") => {
             (icons::FUNCTION, [137, 114, 207], "node-family-functions")
         }
+        ("core", "and" | "or" | "all-conditions" | "any-conditions")
+        | ("org.orange.math", "not" | "xor") => {
+            (icons::BOOLEAN, [196, 160, 52], "node-family-logic")
+        }
         ("core", name) if loop_name(name) => (icons::REFRESH, [51, 151, 163], "node-family-loops"),
         ("core", name) if name.contains("variable") || name.contains("shared") => {
             (icons::VARIABLE, [60, 156, 112], "node-family-state")
@@ -529,7 +533,7 @@ fn catalog_group(definition: &str) -> Option<CatalogGroup> {
         ("core", "number" | "whole-number" | "bool" | "text" | "value" | "true-or-false") => DATA,
         ("core", name) if name.contains("variable") || name.contains("shared") => DATA,
         ("preset:increment" | "preset:decrement", _) => DATA,
-        ("core", "and" | "or" | "not" | "xor" | "all-conditions" | "any-conditions") => CALCULATE,
+        ("core", "and" | "or" | "all-conditions" | "any-conditions") => CALCULATE,
         ("core", "register" | "close-handle" | "close-stream" | "next-item") => TOOLS,
         ("core", _) => FLOW,
         (preset, _) if preset.starts_with("preset:") => FLOW,
