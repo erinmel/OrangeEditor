@@ -185,7 +185,8 @@ four-step exchange is completed in both directions: an unfinished message keeps 
 packet ID across a reconnect, and a received one is handed to the entries once however
 often the broker repeats it. After a reconnect the session subscribes first and then
 repeats what was unfinished. When the broker reports no kept session, exchanges it had
-already confirmed are dropped. A closing session waits up to 500 ms for its disconnect
+already confirmed are dropped. A received message whose topic is empty, contains a
+wildcard or is not UTF-8 is a protocol error and closes the connection. A closing session waits up to 500 ms for its disconnect
 to be sent, so a normal stop does not publish the will. Not provided: MQTT 5,
 client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
 to the connection), and messages over 8 MiB.
