@@ -108,6 +108,7 @@ pub(super) struct Row<'a> {
     pub right: Option<&'a PortView>,
     pub field_inset: f32,
     pub field_end: Option<f32>,
+    paired_input_anchor: Option<f32>,
 }
 
 impl<'a> Row<'a> {
@@ -135,6 +136,9 @@ impl<'a> Row<'a> {
 
     /// Center an editable input between its label and the bottom of its control.
     pub(super) fn input_anchor(&self) -> f32 {
+        if let Some(anchor) = self.paired_input_anchor {
+            return anchor;
+        }
         match self.left {
             Some(Left::Field { editor, named }) => {
                 self.top + (editor.control_height() + if named { NAME } else { 0.0 }) / 2.0
@@ -251,6 +255,7 @@ impl<'a> Card<'a> {
                     right,
                     field_inset: CARD_PADDING,
                     field_end: None,
+                    paired_input_anchor: None,
                 });
                 y.set(y.get() + height);
             };
@@ -316,6 +321,7 @@ impl<'a> Card<'a> {
                 continue;
             }
             if node.missing.is_none()
+                && !crate::properties::advanced_input(node, port)
                 && !port.connected
                 && let Some(kind) = crate::properties::TextInput::for_port(node, port)
             {
@@ -343,6 +349,7 @@ impl<'a> Card<'a> {
             }
             let path = node.paths.iter().find(|path| path.port == port.id);
             lefts.push(match path {
+                _ if crate::properties::advanced_input(node, port) => Left::Port(port),
                 _ if port.connected || node.missing.is_some() => Left::Port(port),
                 Some(path) => Left::Field {
                     editor: FieldOf::Path(port, path),
@@ -373,10 +380,11 @@ impl<'a> Card<'a> {
             }
         }));
         // Fields hinted `header` come first, so they share the outputs' rows (ADR-33).
-        lefts.sort_by_key(|left| {
-            region_of(node, left).map(|(region, _)| region)
-                != Some(orange_host::controls::Region::Header)
-        });
+        if !node.controls.regions.is_empty() {
+            lefts.sort_by_key(|left| {
+                crate::properties::field_order(node, field_name(left).unwrap_or(""))
+            });
+        }
         if paired_map {
             lefts.push(Left::Field {
                 editor: FieldOf::MapPairs,
@@ -426,11 +434,10 @@ impl<'a> Card<'a> {
             let right = if hosts { outputs.next() } else { None };
             push(&mut rows, Some(left), right);
             // Two fields of a region arranged in a row share one, each taking half.
-            let paired = region_of(node, &left)
-                .filter(|(_, arrange)| *arrange != orange_host::controls::Arrange::Column);
+            let paired = field_placement(node, &left);
             if let Some(place) = paired
                 && let Some(next) = lefts.peek()
-                && region_of(node, next) == Some(place)
+                && field_placement(node, next) == Some(place)
                 && let Some(next) = lefts.next()
                 && let Some(first) = rows.last_mut()
             {
@@ -443,6 +450,12 @@ impl<'a> Card<'a> {
                     _ => LINE,
                 };
                 let (top, first_height) = (first.top, first.height);
+                // Both inputs need their own points on the leading edge.
+                let both_inputs = first.input().is_some()
+                    && matches!(next, Left::Field { editor, .. } if editor.port().is_some());
+                if both_inputs {
+                    first.paired_input_anchor = Some(top + 9.0);
+                }
                 rows.push(Row {
                     top,
                     height: first_height.max(height),
@@ -450,6 +463,7 @@ impl<'a> Card<'a> {
                     right: None,
                     field_inset: middle,
                     field_end: None,
+                    paired_input_anchor: both_inputs.then_some(top + 27.0),
                 });
                 if height > first_height {
                     y.set(y.get() + height - first_height);
@@ -462,7 +476,7 @@ impl<'a> Card<'a> {
         for add in growing {
             push(&mut rows, Some(add), None);
         }
-        if crate::palette::signal(node).is_some_and(|(sender, _)| sender) {
+        if crate::palette::signal(node).is_some() {
             push(
                 &mut rows,
                 Some(Left::Field {
@@ -527,6 +541,7 @@ impl<'a> Card<'a> {
                 right: Some(port),
                 field_inset: METER_FIELDS_X,
                 field_end: None,
+                paired_input_anchor: None,
             });
             y += LINE;
         }
@@ -545,6 +560,7 @@ impl<'a> Card<'a> {
                 right: None,
                 field_inset: CARD_PADDING,
                 field_end: None,
+                paired_input_anchor: None,
             });
             stream_y += LINE;
         }
@@ -592,6 +608,7 @@ impl<'a> Card<'a> {
                 right: None,
                 field_inset: inset,
                 field_end: end,
+                paired_input_anchor: None,
             });
         }
         rows.extend(inputs);
@@ -635,22 +652,30 @@ impl<'a> Card<'a> {
     }
 }
 
-/// The hinted region of a field and how that region lays it out (ADR-33).
-fn region_of(
-    node: &NodeView,
-    left: &Left<'_>,
-) -> Option<(
-    orange_host::controls::Region,
-    orange_host::controls::Arrange,
-)> {
-    let Left::Field { editor, .. } = left else {
+fn field_name<'a>(left: &Left<'a>) -> Option<&'a str> {
+    match left {
+        Left::Field {
+            editor: FieldOf::Setting(name, ..),
+            ..
+        } => Some(name),
+        Left::Field { editor, .. } => Some(editor.port()?.id.as_str()),
+        Left::Port(port) => Some(&port.id),
+        _ => None,
+    }
+}
+
+fn field_placement(node: &NodeView, left: &Left<'_>) -> Option<usize> {
+    if !matches!(left, Left::Field { .. }) {
         return None;
-    };
-    let name = match editor {
-        FieldOf::Setting(name, ..) => *name,
-        other => other.port()?.id.as_str(),
-    };
-    node.controls.region_of(name)
+    }
+    let name = field_name(left)?;
+    let (index, placement) = node
+        .controls
+        .regions
+        .iter()
+        .enumerate()
+        .find(|(_, placement)| placement.fields.iter().any(|field| field == name))?;
+    (placement.arrange != orange_host::controls::Arrange::Column).then_some(index)
 }
 
 #[cfg(test)]
@@ -700,15 +725,28 @@ mod tests {
         // Typed, its inputs become fields that can be laid out.
         host.choose_type(&mut draft, id, "T", Some("core/f64@1"))
             .unwrap();
+        let source = host
+            .add_node(&mut draft, "core/number", [-600.0, 0.0])
+            .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
         let card = Card::new(node);
+        let mut canvas = crate::canvas::Canvas::new();
+        canvas.load(&graph);
         {
             let card = &card;
             for (low, high) in [("from_min", "from_max"), ("to_min", "to_max")] {
                 let (low, high) = (row_of(card, low), row_of(card, high));
                 assert_eq!(low.top, high.top, "a pair shares its row");
                 assert!(low.field_end.is_some_and(|end| end < high.field_inset));
+                assert!(high.input_anchor() - low.input_anchor() >= 16.0);
+                for row in [low, high] {
+                    let port = row.input().unwrap();
+                    assert_eq!(
+                        canvas.input_at(&graph, Pos2::new(0.0, row.input_anchor()), false, source),
+                        Some((id, port.id.clone())),
+                    );
+                }
             }
             assert_ne!(row_of(card, "from_min").top, row_of(card, "to_min").top);
             assert!(

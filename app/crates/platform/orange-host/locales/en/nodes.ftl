@@ -68,3 +68,5 @@ name-org-orange-json-read-number = Read JSON Number
 name-org-orange-json-read-bool = Read JSON True or False
 name-core-all-conditions = And
 name-core-any-conditions = Or
+name-core-emit = Dispatch
+name-core-on-event = Listen

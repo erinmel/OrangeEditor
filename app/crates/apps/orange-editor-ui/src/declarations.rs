@@ -11,7 +11,7 @@ use orange_host::{
 };
 use std::collections::BTreeMap;
 
-mod network;
+pub(crate) mod network;
 pub(crate) use network::HTTP;
 const FOLDER_ADAPTER: &str = "org.orange.files/folder";
 
@@ -182,7 +182,8 @@ pub(crate) struct Forms {
     /// Open the new-variable form at the next frame.
     open_variable: bool,
     /// Whether the Connections panel is showing a form.
-    open_connection: bool,
+    pub(crate) open_connection: bool,
+    connection_target: Option<NodeId>,
     /// The variable form is shown.
     variable_open: bool,
     /// What is being typed in place in the Variables list, by variable ID and field,
@@ -213,7 +214,17 @@ impl Forms {
     pub(crate) fn reveal_connection(&mut self) {
         self.open_connection = true;
     }
+    pub(crate) fn new_connection_for(&mut self, node: NodeId, adapter: &str) {
+        self.connection = ConnectionForm {
+            adapter: adapter.to_owned(),
+            ..ConnectionForm::default()
+        };
+        self.connection_target = Some(node);
+        self.reveal_connection();
+    }
+
     pub(crate) fn edit_connection(&mut self, connection: &Connection) {
+        self.connection_target = None;
         self.connection = ConnectionForm {
             changing: connection.id.clone(),
             name: connection.name.clone(),
@@ -843,14 +854,10 @@ impl Editor {
             .document
             .as_ref()
             .is_some_and(|document| document.flow.is_some());
-        let values = self
-            .document
-            .as_ref()
-            .map(|document| document.values.clone())
-            .unwrap_or_default();
         let mut remove = None;
         let mut change: Option<Variable> = None;
         let mut place: Option<(String, bool)> = None;
+        let mut inspect_value = None;
         let mut find: Option<Vec<NodeId>> = None;
         // The nodes that name each variable: Get, Set, Update, On variable changed.
         let mut users_of: HashMap<String, Vec<NodeId>> = HashMap::new();
@@ -891,6 +898,11 @@ impl Editor {
             let Some(id) = variable.id.clone() else {
                 continue;
             };
+            let current_value = self
+                .document
+                .as_ref()
+                .and_then(|doc| doc.values.get(&id))
+                .map(|value| value.shown.clone());
             let _ = item_frame(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -944,7 +956,11 @@ impl Editor {
                             .response
                             .on_hover_text(t("more-options"));
                         // Its value now while the graph runs; the last one, dimmed, after.
-                        match values.get(&id) {
+                        if current_value.is_some() && ui.small_button(t("inspect-value")).clicked()
+                        {
+                            inspect_value = Some(id.clone());
+                        }
+                        match &current_value {
                             Some(value) if running => {
                                 let _ = ui
                                     .add(
@@ -1084,6 +1100,10 @@ impl Editor {
                     });
                 });
             });
+        }
+        if let Some(id) = inspect_value {
+            self.inspected_port = None;
+            self.inspected_variable = Some(id);
         }
         if let Some((id, set)) = place {
             let at = self.canvas.paste_place();
@@ -1297,7 +1317,21 @@ impl Editor {
             .into_iter()
             .filter(|(_, secret)| !secret.is_empty())
             .collect();
-        let Some(id) = self.declare_connection_with_secrets(host, &connection, &secrets) else {
+        let saved = if let Some(node) = self.forms.connection_target {
+            let result = self.editing().map(|draft| {
+                host.declare_connection_for(draft, node, &connection, &secrets)
+                    .and_then(|id| {
+                        if secrets.is_empty() {
+                            host.approve_connection_credentials(draft, &id)?;
+                        }
+                        Ok(id)
+                    })
+            });
+            result.and_then(|result| self.edited_value(host, result))
+        } else {
+            self.declare_connection_with_secrets(host, &connection, &secrets)
+        };
+        let Some(id) = saved else {
             self.forms.connection.tested = Some(Err(t("connection-save-failed").to_owned()));
             return false;
         };
@@ -1354,6 +1388,7 @@ impl Editor {
         };
         if section_heading(ui, t("connections"), t("add-connection")) {
             self.forms.connection = ConnectionForm::default();
+            self.forms.connection_target = None;
             self.forms.reveal_connection();
             self.declaration_search[1].clear();
         }
@@ -1444,7 +1479,15 @@ impl Editor {
         if let Some(id) = remove {
             let _ = self.remove_connection(host, &id);
         }
-        self.connection_dialog(ui.ctx(), host, &adapters);
+    }
+
+    pub(crate) fn show_connection_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
+        if !self.forms.open_connection {
+            return;
+        }
+        let mut adapters = host.adapter_list();
+        adapters.sort_by_key(|adapter| adapter_rank(&adapter.id));
+        self.connection_dialog(ctx, host, &adapters);
     }
 
     fn connection_dialog(
@@ -1747,6 +1790,7 @@ impl Editor {
         if cancel {
             self.forms.connection = ConnectionForm::default();
             self.forms.open_connection = false;
+            self.forms.connection_target = None;
         }
         if refresh {
             let _ = self.adapter_choices(host, &adapter, true);
@@ -2326,6 +2370,160 @@ mod tests {
             Some("s3cret-value")
         );
         draw(&mut editor, &mut host);
+    }
+
+    #[test]
+    fn variable_inspector_copies_full_text_beyond_the_preview() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let id = editor
+            .declare_variable(
+                &mut host,
+                &Variable {
+                    id: None,
+                    name: "Response body".into(),
+                    ty: "core/string@1".into(),
+                    scope: VarScope::Run,
+                    persistent: false,
+                    initial: None,
+                },
+            )
+            .unwrap();
+        let full = format!("{}end", "x".repeat(8192));
+        editor.document.as_mut().unwrap().values.insert(
+            id,
+            crate::ObservedVariable {
+                shown: "short preview".into(),
+                exact_text: Some(orange_host::Value::Str(std::sync::Arc::new(full.clone()))),
+            },
+        );
+
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.variables_tab(ui, &mut host);
+                    editor.variable_inspector_window(ui.ctx());
+                },
+            )
+        };
+        frame(Vec::new()).drop_without_applying_deltas();
+        let layout = frame(Vec::new());
+        let inspect = text_center(&layout.shapes, t("inspect-value")).unwrap();
+        layout.drop_without_applying_deltas();
+        click(inspect, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
+        let open = frame(Vec::new());
+        let copy = text_center(&open.shapes, t("copy")).unwrap();
+        open.drop_without_applying_deltas();
+        let mut copied = false;
+        click(copy, egui::PointerButton::Primary, |events| {
+            let output = frame(events);
+            copied |= output.platform_output.commands.iter().any(
+                |command| matches!(command, egui::OutputCommand::CopyText(text) if text == &full),
+            );
+            output.drop_without_applying_deltas();
+        });
+        assert!(copied);
+    }
+
+    #[test]
+    fn a_connection_created_from_properties_binds_only_its_target() {
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let target = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let other = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let original = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == other)
+            .unwrap()
+            .settings["connection"]
+            .clone();
+        editor.forms.new_connection_for(target, HTTP);
+        editor.forms.connection.name = "Second service".into();
+        editor.forms.connection.settings = json!({"base_url": "https://example.test"}).to_string();
+        assert!(editor.commit_connection_form(&mut host));
+        let graph = editor.graph().unwrap();
+        assert_ne!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == target)
+                .unwrap()
+                .settings["connection"],
+            original
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == other)
+                .unwrap()
+                .settings["connection"],
+            original
+        );
+    }
+
+    #[test]
+    fn properties_opens_the_nodes_connection_without_switching_tabs() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let node = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        editor.canvas.select(Some(node));
+        let profile = editor.declarations().unwrap().connections[0].id.clone();
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 700.0));
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.ui_with_layout(ui, &mut host, |editor, ui, host| {
+                        editor.properties_panel(ui, host);
+                    })
+                },
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(Vec::new());
+        let position = text_center(&frame(Vec::new()), t("edit-connection")).unwrap();
+        click(position, egui::PointerButton::Primary, |events| {
+            frame(events);
+        });
+        frame(Vec::new());
+        assert!(editor.forms.open_connection);
+        assert_eq!(editor.forms.connection.changing, profile);
+        assert!(editor.tab == super::super::Tab::Nodes);
+        assert_eq!(editor.canvas.selected(), Some(node));
     }
 
     #[test]

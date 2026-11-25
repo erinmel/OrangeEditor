@@ -1,15 +1,17 @@
 use std::{f32::consts::TAU, time::Duration};
 
-use egui::{Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use orange_ui_controls::{
     Divider, MeterOrientation, Surface, UiTokens,
     audio_meter::{
-        ChannelLevel, MeterStyle, PeakBallistics, RmsMeter, amplitude_dbfs, stereo_meter,
+        ChannelLevel, ChannelReading, MeterStyle, PeakBallistics, RmsMeter, amplitude_dbfs,
+        stereo_meter,
     },
     continuous_slider,
     eq_plot::{EqPlot, EqView},
     frequency::{Biquad, EqBand, FFT_SIZE, FilterKind, Spectrum},
     pill_segmented,
+    waveform::{Waveform, paint_waveform},
 };
 
 const RATE: f32 = 48_000.0;
@@ -185,7 +187,7 @@ impl Preview {
             );
         });
         ui.weak("Post-EQ trumpet waveform");
-        let wave_visible = waveform(ui, tokens, &self.brass.waveform, None);
+        let wave_visible = waveform(ui, tokens, Waveform::Samples(&self.brass.waveform), None);
 
         Divider::Section.show(ui, tokens);
         ui.heading("Stereo peak and RMS · dBFS");
@@ -236,23 +238,27 @@ impl Preview {
                     );
                 }
                 let (rect, response) = ui.allocate_exact_size(vec2(84.0, 184.0), Sense::hover());
-                let lane = Rect::from_min_size(rect.min + vec2(4.0, 6.0), vec2(40.0, 158.0));
+                let lane = Rect::from_min_size(rect.min + vec2(12.0, 13.0), vec2(40.0, 158.0));
                 RmsMeter {
                     lane,
                     zoom: 1.0,
-                    reading: Some(self.meters[0].rms),
+                    reading: None,
                     target: Some((-35.0, tokens.theme.accent_primary())),
                 }
-                .show(ui, ui.painter(), response.id, tokens);
-                if ui.is_rect_visible(rect) {
-                    ui.painter().text(
-                        lane.center_bottom() + vec2(0.0, 9.0),
-                        egui::Align2::CENTER_CENTER,
+                .show_channels(
+                    ui,
+                    ui.painter(),
+                    response.id,
+                    tokens,
+                    &[(
                         "RMS",
-                        egui::FontId::monospace(9.5),
-                        tokens.theme.text_primary(),
-                    );
-                }
+                        ChannelReading {
+                            rms: self.meters[0].rms,
+                            peak: self.meters[0].peak,
+                            clipped: self.meters[0].clipped,
+                        },
+                    )],
+                );
             })
             .response;
         let fft_visible = plot_visible && self.view != EqView::Eq;
@@ -437,7 +443,7 @@ impl Brass {
 pub(super) fn waveform(
     ui: &mut Ui,
     tokens: UiTokens,
-    samples: &[f32],
+    data: Waveform<'_>,
     playhead: Option<&mut f32>,
 ) -> bool {
     let sense = if playhead.is_some() {
@@ -463,29 +469,7 @@ pub(super) fn waveform(
     );
     let plot = rect.shrink(4.0);
     painter.hline(plot.x_range(), plot.center().y, theme.border_subtle());
-    if samples.len() > 1 {
-        let columns = plot.width().ceil().max(2.0) as usize;
-        let stride = if playhead.is_none() {
-            samples.len().div_ceil(columns.saturating_mul(2)).max(1)
-        } else {
-            1
-        };
-        let points = samples
-            .iter()
-            .enumerate()
-            .step_by(stride)
-            .map(|(i, sample)| {
-                pos2(
-                    egui::lerp(plot.x_range(), i as f32 / (samples.len() - 1) as f32),
-                    plot.center().y - sample.clamp(-1.0, 1.0) * plot.height() * 0.47,
-                )
-            })
-            .collect();
-        painter.add(Shape::line(
-            points,
-            Stroke::new(1.1, theme.accent_primary()),
-        ));
-    }
+    paint_waveform(&painter, plot, data, theme.accent_primary());
     if let Some(position) = playhead {
         if (response.clicked() || response.dragged())
             && let Some(pointer) = response.interact_pointer_pos()

@@ -211,7 +211,7 @@ impl Session {
 }
 
 #[test]
-fn keyboard_can_wire_from_either_end_or_cancel_without_editing() {
+fn keyboard_and_click_can_wire_from_either_end_or_cancel_without_editing() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let start = host
@@ -275,6 +275,24 @@ fn keyboard_can_wire_from_either_end_or_cancel_without_editing() {
             Some(((start, "then".to_owned()), (wait, "in".to_owned())))
         );
         assert!(session.canvas.keyboard_wiring.is_none());
+    }
+    let click_at = |session: &mut Session, pos, modifiers| {
+        let event = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        let _ = session.frame(vec![egui::Event::PointerMoved(pos), event(true)]);
+        session.frame(vec![event(false)])
+    };
+    for (first, second) in [(out, into), (into, out)] {
+        let _ = click_at(&mut session, first, egui::Modifiers::NONE);
+        assert!(session.canvas.keyboard_wiring.is_some());
+        assert_eq!(
+            click_at(&mut session, second, egui::Modifiers::NONE).connect,
+            Some(((start, "then".to_owned()), (wait, "in".to_owned())))
+        );
     }
     focus_port(&mut session, into);
     let _ = press(&mut session, egui::Key::Enter, egui::Modifiers::NONE);
@@ -1081,7 +1099,7 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
     let _ = session.frame(vec![]);
     let zoom = session.canvas.zoom;
     let top = session.corner + (session.canvas.places[&trigger] - session.canvas.origin) * zoom;
-    let from = top + Vec2::new(40.0, BODY_TOP + 10.0 + 185.0 * 35.0 / 120.0) * zoom;
+    let from = top + Vec2::new(10.0, BODY_TOP + 18.0 + 163.0 * 35.0 / 120.0) * zoom;
     let to = from + Vec2::new(0.0, 32.0) * zoom;
     let button = |pos, pressed| egui::Event::PointerButton {
         pos,
@@ -1108,7 +1126,7 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
     assert!(
         labels
             .iter()
-            .any(|label| label.contains(&format!("{shown:.0}"))),
+            .any(|label| label.contains(&format!("{shown:.1}"))),
         "{labels:?}"
     );
     let (config, pointer, value) = session.frame(vec![button(to, false)]).set_config.unwrap();
@@ -1117,6 +1135,15 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
         (trigger, "/threshold_db", Some(shown))
     );
     assert!(session.frame(vec![]).set_config.is_none());
+    session
+        .context
+        .run_ui(egui::RawInput::default(), |ui| {
+            let mut response = ui.label("threshold");
+            response.mark_changed();
+            assert_eq!(threshold.update(&response, f64::NAN), None);
+            assert_eq!(threshold.update(&response, f64::INFINITY), None);
+        })
+        .drop_without_applying_deltas();
 
     let mut changed = (*node).clone();
     changed

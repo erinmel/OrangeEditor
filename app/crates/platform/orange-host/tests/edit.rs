@@ -420,6 +420,45 @@ fn a_wireless_sender_without_receivers_continues_and_can_be_reconnected() {
 }
 
 #[test]
+fn a_wireless_pulse_starts_its_receiver_without_a_payload_value() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let first = host
+        .add_node(&mut draft, "preset:wireless-pulse", [300.0, 100.0])
+        .unwrap();
+    let receiver = draft
+        .document()
+        .root()
+        .nodes
+        .values()
+        .find(|node| node.definition.id.as_str() == "core/on-event")
+        .unwrap()
+        .id;
+    let sender = host
+        .add_signal_sender(&mut draft, receiver, [300.0, 400.0])
+        .unwrap();
+    assert!(host.remove_nodes(&mut draft, &[first]).unwrap());
+    assert!(
+        host.connect(&mut draft, (trigger, "then"), (sender, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (receiver, "then"), (set, "in"))
+            .unwrap()
+    );
+
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    until("the pulse started its receiver", || {
+        host.inspect(flow, |run| {
+            run.variable(id(100).parse().unwrap()) == Some(&Value::I64(7))
+        })
+        .unwrap()
+    });
+    host.close(flow).unwrap();
+}
+
+#[test]
 fn each_edit_is_one_step_back_and_forward() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
     let mut draft = host.draft(&empty()).unwrap();

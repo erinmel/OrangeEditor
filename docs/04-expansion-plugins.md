@@ -364,7 +364,9 @@ is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.
 It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`, and
 `orange-plugin 11` (2026-11-25) since `Presentation` carries `controls` and
 `hint_problems` (ADR-33). `Definition::setting_control`, `input_control` and `layout`
-write a definition's control hints with the `Control` and `Layout` builders.
+write a definition's control hints with the `Control` and `Layout` builders. Card and
+Properties controls use the same hints, including slider guides, dial faces and
+localized dial captions. `orange check` warns about dropped hints.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`

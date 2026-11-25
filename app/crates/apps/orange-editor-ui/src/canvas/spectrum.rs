@@ -707,7 +707,10 @@ pub(super) fn draw_noise(
     if controls && let Some(threshold) = threshold {
         let mut drag = ui
             .interact(
-                bar.expand2(Vec2::new(8.0, 2.0) * zoom),
+                Rect::from_min_max(
+                    bar.min - Vec2::new(12.0, 6.0) * zoom,
+                    bar.max + Vec2::new(0.0, 6.0) * zoom,
+                ),
                 id,
                 Sense::click_and_drag(),
             )
@@ -716,7 +719,7 @@ pub(super) fn draw_noise(
         if (drag.dragged() || drag.clicked() || drag.drag_stopped())
             && let Some(pointer) = drag.interact_pointer_pos()
         {
-            value = f64::from(meter.db_at(pointer).round());
+            value = (f64::from(meter.db_at(pointer)) * 10.0).round() / 10.0;
             drag.mark_changed();
         }
         changed = threshold.update(&drag, value);

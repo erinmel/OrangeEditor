@@ -193,7 +193,7 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         ),
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
-        FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
+        FieldOf::AddSignalReceiver => (signal_peer_label(node).to_owned(), true),
         FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
@@ -209,6 +209,14 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
 }
 
 /// The name line's text of a field.
+fn signal_peer_label(node: &NodeView) -> &'static str {
+    t(if node.entry {
+        "signal-add-sender"
+    } else {
+        "signal-add-receiver"
+    })
+}
+
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
         FieldOf::Input(port)
@@ -227,7 +235,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
-        FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
+        FieldOf::AddSignalReceiver => signal_peer_label(node).to_owned(),
         FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
@@ -323,7 +331,7 @@ pub(super) fn paint_still(
             return;
         } else {
             let (track, number) = slider_slots(rect, zoom);
-            range.paint_slider(ui, track, value);
+            range.paint_slider(ui, track, value, node.controls.settings.get(name));
             number
         };
         frame(painter, number, zoom, colors, false);
@@ -358,7 +366,7 @@ pub(super) fn paint_still(
             return;
         }
         let (track, number) = slider_slots(rect, zoom);
-        range.paint_slider(ui, track, value);
+        range.paint_slider(ui, track, value, Some(control));
         frame(painter, number, zoom, colors, false);
         let (text, dim) = shown(node, field);
         let _ = field_text_in(
@@ -616,7 +624,7 @@ impl Canvas {
                         |ui| {
                             ui.set_clip_rect(ui.clip_rect().intersect(track));
                             ui.spacing_mut().interact_size.y = track.height();
-                            range.slider(ui, Surface::Card, id, current, &label())
+                            range.slider(ui, Surface::Card, id, current, &label(), Some(control))
                         },
                     )
                     .inner;
@@ -923,26 +931,14 @@ impl Canvas {
                                 Surface::Card,
                                 zoom,
                             ) {
-                                let step = stepper.step.unwrap_or(1.0);
-                                let next = value.as_f64().unwrap_or(0.0) + f64::from(sign) * step;
-                                let low = stepper
-                                    .range
-                                    .map(|[low, _]| low)
-                                    .or(schema["minimum"].as_f64());
-                                let high = stepper
-                                    .range
-                                    .map(|[_, high]| high)
-                                    .or(schema["maximum"].as_f64());
-                                let next = next
-                                    .max(low.unwrap_or(f64::MIN))
-                                    .min(high.unwrap_or(f64::MAX));
-                                return setting_number(
-                                    node,
-                                    name,
+                                let next = crate::properties::stepper_value(
+                                    stepper,
                                     schema,
-                                    &format!("{}", next.round()),
-                                )
-                                .and_then(set);
+                                    value.as_f64().unwrap_or(0.0),
+                                    sign,
+                                )?;
+                                return setting_number(node, name, schema, &next.to_string())
+                                    .and_then(set);
                             }
                             let typed = self.number_control(
                                 ui,
@@ -990,7 +986,14 @@ impl Canvas {
                                         |ui| {
                                             ui.set_clip_rect(ui.clip_rect().intersect(track));
                                             ui.spacing_mut().interact_size.y = track.height();
-                                            range.slider(ui, Surface::Card, id, value, &label())
+                                            range.slider(
+                                                ui,
+                                                Surface::Card,
+                                                id,
+                                                value,
+                                                &label(),
+                                                node.controls.settings.get(name),
+                                            )
                                         },
                                     )
                                     .inner;

@@ -596,8 +596,12 @@ impl Host {
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         match definition {
             "preset:watchdog" => self.watchdog_commands(draft, at),
+            "preset:wireless-value" => self.wireless_value_commands(draft, at),
+            "preset:wireless-pulse" => self
+                .signal_commands(draft, at, "Pulse", true)
+                .map(|([sender, _], commands)| (sender, commands)),
             "preset:signal" => self
-                .signal_commands(draft, at, "Signal", [360.0, 0.0])
+                .signal_commands(draft, at, "Signal", false)
                 .map(|([sender, _], commands)| (sender, commands)),
             _ => self.node_commands(draft, definition, at, "node"),
         }
@@ -608,7 +612,7 @@ impl Host {
         draft: &Draft,
         [x, y]: [f32; 2],
         base: &str,
-        [dx, dy]: [f32; 2],
+        pulse: bool,
     ) -> Result<([NodeId; 2], Vec<DocCommand>), HostError> {
         let name = std::iter::once(base.to_owned())
             .chain((2..).map(|index| format!("{base} {index}")))
@@ -621,13 +625,18 @@ impl Host {
             })
             .ok_or_else(|| refused(&"no signal name is available"))?;
         let event = draft.fresh_id("signal-event");
+        let payload = if pulse {
+            "core/option@1<core/bool@1>"
+        } else {
+            "core/bool@1"
+        };
         let declaration = serde_json::from_value(json!({
-            "id": event, "name": name, "payload": "core/bool@1", "scope": "run"
+            "id": event, "name": name, "payload": payload, "scope": "run"
         }))
         .map_err(|error| refused(&error))?;
         let (emit, emission) = self.node_commands(draft, intrinsic::EMIT, [x, y], "signal-emit")?;
         let (entry, reception) =
-            self.node_commands(draft, intrinsic::ON_EVENT, [x + dx, y + dy], "signal-entry")?;
+            self.node_commands(draft, intrinsic::ON_EVENT, [x + 360.0, y], "signal-entry")?;
         let mut commands = vec![DocCommand::UpsertEvent(declaration)];
         commands.extend(emission);
         commands.extend(reception);
@@ -637,8 +646,12 @@ impl Host {
         commands.push(DocCommand::SetLiteral {
             port: port_ref((emit, "payload"))?,
             literal: Some(Literal::value(
-                "core/bool@1".parse().map_err(|error| refused(&error))?,
-                json!(true),
+                payload.parse().map_err(|error| refused(&error))?,
+                if pulse {
+                    json!({"none": true})
+                } else {
+                    json!(true)
+                },
             )),
         });
         Ok(([emit, entry], commands))
@@ -692,14 +705,71 @@ impl Host {
             .ok_or_else(|| refused(&"choose an event before adding a signal endpoint"))?;
         let (node, mut commands) = self.node_commands(draft, definition, at, "signal-endpoint")?;
         commands.push(event_config(node, &event.id.to_string()));
-        if definition == intrinsic::EMIT && event.payload.as_str() == "core/bool@1" {
-            commands.push(DocCommand::SetLiteral {
-                port: port_ref((node, "payload"))?,
-                literal: Some(Literal::value(event.payload.clone(), json!(true))),
-            });
+        if definition == intrinsic::EMIT {
+            let ty = event.payload.as_str();
+            let value = if ty == "core/bool@1" {
+                Some(json!(true))
+            } else if ty.starts_with("core/option@1<") {
+                Some(json!({"none": true}))
+            } else {
+                None
+            };
+            if let Some(value) = value {
+                commands.push(DocCommand::SetLiteral {
+                    port: port_ref((node, "payload"))?,
+                    literal: Some(Literal::value(event.payload.clone(), value)),
+                });
+            }
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
+    }
+
+    /// A stored value with an ordinary writer and reader. Reading starts no activation.
+    fn wireless_value_commands(
+        &self,
+        draft: &Draft,
+        [x, y]: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let id = draft.fresh_id("wireless-value");
+        let name = std::iter::once("Wireless value".to_owned())
+            .chain((2..).map(|index| format!("Wireless value {index}")))
+            .find(|name| {
+                draft
+                    .document()
+                    .variables()
+                    .values()
+                    .all(|variable| &variable.name != name)
+            })
+            .ok_or_else(|| refused(&"no variable name is available"))?;
+        let declaration = serde_json::from_value(json!({
+            "id": id, "name": name, "type": "core/bool@1", "scope": "run",
+            "init": {"type": "core/bool@1", "value": false}
+        }))
+        .map_err(|error| refused(&error))?;
+        let (set, writer) = self.node_commands(
+            draft,
+            intrinsic::SET_VARIABLE,
+            [x, y],
+            "wireless-value-writer",
+        )?;
+        let (get, reader) = self.node_commands(
+            draft,
+            intrinsic::GET_VARIABLE,
+            [x + 360.0, y],
+            "wireless-value-reader",
+        )?;
+        let mut commands = vec![DocCommand::UpsertVariable(declaration)];
+        commands.extend(writer);
+        commands.extend(reader);
+        for node in [set, get] {
+            commands.push(DocCommand::SetConfig {
+                node,
+                config_version: 1,
+                config: [("variable".to_owned(), json!(id))].into_iter().collect(),
+            });
+        }
+        Ok((set, commands))
     }
 
     fn watchdog_commands(
@@ -708,13 +778,9 @@ impl Host {
         [x, y]: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let ([emit, entry], mut commands) =
-            self.signal_commands(draft, [x, y], "Heartbeat", [0.0, 176.0])?;
-        let (wait, timeout) = self.node_commands(
-            draft,
-            intrinsic::WAIT,
-            [x + 360.0, y + 176.0],
-            "watchdog-wait",
-        )?;
+            self.signal_commands(draft, [x, y], "Heartbeat", true)?;
+        let (wait, timeout) =
+            self.node_commands(draft, intrinsic::WAIT, [x + 720.0, y], "watchdog-wait")?;
         commands.extend(timeout);
         let mut policy: ActivationPolicy =
             serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;

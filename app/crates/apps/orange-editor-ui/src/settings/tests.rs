@@ -6,6 +6,7 @@ fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
     theme::apply(&ctx);
     ctx.set_theme(egui::Theme::Dark);
     let mut editor = Editor::new();
+    let light_panel = ctx.style_of(egui::Theme::Light).visuals.panel_fill;
     let colors = [egui::Theme::Light, egui::Theme::Dark].map(|mode| {
         let style = ctx.style_of(mode);
         (style.visuals.window_fill, style.visuals.extreme_bg_color)
@@ -25,7 +26,7 @@ fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
     }
     assert!(shapes.iter().any(|shape| matches!(
         &shape.shape,
-        egui::Shape::Path(path) if path.points.len() == 3 && path.fill == colors[0].0
+        egui::Shape::Path(path) if path.points.len() == 3 && path.fill == light_panel
     )));
     assert_eq!(ctx.theme(), egui::Theme::Dark);
     assert_eq!(editor.preferred_theme, None);

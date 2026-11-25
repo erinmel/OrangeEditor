@@ -418,6 +418,8 @@ impl Editor {
             Ok(endpoint) => {
                 let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(endpoint));
+                // It rides on the pointer until a click places it.
+                self.canvas.follow(endpoint);
                 true
             }
             Err(error) => self.edited(host, Err(error)),

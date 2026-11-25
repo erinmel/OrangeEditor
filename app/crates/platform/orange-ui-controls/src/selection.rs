@@ -233,7 +233,10 @@ impl ChoiceRow<'_> {
 /// Minus and plus buttons at the two ends of `rect`, around a number the caller draws
 /// in between. Returns -1 or +1 for the button clicked. `rect`'s height sets their size.
 pub fn step_buttons(ui: &Ui, rect: Rect, id: egui::Id, surface: Surface, zoom: f32) -> Option<i8> {
-    let side = rect.height();
+    if !rect.is_finite() || !rect.is_positive() || !zoom.is_finite() || zoom <= 0.0 {
+        return None;
+    }
+    let side = rect.height().min(rect.width() * 0.5);
     let minus = Rect::from_min_size(rect.min, vec2(side, side));
     let plus = Rect::from_min_size(pos2(rect.right() - side, rect.top()), vec2(side, side));
     let theme = crate::UiTokens::for_surface(ui, surface).theme;
@@ -976,7 +979,9 @@ pub fn marked_slider(ui: &mut Ui, surface: Surface, fraction: &mut f32, marks: &
 
 /// Paints a marked track in a read-only preview, with no input registration.
 pub fn marked_slider_preview(ui: &Ui, rect: Rect, surface: Surface, fraction: f32, marks: &[f32]) {
-    SliderTrack::new(ui, rect, fraction).marked(ui, surface, None, marks);
+    if rect.is_positive() && rect.is_finite() && rect.size().is_finite() {
+        SliderTrack::new(ui, rect, fraction).marked(ui, surface, None, marks);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1016,6 +1021,13 @@ pub struct DialFace<'a> {
     pub diameter: Option<f32>,
 }
 
+/// Optional presentation for a dial face.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialStyle {
+    pub knob: KnobStyle,
+    pub precision: Option<u8>,
+}
+
 /// A self-contained rotary control: a ring of fine ticks lit up to the value, with the
 /// name, value and unit inside, so it needs no label beside it. It fills the space it
 /// is given, up to the size of a knob, and edits like [`knob`].
@@ -1027,6 +1039,19 @@ pub fn dial(
     step: Option<f32>,
     face: DialFace<'_>,
 ) -> Response {
+    styled_dial(ui, surface, value, range, step, face, DialStyle::default())
+}
+
+/// Draws a dial with the selected knob style and display precision.
+pub fn styled_dial(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+    style: DialStyle,
+) -> Response {
     rotary_with(
         ui,
         surface,
@@ -1034,8 +1059,8 @@ pub fn dial(
         range,
         step,
         &[],
-        KnobStyle::Arc,
-        Some(face),
+        style.knob,
+        Some((face, style)),
     )
 }
 
@@ -1049,7 +1074,34 @@ pub fn dial_preview(
     step: Option<f32>,
     face: DialFace<'_>,
 ) {
-    paint_dial(ui, rect, surface, value, &range, step, face, None);
+    styled_dial_preview(
+        ui,
+        rect,
+        surface,
+        value,
+        range,
+        step,
+        face,
+        DialStyle::default(),
+    );
+}
+
+/// Paints a styled dial without registering input.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one dial preview's display state"
+)]
+pub fn styled_dial_preview(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+    style: DialStyle,
+) {
+    paint_dial(ui, rect, surface, value, &range, step, (face, style), None);
 }
 
 /// Relative rotary control with an optional center detent or outer tick marks.
@@ -1077,7 +1129,7 @@ fn rotary_with(
     step: Option<f32>,
     marks: &[f32],
     style: KnobStyle,
-    face: Option<DialFace<'_>>,
+    face: Option<(DialFace<'_>, DialStyle)>,
 ) -> Response {
     let start = *range.start();
     let end = *range.end();
@@ -1087,11 +1139,15 @@ fn rotary_with(
     let normalize = |raw| rotary_value(raw, &range, None, looping);
     let commit = |raw| rotary_value(raw, &range, step, looping);
     let diameter = face
-        .and_then(|face| face.diameter)
+        .and_then(|(face, _)| face.diameter)
+        .filter(|diameter| diameter.is_finite() && *diameter > 0.0)
         .unwrap_or(ui.spacing().interact_size.y.max(24.0) + 45.0)
         .min(ui.available_width().max(1.0));
-    let (rect, mut response) =
-        ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::click_and_drag());
+    let size = vec2(diameter, diameter);
+    if !span.is_finite() || span <= 0.0 || diameter < 4.0 {
+        return ui.allocate_exact_size(size, egui::Sense::hover()).1;
+    }
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     if response.clicked() || response.drag_started() {
         response.request_focus();
     }
@@ -1254,7 +1310,7 @@ fn paint_dial(
     value: f32,
     range: &RangeInclusive<f32>,
     step: Option<f32>,
-    face: DialFace<'_>,
+    (face, style): (DialFace<'_>, DialStyle),
     response: Option<&Response>,
 ) {
     if !ui.is_rect_visible(rect) {
@@ -1263,11 +1319,15 @@ fn paint_dial(
     let theme = Theme::of(ui);
     let (start, end) = (*range.start(), *range.end());
     let span = end - start;
-    let fraction = if span > 0.0 {
-        ((value - start) / span).clamp(0.0, 1.0)
+    if !rect.is_finite() || !rect.size().is_finite() || !span.is_finite() || span <= 0.0 {
+        return;
+    }
+    let value = if value.is_nan() {
+        start
     } else {
-        0.0
+        value.clamp(start, end)
     };
+    let fraction = (value - start) / span;
     let enabled = response.is_none_or(Response::enabled);
     let painter = ui.painter();
     let diameter = rect.width().min(rect.height());
@@ -1280,7 +1340,12 @@ fn paint_dial(
     let length = (diameter * 0.085).max(3.0);
     let inner = outer - length;
     let point = |normalized: f32, ring: f32| {
-        let angle = (135.0 + 270.0 * normalized).to_radians();
+        let (start, sweep) = if style.knob == KnobStyle::Loop {
+            (90.0, 360.0)
+        } else {
+            (135.0, 270.0)
+        };
+        let angle = (start + sweep * normalized).to_radians();
         center + vec2(angle.cos() * ring, angle.sin() * ring)
     };
     let ink = if enabled {
@@ -1294,11 +1359,24 @@ fn paint_dial(
         painter.circle_stroke(center, inner - 2.0, Stroke::new(1.0, theme.focus));
     }
     let width = (diameter / 50.0).clamp(0.8, 1.6);
-    let count = ((diameter * 0.6) as u16).clamp(24, 48);
-    for index in 0..=count {
+    let zero = if style.knob == KnobStyle::Bipolar && start < 0.0 && end > 0.0 {
+        -start / span
+    } else {
+        0.0
+    };
+    let count = if style.knob == KnobStyle::Notched {
+        step.map_or(12, |step| (span / step).round() as u16)
+            .clamp(2, 48)
+    } else {
+        ((diameter * 0.6) as u16).clamp(24, 48)
+    };
+    let last = count - u16::from(style.knob == KnobStyle::Loop);
+    for index in 0..=last {
         let at = f32::from(index) / f32::from(count);
         // Lit and unlit ticks differ in color only, like the knob's arc and track.
-        let lit = fraction > 0.0 && at <= fraction + 0.5 / f32::from(count);
+        let lit = fraction != zero
+            && at + 0.5 / f32::from(count) >= zero.min(fraction)
+            && at <= zero.max(fraction) + 0.5 / f32::from(count);
         let color = if lit { ink } else { theme.border };
         painter.line_segment(
             [point(at, inner), point(at, outer)],
@@ -1317,11 +1395,14 @@ fn paint_dial(
         ],
         Stroke::new(width * 1.8, needle),
     );
-    let number = if step.is_some() {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    };
+    let precision = style.precision.unwrap_or_else(|| {
+        if step.is_some_and(|step| step.fract() == 0.0) {
+            0
+        } else {
+            1
+        }
+    });
+    let number = format!("{value:.*}", usize::from(precision));
     // Shrinks text that would be wider than `room`.
     let fit = |text: String, size: f32, color, room: f32| {
         let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(size), color);
@@ -1407,11 +1488,15 @@ fn paint_rotary(
         let scale = (diameter / 60.0).clamp(0.35, 1.2);
         let enabled = response.is_none_or(Response::enabled);
         let painter = ui.painter();
-        let fraction = if span > 0.0 {
-            ((value - start) / span).clamp(0.0, 1.0)
+        if !rect.is_finite() || !rect.size().is_finite() || !span.is_finite() || span <= 0.0 {
+            return;
+        }
+        let value = if value.is_nan() {
+            start
         } else {
-            0.0
+            value.clamp(start, end)
         };
+        let fraction = (value - start) / span;
         let center = rect.center();
         let radius = rect.width() * 0.35;
         let point = |normalized: f32, ring: f32| {
@@ -1468,6 +1553,9 @@ fn paint_rotary(
             marks
         };
         for (index, mark) in marks.iter().enumerate() {
+            if !mark.is_finite() {
+                continue;
+            }
             let mark = mark.clamp(0.0, 1.0);
             let major = index == 0
                 || index + 1 == marks.len()
@@ -1532,12 +1620,27 @@ fn rotary_value(raw: f32, range: &RangeInclusive<f32>, step: Option<f32>, loopin
     if !raw.is_finite() || !span.is_finite() || span <= 0.0 {
         return start;
     }
-    let value = step.map_or(raw, |step| start + ((raw - start) / step).round() * step);
-    if looping {
-        start + (value - start).rem_euclid(span)
+    // Quantize and wrap in f64 so a very small step or a distant typed value
+    // cannot overflow the quotient and turn a cyclic dial into NaN.
+    let (start, end, raw) = (f64::from(start), f64::from(end), f64::from(raw));
+    let offset = raw - start;
+    let offset = step
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .map_or(offset, |step| {
+            let step = f64::from(step);
+            (offset / step).round() * step
+        });
+    let value = if looping {
+        start + offset.rem_euclid(end - start)
     } else {
-        value.clamp(start, end)
-    }
+        (start + offset).clamp(start, end)
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the public control edits f32"
+    )]
+    let value = value as f32;
+    value
 }
 
 /// Controls whether numeric values appear beneath a stepped slider.
@@ -1741,6 +1844,11 @@ impl SliderTrack {
         // egui 0.37 uses this inset for the rectangular handle's input travel.
         let inset = (rect.height() / 2.5 * HANDLE_ASPECT).min(rect.width() * 0.5);
         let travel = rect.x_range().shrink(inset);
+        let fraction = if fraction.is_nan() {
+            0.0
+        } else {
+            fraction.clamp(0.0, 1.0)
+        };
         let thumb = pos2(egui::lerp(travel, fraction), rect.center().y);
         Self {
             rect,
@@ -1761,7 +1869,10 @@ impl SliderTrack {
     fn marked(&self, ui: &Ui, surface: Surface, response: Option<&Response>, marks: &[f32]) {
         self.paint(ui, surface, response, |painter, active, idle| {
             for (index, mark) in marks.iter().enumerate() {
-                let x = egui::lerp(self.travel, *mark);
+                if !mark.is_finite() {
+                    continue;
+                }
+                let x = egui::lerp(self.travel, mark.clamp(0.0, 1.0));
                 let major = index == 0 || index + 1 == marks.len();
                 let lit = x <= self.thumb.x && response.is_none_or(Response::enabled);
                 self.notch(painter, x, major, if lit { active } else { idle });
@@ -1814,12 +1925,7 @@ impl SliderTrack {
             pos2(self.travel.max + 2.5, y + 2.5),
         )
         .intersect(self.rect);
-        let background = theme.background(surface);
-        let idle = crate::theme::ensure_contrast(
-            background.lerp_to_gamma(theme.text, 0.23),
-            background,
-            3.0,
-        );
+        let idle = theme.slider_idle(surface);
         painter.rect_filled(rail, 2, idle);
         if enabled && self.thumb.x > self.travel.min {
             painter.rect_filled(
@@ -2494,6 +2600,12 @@ mod tests {
             })
             .drop_without_applying_deltas();
         }
+    }
+
+    #[test]
+    fn cyclic_rotary_remains_finite_when_the_step_is_subnormal() {
+        let next = rotary_value(f32::MAX, &(-10.0..=10.0), Some(f32::from_bits(1)), true);
+        assert!((-10.0..=10.0).contains(&next));
     }
 
     /// Ctrl (Command on macOS) drags a hundred times finer, so a wide range reaches

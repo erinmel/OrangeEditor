@@ -21,6 +21,7 @@ pub(crate) struct ValueForm {
     some: bool,
     focus: bool,
     error: Option<String>,
+    json_error: Option<(usize, usize)>,
 }
 
 impl std::fmt::Debug for ValueForm {
@@ -43,10 +44,11 @@ impl ValueForm {
         });
         let some = value.and_then(|value| value.get("some"));
         let text = match editor {
-            LiteralEditor::Option { .. } => some.map(|value| value.to_string()),
-            LiteralEditor::Structured => value.map(|value| value.to_string()),
+            LiteralEditor::Option { .. } => some,
+            LiteralEditor::Structured => value,
             _ => None,
         }
+        .and_then(|value| serde_json::to_string_pretty(value).ok())
         .unwrap_or_default();
         Self {
             target,
@@ -57,12 +59,14 @@ impl ValueForm {
             some: some.is_some(),
             focus: true,
             error: None,
+            json_error: None,
         }
     }
 
     fn literal(&self) -> Result<Literal, String> {
         let nested = || {
-            serde_json::from_str::<serde_json::Value>(&self.text).map_err(|error| error.to_string())
+            serde_json::from_str::<serde_json::Value>(&self.text)
+                .map_err(|error| json_syntax_message(error.line(), error.column()))
         };
         let value = match self.editor {
             LiteralEditor::Plain if self.ty.as_str() == "core/string@1" => {
@@ -85,6 +89,7 @@ impl ValueForm {
     fn fields(&mut self, ui: &mut egui::Ui) -> bool {
         ui.strong(&self.title);
         ui.weak(type_name(self.ty.as_str()));
+        let was_some = self.some;
         if let LiteralEditor::Option { some } = self.editor {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.some, false, t("literal-none"));
@@ -93,18 +98,19 @@ impl ValueForm {
                 });
             });
         }
-        if !matches!(self.editor, LiteralEditor::Option { .. }) || self.some {
+        if self.some != was_some {
+            self.error = None;
+        }
+        let shows_text = !matches!(self.editor, LiteralEditor::Option { .. }) || self.some;
+        if shows_text {
             let response = if self.editor == LiteralEditor::Plain {
                 ui.add(egui::TextEdit::singleline(&mut self.text).desired_width(f32::INFINITY))
             } else {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.text)
-                        .code_editor()
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(t("literal-json-hint")),
-                )
+                self.json_editor(ui)
             };
+            if response.changed() {
+                self.error = None;
+            }
             if std::mem::take(&mut self.focus) {
                 response.request_focus();
             }
@@ -117,8 +123,67 @@ impl ValueForm {
         } else {
             t("apply")
         };
-        ui.button(action).clicked()
+        ui.add_enabled(
+            !shows_text || self.json_error.is_none(),
+            egui::Button::new(action),
+        )
+        .clicked()
     }
+
+    fn json_editor(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let height = (ui.ctx().content_rect().height() * 0.45).clamp(64.0, 240.0);
+        let response = egui::ScrollArea::vertical()
+            .id_salt("literal-json")
+            .max_height(height)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.text)
+                        .code_editor()
+                        .desired_rows(8)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(t("literal-json-hint")),
+                )
+            })
+            .inner;
+        if response.changed() {
+            self.json_error = serde_json::from_str::<serde_json::Value>(&self.text)
+                .err()
+                .map(|error| (error.line(), error.column()));
+        }
+        let can_format = self.json_error.is_none() && !self.text.trim().is_empty();
+        if ui
+            .add_enabled(can_format, egui::Button::new(t("literal-format-json")))
+            .clicked()
+        {
+            self.format_json();
+        }
+        if let Some((line, column)) = self.json_error {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                json_syntax_message(line, column),
+            );
+        }
+        response
+    }
+
+    fn format_json(&mut self) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.text)
+            && let Ok(text) = serde_json::to_string_pretty(&value)
+        {
+            self.text = text;
+        }
+    }
+}
+
+pub(crate) fn json_syntax_message(line: usize, column: usize) -> String {
+    tf(
+        "literal-json-error",
+        &[
+            ("line", line.max(1).into()),
+            ("column", column.max(1).into()),
+        ],
+    )
 }
 
 pub(crate) fn state_text(state: InputState) -> &'static str {
@@ -329,9 +394,16 @@ mod tests {
         );
         form.some = true;
         form.text = r#"{"none":true}"#.to_owned();
+        form.format_json();
+        assert!(form.text.contains('\n'));
         assert_eq!(
             form.literal().unwrap().payload,
             LiteralPayload::Value(serde_json::json!({"some":{"none":true}}))
         );
+        form.text = "{\n  \"none\": ]".to_owned();
+        let invalid = form.text.clone();
+        form.format_json();
+        assert_eq!(form.text, invalid);
+        assert_eq!(form.literal().unwrap_err(), json_syntax_message(2, 11));
     }
 }

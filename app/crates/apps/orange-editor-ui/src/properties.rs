@@ -2,7 +2,7 @@
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
-use orange_host::controls::{Control, Scale, Widget};
+use orange_host::controls::{Control, Region, Scale, Widget};
 use orange_host::{Connection, EventTiming, NodeView, PortView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
@@ -349,8 +349,54 @@ pub(crate) fn input_hint<'a>(node: &'a NodeView, port: &PortView) -> Option<&'a 
     node.controls.inputs.get(&port.id).filter(|control| {
         numeric
             && matches!(control.widget, Widget::Slider | Widget::Dial)
-            && control.range.is_some()
+            && NumberRange::of_input(control).is_some()
     })
+}
+
+fn input_number_text(port: &PortView, value: f64) -> String {
+    if matches!(
+        port.ty.as_deref(),
+        Some("core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1")
+    ) {
+        value.round().to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+pub(crate) fn advanced_input(node: &NodeView, port: &PortView) -> bool {
+    node.controls
+        .region_of(&port.id)
+        .is_some_and(|(region, _)| region == Region::Advanced)
+}
+
+pub(crate) fn field_order(node: &NodeView, name: &str) -> (u8, usize, usize) {
+    node.controls
+        .regions
+        .iter()
+        .enumerate()
+        .find_map(|(index, placement)| {
+            let field = placement.fields.iter().position(|field| field == name)?;
+            let region = match placement.region {
+                Region::Header => 0,
+                Region::Aside => 1,
+                Region::Body => 2,
+                Region::Advanced => 3,
+            };
+            Some((region, index, field))
+        })
+        .unwrap_or((2, usize::MAX, 0))
+}
+
+fn knob_style(control: &Control) -> orange_ui_controls::KnobStyle {
+    use orange_host::controls::Knob;
+    use orange_ui_controls::KnobStyle;
+    match control.knob {
+        None | Some(Knob::Arc) => KnobStyle::Arc,
+        Some(Knob::Bipolar) => KnobStyle::Bipolar,
+        Some(Knob::Notched) => KnobStyle::Notched,
+        Some(Knob::Loop) => KnobStyle::Loop,
+    }
 }
 
 fn notch_style(control: &Control) -> Option<orange_ui_controls::NotchStyle> {
@@ -370,12 +416,40 @@ pub(crate) fn hinted_number(control: Option<&Control>, value: f64) -> String {
     }
 }
 
+/// The next whole value a stepper can offer within its declared limits.
+pub(crate) fn stepper_value(control: &Control, schema: &Json, value: f64, sign: i8) -> Option<f64> {
+    let [low, high] = control.range.unwrap_or_else(|| {
+        [
+            schema["minimum"].as_f64().unwrap_or(f64::MIN),
+            schema["maximum"].as_f64().unwrap_or(f64::MAX),
+        ]
+    });
+    let (low, high) = (low.ceil(), high.floor());
+    let step = control.step.unwrap_or(1.0);
+    if !low.is_finite()
+        || !high.is_finite()
+        || low > high
+        || !step.is_finite()
+        || step <= 0.0
+        || !value.is_finite()
+    {
+        return None;
+    }
+    Some((value + f64::from(sign) * step).round().clamp(low, high))
+}
+
 /// The dial hint of setting `name`, when the node's definition asks for a dial.
 pub(crate) fn dial_of<'a>(node: &'a NodeView, name: &str) -> Option<&'a Control> {
     node.controls
         .settings
         .get(name)
         .filter(|control| control.widget == Widget::Dial)
+        .filter(|_| {
+            node.schema
+                .as_ref()
+                .and_then(|schema| NumberRange::of(node, name, &schema["properties"][name]))
+                .is_some()
+        })
 }
 
 /// The step a dial moves by and the unit it shows.
@@ -388,7 +462,8 @@ fn dial_face(dial: &Control) -> (Option<f32>, &str) {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ThresholdEdit {
+pub(crate) struct ThresholdEdit<'a> {
+    control: Option<&'a Control>,
     node: NodeId,
     saved: f64,
     range: NumberRange,
@@ -402,8 +477,8 @@ struct ThresholdPreview {
     frame: u64,
 }
 
-impl ThresholdEdit {
-    pub fn for_node(node: &NodeView) -> Option<Self> {
+impl<'a> ThresholdEdit<'a> {
+    pub fn for_node(node: &'a NodeView) -> Option<Self> {
         if !canvas::spectrum::is_noise(node) {
             return None;
         }
@@ -419,6 +494,7 @@ impl ThresholdEdit {
             node: node.id,
             saved,
             range,
+            control: node.controls.settings.get("threshold_db"),
         })
     }
 
@@ -437,6 +513,9 @@ impl ThresholdEdit {
     }
 
     pub fn update(self, response: &egui::Response, value: f64) -> Option<f64> {
+        if !value.is_finite() {
+            return None;
+        }
         let ctx = &response.ctx;
         let owner = response.id;
         let value = value.clamp(self.range.min, self.range.max);
@@ -468,8 +547,9 @@ impl ThresholdEdit {
 
     pub fn slider(self, ui: &mut egui::Ui, surface: Surface) -> Option<f64> {
         let mut fraction = self.range.fraction(self.shown(ui.ctx()));
-        let response =
-            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.range.marks());
+        let defaults = self.range.marks();
+        let marks = self.range.slider_marks(self.control, &defaults);
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks);
         let value = (self.range.value(fraction) * 10.0).round() / 10.0;
         response.widget_info(|| {
             egui::WidgetInfo::slider(response.enabled(), value, t("audio-setting-threshold-db"))
@@ -506,23 +586,39 @@ impl NumberRange {
         let [min, max] = control
             .range
             .or_else(|| Some([schema["minimum"].as_f64()?, schema["maximum"].as_f64()?]))?;
-        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
-            min,
-            max,
-            logarithmic: control.scale == Scale::Log && min > 0.0,
-            notch: notch_style(control),
-        })
+        Self::from_bounds(control, min, max)
     }
 
     /// The range a hinted input offers ([`input_hint`]).
     pub(crate) fn of_input(control: &Control) -> Option<Self> {
         let [min, max] = control.range?;
-        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
+        Self::from_bounds(control, min, max)
+    }
+
+    fn from_bounds(control: &Control, min: f64, max: f64) -> Option<Self> {
+        if !(min.is_finite() && max.is_finite() && min < max)
+            || (control.scale == Scale::Log && min <= 0.0)
+        {
+            return None;
+        }
+        if control.widget == Widget::Dial && !Self::dial_bounds_fit(min, max) {
+            return None;
+        }
+        Some(Self {
             min,
             max,
-            logarithmic: control.scale == Scale::Log && min > 0.0,
+            logarithmic: control.scale == Scale::Log && min.ln() < max.ln(),
             notch: notch_style(control),
         })
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the rotary control uses f32 bounds"
+    )]
+    fn dial_bounds_fit(min: f64, max: f64) -> bool {
+        let (min, max) = (min as f32, max as f32);
+        max > min && (max - min).is_finite()
     }
 
     fn style(self) -> orange_ui_controls::SliderStyle {
@@ -537,23 +633,40 @@ impl NumberRange {
         reason = "normalized screen coordinate"
     )]
     fn fraction(self, value: f64) -> f32 {
-        let value = value.clamp(self.min, self.max);
-        if self.logarithmic {
-            ((value / self.min).ln() / (self.max / self.min).ln()) as f32
-        } else {
-            ((value - self.min) / (self.max - self.min)) as f32
+        if value.is_nan() || value <= self.min {
+            return 0.0;
         }
+        if value >= self.max {
+            return 1.0;
+        }
+        let span = self.max - self.min;
+        let fraction = if self.logarithmic {
+            (value.ln() - self.min.ln()) / (self.max.ln() - self.min.ln())
+        } else if span.is_finite() {
+            (value - self.min) / span
+        } else {
+            (value * 0.5 - self.min * 0.5) / (self.max * 0.5 - self.min * 0.5)
+        };
+        fraction.clamp(0.0, 1.0) as f32
     }
 
     fn value(self, fraction: f32) -> f64 {
-        if fraction <= 0.0 {
+        if fraction.is_nan() || fraction <= 0.0 {
             self.min
         } else if fraction >= 1.0 {
             self.max
-        } else if self.logarithmic {
-            self.min * (self.max / self.min).powf(f64::from(fraction))
         } else {
-            self.min + f64::from(fraction) * (self.max - self.min)
+            let fraction = f64::from(fraction);
+            let span = self.max - self.min;
+            let value = if self.logarithmic {
+                let min = self.min.ln();
+                (min + fraction * (self.max.ln() - min)).exp()
+            } else if span.is_finite() {
+                self.min + fraction * span
+            } else {
+                (1.0 - fraction) * self.min + fraction * self.max
+            };
+            value.clamp(self.min, self.max)
         }
     }
 
@@ -564,16 +677,32 @@ impl NumberRange {
         id: egui::Id,
         value: f64,
         label: &str,
+        control: Option<&Control>,
     ) -> Option<f64> {
         let id = id.with("audio-drag");
         let mut fraction = ui
             .data(|data| data.get_temp::<f32>(id))
             .unwrap_or_else(|| self.fraction(value));
-        let marks = self.marks();
+        let defaults = self.marks();
+        let marks = self.slider_marks(control, &defaults);
         let response = orange_ui_controls::SliderStyle::scope(ui, self.style(), |ui| {
             orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks)
         });
         let value = self.value(fraction);
+        let value = control
+            .and_then(|control| control.step)
+            .map_or(value, |step| {
+                if fraction == 0.0 || fraction == 1.0 {
+                    value
+                } else {
+                    let snapped = self.min + ((value - self.min) / step).round() * step;
+                    if snapped.is_finite() {
+                        snapped.clamp(self.min, self.max)
+                    } else {
+                        value
+                    }
+                }
+            });
         response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), value, label));
         if response.dragged() {
             ui.data_mut(|data| data.insert_temp(id, fraction));
@@ -603,19 +732,28 @@ impl NumberRange {
     ) -> Option<f64> {
         let (step, unit) = dial_face(dial);
         let key = id.with("rotary-draft");
-        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
+        let shown_value = if value.is_nan() {
+            self.min
+        } else {
+            value.clamp(self.min, self.max)
+        } as f32;
+        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(shown_value);
         let response = ui
             .push_id(id, |ui| {
-                orange_ui_controls::dial(
+                orange_ui_controls::styled_dial(
                     ui,
                     surface,
                     &mut shown,
                     self.min as f32..=self.max as f32,
                     step,
                     orange_ui_controls::DialFace {
-                        caption,
+                        caption: dial.caption.as_ref().map_or(caption, |text| &text.fallback),
                         unit,
                         diameter,
+                    },
+                    orange_ui_controls::DialStyle {
+                        knob: knob_style(dial),
+                        precision: dial.precision,
                     },
                 )
             })
@@ -626,11 +764,11 @@ impl NumberRange {
             ui.data_mut(|d| d.insert_temp(key, shown));
             return None;
         }
-        if response.drag_stopped() {
-            ui.data_mut(|d| d.remove::<f32>(key));
-        }
-        (shown != value as f32 && (response.changed() || response.drag_stopped()))
-            .then_some(f64::from(shown))
+        ui.data_mut(|d| d.remove::<f32>(key));
+        (shown.is_finite()
+            && shown != shown_value
+            && (response.changed() || response.drag_stopped()))
+        .then(|| f64::from(shown).clamp(self.min, self.max))
     }
     #[expect(
         clippy::cast_possible_truncation,
@@ -645,7 +783,7 @@ impl NumberRange {
         caption: &str,
     ) {
         let (step, unit) = dial_face(dial);
-        orange_ui_controls::dial_preview(
+        orange_ui_controls::styled_dial_preview(
             ui,
             rect,
             Surface::Card,
@@ -653,15 +791,26 @@ impl NumberRange {
             self.min as f32..=self.max as f32,
             step,
             orange_ui_controls::DialFace {
-                caption,
+                caption: dial.caption.as_ref().map_or(caption, |text| &text.fallback),
                 unit,
                 diameter: None,
+            },
+            orange_ui_controls::DialStyle {
+                knob: knob_style(dial),
+                precision: dial.precision,
             },
         );
     }
 
-    pub(crate) fn paint_slider(self, ui: &egui::Ui, rect: egui::Rect, value: f64) {
-        let marks = self.marks();
+    pub(crate) fn paint_slider(
+        self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        value: f64,
+        control: Option<&Control>,
+    ) {
+        let defaults = self.marks();
+        let marks = self.slider_marks(control, &defaults);
         orange_ui_controls::SliderStyle::apply(ui.ctx(), self.style(), || {
             orange_ui_controls::marked_slider_preview(
                 ui,
@@ -671,6 +820,24 @@ impl NumberRange {
                 &marks,
             );
         });
+    }
+
+    fn slider_marks<'a>(
+        self,
+        control: Option<&Control>,
+        fallback: &'a [f32],
+    ) -> std::borrow::Cow<'a, [f32]> {
+        let Some(control) = control.filter(|control| !control.marks.is_empty()) else {
+            return fallback.into();
+        };
+        control
+            .marks
+            .iter()
+            .copied()
+            .filter(|at| (self.min..=self.max).contains(at))
+            .map(|at| self.fraction(at))
+            .collect::<Vec<_>>()
+            .into()
     }
 
     fn marks(self) -> [f32; 5] {
@@ -812,20 +979,25 @@ impl<'a> Field<'a> {
                 .map_err(|_| tf("not-whole-number", &[("typed", typed.into())])),
             Self::Number => typed
                 .parse::<f64>()
-                .map(Json::from)
-                .map_err(|_| tf("not-a-number", &[("typed", typed.into())])),
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Json::Number)
+                .ok_or_else(|| tf("not-a-number", &[("typed", typed.into())])),
             Self::WatchNumber { whole } => watch_number_value(typed, *whole),
             Self::Time => typed
                 .parse::<f64>()
                 .ok()
-                .filter(|millis| millis.is_finite() && *millis >= 0.0)
-                .map(|millis| {
+                .filter(|millis| *millis >= 0.0)
+                .map(|millis| (millis * NANOS_PER_MILLI).round())
+                // 2^64 is exactly representable as f64; u64::MAX is not.
+                .filter(|nanos| (0.0..18_446_744_073_709_551_616.0).contains(nanos))
+                .map(|nanos| {
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         reason = "a non-negative length of time well inside u64"
                     )]
-                    let nanos = (millis * NANOS_PER_MILLI).round() as u64;
+                    let nanos = nanos as u64;
                     json!(nanos.to_string())
                 })
                 .ok_or_else(|| tf("not-milliseconds", &[("typed", typed.into())])),
@@ -1315,6 +1487,40 @@ impl Editor {
                         if http {
                             self.values_section(ui, &node);
                         }
+                        if http
+                            && self.named_connection(&node).is_none_or(|connection| {
+                                connection.scope == orange_host::ConnectionScope::Graph
+                                    && connection.settings["base_url"]
+                                        .as_str()
+                                        .is_none_or(|url| url.trim().is_empty())
+                            })
+                        {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(t("http-profile-needs-setup")).weak(),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        if let Some(connection) = self.named_connection(&node)
+                            && ui
+                                .button(t("edit-connection"))
+                                .on_hover_text(&connection.name)
+                                .clicked()
+                        {
+                            let connection = connection.clone();
+                            self.forms.edit_connection(&connection);
+                            self.probing = None;
+                        }
+                        if let Some(adapter) = self
+                            .named_connection(&node)
+                            .map(|connection| connection.adapter.clone())
+                            .or_else(|| http.then(|| crate::declarations::network::HTTP.to_owned()))
+                            && ui.button(t("add-connection")).clicked()
+                        {
+                            self.forms.new_connection_for(node.id, &adapter);
+                            self.probing = None;
+                        }
                         if self.canvas.has_failure_routes(node.id) {
                             let label = if self.canvas.failure_routes_expanded(node.id) {
                                 t("hide-failure-routes")
@@ -1361,23 +1567,30 @@ impl Editor {
                                 change = Some(asked);
                             }
                         }
-                        if node.ports.iter().any(|port| port.input && !port.exec) {
+                        if input_ports(&node).any(|port| !advanced_input(&node, port)) {
                             section(ui, t("inputs"));
                             if !self.build_map_pair_control(ui, &node)
-                                && let Some(asked) = self.input_fields(ui, &node, host)
+                                && let Some(asked) = self.input_fields(ui, &node, host, false)
                             {
                                 change = Some(asked);
                             }
                         }
                         // Tuning settings and type pins: rarely changed, never on the card.
                         let tuning = Self::has_tuning(&node);
-                        if tuning || !node.types.is_empty() {
+                        let advanced_inputs =
+                            input_ports(&node).any(|port| advanced_input(&node, port));
+                        if tuning || advanced_inputs || !node.types.is_empty() {
                             egui::CollapsingHeader::new(
                                 egui::RichText::new(t("advanced")).strong(),
                             )
                             .id_salt(("orange-advanced", node.id))
                             .show(ui, |ui| {
                                 if tuning && let Some(asked) = self.settings_fields(ui, &node, true)
+                                {
+                                    change = Some(asked);
+                                }
+                                if advanced_inputs
+                                    && let Some(asked) = self.input_fields(ui, &node, host, true)
                                 {
                                     change = Some(asked);
                                 }
@@ -1538,7 +1751,12 @@ impl Editor {
             .collect();
         let mut changed = None;
         let watch = node.definition == "core/on-watch";
-        let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
+        let mut fields: Vec<_> = watch_field_entries(node)
+            .chain(properties.iter().filter(|_| !watch))
+            .collect();
+        if !node.controls.regions.is_empty() {
+            fields.sort_by_key(|(name, _)| field_order(node, name));
+        }
         for (name, schema) in fields {
             if schema["readOnly"] == true {
                 continue;
@@ -1709,7 +1927,14 @@ impl Editor {
                             let width = (ui.available_width() - 96.0).max(32.0);
                             ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
                                 ui.set_width(width);
-                                range.slider(ui, Surface::Panel, id, value, &label)
+                                range.slider(
+                                    ui,
+                                    Surface::Panel,
+                                    id,
+                                    value,
+                                    &label,
+                                    node.controls.settings.get(name),
+                                )
                             })
                             .inner
                         };
@@ -1737,25 +1962,10 @@ impl Editor {
                         let id = ui.make_persistent_id(("orange-setting-steps", name.as_str()));
                         if let Some(sign) =
                             orange_ui_controls::step_buttons(ui, rect, id, Surface::Panel, 1.0)
+                            && let Some(next) = stepper_value(stepper, schema, value, sign)
+                            && let Ok(next) = Field::Whole.value(&next.to_string())
                         {
-                            let step = stepper.step.unwrap_or(1.0);
-                            let low = stepper
-                                .range
-                                .map(|[low, _]| low)
-                                .or(schema["minimum"].as_f64())
-                                .unwrap_or(f64::MIN);
-                            let high = stepper
-                                .range
-                                .map(|[_, high]| high)
-                                .or(schema["maximum"].as_f64())
-                                .unwrap_or(f64::MAX);
-                            #[expect(
-                                clippy::cast_possible_truncation,
-                                reason = "a stepper holds a whole number"
-                            )]
-                            let next =
-                                (value + f64::from(sign) * step).clamp(low, high).round() as i64;
-                            changed = Some(Change::Setting(pointer.clone(), Some(json!(next))));
+                            changed = Some(Change::Setting(pointer.clone(), Some(next)));
                         }
                         ui.painter().text(
                             rect.center(),
@@ -1894,7 +2104,13 @@ impl Editor {
     }
 
     /// Fields for the values on the node's inputs.
-    fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
+    fn input_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &NodeView,
+        host: &Host,
+        advanced: bool,
+    ) -> Option<Change> {
         let record_omissions = self
             .document
             .as_ref()
@@ -1904,7 +2120,13 @@ impl Editor {
             });
         let mut omit = None;
         let mut write = None;
-        for port in input_ports(node) {
+        let mut ports: Vec<_> = input_ports(node)
+            .filter(|port| advanced_input(node, port) == advanced)
+            .collect();
+        if !node.controls.regions.is_empty() {
+            ports.sort_by_key(|port| field_order(node, &port.id));
+        }
+        for port in ports {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
             let details = self.canvas.port_details(node.id, &port.id, true);
             let editor = port.literal_editor(details);
@@ -2015,7 +2237,8 @@ impl Editor {
                 }
                 if let Some(multiline) = multiline {
                     let typed = self.typed.entry(port.id.clone()).or_default();
-                    let response = ui
+                    let mut syntax_error = None;
+                    let (response, formatted) = ui
                         .vertical(|ui| {
                             let id = ui.make_persistent_id(("property-text", node.id, &port.id));
                             let automatic =
@@ -2050,10 +2273,31 @@ impl Editor {
                                 });
                                 ui.ctx().request_repaint();
                             }
-                            response
+                            let mut formatted = false;
+                            if multiline == TextInput::Body
+                                && !typed.trim().is_empty()
+                                && ui.small_button(t("literal-format-json")).clicked()
+                            {
+                                match serde_json::from_str::<Json>(typed) {
+                                    Ok(value) => {
+                                        if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+                                            *typed = pretty;
+                                            formatted = true;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        syntax_error =
+                                            Some(crate::port_values::json_syntax_message(
+                                                error.line(),
+                                                error.column(),
+                                            ));
+                                    }
+                                }
+                            }
+                            (response, formatted)
                         })
                         .inner;
-                    if response.lost_focus() {
+                    if response.lost_focus() || formatted {
                         let typed = typed.clone();
                         let original = self
                             .document
@@ -2066,6 +2310,9 @@ impl Editor {
                             let literal = (!typed.is_empty()).then(|| multiline.literal(&typed));
                             write = Some(Change::Input(port.id.clone(), literal));
                         }
+                    }
+                    if let Some(error) = syntax_error {
+                        self.say(error);
                     }
                     return;
                 }
@@ -2136,6 +2383,38 @@ impl Editor {
                     return;
                 }
                 let before = Self::shown_input(port);
+                if let Some(control) = input_hint(node, port)
+                    && let Some(range) = NumberRange::of_input(control)
+                {
+                    let value = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .and_then(|text| {
+                            text.parse::<f64>()
+                                .ok()
+                                .or_else(|| serde_json::from_str::<String>(text).ok()?.parse().ok())
+                        })
+                        .filter(|value| value.is_finite())
+                        .unwrap_or_else(|| 0.0_f64.clamp(range.min, range.max));
+                    let id = ui.make_persistent_id((node.id, &port.id, "hinted-input"));
+                    let adjusted = if control.widget == Widget::Dial {
+                        range.dial(ui, Surface::Panel, id, value, control, &label, "", None)
+                    } else {
+                        let width = (ui.available_width() * 0.6).max(1.0);
+                        ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                            ui.set_width(width);
+                            range.slider(ui, Surface::Panel, id, value, &label, Some(control))
+                        })
+                        .inner
+                    };
+                    if let Some(value) = adjusted {
+                        write = Some(Change::Input(
+                            port.id.clone(),
+                            Some(input_number_text(port, value)),
+                        ));
+                    }
+                }
                 // A path is chosen with the system's chooser, where the application
                 // has one.
                 let path = node
@@ -2494,6 +2773,77 @@ mod tests {
 }
 
 #[cfg(test)]
+mod numeric_hint_tests {
+    use super::*;
+
+    #[test]
+    fn extreme_slider_ranges_produce_finite_positions_and_values() {
+        for (scale, low, high, midpoint) in [
+            (Scale::Linear, -f64::MAX, f64::MAX, 0.0),
+            (Scale::Log, 1.0e-300, 1.0e300, 1.0),
+        ] {
+            let control = Control {
+                widget: Widget::Slider,
+                scale,
+                range: Some([low, high]),
+                ..Control::default()
+            };
+            let range = NumberRange::of_input(&control).unwrap();
+            assert_eq!(range.fraction(f64::NAN), 0.0);
+            assert_eq!(range.fraction(midpoint), 0.5);
+            assert_eq!(range.value(0.5), midpoint);
+            assert_eq!(range.value(0.0), low);
+            assert_eq!(range.value(1.0), high);
+            assert!(range.value(0.99).is_finite());
+        }
+    }
+
+    #[test]
+    fn typed_settings_reject_non_finite_numbers_and_overflowing_times() {
+        for input in ["NaN", "inf", "-inf", "1e309"] {
+            assert!(Field::Number.value(input).is_err());
+        }
+        for input in ["-1", "-0.000000001", "18446744073709.552", "1e300"] {
+            assert!(Field::Time.value(input).is_err());
+        }
+        assert_eq!(Field::Time.value("0.000001").unwrap(), json!("1"));
+    }
+
+    #[test]
+    fn steppers_reject_reversed_or_empty_integer_bounds() {
+        let hint = Control {
+            widget: Widget::Stepper,
+            ..Control::default()
+        };
+        for schema in [
+            json!({"minimum": 5, "maximum": 2}),
+            json!({"minimum": 1.2, "maximum": 1.8}),
+        ] {
+            assert_eq!(stepper_value(&hint, &schema, 2.0, 1), None);
+        }
+        let limits = json!({"minimum": 1.2, "maximum": 3.8});
+        assert_eq!(stepper_value(&hint, &limits, 3.0, 1), Some(3.0));
+        assert_eq!(stepper_value(&hint, &limits, 2.0, -1), Some(2.0));
+    }
+
+    #[test]
+    fn unrepresentable_dial_bounds_fall_back_to_typed_fields() {
+        for [low, high] in [
+            [-f64::MAX, f64::MAX],
+            [-3.0e38, 3.0e38],
+            [1.0, 1.0 + f64::EPSILON],
+        ] {
+            let control = Control {
+                widget: Widget::Dial,
+                range: Some([low, high]),
+                ..Control::default()
+            };
+            assert!(NumberRange::of_input(&control).is_none());
+        }
+    }
+}
+
+#[cfg(test)]
 mod width_tests {
     use super::*;
 
@@ -2745,6 +3095,51 @@ mod width_tests {
 }
 
 impl Editor {
+    pub(crate) fn variable_inspector_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = &self.inspected_variable else {
+            return;
+        };
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(variable) = document
+            .declared
+            .variables
+            .iter()
+            .find(|var| var.id.as_ref() == Some(id))
+        else {
+            self.inspected_variable = None;
+            return;
+        };
+        let mut open = true;
+        orange_ui_controls::dialog_window(ctx, &variable.name)
+            .id(egui::Id::unique("orange-variable-inspector"))
+            .default_width(480.0)
+            .collapsible(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.weak(type_name(&variable.ty));
+                if let Some(value) = document.values.get(id) {
+                    ui.weak(t(if document.flow.is_some() {
+                        "value-now-hint"
+                    } else {
+                        "value-last-run-hint"
+                    }));
+                    let full = match &value.exact_text {
+                        Some(orange_host::Value::Str(text)) => text.as_str(),
+                        Some(orange_host::Value::Json(text)) => text.as_str(),
+                        _ => &value.shown,
+                    };
+                    display_port_text(ui, &value.shown, full, 300.0);
+                } else {
+                    ui.weak(t("no-port-value"));
+                }
+            });
+        if !open {
+            self.inspected_variable = None;
+        }
+    }
+
     pub(crate) fn port_inspector_window(&mut self, ctx: &egui::Context) {
         let Some((node, port, input)) = &self.inspected_port else {
             return;
@@ -2756,7 +3151,21 @@ impl Editor {
         };
         let sample = self.canvas.port_sample(graph, *node, port, *input);
         let copyable = self.canvas.copyable_port_text(graph, *node, port, *input);
-        let title = format!("{} · {}", self.canvas.display_name(view), port_label(port));
+        let selected_port = view
+            .ports
+            .iter()
+            .find(|candidate| candidate.id == *port && candidate.input == *input);
+        let label = selected_port.map_or_else(
+            || port_label(port),
+            |candidate| {
+                if *input {
+                    input_caption(view, candidate)
+                } else {
+                    candidate.label.clone().unwrap_or_else(|| port_label(port))
+                }
+            },
+        );
+        let title = format!("{} · {label}", self.canvas.display_name(view));
         let mut open = true;
         orange_ui_controls::dialog_window(ctx, title)
             .id(egui::Id::unique("orange-port-inspector"))
@@ -2764,6 +3173,9 @@ impl Editor {
             .collapsible(false)
             .open(&mut open)
             .show(ctx, |ui| {
+                if let Some(ty) = selected_port.and_then(|port| port.ty.as_deref()) {
+                    ui.weak(type_name(ty));
+                }
                 if let (Some((shown, stale)), Some(copyable)) = (sample, copyable) {
                     if stale {
                         ui.weak(t("previous-port-value"));

@@ -62,8 +62,24 @@ impl Meter {
 pub(crate) struct ChannelMeter {
     frames: usize,
     count: usize,
+    channel_count: f64,
+    channels: Vec<ChannelPower>,
+}
+
+#[derive(Default)]
+struct ChannelPower {
     energy: f64,
-    channels: Vec<(f64, f64, bool)>,
+    peak: f64,
+    clipped: bool,
+}
+
+impl ChannelPower {
+    fn push(&mut self, sample: f32) {
+        let sample = f64::from(sample);
+        let squared = sample * sample;
+        self.energy += squared;
+        self.peak = self.peak.max(squared);
+    }
 }
 
 pub(crate) struct ChannelWindow {
@@ -75,51 +91,77 @@ pub(crate) struct ChannelWindow {
 
 impl ChannelMeter {
     pub(crate) fn new(frames: usize, channels: u16) -> Self {
+        let channels = channels.max(1);
         Self {
             frames: frames.max(1),
             count: 0,
-            energy: 0.0,
-            channels: vec![(0.0, 0.0, false); usize::from(channels.max(1))],
+            channel_count: f64::from(channels),
+            channels: (0..channels).map(|_| ChannelPower::default()).collect(),
         }
     }
 
-    #[expect(clippy::cast_precision_loss, reason = "channel count comes from u16")]
     pub(crate) fn push(&mut self, samples: &[f32], mut report: impl FnMut(ChannelWindow)) {
-        for frame in samples.chunks_exact(self.channels.len()) {
-            let mut total = 0.0;
-            for (&sample, (energy, peak, clipped)) in frame.iter().zip(&mut self.channels) {
-                let squared = f64::from(sample).powi(2);
-                *energy += squared;
-                *peak = peak.max(squared);
-                *clipped |= squared >= 1.0;
-                total += squared;
+        let width = self.channels.len();
+        let mut samples = &samples[..samples.len() / width * width];
+        while !samples.is_empty() {
+            let frames = (self.frames - self.count).min(samples.len() / width);
+            let (block, rest) = samples.split_at(frames * width);
+            samples = rest;
+            match self.channels.as_mut_slice() {
+                [mono] => {
+                    for &sample in block {
+                        mono.push(sample);
+                    }
+                }
+                [left, right] => {
+                    for &[a, b] in block.as_chunks::<2>().0 {
+                        left.push(a);
+                        right.push(b);
+                    }
+                }
+                channels => {
+                    for frame in block.chunks_exact(width) {
+                        for (&sample, channel) in frame.iter().zip(channels.iter_mut()) {
+                            channel.push(sample);
+                        }
+                    }
+                }
             }
-            self.energy += total / frame.len() as f64;
-            self.count += 1;
+            self.count += frames;
             if self.count == self.frames {
-                let (rms, peak): (Vec<_>, Vec<_>) = self
-                    .channels
-                    .iter_mut()
-                    .map(|(energy, peak, _)| {
-                        (
-                            level_db(std::mem::take(energy), self.count),
-                            level_db(std::mem::take(peak), 1),
-                        )
-                    })
-                    .unzip();
-                report(ChannelWindow {
-                    level: level_db(self.energy, self.count),
-                    rms: rms.into(),
-                    peak: peak.into(),
-                    clipped: self
-                        .channels
-                        .iter()
-                        .map(|&(_, _, clipped)| clipped)
-                        .collect(),
-                });
+                report(self.finish());
                 self.count = 0;
-                self.energy = 0.0;
             }
+        }
+    }
+
+    fn finish(&mut self) -> ChannelWindow {
+        let mut total = 0.0;
+        let (rms, peak): (Vec<_>, Vec<_>) = self
+            .channels
+            .iter_mut()
+            .map(|channel| {
+                let energy = std::mem::take(&mut channel.energy);
+                let peak = std::mem::take(&mut channel.peak);
+                total += energy;
+                channel.clipped |= peak >= 1.0;
+                (level_db(energy, self.count), level_db(peak, 1))
+            })
+            .unzip();
+        let level = if let [mono] = rms.as_slice() {
+            *mono
+        } else {
+            level_db(total / self.channel_count, self.count)
+        };
+        ChannelWindow {
+            level,
+            rms: rms.into(),
+            peak: peak.into(),
+            clipped: self
+                .channels
+                .iter()
+                .map(|channel| channel.clipped)
+                .collect(),
         }
     }
 }
@@ -147,6 +189,26 @@ mod tests {
             assert_eq!(window.peak.as_ref(), [SILENCE_DB; 2]);
             assert_eq!(window.clipped.as_ref(), [true, false]);
         });
+    }
+
+    #[test]
+    fn multichannel_windows_cross_push_boundaries_and_measure_each_complete_frame() {
+        let mut meter = ChannelMeter::new(2, 3);
+        let mut windows = Vec::new();
+        meter.push(&[0.0, 0.0, 0.5], |_| panic!("incomplete window"));
+        meter.push(&[-1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], |window| {
+            windows.push(window);
+        });
+        assert_eq!(windows.len(), 2);
+        let first = &windows[0];
+        assert!((first.level - level_db(1.5, 6)).abs() < 1e-12);
+        assert_eq!(first.clipped.as_ref(), [true, false, false]);
+        assert_eq!(
+            first.peak.as_ref(),
+            [0.0, level_db(0.25, 1), level_db(0.25, 1)]
+        );
+        assert_eq!(windows[1].level, SILENCE_DB);
+        assert_eq!(windows[1].clipped.as_ref(), [true, false, false]);
     }
 
     #[test]

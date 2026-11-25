@@ -989,7 +989,9 @@ places fields in card regions (`header`, `aside`, `body`, `advanced`, arranged i
 column, a row or a grid) and may name a built-in visual (`level-meter`, `spectrum`,
 `waveform`). The editor turns hints into the shared controls of
 `orange-ui-controls`, on cards and in Properties alike, so a package node gets a dial
-or a slider without editor code.
+or a slider without editor code. A settings enumeration can use a segmented row
+of two to five short choices. A whole-number setting can use a stepper. Slider
+marks guide placement, and dial captions use package text references.
 
 Hints are presentation only. Validation, inference, compilation and execution never
 read them; they never change a value, an ID or a lock, and a hint's range may narrow

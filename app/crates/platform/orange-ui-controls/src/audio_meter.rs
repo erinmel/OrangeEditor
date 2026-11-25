@@ -55,7 +55,13 @@ impl PeakBallistics {
     }
 
     fn advance_in(&mut self, rms: f32, peak: f32, elapsed: f32, floor: f32) {
-        let elapsed = elapsed.max(0.0);
+        let elapsed = if elapsed.is_finite() {
+            elapsed.max(0.0)
+        } else {
+            0.0
+        };
+        let peak = if peak.is_nan() { floor } else { peak };
+        let rms = if rms.is_nan() { floor } else { rms };
         self.level.clipped |= peak >= 0.0;
         let peak = peak.clamp(floor, 0.0);
         let rms = rms.clamp(floor, peak);
@@ -110,6 +116,9 @@ pub fn stereo_meter(
     } else {
         Rect::from_min_max(outer.min + vec2(22.0, 3.0), outer.max - vec2(19.0, 17.0))
     };
+    if !lanes.is_positive() {
+        return response;
+    }
     let painter = ui.painter_at(outer);
     let font = FontId::monospace(9.5);
     let face = MeterFace {
@@ -305,7 +314,13 @@ impl RmsMeter {
         channels: &[(&str, ChannelReading)],
         preview: Option<[&str; 2]>,
     ) {
-        if !ui.is_rect_visible(self.lane) {
+        if !self.lane.is_positive()
+            || !self.lane.is_finite()
+            || !self.lane.size().is_finite()
+            || !self.zoom.is_finite()
+            || self.zoom <= 0.0
+            || !ui.is_rect_visible(self.lane)
+        {
             return;
         }
         let floor = RMS_FLOOR_DBFS;
@@ -318,7 +333,7 @@ impl RmsMeter {
             zoom: self.zoom,
         };
         let lanes = self.lane;
-        let gap = 0.5 / ui.pixels_per_point();
+        let gap = (0.5 / ui.pixels_per_point()).min(lanes.width() * 0.25);
         let middle = lanes.center().x;
         let split = [
             Rect::from_min_max(lanes.min, pos2(middle - gap, lanes.bottom())),
@@ -358,9 +373,11 @@ impl RmsMeter {
                 ui.data_mut(|data| data.remove::<RmsMotion>(id));
             }
             _ => {
-                face.lane(
-                    lanes,
-                    Self::advance(ui, id, self.reading.map(|db| (db, db))),
+                let level = Self::advance(ui, id, self.reading.map(|db| (db, db)));
+                face.lane(lanes, level);
+                face.clip_light(
+                    lanes.center_top() - vec2(0.0, 7.0 * self.zoom),
+                    level.clipped,
                 );
                 ui.data_mut(|data| {
                     data.remove::<RmsMotion>(id.with(0));
@@ -369,19 +386,28 @@ impl RmsMeter {
             }
         }
         face.scale(lanes, MONO_TICKS);
-        if let Some((db, ink)) = self.target {
+        if let Some((db, ink)) = self.target.filter(|(db, _)| db.is_finite()) {
             let y = meter_position(lanes, MeterOrientation::Vertical, floor, db);
-            let stroke = Stroke::new(1.5 * self.zoom, ink);
+            let left = lanes.left();
+            let z = self.zoom;
+            let span = left..=lanes.right();
             painter.hline(
-                lanes.left() - 4.0 * self.zoom..=lanes.right() + 5.0 * self.zoom,
+                span.clone(),
                 y,
-                stroke,
+                Stroke::new(3.0 * z, tokens.theme.bg_canvas()),
             );
-            painter.circle_filled(
-                pos2(lanes.right() + 5.0 * self.zoom, y),
-                2.5 * self.zoom,
+            painter.hline(span, y, Stroke::new(1.5 * z, ink));
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pos2(left - 10.0 * z, y - 5.0 * z),
+                    pos2(left - 4.0 * z, y - 5.0 * z),
+                    pos2(left + 1.0 * z, y),
+                    pos2(left - 4.0 * z, y + 5.0 * z),
+                    pos2(left - 10.0 * z, y + 5.0 * z),
+                ],
                 ink,
-            );
+                Stroke::new(z, tokens.theme.bg_canvas()),
+            ));
         }
     }
 
@@ -390,25 +416,26 @@ impl RmsMeter {
         let now = ui.input(|input| input.time);
         if let Some((rms, peak)) = reading.filter(|(rms, peak)| rms.is_finite() && peak.is_finite())
         {
-            let mut state = ui
-                .data(|data| data.get_temp::<RmsMotion>(id))
-                .unwrap_or(RmsMotion {
+            let level = ui.data_mut(|data| {
+                let mut state = data.get_temp::<RmsMotion>(id).unwrap_or(RmsMotion {
                     ballistics: PeakBallistics::at_floor(floor),
                     time: now,
                 });
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "elapsed display time is bounded"
-            )]
-            let elapsed = (now - state.time).clamp(0.0, 10.0) as f32;
-            state.ballistics.advance_in(rms, peak, elapsed, floor);
-            state.time = now;
-            let level = state.ballistics.level;
-            if level.peak > peak || level.rms > rms || level.held > level.peak {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "elapsed display time is bounded"
+                )]
+                let elapsed = (now - state.time).clamp(0.0, 10.0) as f32;
+                state.ballistics.advance_in(rms, peak, elapsed, floor);
+                state.time = now;
+                data.insert_temp(id, state);
+                state.ballistics.level
+            });
+            let peak = peak.clamp(floor, 0.0);
+            if level.peak > peak || level.rms > rms.clamp(floor, peak) || level.held > level.peak {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(16));
             }
-            ui.data_mut(|data| data.insert_temp(id, state));
             level
         } else {
             ui.data_mut(|data| data.remove::<RmsMotion>(id));
@@ -417,12 +444,21 @@ impl RmsMeter {
     }
 
     pub fn db_at(self, point: Pos2) -> f32 {
-        let fraction = ((point.y - self.lane.top()) / self.lane.height()).clamp(0.0, 1.0);
+        let height = self.lane.height();
+        if height <= 0.0
+            || !height.is_finite()
+            || !point.y.is_finite()
+            || !self.lane.top().is_finite()
+        {
+            return RMS_FLOOR_DBFS;
+        }
+        let fraction = ((point.y - self.lane.top()) / height).clamp(0.0, 1.0);
         RMS_FLOOR_DBFS * fraction
     }
 }
 
 fn meter_position(lane: Rect, orientation: MeterOrientation, floor: f32, db: f32) -> f32 {
+    let db = if db.is_nan() { floor } else { db };
     let fraction = ((db - floor) / -floor).clamp(0.0, 1.0);
     match orientation {
         MeterOrientation::Vertical => egui::lerp(lane.y_range(), 1.0 - fraction),
@@ -443,6 +479,9 @@ fn paint_lane(
     floor: f32,
     level: ChannelLevel,
 ) {
+    if !lane.is_positive() {
+        return;
+    }
     let vertical = orientation == MeterOrientation::Vertical;
     let pixel = painter.ctx().pixels_per_point().recip();
     let scale = |db| meter_position(lane, orientation, floor, db);
@@ -478,16 +517,25 @@ fn paint_lane(
     }
     if let MeterStyle::Segmented = style {
         let step = if floor < MIN_DBFS { 4.0 } else { 2.0 };
-        let mut db = -step;
-        while db > floor {
-            let tick = position(lane, db);
-            db -= step;
-            let stroke = Stroke::new(pixel, theme.bg_canvas());
-            if vertical {
-                painter.hline(lane.x_range(), tick.y, stroke);
-            } else {
-                painter.vline(tick.x, lane.y_range(), stroke);
+        let length = if vertical {
+            lane.height()
+        } else {
+            lane.width()
+        };
+        if length * step / -floor >= 2.0 * pixel {
+            let mut dividers = egui::Mesh::default();
+            let mut db = -step;
+            while db > floor {
+                let tick = position(lane, db);
+                let rect = if vertical {
+                    Rect::from_center_size(tick, vec2(lane.width(), pixel))
+                } else {
+                    Rect::from_center_size(tick, vec2(pixel, lane.height()))
+                };
+                dividers.add_colored_rect(rect, theme.bg_canvas());
+                db -= step;
             }
+            painter.add(egui::Shape::mesh(dividers));
         }
     }
     let inset = if vertical {
@@ -658,6 +706,56 @@ mod tests {
                 egui::Shape::Text(text) if text.galley.text() == label)));
         }
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn single_rms_lane_shows_and_clears_its_clip_light() {
+        let ctx = egui::Context::default();
+        let lane = Rect::from_min_size(pos2(20.0, 20.0), vec2(44.0, 160.0));
+        let id = egui::Id::unique("single-clip");
+        for (reading, clipped) in [(Some(0.2), true), (Some(-15.0), true), (None, false)] {
+            let mut red = Color32::TRANSPARENT;
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let tokens = UiTokens::resolve(&ctx);
+                red = tokens.theme.meter_zone_inks()[2];
+                RmsMeter {
+                    lane,
+                    zoom: 1.0,
+                    reading,
+                    target: None,
+                }
+                .show(ui, ui.painter(), id, tokens);
+            });
+            assert_eq!(
+                output.shapes.iter().any(|item| matches!(&item.shape,
+                egui::Shape::Circle(dot) if dot.center.x == lane.center().x
+                    && dot.center.y < lane.top() && dot.fill == red)),
+                clipped
+            );
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn invalid_meter_samples_and_pointer_geometry_are_safe() {
+        let mut meter = PeakBallistics::default();
+        meter.advance(f32::NAN, f32::NAN, f32::INFINITY);
+        assert_eq!(meter.level.rms, MIN_DBFS);
+        assert_eq!(meter.level.peak, MIN_DBFS);
+        assert!(!meter.level.clipped);
+        meter.advance(f32::NEG_INFINITY, f32::INFINITY, -1.0);
+        assert_eq!(meter.level.rms, MIN_DBFS);
+        assert_eq!(meter.level.peak, 0.0);
+        assert!(meter.level.clipped);
+
+        let collapsed = RmsMeter {
+            lane: Rect::from_min_size(pos2(10.0, 10.0), vec2(30.0, 0.0)),
+            zoom: 1.0,
+            reading: None,
+            target: None,
+        };
+        assert_eq!(collapsed.db_at(collapsed.lane.center()), RMS_FLOOR_DBFS);
+        assert_eq!(collapsed.db_at(pos2(10.0, f32::NAN)), RMS_FLOOR_DBFS);
     }
 
     #[test]

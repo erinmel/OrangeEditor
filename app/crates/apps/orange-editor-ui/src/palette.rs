@@ -160,7 +160,38 @@ pub(crate) struct PaletteCache {
     generation: Option<u64>,
     search: String,
     language: String,
+    channels: Vec<(String, String)>,
     groups: Vec<(String, Vec<PaletteItem>)>,
+}
+
+/// What a palette item places when it binds a Listen to an existing channel.
+pub(crate) const BIND_LISTEN: &str = "bind:on-event:";
+
+/// Quick-bind items for subscribers: each channel (event ID, name) that has a Dispatch
+/// in the graph, offered under Listen when the search finds Listen or names the channel.
+pub(crate) fn channel_items(
+    channels: &[(String, String)],
+    search: &str,
+    listen_found: bool,
+    listen: &str,
+) -> Vec<PaletteItem> {
+    let query = orange_host::fold_search(search.trim());
+    channels
+        .iter()
+        .filter(|(_, name)| {
+            !query.is_empty()
+                && (listen_found
+                    || query
+                        .split_whitespace()
+                        .all(|word| orange_host::fold_search(name).contains(word)))
+        })
+        .map(|(id, name)| PaletteItem {
+            id: format!("{BIND_LISTEN}{id}"),
+            label: format!("{listen} · {name}"),
+            package: String::new(),
+            purpose: crate::i18n::tf("listen-bound-help", &[("channel", name.clone().into())]),
+        })
+        .collect()
 }
 
 pub(crate) struct PaletteResults<'a> {
@@ -168,11 +199,57 @@ pub(crate) struct PaletteResults<'a> {
 }
 
 impl PaletteCache {
-    pub fn get(&mut self, host: &Host, search: &str, language: &str) -> PaletteResults<'_> {
+    pub fn get(
+        &mut self,
+        host: &Host,
+        search: &str,
+        language: &str,
+        channels: &[(String, String)],
+    ) -> PaletteResults<'_> {
         let generation = host.registry().generation();
-        if self.generation != Some(generation) || self.search != search || self.language != language
+        if self.generation != Some(generation)
+            || self.search != search
+            || self.language != language
+            || self.channels != channels
         {
             self.groups = palette_in(host, search, language);
+            // Existing channels follow Listen, so finding a subscriber also pairs it.
+            let listen = self
+                .groups
+                .iter()
+                .flat_map(|(_, items)| items)
+                .find(|item| item.id == "core/on-event")
+                .map(|item| item.label.clone());
+            let bound = channel_items(
+                channels,
+                search,
+                listen.is_some(),
+                &listen.unwrap_or_else(|| text_in(language, "listen-node", "Listen")),
+            );
+            if !bound.is_empty() {
+                let group = self
+                    .groups
+                    .iter()
+                    .position(|(_, items)| items.iter().any(|item| item.id == "core/on-event"));
+                match group {
+                    Some(group) => {
+                        let items = &mut self.groups[group].1;
+                        let at = items
+                            .iter()
+                            .position(|item| item.id == "core/on-event")
+                            .map_or(items.len(), |at| at + 1);
+                        let _ = items.splice(at..at, bound);
+                    }
+                    None => self.groups.insert(
+                        0,
+                        (
+                            text_in(language, "catalog-triggers", "Triggers & signals"),
+                            bound,
+                        ),
+                    ),
+                }
+            }
+            self.channels = channels.to_vec();
             self.search.clear();
             self.search.push_str(search);
             self.language.clear();
@@ -577,6 +654,8 @@ pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'stati
         (
             "preset:signal"
             | "preset:watchdog"
+            | "preset:wireless-value"
+            | "preset:wireless-pulse"
             | "preset:rising-edge"
             | "preset:falling-edge"
             | "preset:deadband",
@@ -739,10 +818,28 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                     &query,
                     language,
                     "signal-preset",
-                    "Wireless Signal",
-                    "link relay trigger enlace señal senal evento",
+                    "Dispatch and Listen",
+                    "link relay trigger enlace señal senal evento wireless inalambrica inalámbrica dispatch listen despachar escuchar fan out",
+                );
+            let wireless_pulse = found.definition == "core/on-event"
+                && preset_match(
+                    &query,
+                    language,
+                    "wireless-pulse-preset",
+                    "Dispatch without payload",
+                    "event no payload pulse wireless dispatch pulso inalambrico",
+                );
+            let wireless_value = found.definition == "core/get-variable"
+                && preset_match(
+                    &query,
+                    language,
+                    "wireless-value-preset",
+                    "Wireless Value",
+                    "store read shared value",
                 );
             if (alias
+                || wireless_pulse
+                || wireless_value
                 || catalog
                 || signal
                 || deadband
@@ -821,8 +918,22 @@ pub(crate) fn search_with_presets(
                     "core/on-event",
                     "preset:signal",
                     "signal-preset",
-                    "Wireless Signal",
-                    "Send to named receivers without a long wire.",
+                    "Dispatch and Listen",
+                    "Dispatch an event on a named channel to any number of Listen nodes.",
+                ),
+                (
+                    "core/on-event",
+                    "preset:wireless-pulse",
+                    "wireless-pulse-preset",
+                    "Dispatch without payload",
+                    "Start receivers with no payload value.",
+                ),
+                (
+                    "core/get-variable",
+                    "preset:wireless-value",
+                    "wireless-value-preset",
+                    "Wireless Value",
+                    "Write and read a shared run value without starting a flow.",
                 ),
                 (
                     "core/branch",
@@ -840,7 +951,9 @@ pub(crate) fn search_with_presets(
                 let aliases = match id {
                     "preset:deadband" => "change tolerance",
                     "preset:watchdog" => "heartbeat timeout",
-                    "preset:signal" => "link relay trigger enlace señal senal evento",
+                    "preset:wireless-value" => "store read shared value",
+                    "preset:wireless-pulse" => "event no payload pulse wireless dispatch pulso inalambrico",
+                    "preset:signal" => "link relay trigger enlace señal senal evento wireless inalambrica inalámbrica dispatch listen despachar escuchar fan out",
                     "preset:increment" => "bump+ bump + count up",
                     "preset:decrement" => "bump- bump - count down",
                     _ => "",
@@ -1058,6 +1171,29 @@ mod tests {
         }
     }
 
+    /// Searching for a subscriber offers each channel a Dispatch sends on, bound in
+    /// one step; naming the channel finds it too, and an empty search lists nothing.
+    #[test]
+    fn listen_searches_offer_existing_channels_to_bind() {
+        let channels = [
+            ("e1".to_owned(), "Kick".to_owned()),
+            ("e2".to_owned(), "Door bell".to_owned()),
+        ];
+        let found = channel_items(&channels, "listen", true, "Listen");
+        assert_eq!(
+            found
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            [format!("{BIND_LISTEN}e1"), format!("{BIND_LISTEN}e2")]
+        );
+        assert_eq!(found[0].label, "Listen · Kick");
+        let named = channel_items(&channels, "door", false, "Listen");
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].id, format!("{BIND_LISTEN}e2"));
+        assert!(channel_items(&channels, "", true, "Listen").is_empty());
+    }
+
     #[test]
     fn wireless_signal_shares_one_event_with_multiple_receivers() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
@@ -1174,6 +1310,35 @@ mod tests {
     }
 
     #[test]
+    fn wireless_value_creates_a_writer_and_reader_without_an_event() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        assert!(
+            discover(&host, "valor inalámbrico", "es")
+                .iter()
+                .any(|node| node.definition == "preset:wireless-value")
+        );
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let writer = editor
+            .add_node_at(&mut host, "preset:wireless-value", [0.0, 0.0])
+            .unwrap();
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        let set = graph.nodes.iter().find(|node| node.id == writer).unwrap();
+        let get = graph.nodes.iter().find(|node| node.id != writer).unwrap();
+        assert_eq!(get.definition, "core/get-variable");
+        assert_eq!(set.definition, "core/set-variable");
+        assert_eq!(set.settings["variable"], get.settings["variable"]);
+        assert!(!get.entry);
+        assert!(graph.wires.is_empty());
+        let document = editor.document.as_ref().unwrap().draft.document();
+        assert!(document.events().is_empty());
+        assert_eq!(document.variables().len(), 1);
+        editor.undo(&mut host);
+        assert!(editor.graph().unwrap().nodes.is_empty());
+    }
+
+    #[test]
     fn watchdog_search_places_an_editable_timer_as_one_undo() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         assert!(
@@ -1195,6 +1360,10 @@ mod tests {
         let body = doc.root();
         assert_eq!(doc.events().len(), 1);
         assert_eq!(body.nodes.len(), 3);
+        assert_eq!(
+            doc.events().values().next().unwrap().payload.as_str(),
+            "core/option@1<core/bool@1>"
+        );
         let edge = body.edges.values().next().unwrap();
         let entry = &body.nodes[&edge.from.node];
         let wait = &body.nodes[&edge.to.node];
@@ -1461,20 +1630,20 @@ mod tests {
     fn cached_palette_tracks_search_language_and_registry_and_keeps_the_current_allocation() {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut cache = PaletteCache::default();
-        assert_eq!(cache.get(&host, "", "en").groups, palette(&host, ""));
-        let allocation = cache.get(&host, "", "en").groups.as_ptr();
-        assert_eq!(cache.get(&host, "", "en").groups.as_ptr(), allocation);
+        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
+        let allocation = cache.get(&host, "", "en", &[]).groups.as_ptr();
+        assert_eq!(cache.get(&host, "", "en", &[]).groups.as_ptr(), allocation);
         for search in ["MATH add", "unmatched-xyz", ""] {
             assert_eq!(
-                cache.get(&host, search, "en").groups,
+                cache.get(&host, search, "en", &[]).groups,
                 palette(&host, search)
             );
         }
         assert_eq!(
-            cache.get(&host, "disparador", "es").groups,
+            cache.get(&host, "disparador", "es", &[]).groups,
             palette_in(&host, "disparador", "es")
         );
-        assert!(cache.get(&host, "disparador", "en").groups.is_empty());
+        assert!(cache.get(&host, "disparador", "en", &[]).groups.is_empty());
         // Registry generations are process-unique, including when one editor is
         // reused with another host. Old provider labels must not survive that switch.
         let (core, _events) = Host::new(HostOptions {
@@ -1484,7 +1653,7 @@ mod tests {
         .unwrap();
         assert_ne!(core.registry().generation(), host.registry().generation());
         assert_ne!(palette(&core, ""), palette(&host, ""));
-        assert_eq!(cache.get(&core, "", "en").groups, palette(&core, ""));
-        assert_eq!(cache.get(&host, "", "en").groups, palette(&host, ""));
+        assert_eq!(cache.get(&core, "", "en", &[]).groups, palette(&core, ""));
+        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
     }
 }

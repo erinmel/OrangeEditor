@@ -432,7 +432,8 @@ impl crate::Editor {
               "panels":{"nodes":self.panels.nodes,"properties":self.panels.properties,
                         "packages":self.panels.packages,"log":self.panels.log},
               "appearance":self.preferred_theme.map(egui::ThemePreference::name),
-              "node_search_previews":self.node_search_previews})
+              "node_search_previews":self.node_search_previews,
+              "wireless_opacity":self.canvas.wireless_opacity})
     }
     /// Restores supported preferences while preserving defaults for absent settings.
     pub fn restore_preferences(&mut self, value: &serde_json::Value) {
@@ -460,6 +461,10 @@ impl crate::Editor {
             _ => None,
         };
         self.node_search_previews = value["node_search_previews"].as_bool().unwrap_or(false);
+        self.canvas.wireless_opacity = value["wireless_opacity"]
+            .as_u64()
+            .and_then(|percent| u8::try_from(percent.min(100)).ok())
+            .unwrap_or(crate::canvas::DEFAULT_WIRELESS_OPACITY);
         if let Some(tab) = value["tab"].as_str().and_then(crate::Tab::from_key) {
             self.tab = tab;
             self.preferred_tab = tab;

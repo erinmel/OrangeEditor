@@ -15,23 +15,41 @@ Search matches group and section names alongside node labels and aliases. Hover
 a heading for its purpose. Nodes opens by default and the application remembers
 the last sidebar tab chosen explicitly.
 
-Place Wireless Signal to create a named run event with an Emit and an On Event.
-Wire the source trigger into Emit and wire each On Event into its own flow.
-Use Add signal receiver in the sender card or in either endpoint's context menu.
-Use Add signal sender in the context menu to attach another Emit to the same event.
-Deleting an endpoint removes that card and its attached wires. The named event and
-the other cards stay available, even after the last sender or receiver is deleted.
-An Emit with no listeners still continues on its normal exit. Hover an endpoint
-to reveal dashed links. Each receiver starts a separate activation through the run event queue
-(11 §10). Pass shared information as the event payload or through a declared
-variable. The links describe event routing on the canvas and are saved through
-the event references on the nodes.
+Dispatch (`core/emit`, ES "Despachar") sends an event on a named channel, a run
+event (11 §10), to every Listen (`core/on-event`, ES "Escuchar") on it: one to many.
+Each Listen starts its own activation and shows the payload output only when the
+channel has a payload type. Place Dispatch and Listen to create a channel with one of
+each. On a Dispatch, + Add Subscriber creates a Listen on the same channel that
+follows the pointer until a click places it; Escape leaves it where it is. A Listen
+placed on its own picks its channel in Properties, or comes bound from the node
+search: searching for Listen, or for a channel's name, lists each channel a Dispatch
+sends on as "Listen · channel", placed bound in one step.
+
+Deleting a Dispatch never deletes its subscribers. A Listen no Dispatch sends to shows
+an "Unbound · channel" tag above its card; clicking it creates a Dispatch on that
+channel (following the pointer), and choosing another channel in Properties rebinds
+it. A Dispatch with no listeners still continues on its normal exit. Pass shared
+information as the event payload or through a declared variable.
+
+Wireless links run from each Dispatch to each Listen on its channel with the same
+spline as ordinary wires, dashed. Settings > Canvas > Wireless link opacity (0–100 %,
+default 10 %) sets how visible they are at rest on a perceptual curve: 0 % hides
+them, 1 % is faint but visible, 100 % is opaque. Above 0 %, hovering a Dispatch or
+Listen shows its links fully, and resting the pointer on a faint link for one second
+shows every link; leaving earlier cancels it. Links fade in and out. At 0 % they stay
+hidden on hover. The links are saved only through the event references on the nodes.
 
 For a typed payload, place Emit, On Event or Await Event, then open its Event
 picker in Properties. Choose New event, select a payload type, and create it.
 Creation assigns the event to that node in one undoable edit. Select the same
 named event on the other nodes. On Event starts a new activation, while Await
 Event continues an existing one when the event arrives or its timeout expires.
+
+Dispatch without payload starts listeners with an optional payload initialized to None.
+Idle Watchdog places Emit, On Event, and Wait from left to right with an empty
+heartbeat payload. Wireless Value places a Set and Get for one run variable
+without an event handler. Change the variable's type and initial value in
+Variables. Newly placed presets are selected together so they can move as a set.
 
 Collect starts with a limit of 1,024 items. Tee starts with buffers of 32 items
 and 1 MiB per output, with backpressure when either bound is reached. Configure
@@ -87,7 +105,7 @@ combination in the selected language.
 | Empty | A graph with no nodes shows, at the centre of the canvas, how to begin: Tab or right-click to add a node, or drag one from the Nodes panel. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
-## 3. Cards
+Click either connector, then click the opposite endpoint to wire without dragging.\nPress Escape, click the starting port again, or click the background to cancel.\n\n## 3. Cards
 
 * **Titles.** The header uses a category symbol such as a calculator for math or a
   speaker for audio. The node name appears white in dark mode. Double-click the
@@ -674,14 +692,18 @@ Transient remains searchable for graphs that react to sudden hits, such as kicks
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
 The trigger and gallery use the same segmented RMS widget, including the level
 zones, held-peak animation, clipping lights and target marker. A live stereo
-input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane. For
+input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane with
+the same scale, clip light and threshold handle. For
 more than two channels, the display uses aggregate RMS and the highest channel
 peak. Each red light latches when a measured sample reaches full scale and
 clears when the stream is lost or the analyzer restarts. With a stopped or
 unavailable input, the meter shows empty L/R lanes with unlit clip indicators
 and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
-the meter. Drag the threshold line or type a threshold under the meter.
+the meter. Drag the threshold handle on the left or within the meter, or type a
+threshold under the meter. The waveform gallery uses signed min/max columns when
+samples outnumber the display pixels. File previews reuse a bounded envelope with
+the lowest and highest source-channel sample in each bucket.
 The card is built from the definition's control hints (ADR-33): the level-meter visual,
 the `aside` row and the `body` fields. Beside the meter sit the outputs and, under
 them, Hold and Reset margin as dials side
@@ -700,6 +722,17 @@ The Channel levels output carries RMS and sample peaks in dBFS and clip flags
 in stream channel order, including all channels of a multichannel stream.
 Version 1 trigger cards upgrade when a graph opens and keep their settings and
 existing wires.
+
+Properties follows the header, aside and body order within the Settings and Inputs
+groups. The Advanced group contains fields explicitly placed there. Numeric input
+sliders and dials appear next to the typed editor when the input is unwired. Custom
+slider marks show guides at the requested values. Dials use their hinted style,
+precision and localized caption when provided.
+
+Numeric controls keep non-finite readings out of their painted geometry. A dial
+whose range cannot be represented by the rotary control uses a typed field.
+A saved node position outside the signed 32-bit coordinate range uses automatic
+placement.
 
 Editable duration inputs on the canvas and in Properties show milliseconds and
 accept fractional milliseconds up to nanosecond precision. Dragging steps by
@@ -727,6 +760,12 @@ available in Connections. See ADR-30 and [05](05-services-and-platforms.md).
 Themes beyond light and dark, touch input, collaborative editing.
 
 ## 8. Interaction references and review checklist
+
+Properties can open the selected node's existing connection in the same editor
+used by Connections or create and bind a profile there. Variables opens a read-only
+inspector with full copy for observed text and JSON. Structured value dialogs\nprovide a scrollable JSON field,
+a Format JSON action, and localized syntax feedback with a line and column.
+The host still checks the value against its declared type on Apply.
 
 | Reference | Rule for OrangeEditor | Review scenario |
 |---|---|---|
@@ -827,6 +866,8 @@ width and the lower-right corner for both axes. Long text scrolls within the
 chosen height. A toast may carry supporting text and stay until dismissed.
 The shared lifetime policy accepts 2–120 seconds for timed notices. Persistent
 gallery errors have a dismissal action and schedule no timer repaints.
+Gallery and desktop palette tiles render panels, a slider, and buttons from\nthe shared control colors.
+The System tile splits one layout diagonally between light and dark.
 Midnight Contrast shares the high-contrast palette checks for text, semantic
 inks, boundaries, focus and selected text. Volume uses the themed slider rail
 with travel linear in decibels and silence at its lower stop.

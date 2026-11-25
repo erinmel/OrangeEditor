@@ -57,7 +57,7 @@ use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
     StopMode, lines,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Lets a window without the system's frame be resized from its edges and corners,
 /// as a framed one is: the cursor shows the direction and a press hands the resize to
@@ -332,6 +332,17 @@ impl Tab {
     }
 }
 
+struct ObservedVariable {
+    shown: String,
+    exact_text: Option<orange_host::Value>,
+}
+
+impl std::fmt::Debug for ObservedVariable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObservedVariable").finish_non_exhaustive()
+    }
+}
+
 /// The document being edited.
 #[derive(Debug)]
 struct Document {
@@ -357,7 +368,7 @@ struct Document {
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
     /// The latest value of each variable a run wrote, by variable ID, as text.
-    values: std::collections::BTreeMap<String, String>,
+    values: std::collections::BTreeMap<String, ObservedVariable>,
 }
 
 impl Document {
@@ -516,6 +527,7 @@ pub struct Editor {
     shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
     inspected_port: Option<(NodeId, String, bool)>,
+    inspected_variable: Option<String>,
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<LogLine>,
@@ -573,6 +585,12 @@ fn place_node(
     definition: &str,
     at: [f32; 2],
 ) -> Result<(NodeId, Option<NodeId>), HostError> {
+    // A Listen bound to an existing channel in one step.
+    if let Some(event) = definition.strip_prefix(palette::BIND_LISTEN) {
+        let node = host.add_node(draft, "core/on-event", at)?;
+        let _ = host.set_config(draft, node, &serde_json::json!({ "event": event }))?;
+        return Ok((node, None));
+    }
     if definition.starts_with(palette::CONVERSION) {
         return match palette::conversion_named(host, definition) {
             Some(conversion) => host
@@ -651,6 +669,9 @@ impl Editor {
         self.node_config_menu = None;
         self.renaming_node = None;
         self.inspected_port = None;
+        self.inspected_variable = None;
+        self.forms = declarations::Forms::default();
+        self.probing = None;
         self.tab = self.preferred_tab;
         self.previews.invalidate();
         self.stop(host);
@@ -680,7 +701,9 @@ impl Editor {
         self.canvas.set_failure_routes(failure_routes);
         self.canvas.set_port_details(port_details);
         self.canvas.load(&graph);
-        self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
+        let declared = host.declarations(&draft);
+        self.canvas.enums = canvas::enums_of(host, &draft, &graph, &declared);
+        self.canvas.channels = canvas::channels_of(&declared);
         self.canvas.set_groups(draft.groups());
         self.canvas.waypoints = draft.wire_waypoints().collect();
         self.document = Some(Document {
@@ -778,6 +801,7 @@ impl Editor {
         self.canvas.update(&document.graph);
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
+        self.canvas.channels = canvas::channels_of(&document.declared);
         self.canvas.set_groups(document.draft.groups());
         self.canvas.waypoints = document.draft.wire_waypoints().collect();
         // The fields of the properties panel are read again from the new document.
@@ -869,6 +893,24 @@ impl Editor {
         self.add_node_at(host, definition, at)
     }
 
+    /// The channels (event ID, name) that a Dispatch in the open graph sends on.
+    pub(crate) fn dispatch_channels(&self) -> Vec<(String, String)> {
+        let (Some(declared), Some(graph)) = (self.declarations(), self.graph()) else {
+            return Vec::new();
+        };
+        declared
+            .events
+            .iter()
+            .filter(|event| {
+                graph.nodes.iter().any(|node| {
+                    node.definition == "core/emit"
+                        && node.settings["event"].as_str() == Some(event.id.to_string().as_str())
+                })
+            })
+            .map(|event| (event.id.to_string(), event.name.clone()))
+            .collect()
+    }
+
     /// Adds a node of kind `definition` with its top left corner at `at` (graph units)
     /// and selects it.
     pub fn add_node_at(
@@ -878,8 +920,35 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
+        let multi = matches!(
+            definition,
+            "preset:signal" | "preset:wireless-pulse" | "preset:wireless-value" | "preset:watchdog"
+        );
+        let before = multi.then(|| {
+            draft
+                .document()
+                .root()
+                .nodes
+                .keys()
+                .copied()
+                .collect::<HashSet<_>>()
+        });
         let result = place_node(host, draft, definition, at);
-        self.placed(host, result)
+        let created = before.map(|before| {
+            draft
+                .document()
+                .root()
+                .nodes
+                .keys()
+                .filter(|id| !before.contains(id))
+                .copied()
+                .collect::<Vec<_>>()
+        });
+        let placed = self.placed(host, result)?;
+        if let Some(created) = created {
+            self.canvas.select_many(&created);
+        }
+        Some(placed)
     }
 
     /// Selects what a placement made, or reports why it was refused, leaving the
@@ -1691,7 +1760,15 @@ impl Editor {
                             || "unset".to_owned(),
                             |value| canvas::value_text(&self.canvas.enums, ty, value),
                         );
-                        let _ = document.values.insert(variable.to_string(), shown);
+                        let exact_text = match value {
+                            Some(
+                                text @ (orange_host::Value::Str(_) | orange_host::Value::Json(_)),
+                            ) => Some(text.clone()),
+                            _ => None,
+                        };
+                        let _ = document
+                            .values
+                            .insert(id, ObservedVariable { shown, exact_text });
                     }
                 }
                 // A trigger or live value whose provider would not start, or failed
@@ -1770,8 +1847,10 @@ impl Editor {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
-        self.canvas.shortcuts_enabled =
-            !self.settings_open && !self.has_node_ergonomics_modal() && self.value_form.is_none();
+        self.canvas.shortcuts_enabled = !self.settings_open
+            && !self.forms.open_connection
+            && !self.has_node_ergonomics_modal()
+            && self.value_form.is_none();
         self.keyboard(ui, host);
         layout(self, ui, host);
         if self.window_toolbar {
@@ -1782,6 +1861,8 @@ impl Editor {
         self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
         self.function_export_dialog(ui.ctx(), host);
+        self.show_connection_dialog(ui.ctx(), host);
+        self.variable_inspector_window(ui.ctx());
         self.value_dialog(ui.ctx(), host);
         self.for_each_mode_dialog(ui.ctx(), host);
         self.build_map_rows_dialog(ui.ctx(), host);
@@ -1823,6 +1904,7 @@ impl Editor {
     /// must also suppress source input while egui edits text or lacks window focus.
     pub fn accepts_graph_key(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
         !self.settings_open
+            && !self.forms.open_connection
             && self.quick.is_none()
             && self.menu.is_none()
             && self.node_config_menu.is_none()
@@ -2453,7 +2535,8 @@ impl Editor {
             } else {
                 self.language.as_str()
             };
-            let results = self.palette.get(host, &self.search, language);
+            let channels = self.dispatch_channels();
+            let results = self.palette.get(host, &self.search, language, &channels);
             let found = results.groups;
             if searching && found.is_empty() {
                 ui.weak(t("no-node-matches"));
@@ -2769,6 +2852,7 @@ impl Editor {
             self.node_config_menu = Some((node, at));
         }
         if let Some(port) = done.inspect_value {
+            self.inspected_variable = None;
             self.inspected_port = Some(port);
         }
         if let Some(selected) = done.selected
@@ -2805,8 +2889,8 @@ impl Editor {
             self.wire_with_mode_preview(host, ends);
         }
         self.conversion_menu(ui.ctx(), host);
-        if let Some(node) = done.add_signal_receiver {
-            self.add_signal_endpoint(host, node, false);
+        if let Some((node, sender)) = done.add_signal_peer {
+            self.add_signal_endpoint(host, node, sender);
         }
         if let Some((node, port)) = done.add_port {
             let _ = self.add_port(host, node, &port);
@@ -3155,7 +3239,7 @@ mod tests {
                 .document
                 .as_ref()
                 .and_then(|document| document.values.get(&id(100)))
-                .is_some_and(|value| value == "7");
+                .is_some_and(|value| value.shown == "7");
             if set {
                 break;
             }

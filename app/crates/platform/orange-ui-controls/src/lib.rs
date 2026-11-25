@@ -16,14 +16,17 @@ pub mod patterns;
 pub mod theme;
 pub use theme::{Density, Divider, SpacingScale, ThemeMode, UiTokens};
 mod selection;
+mod theme_preview;
+pub use theme_preview::paint_theme_preview;
 pub mod visualizations;
+pub mod waveform;
 pub use selection::{
-    BinaryChoice, ChoiceRow, DialFace, KnobStyle, NotchStyle, NotebookOrientation, NotebookPadding,
-    NotebookWidth, SliderBehavior, SliderGuide, SliderMarks, SliderStyle, StepLabels, ThumbStyle,
-    continuous_marked_slider, continuous_slider, dial, dial_preview, guided_slider, knob,
-    logarithmic_slider, marked_slider, marked_slider_preview, notebook, notebook_flex,
-    notebook_styled, pill_segmented, rotary, rotary_preview, segmented, step_buttons,
-    stepped_slider,
+    BinaryChoice, ChoiceRow, DialFace, DialStyle, KnobStyle, NotchStyle, NotebookOrientation,
+    NotebookPadding, NotebookWidth, SliderBehavior, SliderGuide, SliderMarks, SliderStyle,
+    StepLabels, ThumbStyle, continuous_marked_slider, continuous_slider, dial, dial_preview,
+    guided_slider, knob, logarithmic_slider, marked_slider, marked_slider_preview, notebook,
+    notebook_flex, notebook_styled, pill_segmented, rotary, rotary_preview, segmented,
+    step_buttons, stepped_slider, styled_dial, styled_dial_preview,
 };
 pub use visualizations::{
     ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,
@@ -109,24 +112,33 @@ impl Theme {
             return theme;
         }
         if let Some(tokens) = UiTokens::installed(ctx) {
-            let t = tokens.theme;
-            return Self {
-                panel: t.surface,
-                dialog: t.surface_elevated,
-                inset: t.surface_elevated,
-                text: t.text,
-                muted_text: t.text_muted,
-                border: t.border.color,
-                primary: t.primary,
-                on_primary: t.on_primary,
-                secondary: t.surface_elevated,
-                on_secondary: t.text,
-                focus: t.focus_ring.color,
-                danger: t.danger,
-                danger_fill: t.surface_elevated,
-                on_danger: t.danger,
-            };
+            return Self::from_palette(tokens.theme);
         }
+        Self::from_visuals(visuals)
+    }
+
+    /// Resolves the shared control colors for a palette.
+    pub fn from_palette(t: theme::Theme) -> Self {
+        Self {
+            panel: t.surface,
+            dialog: t.surface_elevated,
+            inset: t.surface_elevated,
+            text: t.text,
+            muted_text: t.text_muted,
+            border: t.border.color,
+            primary: t.primary,
+            on_primary: t.on_primary,
+            secondary: t.surface_elevated,
+            on_secondary: t.text,
+            focus: t.focus_ring.color,
+            danger: t.danger,
+            danger_fill: t.surface_elevated,
+            on_danger: t.danger,
+        }
+    }
+
+    /// Resolves the shared control colors from egui visuals.
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
         let text = visuals.strong_text_color();
         let primary = visuals.selection.bg_fill;
         let [r, g, b, _] = egui::Rgba::from(primary).to_array();
@@ -161,6 +173,11 @@ impl Theme {
             Surface::Dialog => self.dialog,
             Surface::Card => self.inset,
         }
+    }
+
+    fn slider_idle(self, surface: Surface) -> egui::Color32 {
+        let background = self.background(surface);
+        theme::ensure_contrast(background.lerp_to_gamma(self.text, 0.23), background, 3.0)
     }
 
     fn selected_fill(self, surface: Surface) -> egui::Color32 {

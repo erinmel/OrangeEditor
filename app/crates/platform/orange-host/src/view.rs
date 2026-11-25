@@ -997,6 +997,20 @@ impl Host {
             })
             // A trigger shows what fires it.
             .or_else(|| trigger_detail(node.definition.id.as_str(), &node.config));
+        let mut controls = shown
+            .map(|shown| shown.controls.clone())
+            .unwrap_or_default();
+        if let Some(locale) = locale {
+            for hint in controls
+                .settings
+                .values_mut()
+                .chain(controls.inputs.values_mut())
+            {
+                if let Some(caption) = &mut hint.caption {
+                    caption.fallback = self.text_in(caption, locale).into_owned();
+                }
+            }
+        }
         let view = NodeView {
             id: node.id,
             detail,
@@ -1028,9 +1042,7 @@ impl Host {
                 .collect(),
             types,
             paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
-            controls: shown
-                .map(|shown| shown.controls.clone())
-                .unwrap_or_default(),
+            controls,
             missing,
         };
         let details = (!details.is_empty()).then(|| Arc::from(details));
@@ -1066,6 +1078,7 @@ fn position_in(places: Option<&Json>, node: NodeId) -> Option<[f32; 2]> {
     places
         .and_then(|places| places.get(node.to_string()))
         .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
+        .filter(|[x, y]| x.abs().max(y.abs()) <= f64::from(i32::MAX))
         .map(|[x, y]| {
             #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
             [x as f32, y as f32]
@@ -1159,6 +1172,16 @@ fn human_duration(nanoseconds: &str) -> Option<String> {
 #[cfg(test)]
 mod trigger_detail_tests {
     use super::*;
+
+    #[test]
+    fn out_of_range_saved_coordinates_fall_back_to_automatic_layout() {
+        let id = "70000000-0000-4000-8000-000000000001"
+            .parse::<NodeId>()
+            .unwrap();
+        let places = |x| json!({id.to_string(): {"x": x, "y": 10.0}});
+        assert_eq!(position_in(Some(&places(1.0e300)), id), None);
+        assert_eq!(position_in(Some(&places(-15.0)), id), Some([-15.0, 10.0]));
+    }
 
     #[test]
     fn a_trigger_says_what_fires_it() {
