@@ -23,6 +23,7 @@ thiserror.workspace = true
 fluent-bundle.workspace = true
 fluent-syntax.workspace = true
 unic-langid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0" }

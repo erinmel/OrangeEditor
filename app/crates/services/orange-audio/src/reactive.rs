@@ -3,11 +3,13 @@ use crate::{
     Analyzing, BandMeter, Cursor, EmitError, Emitter, InputShared, Lifecycle, Listening, Map,
     Value,
     analysis::{Band, number},
+    level::{ChannelMeter, ChannelWindow},
+    live_nodes::CHANNEL_LEVELS_TYPE,
     spectrum,
     stream::Ring,
-    stream_value, watch_windows,
+    stream_value, watch_window_measurements,
 };
-use orange_sdk::{ListRepr, PortKey};
+use orange_sdk::{ListRepr, PortKey, RecordRepr};
 use serde_json::Value as Json;
 use std::{
     sync::Arc,
@@ -17,7 +19,8 @@ use std::{
 
 pub(crate) const MAX_BANDS: u16 = 12;
 const WINDOW: Duration = Duration::from_millis(25);
-const PLOT_INTERVAL: Duration = Duration::from_millis(50);
+/// About 30 snapshots a second, the rate the editor draws the spectrum at.
+const PLOT_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone, Copy)]
 struct Rule {
@@ -106,22 +109,48 @@ pub(crate) fn noise(
     let rule = Rule::parse(settings, below)?;
     let level_port = port("level")?;
     let state_port = port("condition_met")?;
+    let channels_port = port("channel_levels")?;
+    let channels_type = CHANNEL_LEVELS_TYPE
+        .parse()
+        .map_err(|_| "Invalid channel levels type")?;
     let trigger = port("then")?;
     let mut gate = Crossing::default();
-    watch_windows(
+    watch_window_measurements(
         input,
-        Listening {
-            low_hz: 0.0,
-            high_hz: 0.0,
-            window: WINDOW,
+        WINDOW,
+        |ring| {
+            let listening = Listening {
+                low_hz: 0.0,
+                high_hz: 0.0,
+                window: WINDOW,
+            };
+            ChannelMeter::new(listening.frames(ring.rate), ring.channels)
         },
-        move |level| {
+        |meter, samples, report| meter.push(samples, report),
+        move |window: Option<ChannelWindow>| {
+            let level = window.as_ref().map(|window| window.level);
             if let Some(level) = level {
                 gate.update(rule, level);
             } else {
                 gate = Crossing::default();
             }
             emitter.publish(&level_port, level.map(Value::F64)).is_ok()
+                && emitter
+                    .publish(
+                        &channels_port,
+                        window.map(|window| {
+                            let list = |repr| Some(Value::List(Arc::new(repr)));
+                            Value::Record(Arc::new(RecordRepr {
+                                ty: Clone::clone(&channels_type),
+                                fields: Box::new([
+                                    list(ListRepr::F64(window.rms)),
+                                    list(ListRepr::F64(window.peak)),
+                                    list(ListRepr::Bool(window.clipped)),
+                                ]),
+                            }))
+                        }),
+                    )
+                    .is_ok()
                 && emitter
                     .publish(&state_port, Some(Value::Bool(gate.active)))
                     .is_ok()
@@ -280,10 +309,12 @@ pub(crate) fn spectrum(
     settings: &Map<String, Json>,
     emitter: Emitter,
     streams: bool,
+    run_id: u64,
 ) -> Result<Box<dyn Send>, String> {
     let specs = bands(settings, streams)?;
     for output in specs.iter().filter_map(|spec| spec.output.as_ref()) {
-        let value = stream_value(output.source.id).map_err(|fault| fault.message.to_owned())?;
+        let value =
+            stream_value(&output.source, run_id).map_err(|fault| fault.message.to_owned())?;
         emitter
             .publish(&output.port, Some(value))
             .map_err(|_| "Band output could not be published")?;
@@ -305,9 +336,8 @@ pub(crate) fn spectrum(
             };
             while let Ok(ring) = input.wait_ring(None, &|| running.stopped()) {
                 let channels = usize::from(ring.channels.max(1));
-                let size = spectrum::FRAMES * channels;
-                let mut samples = Vec::with_capacity(size);
-                let mut last_plot = None;
+                let mut history = spectrum::History::new(spectrum::FRAMES * channels);
+                let mut last_plot: Option<Instant> = None;
                 let new_trackers = || {
                     specs
                         .iter()
@@ -352,7 +382,8 @@ pub(crate) fn spectrum(
                             return;
                         }
                         trackers = new_trackers();
-                        samples.clear();
+                        history.clear();
+                        last_plot = None;
                     }
                     if !trackers
                         .iter_mut()
@@ -360,29 +391,19 @@ pub(crate) fn spectrum(
                     {
                         return;
                     }
-                    let mut remaining = &block[..read];
-                    while !remaining.is_empty() {
-                        let count = (size - samples.len()).min(remaining.len());
-                        samples.extend_from_slice(&remaining[..count]);
-                        remaining = &remaining[count..];
-                        if samples.len() == size {
-                            let now = Instant::now();
-                            if last_plot.is_none_or(|last| now - last >= PLOT_INTERVAL) {
-                                let values = transform.measure(&samples, channels, ring.rate);
-                                if emitter
-                                    .publish(
-                                        &plot,
-                                        Some(Value::List(Arc::new(ListRepr::F64(Box::new(
-                                            values,
-                                        ))))),
-                                    )
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                                last_plot = Some(now);
+                    history.push(&block[..read]);
+                    let now = Instant::now();
+                    if last_plot.is_none_or(|last| now - last >= PLOT_INTERVAL) {
+                        let latest = history.latest();
+                        if let Some(values) = transform.measure(latest, channels, ring.rate) {
+                            let values = ListRepr::F64(values.into_boxed_slice());
+                            if emitter
+                                .publish(&plot, Some(Value::List(Arc::new(values))))
+                                .is_err()
+                            {
+                                return;
                             }
-                            samples.clear();
+                            last_plot = Some(now);
                         }
                     }
                 }

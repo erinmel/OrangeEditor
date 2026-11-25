@@ -1,0 +1,4684 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "cb86e33c-9865-4a91-b53e-2cc0e08c86dc",
+  "revision": 54,
+  "package_lock": [
+    {
+      "id": "org.orange.audio",
+      "version": "0.0.0",
+      "content_digest": "sha256:7937fcde4f140b5af8a59b57d83c6d7cb20715740c2aded49aa437d338fbb2d0"
+    },
+    {
+      "id": "org.orange.files",
+      "version": "0.0.0",
+      "content_digest": "sha256:f4208f509dd4c097a776329318e5d7052c6e0edd0cc742bbebe0d2c326c77306"
+    },
+    {
+      "id": "org.orange.net",
+      "version": "0.0.0",
+      "content_digest": "sha256:f264fc68eb4ef10354ff58109a95740e364b438b95d21ce98dc3dca121efbfb3"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "2b2107df-1bb0-4f50-8666-6faae479c0eb",
+      "name": "Playback suite completed",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "f02705f5-d222-421d-adca-6b01357eb50f",
+      "name": "Playback failures",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "b8485af0-7f03-4623-ad0a-aff134c857d8",
+      "name": "Loop stopped",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "102e59bb-17fd-45cf-a7b5-a30fba767444",
+      "name": "Clip picked from folder",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "306fbc91-b967-40e6-8369-d2304d719e5b",
+      "name": "On audible level count",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "f0a44a67-4f4a-46f1-8945-55c49202d68c",
+      "name": "On tone onset count",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "d2ff98d7-9a13-48d8-b7a7-275bb0cc8021",
+      "name": "On local source finished count",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "608084b7-e924-41b7-b255-aaa0398c22fb",
+      "name": "Recorded seconds",
+      "type": "core/f64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "4581c82f-1008-4a67-badf-942461ae1748",
+      "name": "Record and replay completed",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "6104036f-eccf-4ea8-a1ac-11310806dd66",
+      "name": "Record and replay failures",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "fd7c22d5-c1f4-409e-9b6d-637d48fe81cf",
+      "name": "Text read back",
+      "type": "core/string@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "cb1af682-9465-4196-92ac-91d1be0a5a95",
+      "name": "Text file size",
+      "type": "core/u64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "a6df1438-fa15-4e3b-8dbd-a7defb42f1bf",
+      "name": "Text files in QA folder",
+      "type": "core/list@1<core/string@1>",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "e4ff00e5-8c53-4773-8f8b-b2208a6bdc5d",
+      "name": "Deleted copy still exists",
+      "type": "core/bool@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "5be426e5-19d8-4ae0-80ce-03e73618e2f1",
+      "name": "File suite completed",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "d24927d4-a6ba-4ccd-bc98-c956b444c3a8",
+      "name": "File suite failures",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "ff4ee453-d6e1-4c06-a6f0-993e01ff7f9d",
+      "name": "Folder change events",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "eb97c45a-2a1e-4066-be30-64581bac38f1",
+      "name": "Read-only write rejected",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "cfec07a0-1735-4be8-a387-7d3d14bd2737",
+      "name": "Unexpected success · Read-only write rejected",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "91f2ea34-4ea9-4bab-a422-b16b9cb11f2a",
+      "name": "Parent path rejected",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "3d0539cc-5e3d-4f75-a5d4-7528d159554b",
+      "name": "Unexpected success · Parent path rejected",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "666d4656-e800-41fd-9df2-37709c78c97f",
+      "name": "Remote clips completed",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "c19fea4c-a397-4816-badb-a1f5bea552e6",
+      "name": "Fixture server HTTP status",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "9dcd6cfd-2ce0-47fd-b192-0d3a4cd5da6b",
+      "name": "Fixture server request failed",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "connections": [
+    {
+      "id": "1bfeb025-0385-462b-beaf-77f87c1c161b",
+      "name": "QA output · silent test device",
+      "adapter": "org.orange.audio/output",
+      "scope": "graph",
+      "settings": {
+        "device": "null"
+      }
+    },
+    {
+      "id": "5f43d38f-04a6-431d-a69c-2674a1a60944",
+      "name": "QA source · local WebM Opus",
+      "adapter": "org.orange.audio/input",
+      "scope": "graph",
+      "settings": {
+        "file": "app/crates/services/orange-audio/tests/fixtures/stereo.webm"
+      }
+    },
+    {
+      "id": "b5630641-9bf8-4eb6-9daf-918d3002dbe2",
+      "name": "QA source · HTTP Ogg Opus",
+      "adapter": "org.orange.audio/input",
+      "scope": "graph",
+      "settings": {
+        "file": "http://127.0.0.1:18765/stereo.opus"
+      }
+    },
+    {
+      "id": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63",
+      "name": "QA scratch · relative to launch directory",
+      "adapter": "org.orange.files/folder",
+      "scope": "graph",
+      "settings": {
+        "path": ".",
+        "poll_ms": 100
+      }
+    },
+    {
+      "id": "34f1efd7-fd9e-4816-bedb-57e20abc5ea2",
+      "name": "QA scratch · read only",
+      "adapter": "org.orange.files/folder",
+      "scope": "graph",
+      "settings": {
+        "path": ".",
+        "read_only": true
+      }
+    },
+    {
+      "id": "31870ca6-922a-4999-972a-d6695121be8d",
+      "name": "QA HTTP fixture server",
+      "adapter": "org.orange.net/http",
+      "scope": "graph",
+      "settings": {
+        "base_url": "http://127.0.0.1:18765",
+        "timeout_ms": 3000
+      }
+    },
+    {
+      "id": "378ab732-8794-4adf-9418-918453fa604d",
+      "name": "QA loop output · silent test device",
+      "adapter": "org.orange.audio/output",
+      "scope": "graph",
+      "settings": {
+        "device": "null"
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:04746aacdbf367754663e1545a68f04f647d3d0b71597726be12a79b24ec8e18": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    },
+    "sha256:0994a161ebc329c916640d185124f11b8729f8b2753cd1bc43538bd7a184ed9b": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "level",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/f64@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:0cf05d5297f27bd66ad003c6bcb0adb7a1d5dadb28801c452524fc3d6259d9e5": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "text",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:10b0933f8ff3392f41b36488f4d9a277f002464642585f30f0bfd8962955f569": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "command",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/source-command@1",
+          "default": {
+            "type": "org.orange.audio/source-command@1",
+            "value": {
+              "variant": "play"
+            }
+          }
+        },
+        {
+          "port_id": "seconds",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "0000000000000000"
+          }
+        }
+      ]
+    },
+    "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "wait_for_folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": false
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.files/change@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:15d5477061b4065814a866e90ef36251c2fe24cdf10ef7dfce61277116fb1828": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "release",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "50000000"
+          }
+        },
+        {
+          "port_id": "limited_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:1e262bf7859c6e709452f79532c5aa9932a588e8181d64f0cf4fbe0263810778": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "pick",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/u64@1",
+          "default": {
+            "type": "core/u64@1",
+            "value": "0"
+          }
+        },
+        {
+          "port_id": "gain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "3ff0000000000000"
+          }
+        },
+        {
+          "port_id": "file",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:1fcbd02b74eafa99344b4f8d62e9a58871f2e651b4d1847891880ba06e6dd67e": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "data",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1"
+        }
+      ]
+    },
+    "sha256:214be95babe572023d8a5bf89be0e9b14de6f74f79f42df891dc21bad6783e7b": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "is_directory",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "bytes",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/u64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "modified_unix_ms",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/option@1<core/i64@1>",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "read_only",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:239ae1a12b429ad03d95ec486a7f343ba443b04782d6339335210bb5a2dbee72": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "attack",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "10000000"
+          }
+        },
+        {
+          "port_id": "release",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "120000000"
+          }
+        },
+        {
+          "port_id": "compressed_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    },
+    "sha256:2bcd0b1b5858392921cd49f586c54e022eeb8400eb3de5a7936659025841dffa": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "format",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/format@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:2c624b6a2462af0624ea831d15b7f2c5f7684b2177acfc7fe3767af27a52eaea": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "method",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": "GET"
+          }
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "content_type",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "headers",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/list@1<core/string@1>",
+          "default": {
+            "type": "core/list@1<core/string@1>",
+            "value": []
+          }
+        },
+        {
+          "port_id": "content",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "default": {
+            "type": "core/bytes@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "status",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "success",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response_type",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        },
+        {
+          "port_id": "response",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:361df6e3f8dc38b76242ceb2a95ef7aad1df5317b303a7595f5d3fd421ec7711": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "command",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/sound-command@1",
+          "default": {
+            "type": "org.orange.audio/sound-command@1",
+            "value": {
+              "variant": "stop"
+            }
+          }
+        },
+        {
+          "port_id": "seconds",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "0000000000000000"
+          }
+        },
+        {
+          "port_id": "gain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "3ff0000000000000"
+          }
+        }
+      ]
+    },
+    "sha256:53b9e80b04089d6f5ae015c042a76911046e5cb1b8f486134b44f73e57aa6304": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "to",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    },
+    "sha256:5c9173ea9619e86bb44cad8bb848c1c39f226742f56f1c092fa622310d63df6d": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "attack",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "5000000"
+          }
+        },
+        {
+          "port_id": "hold",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "100000000"
+          }
+        },
+        {
+          "port_id": "release",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "80000000"
+          }
+        },
+        {
+          "port_id": "gated_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:61464d8455021534230a4a969549ddd46af221a64dc9da4ba8243fb9069d8805": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "offset",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/u64@1"
+        },
+        {
+          "port_id": "length",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/u64@1"
+        },
+        {
+          "port_id": "data",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bytes@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:634dd1f81e310a8f34d91240b667c1744afb2ab4572886f7aac2ae14b4bc2e7e": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "seconds",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "4024000000000000"
+          }
+        },
+        {
+          "port_id": "recorded",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/f64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:7936da9e54ebad2eb9461da898a909dc8cac70855894cf5892763aba3fc6e68b": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "found",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:84c581b767a4c239f0732bb9f605cf75d824a6014efd510133e3a3befe63ab57": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "filtered_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:9e1ec569244fbbbfcdb0f688a0a89dc1bc5657ce8b4476958f093f8a80d353de": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "level",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/f64@1",
+          "source": "computed"
+        },
+        {
+          "port_id": "condition_met",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:c8618fbad6863c9e665f25725c06b748c79cd61cbee757fe7b25de2914161649": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "pattern",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "recursive",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": false
+          }
+        },
+        {
+          "port_id": "names",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/list@1<core/string@1>",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    },
+    "sha256:c9807462f15de6a7ed06d088352cbb32279dd935a06d1c1ccc1ac3ff12b6461f": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/f64@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:cd8282a1a4b5aeebb1fa8e98d9a466d7c1adf31c151af8f7f9c75602bce3b7fb": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "adjusted_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:d328a6ae549f22d57f79be6fd603295fb0bc12e0bb9774185ec231245bc05fed": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "enabled",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": true
+          }
+        },
+        {
+          "port_id": "gain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "3ff0000000000000"
+          }
+        },
+        {
+          "port_id": "playing",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "computed"
+        },
+        {
+          "port_id": "finished",
+          "direction": "output",
+          "kind": "exec",
+          "variadic": {
+            "min": 0,
+            "max": 0
+          }
+        }
+      ]
+    },
+    "sha256:ea5cb07f70d123fda15d062d9a9bac39edeb58eea25ac8a91eb6393227e55e4d": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "spectrum",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/list@1<core/f64@1>",
+          "source": "computed"
+        },
+        {
+          "port_id": "band_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed",
+          "variadic": {
+            "min": 0,
+            "max": 12
+          }
+        },
+        {
+          "port_id": "band_above",
+          "direction": "output",
+          "kind": "exec",
+          "variadic": {
+            "min": 0,
+            "max": 0
+          }
+        }
+      ]
+    },
+    "sha256:f381cec028e351f615ddca0b6ae386cafa1d21ae30a481188b09cd18c095f3c3": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        }
+      ]
+    },
+    "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "gain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "3ff0000000000000"
+          }
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "441658b7-d108-41c2-916d-36974cda9811",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Run seven playback formats"
+    },
+    {
+      "id": "a8a767dd-30f2-4e5b-81c2-3413196490a8",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "2b2107df-1bb0-4f50-8666-6faae479c0eb",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Playback suite completed"
+    },
+    {
+      "id": "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "f02705f5-d222-421d-adca-6b01357eb50f",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Playback failures"
+    },
+    {
+      "id": "7a97417d-fa4d-4e01-9473-7872c001a038",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Start Opus loop"
+    },
+    {
+      "id": "29b1d23d-43b7-4be8-8845-a82e5d9fdbaa",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "b8485af0-7f03-4623-ad0a-aff134c857d8",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Loop stopped"
+    },
+    {
+      "id": "9fb362eb-9a27-42d5-96b8-ff287430717c",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Loop · pause"
+    },
+    {
+      "id": "8099b936-122e-4c1c-843a-cdd3998acc93",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Loop · resume"
+    },
+    {
+      "id": "25c5a657-bb7f-4bfc-9e73-3e5f59240501",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Loop · jump"
+    },
+    {
+      "id": "a53106c2-12d4-458a-a08f-e448eb12f399",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Loop · volume"
+    },
+    {
+      "id": "e51a35d2-1143-43a3-a6ee-765d75afe06f",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Loop · stop"
+    },
+    {
+      "id": "fe24d186-e621-4d57-bbcb-0165001ffa4d",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "102e59bb-17fd-45cf-a7b5-a30fba767444"
+      },
+      "name": "Clip picked from folder"
+    },
+    {
+      "id": "e10056d4-e866-4791-99fb-18af34122412",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Play from fixture folder"
+    },
+    {
+      "id": "800dcc00-eb68-4d4b-a00c-887adc7f3ded",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Play local source"
+    },
+    {
+      "id": "347ad6ff-b3b7-4035-a457-8bb9e1820781",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "306fbc91-b967-40e6-8369-d2304d719e5b",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "On audible level count"
+    },
+    {
+      "id": "ea80d897-26a1-4a43-a2f3-9a63cb41c8c0",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "f0a44a67-4f4a-46f1-8945-55c49202d68c",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "On tone onset count"
+    },
+    {
+      "id": "2bc6f80c-c079-4777-a3d0-2bc1d3f663f2",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "d2ff98d7-9a13-48d8-b7a7-275bb0cc8021",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "On local source finished count"
+    },
+    {
+      "id": "c4f10eea-ee65-4550-a2e1-342ae565f514",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "608084b7-e924-41b7-b255-aaa0398c22fb"
+      },
+      "name": "Recorded seconds"
+    },
+    {
+      "id": "a90a3d51-68af-47d9-93b2-58ae45ddfdba",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Record processed stream"
+    },
+    {
+      "id": "0ae0c660-a726-44b7-b7eb-fe76c0493772",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "4581c82f-1008-4a67-badf-942461ae1748",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Record and replay completed"
+    },
+    {
+      "id": "608431a5-2bc6-425e-8765-38ad6c3fbd89",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "6104036f-eccf-4ea8-a1ac-11310806dd66",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Record and replay failures"
+    },
+    {
+      "id": "03e1be24-48b9-46a9-bf7a-d8bae67c957f",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Run file and folder suite"
+    },
+    {
+      "id": "a58e157a-52bf-4162-b538-e44e37f03acd",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "fd7c22d5-c1f4-409e-9b6d-637d48fe81cf"
+      },
+      "name": "Text read back"
+    },
+    {
+      "id": "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "cb1af682-9465-4196-92ac-91d1be0a5a95"
+      },
+      "name": "Text file size"
+    },
+    {
+      "id": "caa89522-d96c-403b-aab5-9cac34cc03dd",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "a6df1438-fa15-4e3b-8dbd-a7defb42f1bf"
+      },
+      "name": "Text files in QA folder"
+    },
+    {
+      "id": "0e921ee7-9a0b-4c18-b296-ee5346a045a8",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "e4ff00e5-8c53-4773-8f8b-b2208a6bdc5d"
+      },
+      "name": "Deleted copy still exists"
+    },
+    {
+      "id": "3bbeef5c-8d38-47ec-ada1-7aef8c0b92f9",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "5be426e5-19d8-4ae0-80ce-03e73618e2f1",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "File suite completed"
+    },
+    {
+      "id": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "d24927d4-a6ba-4ccd-bc98-c956b444c3a8",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "File suite failures"
+    },
+    {
+      "id": "07e8e5dd-5695-4e2a-89b7-059e909fa6de",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "ff4ee453-d6e1-4c06-a6f0-993e01ff7f9d",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Folder change events"
+    },
+    {
+      "id": "3aa73b85-1e2f-499e-9cde-6695503648d4",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Test · Read-only write rejected"
+    },
+    {
+      "id": "0069be6e-b76b-4ca3-a046-2465949fce66",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "eb97c45a-2a1e-4066-be30-64581bac38f1",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Read-only write rejected"
+    },
+    {
+      "id": "7ef93a8e-3c40-4f99-87b8-a6d2b16e1c22",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "cfec07a0-1735-4be8-a387-7d3d14bd2737",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Unexpected success · Read-only write rejected"
+    },
+    {
+      "id": "6465ad1d-98e3-4b83-8469-ccb7de7713be",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Test · Parent path rejected"
+    },
+    {
+      "id": "4ddf5039-6e9d-477d-ae2e-c998e3303c53",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "91f2ea34-4ea9-4bab-a422-b16b9cb11f2a",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Parent path rejected"
+    },
+    {
+      "id": "fc8042d3-ebd1-424f-96aa-2e5bf4651748",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "3d0539cc-5e3d-4f75-a5d4-7528d159554b",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Unexpected success · Parent path rejected"
+    },
+    {
+      "id": "5bee4249-ee36-4262-a407-929b3d944643",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Play remote audio"
+    },
+    {
+      "id": "1cdd68ef-6123-4e05-8462-44faded9619a",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "666d4656-e800-41fd-9df2-37709c78c97f",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Remote clips completed"
+    },
+    {
+      "id": "8125017e-dea3-454d-a6c8-528fe2a8e00d",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "c19fea4c-a397-4816-badb-a1f5bea552e6"
+      },
+      "name": "Fixture server HTTP status"
+    },
+    {
+      "id": "cd12cad8-d68a-48ee-adf0-0038371a2726",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Check fixture server"
+    },
+    {
+      "id": "4d1c9428-5476-47eb-8ced-6a0f5ff4984c",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "9dcd6cfd-2ce0-47fd-b192-0d3a4cd5da6b",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Fixture server request failed"
+    },
+    {
+      "id": "1ea19b38-9c52-4d44-b339-97f392d73845",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/tone.mp3"
+        }
+      },
+      "name": "MP3"
+    },
+    {
+      "id": "e5e5c242-bec5-4e02-8265-49e5b02f8bc9",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/tone.ogg"
+        }
+      },
+      "name": "Ogg Vorbis"
+    },
+    {
+      "id": "66e2e838-00a3-4c7e-8ec0-0b7498226d6d",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo-aac.m4a"
+        }
+      },
+      "name": "M4A AAC-LC"
+    },
+    {
+      "id": "b6011820-d816-4c2b-949a-eccd0217cdc6",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo-alac.m4a"
+        }
+      },
+      "name": "M4A ALAC"
+    },
+    {
+      "id": "3b864c30-6149-4e91-8366-095e796ffacc",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo-pcm.aiff"
+        }
+      },
+      "name": "AIFF 24-bit PCM"
+    },
+    {
+      "id": "0edd0b4d-5412-4e73-8de9-5e714a967e4e",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo.opus"
+        }
+      },
+      "name": "Ogg Opus"
+    },
+    {
+      "id": "85398911-1c88-4169-8d89-ec2d4e455cea",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo.webm"
+        }
+      },
+      "name": "WebM Opus"
+    },
+    {
+      "id": "ebdc9451-61ef-4cae-a227-3e18a85420a6",
+      "definition_id": "org.orange.audio/loop",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures/stereo.opus"
+        }
+      },
+      "name": "Loop an Opus clip"
+    },
+    {
+      "id": "d413b82d-ed78-47f7-b09e-966d6688f041",
+      "definition_id": "org.orange.audio/sound-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6",
+      "inputs": {
+        "command": {
+          "type": "org.orange.audio/sound-command@1",
+          "value": {
+            "variant": "pause"
+          }
+        }
+      },
+      "name": "Apply pause"
+    },
+    {
+      "id": "ab7aa2b8-1f69-47cb-83f6-2264e3eda39c",
+      "definition_id": "org.orange.audio/sound-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6",
+      "inputs": {
+        "command": {
+          "type": "org.orange.audio/sound-command@1",
+          "value": {
+            "variant": "resume"
+          }
+        }
+      },
+      "name": "Apply resume"
+    },
+    {
+      "id": "2b172012-4ca4-4f27-b2bb-101601c18f5b",
+      "definition_id": "org.orange.audio/sound-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6",
+      "inputs": {
+        "command": {
+          "type": "org.orange.audio/sound-command@1",
+          "value": {
+            "variant": "jump"
+          }
+        },
+        "seconds": {
+          "type": "core/f64@1",
+          "bits": "3fb999999999999a"
+        }
+      },
+      "name": "Apply jump"
+    },
+    {
+      "id": "e9ca691b-2b9b-46ec-870a-783e4824af15",
+      "definition_id": "org.orange.audio/sound-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6",
+      "inputs": {
+        "command": {
+          "type": "org.orange.audio/sound-command@1",
+          "value": {
+            "variant": "volume"
+          }
+        },
+        "gain": {
+          "type": "core/f64@1",
+          "bits": "3fd3333333333333"
+        }
+      },
+      "name": "Apply volume"
+    },
+    {
+      "id": "ccc20253-6f13-441e-b7c0-14fa077ed1f2",
+      "definition_id": "org.orange.audio/sound-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "378ab732-8794-4adf-9418-918453fa604d"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:38d398813d16895f9fafba8132c6364534d75fb8a360b74a34ce2a856cd201b6",
+      "inputs": {
+        "command": {
+          "type": "org.orange.audio/sound-command@1",
+          "value": {
+            "variant": "stop"
+          }
+        }
+      },
+      "name": "Apply stop"
+    },
+    {
+      "id": "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+      "definition_id": "org.orange.audio/play-from",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:1e262bf7859c6e709452f79532c5aa9932a588e8181d64f0cf4fbe0263810778",
+      "inputs": {
+        "folder": {
+          "type": "core/string@1",
+          "value": "app/crates/services/orange-audio/tests/fixtures"
+        },
+        "pick": {
+          "type": "core/u64@1",
+          "value": "3"
+        }
+      },
+      "name": "Pick a clip from the fixture folder"
+    },
+    {
+      "id": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+      "definition_id": "org.orange.audio/audio-source",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "5f43d38f-04a6-431d-a69c-2674a1a60944"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:361df6e3f8dc38b76242ceb2a95ef7aad1df5317b303a7595f5d3fd421ec7711",
+      "name": "Local source · WebM Opus"
+    },
+    {
+      "id": "cd3a12e5-1514-47b9-85bb-97b60582a449",
+      "definition_id": "org.orange.audio/source-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:10b0933f8ff3392f41b36488f4d9a277f002464642585f30f0bfd8962955f569",
+      "name": "Start local source"
+    },
+    {
+      "id": "ffb27a8f-2310-4190-ab25-997e6512dc60",
+      "definition_id": "org.orange.audio/audio-format",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:2bcd0b1b5858392921cd49f586c54e022eeb8400eb3de5a7936659025841dffa",
+      "name": "Channel count and sample rate"
+    },
+    {
+      "id": "e582278a-2129-4e86-a988-a8e94a13e0bc",
+      "definition_id": "org.orange.audio/gain",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "gain_db": 3
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:cd8282a1a4b5aeebb1fa8e98d9a466d7c1adf31c151af8f7f9c75602bce3b7fb",
+      "name": "Gain · +3 dB"
+    },
+    {
+      "id": "79689ebe-2148-4042-99f7-680fb7b70295",
+      "definition_id": "org.orange.audio/noise-gate",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:5c9173ea9619e86bb44cad8bb848c1c39f226742f56f1c092fa622310d63df6d",
+      "name": "Gate quiet passages"
+    },
+    {
+      "id": "e108fac4-9738-4267-9167-cc58b09a9e3e",
+      "definition_id": "org.orange.audio/compressor",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:239ae1a12b429ad03d95ec486a7f343ba443b04782d6339335210bb5a2dbee72",
+      "name": "Compress loud passages"
+    },
+    {
+      "id": "7d960190-1be7-4bbc-9c1a-8668cef37758",
+      "definition_id": "org.orange.audio/filter",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "mode": "low-pass",
+        "cutoff_hz": 1200
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:84c581b767a4c239f0732bb9f605cf75d824a6014efd510133e3a3befe63ab57",
+      "name": "Low-pass at 1.2 kHz"
+    },
+    {
+      "id": "4b9e4bdd-6783-402f-b5df-c71aa67f716d",
+      "definition_id": "org.orange.audio/limiter",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:15d5477061b4065814a866e90ef36251c2fe24cdf10ef7dfce61277116fb1828",
+      "name": "Limit peaks"
+    },
+    {
+      "id": "06c346be-dbbe-48a3-a457-29739f6a10e4",
+      "definition_id": "org.orange.audio/live-level",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:0994a161ebc329c916640d185124f11b8729f8b2753cd1bc43538bd7a184ed9b",
+      "name": "Processed level"
+    },
+    {
+      "id": "7988a6da-f57b-4551-b63b-fa47fbc26be7",
+      "definition_id": "org.orange.audio/audio-out",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:d328a6ae549f22d57f79be6fd603295fb0bc12e0bb9774185ec231245bc05fed",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Processed audio out"
+    },
+    {
+      "id": "ca0ce047-f2b1-4d41-a7c7-e700509ed982",
+      "definition_id": "org.orange.audio/multiband-spectrum",
+      "definition_version": 3,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:ea5cb07f70d123fda15d062d9a9bac39edeb58eea25ac8a91eb6393227e55e4d",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Live frequency spectrum"
+    },
+    {
+      "id": "47040930-d9ed-46f9-be62-c91fce9bc319",
+      "definition_id": "org.orange.audio/noise-level",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "threshold_db": -42,
+        "hold_ms": 20,
+        "reset_db": 4
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:9e1ec569244fbbbfcdb0f688a0a89dc1bc5657ce8b4476958f093f8a80d353de",
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On audible level"
+    },
+    {
+      "id": "88fc2b24-bdd0-454d-90d2-b44acb4db363",
+      "definition_id": "org.orange.audio/transient",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "low_hz": 350,
+        "high_hz": 750
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:c9807462f15de6a7ed06d088352cbb32279dd935a06d1c1ccc1ac3ff12b6461f",
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On tone onset"
+    },
+    {
+      "id": "0372eb5b-aec4-4dc0-8ddf-f9dfb21c8a4d",
+      "definition_id": "org.orange.audio/source-finished",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f381cec028e351f615ddca0b6ae386cafa1d21ae30a481188b09cd18c095f3c3",
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On local source finished"
+    },
+    {
+      "id": "9971bf2b-4a24-4bf3-927f-899cbeacb080",
+      "definition_id": "org.orange.files/make-directory",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:04746aacdbf367754663e1545a68f04f647d3d0b71597726be12a79b24ec8e18",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc"
+        }
+      },
+      "name": "Create the QA folder"
+    },
+    {
+      "id": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+      "definition_id": "org.orange.audio/record",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:634dd1f81e310a8f34d91240b667c1744afb2ab4572886f7aac2ae14b4bc2e7e",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/capture.wav"
+        },
+        "seconds": {
+          "type": "core/f64@1",
+          "bits": "3ff0000000000000"
+        }
+      },
+      "name": "Record one second of processed audio"
+    },
+    {
+      "id": "3bf53775-97c9-4343-b882-0f57465bbeba",
+      "definition_id": "org.orange.audio/play",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f7eed66a1b0bcf19aa6736ec58bad50abb812f72caf749d3134b2adf3ff03df9",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/capture.wav"
+        }
+      },
+      "name": "Play the recorded PCM WAV"
+    },
+    {
+      "id": "cb14efd9-d71b-4efd-9546-4f489e8abac9",
+      "definition_id": "org.orange.files/make-directory",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:04746aacdbf367754663e1545a68f04f647d3d0b71597726be12a79b24ec8e18",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc"
+        }
+      },
+      "name": "Create private QA folder"
+    },
+    {
+      "id": "d808a282-9e1f-4096-8e42-5389e29c7b7a",
+      "definition_id": "org.orange.files/write-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/sample.txt"
+        },
+        "text": {
+          "type": "core/string@1",
+          "value": "OrangeEditor · audio QA\n"
+        }
+      },
+      "name": "Write UTF-8 text"
+    },
+    {
+      "id": "d9bcf401-5b13-4a56-828e-11b804e2a489",
+      "definition_id": "org.orange.files/append-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/sample.txt"
+        },
+        "text": {
+          "type": "core/string@1",
+          "value": "Second line ✓\n"
+        }
+      },
+      "name": "Append a second line"
+    },
+    {
+      "id": "bca41e88-1ced-4b91-a794-ff1dccab4626",
+      "definition_id": "org.orange.files/read-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:0cf05d5297f27bd66ad003c6bcb0adb7a1d5dadb28801c452524fc3d6259d9e5",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/sample.txt"
+        }
+      },
+      "name": "Read edited text"
+    },
+    {
+      "id": "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c",
+      "definition_id": "org.orange.files/copy",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:53b9e80b04089d6f5ae015c042a76911046e5cb1b8f486134b44f73e57aa6304",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/sample.txt"
+        },
+        "to": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/copy.txt"
+        }
+      },
+      "name": "Copy the text file"
+    },
+    {
+      "id": "129ac837-5273-4f67-bcf0-d999706fc3d4",
+      "definition_id": "org.orange.files/move",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:53b9e80b04089d6f5ae015c042a76911046e5cb1b8f486134b44f73e57aa6304",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/copy.txt"
+        },
+        "to": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/moved.txt"
+        }
+      },
+      "name": "Rename the copy"
+    },
+    {
+      "id": "ae70a703-1483-492b-ada5-947c49bd40e7",
+      "definition_id": "org.orange.files/file-info",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:214be95babe572023d8a5bf89be0e9b14de6f74f79f42df891dc21bad6783e7b",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/moved.txt"
+        }
+      },
+      "name": "Measure the renamed file"
+    },
+    {
+      "id": "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+      "definition_id": "org.orange.files/read-range",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:61464d8455021534230a4a969549ddd46af221a64dc9da4ba8243fb9069d8805",
+      "inputs": {
+        "length": {
+          "type": "core/u64@1",
+          "value": "12"
+        },
+        "offset": {
+          "type": "core/u64@1",
+          "value": "0"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/moved.txt"
+        }
+      },
+      "name": "Read a slice of the file"
+    },
+    {
+      "id": "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+      "definition_id": "org.orange.files/write-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:1fcbd02b74eafa99344b4f8d62e9a58871f2e651b4d1847891880ba06e6dd67e",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/slice.bin"
+        }
+      },
+      "name": "Write slice as a binary file"
+    },
+    {
+      "id": "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+      "definition_id": "org.orange.files/list",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:c8618fbad6863c9e665f25725c06b748c79cd61cbee757fe7b25de2914161649",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc"
+        },
+        "pattern": {
+          "type": "core/string@1",
+          "value": "*.txt"
+        },
+        "recursive": {
+          "type": "core/bool@1",
+          "value": false
+        }
+      },
+      "name": "List scratch files"
+    },
+    {
+      "id": "7206d44e-02ef-44a2-b767-782a33aeab18",
+      "definition_id": "org.orange.files/delete",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:04746aacdbf367754663e1545a68f04f647d3d0b71597726be12a79b24ec8e18",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/moved.txt"
+        }
+      },
+      "name": "Delete only the renamed QA copy"
+    },
+    {
+      "id": "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+      "definition_id": "org.orange.files/exists",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:7936da9e54ebad2eb9461da898a909dc8cac70855894cf5892763aba3fc6e68b",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/moved.txt"
+        }
+      },
+      "name": "Check the QA copy is gone"
+    },
+    {
+      "id": "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
+      "definition_id": "org.orange.files/write-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "34f1efd7-fd9e-4816-bedb-57e20abc5ea2"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc/forbidden.txt"
+        },
+        "text": {
+          "type": "core/string@1",
+          "value": "must not be created"
+        }
+      },
+      "name": "Try writing through read-only connection"
+    },
+    {
+      "id": "86e84be0-20d9-46ae-b843-cad0323538ac",
+      "definition_id": "org.orange.files/read-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:0cf05d5297f27bd66ad003c6bcb0adb7a1d5dadb28801c452524fc3d6259d9e5",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "../not-in-this-connection.txt"
+        }
+      },
+      "name": "Try a path above the folder boundary"
+    },
+    {
+      "id": "cb5c40f8-7050-47e7-b743-28a56428a757",
+      "definition_id": "org.orange.audio/audio-source",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "b5630641-9bf8-4eb6-9daf-918d3002dbe2"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:361df6e3f8dc38b76242ceb2a95ef7aad1df5317b303a7595f5d3fd421ec7711",
+      "name": "Remote source · Ogg Opus over HTTP"
+    },
+    {
+      "id": "3583d7a7-a5cb-465b-bff5-f582b6e6a4c2",
+      "definition_id": "org.orange.audio/source-control",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:10b0933f8ff3392f41b36488f4d9a277f002464642585f30f0bfd8962955f569",
+      "name": "Play remote source"
+    },
+    {
+      "id": "d9f9d3de-44f8-44f2-bd65-abaad35a389c",
+      "definition_id": "org.orange.audio/live-level",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:0994a161ebc329c916640d185124f11b8729f8b2753cd1bc43538bd7a184ed9b",
+      "name": "Remote level"
+    },
+    {
+      "id": "58665337-822f-41a3-a409-0f0e9bd2c6dd",
+      "definition_id": "org.orange.audio/audio-out",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "1bfeb025-0385-462b-beaf-77f87c1c161b"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:d328a6ae549f22d57f79be6fd603295fb0bc12e0bb9774185ec231245bc05fed",
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Remote audio out"
+    },
+    {
+      "id": "864c0577-1690-44b4-8d3b-67c97ae6a559",
+      "definition_id": "org.orange.audio/source-finished",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:f381cec028e351f615ddca0b6ae386cafa1d21ae30a481188b09cd18c095f3c3",
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On HTTP audio finished"
+    },
+    {
+      "id": "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+      "definition_id": "org.orange.net/http-request-bytes",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "31870ca6-922a-4999-972a-d6695121be8d"
+      },
+      "provider": {
+        "package": "org.orange.net",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:2c624b6a2462af0624ea831d15b7f2c5f7684b2177acfc7fe3767af27a52eaea",
+      "inputs": {
+        "method": {
+          "type": "core/string@1",
+          "value": "GET"
+        },
+        "path": {
+          "type": "core/string@1",
+          "value": "/stereo.opus"
+        }
+      },
+      "name": "GET the served audio file"
+    },
+    {
+      "id": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
+      "definition_id": "org.orange.files/on-change",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "98b63470-cf1a-49f8-a6fb-cb701ac4ec63"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3",
+      "inputs": {
+        "folder": {
+          "type": "core/string@1",
+          "value": "orange-audio-qa-86dc"
+        },
+        "wait_for_folder": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 32,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Watch the QA folder"
+    },
+    {
+      "id": "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "f02705f5-d222-421d-adca-6b01357eb50f",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Playback and folder-pick failures"
+    },
+    {
+      "id": "2c78304f-a716-43fb-93d1-ce131657d36c",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "d24927d4-a6ba-4ccd-bc98-c956b444c3a8",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "File preparation failures"
+    },
+    {
+      "id": "a281e0b8-2484-4f68-b688-47b68989b8d8",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "d24927d4-a6ba-4ccd-bc98-c956b444c3a8",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "File cleanup failures"
+    }
+  ],
+  "edges": [
+    {
+      "id": "b04b8164-5681-43e6-90f2-63c099edcee5",
+      "from": {
+        "node": "0e921ee7-9a0b-4c18-b296-ee5346a045a8",
+        "port": "then"
+      },
+      "to": {
+        "node": "3bbeef5c-8d38-47ec-ada1-7aef8c0b92f9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "e6cba087-babf-42d7-9abc-8c37901a4115",
+      "from": {
+        "node": "441658b7-d108-41c2-916d-36974cda9811",
+        "port": "then"
+      },
+      "to": {
+        "node": "1ea19b38-9c52-4d44-b339-97f392d73845",
+        "port": "in"
+      }
+    },
+    {
+      "id": "8b7cf5ec-6979-43a3-9bcf-0582afd0873c",
+      "from": {
+        "node": "1ea19b38-9c52-4d44-b339-97f392d73845",
+        "port": "then"
+      },
+      "to": {
+        "node": "e5e5c242-bec5-4e02-8265-49e5b02f8bc9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "b5cfea78-9e84-4db6-bd8c-1e59578b4e2c",
+      "from": {
+        "node": "e5e5c242-bec5-4e02-8265-49e5b02f8bc9",
+        "port": "then"
+      },
+      "to": {
+        "node": "66e2e838-00a3-4c7e-8ec0-0b7498226d6d",
+        "port": "in"
+      }
+    },
+    {
+      "id": "ed193747-8bd1-4865-8b58-af68549c840e",
+      "from": {
+        "node": "66e2e838-00a3-4c7e-8ec0-0b7498226d6d",
+        "port": "then"
+      },
+      "to": {
+        "node": "b6011820-d816-4c2b-949a-eccd0217cdc6",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4c04bd6b-42f8-43f9-ba32-945d73ba04ab",
+      "from": {
+        "node": "b6011820-d816-4c2b-949a-eccd0217cdc6",
+        "port": "then"
+      },
+      "to": {
+        "node": "3b864c30-6149-4e91-8366-095e796ffacc",
+        "port": "in"
+      }
+    },
+    {
+      "id": "b6b005fe-6cf0-41e5-b0db-8465b50e1bdd",
+      "from": {
+        "node": "3b864c30-6149-4e91-8366-095e796ffacc",
+        "port": "then"
+      },
+      "to": {
+        "node": "0edd0b4d-5412-4e73-8de9-5e714a967e4e",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4d7b1747-a95b-4825-b913-ab792532efb2",
+      "from": {
+        "node": "0edd0b4d-5412-4e73-8de9-5e714a967e4e",
+        "port": "then"
+      },
+      "to": {
+        "node": "85398911-1c88-4169-8d89-ec2d4e455cea",
+        "port": "in"
+      }
+    },
+    {
+      "id": "95500551-87c0-4bf9-b59d-5f3a87a63180",
+      "from": {
+        "node": "85398911-1c88-4169-8d89-ec2d4e455cea",
+        "port": "then"
+      },
+      "to": {
+        "node": "a8a767dd-30f2-4e5b-81c2-3413196490a8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "47ac2616-e148-446b-ad68-02922df6a39d",
+      "from": {
+        "node": "1ea19b38-9c52-4d44-b339-97f392d73845",
+        "port": "failed"
+      },
+      "to": {
+        "node": "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+        "port": "in"
+      }
+    },
+    {
+      "id": "e9ba5d21-ac35-4eb1-969a-27c53015d7c2",
+      "from": {
+        "node": "e5e5c242-bec5-4e02-8265-49e5b02f8bc9",
+        "port": "failed"
+      },
+      "to": {
+        "node": "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c3d7502d-a084-4a71-aa94-2763954c673a",
+      "from": {
+        "node": "66e2e838-00a3-4c7e-8ec0-0b7498226d6d",
+        "port": "failed"
+      },
+      "to": {
+        "node": "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+        "port": "in"
+      }
+    },
+    {
+      "id": "af93a1eb-4f9f-41dc-bd6b-2b3ba03010ca",
+      "from": {
+        "node": "b6011820-d816-4c2b-949a-eccd0217cdc6",
+        "port": "failed"
+      },
+      "to": {
+        "node": "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+        "port": "in"
+      }
+    },
+    {
+      "id": "94e29e7b-6f08-46b5-9b70-097fa2d80afb",
+      "from": {
+        "node": "3b864c30-6149-4e91-8366-095e796ffacc",
+        "port": "failed"
+      },
+      "to": {
+        "node": "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "b09a2297-fa24-437b-af23-ced97b4f41a5",
+      "from": {
+        "node": "0edd0b4d-5412-4e73-8de9-5e714a967e4e",
+        "port": "failed"
+      },
+      "to": {
+        "node": "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "07566bfa-86d4-4bcc-817a-c9f58de33ab2",
+      "from": {
+        "node": "85398911-1c88-4169-8d89-ec2d4e455cea",
+        "port": "failed"
+      },
+      "to": {
+        "node": "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "d3fe25e6-f0e1-46dd-bce9-f2200786394c",
+      "from": {
+        "node": "7a97417d-fa4d-4e01-9473-7872c001a038",
+        "port": "then"
+      },
+      "to": {
+        "node": "ebdc9451-61ef-4cae-a227-3e18a85420a6",
+        "port": "in"
+      }
+    },
+    {
+      "id": "d91f7035-53dd-4643-86ca-563436d4320d",
+      "from": {
+        "node": "ebdc9451-61ef-4cae-a227-3e18a85420a6",
+        "port": "then"
+      },
+      "to": {
+        "node": "29b1d23d-43b7-4be8-8845-a82e5d9fdbaa",
+        "port": "in"
+      }
+    },
+    {
+      "id": "e673d783-5e8e-4b18-9f2d-0df9607b4d0f",
+      "from": {
+        "node": "9fb362eb-9a27-42d5-96b8-ff287430717c",
+        "port": "then"
+      },
+      "to": {
+        "node": "d413b82d-ed78-47f7-b09e-966d6688f041",
+        "port": "in"
+      }
+    },
+    {
+      "id": "6f3bd543-4904-4bd7-9057-4cd295717763",
+      "from": {
+        "node": "8099b936-122e-4c1c-843a-cdd3998acc93",
+        "port": "then"
+      },
+      "to": {
+        "node": "ab7aa2b8-1f69-47cb-83f6-2264e3eda39c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c096064b-9fbd-4292-b431-db318d9b54b8",
+      "from": {
+        "node": "25c5a657-bb7f-4bfc-9e73-3e5f59240501",
+        "port": "then"
+      },
+      "to": {
+        "node": "2b172012-4ca4-4f27-b2bb-101601c18f5b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "788c112e-8587-4bbc-8ebf-80f39a84b76b",
+      "from": {
+        "node": "a53106c2-12d4-458a-a08f-e448eb12f399",
+        "port": "then"
+      },
+      "to": {
+        "node": "e9ca691b-2b9b-46ec-870a-783e4824af15",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c91ed691-cbf4-4cf9-937e-9bc5b8ad87bf",
+      "from": {
+        "node": "e51a35d2-1143-43a3-a6ee-765d75afe06f",
+        "port": "then"
+      },
+      "to": {
+        "node": "ccc20253-6f13-441e-b7c0-14fa077ed1f2",
+        "port": "in"
+      }
+    },
+    {
+      "id": "cf44bb57-a70f-489a-bc6f-64ff78b07cb5",
+      "from": {
+        "node": "e10056d4-e866-4791-99fb-18af34122412",
+        "port": "then"
+      },
+      "to": {
+        "node": "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+        "port": "in"
+      }
+    },
+    {
+      "id": "b11aa88e-22a3-4cdc-8031-3f78ff60f939",
+      "from": {
+        "node": "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+        "port": "then"
+      },
+      "to": {
+        "node": "fe24d186-e621-4d57-bbcb-0165001ffa4d",
+        "port": "in"
+      }
+    },
+    {
+      "id": "8c4d0095-fd62-4f61-8566-ee270712c3de",
+      "from": {
+        "node": "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+        "port": "file"
+      },
+      "to": {
+        "node": "fe24d186-e621-4d57-bbcb-0165001ffa4d",
+        "port": "value"
+      }
+    },
+    {
+      "id": "1d713ca4-8ff7-40ce-8393-128e1e9bc256",
+      "from": {
+        "node": "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+        "port": "failed"
+      },
+      "to": {
+        "node": "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "bde1fe9a-f5f4-47e0-9eb1-c12eec5d06c9",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "cd3a12e5-1514-47b9-85bb-97b60582a449",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "0327a360-2b4b-4d87-a927-d256d3090916",
+      "from": {
+        "node": "800dcc00-eb68-4d4b-a00c-887adc7f3ded",
+        "port": "then"
+      },
+      "to": {
+        "node": "cd3a12e5-1514-47b9-85bb-97b60582a449",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c370ea1b-8e1a-4b01-a796-30883cc3656a",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "ffb27a8f-2310-4190-ab25-997e6512dc60",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "6fd348bf-1c65-41c1-a4c3-9d78f4a40840",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "e582278a-2129-4e86-a988-a8e94a13e0bc",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "ce2b4eca-89c2-41fc-bbfe-ac2d5763deb0",
+      "from": {
+        "node": "e582278a-2129-4e86-a988-a8e94a13e0bc",
+        "port": "adjusted_stream"
+      },
+      "to": {
+        "node": "79689ebe-2148-4042-99f7-680fb7b70295",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "3b55a9e1-e137-4bb1-80c4-4a4b23637be3",
+      "from": {
+        "node": "79689ebe-2148-4042-99f7-680fb7b70295",
+        "port": "gated_stream"
+      },
+      "to": {
+        "node": "e108fac4-9738-4267-9167-cc58b09a9e3e",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "196ebcc6-2c4a-4efc-afcf-61ccda359980",
+      "from": {
+        "node": "e108fac4-9738-4267-9167-cc58b09a9e3e",
+        "port": "compressed_stream"
+      },
+      "to": {
+        "node": "7d960190-1be7-4bbc-9c1a-8668cef37758",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "3c35f70c-5b0e-48cf-ba8a-e3feb14e7864",
+      "from": {
+        "node": "7d960190-1be7-4bbc-9c1a-8668cef37758",
+        "port": "filtered_stream"
+      },
+      "to": {
+        "node": "4b9e4bdd-6783-402f-b5df-c71aa67f716d",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "4d3d140c-ddd2-4870-b8ef-495c93d0bafd",
+      "from": {
+        "node": "4b9e4bdd-6783-402f-b5df-c71aa67f716d",
+        "port": "limited_stream"
+      },
+      "to": {
+        "node": "06c346be-dbbe-48a3-a457-29739f6a10e4",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "9921c542-7b78-472c-95d5-535cad5a0c3d",
+      "from": {
+        "node": "4b9e4bdd-6783-402f-b5df-c71aa67f716d",
+        "port": "limited_stream"
+      },
+      "to": {
+        "node": "7988a6da-f57b-4551-b63b-fa47fbc26be7",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "0e11c397-e461-4c08-b433-6e44f8010540",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "ca0ce047-f2b1-4d41-a7c7-e700509ed982",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "63040e04-5fb3-4b39-8c2e-742aeb87b8fb",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "47040930-d9ed-46f9-be62-c91fce9bc319",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "23bb9017-7177-42b9-9b15-b09926c2b3b3",
+      "from": {
+        "node": "47040930-d9ed-46f9-be62-c91fce9bc319",
+        "port": "then"
+      },
+      "to": {
+        "node": "347ad6ff-b3b7-4035-a457-8bb9e1820781",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c5c56062-8e98-46d3-a9b0-de5c516d0ef0",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "88fc2b24-bdd0-454d-90d2-b44acb4db363",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "511016a6-425d-4a47-9615-5087960e8df2",
+      "from": {
+        "node": "88fc2b24-bdd0-454d-90d2-b44acb4db363",
+        "port": "then"
+      },
+      "to": {
+        "node": "ea80d897-26a1-4a43-a2f3-9a63cb41c8c0",
+        "port": "in"
+      }
+    },
+    {
+      "id": "960f0991-2e43-46cf-bec5-f4bbf1c4650e",
+      "from": {
+        "node": "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+        "port": "stream"
+      },
+      "to": {
+        "node": "0372eb5b-aec4-4dc0-8ddf-f9dfb21c8a4d",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "f4f15909-ce6d-40fa-8791-1cc4b0a013bc",
+      "from": {
+        "node": "0372eb5b-aec4-4dc0-8ddf-f9dfb21c8a4d",
+        "port": "then"
+      },
+      "to": {
+        "node": "2bc6f80c-c079-4777-a3d0-2bc1d3f663f2",
+        "port": "in"
+      }
+    },
+    {
+      "id": "392fcb5e-9543-4a29-ab9f-bba37d8c141f",
+      "from": {
+        "node": "4b9e4bdd-6783-402f-b5df-c71aa67f716d",
+        "port": "limited_stream"
+      },
+      "to": {
+        "node": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "c56d8ad8-695c-4c8d-b6de-bfd09a8ee6b2",
+      "from": {
+        "node": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+        "port": "recorded"
+      },
+      "to": {
+        "node": "c4f10eea-ee65-4550-a2e1-342ae565f514",
+        "port": "value"
+      }
+    },
+    {
+      "id": "03aabe45-351a-4d59-a6d3-51e810296a56",
+      "from": {
+        "node": "a90a3d51-68af-47d9-93b2-58ae45ddfdba",
+        "port": "then"
+      },
+      "to": {
+        "node": "9971bf2b-4a24-4bf3-927f-899cbeacb080",
+        "port": "in"
+      }
+    },
+    {
+      "id": "7fd4635f-160a-4d17-bfde-a521abeab4d2",
+      "from": {
+        "node": "9971bf2b-4a24-4bf3-927f-899cbeacb080",
+        "port": "then"
+      },
+      "to": {
+        "node": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+        "port": "in"
+      }
+    },
+    {
+      "id": "469754fb-f6fa-48cd-a506-8455256d83b9",
+      "from": {
+        "node": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+        "port": "then"
+      },
+      "to": {
+        "node": "c4f10eea-ee65-4550-a2e1-342ae565f514",
+        "port": "in"
+      }
+    },
+    {
+      "id": "0fb68e06-56fa-409f-8038-b6c6579676e4",
+      "from": {
+        "node": "c4f10eea-ee65-4550-a2e1-342ae565f514",
+        "port": "then"
+      },
+      "to": {
+        "node": "3bf53775-97c9-4343-b882-0f57465bbeba",
+        "port": "in"
+      }
+    },
+    {
+      "id": "67f3587e-b934-4772-ab61-ce78f334d35e",
+      "from": {
+        "node": "3bf53775-97c9-4343-b882-0f57465bbeba",
+        "port": "then"
+      },
+      "to": {
+        "node": "0ae0c660-a726-44b7-b7eb-fe76c0493772",
+        "port": "in"
+      }
+    },
+    {
+      "id": "f9e4d6cf-6d64-4af3-8fb7-7ad88d318a00",
+      "from": {
+        "node": "9971bf2b-4a24-4bf3-927f-899cbeacb080",
+        "port": "failed"
+      },
+      "to": {
+        "node": "608431a5-2bc6-425e-8765-38ad6c3fbd89",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c0bbb2ef-19f7-4e2b-baa8-165faa303e4e",
+      "from": {
+        "node": "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+        "port": "failed"
+      },
+      "to": {
+        "node": "608431a5-2bc6-425e-8765-38ad6c3fbd89",
+        "port": "in"
+      }
+    },
+    {
+      "id": "84078509-2301-4882-91f2-815094c6f120",
+      "from": {
+        "node": "3bf53775-97c9-4343-b882-0f57465bbeba",
+        "port": "failed"
+      },
+      "to": {
+        "node": "608431a5-2bc6-425e-8765-38ad6c3fbd89",
+        "port": "in"
+      }
+    },
+    {
+      "id": "80774e50-2eab-4b36-a0e8-0a7d457c9a64",
+      "from": {
+        "node": "03e1be24-48b9-46a9-bf7a-d8bae67c957f",
+        "port": "then"
+      },
+      "to": {
+        "node": "cb14efd9-d71b-4efd-9546-4f489e8abac9",
+        "port": "in"
+      }
+    },
+    {
+      "id": "27667460-795e-46ea-987a-765bac964418",
+      "from": {
+        "node": "cb14efd9-d71b-4efd-9546-4f489e8abac9",
+        "port": "then"
+      },
+      "to": {
+        "node": "d808a282-9e1f-4096-8e42-5389e29c7b7a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "b772f161-5cd0-43dc-af78-8679608012f0",
+      "from": {
+        "node": "d808a282-9e1f-4096-8e42-5389e29c7b7a",
+        "port": "then"
+      },
+      "to": {
+        "node": "d9bcf401-5b13-4a56-828e-11b804e2a489",
+        "port": "in"
+      }
+    },
+    {
+      "id": "afceff5c-1693-49fc-bdb5-244ce267ea92",
+      "from": {
+        "node": "d9bcf401-5b13-4a56-828e-11b804e2a489",
+        "port": "then"
+      },
+      "to": {
+        "node": "bca41e88-1ced-4b91-a794-ff1dccab4626",
+        "port": "in"
+      }
+    },
+    {
+      "id": "e14a0944-d8b4-4839-b02b-2250a97fbb5a",
+      "from": {
+        "node": "bca41e88-1ced-4b91-a794-ff1dccab4626",
+        "port": "then"
+      },
+      "to": {
+        "node": "a58e157a-52bf-4162-b538-e44e37f03acd",
+        "port": "in"
+      }
+    },
+    {
+      "id": "37b9aa6f-5683-480b-bd5a-30513a03f61b",
+      "from": {
+        "node": "a58e157a-52bf-4162-b538-e44e37f03acd",
+        "port": "then"
+      },
+      "to": {
+        "node": "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "d8ba9d94-7814-4849-8bd7-d91d1276b07d",
+      "from": {
+        "node": "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c",
+        "port": "then"
+      },
+      "to": {
+        "node": "129ac837-5273-4f67-bcf0-d999706fc3d4",
+        "port": "in"
+      }
+    },
+    {
+      "id": "7461653c-5545-4135-b1f0-0e3fb42ac084",
+      "from": {
+        "node": "129ac837-5273-4f67-bcf0-d999706fc3d4",
+        "port": "then"
+      },
+      "to": {
+        "node": "ae70a703-1483-492b-ada5-947c49bd40e7",
+        "port": "in"
+      }
+    },
+    {
+      "id": "2f1d5101-7313-40c7-99b2-351a5c7492ce",
+      "from": {
+        "node": "ae70a703-1483-492b-ada5-947c49bd40e7",
+        "port": "then"
+      },
+      "to": {
+        "node": "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223",
+        "port": "in"
+      }
+    },
+    {
+      "id": "01bae1ab-90d6-4bf7-bbdd-164dcc8d8476",
+      "from": {
+        "node": "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223",
+        "port": "then"
+      },
+      "to": {
+        "node": "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+        "port": "in"
+      }
+    },
+    {
+      "id": "20c0b3c0-4cba-4a0b-9c35-637a8ab48f0f",
+      "from": {
+        "node": "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+        "port": "then"
+      },
+      "to": {
+        "node": "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+        "port": "in"
+      }
+    },
+    {
+      "id": "9fcf1d75-3ad9-458f-adf4-b67252077b2f",
+      "from": {
+        "node": "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+        "port": "then"
+      },
+      "to": {
+        "node": "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+        "port": "in"
+      }
+    },
+    {
+      "id": "93936685-9c5f-41e1-b9f9-3694ea21104c",
+      "from": {
+        "node": "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+        "port": "then"
+      },
+      "to": {
+        "node": "caa89522-d96c-403b-aab5-9cac34cc03dd",
+        "port": "in"
+      }
+    },
+    {
+      "id": "cc0722f8-6882-48e4-b833-39fbe8d33b01",
+      "from": {
+        "node": "caa89522-d96c-403b-aab5-9cac34cc03dd",
+        "port": "then"
+      },
+      "to": {
+        "node": "7206d44e-02ef-44a2-b767-782a33aeab18",
+        "port": "in"
+      }
+    },
+    {
+      "id": "7f525665-b8f3-4e94-8da6-e129909b9153",
+      "from": {
+        "node": "7206d44e-02ef-44a2-b767-782a33aeab18",
+        "port": "then"
+      },
+      "to": {
+        "node": "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+        "port": "in"
+      }
+    },
+    {
+      "id": "eebfb927-0c4f-4a8a-9013-8e2402feb8b1",
+      "from": {
+        "node": "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+        "port": "then"
+      },
+      "to": {
+        "node": "0e921ee7-9a0b-4c18-b296-ee5346a045a8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "de40e3d9-64b1-4ef1-8ff2-97f5d530da0a",
+      "from": {
+        "node": "bca41e88-1ced-4b91-a794-ff1dccab4626",
+        "port": "text"
+      },
+      "to": {
+        "node": "a58e157a-52bf-4162-b538-e44e37f03acd",
+        "port": "value"
+      }
+    },
+    {
+      "id": "2ff9ed64-94bf-4700-8b54-ccfc8daad5fa",
+      "from": {
+        "node": "ae70a703-1483-492b-ada5-947c49bd40e7",
+        "port": "bytes"
+      },
+      "to": {
+        "node": "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223",
+        "port": "value"
+      }
+    },
+    {
+      "id": "1c69e488-5842-463b-aa02-a52ddc4ad3eb",
+      "from": {
+        "node": "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+        "port": "data"
+      },
+      "to": {
+        "node": "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+        "port": "data"
+      }
+    },
+    {
+      "id": "303b22f0-3f1a-4516-9ff9-5d6c20854865",
+      "from": {
+        "node": "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+        "port": "names"
+      },
+      "to": {
+        "node": "caa89522-d96c-403b-aab5-9cac34cc03dd",
+        "port": "value"
+      }
+    },
+    {
+      "id": "06942b32-98f7-4766-ad85-b1b2e38ae5a3",
+      "from": {
+        "node": "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+        "port": "found"
+      },
+      "to": {
+        "node": "0e921ee7-9a0b-4c18-b296-ee5346a045a8",
+        "port": "value"
+      }
+    },
+    {
+      "id": "2562191b-c5ff-444d-8274-665c5d51190d",
+      "from": {
+        "node": "cb14efd9-d71b-4efd-9546-4f489e8abac9",
+        "port": "failed"
+      },
+      "to": {
+        "node": "2c78304f-a716-43fb-93d1-ce131657d36c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "ad2b4990-f306-45f6-8b54-36de660b5c37",
+      "from": {
+        "node": "d808a282-9e1f-4096-8e42-5389e29c7b7a",
+        "port": "failed"
+      },
+      "to": {
+        "node": "2c78304f-a716-43fb-93d1-ce131657d36c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "6a2170c5-a50b-47e0-a807-7f70c937f553",
+      "from": {
+        "node": "d9bcf401-5b13-4a56-828e-11b804e2a489",
+        "port": "failed"
+      },
+      "to": {
+        "node": "2c78304f-a716-43fb-93d1-ce131657d36c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "0b6a6d0b-4f1e-478d-b603-dd5187cc1cdc",
+      "from": {
+        "node": "bca41e88-1ced-4b91-a794-ff1dccab4626",
+        "port": "failed"
+      },
+      "to": {
+        "node": "2c78304f-a716-43fb-93d1-ce131657d36c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "964c793b-d033-476c-8dd4-510012da1161",
+      "from": {
+        "node": "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c",
+        "port": "failed"
+      },
+      "to": {
+        "node": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "e0e148fd-4fbe-415d-950f-e05f8c3f00f9",
+      "from": {
+        "node": "129ac837-5273-4f67-bcf0-d999706fc3d4",
+        "port": "failed"
+      },
+      "to": {
+        "node": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4d893c9e-2222-4d13-9166-47f299594191",
+      "from": {
+        "node": "ae70a703-1483-492b-ada5-947c49bd40e7",
+        "port": "failed"
+      },
+      "to": {
+        "node": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "5691b1a3-805a-4f26-a922-cf076411fc34",
+      "from": {
+        "node": "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+        "port": "failed"
+      },
+      "to": {
+        "node": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "4e9bf47d-bdd2-4fac-8fee-e3b2631ff136",
+      "from": {
+        "node": "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+        "port": "failed"
+      },
+      "to": {
+        "node": "e4134184-cf76-497b-8c3c-0dae9d78148b",
+        "port": "in"
+      }
+    },
+    {
+      "id": "51a66beb-ee94-454f-939c-dd2992bc08ee",
+      "from": {
+        "node": "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+        "port": "failed"
+      },
+      "to": {
+        "node": "a281e0b8-2484-4f68-b688-47b68989b8d8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "d28f1bc6-0c9f-4ead-8e23-16066758ce51",
+      "from": {
+        "node": "7206d44e-02ef-44a2-b767-782a33aeab18",
+        "port": "failed"
+      },
+      "to": {
+        "node": "a281e0b8-2484-4f68-b688-47b68989b8d8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "ffc93902-1162-429c-8994-12bb15ed5afa",
+      "from": {
+        "node": "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+        "port": "failed"
+      },
+      "to": {
+        "node": "a281e0b8-2484-4f68-b688-47b68989b8d8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "f05a6237-1c23-4a32-930f-c40745ddcae5",
+      "from": {
+        "node": "3aa73b85-1e2f-499e-9cde-6695503648d4",
+        "port": "then"
+      },
+      "to": {
+        "node": "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
+        "port": "in"
+      }
+    },
+    {
+      "id": "12b6f589-b8ba-4b25-834a-6cd7ed70fd05",
+      "from": {
+        "node": "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
+        "port": "failed"
+      },
+      "to": {
+        "node": "0069be6e-b76b-4ca3-a046-2465949fce66",
+        "port": "in"
+      }
+    },
+    {
+      "id": "6fc8aa43-941e-4104-b629-53034924b92a",
+      "from": {
+        "node": "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
+        "port": "then"
+      },
+      "to": {
+        "node": "7ef93a8e-3c40-4f99-87b8-a6d2b16e1c22",
+        "port": "in"
+      }
+    },
+    {
+      "id": "6e4a1761-3955-4cdd-b72d-a9a1f40614b0",
+      "from": {
+        "node": "6465ad1d-98e3-4b83-8469-ccb7de7713be",
+        "port": "then"
+      },
+      "to": {
+        "node": "86e84be0-20d9-46ae-b843-cad0323538ac",
+        "port": "in"
+      }
+    },
+    {
+      "id": "34d1b237-1663-4018-928b-b2cf1a7e1e51",
+      "from": {
+        "node": "86e84be0-20d9-46ae-b843-cad0323538ac",
+        "port": "failed"
+      },
+      "to": {
+        "node": "4ddf5039-6e9d-477d-ae2e-c998e3303c53",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c8c54e6f-a8d1-4188-8cbc-e24203496829",
+      "from": {
+        "node": "86e84be0-20d9-46ae-b843-cad0323538ac",
+        "port": "then"
+      },
+      "to": {
+        "node": "fc8042d3-ebd1-424f-96aa-2e5bf4651748",
+        "port": "in"
+      }
+    },
+    {
+      "id": "0329b757-beae-4873-94f0-7cf94207fdc0",
+      "from": {
+        "node": "5bee4249-ee36-4262-a407-929b3d944643",
+        "port": "then"
+      },
+      "to": {
+        "node": "3583d7a7-a5cb-465b-bff5-f582b6e6a4c2",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c07c31e6-443c-47db-a933-2ffe4d4183f3",
+      "from": {
+        "node": "cb5c40f8-7050-47e7-b743-28a56428a757",
+        "port": "stream"
+      },
+      "to": {
+        "node": "3583d7a7-a5cb-465b-bff5-f582b6e6a4c2",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "f5823e6f-4bc1-49f7-bfa9-bdeec4c40904",
+      "from": {
+        "node": "cb5c40f8-7050-47e7-b743-28a56428a757",
+        "port": "stream"
+      },
+      "to": {
+        "node": "d9f9d3de-44f8-44f2-bd65-abaad35a389c",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "04c52de0-07ba-46f6-ae23-48a44697f76c",
+      "from": {
+        "node": "cb5c40f8-7050-47e7-b743-28a56428a757",
+        "port": "stream"
+      },
+      "to": {
+        "node": "58665337-822f-41a3-a409-0f0e9bd2c6dd",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "60e8c4f1-1267-49be-a5fc-e8918d6d8e40",
+      "from": {
+        "node": "cb5c40f8-7050-47e7-b743-28a56428a757",
+        "port": "stream"
+      },
+      "to": {
+        "node": "864c0577-1690-44b4-8d3b-67c97ae6a559",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "394eb5ea-d8b6-4a45-92e2-2519000e31c9",
+      "from": {
+        "node": "864c0577-1690-44b4-8d3b-67c97ae6a559",
+        "port": "then"
+      },
+      "to": {
+        "node": "1cdd68ef-6123-4e05-8462-44faded9619a",
+        "port": "in"
+      }
+    },
+    {
+      "id": "26650a6b-951f-466e-b1b4-79b7bbf71104",
+      "from": {
+        "node": "cd12cad8-d68a-48ee-adf0-0038371a2726",
+        "port": "then"
+      },
+      "to": {
+        "node": "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+        "port": "in"
+      }
+    },
+    {
+      "id": "7a5ea582-2df1-4934-b07a-6eff903cbcd4",
+      "from": {
+        "node": "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+        "port": "then"
+      },
+      "to": {
+        "node": "8125017e-dea3-454d-a6c8-528fe2a8e00d",
+        "port": "in"
+      }
+    },
+    {
+      "id": "1c136239-b7df-43f6-a9b1-13af2fb1148e",
+      "from": {
+        "node": "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+        "port": "status"
+      },
+      "to": {
+        "node": "8125017e-dea3-454d-a6c8-528fe2a8e00d",
+        "port": "value"
+      }
+    },
+    {
+      "id": "d30eb4e0-1488-46a6-8f4b-6565cac8b140",
+      "from": {
+        "node": "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+        "port": "failed"
+      },
+      "to": {
+        "node": "4d1c9428-5476-47eb-8ced-6a0f5ff4984c",
+        "port": "in"
+      }
+    },
+    {
+      "id": "c37bf460-aa5b-45f5-9146-d603978e687b",
+      "from": {
+        "node": "f1de51be-a6d3-45ae-859f-2aed589a58dd",
+        "port": "then"
+      },
+      "to": {
+        "node": "07e8e5dd-5695-4e2a-89b7-059e909fa6de",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "positions": {
+      "441658b7-d108-41c2-916d-36974cda9811": {
+        "x": 0,
+        "y": 0
+      },
+      "a8a767dd-30f2-4e5b-81c2-3413196490a8": {
+        "x": 0,
+        "y": 490
+      },
+      "d0bc27ec-8608-448c-b944-e6c3bb60c196": {
+        "x": 1400,
+        "y": 220
+      },
+      "1ea19b38-9c52-4d44-b339-97f392d73845": {
+        "x": 350,
+        "y": 0
+      },
+      "e5e5c242-bec5-4e02-8265-49e5b02f8bc9": {
+        "x": 700,
+        "y": 0
+      },
+      "66e2e838-00a3-4c7e-8ec0-0b7498226d6d": {
+        "x": 1050,
+        "y": 0
+      },
+      "b6011820-d816-4c2b-949a-eccd0217cdc6": {
+        "x": 1050,
+        "y": 245
+      },
+      "3b864c30-6149-4e91-8366-095e796ffacc": {
+        "x": 700,
+        "y": 245
+      },
+      "0edd0b4d-5412-4e73-8de9-5e714a967e4e": {
+        "x": 350,
+        "y": 245
+      },
+      "85398911-1c88-4169-8d89-ec2d4e455cea": {
+        "x": 0,
+        "y": 245
+      },
+      "ebdc9451-61ef-4cae-a227-3e18a85420a6": {
+        "x": 350,
+        "y": 1120
+      },
+      "7a97417d-fa4d-4e01-9473-7872c001a038": {
+        "x": 0,
+        "y": 1120
+      },
+      "29b1d23d-43b7-4be8-8845-a82e5d9fdbaa": {
+        "x": 700,
+        "y": 1120
+      },
+      "9fb362eb-9a27-42d5-96b8-ff287430717c": {
+        "x": 700,
+        "y": 1365
+      },
+      "d413b82d-ed78-47f7-b09e-966d6688f041": {
+        "x": 1050,
+        "y": 1365
+      },
+      "8099b936-122e-4c1c-843a-cdd3998acc93": {
+        "x": 1400,
+        "y": 1365
+      },
+      "ab7aa2b8-1f69-47cb-83f6-2264e3eda39c": {
+        "x": 1750,
+        "y": 1365
+      },
+      "25c5a657-bb7f-4bfc-9e73-3e5f59240501": {
+        "x": 0,
+        "y": 1610
+      },
+      "2b172012-4ca4-4f27-b2bb-101601c18f5b": {
+        "x": 350,
+        "y": 1610
+      },
+      "a53106c2-12d4-458a-a08f-e448eb12f399": {
+        "x": 700,
+        "y": 1610
+      },
+      "e9ca691b-2b9b-46ec-870a-783e4824af15": {
+        "x": 1050,
+        "y": 1610
+      },
+      "e51a35d2-1143-43a3-a6ee-765d75afe06f": {
+        "x": 0,
+        "y": 1365
+      },
+      "ccc20253-6f13-441e-b7c0-14fa077ed1f2": {
+        "x": 350,
+        "y": 1365
+      },
+      "1349c11a-f5cb-43bf-a130-ca974587aa2e": {
+        "x": 350,
+        "y": 735
+      },
+      "fe24d186-e621-4d57-bbcb-0165001ffa4d": {
+        "x": 700,
+        "y": 735
+      },
+      "e10056d4-e866-4791-99fb-18af34122412": {
+        "x": 0,
+        "y": 735
+      },
+      "88bf5de2-4aa0-4a76-b76e-1899609f75e5": {
+        "x": 2250,
+        "y": 245
+      },
+      "cd3a12e5-1514-47b9-85bb-97b60582a449": {
+        "x": 2600,
+        "y": 0
+      },
+      "800dcc00-eb68-4d4b-a00c-887adc7f3ded": {
+        "x": 2250,
+        "y": 0
+      },
+      "ffb27a8f-2310-4190-ab25-997e6512dc60": {
+        "x": 2600,
+        "y": 245
+      },
+      "e582278a-2129-4e86-a988-a8e94a13e0bc": {
+        "x": 2250,
+        "y": 980
+      },
+      "79689ebe-2148-4042-99f7-680fb7b70295": {
+        "x": 2600,
+        "y": 980
+      },
+      "e108fac4-9738-4267-9167-cc58b09a9e3e": {
+        "x": 2950,
+        "y": 980
+      },
+      "7d960190-1be7-4bbc-9c1a-8668cef37758": {
+        "x": 3300,
+        "y": 980
+      },
+      "4b9e4bdd-6783-402f-b5df-c71aa67f716d": {
+        "x": 3300,
+        "y": 1225
+      },
+      "06c346be-dbbe-48a3-a457-29739f6a10e4": {
+        "x": 3650,
+        "y": 1060
+      },
+      "7988a6da-f57b-4551-b63b-fa47fbc26be7": {
+        "x": 3650,
+        "y": 1250
+      },
+      "ca0ce047-f2b1-4d41-a7c7-e700509ed982": {
+        "x": 3300,
+        "y": 0
+      },
+      "47040930-d9ed-46f9-be62-c91fce9bc319": {
+        "x": 2950,
+        "y": 245
+      },
+      "347ad6ff-b3b7-4035-a457-8bb9e1820781": {
+        "x": 3300,
+        "y": 245
+      },
+      "88fc2b24-bdd0-454d-90d2-b44acb4db363": {
+        "x": 2950,
+        "y": 490
+      },
+      "ea80d897-26a1-4a43-a2f3-9a63cb41c8c0": {
+        "x": 3300,
+        "y": 490
+      },
+      "0372eb5b-aec4-4dc0-8ddf-f9dfb21c8a4d": {
+        "x": 2950,
+        "y": 735
+      },
+      "2bc6f80c-c079-4777-a3d0-2bc1d3f663f2": {
+        "x": 3300,
+        "y": 735
+      },
+      "9971bf2b-4a24-4bf3-927f-899cbeacb080": {
+        "x": 2600,
+        "y": 1730
+      },
+      "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7": {
+        "x": 2950,
+        "y": 1730
+      },
+      "c4f10eea-ee65-4550-a2e1-342ae565f514": {
+        "x": 2950,
+        "y": 1975
+      },
+      "3bf53775-97c9-4343-b882-0f57465bbeba": {
+        "x": 2600,
+        "y": 1975
+      },
+      "a90a3d51-68af-47d9-93b2-58ae45ddfdba": {
+        "x": 2250,
+        "y": 1730
+      },
+      "0ae0c660-a726-44b7-b7eb-fe76c0493772": {
+        "x": 2250,
+        "y": 1975
+      },
+      "608431a5-2bc6-425e-8765-38ad6c3fbd89": {
+        "x": 2950,
+        "y": 2220
+      },
+      "03e1be24-48b9-46a9-bf7a-d8bae67c957f": {
+        "x": 0,
+        "y": 1730
+      },
+      "cb14efd9-d71b-4efd-9546-4f489e8abac9": {
+        "x": 350,
+        "y": 1730
+      },
+      "d808a282-9e1f-4096-8e42-5389e29c7b7a": {
+        "x": 700,
+        "y": 1730
+      },
+      "d9bcf401-5b13-4a56-828e-11b804e2a489": {
+        "x": 1050,
+        "y": 1730
+      },
+      "bca41e88-1ced-4b91-a794-ff1dccab4626": {
+        "x": 1050,
+        "y": 1975
+      },
+      "a58e157a-52bf-4162-b538-e44e37f03acd": {
+        "x": 700,
+        "y": 1975
+      },
+      "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c": {
+        "x": 350,
+        "y": 1975
+      },
+      "129ac837-5273-4f67-bcf0-d999706fc3d4": {
+        "x": 0,
+        "y": 1975
+      },
+      "ae70a703-1483-492b-ada5-947c49bd40e7": {
+        "x": 0,
+        "y": 2220
+      },
+      "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223": {
+        "x": 350,
+        "y": 2220
+      },
+      "74dd51a7-a06a-4c74-9cc5-05fbd79e6688": {
+        "x": 700,
+        "y": 2220
+      },
+      "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3": {
+        "x": 1050,
+        "y": 2220
+      },
+      "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7": {
+        "x": 700,
+        "y": 2465
+      },
+      "caa89522-d96c-403b-aab5-9cac34cc03dd": {
+        "x": 350,
+        "y": 2465
+      },
+      "7206d44e-02ef-44a2-b767-782a33aeab18": {
+        "x": 0,
+        "y": 2465
+      },
+      "4fa155d5-8973-4996-9a73-43a7d5e888d3": {
+        "x": 0,
+        "y": 2710
+      },
+      "0e921ee7-9a0b-4c18-b296-ee5346a045a8": {
+        "x": 350,
+        "y": 2710
+      },
+      "3bbeef5c-8d38-47ec-ada1-7aef8c0b92f9": {
+        "x": 700,
+        "y": 2710
+      },
+      "e4134184-cf76-497b-8c3c-0dae9d78148b": {
+        "x": 1400,
+        "y": 2450
+      },
+      "f1de51be-a6d3-45ae-859f-2aed589a58dd": {
+        "x": 0,
+        "y": 3320
+      },
+      "07e8e5dd-5695-4e2a-89b7-059e909fa6de": {
+        "x": 350,
+        "y": 3320
+      },
+      "a2af7b97-9c9b-42bd-b35a-90009cdddeaf": {
+        "x": 350,
+        "y": 3565
+      },
+      "86e84be0-20d9-46ae-b843-cad0323538ac": {
+        "x": 350,
+        "y": 3810
+      },
+      "3aa73b85-1e2f-499e-9cde-6695503648d4": {
+        "x": 0,
+        "y": 3565
+      },
+      "0069be6e-b76b-4ca3-a046-2465949fce66": {
+        "x": 700,
+        "y": 3565
+      },
+      "7ef93a8e-3c40-4f99-87b8-a6d2b16e1c22": {
+        "x": 1050,
+        "y": 3565
+      },
+      "6465ad1d-98e3-4b83-8469-ccb7de7713be": {
+        "x": 0,
+        "y": 3810
+      },
+      "4ddf5039-6e9d-477d-ae2e-c998e3303c53": {
+        "x": 700,
+        "y": 3810
+      },
+      "fc8042d3-ebd1-424f-96aa-2e5bf4651748": {
+        "x": 1050,
+        "y": 3810
+      },
+      "cb5c40f8-7050-47e7-b743-28a56428a757": {
+        "x": 2250,
+        "y": 3565
+      },
+      "3583d7a7-a5cb-465b-bff5-f582b6e6a4c2": {
+        "x": 2600,
+        "y": 3320
+      },
+      "5bee4249-ee36-4262-a407-929b3d944643": {
+        "x": 2250,
+        "y": 3320
+      },
+      "d9f9d3de-44f8-44f2-bd65-abaad35a389c": {
+        "x": 2600,
+        "y": 3565
+      },
+      "58665337-822f-41a3-a409-0f0e9bd2c6dd": {
+        "x": 3300,
+        "y": 3320
+      },
+      "864c0577-1690-44b4-8d3b-67c97ae6a559": {
+        "x": 2950,
+        "y": 3565
+      },
+      "1cdd68ef-6123-4e05-8462-44faded9619a": {
+        "x": 3300,
+        "y": 3565
+      },
+      "4d13664c-2113-4b31-bcdb-2d2028c107a8": {
+        "x": 2600,
+        "y": 3810
+      },
+      "8125017e-dea3-454d-a6c8-528fe2a8e00d": {
+        "x": 2950,
+        "y": 3810
+      },
+      "cd12cad8-d68a-48ee-adf0-0038371a2726": {
+        "x": 2250,
+        "y": 3810
+      },
+      "4d1c9428-5476-47eb-8ced-6a0f5ff4984c": {
+        "x": 3300,
+        "y": 3810
+      },
+      "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9": {
+        "x": 1400,
+        "y": 735
+      },
+      "2c78304f-a716-43fb-93d1-ce131657d36c": {
+        "x": 1400,
+        "y": 1890
+      },
+      "a281e0b8-2484-4f68-b688-47b68989b8d8": {
+        "x": 1400,
+        "y": 2870
+      }
+    },
+    "groups": {
+      "codecs": {
+        "name": "01 · Playback formats and folder pick",
+        "color": "#569cd6",
+        "nodes": [
+          "441658b7-d108-41c2-916d-36974cda9811",
+          "1ea19b38-9c52-4d44-b339-97f392d73845",
+          "e5e5c242-bec5-4e02-8265-49e5b02f8bc9",
+          "66e2e838-00a3-4c7e-8ec0-0b7498226d6d",
+          "85398911-1c88-4169-8d89-ec2d4e455cea",
+          "0edd0b4d-5412-4e73-8de9-5e714a967e4e",
+          "3b864c30-6149-4e91-8366-095e796ffacc",
+          "b6011820-d816-4c2b-949a-eccd0217cdc6",
+          "a8a767dd-30f2-4e5b-81c2-3413196490a8",
+          "d0bc27ec-8608-448c-b944-e6c3bb60c196",
+          "e10056d4-e866-4791-99fb-18af34122412",
+          "1349c11a-f5cb-43bf-a130-ca974587aa2e",
+          "fe24d186-e621-4d57-bbcb-0165001ffa4d",
+          "3b6153e2-ed9e-47b0-b83a-1336d1ee22b9"
+        ],
+        "collapsed": false
+      },
+      "analysis": {
+        "name": "03 · Stream processing and triggers",
+        "color": "#c59162",
+        "nodes": [
+          "800dcc00-eb68-4d4b-a00c-887adc7f3ded",
+          "cd3a12e5-1514-47b9-85bb-97b60582a449",
+          "ca0ce047-f2b1-4d41-a7c7-e700509ed982",
+          "88bf5de2-4aa0-4a76-b76e-1899609f75e5",
+          "ffb27a8f-2310-4190-ab25-997e6512dc60",
+          "47040930-d9ed-46f9-be62-c91fce9bc319",
+          "347ad6ff-b3b7-4035-a457-8bb9e1820781",
+          "88fc2b24-bdd0-454d-90d2-b44acb4db363",
+          "ea80d897-26a1-4a43-a2f3-9a63cb41c8c0",
+          "0372eb5b-aec4-4dc0-8ddf-f9dfb21c8a4d",
+          "2bc6f80c-c079-4777-a3d0-2bc1d3f663f2",
+          "e582278a-2129-4e86-a988-a8e94a13e0bc",
+          "79689ebe-2148-4042-99f7-680fb7b70295",
+          "e108fac4-9738-4267-9167-cc58b09a9e3e",
+          "7d960190-1be7-4bbc-9c1a-8668cef37758",
+          "7988a6da-f57b-4551-b63b-fa47fbc26be7",
+          "06c346be-dbbe-48a3-a457-29739f6a10e4",
+          "4b9e4bdd-6783-402f-b5df-c71aa67f716d"
+        ],
+        "collapsed": false
+      },
+      "files": {
+        "name": "05 · File and folder operations",
+        "color": "#6aaa64",
+        "nodes": [
+          "03e1be24-48b9-46a9-bf7a-d8bae67c957f",
+          "cb14efd9-d71b-4efd-9546-4f489e8abac9",
+          "d808a282-9e1f-4096-8e42-5389e29c7b7a",
+          "d9bcf401-5b13-4a56-828e-11b804e2a489",
+          "129ac837-5273-4f67-bcf0-d999706fc3d4",
+          "5f16eae9-1a8a-4f69-b1f4-e983b3cbc61c",
+          "a58e157a-52bf-4162-b538-e44e37f03acd",
+          "bca41e88-1ced-4b91-a794-ff1dccab4626",
+          "ae70a703-1483-492b-ada5-947c49bd40e7",
+          "c3ee1c2b-3f8f-4dbc-ba4a-58e0dd260223",
+          "74dd51a7-a06a-4c74-9cc5-05fbd79e6688",
+          "7eee864d-5eae-4d16-bf70-ca5bf7ab97e3",
+          "7206d44e-02ef-44a2-b767-782a33aeab18",
+          "caa89522-d96c-403b-aab5-9cac34cc03dd",
+          "4d1a0ec4-a4b5-4b81-841f-15ca22d1c6a7",
+          "e4134184-cf76-497b-8c3c-0dae9d78148b",
+          "4fa155d5-8973-4996-9a73-43a7d5e888d3",
+          "0e921ee7-9a0b-4c18-b296-ee5346a045a8",
+          "3bbeef5c-8d38-47ec-ada1-7aef8c0b92f9",
+          "2c78304f-a716-43fb-93d1-ce131657d36c",
+          "a281e0b8-2484-4f68-b688-47b68989b8d8"
+        ],
+        "collapsed": false
+      },
+      "guards": {
+        "name": "06 · File watcher and boundary checks",
+        "color": "#c85a5a",
+        "nodes": [
+          "f1de51be-a6d3-45ae-859f-2aed589a58dd",
+          "07e8e5dd-5695-4e2a-89b7-059e909fa6de",
+          "3aa73b85-1e2f-499e-9cde-6695503648d4",
+          "a2af7b97-9c9b-42bd-b35a-90009cdddeaf",
+          "0069be6e-b76b-4ca3-a046-2465949fce66",
+          "7ef93a8e-3c40-4f99-87b8-a6d2b16e1c22",
+          "6465ad1d-98e3-4b83-8469-ccb7de7713be",
+          "86e84be0-20d9-46ae-b843-cad0323538ac",
+          "4ddf5039-6e9d-477d-ae2e-c998e3303c53",
+          "fc8042d3-ebd1-424f-96aa-2e5bf4651748"
+        ],
+        "collapsed": false
+      },
+      "network": {
+        "name": "07 · HTTP audio and server checks",
+        "color": "#b46ec8",
+        "nodes": [
+          "5bee4249-ee36-4262-a407-929b3d944643",
+          "3583d7a7-a5cb-465b-bff5-f582b6e6a4c2",
+          "58665337-822f-41a3-a409-0f0e9bd2c6dd",
+          "cb5c40f8-7050-47e7-b743-28a56428a757",
+          "d9f9d3de-44f8-44f2-bd65-abaad35a389c",
+          "864c0577-1690-44b4-8d3b-67c97ae6a559",
+          "1cdd68ef-6123-4e05-8462-44faded9619a",
+          "cd12cad8-d68a-48ee-adf0-0038371a2726",
+          "4d13664c-2113-4b31-bcdb-2d2028c107a8",
+          "8125017e-dea3-454d-a6c8-528fe2a8e00d",
+          "4d1c9428-5476-47eb-8ced-6a0f5ff4984c"
+        ],
+        "collapsed": false
+      },
+      "loop": {
+        "name": "02 · Loop transport controls",
+        "color": "#d69d56",
+        "nodes": [
+          "7a97417d-fa4d-4e01-9473-7872c001a038",
+          "ebdc9451-61ef-4cae-a227-3e18a85420a6",
+          "29b1d23d-43b7-4be8-8845-a82e5d9fdbaa",
+          "e51a35d2-1143-43a3-a6ee-765d75afe06f",
+          "ccc20253-6f13-441e-b7c0-14fa077ed1f2",
+          "9fb362eb-9a27-42d5-96b8-ff287430717c",
+          "d413b82d-ed78-47f7-b09e-966d6688f041",
+          "8099b936-122e-4c1c-843a-cdd3998acc93",
+          "ab7aa2b8-1f69-47cb-83f6-2264e3eda39c",
+          "25c5a657-bb7f-4bfc-9e73-3e5f59240501",
+          "2b172012-4ca4-4f27-b2bb-101601c18f5b",
+          "a53106c2-12d4-458a-a08f-e448eb12f399",
+          "e9ca691b-2b9b-46ec-870a-783e4824af15"
+        ],
+        "collapsed": false
+      },
+      "recording": {
+        "name": "04 · Record and replay",
+        "color": "#569cd6",
+        "nodes": [
+          "a90a3d51-68af-47d9-93b2-58ae45ddfdba",
+          "9971bf2b-4a24-4bf3-927f-899cbeacb080",
+          "de82e0b2-b3e0-4ffd-b2a3-81467a259fb7",
+          "0ae0c660-a726-44b7-b7eb-fe76c0493772",
+          "3bf53775-97c9-4343-b882-0f57465bbeba",
+          "c4f10eea-ee65-4550-a2e1-342ae565f514",
+          "608431a5-2bc6-425e-8765-38ad6c3fbd89"
+        ],
+        "collapsed": false
+      }
+    }
+  }
+}

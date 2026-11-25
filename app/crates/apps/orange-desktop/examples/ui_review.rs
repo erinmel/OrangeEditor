@@ -11,7 +11,7 @@ fn new_document() -> String {
     document.to_string()
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (host, _) = Host::with_services(
+    let (review_host, _) = Host::with_services(
         HostOptions::default(),
         vec![
             orange_audio::package(),
@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             orange_net::package(),
         ],
     )?;
+    let host = &review_host;
     fs::create_dir_all(".artifacts/ui-audit/graphs")?;
     let mut categories = BTreeMap::<String, Vec<String>>::new();
     for found in host.search_nodes("", "en") {
@@ -59,13 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
     let mut draft = host.draft(&orange_host::new_document()?)?;
-    let mut add = |kind: &str, at| host.add_node(&mut draft, kind, at);
-    let a = add("core/whole-number", [0.0, 0.0])?;
-    let absolute = add("org.orange.math/absolute", [310.0, 0.0])?;
-    let b = add("core/whole-number", [0.0, 160.0])?;
-    let sum = add("org.orange.math/add", [310.0, 160.0])?;
-    let greater = add("org.orange.math/greater", [0.0, 350.0])?;
-    let manual = add("core/on-manual", [310.0, 380.0])?;
+    let add = |draft: &mut orange_host::Draft, kind: &str, at| host.add_node(draft, kind, at);
+    let a = add(&mut draft, "core/whole-number", [0.0, 0.0])?;
+    let absolute = add(&mut draft, "org.orange.math/absolute", [310.0, 0.0])?;
+    let b = add(&mut draft, "core/whole-number", [0.0, 160.0])?;
+    let sum = add(&mut draft, "org.orange.math/add", [310.0, 160.0])?;
+    let greater = add(&mut draft, "org.orange.math/greater", [0.0, 350.0])?;
+    let manual = add(&mut draft, "core/on-manual", [310.0, 380.0])?;
     let _ = manual;
     host.set_input(&mut draft, (a, "value"), Some("-17"))?;
     host.set_input(&mut draft, (b, "value"), Some("31"))?;

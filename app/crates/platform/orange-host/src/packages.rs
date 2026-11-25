@@ -14,7 +14,74 @@ impl Host {
     /// With [`HostOptions::package_dir`] the archive is then saved. If saving fails the
     /// package stays installed for this session and the error says it was not stored.
     pub fn install(&mut self, archive: &[u8], grants: Grants) -> Result<PackageKey, HostError> {
-        self.install_expected(archive, grants, None)
+        self.install_expected(archive, grants.into(), None)
+    }
+
+    /// Installs a package like [`install`](Self::install) with its own limits as well
+    /// as its grants: the hosts it may reach and the size of its data directory.
+    pub fn install_with(
+        &mut self,
+        archive: &[u8],
+        access: PackageAccess,
+    ) -> Result<PackageKey, HostError> {
+        self.install_expected(archive, access, None)
+    }
+
+    /// What installed package `key` may reach now; `None` when it is not installed.
+    pub fn access(&self, key: &PackageKey) -> Option<&PackageAccess> {
+        self.access
+            .get(&(key.id.as_str().to_owned(), key.version.as_str().to_owned()))
+    }
+
+    /// Changes what installed package `key` may reach, such as revoking a grant or
+    /// narrowing its hosts. A grant the package does not ask for is refused. The
+    /// change is saved with the package and applies to flows and previews opened
+    /// afterwards; running flows keep the instances they started with.
+    pub fn set_access(&mut self, key: &PackageKey, access: PackageAccess) -> Result<(), HostError> {
+        let id = (key.id.as_str().to_owned(), key.version.as_str().to_owned());
+        if !self.access.contains_key(&id) {
+            return Err(HostError::Install(format!("`{key}` is not installed")));
+        }
+        let manifest = self
+            .store
+            .packages()
+            .find(|record| record.manifest().key() == key)
+            .map(|record| record.manifest().clone())
+            .ok_or_else(|| HostError::Install(format!("`{key}` is not installed")))?;
+        check_grants(access.grants, asked(&manifest)?)?;
+        let guest_access = self.guest_access(key, &access);
+        for guest in &mut self.guests {
+            let provider = guest.provider();
+            if provider.package == id.0 && provider.version == id.1 {
+                *guest = guest
+                    .clone()
+                    .with_grants(access.grants)
+                    .with_access(guest_access.clone());
+            }
+        }
+        if let Some(directory) = &self.options.package_dir {
+            persist::set_access(directory, key, &access).map_err(HostError::Storage)?;
+        }
+        let _ = self.access.insert(id, access);
+        Ok(())
+    }
+
+    /// What the instances of package `key` reach with `access`, falling back to the
+    /// application's limits where the package sets none.
+    fn guest_access(&self, key: &PackageKey, access: &PackageAccess) -> GuestAccess {
+        GuestAccess {
+            data_dir: self
+                .options
+                .plugin_data_dir
+                .as_ref()
+                .map(|root| root.join(key.id.as_str())),
+            http: self.options.plugin_http.clone(),
+            max_data_bytes: access.data_quota.or(self.options.plugin_data_quota),
+            http_hosts: access
+                .http_hosts
+                .clone()
+                .or_else(|| self.options.plugin_http_hosts.clone()),
+        }
     }
 
     /// What a package asks to be granted, read from the `permissions` section of its
@@ -28,6 +95,25 @@ impl Host {
         asked(verified.manifest())
     }
 
+    /// The package ID and version an archive holds, read without installing anything:
+    /// what a dialog names a package by before the user approves it.
+    pub fn archive_key(&self, archive: &[u8]) -> Result<PackageKey, HostError> {
+        let mut files = DiscardSink;
+        let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
+            .map_err(|error| HostError::Archive(error.to_string()))?;
+        Ok(verified.manifest().key().clone())
+    }
+
+    /// The grants an installed package asks for, from its manifest; `None` when it is
+    /// not installed and active. What a dialog offers when access is changed later.
+    pub fn requested_grants(&self, key: &PackageKey) -> Option<Grants> {
+        self.store
+            .packages()
+            .filter(|record| record.state() == PackageState::Active)
+            .find(|record| record.manifest().key() == key)
+            .and_then(|record| asked(record.manifest()).ok())
+    }
+
     /// Installs a package like [`install`](Self::install), but only if its content
     /// digest is `content_digest` (`sha256:<64 hex>`): the check that a downloaded
     /// archive is the one an update feed announced.
@@ -37,7 +123,7 @@ impl Host {
         grants: Grants,
         content_digest: &str,
     ) -> Result<PackageKey, HostError> {
-        self.install_expected(archive, grants, Some(content_digest))
+        self.install_expected(archive, grants.into(), Some(content_digest))
     }
 
     /// Registers the types an archive declares, each a file `types/<name>.json` that
@@ -126,11 +212,11 @@ impl Host {
     pub(super) fn install_archive(
         &mut self,
         archive: &[u8],
-        grants: Grants,
+        access: &PackageAccess,
         expected: Option<&str>,
     ) -> Result<PackageKey, HostError> {
         let published = self.publish_archive_types(archive)?;
-        let installed = self.install_archive_nodes(archive, grants, expected);
+        let installed = self.install_archive_nodes(archive, access, expected);
         if installed.is_err() && published {
             let _ = self.store.rollback();
         }
@@ -140,12 +226,12 @@ impl Host {
     pub(super) fn install_expected(
         &mut self,
         archive: &[u8],
-        grants: Grants,
+        access: PackageAccess,
         expected: Option<&str>,
     ) -> Result<PackageKey, HostError> {
-        let key = self.install_archive(archive, grants, expected)?;
+        let key = self.install_archive(archive, &access, expected)?;
         if let Some(directory) = &self.options.package_dir {
-            persist::save(directory, archive, grants, &key).map_err(HostError::Storage)?;
+            persist::save(directory, archive, &access, &key).map_err(HostError::Storage)?;
         }
         // Installing a package is asking for it: it is enabled again.
         self.set_enabled(key.id.as_str(), true)?;
@@ -239,6 +325,9 @@ impl Host {
                 package != key.id.as_str() || version != key.version.as_str()
             });
         }
+        let _ = self
+            .access
+            .remove(&(key.id.as_str().to_owned(), key.version.as_str().to_owned()));
         if let Some(directory) = &self.options.package_dir {
             persist::forget(directory, key).map_err(HostError::Storage)?;
         }
@@ -254,7 +343,7 @@ impl Host {
     fn install_archive_nodes(
         &mut self,
         archive: &[u8],
-        grants: Grants,
+        access: &PackageAccess,
         expected: Option<&str>,
     ) -> Result<PackageKey, HostError> {
         let mut files = MemorySink::new();
@@ -262,18 +351,7 @@ impl Host {
             .map_err(|error| HostError::Archive(error.to_string()))?;
         let manifest = verified.manifest().clone();
         let key = manifest.key().clone();
-        let asked = asked(&manifest)?;
-        for (name, given, wanted) in [
-            ("log", grants.log, asked.log),
-            ("files", grants.files, asked.files),
-            ("http", grants.http, asked.http),
-        ] {
-            if given && !wanted {
-                return Err(HostError::Install(format!(
-                    "the package does not ask for the `{name}` grant"
-                )));
-            }
-        }
+        check_grants(access.grants, asked(&manifest)?)?;
 
         let content_digest = verified.content_digest().to_owned();
         if expected.is_some_and(|expected| {
@@ -359,25 +437,15 @@ impl Host {
                     .iter()
                     .all(|guest| guest.provider().id != provider.id)
             {
-                let access = GuestAccess {
-                    data_dir: self
-                        .options
-                        .plugin_data_dir
-                        .as_ref()
-                        .map(|root| root.join(key.id.as_str())),
-                    http: self.options.plugin_http.clone(),
-                    max_data_bytes: self.options.plugin_data_quota,
-                    http_hosts: self.options.plugin_http_hosts.clone(),
-                };
                 guests.push(
                     GuestPackage::from_archive(
                         &self.engine,
                         &verified,
                         &files,
                         &provider.id,
-                        grants,
+                        access.grants,
                     )?
-                    .with_access(access),
+                    .with_access(self.guest_access(&key, access)),
                 );
             }
         }
@@ -456,6 +524,10 @@ impl Host {
         self.graphs.extend(graphs);
         self.presentations.extend(described);
         self.replacements = replacements;
+        let _ = self.access.insert(
+            (key.id.as_str().to_owned(), key.version.as_str().to_owned()),
+            access.clone(),
+        );
         Ok(key)
     }
 
@@ -475,7 +547,8 @@ impl Host {
         .map_err(|error| refused(error.to_string()))?;
         let mut scratch = graphs::scratch(&empty, bodies)
             .ok_or_else(|| refused("could not build a validation document".into()))?;
-        graphs::link(&mut scratch, known);
+        let input_bytes = scratch.to_string().len();
+        graphs::link(&mut scratch, known, input_bytes).map_err(refused)?;
         let document =
             from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
         let analysis = analyzed(&document, registry);
@@ -487,5 +560,39 @@ impl Host {
                 analysis.report().diagnostics.clone(),
             ))
         }
+    }
+}
+
+/// Refuses a grant the package does not ask for, so a package never holds more than
+/// it declared and the user approved.
+fn check_grants(given: Grants, asked: Grants) -> Result<(), HostError> {
+    for ((name, given), (_, wanted)) in given.named().into_iter().zip(asked.named()) {
+        if given && !wanted {
+            return Err(HostError::Install(format!(
+                "the package does not ask for the `{name}` grant"
+            )));
+        }
+    }
+    Ok(())
+}
+
+impl Host {
+    /// The trigger source of a package entry node, from the loaded component that is
+    /// its exact provider: started on the session of the connection its settings name
+    /// (1.1 `events`). `None` when no loaded package provides it, the user did not grant
+    /// it `websocket`, or the entry's outputs are not ones a trigger can have.
+    pub(crate) fn guest_trigger(
+        &self,
+        provider: &ProviderKey,
+        definition: &DefinitionRef,
+        registry: &Arc<RegistrySnapshot>,
+    ) -> Option<(Arc<dyn ServiceSource>, bool)> {
+        let guest = self
+            .guests
+            .iter()
+            .find(|guest| guest.provider() == provider)?;
+        let definition = registry.definition(definition)?;
+        let source = guest.trigger(definition, Arc::clone(registry))?;
+        Some((Arc::new(source), true))
     }
 }

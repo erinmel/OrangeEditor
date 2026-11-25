@@ -7,7 +7,7 @@ use super::settings;
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
-    choose_http_method, http_request_variant, input_label, watch_label, watch_number_value,
+    choose_http_method, http_request_variant, input_caption, watch_label, watch_number_value,
 };
 
 /// What a field changed.
@@ -15,6 +15,7 @@ use crate::properties::{
 pub(super) enum FieldEdit {
     /// An input's value, typed as a person types it.
     Input(String, String),
+    Literal(String),
     /// A setting at a JSON pointer.
     Setting(String, serde_json::Value),
     /// "New variable…" was chosen for the setting at a JSON pointer.
@@ -27,6 +28,8 @@ pub(super) enum FieldEdit {
     Browse(String),
     /// One more instance of this variadic port.
     AddPort(String),
+    AddSignalReceiver,
+    MapPairs,
     /// The devices of this adapter are to be listed again.
     RefreshDevices(String),
 }
@@ -96,15 +99,6 @@ fn pointer_of(name: &str) -> String {
     format!("/{}", name.replace('~', "~0").replace('/', "~1"))
 }
 
-/// A choice as a person reads it: When's modes in words, others as declared.
-fn choice_label<'a>(node: &NodeView, name: &str, choice: &'a str) -> &'a str {
-    if name == "direction" && spectrum::is_noise(node) {
-        spectrum::direction(choice)
-    } else {
-        crate::properties::setting_choice_caption(node, choice)
-    }
-}
-
 /// The text a field shows while nothing edits it, and whether it is a default.
 pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
     match field {
@@ -117,6 +111,17 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| kind.hint().to_owned());
             (text, port.value.is_none())
+        }
+        FieldOf::Input(port) if port.ty.as_deref() == Some("core/duration@1") => {
+            let display = port
+                .value
+                .as_deref()
+                .or(port.default.as_deref())
+                .and_then(duration_millis);
+            (
+                display.map_or_else(|| "-".to_owned(), |ms| format!("{ms} ms")),
+                port.value.is_none(),
+            )
         }
         FieldOf::Input(port) => match (&port.value, &port.default) {
             (Some(value), _) => (
@@ -153,12 +158,14 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                     (name, false)
                 },
             ),
-        FieldOf::Setting(name, schema) => {
+        FieldOf::Setting(name, schema, _) => {
             let value = setting_value(node, name, schema);
             let set = node.settings.get(name).is_some();
             let text = match &value {
                 serde_json::Value::Null => "—".to_owned(),
-                serde_json::Value::String(text) => choice_label(node, name, text).to_owned(),
+                serde_json::Value::String(text) => {
+                    crate::properties::setting_choice_label(node, text).into_owned()
+                }
                 other => {
                     let unit = unit(name);
                     if unit.is_empty() {
@@ -176,6 +183,8 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         ),
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
+        FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
+        FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
 
@@ -193,14 +202,12 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
         FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            crate::properties::log_part_label(node, &port.id).unwrap_or_else(|| {
-                input_label(node, &port.id).map_or_else(|| port_title(port), str::to_owned)
-            })
+            input_caption(node, port)
         }
-        FieldOf::Setting(name, schema) => {
+        FieldOf::Setting(name, schema, _) => {
             if node.definition == "core/on-watch" {
                 watch_label(name).to_owned()
-            } else if let Some(label) = crate::properties::noise_gate_label(node, name) {
+            } else if let Some(label) = crate::properties::audio_setting_label(node, name) {
                 label.to_owned()
             } else {
                 settings::label(name, schema)
@@ -209,6 +216,8 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
+        FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
+        FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
 
@@ -258,47 +267,28 @@ pub(super) fn field_text_in(
     cut
 }
 
-/// Paints a No | Yes switch with `on` chosen; `None` chooses neither. `dim` draws the
-/// chosen half paler, for a default. Returns each half's rectangle.
-pub(super) fn switch(
-    painter: &egui::Painter,
-    rect: Rect,
+fn binary_choice(
+    on: Option<bool>,
+    defaulted: bool,
     zoom: f32,
-    colors: &Palette,
-    (on, dim): (Option<bool>, bool),
-    hovered: Option<bool>,
-) -> [Rect; 2] {
-    let (no, yes) = rect.split_left_right_at_fraction(0.5);
-    frame(painter, rect, zoom, colors, false);
-    let font = FontId::proportional(12.5 * zoom);
-    for (half, value, label) in [(no, false, t("no")), (yes, true, t("yes"))] {
-        let chosen = on == Some(value);
-        let inner = half.shrink(2.0 * zoom);
-        if chosen {
-            let fill = if dim {
-                colors.selected.gamma_multiply(0.45)
-            } else {
-                colors.selected
-            };
-            painter.rect_filled(inner, 4.0 * zoom, fill);
-        } else if hovered == Some(value) {
-            painter.rect_filled(inner, 4.0 * zoom, colors.outline.gamma_multiply(0.6));
-        }
-        let ink = if chosen { colors.card } else { colors.text };
-        let _ = painter.text(
-            inner.center(),
-            Align2::CENTER_CENTER,
-            label,
-            font.clone(),
-            ink,
-        );
+) -> orange_ui_controls::BinaryChoice<'static> {
+    orange_ui_controls::BinaryChoice {
+        labels: [t("no"), t("yes")],
+        selected: on,
+        defaulted,
+        surface: Surface::Card,
+        zoom,
     }
-    [no, yes]
 }
 
 /// Paints a field as it reads when nothing edits it: for a card too small for
 /// controls, or a card being dragged from the palette.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "read-only card field geometry and style"
+)]
 pub(super) fn paint_still(
+    ui: &egui::Ui,
     painter: &egui::Painter,
     node: &NodeView,
     field: FieldOf<'_>,
@@ -307,6 +297,30 @@ pub(super) fn paint_still(
     colors: &Palette,
     profile: Option<&str>,
 ) {
+    if let FieldOf::Setting(name, schema, dial) = field
+        && let Some(range) = crate::properties::AudioRange::of(node, name, schema)
+        && let Some(value) = setting_value(node, name, schema).as_f64()
+    {
+        let number = if let Some(dial) = dial {
+            range.paint_dial(ui, dial_slot(rect), value, dial);
+            return;
+        } else {
+            let (track, number) = slider_slots(rect, zoom);
+            range.paint_slider(ui, track, value);
+            number
+        };
+        frame(painter, number, zoom, colors, false);
+        let (text, dim) = shown(node, field);
+        field_text_in(
+            painter,
+            number,
+            zoom,
+            &text,
+            if dim { colors.weak } else { colors.text },
+            None,
+        );
+        return;
+    }
     let switch_value = match field {
         FieldOf::Input(port) if port.ty.as_deref() == Some("core/bool@1") => Some((
             port.value
@@ -315,14 +329,14 @@ pub(super) fn paint_still(
                 .map(|v| v == "true"),
             port.value.is_none(),
         )),
-        FieldOf::Setting(name, schema) if schema["type"] == "boolean" => Some((
+        FieldOf::Setting(name, schema, _) if schema["type"] == "boolean" => Some((
             setting_value(node, name, schema).as_bool(),
             node.settings.get(name).is_none(),
         )),
         _ => None,
     };
-    if let Some(value) = switch_value {
-        let _ = switch(painter, rect, zoom, colors, value, None);
+    if let Some((on, dim)) = switch_value {
+        binary_choice(on, dim, zoom).paint_preview(ui, rect);
         return;
     }
     frame(painter, rect, zoom, colors, false);
@@ -338,6 +352,18 @@ pub(super) fn paint_still(
         if dim { colors.weak } else { colors.text },
         None,
     );
+}
+
+fn dial_slot(slot: Rect) -> Rect {
+    Rect::from_min_size(slot.min, Vec2::splat(slot.height()))
+}
+
+fn slider_slots(slot: Rect, zoom: f32) -> (Rect, Rect) {
+    let split = slot.right() - (85.0 * zoom).min(slot.width() * 0.5);
+    (
+        Rect::from_min_max(slot.min, Pos2::new(split - 6.0 * zoom, slot.bottom())),
+        Rect::from_min_max(Pos2::new(split, slot.top()), slot.max),
+    )
 }
 
 impl Canvas {
@@ -464,7 +490,41 @@ impl Canvas {
                 None
             }
             FieldOf::Input(port) => {
+                let details = self.port_details(node.id, &port.id, true);
+                let editor = port.literal_editor(details);
+                let enum_picker = port
+                    .ty
+                    .as_deref()
+                    .and_then(|ty| self.enums.get(ty))
+                    .is_some_and(|choices| choices.iter().any(|choice| !choice.payload));
+                if matches!(
+                    editor,
+                    orange_host::LiteralEditor::Option { .. }
+                        | orange_host::LiteralEditor::Structured
+                ) && !enum_picker
+                {
+                    let state = crate::port_values::state_text(port.input_state(details));
+                    let current = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .unwrap_or(state);
+                    let touch = ui
+                        .interact(slot, id, Sense::click())
+                        .on_hover_text(t("edit-literal"));
+                    frame(ui.painter(), slot, zoom, &colors, touch.hovered());
+                    let _ = field_text_in(ui.painter(), slot, zoom, current, colors.text, None);
+                    touch.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, t("edit-literal"))
+                    });
+                    return touch.clicked().then(|| FieldEdit::Literal(port.id.clone()));
+                }
                 let input = |text: String| Some(FieldEdit::Input(port.id.clone(), text));
+                if port.ty.as_deref() == Some("core/duration@1") {
+                    return self
+                        .duration_input(ui, (node.id, &port.id), slot, id, port)
+                        .and_then(input);
+                }
                 if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
                     let color = crate::properties::input_color(port);
                     let response = ui
@@ -588,7 +648,7 @@ impl Canvas {
                 self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, zoom, current)
                     .map(|text| FieldEdit::Input(port.id.clone(), text))
             }
-            FieldOf::Setting(name, schema) => {
+            FieldOf::Setting(name, schema, dial) => {
                 let value = setting_value(node, name, schema);
                 let set =
                     |value: serde_json::Value| Some(FieldEdit::Setting(pointer_of(name), value));
@@ -609,7 +669,10 @@ impl Canvas {
                             for option in &options {
                                 let label = option.as_str().map_or_else(
                                     || option.to_string(),
-                                    |o| choice_label(node, name, o).to_owned(),
+                                    |o| {
+                                        crate::properties::setting_choice_label(node, o)
+                                            .into_owned()
+                                    },
                                 );
                                 if ui.selectable_label(*option == value, label).clicked()
                                     && *option != value
@@ -621,14 +684,77 @@ impl Canvas {
                         chosen.and_then(set)
                     }
                     kind @ (Kind::Whole | Kind::Number) => {
+                        if name == "threshold_db"
+                            && let Some(threshold) =
+                                crate::properties::ThresholdEdit::for_node(node)
+                        {
+                            let (track, number) = slider_slots(slot, zoom);
+                            let mut track_ui = ui.new_child(
+                                UiBuilder::new()
+                                    .max_rect(track)
+                                    .id_salt(id.with("threshold-slider")),
+                            );
+                            track_ui.set_clip_rect(ui.clip_rect().intersect(track));
+                            track_ui.spacing_mut().interact_size.y = track.height();
+                            let slider = threshold.slider(&mut track_ui, Surface::Card);
+                            let mut number_ui = ui.new_child(
+                                UiBuilder::new()
+                                    .max_rect(number)
+                                    .id_salt(id.with("threshold-number")),
+                            );
+                            number_ui.set_clip_rect(ui.clip_rect().intersect(number));
+                            styled(&mut number_ui, zoom);
+                            return threshold
+                                .number(&mut number_ui)
+                                .or(slider)
+                                .and_then(|number| set(number.into()));
+                        }
                         let whole = kind == Kind::Whole;
                         let current = (!value.is_null()).then(|| value.to_string());
                         let key = pointer_of(name);
                         let ty = if whole { "core/i64@1" } else { "core/f64@1" };
+                        let (slider, number_slot) = if let Some(range) =
+                            crate::properties::AudioRange::of(node, name, schema)
+                            && let Some(value) = value.as_f64()
+                        {
+                            if let Some(dial) = dial {
+                                let knob = dial_slot(slot);
+                                let changed = ui
+                                    .scope_builder(
+                                        UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
+                                        |ui| {
+                                            ui.set_clip_rect(ui.clip_rect().intersect(knob));
+                                            ui.spacing_mut().interact_size.y = card::CONTROL * zoom;
+                                            range.dial(ui, Surface::Card, id, value, dial)
+                                        },
+                                    )
+                                    .inner;
+                                return changed.and_then(|value| set(value.into()));
+                            } else {
+                                let (track, number) = slider_slots(slot, zoom);
+                                let slider = ui
+                                    .scope_builder(
+                                        UiBuilder::new().max_rect(track).id_salt(id.with("slider")),
+                                        |ui| {
+                                            ui.set_clip_rect(ui.clip_rect().intersect(track));
+                                            ui.spacing_mut().interact_size.y = track.height();
+                                            range.slider(ui, Surface::Card, id, value)
+                                        },
+                                    )
+                                    .inner;
+                                (slider, number)
+                            }
+                        } else {
+                            (None, slot)
+                        };
+                        if let Some(value) = slider {
+                            return setting_number(node, name, schema, &value.to_string())
+                                .and_then(set);
+                        }
                         let typed = self.number_control(
                             ui,
                             (node.id, &key),
-                            slot,
+                            number_slot,
                             id,
                             (current.as_deref(), None),
                             (whole, ty, unit(name)),
@@ -681,9 +807,8 @@ impl Canvas {
                 edit
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
-            FieldOf::AddPort(variadic) => {
-                // A quiet button across the card: "+ Add branch".
-                let label = add_port_text(node, variadic);
+            action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver | FieldOf::MapPairs) => {
+                let label = name(node, action, None);
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -715,9 +840,11 @@ impl Canvas {
                     label,
                     colors.text,
                 );
-                touched
-                    .clicked()
-                    .then(|| FieldEdit::AddPort(variadic.port.clone()))
+                touched.clicked().then(|| match action {
+                    FieldOf::AddPort(variadic) => FieldEdit::AddPort(variadic.port.clone()),
+                    FieldOf::MapPairs => FieldEdit::MapPairs,
+                    _ => FieldEdit::AddSignalReceiver,
+                })
             }
         }
     }
@@ -829,24 +956,7 @@ impl Canvas {
         (on, dim): (Option<bool>, bool),
     ) -> Option<bool> {
         let zoom = slot.height() / card::CONTROL;
-        let colors = Palette::of(ui);
-        let touched = ui.interact(slot, id, Sense::click());
-        let side = |at: Pos2| at.x >= slot.center().x;
-        let hovered = touched.hover_pos().map(side);
-        let _ = switch(ui.painter(), slot, zoom, &colors, (on, dim), hovered);
-        touched.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::accesskit::Role::Switch,
-                true,
-                on == Some(true),
-                t("yes"),
-            )
-        });
-        let clicked = touched
-            .clicked()
-            .then(|| touched.interact_pointer_pos().map(side))
-            .flatten()?;
-        (on != Some(clicked) || dim).then_some(clicked)
+        binary_choice(on, dim, zoom).show(ui, slot, id)
     }
 
     /// A text field: the value painted in its frame; a click types a new one, kept on
@@ -950,7 +1060,12 @@ impl Canvas {
         let touched = number_field(ui, slot, id, shown.as_deref(), default, unit);
         if touched.clicked() {
             self.number_drag = None;
-            let typed = value.unwrap_or_default().to_owned();
+            let typed = if ty == "core/duration@1" {
+                value.or(default)
+            } else {
+                value
+            };
+            let typed = typed.unwrap_or_default().to_owned();
             self.typing = Some((node, key.to_owned(), typed, false));
             return None;
         }
@@ -971,6 +1086,67 @@ impl Canvas {
         }
         None
     }
+
+    pub(crate) fn duration_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: (NodeId, &str),
+        slot: Rect,
+        id: egui::Id,
+        port: &PortView,
+    ) -> Option<String> {
+        let value = port.value.as_deref().and_then(duration_millis);
+        let default = port.default.as_deref().and_then(duration_millis);
+        self.number_control(
+            ui,
+            key,
+            slot,
+            id,
+            (value.as_deref(), default.as_deref()),
+            (false, "core/duration@1", "ms"),
+        )
+        .and_then(|ms| duration_nanos(&ms))
+        .filter(|nanos| Some(nanos.as_str()) != port.value.as_deref().or(port.default.as_deref()))
+    }
+}
+
+pub(super) fn duration_millis(raw: &str) -> Option<String> {
+    let ns = field_text(raw).parse::<i64>().ok()?;
+    let magnitude = ns.unsigned_abs();
+    let sign = if ns < 0 { "-" } else { "" };
+    let whole = magnitude / 1_000_000;
+    let fraction = magnitude % 1_000_000;
+    if fraction == 0 {
+        Some(format!("{sign}{whole}"))
+    } else {
+        Some(
+            format!("{sign}{whole}.{fraction:06}")
+                .trim_end_matches('0')
+                .to_owned(),
+        )
+    }
+}
+
+pub(super) fn duration_nanos(ms: &str) -> Option<String> {
+    let (negative, magnitude) = ms.strip_prefix('-').map_or((false, ms), |ms| (true, ms));
+    let (whole, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u64>().ok()?
+    };
+    if magnitude.is_empty() || magnitude == "." || fraction.len() > 6 {
+        return None;
+    }
+    let nanos = if fraction.is_empty() {
+        0
+    } else {
+        format!("{fraction:0<6}").parse::<u64>().ok()?
+    };
+    let value = i128::from(whole) * 1_000_000 + i128::from(nanos);
+    i64::try_from(if negative { -value } else { value })
+        .ok()
+        .map(|ns| ns.to_string())
 }
 
 /// A setting's number as typed, held to its schema; When's optional fields take an
@@ -988,6 +1164,9 @@ fn setting_number(
         return watch_number_value(typed, matches!(name, "hold" | "cooldown")).ok();
     }
     let number: f64 = typed.trim().parse().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
     let least = schema["minimum"].as_f64().unwrap_or(f64::MIN);
     let most = schema["maximum"].as_f64().unwrap_or(f64::MAX);
     let number = number.clamp(least, most);

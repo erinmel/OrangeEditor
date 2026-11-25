@@ -6,7 +6,6 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use orange_host::{FlowId, Host, HostOptions, Value, VariableId};
 use orange_model::binding::{NewNode, new_node_edit};
@@ -207,12 +206,19 @@ fn broker() -> (String, Arc<Seen>, Receiver<(String, String, String)>) {
 struct Secrets;
 impl orange_host::SecretStore for Secrets {
     fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
-        if name == "mqtt/password" {
-            Ok("generated-broker-value".to_owned())
-        } else {
-            Err(orange_host::SecretError::NotFound)
+        match name {
+            "mqtt/password" => Ok("generated-broker-value".to_owned()),
+            "mqtt/wrong" => Ok("not-the-password".to_owned()),
+            _ => Err(orange_host::SecretError::NotFound),
         }
     }
+}
+
+fn open(host: &mut Host, text: &str) -> FlowId {
+    let draft = host.draft(text).unwrap();
+    host.approve_connection_credentials_for_session(&draft, CONNECTION)
+        .unwrap();
+    host.open(text).unwrap()
 }
 
 /// Text messages are stored in variable 100 and binary ones in 101. Manual entry 2
@@ -345,7 +351,7 @@ fn a_graph_publishes_and_is_triggered_by_the_topics_it_subscribes_to() {
     // The document holds the reference, not the password.
     assert!(!text.contains("generated-broker-value"));
 
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     assert_eq!(
         logins.recv_timeout(WAIT).unwrap(),
         (
@@ -380,7 +386,7 @@ fn an_unacknowledged_message_is_sent_again_after_reconnecting() {
     let (url, seen, logins) = broker();
     let mut host = host();
     let text = document(&host, &url);
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     let _ = logins.recv_timeout(WAIT).unwrap();
 
     // The broker drops the connection instead of acknowledging the message.
@@ -395,9 +401,9 @@ fn an_unacknowledged_message_is_sent_again_after_reconnecting() {
 }
 
 /// Runs against a real broker when one is named:
-/// `ORANGE_MQTT_BROKER=mqtt://localhost:1883 cargo test -p orange-net --test mqtt -- --ignored`.
+/// `ORANGE_MQTT_BROKER=mqtt://localhost:1883 cargo test -p orange-net --features network-service-tests --test mqtt a_real_broker`.
 #[test]
-#[ignore = "needs a real MQTT broker in ORANGE_MQTT_BROKER"]
+#[cfg(feature = "network-service-tests")]
 fn a_real_broker_delivers_what_the_graph_publishes() {
     let url = std::env::var("ORANGE_MQTT_BROKER").expect("ORANGE_MQTT_BROKER is set");
     let mut host = host();
@@ -418,18 +424,18 @@ fn a_real_broker_delivers_what_the_graph_publishes() {
     // ORANGE_MQTT_WRONG_PASSWORD makes the login fail: nothing must be delivered.
     let wrong = std::env::var("ORANGE_MQTT_WRONG_PASSWORD").is_ok();
     if wrong {
-        settings["password"] = json!("not-the-password");
+        settings["password"] = json!("credential://mqtt/wrong");
     }
     let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
-    let flow = host.open(&text).unwrap();
+    let flow = open(&mut host, &text);
     if wrong {
         host.trigger(flow, node(2), None).unwrap();
-        std::thread::sleep(Duration::from_secs(4));
+        std::thread::sleep(std::time::Duration::from_secs(4));
         assert_eq!(text_pair(&host, flow), None);
         return;
     }
     // Publishing waits in the queue until the session is connected and subscribed.
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(std::time::Duration::from_secs(2));
     host.trigger(flow, node(2), None).unwrap();
     until("the text message", || text_pair(&host, flow).is_some());
     assert_eq!(text_pair(&host, flow).unwrap(), ["orange/test", "hello"]);

@@ -2,7 +2,7 @@
 //! pending work completes through an identity-checked host call, never by polling.
 use super::*;
 use orange_model::id::TypeExpr;
-use orange_model::value::shape::ValueShape;
+use orange_model::value::shape::{ValueCheckError, ValueShape};
 use std::sync::atomic::AtomicBool;
 mod bridge;
 mod graph;
@@ -71,6 +71,24 @@ pub enum StreamRead {
     End,
     Pending(StreamNextId),
     Failed(KernelFault),
+}
+pub(super) struct CheckedItem {
+    pub value: Value,
+    pub bytes: usize,
+}
+
+enum CheckedRead {
+    Item(CheckedItem),
+    End,
+    Pending(StreamNextId),
+    Failed(KernelFault),
+}
+
+fn stream_value_error(error: ValueCheckError) -> StreamError {
+    match error {
+        ValueCheckError::InvalidType => StreamError::Contract,
+        _ => StreamError::Limit,
+    }
 }
 /// A bounded collection either yields the whole typed list, suspends, or needs
 /// another host slice. Refusal/failure never returns a partial list.
@@ -155,6 +173,7 @@ struct Pending {
 }
 struct Collection {
     max: usize,
+    shape: ValueShape,
     items: Vec<Value>,
     retained: Tally,
 }
@@ -298,12 +317,17 @@ impl Run {
         if !consumer.finished && self.stream_resource(consumer.handle)?.collection.is_some() {
             return Err(StreamError::Claimed);
         }
-        self.next_stream_inner(consumer)
+        Ok(match self.next_stream_inner(consumer)? {
+            CheckedRead::Item(item) => StreamRead::Item(item.value),
+            CheckedRead::End => StreamRead::End,
+            CheckedRead::Pending(id) => StreamRead::Pending(id),
+            CheckedRead::Failed(fault) => StreamRead::Failed(fault),
+        })
     }
     fn next_stream_inner(
         &mut self,
         consumer: &mut StreamConsumer,
-    ) -> Result<StreamRead, StreamError> {
+    ) -> Result<CheckedRead, StreamError> {
         if !consumer.handle.resource.belongs_to(self.id) {
             return Err(StreamError::WrongRun);
         }
@@ -311,7 +335,7 @@ impl Run {
             return Err(StreamError::NotRunning);
         }
         if consumer.finished {
-            return Ok(StreamRead::End);
+            return Ok(CheckedRead::End);
         }
         let limit = self.options.limits.max_stream_item_bytes;
         let resource = self.stream_resource(consumer.handle)?;
@@ -321,20 +345,21 @@ impl Run {
                 sequence: pending.sequence,
             };
             let Some(result) = pending.result.take() else {
-                return Ok(StreamRead::Pending(id));
+                return Ok(CheckedRead::Pending(id));
             };
             resource.pending = None;
-            let _ = resource.retained.try_set(0);
+            let bytes = resource.retained.get();
+            resource.retained.set(0);
             return match result {
-                Ok(Some(value)) => Ok(StreamRead::Item(value)),
+                Ok(Some(value)) => Ok(CheckedRead::Item(CheckedItem { value, bytes })),
                 Ok(None) => {
                     resource.terminal.store(2, Ordering::Relaxed);
                     self.close_stream(consumer)?;
-                    Ok(StreamRead::End)
+                    Ok(CheckedRead::End)
                 }
                 Err(fault) => {
                     self.close_stream(consumer)?;
-                    Ok(StreamRead::Failed(fault))
+                    Ok(CheckedRead::Failed(fault))
                 }
             };
         }
@@ -375,30 +400,27 @@ impl Run {
         };
         let resource = self.stream_resource(consumer.handle)?;
         match result {
-            Ok(StreamStep::Pending) => Ok(StreamRead::Pending(id)),
+            Ok(StreamStep::Pending) => Ok(CheckedRead::Pending(id)),
             Ok(StreamStep::Item(value)) => {
-                if let Err(error) = resource.shape.checked_charge(&value, limit) {
-                    let error = match error {
-                        orange_model::value::shape::ValueCheckError::InvalidType => {
-                            StreamError::Contract
-                        }
-                        _ => StreamError::Limit,
-                    };
-                    self.close_stream(consumer)?;
-                    return Err(error);
-                }
+                let bytes = match resource.shape.checked_charge(&value, limit) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.close_stream(consumer)?;
+                        return Err(stream_value_error(error));
+                    }
+                };
                 resource.pending = None;
-                Ok(StreamRead::Item(value))
+                Ok(CheckedRead::Item(CheckedItem { value, bytes }))
             }
             Ok(StreamStep::End) => {
                 resource.terminal.store(2, Ordering::Relaxed);
                 self.close_stream(consumer)?;
-                Ok(StreamRead::End)
+                Ok(CheckedRead::End)
             }
             Err(fault) => {
                 self.close_stream(consumer)?;
                 if fault.is_valid() {
-                    Ok(StreamRead::Failed(fault))
+                    Ok(CheckedRead::Failed(fault))
                 } else {
                     Err(StreamError::Contract)
                 }
@@ -443,17 +465,10 @@ impl Run {
             .ok_or(StreamError::Stale)?;
         let _ = pending;
         let bytes = match &outcome {
-            Ok(Some(value)) => {
-                resource
-                    .shape
-                    .checked_charge(value, limit)
-                    .map_err(|e| match e {
-                        orange_model::value::shape::ValueCheckError::InvalidType => {
-                            StreamError::Contract
-                        }
-                        _ => StreamError::Limit,
-                    })?
-            }
+            Ok(Some(value)) => resource
+                .shape
+                .checked_charge(value, limit)
+                .map_err(stream_value_error)?,
             Err(fault) if fault.is_valid() => fault.retained_bytes(),
             Err(_) => return Err(StreamError::Contract),
             Ok(None) => 0,
@@ -513,7 +528,6 @@ impl Run {
         let aggregate = self.budget.clone();
         let limit = self.options.limits.max_stream_collect_bytes;
         let resource = self.stream_resource(consumer.handle)?;
-        let shape = resource.shape.clone();
         let mut collection = match resource.collection.take() {
             Some(collection) => collection,
             None => {
@@ -524,6 +538,7 @@ impl Run {
                 }
                 Collection {
                     max: max_items,
+                    shape: resource.shape.clone(),
                     items: Vec::new(),
                     retained,
                 }
@@ -536,18 +551,11 @@ impl Run {
         while *budget > 0 {
             *budget -= 1;
             match self.next_stream_inner(consumer) {
-                Ok(StreamRead::Item(value)) => {
-                    let bytes = match shape.checked_charge(&value, limit) {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
-                            self.close_stream(consumer)?;
-                            return Err(StreamError::Limit);
-                        }
-                    };
+                Ok(CheckedRead::Item(item)) => {
                     let total = collection
                         .retained
                         .get()
-                        .checked_add(bytes)
+                        .checked_add(item.bytes)
                         .filter(|n| *n <= limit);
                     if collection.items.len() == collection.max
                         || total.is_none_or(|n| !collection.retained.try_set(n))
@@ -556,14 +564,15 @@ impl Run {
                         self.close_stream(consumer)?;
                         return Err(StreamError::Limit);
                     }
-                    collection.items.push(value);
+                    collection.items.push(item.value);
                 }
-                Ok(StreamRead::Pending(id)) => {
+                Ok(CheckedRead::Pending(id)) => {
                     self.stream_resource(consumer.handle)?.collection = Some(collection);
                     return Ok(StreamCollectPoll::Pending(id));
                 }
-                Ok(StreamRead::End) => {
-                    let mut builder = orange_model::value::ListBuilder::new(Some(&shape));
+                Ok(CheckedRead::End) => {
+                    let mut builder =
+                        orange_model::value::ListBuilder::new(Some(&collection.shape));
                     builder
                         .reserve(collection.items.len())
                         .map_err(|_| StreamError::Limit)?;
@@ -574,7 +583,7 @@ impl Run {
                         builder.finish(),
                     ))));
                 }
-                Ok(StreamRead::Failed(fault)) => return Ok(StreamCollectPoll::Failed(fault)),
+                Ok(CheckedRead::Failed(fault)) => return Ok(StreamCollectPoll::Failed(fault)),
                 Err(error) => {
                     let _ = self.close_stream(consumer);
                     return Err(error);

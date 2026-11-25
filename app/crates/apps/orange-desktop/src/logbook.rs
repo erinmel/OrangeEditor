@@ -361,19 +361,9 @@ mod tests {
             shapes
         };
         let click = |editor: &mut orange_editor_ui::Editor, host: &mut orange_host::Host, pos| {
-            frame(editor, host, vec![egui::Event::PointerMoved(pos)]);
-            for pressed in [true, false] {
-                frame(
-                    editor,
-                    host,
-                    vec![egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                );
-            }
+            orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+                frame(editor, host, events);
+            });
         };
         let position = |shapes: &[egui::epaint::ClippedShape], label: &str| {
             shapes

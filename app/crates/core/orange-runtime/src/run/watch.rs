@@ -3,11 +3,28 @@
 use super::events::EventAdmission;
 use super::*;
 use orange_model::catalog::{NumericWatch, WatchCondition};
+use orange_model::value::shape::{ValueCheckError, ValueShape};
 use std::collections::BTreeSet;
 
 /// The activation and causal depth a reaction descends from; none for a host-published
 /// live value.
 type Cause = Option<(u64, u16)>;
+
+#[derive(Clone)]
+pub(super) struct LiveValue {
+    pub(super) value: Value,
+    bytes: usize,
+}
+
+fn live_charge(ty: &ValueShape, value: &Value, limit: usize) -> Result<usize, IngressError> {
+    match ty.checked_charge(value, limit) {
+        Ok(bytes) => Ok(bytes),
+        Err(ValueCheckError::InvalidType) => Err(IngressError::InvalidPayload),
+        // A short bounded walk can refuse before it reaches a malformed element.
+        Err(_) if !ty.accepts(value) => Err(IngressError::InvalidPayload),
+        Err(_) => Err(IngressError::DeliveryLimit),
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Reaction {
@@ -390,7 +407,7 @@ impl Run {
     /// The value a live node last published, if any.
     pub fn live_value(&self, node: NodeId) -> Option<&Value> {
         let index = self.plan.as_ref()?.live_index(node)?;
-        self.lives.get(index)?.as_ref()
+        self.lives.get(index)?.as_ref().map(|live| &live.value)
     }
     /// The latest value published on a specific output.
     pub fn live_port_value(
@@ -399,7 +416,7 @@ impl Run {
         port: &orange_model::id::PortKey,
     ) -> Option<&Value> {
         let index = self.plan.as_ref()?.live_port_index(node, port)?;
-        self.lives.get(index)?.as_ref()
+        self.lives.get(index)?.as_ref().map(|live| &live.value)
     }
     /// Last graph fault of a Watch, cleared by its next successful evaluation.
     /// Faults suppress delivery and preserve the previous successful baseline.
@@ -478,19 +495,11 @@ impl Run {
             self.watches.evaluations = self.watches.evaluations.saturating_add(1);
             self.watches.active = true;
         }
-        let outcome = loop {
-            match data.poll_host_export(watch.root(), budget)? {
-                HostPoll::Pending => return Ok(()),
-                HostPoll::Input(input) => {
-                    let value =
-                        root_value(plan, &self.variables, &self.layout, &self.lives, input)?;
-                    data.set_input_outcome(input, value)?;
-                }
-                HostPoll::Ready(Some(export)) => {
-                    break export.outcome.cloned().map_err(Clone::clone);
-                }
-                HostPoll::Ready(None) => return Err(RunError::InvalidState),
-            }
+        let Some(outcome) = poll_root(data, watch.root(), budget, |input| {
+            root_value(plan, &self.variables, &self.layout, &self.lives, input)
+        })?
+        else {
+            return Ok(());
         };
         self.watches.active = false;
         self.watches.pending.pop_front();
@@ -513,7 +522,17 @@ impl Run {
         self.watches
             .replace_fault(index, None, self.options.limits.max_state_bytes)?;
         let previous = &self.watches.previous[index];
+        if let WatchCondition::Deadband(threshold) = watch.condition()
+            && (matches!(&value, Value::F32(sample) if !sample.is_finite())
+                || matches!(&value, Value::F64(sample) if !sample.is_finite())
+                || previous
+                    .as_ref()
+                    .is_some_and(|old| !exceeds_deadband(old, &value, threshold)))
+        {
+            return Ok(());
+        }
         let firing = match watch.condition() {
+            WatchCondition::Deadband(_) => previous.is_some().then_some(cause),
             WatchCondition::Changed => previous
                 .as_ref()
                 .is_some_and(|old| watch.ty().equal_values(old, &value) == Some(false))
@@ -599,13 +618,45 @@ impl Run {
     }
 }
 
+fn exceeds_deadband(old: &Value, new: &Value, threshold: &Value) -> bool {
+    match (old, new, threshold) {
+        (Value::I32(a), Value::I32(b), Value::I32(t)) => a.abs_diff(*b) > t.unsigned_abs(),
+        (Value::I64(a), Value::I64(b), Value::I64(t)) => a.abs_diff(*b) > t.unsigned_abs(),
+        (Value::U32(a), Value::U32(b), Value::U32(t)) => a.abs_diff(*b) > *t,
+        (Value::U64(a), Value::U64(b), Value::U64(t)) => a.abs_diff(*b) > *t,
+        (Value::F32(a), Value::F32(b), Value::F32(t)) => (a - b).abs() > *t,
+        (Value::F64(a), Value::F64(b), Value::F64(t)) => (a - b).abs() > *t,
+        _ => false,
+    }
+}
+
+type RootOutcome = Result<Value, ConstantFault>;
+
+fn poll_root(
+    data: &mut DataActivation,
+    root: usize,
+    budget: &mut usize,
+    mut read_input: impl FnMut(usize) -> Result<FoldedValue, RunError>,
+) -> Result<Option<RootOutcome>, RunError> {
+    loop {
+        match data.poll_host_export(root, budget)? {
+            HostPoll::Pending => return Ok(None),
+            HostPoll::Input(input) => data.set_input_outcome(input, read_input(input)?)?,
+            HostPoll::Ready(Some(export)) => {
+                return Ok(Some(export.outcome.cloned().map_err(Clone::clone)));
+            }
+            HostPoll::Ready(None) => return Err(RunError::InvalidState),
+        }
+    }
+}
+
 /// A host input read at the root: a run variable, or a live value, which faults until
 /// its provider has published one.
 fn root_value(
     plan: &ControlPlan,
     variables: &[Option<Value>],
     layout: &StateLayout,
-    lives: &[Option<Value>],
+    lives: &[Option<LiveValue>],
     input: usize,
 ) -> Result<FoldedValue, RunError> {
     match plan.host_sources()[input] {
@@ -614,7 +665,7 @@ fn root_value(
             .map(FoldedValue::Value)
             .ok_or(RunError::InvalidState),
         HostSource::Live(live) => Ok(match &lives[live] {
-            Some(value) => FoldedValue::Value(value.clone()),
+            Some(value) => FoldedValue::Value(value.value.clone()),
             None => FoldedValue::Fault(no_value_yet(plan.lives()[live].node())),
         }),
         _ => Err(RunError::InvalidState),
@@ -652,19 +703,11 @@ impl Run {
         }
         while self.watches.partial.len() < source.roots().len() {
             let root = source.roots()[self.watches.partial.len()];
-            let outcome = loop {
-                match data.poll_host_export(root, budget)? {
-                    HostPoll::Pending => return Ok(()),
-                    HostPoll::Input(input) => {
-                        let value =
-                            root_value(plan, &self.variables, &self.layout, &self.lives, input)?;
-                        data.set_input_outcome(input, value)?;
-                    }
-                    HostPoll::Ready(Some(export)) => {
-                        break export.outcome.cloned().map_err(Clone::clone);
-                    }
-                    HostPoll::Ready(None) => return Err(RunError::InvalidState),
-                }
+            let Some(outcome) = poll_root(data, root, budget, |input| {
+                root_value(plan, &self.variables, &self.layout, &self.lives, input)
+            })?
+            else {
+                return Ok(());
             };
             match outcome {
                 Ok(value) => self.watches.partial.push(value),
@@ -716,21 +759,13 @@ impl Run {
         // A live value was published for the previous arguments: until the provider
         // armed with these publishes, it has no value, rather than a stale one.
         for &live in source.outputs() {
-            let ty = plan.lives()[live].ty();
-            let release = |value: &Value| ty.checked_charge(value, usize::MAX).unwrap_or(0);
-            let mut freed = self
-                .pending_lives
-                .remove(&live)
-                .flatten()
-                .as_ref()
-                .map_or(0, release);
+            let pending = self.pending_lives.remove(&live).flatten();
+            let mut freed = pending.map_or(0, |held| held.bytes);
             if let Some(old) = self.lives[live].take() {
-                freed += release(&old);
+                freed = freed.checked_add(old.bytes).ok_or(RunError::InvalidState)?;
                 self.watches.schedule_live(plan, live);
             }
-            let _ = self
-                .live_bytes
-                .try_set(self.live_bytes.get().saturating_sub(freed));
+            self.release_live_bytes(freed)?;
         }
         Ok(())
     }
@@ -770,23 +805,18 @@ impl Run {
         index: usize,
         value: Option<Value>,
     ) -> Result<bool, IngressError> {
-        let ty = plan.lives()[index].ty();
-        if value.as_ref().is_some_and(|value| !ty.accepts(value)) {
-            return Err(IngressError::InvalidPayload);
-        }
+        let limit = self.options.limits.max_state_bytes;
+        let charge = value.as_ref().map_or(Ok(0), |value| {
+            live_charge(plan.lives()[index].ty(), value, limit)
+        })?;
         let pending = self.pending_lives.get(&index);
-        if pending.unwrap_or(&self.lives[index]) == &value {
+        let current = pending.unwrap_or(&self.lives[index]).as_ref();
+        if current.map(|held| &held.value) == value.as_ref() {
             return Ok(false);
         }
-        let limit = self.options.limits.max_state_bytes;
-        let charge = value
-            .as_ref()
-            .map_or(Ok(0), |value| ty.checked_charge(value, limit))
-            .map_err(|_| IngressError::DeliveryLimit)?;
         let old = pending
             .and_then(Option::as_ref)
-            .and_then(|held| ty.checked_charge(held, usize::MAX).ok())
-            .unwrap_or(0);
+            .map_or(0, |held| held.bytes);
         let total = self
             .live_bytes
             .get()
@@ -797,7 +827,13 @@ impl Run {
         if !self.live_bytes.try_set(total) {
             return Err(IngressError::DeliveryLimit);
         }
-        let _ = self.pending_lives.insert(index, value);
+        let _ = self.pending_lives.insert(
+            index,
+            value.map(|value| LiveValue {
+                value,
+                bytes: charge,
+            }),
+        );
         Ok(true)
     }
 
@@ -810,17 +846,24 @@ impl Run {
             .pending_lives
             .pop_first()
             .ok_or(RunError::InvalidState)?;
-        let changed = self.lives[index] != value;
+        let changed = self.lives[index].as_ref().map(|held| &held.value)
+            != value.as_ref().map(|held| &held.value);
         if let Some(old) = std::mem::replace(&mut self.lives[index], value) {
-            let charge = plan.lives()[index]
-                .ty()
-                .checked_charge(&old, usize::MAX)
-                .map_err(|_| RunError::InvalidState)?;
-            let _ = self.live_bytes.try_set(self.live_bytes.get() - charge);
+            self.release_live_bytes(old.bytes)?;
         }
         if changed {
             self.watches.schedule_live(plan, index);
         }
+        Ok(())
+    }
+
+    fn release_live_bytes(&mut self, bytes: usize) -> Result<(), RunError> {
+        let remaining = self
+            .live_bytes
+            .get()
+            .checked_sub(bytes)
+            .ok_or(RunError::InvalidState)?;
+        self.live_bytes.set(remaining);
         Ok(())
     }
 }
@@ -829,6 +872,51 @@ impl Run {
 mod tests {
     use super::*;
     use orange_compiler::FaultText;
+
+    #[test]
+    fn live_validation_preserves_type_errors_when_the_size_check_stops_early() {
+        use orange_model::value::ListRepr;
+        let ty = ValueShape::List(Box::new(ValueShape::U64));
+        let valid = Value::List(Arc::new(ListRepr::U64(Box::new([1, 2, 3]))));
+        let invalid = Value::List(Arc::new(ListRepr::Bool(Box::new([true, false]))));
+        assert_eq!(
+            live_charge(&ty, &valid, 1),
+            Err(IngressError::DeliveryLimit)
+        );
+        assert_eq!(
+            live_charge(&ty, &invalid, 1),
+            Err(IngressError::InvalidPayload)
+        );
+        assert_eq!(
+            live_charge(&ty, &valid, usize::MAX),
+            ty.checked_charge(&valid, usize::MAX)
+                .map_err(|_| IngressError::InvalidPayload)
+        );
+    }
+
+    #[test]
+    fn deadband_distance_is_strict_and_handles_integer_extremes() {
+        assert!(!exceeds_deadband(
+            &Value::I32(-1),
+            &Value::I32(1),
+            &Value::I32(2)
+        ));
+        assert!(exceeds_deadband(
+            &Value::I64(i64::MIN),
+            &Value::I64(i64::MAX),
+            &Value::I64(i64::MAX)
+        ));
+        assert!(!exceeds_deadband(
+            &Value::U64(u64::MAX),
+            &Value::U64(0),
+            &Value::U64(u64::MAX)
+        ));
+        assert!(exceeds_deadband(
+            &Value::F64(1.0),
+            &Value::F64(0.49),
+            &Value::F64(0.5)
+        ));
+    }
 
     #[test]
     fn last_watch_fault_text_is_admitted_transactionally_and_released_on_success() {

@@ -61,6 +61,9 @@ pub struct Draft {
     document: GraphDocument,
     undo: Vec<Inverse>,
     redo: Vec<Inverse>,
+    /// Edits on the undo history, counting every one pushed and taken back since the
+    /// draft was made, so a group knows how many are its own even past [`MAX_UNDO`].
+    recorded: u64,
     /// Kept once [`Host::problems`] has been asked; then it follows every edit.
     analysis: Option<Analysis>,
     /// Lookups of the document that type inference keeps up to date between edits.
@@ -98,6 +101,7 @@ impl Draft {
             document,
             undo: Vec::new(),
             redo: Vec::new(),
+            recorded: 0,
             analysis: None,
             index: None,
             opened: OpenReport::default(),
@@ -159,8 +163,10 @@ impl Draft {
         match self.document.revert(inverse) {
             Ok(committed) => {
                 if back {
+                    self.recorded = self.recorded.saturating_sub(1);
                     self.redo.push(committed.inverse);
                 } else {
+                    self.recorded += 1;
                     self.undo.push(committed.inverse);
                 }
                 self.follow(&committed.change_set);
@@ -237,6 +243,7 @@ impl Draft {
     }
 
     fn record(&mut self, committed: Committed) {
+        self.recorded += 1;
         self.undo.push(committed.inverse);
         if self.undo.len() > MAX_UNDO {
             let _ = self.undo.remove(0);
@@ -252,6 +259,50 @@ impl Draft {
             .follow(change);
         if let Some(analysis) = &mut self.analysis {
             analysis.follow(&self.document, change);
+        }
+    }
+
+    /// Runs `edit`, which may commit several times, as one action: on success its
+    /// commits become one undo step; on failure every commit it made is taken back and
+    /// the undo and redo history is exactly as it was.
+    pub(crate) fn as_one_edit<T>(
+        &mut self,
+        edit: impl FnOnce(&mut Self) -> Result<T, HostError>,
+    ) -> Result<T, HostError> {
+        let (redo, recorded) = (self.redo.clone(), self.recorded);
+        let result = edit(self);
+        // Edits the group left on the history, fewer if the limit dropped the oldest.
+        let made = usize::try_from(self.recorded.saturating_sub(recorded))
+            .unwrap_or(usize::MAX)
+            .min(self.undo.len());
+        match result {
+            Ok(value) => {
+                if made > 1 {
+                    let mut merged = self.undo.pop();
+                    for _ in 1..made {
+                        let earlier = self.undo.pop();
+                        merged = merged
+                            .zip(earlier)
+                            .and_then(|(later, earlier)| later.then(earlier));
+                    }
+                    match merged {
+                        Some(merged) => self.undo.push(merged),
+                        // Commits of one group always follow each other; if they did
+                        // not, a history that no longer fits is dropped.
+                        None => self.undo.clear(),
+                    }
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                for _ in 0..made {
+                    let _ = self.undo();
+                }
+                if made > 0 {
+                    self.redo = redo;
+                }
+                Err(error)
+            }
         }
     }
 

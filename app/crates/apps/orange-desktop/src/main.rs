@@ -10,6 +10,7 @@ mod automation;
 mod gallery;
 mod keyboard;
 mod logbook;
+mod native;
 mod picture;
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
@@ -54,8 +55,11 @@ struct Desktop {
     editor: Editor,
     /// With `--canvas-only`: the graph and its canvas, shown without the editor.
     bare: Option<(GraphView, Canvas)>,
+    capture_canvas_only: bool,
     shot: Option<Shot>,
     title: String,
+    /// Native plugin libraries and the full access the person gave each.
+    native: native::NativePlugins,
 }
 
 fn preferences_path() -> Option<std::path::PathBuf> {
@@ -76,6 +80,9 @@ fn preferences_path() -> Option<std::path::PathBuf> {
 
 impl Drop for Desktop {
     fn drop(&mut self) {
+        if self.shot.is_some() {
+            return;
+        }
         let Some(path) = preferences_path() else {
             return;
         };
@@ -90,6 +97,32 @@ impl Drop for Desktop {
     }
 }
 
+// Native clipboard shortcuts are delivered as raw keys so the Settings recorder
+// can see the original chord even with an empty clipboard. Text fields still
+// receive egui's clipboard commands when they own keyboard input.
+fn text_clipboard_command(event: &eframe::egui::Event) -> Option<eframe::egui::Key> {
+    use eframe::egui::{Event, Key};
+    let Event::Key {
+        key,
+        modifiers,
+        pressed: true,
+        ..
+    } = *event
+    else {
+        return None;
+    };
+    match key {
+        Key::Copy | Key::Cut | Key::Paste => Some(key),
+        Key::C if modifiers.command_only() => Some(Key::Copy),
+        Key::X if modifiers.command_only() => Some(Key::Cut),
+        Key::V if modifiers.command_only() => Some(Key::Paste),
+        Key::Delete if cfg!(target_os = "windows") && modifiers.shift => Some(Key::Cut),
+        Key::Insert if cfg!(target_os = "windows") && modifiers.ctrl => Some(Key::Copy),
+        Key::Insert if cfg!(target_os = "windows") && modifiers.shift => Some(Key::Paste),
+        _ => None,
+    }
+}
+
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         // What the graph logged, between frames, then the run's own events.
@@ -98,7 +131,10 @@ impl eframe::App for Desktop {
             self.editor.note(*level, text);
         }
         self.editor.notes_dropped(dropped);
-        if self.editor.take_events(&self.events) || !notes.is_empty() {
+        if self.editor.poll_events(&self.events)
+            || self.editor.reconcile_run_state(&self.host)
+            || !notes.is_empty()
+        {
             // A bounded poll may leave a backlog, including events from retired flows.
             ui.ctx().request_repaint();
         }
@@ -120,7 +156,14 @@ impl eframe::App for Desktop {
                     .frame(eframe::egui::Frame::NONE)
                     .show(ui, |ui| canvas.show(ui, graph, &[]));
             }
+            None if self.capture_canvas_only => {
+                self.editor
+                    .ui_with_layout(ui, &mut self.host, Editor::canvas_panel);
+            }
             None => self.editor.ui(ui, &mut self.host),
+        }
+        if self.bare.is_none() && self.shot.is_none() {
+            self.native.dialog(ui.ctx());
         }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
         let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
@@ -158,6 +201,25 @@ impl eframe::App for Desktop {
             }
             ui.ctx().request_repaint();
         }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &eframe::egui::Context, input: &mut eframe::egui::RawInput) {
+        use eframe::egui::{Event, Key, ViewportCommand};
+        if self.editor.is_recording_shortcut() || !ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        input.events.retain_mut(|event| {
+            match text_clipboard_command(event) {
+                Some(Key::Copy) => *event = Event::Copy,
+                Some(Key::Cut) => *event = Event::Cut,
+                Some(Key::Paste) => {
+                    ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
     }
 }
 
@@ -309,7 +371,62 @@ impl Desktop {
         }
     }
 
+    /// Reads a shared graph the person chooses and hands it to the editor's review.
+    fn import_bundle(&mut self) {
+        use std::io::Read;
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(t("open-shared-graph"))
+            .add_filter(
+                t("desktop-bundle-filter"),
+                &[orange_editor_ui::bundle::BUNDLE_EXTENSION],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(&path).and_then(|file| {
+            file.take(orange_host::MAX_DOCUMENT_BYTES + 1)
+                .read_to_end(&mut bytes)
+        });
+        if let Err(error) = read {
+            trouble(t("desktop-bundle-error"), &error.to_string());
+            return;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        if let Err(error) = self.editor.review_bundle(&self.host, name, &bytes) {
+            trouble(t("desktop-bundle-error"), &error.to_string());
+        }
+    }
+
     fn carry_out(&mut self, request: FileRequest) {
+        if let FileRequest::ExportBundle { name, bundle } = request {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter(
+                    t("desktop-bundle-filter"),
+                    &[orange_editor_ui::bundle::BUNDLE_EXTENSION],
+                )
+                .set_file_name(name)
+                .save_file()
+                && let Err(error) = std::fs::write(path, bundle)
+            {
+                trouble(t("desktop-not-saved"), &error.to_string());
+            }
+            return;
+        }
+        if request == FileRequest::ImportBundle {
+            self.import_bundle();
+            return;
+        }
+        if request == FileRequest::NativePlugins {
+            self.native.open = true;
+            return;
+        }
         if let FileRequest::ExportPackage { name, archive } = request {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter(t("desktop-package-filter"), &["orangeplug"])
@@ -379,7 +496,7 @@ impl Desktop {
                 let Some(path) = dialog.set_title(t("desktop-open-graph")).pick_file() else {
                     return;
                 };
-                match std::fs::read_to_string(&path) {
+                match orange_host::read_document(&path) {
                     Ok(text) => self
                         .editor
                         .open(&mut self.host, path.display().to_string(), text),
@@ -392,7 +509,10 @@ impl Desktop {
             FileRequest::ChoosePath { .. }
             | FileRequest::ChooseConnectionFolder { .. }
             | FileRequest::ImportPackage
-            | FileRequest::ExportPackage { .. } => {}
+            | FileRequest::ExportPackage { .. }
+            | FileRequest::ExportBundle { .. }
+            | FileRequest::ImportBundle
+            | FileRequest::NativePlugins => {}
             FileRequest::SaveAs => {
                 let name = current
                     .and_then(Path::file_name)
@@ -417,6 +537,33 @@ fn window_title(path: Option<&str>) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy())
 }
 
+/// The network client of installed packages that hold the `http` or `http-local`
+/// grant. The plugin engine has already checked each address, so an `http://` URL
+/// reaches it only for a local address under `http-local`. Redirects are not followed.
+#[derive(Debug)]
+struct PluginHttp;
+impl orange_host::HttpClient for PluginHttp {
+    fn send(
+        &self,
+        request: &orange_host::HttpRequest,
+    ) -> Result<orange_host::HttpResponse, String> {
+        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
+        orange_net::fetch_response(
+            &request.method,
+            &request.url,
+            &request.headers,
+            &request.body,
+            limit,
+            request.url.starts_with("http://"),
+        )
+        .map(|response| orange_host::HttpResponse {
+            status: response.status,
+            headers: response.headers,
+            body: response.body,
+        })
+    }
+}
+
 fn built_in_services(
     keyboard: &keyboard::Keyboard,
     logbook: &logbook::LogBook,
@@ -435,15 +582,28 @@ fn start(
     canvas_only: bool,
     screenshot: Option<String>,
 ) -> Result<Desktop, String> {
+    // Installed packages and the data folders of packages with the `files` grant live
+    // beside the preferences.
+    let beside =
+        |name: &str| preferences_path().and_then(|path| path.parent().map(|dir| dir.join(name)));
     let options = HostOptions {
         secrets: Some(Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
-        package_dir: preferences_path()
-            .and_then(|path| path.parent().map(|dir| dir.join("packages"))),
+        package_dir: beside("packages"),
+        plugin_data_dir: beside("plugin-data"),
+        plugin_http: Some(Arc::new(PluginHttp)),
         ..HostOptions::default()
     };
     let keyboard = keyboard::Keyboard::default();
     let logbook = logbook::LogBook::default();
-    let services = built_in_services(&keyboard, &logbook)?;
+    let mut services = built_in_services(&keyboard, &logbook)?;
+    // Native plugin libraries load only with the full access the person gave each.
+    let mut native = preferences_path()
+        .and_then(|path| path.parent().map(|dir| dir.join("plugins")))
+        .map(native::NativePlugins::open)
+        .unwrap_or_default();
+    if screenshot.is_none() {
+        services.extend(native.load());
+    }
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();
@@ -458,11 +618,13 @@ fn start(
         editor.restore_preferences(&saved);
     }
     editor.file_dialogs = true;
+    editor.native_plugins = screenshot.is_none();
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {
-        let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
-        if canvas_only {
+        let text = orange_host::read_document(Path::new(&path))
+            .map_err(|error| format!("{path}: {error}"))?;
+        if canvas_only && screenshot.is_none() {
             let graph = host
                 .view(&text)
                 .map_err(|error| format!("{path}: {error}"))?;
@@ -491,7 +653,9 @@ fn start(
         events,
         editor,
         bare,
+        capture_canvas_only: canvas_only && screenshot.is_some(),
         title,
+        native,
         shot: screenshot.map(|path| Shot {
             path,
             frames: 0,
@@ -534,6 +698,7 @@ fn main() -> ExitCode {
         }
     };
     let options = eframe::NativeOptions {
+        clipboard_shortcuts: false,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(desktop.title.clone())
             .with_inner_size([1280.0, 800.0])
@@ -565,6 +730,27 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_clipboard_keys_map_to_text_commands() {
+        use eframe::egui::{Event, Key, Modifiers};
+        for (key, command) in [
+            (Key::C, Key::Copy),
+            (Key::V, Key::Paste),
+            (Key::X, Key::Cut),
+        ] {
+            assert_eq!(
+                super::text_clipboard_command(&Event::Key {
+                    key,
+                    physical_key: None,
+                    modifiers: Modifiers::COMMAND,
+                    pressed: true,
+                    repeat: false,
+                }),
+                Some(command)
+            );
+        }
+    }
+
     use orange_host::Catalogs;
 
     /// Every language has the desktop's English messages, and no others.

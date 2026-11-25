@@ -337,7 +337,6 @@ fn deeply_nested_option_list_literals_round_trip() {
 }
 
 #[test]
-#[ignore = "manual release timing probe; no wall-clock assertion"]
 fn measure_nested_none_literal_decoding() {
     use orange_model::document::literal::{Literal, LiteralPayload};
     use orange_model::value::literal_codec::{SchemaSet, decode};

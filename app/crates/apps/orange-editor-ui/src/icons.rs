@@ -60,6 +60,11 @@ pub const MATH: char = '\u{ea5f}'; // calculate
 pub const AUDIO: char = '\u{e050}'; // volume_up
 pub const NETWORK: char = '\u{e894}'; // language
 
+pub(crate) const SIGNAL: char = ''; // rss_feed
+pub(crate) const TEXT: char = ''; // format_align_left
+pub(crate) const CLOCK: char = ''; // schedule
+pub(crate) const LOGIC: char = ''; // call_split
+
 /// Every icon the editor draws, for the test that each is in the font.
 pub const ALL: &[char] = &[
     NEW,
@@ -120,6 +125,10 @@ pub const ALL: &[char] = &[
     MATH,
     AUDIO,
     NETWORK,
+    SIGNAL,
+    TEXT,
+    CLOCK,
+    LOGIC,
 ];
 
 /// Paints a command icon identified by a constant from this module. Return `false`

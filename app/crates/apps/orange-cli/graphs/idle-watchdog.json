@@ -1,0 +1,204 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000002",
+  "revision": 0,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Idle",
+      "type": "core/bool@1",
+      "scope": "run",
+      "init": {
+        "type": "core/bool@1",
+        "value": false
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [
+    {
+      "id": "20000000-0000-4000-8000-000000000007",
+      "name": "Heartbeat",
+      "payload": "core/bool@1",
+      "scope": "run"
+    }
+  ],
+  "connections": [],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Heartbeat"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "core/emit",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "event": "20000000-0000-4000-8000-000000000007"
+      },
+      "inputs": {
+        "payload": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      },
+      "name": "Send heartbeat"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "core/on-event",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "event": "20000000-0000-4000-8000-000000000007"
+      },
+      "activation": {
+        "mode": "replace",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Restart countdown"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/bool@1",
+          "value": false
+        }
+      },
+      "name": "Clear idle"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "definition_id": "core/wait",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "inputs": {
+        "duration": {
+          "type": "core/duration@1",
+          "value": "750000000"
+        }
+      },
+      "name": "Wait 750 ms"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000006",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      },
+      "name": "Mark idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000003": {
+        "x": 0,
+        "y": 208
+      },
+      "10000000-0000-4000-8000-000000000004": {
+        "x": 320,
+        "y": 208
+      },
+      "10000000-0000-4000-8000-000000000005": {
+        "x": 640,
+        "y": 208
+      },
+      "10000000-0000-4000-8000-000000000006": {
+        "x": 960,
+        "y": 208
+      }
+    }
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000003",
+  "revision": 4,
+  "package_lock": [
+    {
+      "id": "org.orange.audio",
+      "version": "0.0.0",
+      "content_digest": "sha256:7937fcde4f140b5af8a59b57d83c6d7cb20715740c2aded49aa437d338fbb2d0"
+    }
+  ],
+  "type_lock": [],
+  "variables": [],
+  "events": [],
+  "connections": [
+    {
+      "id": "40000000-0000-4000-8000-000000000001",
+      "name": "Silent input (choose your microphone)",
+      "adapter": "org.orange.audio/input",
+      "scope": "graph",
+      "settings": {
+        "device": "null"
+      }
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000002",
+      "name": "Silent monitor (choose headphones)",
+      "adapter": "org.orange.audio/output",
+      "scope": "graph",
+      "settings": {
+        "device": "null"
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:0994a161ebc329c916640d185124f11b8729f8b2753cd1bc43538bd7a184ed9b": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "level",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/f64@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:361df6e3f8dc38b76242ceb2a95ef7aad1df5317b303a7595f5d3fd421ec7711": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:5c9173ea9619e86bb44cad8bb848c1c39f226742f56f1c092fa622310d63df6d": {
+      "kind": "volatile",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "attack",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "5000000"
+          }
+        },
+        {
+          "port_id": "hold",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "100000000"
+          }
+        },
+        {
+          "port_id": "release",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/duration@1",
+          "default": {
+            "type": "core/duration@1",
+            "value": "80000000"
+          }
+        },
+        {
+          "port_id": "gated_stream",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:d328a6ae549f22d57f79be6fd603295fb0bc12e0bb9774185ec231245bc05fed": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "stream",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.audio/stream@1"
+        },
+        {
+          "port_id": "enabled",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": true
+          }
+        },
+        {
+          "port_id": "gain",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/f64@1",
+          "default": {
+            "type": "core/f64@1",
+            "bits": "3ff0000000000000"
+          }
+        },
+        {
+          "port_id": "playing",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/bool@1",
+          "source": "computed"
+        },
+        {
+          "port_id": "finished",
+          "direction": "output",
+          "kind": "exec",
+          "variadic": {
+            "min": 0,
+            "max": 0
+          }
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "org.orange.audio/audio-source",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000001"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:361df6e3f8dc38b76242ceb2a95ef7aad1df5317b303a7595f5d3fd421ec7711",
+      "name": "Microphone"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.audio/noise-gate",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "threshold_db": -40
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:5c9173ea9619e86bb44cad8bb848c1c39f226742f56f1c092fa622310d63df6d",
+      "name": "Mute quiet sound"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "org.orange.audio/live-level",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:0994a161ebc329c916640d185124f11b8729f8b2753cd1bc43538bd7a184ed9b",
+      "name": "Measure gated level"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "org.orange.audio/audio-out",
+      "definition_version": 2,
+      "config_version": 1,
+      "config": {
+        "connection": "40000000-0000-4000-8000-000000000002"
+      },
+      "provider": {
+        "package": "org.orange.audio",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:d328a6ae549f22d57f79be6fd603295fb0bc12e0bb9774185ec231245bc05fed",
+      "inputs": {
+        "enabled": {
+          "type": "core/bool@1",
+          "value": true
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "Monitor gated signal"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "stream"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "gated_stream"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "stream"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "gated_stream"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "stream"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 320,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000003": {
+        "x": 640,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000004": {
+        "x": 640,
+        "y": 208
+      }
+    }
+  }
+}

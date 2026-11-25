@@ -61,16 +61,26 @@ fn edit_timing() {
         document.names = time!("names", runs, {
             Names::of_document(&host, document.draft.document()).without_ids()
         });
-        let before = std::mem::take(&mut document.graph);
-        document.graph = time!("draft view", runs, {
-            host.draft_view(&document.draft).unwrap_or_default()
+        let (before, failure_routes, port_details) = time!("draft view", runs, {
+            let orange_host::AuthoringView {
+                graph,
+                failure_routes,
+                port_details,
+            } = host
+                .draft_authoring_view(&document.draft)
+                .unwrap_or_default();
+            (document.replace_graph(graph), failure_routes, port_details)
         });
         let touched = time!("touched", runs, {
             touched_by_edit(&before, &document.graph)
         });
         document.declared = time!("declarations", runs, { host.declarations(&document.draft) });
         let graph = document.graph.clone();
-        time!("canvas update", runs, editor.canvas.update(&graph));
+        time!("canvas update", runs, {
+            editor.canvas.set_failure_routes(failure_routes);
+            editor.canvas.set_port_details(port_details);
+            editor.canvas.update(&graph);
+        });
         let document = editor.document.as_ref().unwrap();
         let enums = time!("enums", runs, {
             canvas::enums_of(&host, &document.draft, &document.graph, &document.declared)
@@ -99,21 +109,19 @@ fn edit_timing() {
 fn an_edit_previews_what_it_touched_and_keeps_the_rest() {
     let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-    let mut chain = |value: &str, y: f32| {
-        let number = host
-            .add_node(&mut draft, "core/whole-number", [0.0, y])
-            .unwrap();
-        host.set_input(&mut draft, (number, "value"), Some(value))
+    let chain = |host: &Host, draft: &mut Draft, value: &str, y: f32| {
+        let number = host.add_node(draft, "core/whole-number", [0.0, y]).unwrap();
+        host.set_input(draft, (number, "value"), Some(value))
             .unwrap();
         let absolute = host
-            .add_node(&mut draft, "org.orange.math/absolute", [200.0, y])
+            .add_node(draft, "org.orange.math/absolute", [200.0, y])
             .unwrap();
-        host.connect(&mut draft, (number, "result"), (absolute, "value"))
+        host.connect(draft, (number, "result"), (absolute, "value"))
             .unwrap();
         (number, absolute)
     };
-    let (first, first_absolute) = chain("5", 0.0);
-    let (_, second_absolute) = chain("-3", 200.0);
+    let (first, first_absolute) = chain(&host, &mut draft, "5", 0.0);
+    let (_, second_absolute) = chain(&host, &mut draft, "-3", 200.0);
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, draft.text().unwrap());
     let shown = |editor: &Editor, node| {

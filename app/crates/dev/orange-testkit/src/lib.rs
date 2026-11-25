@@ -6,12 +6,32 @@
 //! panic on failure, as test code does.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::missing_panics_doc)]
 
+#[cfg(feature = "ui")]
+pub mod ui;
+
 use orange_model::id::{NodeId, VariableId};
 use serde_json::{Value as Json, json};
 use std::time::{Duration, Instant};
 
 /// How long [`until`] waits before it fails the test.
 pub const WAIT: Duration = Duration::from_secs(20);
+
+/// Time a prepared workload after three warmups. Prints the results in milliseconds.
+pub fn measure_batches(label: &str, mut batch: impl FnMut()) {
+    for _ in 0..3 {
+        batch();
+    }
+    let mut samples = [Duration::ZERO; 20];
+    for sample in &mut samples {
+        let start = Instant::now();
+        batch();
+        *sample = start.elapsed();
+    }
+    samples.sort_unstable();
+    let median = (samples[9] + samples[10]).as_secs_f64() * 500.0;
+    let tail = samples[19].as_secs_f64() * 1000.0;
+    println!("{label}: median={median:.6} ms p99={tail:.6} ms");
+}
 
 /// The ID text every test uses for node or variable number `n`.
 pub fn id(n: u32) -> String {
@@ -50,10 +70,21 @@ pub fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
         "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
 }
 /// Waits until `done` is true, failing the test after [`WAIT`].
-pub fn until(what: &str, mut done: impl FnMut() -> bool) {
+pub fn until(what: &str, done: impl FnMut() -> bool) {
+    until_with_context(what, done, || ())
+}
+
+/// Captures a redacted diagnostic snapshot only if the expected state is not reached.
+pub fn until_with_context<T: std::fmt::Debug>(
+    what: &str,
+    mut done: impl FnMut() -> bool,
+    context: impl FnOnce() -> T,
+) {
     let start = Instant::now();
     while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
+        if start.elapsed() >= WAIT {
+            panic!("timed out waiting for {what}. Last state: {:?}", context());
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
 }

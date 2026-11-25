@@ -8,9 +8,9 @@ use crate::document::{BodyRef, GraphDocument, PortDirection, PortKind, Suspends}
 use crate::id::NodeId;
 
 use super::connections::ConnectionValidation;
-use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
+use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
-use super::scope::{NodeSubset, Scope, Tally};
+use super::scope::{NodeSubset, Scope, Tally, valid_control_edges};
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -79,12 +79,7 @@ fn control_cycles_among(
         incomplete_nodes: connections.incomplete_nodes.clone(),
         ..ControlCycleValidation::default()
     };
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     let certified = |node: NodeId| {
         resolved
             .get(&node)
@@ -97,14 +92,7 @@ fn control_cycles_among(
         };
         tally.add(|visits| visits.bodies += 1);
         let mut full = Graph::new();
-        for edge in super::scope::edges_of(body, only, tally) {
-            if error_edges.contains(&edge.id)
-                || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
-                || !body.nodes.contains_key(&edge.from.node)
-                || !body.nodes.contains_key(&edge.to.node)
-            {
-                continue;
-            }
+        for edge in valid_control_edges(body, only, &error_edges, tally) {
             tally.add(|visits| visits.ports += 2);
             match (resolved.port(&edge.from), resolved.port(&edge.to)) {
                 (Ok(from), Ok(to))

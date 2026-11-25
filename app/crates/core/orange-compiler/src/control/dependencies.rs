@@ -17,34 +17,53 @@ pub(super) fn host_dependencies(
     items: &mut usize,
     scratch: &mut UnionScratch,
 ) -> Result<Vec<Arc<[usize]>>, CompileError> {
-    let host_indices: BTreeMap<_, _> = data
-        .host_inputs()
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.index(), i))
-        .collect();
+    // Lowering appends each host input with its data node, in the same order.
+    let mut host_indices = data.host_inputs().iter().enumerate().peekable();
     let mut dependencies: Vec<Arc<[usize]>> = Vec::with_capacity(data.nodes().len());
     for node in data.nodes() {
         options.checkpoint()?;
-        let inputs = if let Some(index) = host_indices.get(&node.index().index()) {
-            charge(items, 1, options.limits.max_graph_items)?;
-            Arc::from([*index])
-        } else {
-            let producers = node
-                .inputs()
-                .iter()
-                .filter_map(|i| i.producer)
-                .map(|i| {
-                    dependencies
-                        .get(i.index())
-                        .ok_or(CompileError::ValidationIncomplete)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            union_inputs(producers, options, items, scratch)?
-        };
+        let inputs =
+            if let Some((index, _)) = host_indices.next_if(|(_, input)| **input == node.index()) {
+                charge(items, 1, options.limits.max_graph_items)?;
+                Arc::from([index])
+            } else {
+                let producers = node
+                    .inputs()
+                    .iter()
+                    .filter_map(|i| i.producer)
+                    .map(|i| {
+                        dependencies
+                            .get(i.index())
+                            .ok_or(CompileError::ValidationIncomplete)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                union_inputs(producers, options, items, scratch)?
+            };
         dependencies.push(inputs);
     }
+    if host_indices.next().is_some() {
+        return Err(CompileError::ValidationIncomplete);
+    }
     Ok(dependencies)
+}
+
+/// Data nodes are in producer-first order. Compute each cone's entropy fact once.
+pub(super) fn entropy_dependencies(
+    data: &DataPlan,
+    options: CompileOptions<'_>,
+) -> Result<Vec<bool>, CompileError> {
+    let mut entropy = Vec::with_capacity(data.nodes().len());
+    for node in data.nodes() {
+        options.checkpoint()?;
+        let mut draws = matches!(node.operation(), DataOperation::Entropy(_));
+        for producer in node.inputs().iter().filter_map(|input| input.producer) {
+            draws |= *entropy
+                .get(producer.index())
+                .ok_or(CompileError::ValidationIncomplete)?;
+        }
+        entropy.push(draws);
+    }
+    Ok(entropy)
 }
 
 /// Union of strictly increasing host-input sets, sharing the input set when all are

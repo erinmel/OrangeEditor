@@ -6,6 +6,44 @@ exists. It draws on node editors people already know (Blender's node editors, Un
 Blueprints, Houdini, ComfyUI, Warudo) and on the owner's review of the current editor.
 It changes no graph semantics; where a change needs one (11), it is called out.
 
+## Finding nodes and connecting distant sections
+
+The picker groups built-in nodes by task: Flow & triggers, Data & text, Math &
+logic, Files & network, Audio, and Utilities. Sections within those groups keep
+related nodes together, such as Loops, JSON, HTTP Request, and Audio routing.
+Search matches group and section names alongside node labels and aliases. Hover
+a heading for its purpose. Nodes opens by default and the application remembers
+the last sidebar tab chosen explicitly.
+
+Place Wireless Signal to create a named run event with an Emit and an On Event.
+Wire the source trigger into Emit and wire each On Event into its own flow.
+Use Add signal receiver in the sender card or in either endpoint's context menu.
+Use Add signal sender in the context menu to attach another Emit to the same event.
+Deleting an endpoint removes that card and its attached wires. The named event and
+the other cards stay available, even after the last sender or receiver is deleted.
+An Emit with no listeners still continues on its normal exit. Hover an endpoint
+to reveal dashed links. Each receiver starts a separate activation through the run event queue
+(11 §10). Pass shared information as the event payload or through a declared
+variable. The links describe event routing on the canvas and are saved through
+the event references on the nodes.
+
+For a larger automation, group the trigger, data preparation, and effects where
+each can be inspected independently. For example, a timer can start an HTTP JSON
+request, route its success through JSON Field and a typed conversion, and use
+For Each for a side effect per item. Use Repeat with State to carry a result from
+one iteration to the next, or Make Function to expose typed inputs and outputs for
+reusable calculations. One Wireless Signal can reach independent destinations
+such as a log and a dashboard. The CLI starter graphs in the README show the
+corresponding HTTP, loops, failure and event patterns.
+
+In Settings, the theme tiles preview and select System, Light and Dark. System
+shows both palettes on a diagonal and may preview additional sidebar, canvas,
+button and text surfaces. Editing a shortcut immediately waits for a
+key combination, showing held modifiers as you press them. Confirm it to save,
+use Escape to cancel, or explicitly reassign
+a conflicting binding. Search accepts the displayed action, category and key
+combination in the selected language.
+
 ## 1. Principles
 
 1. **The canvas is where work happens.** Anything a person sets often (a number, a
@@ -28,13 +66,14 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 | Area | Decision |
 |---|---|
 | Wheel | Zooms about the pointer by default. Shift+wheel scrolls sideways, Ctrl+wheel up and down. A setting gives back scroll-first for trackpads. |
-| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented radio group for Dots, Lines and Hidden, with one highlighted choice and arrow-key navigation. The spacing slider shows four stops at 12, 24, 36 and 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom percentage opens a continuous slider, Fit and Actual size. The slider keeps the center point of the viewport fixed. |
+| Grid | A magnet icon toggles Snap to grid. Grid settings uses one segmented radio group for Dots, Lines and Hidden, with one highlighted choice and arrow-key navigation. The spacing slider shows four stops at 12, 24, 36 and 48 graph units. The same controls are available in Display and canvas. Grid visibility is independent of snapping. The default spacing is 24 graph units. Round dots and pixel-aligned lines use stronger marks every four steps. Below 12 points between minor marks, only the stronger grid is drawn. Both grids keep their alignment as the canvas pans and zooms. Alt while dragging moves freely. The zoom ranges from 20% to 175%. The zoom percentage opens a continuous slider, Fit and Actual size. The slider keeps the center point of the viewport fixed. |
 | Resize | The desktop uses the platform window frame for resizing. Resizing the window or a dock preserves the graph point at the center of the canvas. |
 | Overlap | Selection, dragging, and completed inline edits bring a card forward. The last active card stays in front when selection clears. A front card covers only the area it overlaps and receives pointer input there. Exposed controls on rear cards stay visible and usable. |
-| Wires | Execution ports are diamonds, stream ports are squares, and other data ports are circles. Execution wires are thicker. Connector hues are adjusted for contrast against the canvas and card surfaces. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked for Insert node / Delete. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
-| Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect outputs even without outgoing wires. |
+| Wires | Execution ports are diamonds, stream ports are squares, and other data ports are circles. Execution wires are thicker. Connector hues are adjusted for contrast against the canvas and card surfaces. Hovering a port shows its full label and type. A wire can be hovered (it thickens), clicked to select (Delete removes it), and right-clicked to insert a node, set or remove a reroute point, or delete the wire. Reroute points can be dragged and are saved as layout, independent of execution. Dragging a node over a wire highlights it; letting go inserts the node between both ends when its ports fit (the model's insertion transaction, 12). |
+| Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect and variable-update outputs even without outgoing wires. Previews read JSON as its text, enum values by choice name, collections as `[1, 2, …]` and `{key: value}` summaries, and records by type name; long decimals in number fields show five places. |
 | Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires use the same diagnostic colour. A port outline shares the connector centre and follows its diamond, square or circle at every zoom. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent search, filters and scroll positions. |
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
+| Empty | A graph with no nodes shows, at the centre of the canvas, how to begin: Tab or right-click to add a node, or drag one from the Nodes panel. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
 ## 3. Cards
@@ -90,6 +129,12 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   trigger with the corresponding transition and a boolean input.
   Guard places a Branch with a boolean condition. Wire its True output to
   continue when the condition passes.
+  A new On timer fires every second, first after one interval, and a new On timeout
+  after one second, so a placed timer runs without further set-up.
+* **Variable writes.** Set and Update cards show what they do under the flow row,
+  with the typed value or the wired input's name: `Counter ← Counter + 1`,
+  `Counter ← 0`. A renamed card ("Add one") keeps showing its operation. Properties
+  repeats the line.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 * **Arithmetic.** Add and other arithmetic cards use their named ports and values.
   Comparison cards may retain a comparison expression. Ordinary arithmetic has
@@ -104,6 +149,9 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   errors name the connection when it is known. Embeddings without a dialog handler
   show a text field.
   Device nodes have an inline device selector. Fields preserve their JSON types.
+* **Properties** shows the node's name, kind, description and set-up, its inputs, an
+  Outputs list with each output's type, observed values, and a destructive Delete
+  node. A record or enum node names a graph's own type by its declared name.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.
 * **Composition.** Embedding applications may call `Editor::ui_with_layout` and
@@ -114,21 +162,100 @@ It changes no graph semantics; where a change needs one (11), it is called out.
   centered chevron and the theme's selection outline on focus or when open.
 
   The private `orange-ui-controls` crate owns button roles, dropdowns, search
-  layout, icon button geometry, disclosure rows, segmented radios and sliders. The semantic
+  layout, icon button geometry, disclosure rows, notebook tabs, segmented radios,
+  continuous and stepped sliders, marked sliders and circular knobs, checkboxes,
+  switches, simple and emphasized radios, text fields and text areas, shared
+  dialog and popup frames, and reusable level-meter and chart representations.
+  Notebooks support horizontal and vertical orientations with compact or
+  comfortable padding. Editor dock tabs fill the available width and move to an
+  overflow menu when the labels no longer fit. The tab row and search field use
+  the visible panel width during resizing. Buttons expose solid, outline, ghost and subtle visual
+  styles plus persistent toggle state, hover, pressed, focused and disabled states.
+  The editor owns card layout, port geometry, wiring, document settings and commit rules.
+  Both search and placement previews use the same card layout as the live canvas.
+  The normal template reads the host projection of typed ports, defaults, references,
+  and settings. A specialized renderer checks the projected shape it consumes and
+  falls back to the normal template for incompatible definitions. Presentation
+  does not change which ports the graph can wire.
+  Geometry presets cover rounded, compact, pill, no-border and square buttons.
+  Semantic tones cover neutral, info, success, warning and danger. Confirmation
+  pairs keep Cancel neutral and Confirm on a selected semantic tone. Border,
+  radius, fill and foreground are host-theme tokens shared with every other control.
+  Meter and chart modules own continuous, segmented and line/area/bars drawing;
+  OrangeEditor supplies normalized audio values and graph-specific thresholds.
+  The semantic
   palette exposes text, muted text, panel, dialog and inset layers, plus colors
   and foregrounds for primary, secondary and destructive actions. Apps can
   override those tokens per egui context. Tertiary actions and quiet menu
   buttons gain emphasis on hover. Hover and press transitions follow egui's
   animation time, including immediate state changes when it is zero.
   Apps supply their own icons and labels. Connection form actions wrap as the
-  panel narrows, and the segmented control stacks its choices in one frame.
-  Two-option and multi-option selectors share an indicator that moves to the
-  selected segment using the same animation time. A short underline shows keyboard
-  focus while the indicator moves.
-  Continuous and stepped sliders share a thin rail and pill-shaped thumb. The
-  stepped control draws small borderless pills in the thumb's shape that blend
-  into the active or inactive rail, optionally labels values below it,
-  and changes by one step with the arrow keys. Grid spacing shows the labels.
+  panel narrows. Notebook tabs never change height: when a narrow dock cannot
+  show every tab, overflow tabs move into a fixed-height dropdown while the
+  selected tab remains visible.
+  Panel notebooks fill their available panel width: left and right docks distribute
+  compact tabs across the row, and the bottom Problems/Log notebook aligns its
+  search and content beneath the same header. Fixed-width notebooks remain opt-in
+  for dialogs and toolbars.
+  Notebook padding is compact by default: text has a short inset, the frame
+  has two to four units of inset, and tab height remains 28 units. Comfortable
+  padding is an opt-in alternative for larger dialogs, never a narrow-dock default.
+  Two-option and multi-option selectors use an intrinsic pill track with an
+  animated active pill. Options stack when their measured labels and padding
+  exceed the panel width. A single pill carries the selection through the
+  entire transition. A small underline identifies keyboard focus.
+  Every button family uses the same interaction precedence: disabled suppresses
+  interaction and lowers contrast; selected or active is persistent; pressed is
+  transient while held; focused has a visible outline independent of pointer
+  hover; hovered lightens its fill; inactive uses the rest state. A boolean
+  toggle exposes on/off; a segmented radio or radio list exposes one choice;
+  a checklist or multi-select exposes several independent choices.
+
+  The shared component theme supports System, Light, Dark and custom palettes,
+  plus High Contrast Light and High Contrast Dark. The high-contrast palettes
+  use text and semantic inks at 7:1 or higher against their surfaces, prominent
+  borders and two-point focus rings. Notes and validation states pair color with
+  a symbol or text. Hosts supply localized accessibility labels, and custom
+  actionable shapes expose egui widget roles and state. The component defaults
+  are Compact at 24 points and Comfy at 40 points, with spacing multiples
+  `[1, 2, 4, 6, 8]` of two and three points respectively. Editor desktop
+  defaults use Compact. The shared modal opts into Comfy.
+
+  Run `cargo run -p orange-ui-controls --locked --example gallery` to see all
+  component examples on one scrollable canvas. Appearance tiles follow the
+  Settings layout, including the split System preview, and apply the palette
+  to the whole gallery. Compact and Comfy apply the density across the page.
+  Button roles, continuous and stepped sliders, disabled controls and
+  validation examples appear inline. Gallery rows measure their tallest card
+  from child content. Menu lists use full-width borderless rows, a dedicated
+  icon column and muted shortcut hints. Structured dialogs use a fullscreen
+  dim backdrop, separate header, scrollable body and footer, and Escape close.
+  The WAV preview decodes on a worker and optionally plays a bounded mono
+  preview on the default playback device after explicit activation.
+  Section links live in the header so the canvas uses the full window width.
+  File fixtures browse or accept file drops and list selected names. Clock
+  wheels support focused arrow keys, scrolling and vertical pointer drags. They wrap hours at 24 and minutes and seconds at 60, independently.
+  Search has a pill-shaped inset field and leading icon. Plain inputs use a
+  rectangular inset, dropdowns add a chevron, and text areas offer resize grips.
+  Input borders and active toggle text meet the gallery contrast checks.
+  The gallery's audio preview uses four adjustable biquad bands, a logarithmic
+  20 Hz–20 kHz plot, a 2048-sample Hann FFT of a 48 kHz synthetic trumpet and a
+  post-EQ waveform. Its stereo dBFS meters use separate peak, RMS and held
+  values, 6 dB ticks, and per-channel clipping latches. The demonstration runs
+  on the UI side and uses a pausable signal. Visible signal displays target 60 Hz and the spectrum targets 30 Hz. Pausing or scrolling all live displays out of view suspends signal processing. EQ response samples are cached by band settings, sample rate and plot resolution.
+  Continuous and stepped sliders share a thin rail and circular thumb. The
+  stepped control blends its stops into the active or inactive rail, places
+  optional labels just below it and changes by one step with the arrow keys.
+  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound.
+  Drag up or right to increase the value, hold Shift for a fine adjustment,
+  focus the knob to nudge it with the wheel or arrow keys, or double-click the centered readout
+  to enter a number.
+  Continuous marked sliders show guide notches without snapping. Canvas zoom
+  uses guides at 50%, 75%, 100%, 125%, 150% and 175%, but accepts every value within 20–175%.
+  A guided slider may hide guides, show only pills, show only labels, or show
+  pills and labels. A strict guided slider snaps to its configured step; a free
+  guided slider never snaps. Circular controls share the same guide and step
+  concepts for values that suit a dial.
 
 ### 3.1 Card anatomy (rules, 2026-11-18, revised)
 
@@ -164,6 +291,30 @@ other code places anything on a card.
   it reaches its most; removing one is in Properties.
 * **A wired input keeps its name line only**, with the value it received in a pill
   at the right while a run reports it. Unwiring brings its field back.
+* **Typed input details** are shared between the card and Properties. A port's
+  help distinguishes an inherited default, an implicit None, a required value,
+  a saved literal, and a wire shadowing a saved literal. Option and aggregate
+  controls edit canonical values and apply one validated edit. Make Record can
+  explicitly omit schema-optional fields. Build Map offers paired rows while
+  both typed input lists are unwired.
+* **Loop cards** identify begin, end and result. Before an authoring gesture
+  changes a For Each between list and map, the editor shows the affected Items
+  value or wire, type pins and body wires. A confirmed change is one undoable edit.
+* **Fire With Value** opens a transient typed sample for a running root manual
+  entry that accepts a payload. The host validates it against that running
+  incarnation and rejects submissions after the flow is replaced.
+* **Saved ports** remain available for inspection and existing wires when their
+  provider is unavailable. A wire whose saved endpoint has no matching port
+  has a repair marker. Backward wiring highlights matching live outputs using
+  matches computed for the active drag. A converter chosen for a splice is one
+  edit, with the original wire and waypoint restored on undo.
+* **Failure routes** are available below the primary rows on cards with implicit
+  failure or cancellation ports. Expand the section with its button, with Enter or
+  Space while focused, from Properties, or with the selected card shortcut
+  (Alt+O by default). Wired routes, a pending wire's source and the focused
+  diagnostic port stay visible when collapsed. A wired Error also keeps Failed
+  visible. Error is available only on the Failed path. The disclosure is view state
+  and leaves primary port positions and graph edits intact.
 * **Edit card values in place.** Controls such as the color picker can open an
   anchored popup. Tuning settings such as the analysis window live in Properties
   under Advanced.
@@ -224,6 +375,25 @@ Names only on the left and Node cards on the right.
   Enter adds.
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
+* **What a wire offers** (2026-11-24). A wire let go on empty canvas lists the kinds
+  that take it (`Host::takers`); Insert node… on a wire lists the kinds that take its
+  output and go on into its input (`Host::splice_takers`). Matching binds each kind's
+  type parameters once and checks their constraints (`orange_model::fit::PortFit`), so
+  a whole number never offers List Length, a `list<i64>` wire into a `list<i64>` input
+  offers List Reverse but not List Length, and a decimal offers Greater but not Equal
+  (11 §5.3). A step goes on through `then`, else a loop's `completed`; failure,
+  cancellation and loop-body ports and triggers are never offered as guessed
+  continuations. Explicit conversions stay listed for a value wire let go on canvas.
+* **Wires from inputs.** A wire can also be dragged back from an input. Let go on an
+  output of the same sort, it connects there. Let go on empty canvas, the search lists
+  the kinds with an output that feeds the input (`Host::givers`, same matching), with
+  triggers for a step input, and wires the choice's output into it.
+* **One action, one undo.** Choosing from a dropped wire, from either end, or a
+  conversion for it, places the node and wires it as one edit (`Host::grouped`), like
+  Insert node…: one undo takes both back. A choice
+  the language refuses, or a graph that changed while the search was open, changes
+  nothing: the graph, the selection and the undo and redo history stay as they were,
+  and the Log says why.
 * The right-click menu is the command centre: on the canvas (Add node… with search,
   Paste, Group, Arrange, Snap), on a card (Properties, Rename, Duplicate, Disable,
   Group, Make function, Delete, Help), on a wire (Insert node…, Delete), on a port
@@ -246,25 +416,24 @@ Names only on the left and Node cards on the right.
   and the unsaved indicator remain in the status bar.
 * Settings uses a centered, resizable dialog with a search field above the text
   navigation in the left sidebar, an independently scrolling content pane, and a
-  fixed Done button below the left navigation. On compact windows it stays at the
-  bottom left below the content. On wide windows the settings page scrolls to
-  the bottom of the window alongside the sidebar action. General groups Language
+  Done button spanning the left sidebar. On compact windows with a top navigation
+  strip, Done uses the bottom footer. General groups Language
   and Node search. Node search displays either names or read-only canvas cards with
   their ports and charts directly in the results. The same choice applies to the node
   tree and canvas quick-add. Search and the section selector share a single strip in
   compact windows. Search finds settings sections, shortcut
   actions and key combinations. Display and canvas groups controls by interface,
   including the persisted System, Light, and Dark appearance choices,
-  panels and canvas. Light and Dark theme samples show the window, navigation,
-  input, and selection colors before changing the active theme. Choice labels align
+  panels and canvas. Choose the Light or Dark preview to apply that theme. The
+  System preview shows both palettes on a diagonal and follows the OS. Choice labels align
   in a column when space permits and stack above their controls in compact windows.
   Interface scale applies when a percentage is chosen in its dropdown. At large
   scales or narrow widths, the editing commands can scroll
   horizontally so Settings and the run controls stay visible.
   The Keyboard shortcuts page displays grouped, left-aligned action labels and
-  single-line bindings. Select a binding to replace its cell with an inline field
-  and compact actions while keeping the same row height. Type
-  a replacement or use Record keys to capture a chord. Shortcuts can be removed or reset, and conflicts require
+  single-line bindings. Select a binding to record a chord in its cell while
+  keeping the same row height. Confirm or edit the captured chord there. Shortcuts
+  can be removed or reset, and conflicts require
   explicit reassignment. The desktop saves bindings, node language and canvas preferences
   under the user's configuration directory on exit. Graph documents carry none of
   these preferences.
@@ -275,11 +444,17 @@ Names only on the left and Node cards on the right.
   running. Icons are centered within their buttons. Hovering an enabled button
   highlights its background, including the red Stop control. Menu and toolbar
   shortcut labels follow the current binding.
-* Problems has a search field and filters for Blockers, Warnings and Drafts.
-  Drag over diagnostic text and use the system copy shortcut to copy the
-  selection. The **Show the node** button jumps to the affected node.
-  **Copy visible problems** copies the current results with their severity,
-  diagnostic code when available, message and location.
+* Problems has a search field and an inline severity dropdown for Blockers,
+  Warnings and Drafts. The dropdown and search are on one flex row; no extra
+  filter row is drawn.
+  Each row has a checkbox for multi-selection. Ctrl/Cmd+C copies only selected
+  rows as formatted plain text with severity, diagnostic code, affected node
+  and message. **Clear selection** clears the checkboxes and **Copy selected
+  problems** repeats the same plain-text copy.
+  Log uses the same element-first flex-row rule: level filter, live-trace and
+  clear actions come before search. Problems and Log do not add a separate
+  notebook inside the bottom diagnostics panel.
+  The **Show the node** button jumps to the affected node.
   Search matches node names, text and diagnostic codes. Blockers appear first.
   The workspace badge counts blockers and warnings. Drafts have their own count in
   the panel.
@@ -325,9 +500,10 @@ severity choices and literal messages.
 
 ### 4.2 Shared controls
 
-Use the editor's public `orange_editor_ui::controls` module for choices, panel
-search, framed actions and menu rows. Applications embedding the editor can reuse
-these controls in their own layouts with their own egui theme.
+Use `orange-ui-controls` for reusable layout and presentation. The editor's
+public `orange_editor_ui::controls` module supplies its localized labels and
+icon defaults. Applications embedding the editor can reuse the controls with
+their own egui theme.
 Choose `Surface::Panel` in a dock or toolbar, `Surface::Dialog` in a window or
 modal, and `Surface::Card` for fields drawn on the canvas. Fills and borders are
 derived from that surface and the active theme. Canvas controls retain the card's
@@ -369,19 +545,33 @@ default fonts across platforms.
 | Outlined button | Use `Action::Outline` for Cancel, Close, and secondary dialog actions. Its resting fill matches the surrounding surface. |
 | Destructive button | Use `Action::Destructive` for commands that remove saved data. Pair a restrained error tint with an explicit label. Clear log is a neutral command with a centered trash icon and is disabled for an empty log. |
 | Toggle | Use `Action::Toggle` for pressed commands and filters, and the labeled toggle for a Boolean setting. Keep inactive toggles flat. Toggle and segmented controls share the selection fill and focus color. |
-| Menu row | Use `Action::Menu` for commands in context menus. Align the shared command icon, label and shortcut. The row gains a background on hover or focus. |
+| Menu row | Use `menu_item` for context commands. Center icons and text on the same row, align labels to the leading edge, and place shortcut labels at the trailing edge. |
+| Toolbar | Use `action_row` when actions precede a search field. Search fills the remaining width or wraps below when the dock is narrow. |
+| Form | Use `form_grid` for labels and fields, with shared column and row spacing. Single-line fields center text vertically. |
+| Window and popup | Use `dialog_window`, `modal`, or `anchored_popup` for shared surface, radius, border and inset. Keep command routing and close rules with the caller. |
+| Keyboard navigation | Use `consume_plain_keys` after deciding which control owns focus. Bindings and conflict rules belong to the editor. |
+| Notice | Use `notice` for an inline warning or error, with text that conveys the state. |
 | List row | Use the shared raised row surface for clickable search results. The palette owns node names, card previews, and the drag payload. |
 | Dialog actions | Put Cancel first, followed by one filled confirmation, in the shared recessed footer. Use the primary color for actions like Install and Save, and the destructive color for Remove. |
 
 Toolbar icon buttons and list rows retain their compact shapes and visible hover
-and focus states. Use the shared controls whenever a choice or action needs a
-visible boundary at rest.
+and focus states. When a screen introduces a repeated pattern, define its layout,
+spacing, and enabled and focused states in the shared crate before using it
+across screens. For changes to a shared component, exercise narrow and wide
+layouts, Light and Dark, keyboard focus, and localized text where relevant. Run
+the shared-control and editor tests before adopting the change more broadly.
 
 ## 5. Variables and connections
 
 * **Variables** filter by name, type or scope. Each scope groups editable names,
   types and initial values, with the current value shown while running. Drag a
-  variable onto the canvas for Get or Alt-drag for Set. The node tree also lists
+  variable onto the canvas for Get or Alt-drag for Set; a variable shared by all
+  graphs gets Set shared, the only write the language accepts for it. Each row also
+  has Get and Set buttons that place the node in view, and says how many nodes use
+  the variable; clicking that selects and shows them. Scopes read *This trigger
+  only*, *While the graph runs* and *Shared by all graphs*, and persistence reads
+  *Remember after stopping*. The first run of a graph that declares shared variables
+  declares them in the host. The node tree also lists
   draggable Get variable and Set variable nodes. Each picks the variable by name and
   type. Declaring from a node opens the same Variables form and selects the new
   variable on the originating node.
@@ -392,7 +582,8 @@ visible boundary at rest.
   adapter's settings are drawn from its schema; a secret field (password, token, key)
   is entered in a masked field and stored in the operating system's credential store,
   and the document keeps only the `credential://` reference (12, ADR-21). A connection
-  shows whether it is in use, by which nodes, and can be tested (open, ping, list
+  shows whether it is in use, by which nodes (clicking the count selects and shows
+  them), and can be tested (open, ping, list
   devices). Saving edits to an existing connection keeps its form open and
   reloads the persisted values and credential references. Done closes the form.
 * Text, binary and streamed HTTP requests use the same Method dropdown on the
@@ -412,6 +603,22 @@ visible boundary at rest.
   providers stay in the list. Removing a version preserves running flows and the
   saved provider bindings of graphs that use it. The host refuses removal while
   another installed package depends on that version.
+* **Access per package.** An installed package that asks for grants shows them as
+  boxes in its row; unticking one revokes it for graphs started afterwards
+  (`Host::set_access`, 04). Nothing is ticked for the person at import.
+* **Share with packages** saves the open graph with the stored archives of the
+  packages it is locked to as one `.orangebundle` file (`Host::export`); packages
+  without a stored archive are named in the Log. **Open shared graph** lists what the
+  file carries, marks what is installed, asks for each missing package's grants and
+  names what the file lacks. It can install and open, or open without installing; the
+  graph opens as a new, unsaved document.
+* **A node whose package is missing** keeps its card, settings and wires: its ports
+  come from the saved signature, its title tooltip and Properties name the package and
+  version, and Properties offers Install package. The node runs once the package is
+  installed.
+* **Full-access plugins** (desktop only) lists native plugin libraries waiting for a
+  decision and the ones allowed, with the risk in plain words, and opens at start
+  when a new or changed library waits.
 
 ## 6. Audio
 
@@ -419,14 +626,23 @@ Connect Audio Source to Frequency Splitter to view its live frequency line. Drag
 across the plot and release to add one filtered audio stream output to the card.
 Draw across another range to add another output. Each output row has editable
 name and frequency fields and a visible delete button. The rows sort by their
-lower frequency. Editing a band preserves its port keys and wires. Removing a band removes its wire connections in one
+lower frequency. The raw spectrum is also available as an output port.
+Editing a band preserves its port keys and wires. Removing a band removes its wire connections in one
 undoable edit. Drawing on an older spectrum card upgrades it in the same edit
 and preserves existing level and execution outputs and their wires.
 
 The plot, bands and ports use the card's zoom scale. The pointer shows the
 frequency under it. Collapse Frequency chart to stop painting the plot and
-preparing new display samples. The band controls and filtered outputs stay available.
+building the trace geometry. The latest display samples remain available when it reopens.
+The band controls and filtered outputs stay available. The splitter shares the
+EQ gallery’s plot frame, axes and cached trace painter. It supplies logarithmic
+analyzer buckets and editable band ranges. The gallery supplies FFT bins and
+response curves. Unchanged traces reuse the tessellated mesh.
 The spectrum, Audio Level Trigger and connection meters show -120 to 0 dBFS.
+The canvas and Properties distinguish disconnected, stopped preview, waiting for samples,
+and live input. Properties identifies the connected upstream node and output port.
+A connected stopped preview shows the chart or meter scale without audio.
+Silence is a valid live reading at the floor.
 
 The Audio group starts with Audio Source, Frequency Splitter, Audio Level Trigger
 and Audio Out when browsing or searching for audio. Audio Source uses the full
@@ -434,12 +650,35 @@ connection row for its device picker. Searching for Audio In finds Audio Source.
 Transient remains searchable for graphs that react to sudden hits, such as kicks.
 
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
-The vertical green, yellow and red meter rises immediately, decays smoothly and
-briefly holds the recent peak. The Level output shows the current reading beside
+The trigger and gallery use the same segmented RMS widget, including the level
+zones, held-peak animation, clipping lights and target marker. A live stereo
+input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane. For
+more than two channels, the display uses aggregate RMS and the highest channel
+peak. Each red light latches when a measured sample reaches full scale and
+clears when the stream is lost or the analyzer restarts. With a stopped or
+unavailable input, the meter shows empty L/R lanes with unlit clip indicators
+and keeps the threshold marker in place.
+The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold in the settings column.
-The direction and hold duration sit in the same column.
+The direction, hold duration and reset margin sit in the same column.
+Hold and Reset margin use the same rotary controls as Properties, with a smaller
+face on the canvas and a side-by-side layout. The knob face shows the value and can be double-clicked to type.
+The meter marker, slider and numeric threshold control mirror the active drag.
+Release commits one undoable edit. A typed threshold commits when editing ends.
+Threshold, Hold, and Reset margin configure the trigger's subscription.
+Hold requires
+continuous qualification. Reset margin is the amount the signal must move past the
+threshold in the opposite direction to rearm after a firing.
 Level and Condition met are live data outputs. Triggered continues execution
-after qualification.
+after qualification. The threshold, hold and reset always apply to aggregate RMS.
+The Channel levels output carries RMS and sample peaks in dBFS and clip flags
+in stream channel order, including all channels of a multichannel stream.
+Version 1 trigger cards upgrade when a graph opens and keep their settings and
+existing wires.
+
+Editable duration inputs on the canvas and in Properties show milliseconds and
+accept fractional milliseconds up to nanosecond precision. Dragging steps by
+whole milliseconds. The graph still stores its duration literals in nanoseconds.
 
 Place Noise Gate between a source and Audio Out, Record to File or another
 stream consumer to mute quiet samples. Threshold sets the level to open, Reset
@@ -503,3 +742,68 @@ The canvas indexes incoming wires once per frame for displayed values and formul
 Port value reads borrow their keys. Wire hit testing skips curves whose bounds do not
 reach the pointer. Frame timing and interaction latency still require measurement on
 dense graphs.
+
+### Portable control composition
+
+Simple fields expose their value, label and focus. An advanced field adds units,
+stepping or validation. A composite owns the interaction across its children,
+such as a calendar or media transport. The host owns persistent state, translated
+labels, media decoding, native pickers and permission lifetimes.
+
+- Give editable fields persistent labels. Icons identify a field purpose and
+  supplement its name. Put an actionable error beside its field. Preserve the
+  draft across resize, validation and theme changes. Single-line edits can use
+  platform IME input. Multiline editors retain vertical, horizontal or two-axis
+  resizing on desktop; narrow hosts should choose vertical resize.
+- Use 4.5:1 for normal text and 3:1 for large text and essential control
+  boundaries. Compare against the actual adjacent fill, including selected and
+  hovered states. Pair semantic colors with text or a recognizable symbol.
+- Voice previews group play/pause, a seekable waveform and elapsed/duration.
+  Equal fader travel represents equal dB increments, with silence at the lower
+  stop and unity at the top. The output callback receives linear amplitude.
+- Inline video integration reserves a stable aspect-ratio rectangle. Hosts can
+  present decoded frames as textures or delegate playback to a native player.
+  Route caption selection, full screen, audio focus and app suspension to the
+  host. Android Media3 PlayerView and Apple system players are native integration
+  options. The desktop WAV gallery demonstrates audio playback.
+- A mobile host can render portable egui controls and supply its own picker
+  on activation. The optional synchronous desktop file dialog is available on
+  Windows, Linux and macOS. Mobile resource handles, including content URIs,
+  belong to the host and need not have a filesystem path.
+- Spruce and Parchment are original color selections and introduce no external
+  theme assets. Theme installation is idempotent for an unchanged configuration.
+The gallery reserves the measured space of offscreen catalogue cards without
+laying out their previews on steady frames. Width and density changes remeasure
+the cards. Horizontal slider thumbs use the same pill silhouette as the notches,
+with a larger size to distinguish the active handle.
+The gallery offers a left section menu on wide windows and a compact navigation
+menu plus bottom shortcuts on narrow windows. Section navigation moves the
+single canvas. An ellipsis opens item actions. Search scopes remain optional.
+Calendar popups use the same elevated frame, radius and selected foreground as
+cards and menus. Semantic note accents follow the frame contour in both densities.
+
+Session tables retain authored order. In sortable tables the active column and
+direction are visible, and sorting changes a row-index array only on activation.
+Browsed folders load on expansion off the UI thread. Cache directory listings
+and failures until refresh or folder replacement. File-name filtering operates
+on expanded folders without recursively scanning the filesystem.
+Resize affordances occupy the edge that moves: bottom for height, right for
+width and the lower-right corner for both axes. Long text scrolls within the
+chosen height. A toast may carry supporting text and stay until dismissed.
+The shared lifetime policy accepts 2–120 seconds for timed notices. Persistent
+gallery errors have a dismissal action and schedule no timer repaints.
+Midnight Contrast shares the high-contrast palette checks for text, semantic
+inks, boundaries, focus and selected text. Volume uses the themed slider rail
+with travel linear in decibels and silence at its lower stop.
+Wide settings panes and gallery navigation use full-width rows. Selection is
+marked by a leading accent and background tint. Disclosure rows expose
+expanded state and group child destinations. Both text and icons remain
+visible on the selected surface. A single-axis textarea grip spans 32 points
+along its movable edge, and the sort indicator is drawn independently of fonts.
+The editor canvas retains one grid mesh per canvas. Viewport bounds, camera,
+grid configuration, palette colors and display scale determine reuse. Display
+elision measures at most 4096 UTF-8 bytes of a label; copying and inspecting
+values keep their original data. The calendar heading centers between equal
+navigation targets and opens month and year grids in the same fixed-size popup.
+Choosing a year or month moves to the next grid. Only choosing a day commits a date.
+On selection or Escape, focus returns to the date field.

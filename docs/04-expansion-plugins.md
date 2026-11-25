@@ -25,8 +25,8 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 ## Contribution surface
 
 The table below is the selected extension contract. Current installed guest
-execution implements Pure, Action and Async nodes with concrete port types and empty
-config (K02c; effects 2026-11-10). The compiler and host also support package Entry
+execution implements Pure, Action and Async nodes with concrete port types (K02c;
+effects 2026-11-10); since 1.1 their settings reach the instance through `settings`. The compiler and host also support package Entry
 nodes fed by trusted native service sources, including incoming WebSocket text.
 Installed Wasm guests still lack host service imports, iterators and resource contributions. Trusted host type registration implements records, enums and handle kinds;
 arbitrary package scalar representations/codecs and complete archive contribution
@@ -136,10 +136,107 @@ replaced file gives its bytes back) and `HostOptions::plugin_http_hosts` lists t
 hosts requests may go to, where `.example.org` allows every host under that domain
 (anything else is `not-allowed`); `orange` takes `--plugin-quota-mb` and
 `--plugin-host`. Without them there is no limit. Limits: the quota counts at most
-10,000 files; a
-request blocks its node and cannot be interrupted by cancellation, only by the
+10,000 files. Pure evaluation and component initialization cannot use file or HTTP
+imports. Graph bindings expose host I/O only to Async nodes. An in-progress
+request occupies a worker and ends at its
 client's timeout; there are no sockets, clocks, random numbers, environment or
 processes for components.
+
+One engine also bounds concurrent stores, aggregate linear-memory bytes and
+aggregate table elements through `GuestLimits`. The defaults are 256 stores,
+512 MiB of linear memory and 262,144 elements. Dropping a store returns its
+capacity. Plugin calls check the combined input budget before copying values
+into the component and the output budget before returning them to a graph.
+
+Local HTTP, response headers and heavy compute (2026-11-24; `orange-guest`, `sdk/wit`,
+`orange-host`): a manifest's `permissions` may also list `"http-local"` and
+`"compute"`. `http-local` (`Grants::http_local`) links the same `http` import and
+reaches this computer and the local network over `http://` or `https://`:
+`localhost` and names under it, `.local` names, and loopback, private (10/8,
+172.16/12, 192.168/16) and link-local IPv4 and IPv6 literals, including unique-local
+`fc00::/7` (`orange_guest::is_local`). Other names are never resolved for this check,
+so a public name pointing at a local address is not local. `http` alone still reaches
+only `https://`, and the host list never limits local addresses. A request the grants
+do not reach is `not-allowed`; a scheme other than HTTP(S) or a malformed address is
+`invalid-request`. The `http.response` record carries `headers` (in the order received)
+before `body`; headers and body together must fit the transfer limit. An application's
+client must not follow redirects, or must check each new address the same way;
+`orange_net::fetch_response` follows none and sends `http://` only when asked.
+`compute` (`Grants::compute`) gives each call of that package's instances
+`HEAVY_COMPUTE_FACTOR` (16) times the engine's per-call fuel, transfer and input
+limits; memory and the engine's aggregate limits are unchanged. The `orange` command
+takes `--grant-http-local` and `--grant-compute`.
+
+Per-package access (2026-11-24; `orange-host`): what a package may reach is a
+`PackageAccess`: its `grants`, its own `http_hosts` and its own `data_quota`. A
+package's own list or quota replaces `HostOptions::plugin_http_hosts` or
+`HostOptions::plugin_data_quota` for it; without one the application's applies.
+`Host::install_with` installs with an access, `Host::access` reads it, and
+`Host::set_access` changes it later: a grant the manifest does not ask for is refused,
+and a revoked grant is not linked into instances made afterwards, so flows and
+previews opened afterwards cannot use it while running flows keep the instances they
+started with. The access is saved in `installed.json` beside the archive (`log`,
+`files`, `http`, `http-local`, `compute`, `http-hosts`, `data-quota`); an index
+written before these fields reads them as not granted and without own limits.
+`Host::requested_grants` returns what an installed package's manifest asks for and
+`Host::archive_key` names an archive without installing it.
+
+Plugin world 1.1 (2026-11-24; `sdk/wit`, `orange-guest`, `orange-sdk`, `orange-net`,
+`orange-host`): the package is `orange:expansion@1.1.0` and `host.api-version` answers
+(1, 1). It adds two imports and changes nothing 1.0 has, so components built against
+1.0 instantiate unchanged: Wasmtime 50 resolves component imports and exports by semver
+compatibility, and the 1.0 test components and `probe.wasm` run against the 1.1 host.
+`settings.get` (always linked) returns the JSON text of the node's saved `config`;
+package nodes may now have settings, which validation checks against their schema.
+Settings name declarations and never hold secrets. `websocket.send-text` and
+`send-binary` (the `"websocket"` permission, `Grants::websocket`, `--grant-websocket`)
+queue a message on the connection the node's settings name, for async nodes only. The
+host opens that connection like its own nodes' connections: the declared settings,
+credentials from the credential store after the graph's approval, the
+`ConnectionAuthorizer` policy for the graph and for each send, reconnection and the
+bounded outgoing queue all stay with the host, which hands the session to the guest for
+the one call (`Session::send_message`, `orange_sdk::Message`). The guest never sees the
+address or a token. A node that names no open connection gets `unavailable`, a full
+queue `quota-exceeded`, an oversized message `too-large`. Values keep their 1.0 form:
+interface types cannot be recursive, so records, enums, lists and maps cross as
+`orange.value.v1` literals the host checks against the registered type in both
+directions; changing the exported `value` variant would break every 1.0 component.
+Each node binding owns its instance, so a guest keeps per-instance state in its own
+memory between effect calls (`effects_keep_instance_state_and_report_their_own_errors`).
+Package triggers (2026-11-24): a package targeting the `plugin-events` world (`include
+plugin; export events`) contributes entry nodes. Its manifest lists them like other
+nodes, each a definition of kind `entry` that names a connection adapter and has at most
+one data output, `payload`, of a concrete type. Components of the `plugin` world, and
+every 1.0 component, simply contribute no trigger. The host starts a package trigger the
+way it starts its own: on the session of the connection the node's settings name,
+opened with the stored credentials after the graph's approval and allowed by the
+`ConnectionAuthorizer` (`ServiceOperation::Entry`). It is started only when the user
+granted the package `websocket`; without the grant the flow does not open. Each trigger
+node gets its own instance with its settings and no file, network or connection access,
+and the host registers it with `Session::listen_messages`. For each text or binary
+message, the host calls `events.receive` on that instance under the instance's fuel and
+input limits (a message over the input limit is refused before the guest sees it). The
+answer fires the node with its payload through the entry's bounded mailbox (a full
+mailbox drops that message, as for the host's own triggers), lets the message pass, or
+reports a fault on the node. A trapped instance stops listening. Closing or stopping the
+flow drops the listener, and the host closes the socket once nothing uses it. Messages
+are decided on the connection's own thread, so a slow package slows only its own
+connection, within its fuel. `Session::listen_messages` is part of the native ABI
+revision 10 (`orange_net`'s WebSocket session implements it).
+
+Full-access native plugins in the desktop (2026-11-24; `orange-desktop`): the desktop
+application loads `orange-native` libraries from `plugins` beside its preferences,
+only after the person allowed full access to that exact file. The approval keeps the
+file name and SHA-256 in `plugins/full-access.json`; a changed file asks again. The
+dialog states the risk in plain words, including that a native plugin can read the
+operating system's credential store as the person, so the vault's protection does not
+apply to it. A library is never loaded to describe it. The desktop also gives installed
+Wasm packages their data folders (`plugin-data` beside its preferences) and its network
+client (`orange_net::fetch_response`, no redirects), so the `files`, `http` and
+`http-local` grants reach something there. Native libraries still load at
+start (ADR-03 amendment 2026-11-11), so an approval or revocation applies from the next
+start. Graphs, exports and bundles still never hold secrets.
+
 
 Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
 its tier, can be switched off by ID and on again without removing it; the switch is
@@ -189,8 +286,11 @@ connection kinds behave exactly like built-in ones and are listed by `Host::node
 `Host::packages`. The `orange` command takes `--plugins <dir>`.
 `app/crates/dev/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
 text cannot detect different dependency versions or features, so a plugin must be
-built with the application's lockfile; a panic in a plugin aborts the process; a
-library is never unloaded, is not loaded while the application runs, and cannot be
+built with the application's lockfile; a panic across an exported C ABI or a process
+abort ends the process. The host contains ordinary Rust unwinds at compilation,
+preview, service invocation and the graph turn boundary. A kernel panic during a
+turn interrupts the run and starts cleanup. A library is never unloaded, is not
+loaded while the application runs, and cannot be
 removed with `Host::uninstall`; there is no manifest or grant for this tier.
 
 Types from a native plugin (2026-11-13 first part): `ServicePackage::record(name,
@@ -261,6 +361,7 @@ and fire a named outcome using `Emitter::emit_on`. The resolved port includes
 the stable counter for a variadic instance. The host binds these callbacks to
 the running provider guard and its checked ports. The native ABI identifier
 is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
+It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`

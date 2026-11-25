@@ -484,20 +484,22 @@ impl Workspace {
 }
 
 #[cfg(test)]
+fn test_registry() -> Arc<RegistrySnapshot> {
+    orange_model::catalog::RegistryBuilder::core(
+        orange_model::validation::HostOrigin::new("0.0.0", format!("sha256:{}", "a".repeat(64)))
+            .unwrap(),
+    )
+    .build()
+    .unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn exhausted_version_never_wraps_or_publishes_new_values() {
         let document=orange_model::from_json(r#"{"format":"orange.graph","format_version":1,"graph_id":"20000000-0000-4000-8000-000000000001","revision":0,"nodes":[],"edges":[],"variables":[{"id":"10000000-0000-4000-8000-000000000001","name":"v","type":"core/u64@1","scope":"workspace","init":{"type":"core/u64@1","value":"1"}}]}"#).unwrap();
-        let registry = orange_model::catalog::RegistryBuilder::core(
-            orange_model::validation::HostOrigin::new(
-                "0.0.0",
-                format!("sha256:{}", "a".repeat(64)),
-            )
-            .unwrap(),
-        )
-        .build()
-        .unwrap();
+        let registry = test_registry();
         let mut workspace =
             Workspace::new(&document, registry, WorkspaceLimits::default()).unwrap();
         Arc::get_mut(&mut workspace.current.0).unwrap().version = u64::MAX;

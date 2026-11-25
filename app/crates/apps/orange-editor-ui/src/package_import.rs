@@ -16,20 +16,23 @@ impl Editor {
         let Some(key) = &self.pending_package_removal else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("orange-remove-package")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(t("remove-package"));
-            ui.label(tf(
-                "remove-package-hint",
-                &[("package", key.to_string().into())],
-            ));
-            controls::dialog_actions(
-                ui,
-                Action::Destructive,
-                true,
-                egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
-            )
-        });
+        let modal = orange_ui_controls::modal(ctx, egui::Id::unique("orange-remove-package")).show(
+            ctx,
+            |ui| {
+                ui.set_max_width(420.0);
+                ui.heading(t("remove-package"));
+                ui.label(tf(
+                    "remove-package-hint",
+                    &[("package", key.to_string().into())],
+                ));
+                controls::dialog_actions(
+                    ui,
+                    Action::Destructive,
+                    true,
+                    egui::Button::new((icons::text(icons::DELETE), t("remove-package"))),
+                )
+            },
+        );
         let (cancel, remove) = &modal.inner;
         if remove.clicked()
             && let Some(key) = self.pending_package_removal.take()
@@ -79,60 +82,25 @@ impl Editor {
         let Some(import) = &mut self.pending_package else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("orange-import-package")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(t("import-package"));
-            ui.label(&import.name);
-            if import.requested != Grants::default() {
-                ui.separator();
-                ui.label(t("package-permissions"));
-                for (requested, approved, label) in [
-                    (
-                        import.requested.log,
-                        &mut import.approved.log,
-                        "package-grant-log",
-                    ),
-                    (
-                        import.requested.files,
-                        &mut import.approved.files,
-                        "package-grant-files",
-                    ),
-                    (
-                        import.requested.http,
-                        &mut import.approved.http,
-                        "package-grant-http",
-                    ),
-                ] {
-                    if requested {
-                        ui.checkbox(approved, t(label));
-                    }
-                }
-            } else {
-                ui.label(t("package-no-permissions"));
-            }
-            controls::dialog_actions(
-                ui,
-                Action::Primary,
-                true,
-                egui::Button::new(t("install-package")),
-            )
-        });
+        let modal = orange_ui_controls::modal(ctx, egui::Id::unique("orange-import-package")).show(
+            ctx,
+            |ui| {
+                ui.set_max_width(420.0);
+                ui.heading(t("import-package"));
+                ui.label(&import.name);
+                grant_choices(ui, import.requested, &mut import.approved);
+                controls::dialog_actions(
+                    ui,
+                    Action::Primary,
+                    true,
+                    egui::Button::new(t("install-package")),
+                )
+            },
+        );
         let (cancel, install) = &modal.inner;
         if install.clicked() {
             if let Some(import) = self.pending_package.take() {
-                match host.install(&import.archive, import.approved) {
-                    Ok(key) => self.say(tf(
-                        "package-imported",
-                        &[("name", key.id.to_string().into())],
-                    )),
-                    Err(error) => self.say_at(
-                        NoteLevel::Error,
-                        tf(
-                            "package-import-failed",
-                            &[("error", error.to_string().into())],
-                        ),
-                    ),
-                }
+                self.install_approved_package(host, &import.archive, import.approved);
                 self.previews.invalidate();
                 self.check(host);
                 self.panels.log = true;
@@ -142,6 +110,66 @@ impl Editor {
             self.pending_package = None;
         }
     }
+
+    pub(super) fn install_approved_package(
+        &mut self,
+        host: &mut Host,
+        archive: &[u8],
+        grants: Grants,
+    ) {
+        match host.install(archive, grants) {
+            Ok(key) => self.say(tf(
+                "package-imported",
+                &[("name", key.id.to_string().into())],
+            )),
+            Err(error) => self.say_at(
+                NoteLevel::Error,
+                tf(
+                    "package-import-failed",
+                    &[("error", error.to_string().into())],
+                ),
+            ),
+        }
+    }
+}
+
+/// The grants a package asks for, each a box the person ticks to allow it; nothing is
+/// ticked for them. Says so when the package asks for nothing. Returns whether a box
+/// changed.
+pub(super) fn grant_choices(ui: &mut egui::Ui, requested: Grants, approved: &mut Grants) -> bool {
+    if requested == Grants::default() {
+        ui.label(t("package-no-permissions"));
+        return false;
+    }
+    ui.separator();
+    ui.label(t("package-permissions"));
+    let mut choices = Vec::new();
+    for (asked, given, label) in [
+        (requested.log, &mut approved.log, "package-grant-log"),
+        (requested.files, &mut approved.files, "package-grant-files"),
+        (requested.http, &mut approved.http, "package-grant-http"),
+        (
+            requested.http_local,
+            &mut approved.http_local,
+            "package-grant-http-local",
+        ),
+        (
+            requested.compute,
+            &mut approved.compute,
+            "package-grant-compute",
+        ),
+    ] {
+        if asked {
+            choices.push((given, t(label)));
+        }
+    }
+    orange_ui_controls::check_list(
+        ui,
+        Surface::Dialog,
+        orange_ui_controls::CheckStyle::Emphasis,
+        &mut choices,
+    )
+    .changed()
 }
 
 #[cfg(test)]
@@ -204,16 +232,9 @@ mod tests {
             output.drop_without_applying_deltas();
         }
         let pos = install.expect("install button");
-        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(vec![egui::Event::PointerButton {
-                pos,
-                pressed,
-                button: egui::PointerButton::Primary,
-                modifiers: egui::Modifiers::NONE,
-            }])
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
         assert!(editor.pending_package.is_none());
         assert!(
             host.search_nodes("remember", "en")
@@ -253,16 +274,9 @@ mod tests {
             output.drop_without_applying_deltas();
         }
         let pos = button.expect("remove package button");
-        frame(vec![egui::Event::PointerMoved(pos)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(vec![egui::Event::PointerButton {
-                pos,
-                pressed,
-                button: egui::PointerButton::Primary,
-                modifiers: egui::Modifiers::NONE,
-            }])
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
         assert!(editor.pending_package_removal.is_none());
         assert!(
             host.packages()

@@ -40,6 +40,10 @@ pub enum Command {
     ExportFunction,
     Delete,
     InsertNode,
+    AddWaypoint,
+    AddSignalReceiver,
+    AddSignalSender,
+    RemoveWaypoint,
     DeleteWire,
     Disconnect,
     WatchValue,
@@ -172,6 +176,33 @@ impl Editor {
                         true,
                     ),
                 ];
+                if self.graph().is_some_and(|graph| {
+                    graph
+                        .nodes
+                        .iter()
+                        .any(|card| card.id == *node && palette::signal(card).is_some())
+                }) {
+                    entries.insert(
+                        1,
+                        entry(
+                            Command::AddSignalReceiver,
+                            t("signal-add-receiver"),
+                            "",
+                            icons::SIGNAL,
+                            true,
+                        ),
+                    );
+                    entries.insert(
+                        2,
+                        entry(
+                            Command::AddSignalSender,
+                            t("signal-add-sender"),
+                            "",
+                            icons::SIGNAL,
+                            true,
+                        ),
+                    );
+                }
                 if self.call_function(*node).is_some() {
                     entries.push(entry(
                         Command::ExportFunction,
@@ -193,8 +224,22 @@ impl Editor {
                 ]);
                 entries
             }
-            MenuTarget::Wire(_) => vec![
+            MenuTarget::Wire(wire) => vec![
                 entry(Command::InsertNode, t("insert-node"), "", icons::ADD, true),
+                entry(
+                    Command::AddWaypoint,
+                    t("wire-reroute"),
+                    "",
+                    icons::ARRANGE,
+                    true,
+                ),
+                entry(
+                    Command::RemoveWaypoint,
+                    t("remove-reroute"),
+                    "",
+                    icons::DISCONNECT,
+                    self.canvas.waypoints.contains_key(wire),
+                ),
                 entry(
                     Command::DeleteWire,
                     t("delete-wire"),
@@ -225,6 +270,20 @@ impl Editor {
                 ]
             }
         }
+    }
+
+    pub(crate) fn set_waypoint(
+        &mut self,
+        host: &mut Host,
+        wire: &canvas::WireEnds,
+        at: Option<[f32; 2]>,
+    ) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let ((source, out), (target, input)) = wire;
+        let result = draft.set_wire_waypoint((*source, out), (*target, input), at);
+        self.edited(host, result)
     }
 
     /// Runs `command` of the open menu on what was right-clicked, and closes the menu.
@@ -293,6 +352,15 @@ impl Editor {
                 self.open_insert_node(wire.clone(), menu.at, menu.screen);
                 true
             }
+            (Command::AddSignalReceiver | Command::AddSignalSender, MenuTarget::Node(node)) => {
+                self.add_signal_endpoint(host, *node, command == Command::AddSignalSender)
+            }
+            (Command::AddWaypoint, MenuTarget::Wire(wire)) => {
+                self.set_waypoint(host, wire, Some(menu.at))
+            }
+            (Command::RemoveWaypoint, MenuTarget::Wire(wire)) => {
+                self.set_waypoint(host, wire, None)
+            }
             (Command::DeleteWire, MenuTarget::Wire(wire)) => self.remove_wire(host, wire),
             (Command::Disconnect, MenuTarget::Port { node, port, input }) => {
                 self.disconnect(host, (*node, port), *input)
@@ -304,6 +372,55 @@ impl Editor {
                 true
             }
             _ => false,
+        }
+    }
+
+    pub(crate) fn add_signal_endpoint(
+        &mut self,
+        host: &mut Host,
+        node: NodeId,
+        sender: bool,
+    ) -> bool {
+        let Some(graph) = self.graph() else {
+            return false;
+        };
+        let places: std::collections::BTreeMap<_, _> = self.canvas.places().into_iter().collect();
+        let Some(&[x, mut y]) = places.get(&node) else {
+            return false;
+        };
+        let side = canvas::NODE_WIDTH + 48.0;
+        let x = if sender { x - side } else { x + side };
+        let mut occupied: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter_map(|card| {
+                let [left, top] = places.get(&card.id)?;
+                let size = canvas::node_size(card);
+                (x < left + size.x && *left < x + canvas::NODE_WIDTH)
+                    .then_some((*top, top + size.y))
+            })
+            .collect();
+        occupied.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (top, bottom) in occupied {
+            if y + 220.0 > top && y < bottom + 24.0 {
+                y = bottom + 24.0;
+            }
+        }
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = if sender {
+            host.add_signal_sender(draft, node, [x, y])
+        } else {
+            host.add_signal_receiver(draft, node, [x, y])
+        };
+        match result {
+            Ok(endpoint) => {
+                let _ = self.edited(host, Ok(true));
+                self.canvas.select(Some(endpoint));
+                true
+            }
+            Err(error) => self.edited(host, Err(error)),
         }
     }
 
@@ -371,71 +488,70 @@ impl Editor {
         };
         let (screen, shown_before) = (menu.screen, menu.shown);
         let mut chosen = None;
-        let bounds = ctx.content_rect().shrink(6.0);
-        let shown = egui::Area::new(egui::Id::unique("orange-context-menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen)
-            .constrain_to(bounds)
-            .show(ctx, |ui| {
-                egui::Frame::menu(ui.style()).show(ui, |ui| {
-                    ui.set_width(220.0_f32.min((bounds.width() - 20.0).max(48.0)));
-                    ui.strong(title);
-                    ui.separator();
-                    let mut previous_group = None;
-                    for entry in &entries {
-                        let group = match entry.command {
-                            Command::Group
-                            | Command::MakeFunction
-                            | Command::ExportFunction
-                            | Command::Arrange => 1,
-                            Command::Fit | Command::SelectAll => 2,
-                            Command::Delete | Command::DeleteWire | Command::Disconnect => 3,
-                            _ => 0,
-                        };
-                        if previous_group.is_some_and(|previous| previous != group) {
-                            ui.separator();
+        let shown = orange_ui_controls::anchored_popup(
+            ctx,
+            egui::Id::unique("orange-context-menu"),
+            screen,
+            220.0,
+            |ui| {
+                ui.strong(title);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 64.0).max(28.0))
+                    .show(ui, |ui| {
+                        let mut previous_group = None;
+                        for entry in &entries {
+                            let group = match entry.command {
+                                Command::Group
+                                | Command::MakeFunction
+                                | Command::ExportFunction
+                                | Command::Arrange => 1,
+                                Command::Fit | Command::SelectAll => 2,
+                                Command::Delete | Command::DeleteWire | Command::Disconnect => 3,
+                                _ => 0,
+                            };
+                            if previous_group.is_some_and(|previous| previous != group) {
+                                ui.separator();
+                            }
+                            previous_group = Some(group);
+                            let action = match entry.command {
+                                Command::AddNode => Some("add"),
+                                Command::Paste => Some("paste"),
+                                Command::SelectAll => Some("select-all"),
+                                Command::Group => Some("group"),
+                                Command::Arrange => Some("arrange"),
+                                Command::Fit => Some("fit"),
+                                Command::Copy => Some("copy"),
+                                Command::Cut => Some("cut"),
+                                Command::Duplicate => Some("duplicate"),
+                                Command::MakeFunction => Some("function"),
+                                Command::Delete | Command::DeleteWire => Some("delete"),
+                                _ => None,
+                            };
+                            let shortcut = action.map_or_else(
+                                || entry.shortcut.to_owned(),
+                                |action| self.canvas.keys.label(action),
+                            );
+                            let shortcut = if shortcut == t("unassigned") {
+                                ""
+                            } else {
+                                &shortcut
+                            };
+                            if orange_ui_controls::menu_item(
+                                ui,
+                                icons::centered(entry.icon),
+                                entry.label,
+                                shortcut,
+                                entry.enabled,
+                            )
+                            .clicked()
+                            {
+                                chosen = Some(entry.command);
+                            }
                         }
-                        previous_group = Some(group);
-                        let action = match entry.command {
-                            Command::AddNode => Some("add"),
-                            Command::Paste => Some("paste"),
-                            Command::SelectAll => Some("select-all"),
-                            Command::Group => Some("group"),
-                            Command::Arrange => Some("arrange"),
-                            Command::Fit => Some("fit"),
-                            Command::Copy => Some("copy"),
-                            Command::Cut => Some("cut"),
-                            Command::Duplicate => Some("duplicate"),
-                            Command::MakeFunction => Some("function"),
-                            Command::Delete | Command::DeleteWire => Some("delete"),
-                            _ => None,
-                        };
-                        let shortcut = action.map_or_else(
-                            || entry.shortcut.to_owned(),
-                            |action| self.canvas.keys.label(action),
-                        );
-                        let shortcut = if shortcut == t("unassigned") {
-                            ""
-                        } else {
-                            &shortcut
-                        };
-                        let button = egui::Button::new((icons::centered(entry.icon), entry.label))
-                            .shortcut_text(shortcut)
-                            .min_size(egui::vec2(ui.available_width(), 28.0));
-                        if controls::button(
-                            ui,
-                            Surface::Dialog,
-                            controls::Action::Menu,
-                            entry.enabled,
-                            button,
-                        )
-                        .clicked()
-                        {
-                            chosen = Some(entry.command);
-                        }
-                    }
-                });
-            });
+                    });
+            },
+        );
         let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
         if let Some(command) = chosen {
             let _ = self.run_command(host, command);
@@ -452,6 +568,102 @@ mod tests {
     use super::*;
     use crate::tests::graph;
     use orange_host::HostOptions;
+
+    #[test]
+    fn keyboard_and_context_delete_only_the_selected_signal_endpoint() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let sender = editor
+            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .unwrap();
+        let first = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id != sender)
+            .unwrap()
+            .id;
+        assert!(editor.add_signal_endpoint(&mut host, sender, false));
+        let second = editor.canvas.selected().unwrap();
+
+        editor.open_menu(MenuTarget::Node(first), [0.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, Command::AddSignalSender));
+        let other_sender = editor.canvas.selected().unwrap();
+        assert_eq!(editor.graph().unwrap().nodes.len(), 4);
+        let wait_a = editor
+            .add_node_at(&mut host, "core/wait", [740.0, 0.0])
+            .unwrap();
+        let wait_b = editor
+            .add_node_at(&mut host, "core/wait", [740.0, 200.0])
+            .unwrap();
+        assert!(editor.connect(&mut host, (first, "then"), (wait_a, "in")));
+        assert!(editor.connect(&mut host, (second, "then"), (wait_b, "in")));
+
+        editor.open_menu(MenuTarget::Node(first), [0.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, Command::Delete));
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.id != first)
+        );
+        assert_eq!(editor.graph().unwrap().nodes.len(), 5);
+        assert_eq!(editor.graph().unwrap().wires.len(), 1);
+        assert_eq!(editor.graph().unwrap().wires[0].from.0, second);
+
+        editor.canvas.select(Some(sender));
+        let ctx = egui::Context::default();
+        for events in [
+            vec![],
+            vec![egui::Event::Key {
+                key: egui::Key::Delete,
+                physical_key: None,
+                modifiers: egui::Modifiers::NONE,
+                pressed: true,
+                repeat: false,
+            }],
+        ] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.ui(ui, &mut host);
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        assert_eq!(graph.wires.len(), 1);
+        assert!(graph.nodes.iter().any(|node| node.id == second));
+        assert!(graph.nodes.iter().any(|node| node.id == other_sender));
+        assert_eq!(
+            editor
+                .document
+                .as_ref()
+                .unwrap()
+                .draft
+                .document()
+                .events()
+                .len(),
+            1
+        );
+        editor.undo(&mut host);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|node| node.id == sender)
+        );
+    }
 
     fn id(n: u32) -> NodeId {
         format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
@@ -554,7 +766,12 @@ mod tests {
         editor.open_menu(MenuTarget::Wire(wire), [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(
             commands(&editor),
-            [Command::InsertNode, Command::DeleteWire]
+            [
+                Command::InsertNode,
+                Command::AddWaypoint,
+                Command::RemoveWaypoint,
+                Command::DeleteWire
+            ]
         );
         // An unwired port cannot be disconnected but can be watched.
         let port = MenuTarget::Port {
@@ -564,6 +781,21 @@ mod tests {
         };
         let entries = editor.entries_for(&port);
         assert!(!entries[0].enabled && entries[1].enabled);
+    }
+
+    #[test]
+    fn rerouting_is_a_layout_edit_with_undo() {
+        let (mut editor, mut host) = opened();
+        let wire = ((id(1), "then".to_owned()), (id(2), "in".to_owned()));
+        editor.open_menu(
+            MenuTarget::Wire(wire.clone()),
+            [50.0, 80.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(editor.run_command(&mut host, Command::AddWaypoint));
+        assert_eq!(editor.canvas.waypoints.get(&wire), Some(&[50.0, 80.0]));
+        editor.undo(&mut host);
+        assert!(!editor.canvas.waypoints.contains_key(&wire));
     }
 
     #[test]

@@ -56,14 +56,19 @@ impl Lease {
     /// Whether the reservation could change to `bytes`; shrinking always fits.
     pub(crate) fn admits(&self, bytes: usize) -> bool {
         match (&self.budget, bytes.checked_sub(self.held)) {
-            (Some(budget), Some(growth)) => budget.admits(growth),
+            (Some(budget), Some(growth)) if growth != 0 => budget.admits(growth),
             _ => true,
         }
     }
     /// Change the reservation to `bytes`. Growth must have been admitted.
     pub(crate) fn set(&mut self, bytes: usize) {
+        // Replacing a fixed-size value usually keeps its charge. In that case
+        // leave the shared budget alone, including when dropping an empty lease.
+        if bytes == self.held {
+            return;
+        }
         if let Some(budget) = &self.budget {
-            if bytes >= self.held {
+            if bytes > self.held {
                 budget.used.fetch_add(bytes - self.held, Ordering::Relaxed);
             } else {
                 budget.used.fetch_sub(self.held - bytes, Ordering::Relaxed);

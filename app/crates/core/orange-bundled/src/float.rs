@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use orange_model::Value;
-use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot, TypeArgs};
+use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot};
 use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
@@ -27,6 +27,7 @@ pub enum FloatOperation {
     Log2,
     Log10,
     Power,
+    MapRange,
     Floor,
     Ceiling,
     Truncate,
@@ -53,13 +54,14 @@ pub enum FloatOperation {
 }
 
 impl FloatOperation {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::SquareRoot,
         Self::Exponential,
         Self::NaturalLog,
         Self::Log2,
         Self::Log10,
         Self::Power,
+        Self::MapRange,
         Self::Floor,
         Self::Ceiling,
         Self::Truncate,
@@ -102,6 +104,7 @@ impl FloatOperation {
             Self::Log2 => "org.orange.math/log2",
             Self::Log10 => "org.orange.math/log10",
             Self::Power => "org.orange.math/power",
+            Self::MapRange => "org.orange.math/map-range",
             Self::Floor => "org.orange.math/floor",
             Self::Ceiling => "org.orange.math/ceiling",
             Self::Truncate => "org.orange.math/truncate",
@@ -137,6 +140,7 @@ impl FloatOperation {
     pub const fn input_ports(self) -> &'static [&'static str] {
         match self {
             Self::Power => &["base", "exponent"],
+            Self::MapRange => &["value", "from_min", "from_max", "to_min", "to_max"],
             Self::Arctangent2 => &["y", "x"],
             Self::Minimum
             | Self::Maximum
@@ -191,11 +195,14 @@ pub fn float_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 },
                 OutputSource::Computed,
             ));
-            let properties = if operation.is_predicate() {
+            let mut properties = if operation.is_predicate() {
                 json!({})
             } else {
                 json!({"float_policy":{"enum":["finite","ieee"],"default":"finite"}})
             };
+            if operation == FloatOperation::MapRange {
+                properties["clamp"] = json!({"type":"boolean","default":true});
+            }
             Ok(NodeDefinition {
                 definition: DefinitionRef {
                     id: operation.definition_id().parse()?,
@@ -229,6 +236,7 @@ pub struct ResolvedFloat {
     operation: FloatOperation,
     scalar: Scalar,
     policy: FloatPolicy,
+    clamp_range: bool,
 }
 
 impl ResolvedFloat {
@@ -280,14 +288,14 @@ impl ResolvedFloat {
                 if inputs.len() != arity {
                     return Err(KernelError::InputContract);
                 }
-                let mut v: [$p; 3] = [0.0; 3];
+                let mut v: [$p; 5] = [0.0; 5];
                 for (slot, input) in v.iter_mut().zip(inputs) {
                     let Value::$variant(x) = input else {
                         return Err(KernelError::InputContract);
                     };
                     *slot = *x;
                 }
-                let [a, b, c] = v;
+                let [a, b, c, d, e] = v;
                 let truth = match self.operation {
                     // IEEE comparisons: NaN is unordered and -0 equals +0.
                     Equal => Some(a == b),
@@ -334,6 +342,30 @@ impl ResolvedFloat {
                             return Err(KernelError::Domain);
                         }
                         a.powf(b)
+                    }
+                    MapRange => {
+                        if b == c {
+                            return Err(KernelError::DivideByZero);
+                        }
+                        let width = c - b;
+                        let mut position = if width.is_infinite() && b.is_finite() && c.is_finite()
+                        {
+                            (a * 0.5 - b * 0.5) / (c * 0.5 - b * 0.5)
+                        } else {
+                            (a - b) / width
+                        };
+                        if self.clamp_range {
+                            position = position.clamp(0.0, 1.0);
+                        }
+                        if position == 0.0 {
+                            d
+                        } else if position == 1.0 {
+                            e
+                        } else if (0.0..=1.0).contains(&position) {
+                            (1.0 - position) * d + position * e
+                        } else {
+                            (e - d).mul_add(position, d)
+                        }
                     }
                     Floor => a.floor(),
                     Ceiling => a.ceil(),
@@ -410,14 +442,7 @@ impl MathPackage {
         {
             return Err(BindingError::Unavailable);
         }
-        let args = TypeArgs::from([("T".into(), ty.clone())]);
-        if snapshot
-            .provider(provider)
-            .and_then(|p| p.specializations.get(definition))
-            .is_none_or(|list| !list.contains(&args))
-        {
-            return Err(BindingError::UnsupportedType);
-        }
+        crate::catalog::require_specialization(&snapshot, provider, definition, ty)?;
         let scalar = match ty.as_str() {
             "core/f32@1" => Scalar::F32,
             "core/f64@1" => Scalar::F64,
@@ -425,7 +450,8 @@ impl MathPackage {
         };
         // A shared operation's whole-number overflow policy does not apply to decimals.
         let own = |key: &str| {
-            key == "float_policy" && !operation.is_predicate()
+            key == "clamp" && operation == FloatOperation::MapRange
+                || key == "float_policy" && !operation.is_predicate()
                 || key == "int_overflow"
                     && matches!(operation, FloatOperation::Negate | FloatOperation::Absolute)
         };
@@ -437,12 +463,17 @@ impl MathPackage {
             Some(Some("ieee")) => FloatPolicy::Ieee,
             _ => return Err(BindingError::InvalidConfig),
         };
+        let clamp_range = match config.get("clamp") {
+            None => true,
+            Some(value) => value.as_bool().ok_or(BindingError::InvalidConfig)?,
+        };
         Ok(ResolvedFloat {
             snapshot,
             provider: provider.clone(),
             operation,
             scalar,
             policy,
+            clamp_range,
         })
     }
 }

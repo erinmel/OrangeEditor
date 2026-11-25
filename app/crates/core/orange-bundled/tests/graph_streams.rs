@@ -438,6 +438,36 @@ fn stop_cancels_accepted_unpublished_pull_and_partial_collection_without_results
 }
 
 #[test]
+fn collection_charges_synchronous_and_completed_items_at_the_same_boundary() {
+    use orange_model::value::shape::VALUE_CHARGE;
+
+    for asynchronous in [false, true] {
+        for max_bytes in [3 * VALUE_CHARGE - 1, 3 * VALUE_CHARGE] {
+            let mut options = RunOptions::default();
+            options.limits.max_stream_collect_bytes = max_bytes;
+            let mut run = setup(options, |wire| collect_wire(wire, 2));
+            let probe = open(&mut run, 2, asynchronous);
+            idle(&mut run);
+            if asynchronous {
+                for (index, value) in [Some(Value::U64(1)), Some(Value::U64(2)), None]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let Some(demand) = probe.demands.lock().unwrap().get(index).cloned() else {
+                        break;
+                    };
+                    run.complete_stream(demand.id, Ok(value.as_ref())).unwrap();
+                    idle(&mut run);
+                }
+            }
+            let expected = if max_bytes == 3 * VALUE_CHARGE { 2 } else { 0 };
+            assert!(matches!(variable(&run), Some(Value::List(items)) if items.len() == expected));
+            assert_eq!(probe.closes.lock().unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
 fn collection_bounds_fail_atomically_and_empty_zero_bound_succeeds() {
     for (length, max, success) in [(0, 0, true), (1, 0, false), (3, 2, false)] {
         let mut run = setup(RunOptions::default(), |wire| collect_wire(wire, max));

@@ -10,6 +10,17 @@ rebuilding the application.
 It is pre-1.0: the core, editor and base services work; see
 [the overview](docs/00-overview.md) for what is done and what is missing.
 
+## Starter workflows
+
+| Graph | What it demonstrates |
+| --- | --- |
+| [Counter with reset](app/crates/apps/orange-cli/graphs/counter-with-reset.json) | Increment, decrement and reset the same initialized variable. Search for Increment or Bump + in the editor to add a preconfigured update. |
+| [Quiet mic gate](app/crates/apps/orange-cli/graphs/quiet-mic-gate.json) | Route a microphone through a gate and meter it. The graph starts on silent devices. Choose your microphone and headphones when ready to listen. |
+| [HTTP with failure handling](app/crates/apps/orange-cli/graphs/http-with-failure-handling.json) | Make a GET request and record success, an HTTP error status, or a transport error independently. The default endpoint is `http://127.0.0.1:8080/health`. |
+| [HTTP with bounded retry](app/crates/apps/orange-cli/graphs/http-with-bounded-retry.json) | Retry GET once after 250 ms on the request failure route. HTTP error statuses terminate the attempt immediately. |
+| [Idle watchdog](app/crates/apps/orange-cli/graphs/idle-watchdog.json) | Fire Heartbeat to start a 750 ms timer. Every new heartbeat replaces the pending wait. The Idle variable turns true once the flow goes quiet. Search for Idle Watchdog to add the three timer cards to another graph. |
+| [Forward value with deadband](app/crates/apps/orange-cli/graphs/forward-value-with-deadband.json) | Change Reading in a running graph. Values only forward when they move more than 1 from the last qualifying reading. |
+
 ## Run it
 
 Use the toolchain in [rust-toolchain.toml](rust-toolchain.toml) (Rust 1.99.1) from the
@@ -50,6 +61,29 @@ with a Folder connection and select **Debounce** under **Event timing** in
 Properties. Connect its execution output to **HTTP JSON Request**, and wire a
 JSON object into Body. The HTTP node uses its own HTTP connection. Wire its
 optional JSON result to **Match Option** to handle absent or non-JSON responses.
+
+[audio-file-quality.json](app/crates/apps/orange-cli/graphs/audio-file-quality.json)
+is a grouped QA graph for seven playback formats, audio triggers, loop controls,
+recording, files and HTTP. Launch the editor from the repository root so the
+relative fixture paths resolve. The file suite creates `orange-audio-qa-86dc`
+under the launch directory. Fire **Run file and folder suite** and then edit a
+file in that scratch folder to exercise the watcher.
+
+The two output connections default to the silent test device. For listening tests,
+choose a playback device for **QA output** and **QA loop output**. **Start Opus
+loop** repeats until **Loop · stop** fires. **Loop stopped** counts completed
+stops. **On local source finished** uses the supplied WebM file connection.
+**Read-only write rejected** and **Parent path rejected** deliberately log
+errors and should each increment their rejection counter.
+
+For the HTTP group, serve the fixtures before pressing Run. One local option is
+
+```sh
+python -m http.server 18765 --bind 127.0.0.1 --directory app/crates/services/orange-audio/tests/fixtures
+```
+
+Fire **Play remote audio** and **Check fixture server**. Expect one completed
+remote clip and status 200. The other groups can be exercised without the server.
 
 Double-click a node name in Properties or on the card to rename it. An empty name
 restores the node type's name.

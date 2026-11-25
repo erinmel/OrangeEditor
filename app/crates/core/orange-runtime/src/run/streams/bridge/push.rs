@@ -101,7 +101,7 @@ impl Run {
                     .min(hub.options.max_bytes),
             )
             .map_err(|error| {
-                if error == orange_model::value::shape::ValueCheckError::InvalidType {
+                if error == ValueCheckError::InvalidType {
                     StreamError::Contract
                 } else {
                     StreamError::Limit

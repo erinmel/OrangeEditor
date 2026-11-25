@@ -49,6 +49,13 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
         .chain(inputs.filter(move |port| !first(port)))
 }
 
+pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
+    log_part_label(node, &port.id)
+        .or_else(|| port.label.clone())
+        .or_else(|| input_label(node, &port.id).map(str::to_owned))
+        .unwrap_or_else(|| port_label(&port.id))
+}
+
 pub(crate) fn log_part_label(node: &NodeView, id: &str) -> Option<String> {
     (node.definition == "org.orange.logging/log-message" && id.starts_with("argument#"))
         .then(|| {
@@ -98,7 +105,12 @@ impl TextInput {
             }
             "headers" if http_request(node) => Some(Self::Headers),
             "headers" if http_request_variant(node) => Some(Self::HeaderList),
-            "path" if node.definition == "org.orange.json/get-path" => Some(Self::JsonPath),
+            "path"
+                if node.definition == "org.orange.json/get-path"
+                    || node.definition.starts_with("org.orange.json/read-") =>
+            {
+                Some(Self::JsonPath)
+            }
             "text"
                 if matches!(
                     node.definition.as_str(),
@@ -252,28 +264,27 @@ pub(crate) fn pick_color(
     response: &egui::Response,
     color: [u8; 4],
 ) -> Option<String> {
-    let picked = orange_ui_controls::color_picker::popup(
-        ui,
-        response,
-        color,
-        true,
-        orange_ui_controls::color_picker::Labels {
-            channels: [
-                t("color-red"),
-                t("color-green"),
-                t("color-blue"),
-                t("color-alpha"),
-            ],
-            hue: t("color-hue"),
-            saturation_value: t("color-saturation-value"),
-            recent: t("color-recent"),
-            value: t("color-value"),
-            invalid_value: t("color-value-invalid"),
-            apply: t("color-apply"),
-            cancel: t("cancel"),
-        },
-    )?;
+    let picked =
+        orange_ui_controls::color_picker::popup(ui, response, color, true, color_picker_labels())?;
     Some(orange_host::rgba_hex(picked))
+}
+
+pub(crate) fn color_picker_labels() -> orange_ui_controls::color_picker::Labels<'static> {
+    orange_ui_controls::color_picker::Labels {
+        channels: [
+            t("color-red"),
+            t("color-green"),
+            t("color-blue"),
+            t("color-alpha"),
+        ],
+        hue: t("color-hue"),
+        saturation_value: t("color-saturation-value"),
+        recent: t("color-recent"),
+        value: t("color-value"),
+        invalid_value: t("color-value-invalid"),
+        apply: t("color-apply"),
+        cancel: t("cancel"),
+    }
 }
 
 pub(crate) fn http_request_label(port: &str) -> Option<&'static str> {
@@ -302,7 +313,303 @@ pub const COMMON_TYPES: [&str; 6] = [
 /// Nanoseconds in a millisecond: lengths of time are typed in milliseconds.
 const NANOS_PER_MILLI: f64 = 1_000_000.0;
 
-pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'static str> {
+/// Display scaling for bounded audio settings. The provider schema owns the valid range.
+#[derive(Clone, Copy)]
+pub(crate) struct AudioRange {
+    min: f64,
+    max: f64,
+    logarithmic: bool,
+}
+
+/// Audio Level Trigger gives Hold and Reset margin the same dial on both surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioDial {
+    Hold,
+    Reset,
+}
+
+impl AudioDial {
+    pub(crate) fn for_setting(node: &NodeView, name: &str) -> Option<Self> {
+        if node.definition != "org.orange.audio/noise-level" {
+            return None;
+        }
+        match name {
+            "hold_ms" => Some(Self::Hold),
+            "reset_db" => Some(Self::Reset),
+            _ => None,
+        }
+    }
+
+    fn controls(self) -> (Option<f32>, orange_ui_controls::KnobStyle) {
+        match self {
+            Self::Hold => (Some(1.0), orange_ui_controls::KnobStyle::Notched),
+            Self::Reset => (None, orange_ui_controls::KnobStyle::Arc),
+        }
+    }
+}
+
+const AUDIO_DIAL_MARKS: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0];
+
+#[derive(Clone, Copy)]
+pub(crate) struct ThresholdEdit {
+    node: NodeId,
+    saved: f64,
+    range: AudioRange,
+}
+
+#[derive(Clone, Copy)]
+struct ThresholdPreview {
+    owner: egui::Id,
+    saved: f64,
+    value: f64,
+    frame: u64,
+}
+
+impl ThresholdEdit {
+    pub fn for_node(node: &NodeView) -> Option<Self> {
+        if !canvas::spectrum::is_noise(node) {
+            return None;
+        }
+        let schema = &node.schema.as_ref()?["properties"]["threshold_db"];
+        if schema["type"] != "number" || schema["readOnly"] == true {
+            return None;
+        }
+        let range = AudioRange::of(node, "threshold_db", schema)?;
+        let saved = node.settings["threshold_db"]
+            .as_f64()
+            .or_else(|| schema["default"].as_f64())?;
+        Some(Self {
+            node: node.id,
+            saved,
+            range,
+        })
+    }
+
+    fn key(self) -> egui::Id {
+        egui::Id::unique(("orange-threshold-preview", self.node))
+    }
+
+    fn preview(self, ctx: &egui::Context) -> Option<ThresholdPreview> {
+        let frame = ctx.cumulative_frame_nr();
+        ctx.data(|data| data.get_temp::<ThresholdPreview>(self.key()))
+            .filter(|draft| draft.saved == self.saved && frame.saturating_sub(draft.frame) <= 1)
+    }
+
+    pub fn shown(self, ctx: &egui::Context) -> f64 {
+        self.preview(ctx).map_or(self.saved, |draft| draft.value)
+    }
+
+    pub fn update(self, response: &egui::Response, value: f64) -> Option<f64> {
+        let ctx = &response.ctx;
+        let owner = response.id;
+        let value = value.clamp(self.range.min, self.range.max);
+        if response.dragged() {
+            if self.shown(ctx) != value {
+                ctx.request_repaint();
+            }
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    self.key(),
+                    ThresholdPreview {
+                        owner,
+                        saved: self.saved,
+                        value,
+                        frame,
+                    },
+                )
+            });
+            return None;
+        }
+        let owns_preview = self.preview(ctx).is_some_and(|draft| draft.owner == owner);
+        let commit = response.changed() || (owns_preview && response.drag_stopped());
+        if commit || owns_preview {
+            ctx.data_mut(|data| data.remove::<ThresholdPreview>(self.key()));
+        }
+        (commit && self.saved != value).then_some(value)
+    }
+
+    pub fn slider(self, ui: &mut egui::Ui, surface: Surface) -> Option<f64> {
+        let mut fraction = self.range.fraction(self.shown(ui.ctx()));
+        let response =
+            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.range.marks());
+        let value = (self.range.value(fraction) * 10.0).round() / 10.0;
+        self.update(&response, value)
+    }
+
+    pub fn number(self, ui: &mut egui::Ui) -> Option<f64> {
+        let mut value = self.shown(ui.ctx());
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut value)
+                    .range(self.range.min..=self.range.max)
+                    .speed(0.25)
+                    .max_decimals(3)
+                    .update_while_editing(false)
+                    .suffix(" dBFS"),
+            )
+            .accessible_name(t("audio-setting-threshold-db"));
+        self.update(&response, value)
+    }
+}
+
+impl AudioRange {
+    pub(crate) fn of(node: &NodeView, name: &str, schema: &Json) -> Option<Self> {
+        if !node.definition.starts_with("org.orange.audio/")
+            || !matches!(schema["type"].as_str(), Some("number" | "integer"))
+        {
+            return None;
+        }
+        let (min, max) = (schema["minimum"].as_f64()?, schema["maximum"].as_f64()?);
+        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
+            min,
+            max,
+            logarithmic: min > 0.0 && name.ends_with("_hz"),
+        })
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "normalized screen coordinate"
+    )]
+    fn fraction(self, value: f64) -> f32 {
+        let value = value.clamp(self.min, self.max);
+        if self.logarithmic {
+            ((value / self.min).ln() / (self.max / self.min).ln()) as f32
+        } else {
+            ((value - self.min) / (self.max - self.min)) as f32
+        }
+    }
+
+    fn value(self, fraction: f32) -> f64 {
+        if fraction <= 0.0 {
+            self.min
+        } else if fraction >= 1.0 {
+            self.max
+        } else if self.logarithmic {
+            self.min * (self.max / self.min).powf(f64::from(fraction))
+        } else {
+            self.min + f64::from(fraction) * (self.max - self.min)
+        }
+    }
+
+    pub(crate) fn slider(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+    ) -> Option<f64> {
+        let id = id.with("audio-drag");
+        self.marked_slider(ui, surface, id, value)
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded audio controls use f32 for painting and retain the typed editor"
+    )]
+    pub(crate) fn dial(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+        dial: AudioDial,
+    ) -> Option<f64> {
+        let (step, style) = dial.controls();
+        let key = id.with("rotary-draft");
+        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
+        let response = ui
+            .push_id(id, |ui| {
+                orange_ui_controls::rotary(
+                    ui,
+                    surface,
+                    &mut shown,
+                    self.min as f32..=self.max as f32,
+                    step,
+                    AUDIO_DIAL_MARKS,
+                    style,
+                )
+            })
+            .inner;
+        if response.dragged() {
+            ui.data_mut(|d| d.insert_temp(key, shown));
+            return None;
+        }
+        if response.drag_stopped() {
+            ui.data_mut(|d| d.remove::<f32>(key));
+        }
+        (shown != value as f32 && (response.changed() || response.drag_stopped()))
+            .then_some(f64::from(shown))
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded audio display values"
+    )]
+    pub(crate) fn paint_dial(self, ui: &egui::Ui, rect: egui::Rect, value: f64, dial: AudioDial) {
+        let (step, style) = dial.controls();
+        orange_ui_controls::rotary_preview(
+            ui,
+            rect,
+            Surface::Card,
+            value as f32,
+            self.min as f32..=self.max as f32,
+            step,
+            AUDIO_DIAL_MARKS,
+            style,
+        );
+    }
+
+    pub(crate) fn paint_slider(self, ui: &egui::Ui, rect: egui::Rect, value: f64) {
+        orange_ui_controls::marked_slider_preview(
+            ui,
+            rect,
+            Surface::Card,
+            self.fraction(value),
+            &self.marks(),
+        );
+    }
+
+    fn marks(self) -> [f32; 5] {
+        if self.logarithmic {
+            [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0].map(|at| self.fraction(at))
+        } else if self.min < 0.0 && self.max > 0.0 {
+            [0.0, 0.25, self.fraction(0.0), 0.75, 1.0]
+        } else {
+            [0.0, 0.25, 0.5, 0.75, 1.0]
+        }
+    }
+
+    fn marked_slider(
+        self,
+        ui: &mut egui::Ui,
+        surface: Surface,
+        id: egui::Id,
+        value: f64,
+    ) -> Option<f64> {
+        let mut fraction = ui
+            .data(|data| data.get_temp::<f32>(id))
+            .unwrap_or_else(|| self.fraction(value));
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
+        if response.dragged() {
+            ui.data_mut(|data| data.insert_temp(id, fraction));
+            return None;
+        }
+        ui.data_mut(|data| data.remove::<f32>(id));
+        (response.changed() || response.drag_stopped()).then(|| self.value(fraction))
+    }
+}
+
+pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'static str> {
+    if node.definition == "org.orange.audio/noise-level" {
+        return Some(t(match setting {
+            "threshold_db" => "audio-setting-threshold-db",
+            "reset_db" => "audio-reset-margin",
+            "hold_ms" => "audio-setting-hold-ms",
+            "direction" => "when-mode",
+            _ => return None,
+        }));
+    }
     if node.definition != "org.orange.audio/noise-gate" {
         return None;
     }
@@ -315,6 +622,17 @@ pub(crate) fn noise_gate_label(node: &NodeView, setting: &str) -> Option<&'stati
         _ => return None,
     };
     Some(t(key))
+}
+
+pub(crate) fn audio_trigger_help(node: &NodeView, name: &str) -> Option<&'static str> {
+    if node.definition != "org.orange.audio/noise-level" {
+        return None;
+    }
+    Some(t(match name {
+        "hold_ms" => "audio-trigger-hold-help",
+        "reset_db" => "audio-trigger-reset-help",
+        _ => return None,
+    }))
 }
 
 /// Sets the value at a JSON `pointer` (such as `/variable`) in `settings`, making
@@ -360,6 +678,7 @@ enum Field<'a> {
     },
     /// A length of time, typed in milliseconds and kept as nanoseconds in digits.
     Time,
+    Json,
     Text,
 }
 
@@ -373,6 +692,7 @@ impl<'a> Field<'a> {
             (Some("integer"), _) => Self::Whole,
             (Some("number"), _) => Self::Number,
             (Some("string"), Some("duration-ns")) => Self::Time,
+            (Some("object" | "array"), _) => Self::Json,
             _ => Self::Text,
         }
     }
@@ -425,6 +745,9 @@ impl<'a> Field<'a> {
                     json!(nanos.to_string())
                 })
                 .ok_or_else(|| tf("not-milliseconds", &[("typed", typed.into())])),
+            Self::Json => {
+                serde_json::from_str(typed).map_err(|_| t("invalid-setting-json").to_owned())
+            }
             Self::Choice(_) | Self::Toggle | Self::Text => Ok(json!(typed)),
         }
     }
@@ -437,6 +760,7 @@ fn setting_key(pointer: &str) -> String {
 
 pub(crate) fn watch_fields(mode: Option<&str>) -> &'static [&'static str] {
     match mode {
+        Some("deadband") => &["mode", "threshold"],
         Some("above" | "below") => &["mode", "threshold", "release", "hold", "cooldown"],
         Some("inside" | "outside") => &["mode", "low", "high", "hold", "cooldown"],
         _ => &["mode"],
@@ -489,6 +813,7 @@ pub(crate) fn watch_label(name: &str) -> &'static str {
         "below" => t("when-below"),
         "inside" => t("when-inside"),
         "outside" => t("when-outside"),
+        "deadband" => t("when-deadband"),
         "threshold" => t("when-threshold"),
         "release" => t("when-release"),
         "low" => t("when-low"),
@@ -639,7 +964,7 @@ impl Editor {
             .connection_label(&view.definition)
             .unwrap_or_else(|| t("configure-node").to_owned());
         let mut open = true;
-        egui::Window::new(label)
+        orange_ui_controls::dialog_window(ctx, label)
             .id(egui::Id::unique("node-config").with(node))
             .default_pos(position)
             .default_width(330.0)
@@ -793,17 +1118,92 @@ impl Editor {
         self.inspect(&node, host);
         ui.add_space(2.0);
         self.properties_title(ui, host, &node);
-        let mut subtitle = self.canvas.kind_name(&node).to_owned();
-        if let Some(detail) = &node.detail {
-            subtitle.push_str(" · ");
-            subtitle.push_str(detail);
+        let kind = self.canvas.kind_name(&node);
+        let title = self.canvas.display_name(&node);
+        let subtitle = match (title == kind, node.detail.as_deref()) {
+            (true, detail) => detail.map(str::to_owned),
+            (false, Some(detail)) => Some(format!("{kind} · {detail}")),
+            (false, None) => Some(kind.to_owned()),
+        };
+        if let Some(subtitle) = subtitle {
+            ui.add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
+                .on_hover_text(node.definition.as_str());
         }
-        let _ = ui
-            .add(egui::Label::new(egui::RichText::new(subtitle).weak()).truncate())
-            .on_hover_text(node.definition.as_str());
+        if let Some(missing) = &node.missing {
+            ui.add_space(4.0);
+            let warning = ui.visuals().warn_fg_color;
+            let _ = ui.add(
+                egui::Label::new(egui::RichText::new(missing_package_text(missing)).color(warning))
+                    .wrap(),
+            );
+            let _ = ui.add(egui::Label::new(t("missing-package-hint")).wrap());
+            if self.file_dialogs
+                && controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Primary,
+                    true,
+                    egui::Button::new((icons::text(icons::ADD), t("install-missing-package"))),
+                )
+                .clicked()
+            {
+                self.ask(FileRequest::ImportPackage);
+            }
+        }
         if let Some(description) = self.canvas.description(&node.definition) {
             ui.add_space(4.0);
             let _ = ui.add(egui::Label::new(description).wrap());
+        }
+        // A variable write says what it does, as its card does.
+        if let Some(caption) = node_ergonomics::operation_caption(&node) {
+            ui.add_space(2.0);
+            let _ = ui.add(egui::Label::new(egui::RichText::new(caption).monospace()).wrap());
+        }
+        if matches!(
+            node.definition.as_str(),
+            "org.orange.audio/noise-level" | "org.orange.audio/multiband-spectrum"
+        ) {
+            let has_reading = self.canvas.noise_readings.contains_key(&node.id)
+                || self
+                    .canvas
+                    .spectra
+                    .get(&node.id)
+                    .is_some_and(|bins| bins.len() > 1);
+            ui.weak(canvas::spectrum::audio_status(
+                &node,
+                self.canvas.audio_running,
+                has_reading,
+            ));
+            if let Some(level) = self.canvas.noise_readings.get(&node.id) {
+                ui.label(tf(
+                    "audio-display-level",
+                    &[("level", format!("{level:.1}").into())],
+                ));
+            }
+            if let Some(graph) = self.graph()
+                && let Some(wire) = graph
+                    .wires
+                    .iter()
+                    .find(|wire| wire.to.0 == node.id && wire.to.1 == "stream")
+                && let Some(source) = graph.nodes.iter().find(|source| source.id == wire.from.0)
+            {
+                let port = source
+                    .ports
+                    .iter()
+                    .find(|port| !port.input && port.id == wire.from.1);
+                let label = port
+                    .and_then(|port| port.label.as_deref())
+                    .map_or_else(|| port_label(&wire.from.1), str::to_owned);
+                let from = tf(
+                    "audio-display-source",
+                    &[
+                        ("node", self.canvas.display_name(source).into()),
+                        ("port", label.into()),
+                    ],
+                );
+                ui.add(egui::Label::new(&from).truncate())
+                    .on_hover_text(&from);
+            }
         }
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
@@ -814,6 +1214,20 @@ impl Editor {
                 let http = http_request_variant(&node);
                 if http {
                     self.values_section(ui, &node);
+                }
+                if self.canvas.has_failure_routes(node.id) {
+                    let label = if self.canvas.failure_routes_expanded(node.id) {
+                        t("hide-failure-routes")
+                    } else {
+                        t("show-failure-routes")
+                    };
+                    if ui
+                        .button(label)
+                        .on_hover_text(t("failure-routes-hint"))
+                        .clicked()
+                    {
+                        self.canvas.toggle_failure_routes(node.id);
+                    }
                 }
                 let has_settings = node
                     .schema
@@ -847,7 +1261,9 @@ impl Editor {
                 }
                 if node.ports.iter().any(|port| port.input && !port.exec) {
                     section(ui, t("inputs"));
-                    if let Some(asked) = self.input_fields(ui, &node, host) {
+                    if !self.build_map_pair_control(ui, &node)
+                        && let Some(asked) = self.input_fields(ui, &node, host)
+                    {
                         change = Some(asked);
                     }
                 }
@@ -868,6 +1284,7 @@ impl Editor {
                 if !http {
                     self.values_section(ui, &node);
                 }
+                Self::outputs_section(ui, &node);
                 if let Some(current) = self
                     .document
                     .as_ref()
@@ -877,7 +1294,15 @@ impl Editor {
                     change = Some(Change::EventTiming(timing));
                 }
                 ui.add_space(10.0);
-                if ui.button(t("delete-node")).clicked() {
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Destructive,
+                    true,
+                    egui::Button::new(t("delete-node")),
+                )
+                .clicked()
+                {
                     change = Some(Change::Delete);
                 }
             });
@@ -886,7 +1311,7 @@ impl Editor {
         };
         match change {
             Change::Setting(pointer, value) => {
-                let _ = self.set_setting(host, node.id, &pointer, value);
+                let _ = self.setting_with_mode_preview(host, node.id, &pointer, value);
             }
             Change::Type(param, ty) => {
                 let _ = self.choose_type(host, node.id, &param, ty.as_deref());
@@ -894,6 +1319,7 @@ impl Editor {
             Change::Input(port, typed) => {
                 let _ = self.set_input(host, (node.id, &port), typed.as_deref());
             }
+            Change::OmitRecordField(port, ty) => self.omit_record_field(host, node.id, &port, ty),
             Change::AddPort(port) => {
                 let _ = self.add_port(host, node.id, &port);
             }
@@ -995,6 +1421,9 @@ impl Editor {
         let watch = node.definition == "core/on-watch";
         let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
         for (name, schema) in fields {
+            if schema["readOnly"] == true {
+                continue;
+            }
             if name == "bands" && node.definition == "org.orange.audio/multiband-spectrum" {
                 continue;
             }
@@ -1014,8 +1443,8 @@ impl Editor {
                 watch_label(name).to_owned()
             } else if name == "max_iterations" {
                 t("max-iterations").to_owned()
-            } else if let Some(label) = noise_gate_label(node, name) {
-                if matches!(field, Field::Time) {
+            } else if let Some(label) = audio_setting_label(node, name) {
+                if matches!(field, Field::Time) || name == "hold_ms" {
                     tf("in-milliseconds", &[("name", label.into())])
                 } else {
                     label.to_owned()
@@ -1028,7 +1457,9 @@ impl Editor {
                 words(name)
             };
             let hover = Some(
-                if measurement_time {
+                if let Some(help) = audio_trigger_help(node, name) {
+                    help
+                } else if measurement_time {
                     t("audio-setting-window-help")
                 } else if name == "max_iterations" {
                     t("max-iterations-help")
@@ -1043,8 +1474,10 @@ impl Editor {
             row(ui, &label, hover, |ui| match &field {
                 Field::Choice(options) => {
                     let selected = current.as_str().or_else(|| schema["default"].as_str());
-                    let shown = selected
-                        .map_or(t("not-set"), |choice| setting_choice_caption(node, choice));
+                    let shown = selected.map_or_else(
+                        || t("not-set").into(),
+                        |choice| setting_choice_label(node, choice),
+                    );
                     let _ = egui::ComboBox::from_id_salt(("orange-setting", name.as_str()))
                         .selected_text(shown)
                         .width(ui.available_width())
@@ -1060,7 +1493,7 @@ impl Editor {
                             }
                             for option in options {
                                 let on = selected == Some(*option);
-                                let label = setting_choice_caption(node, option);
+                                let label = setting_choice_label(node, option);
                                 if ui.selectable_label(on, label).clicked() && !on {
                                     changed =
                                         Some(Change::Setting(pointer.clone(), Some(json!(option))));
@@ -1078,7 +1511,54 @@ impl Editor {
                 | Field::Number
                 | Field::WatchNumber { .. }
                 | Field::Time
+                | Field::Json
                 | Field::Text => {
+                    if name == "threshold_db"
+                        && let Some(threshold) = ThresholdEdit::for_node(node)
+                    {
+                        let width = (ui.available_width() - 102.0).max(28.0);
+                        let slider = ui
+                            .allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                                ui.set_width(width);
+                                threshold.slider(ui, Surface::Panel)
+                            })
+                            .inner;
+                        if let Some(value) = threshold.number(ui).or(slider) {
+                            changed = Some(Change::Setting(pointer.clone(), Some(json!(value))));
+                        }
+                        return;
+                    }
+                    if let Some(range) = AudioRange::of(node, name, schema)
+                        && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
+                    {
+                        let id = ui.make_persistent_id((&node.id, &pointer));
+                        let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
+                            if let Some(value) = range.dial(ui, Surface::Panel, id, value, dial) {
+                                changed =
+                                    Some(Change::Setting(pointer.clone(), Some(json!(value))));
+                            }
+                            return;
+                        } else {
+                            let width = (ui.available_width() - 96.0).max(32.0);
+                            ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                                ui.set_width(width);
+                                range.slider(ui, Surface::Panel, id, value)
+                            })
+                            .inner
+                        };
+                        if let Some(value) = adjusted {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "an integer setting rounds the bounded slider position"
+                            )]
+                            let literal = if schema["type"] == "integer" {
+                                json!(value.round() as i64)
+                            } else {
+                                json!(value)
+                            };
+                            changed = Some(Change::Setting(pointer.clone(), Some(literal)));
+                        }
+                    }
                     let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
                     let hint = if needed { "required" } else { "optional" };
@@ -1204,18 +1684,27 @@ impl Editor {
 
     /// Fields for the values on the node's inputs.
     fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
+        let record_omissions = self
+            .document
+            .as_ref()
+            .filter(|_| node.missing.is_none())
+            .map_or_else(Default::default, |document| {
+                host.record_omissions(&document.draft, node.id)
+            });
+        let mut omit = None;
         let mut write = None;
         for port in input_ports(node) {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
+            let details = self.canvas.port_details(node.id, &port.id, true);
+            let editor = port.literal_editor(details);
+            let state = port_values::state_text(port.input_state(details));
+            let mut help = format!("{ty}\n{state}");
+            if let Some(description) = details.and_then(|detail| detail.description.as_deref()) {
+                help.push('\n');
+                help.push_str(description);
+            }
             let multiline = TextInput::for_port(node, port).filter(|kind| *kind != TextInput::Text);
-            let label = input_label(node, &port.id).map_or_else(
-                || {
-                    log_part_label(node, &port.id)
-                        .or_else(|| port.label.clone())
-                        .unwrap_or_else(|| port_label(&port.id))
-                },
-                str::to_owned,
-            );
+            let label = input_caption(node, port);
             if node.definition == "org.orange.logging/log-message"
                 && port.id == "message"
                 && node.variadic.iter().any(|port| port.port == "argument")
@@ -1232,9 +1721,49 @@ impl Editor {
             } else {
                 label
             };
-            row(ui, &label, Some(ty.clone()), |ui| {
+            row(ui, &label, Some(help), |ui| {
                 if port.connected {
-                    ui.weak(t("from-a-wire"));
+                    ui.weak(state);
+                    return;
+                }
+                match record_omissions.get(&port.id) {
+                    Some(true) => {
+                        ui.weak(t("record-field-omitted"));
+                    }
+                    Some(false) if ui.small_button(t("record-omit-field")).clicked() => {
+                        if let Some(ty) = port.ty.as_deref().and_then(|ty| ty.parse().ok()) {
+                            omit = Some(Change::OmitRecordField(port.id.clone(), ty));
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+                let enum_picker = port
+                    .ty
+                    .as_deref()
+                    .and_then(|ty| self.canvas.enums.get(ty))
+                    .is_some_and(|choices| choices.iter().any(|choice| !choice.payload));
+                if multiline.is_none()
+                    && !enum_picker
+                    && matches!(
+                        editor,
+                        orange_host::LiteralEditor::Option { .. }
+                            | orange_host::LiteralEditor::Structured
+                    )
+                {
+                    let shown = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .unwrap_or(state);
+                    let response = ui.button(shown).on_hover_text(t("edit-literal"));
+                    if response.clicked() {
+                        self.begin_value_input(node.id, &port.id);
+                    }
+                    return;
+                }
+                if editor == orange_host::LiteralEditor::Unavailable {
+                    ui.weak(t("literal-unavailable"));
                     return;
                 }
                 if port.ty.as_deref() == Some(orange_host::RGBA_TYPE) {
@@ -1368,6 +1897,33 @@ impl Editor {
                     }
                     return;
                 }
+                if port.ty.as_deref() == Some("core/duration@1") {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if port.value.is_some()
+                            && ui
+                                .small_button(icons::text(icons::CLOSE))
+                                .on_hover_text(t("clear-value-hint"))
+                                .clicked()
+                        {
+                            write = Some(Change::Input(port.id.clone(), None));
+                        }
+                        let (slot, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 30.0),
+                            egui::Sense::hover(),
+                        );
+                        let key = format!("properties-duration:{}", port.id);
+                        if let Some(nanos) = self.canvas.duration_input(
+                            ui,
+                            (node.id, &key),
+                            slot,
+                            response.id.with("value"),
+                            port,
+                        ) {
+                            write = Some(Change::Input(port.id.clone(), Some(nanos)));
+                        }
+                    });
+                    return;
+                }
                 let before = Self::shown_input(port);
                 // A path is chosen with the system's chooser, where the application
                 // has one.
@@ -1407,7 +1963,7 @@ impl Editor {
                 }
             });
         }
-        write
+        omit.or(write)
     }
 }
 
@@ -1469,6 +2025,7 @@ enum Change {
     Setting(String, Option<Json>),
     Type(String, Option<String>),
     Input(String, Option<String>),
+    OmitRecordField(String, orange_host::TypeExpr),
     AddPort(String),
     RemovePort(String),
     EventTiming(Option<EventTiming>),
@@ -1555,22 +2112,18 @@ fn row(ui: &mut egui::Ui, label: &str, hover: Option<String>, field: impl FnOnce
 /// A No | Yes switch across the row; `None` chooses neither. Returns the half clicked
 /// when it is not the one chosen.
 fn yes_no(ui: &mut egui::Ui, on: Option<bool>) -> Option<bool> {
-    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-    let mut clicked = None;
-    for (value, label) in [(false, t("no")), (true, t("yes"))] {
-        let chosen = on == Some(value);
-        if ui
-            .add_sized(
-                egui::vec2(width, ui.spacing().interact_size.y),
-                egui::Button::selectable(chosen, label),
-            )
-            .clicked()
-            && !chosen
-        {
-            clicked = Some(value);
-        }
+    let (id, rect) = ui.allocate_space(egui::vec2(
+        ui.available_width(),
+        ui.spacing().interact_size.y,
+    ));
+    orange_ui_controls::BinaryChoice {
+        labels: [t("no"), t("yes")],
+        selected: on,
+        defaulted: false,
+        surface: Surface::Panel,
+        zoom: 1.0,
     }
-    clicked
+    .show(ui, rect, id)
 }
 
 /// A setting's name as a person reads it: `max_iterations` is "Max iterations".
@@ -1596,11 +2149,26 @@ pub fn port_label(id: &str) -> String {
     }
 }
 
-pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
+pub(crate) fn setting_choice_label<'a>(
+    node: &NodeView,
+    choice: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    if choice.starts_with("local/") {
+        return type_name(choice).into();
+    }
+    setting_choice_caption(node, choice).into()
+}
+
+fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
     match (node.definition.as_str(), choice) {
         ("core/on-watch", _) => watch_label(choice),
+        ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
         ("core/for-each", "list") => t("for-each-list"),
         ("core/for-each", "map") => t("for-each-map"),
+        ("org.orange.audio/filter", "low-pass") => t("audio-filter-low"),
+        ("org.orange.audio/filter", "high-pass") => t("audio-filter-high"),
+        ("org.orange.audio/filter", "band-pass") => t("audio-filter-band"),
+        ("org.orange.audio/filter", "notch") => t("audio-filter-notch"),
         ("org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp", "rfc3339") => {
             t("timestamp-rfc3339")
         }
@@ -1624,6 +2192,24 @@ pub(crate) fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'
     }
 }
 
+/// What a node of a package this host lacks says it needs: the package and, when the
+/// document records it, the version.
+pub(crate) fn missing_package_text(missing: &orange_host::MissingPackage) -> String {
+    if missing.version.is_empty() {
+        tf(
+            "node-needs-package-any",
+            &[("package", missing.package.clone().into())],
+        )
+    } else {
+        tf(
+            "node-needs-package",
+            &[
+                ("package", missing.package.clone().into()),
+                ("version", missing.version.clone().into()),
+            ],
+        )
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1641,6 +2227,18 @@ mod tests {
         set_at(&mut settings, "/missing/one", None);
         set_at(&mut settings, "/variable", None);
         assert_eq!(settings, json!({"keep": 1, "deep": {}}));
+    }
+
+    #[test]
+    fn structured_settings_are_edited_as_json() {
+        for (schema, value) in [
+            (json!({"type": "object"}), json!({"nested": [true, 2]})),
+            (json!({"type": "array"}), json!([1, "text"])),
+        ] {
+            let field = Field::of(&schema);
+            assert_eq!(field.value(&field.typed(&value)).unwrap(), value);
+            assert!(field.value("{ incomplete").is_err());
+        }
     }
 
     #[test]
@@ -1728,20 +2326,10 @@ mod width_tests {
         let at = title.pos + title.galley.rect.center().to_vec2();
         let baseline = title.pos.y;
         output.drop_without_applying_deltas();
-        frame(&mut editor, vec![egui::Event::PointerMoved(at)]).drop_without_applying_deltas();
         for expected in [None, Some((node, "Sample amount".to_owned()))] {
-            for pressed in [true, false] {
-                frame(
-                    &mut editor,
-                    vec![egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    }],
-                )
-                .drop_without_applying_deltas();
-            }
+            orange_testkit::ui::click(at, egui::PointerButton::Primary, |events| {
+                frame(&mut editor, events).drop_without_applying_deltas();
+            });
             assert_eq!(
                 editor
                     .renaming_node
@@ -1959,7 +2547,7 @@ impl Editor {
         let copyable = self.canvas.copyable_port_text(graph, *node, port, *input);
         let title = format!("{} · {}", self.canvas.display_name(view), port_label(port));
         let mut open = true;
-        egui::Window::new(title)
+        orange_ui_controls::dialog_window(ctx, title)
             .id(egui::Id::unique("orange-port-inspector"))
             .default_width(480.0)
             .collapsible(false)
@@ -1980,6 +2568,39 @@ impl Editor {
     }
 
     /// The last observed values and any failure, with copyable result text.
+    /// What the node gives, with the type of each, so a person can tell what to wire
+    /// where before anything has run.
+    fn outputs_section(ui: &mut egui::Ui, node: &NodeView) {
+        let outputs: Vec<_> = node
+            .ports
+            .iter()
+            .filter(|port| !port.input && !port.exec)
+            .collect();
+        if outputs.is_empty() {
+            return;
+        }
+        section(ui, t("outputs"));
+        for port in outputs {
+            let caption = node_ergonomics::loop_result(node, port)
+                .map(str::to_owned)
+                .or_else(|| port.label.clone())
+                .unwrap_or_else(|| port_label(&port.id));
+            let ty = port.ty.as_deref().unwrap_or_default();
+            ui.horizontal(|ui| {
+                let _ = ui.add(egui::Label::new(&caption).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let _ = ui
+                        .label(
+                            egui::RichText::new(canvas::short_type(ty))
+                                .small()
+                                .color(canvas::type_color(Some(ty))),
+                        )
+                        .on_hover_text(exact_type(ty));
+                });
+            });
+        }
+    }
+
     fn values_section(&self, ui: &mut egui::Ui, node: &NodeView) {
         let Some(graph) = self.graph() else {
             return;
@@ -1989,7 +2610,9 @@ impl Editor {
         let ports: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| !port.exec && (!http || !port.input))
+            .filter(|port| {
+                !port.exec && !canvas::stream_type(port.ty.as_deref()) && (!http || !port.input)
+            })
             .filter_map(|port| {
                 let (shown, stale) = self
                     .canvas
@@ -2002,39 +2625,62 @@ impl Editor {
         }
         section(ui, if http { t("http-results") } else { t("values") });
         if let Some(why) = failure {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
+            orange_ui_controls::notice(
+                ui,
+                controls::ButtonTone::Danger,
                 tf("failed", &[("why", why.to_string().into())]),
             );
         }
         for (port, shown, stale) in ports {
+            let caption = node_ergonomics::loop_result(node, port)
+                .map(str::to_owned)
+                .or_else(|| port.label.clone())
+                .unwrap_or_else(|| port_label(&port.id));
             let side = if port.input { "in" } else { "out" };
             let freshness = if stale { t("previous-suffix") } else { "" };
             let response = http && !port.input && port.id == "response";
             let title = if response {
-                format!("{}{freshness}", port_label(&port.id))
+                format!("{caption}{freshness}")
             } else if shown.short == shown.full
                 && shown.short.chars().take(17).count() <= 16
                 && !shown.short.contains(['\n', '\r'])
             {
-                format!(
-                    "{} ({side}) = {}{freshness}",
-                    port_label(&port.id),
-                    shown.short
-                )
+                format!("{caption} ({side}) = {}{freshness}", shown.short)
             } else {
-                format!("{} ({side}){freshness}", port_label(&port.id))
+                format!("{caption} ({side}){freshness}")
             };
-            egui::CollapsingHeader::new(egui::RichText::new(title).monospace())
-                .id_salt(("orange-value", node.id, port.id.as_str(), port.input))
-                .default_open(response)
-                .show(ui, |ui| {
-                    let copyable = self
-                        .canvas
-                        .copyable_port_text(graph, node.id, &port.id, port.input)
-                        .unwrap_or(&shown.full);
-                    display_port_text(ui, &shown.full, copyable, 126.0);
-                });
+            let id = ui.make_persistent_id(("orange-value", node.id, port.id.as_str(), port.input));
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                response,
+            );
+            let row = orange_ui_controls::navigation::sidebar_row(
+                ui,
+                &title,
+                false,
+                Some(state.is_open()),
+                |ui, rect, ink| {
+                    icons::paint_centered(ui.painter(), rect.center(), icons::WATCH, 15.0, ink);
+                },
+            )
+            .on_hover_text(
+                self.canvas
+                    .port_details(node.id, &port.id, port.input)
+                    .and_then(|detail| detail.description.as_deref())
+                    .map_or(title.clone(), |help| format!("{title}\n{help}")),
+            );
+            if row.clicked() {
+                state.toggle(ui);
+                state.store(ui.ctx());
+            }
+            if state.is_open() {
+                let copyable = self
+                    .canvas
+                    .copyable_port_text(graph, node.id, &port.id, port.input)
+                    .unwrap_or(&shown.full);
+                display_port_text(ui, &shown.full, copyable, 126.0);
+            }
         }
     }
 }

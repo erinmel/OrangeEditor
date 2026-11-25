@@ -2,12 +2,14 @@
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
 use orange_model::catalog::{NominalAccess, Ports};
+use orange_model::document::PortRef;
 use orange_model::document::{
     ConfigValue, ConnectionDecl, EventDecl, FunctionDecl, NodeInstance, NodeKind, PortDirection,
     PortKind, SignatureSnapshot, VariableDecl,
 };
 use orange_model::id::{ConnectionId, EdgeId, EventDeclId, FunctionId, SignatureKey};
 use serde_json::{Value as Json, json};
+use std::collections::{HashMap, HashSet};
 
 fn spectrum_band_label(node: &NodeInstance, key: &PortKey) -> Option<String> {
     if node.definition.id.as_str() != "org.orange.audio/multiband-spectrum" {
@@ -65,8 +67,8 @@ pub struct NodeView {
     pub detail: Option<String>,
     /// Whether it starts work: a trigger.
     pub entry: bool,
-    /// Inputs and outputs in declared order. Empty when this host does not have the
-    /// node's definition.
+    /// Inputs and outputs in declared order. A missing node can show its saved
+    /// signature for repair.
     pub ports: Vec<PortView>,
     /// Where the document's layout puts it, if it says.
     pub position: Option<[f32; 2]>,
@@ -85,6 +87,19 @@ pub struct NodeView {
     /// Text inputs that hold a path on this machine, from the node's definition file,
     /// so the editor can offer the system's file or folder chooser beside them.
     pub paths: Vec<PathInput>,
+    /// The package the node needs when its exact provider is unavailable. The
+    /// node, its settings and its wires stay in the document, and the view can
+    /// draw its saved signature.
+    pub missing: Option<MissingPackage>,
+}
+
+/// The package a node needs and this host lacks: the one its provider was bound to, or,
+/// for a node written without a provider, its definition's namespace with no version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingPackage {
+    pub package: String,
+    /// Empty when the document does not say which version.
+    pub version: String,
 }
 
 /// A variadic port of a node, such as the branches of a fork: its instances are
@@ -288,17 +303,59 @@ pub struct GraphView {
     pub wires: Vec<WireView>,
 }
 
+/// The top-level graph with all implicit failure ports available for authoring.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AuthoringView {
+    pub graph: GraphView,
+    /// Only nodes with implicit failure ports are listed. A UI may collapse
+    /// these ports while they are unwired.
+    pub failure_routes: HashMap<NodeId, FailureRoutes>,
+    /// Captions are carried by PortView. Details add localized help and the
+    /// value capabilities that a plain primitive port does not need to store.
+    pub port_details: HashMap<NodeId, Arc<[PortDetails]>>,
+}
+
+/// Implicit failure ports supplied by the language for a node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FailureRoutes(u8);
+
+impl FailureRoutes {
+    fn bit(port: &str) -> u8 {
+        match port {
+            "failed" => 1,
+            "error" => 2,
+            "cancelled" => 4,
+            _ => 0,
+        }
+    }
+
+    /// Whether this port is implicit. A declared port such as Match Result's
+    /// `error` is not in this set.
+    pub fn contains(self, port: &str) -> bool {
+        self.0 & Self::bit(port) != 0
+    }
+}
+
+#[derive(Clone)]
+struct CachedCard {
+    view: Arc<NodeView>,
+    failure_routes: FailureRoutes,
+    port_details: Option<Arc<[PortDetails]>>,
+}
+
 /// The cards of a draft's last view and the nodes edited since, so the next view
 /// builds only those again (docs/10 "Performance").
 #[derive(Default)]
 pub(crate) struct ViewCache {
     /// What every card was drawn with; a change to any of it draws every card again.
     shared: Option<SharedKey>,
-    nodes: std::collections::HashMap<NodeId, Arc<NodeView>>,
+    nodes: HashMap<NodeId, CachedCard>,
+    complete_outcomes: bool,
+    locale: Option<String>,
     /// Each top-level wire's ends, to find the cards a wire added or removed changes.
-    edges: std::collections::HashMap<EdgeId, (NodeId, NodeId)>,
+    edges: HashMap<EdgeId, (PortRef, PortRef)>,
     /// Nodes edited since the last view.
-    edited: std::collections::HashSet<NodeId>,
+    edited: HashSet<NodeId>,
 }
 
 impl std::fmt::Debug for ViewCache {
@@ -330,7 +387,12 @@ impl ViewCache {
 
     /// Forgets every card when what all of them were drawn with changed, and the cards
     /// of nodes edited, or whose wires changed, since the last view.
-    fn forget_changed(&mut self, context: &ViewContext<'_>) {
+    fn forget_changed(&mut self, context: &ViewContext<'_>, complete_outcomes: bool) {
+        if self.complete_outcomes != complete_outcomes || self.locale.as_deref() != context.locale {
+            self.nodes.clear();
+            self.complete_outcomes = complete_outcomes;
+            self.locale = context.locale.map(str::to_owned);
+        }
         if !self
             .shared
             .as_ref()
@@ -342,19 +404,26 @@ impl ViewCache {
         for node in self.edited.drain() {
             let _ = self.nodes.remove(&node);
         }
-        let mut edges = std::collections::HashMap::with_capacity(self.edges.len());
+        let mut edges = HashMap::with_capacity(self.edges.len());
         for (id, edge) in &context.document.root().edges {
-            let ends = (edge.from.node, edge.to.node);
-            if self.edges.remove(id) != Some(ends) {
-                let _ = self.nodes.remove(&ends.0);
-                let _ = self.nodes.remove(&ends.1);
-            }
+            let ends = match self.edges.remove(id) {
+                Some(ends) if ends.0 == edge.from && ends.1 == edge.to => ends,
+                prior => {
+                    if let Some((from, to)) = prior {
+                        let _ = self.nodes.remove(&from.node);
+                        let _ = self.nodes.remove(&to.node);
+                    }
+                    let _ = self.nodes.remove(&edge.from.node);
+                    let _ = self.nodes.remove(&edge.to.node);
+                    (edge.from.clone(), edge.to.clone())
+                }
+            };
             let _ = edges.insert(*id, ends);
         }
         // What is left was taken away.
         for (from, to) in std::mem::replace(&mut self.edges, edges).into_values() {
-            let _ = self.nodes.remove(&from);
-            let _ = self.nodes.remove(&to);
+            let _ = self.nodes.remove(&from.node);
+            let _ = self.nodes.remove(&to.node);
         }
     }
 }
@@ -420,19 +489,20 @@ impl SharedKey {
 /// What every node view of one document is drawn with.
 struct ViewContext<'a> {
     document: &'a GraphDocument,
+    locale: Option<&'a str>,
     /// The document's registry, with its own types ([`Host::registry_for`]).
     registry: Arc<RegistrySnapshot>,
     names: Names,
     labels: BTreeMap<String, String>,
     places: Option<&'a Json>,
     /// The ports a wire ends or starts at, by node and side.
-    connected: std::collections::HashMap<(NodeId, bool), std::collections::HashSet<String>>,
+    connected: HashMap<(NodeId, bool), HashSet<String>>,
 }
 
 impl Host {
     /// What a canvas shows of a document: its top-level nodes with their ports and
-    /// places, and its wires. The document does not have to be valid or bound; a node
-    /// whose definition this host lacks is shown without ports.
+    /// places, and its wires. The document does not have to be valid or bound.
+    /// An unavailable package node shows the ports of its saved signature.
     pub fn view(&self, json: &str) -> Result<GraphView, HostError> {
         let mut document =
             from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
@@ -447,7 +517,25 @@ impl Host {
         // Keep package definitions and saved settings in the editor. Runtime linking
         // replaces them with internal calls and can expand hidden implementation nodes.
         let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(self.view_with(draft.document(), Some(&mut cache)))
+        Ok(self
+            .view_with(draft.document(), Some(&mut cache), None)
+            .graph)
+    }
+
+    /// Like [`Host::draft_view`], with unwired implicit failure and cancellation ports
+    /// included so they can be offered for wiring.
+    pub fn draft_authoring_view(&self, draft: &Draft) -> Result<AuthoringView, HostError> {
+        self.draft_authoring_view_in(draft, SOURCE_LANGUAGE)
+    }
+
+    /// Authoring projection with port captions and help in the requested locale.
+    pub fn draft_authoring_view_in(
+        &self,
+        draft: &Draft,
+        locale: &str,
+    ) -> Result<AuthoringView, HostError> {
+        let mut cache = draft.view.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(self.view_with(draft.document(), Some(&mut cache), Some(locale)))
     }
 
     fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {
@@ -462,8 +550,7 @@ impl Host {
             .collect();
         // Index endpoints once. A port lookup must not scan every edge, including
         // when the graph is incomplete and exposes only implicit control ports.
-        let mut connected: std::collections::HashMap<_, std::collections::HashSet<String>> =
-            std::collections::HashMap::new();
+        let mut connected: HashMap<_, HashSet<String>> = HashMap::new();
         for edge in document.root().edges.values() {
             for (end, input) in [(&edge.from, false), (&edge.to, true)] {
                 let _ = connected
@@ -474,6 +561,7 @@ impl Host {
         }
         ViewContext {
             document,
+            locale: None,
             registry: self.registry_for(document),
             names: Names::of_document(self, document),
             labels,
@@ -482,60 +570,130 @@ impl Host {
         }
     }
 
-    /// One top-level node as the canvas draws it; `None` when the document has no such node.
+    /// One output on a top-level node, with the same projected type as the canvas.
+    pub(crate) fn output_view(
+        &self,
+        document: &GraphDocument,
+        from: (NodeId, &str),
+    ) -> Option<PortView> {
+        self.wire_port_view(document, from, false)
+    }
+
+    pub(crate) fn input_view(&self, document: &GraphDocument, to: PortEnd<'_>) -> Option<PortView> {
+        self.wire_port_view(document, to, true)
+    }
+
+    fn wire_port_view(
+        &self,
+        document: &GraphDocument,
+        end: PortEnd<'_>,
+        input: bool,
+    ) -> Option<PortView> {
+        self.wire_node_view(document, end.0)?
+            .ports
+            .into_iter()
+            .find(|port| port.input == input && port.id == end.1)
+    }
+
+    /// One top-level node's fresh port view; `None` when it or its exact provider is absent.
     pub(crate) fn node_view(&self, document: &GraphDocument, node: NodeId) -> Option<NodeView> {
+        self.lookup_node_view(document, node, false)
+    }
+
+    /// Includes unwired implicit outcomes so editing can connect their first wires.
+    pub(crate) fn wire_node_view(
+        &self,
+        document: &GraphDocument,
+        node: NodeId,
+    ) -> Option<NodeView> {
+        self.lookup_node_view(document, node, true)
+    }
+
+    fn lookup_node_view(
+        &self,
+        document: &GraphDocument,
+        node: NodeId,
+        complete_outcomes: bool,
+    ) -> Option<NodeView> {
+        let node = document.root().nodes.get(&node)?;
         let context = self.view_context(document);
-        document
-            .root()
-            .nodes
-            .get(&node)
-            .map(|node| self.node_view_in(&context, node))
+        let view = self
+            .node_view_in(&context, node, complete_outcomes, false)
+            .0;
+        view.missing.is_none().then_some(view)
     }
 
     fn view_of(&self, document: &GraphDocument) -> GraphView {
-        self.view_with(document, None)
+        self.view_with(document, None, None).graph
     }
 
-    fn view_with(&self, document: &GraphDocument, cache: Option<&mut ViewCache>) -> GraphView {
-        let context = self.view_context(document);
+    fn view_with(
+        &self,
+        document: &GraphDocument,
+        cache: Option<&mut ViewCache>,
+        locale: Option<&str>,
+    ) -> AuthoringView {
+        let mut context = self.view_context(document);
+        context.locale = locale;
+        let complete_outcomes = locale.is_some();
         let body = document.root();
+        let project = |node| {
+            let (view, failure_routes, port_details) =
+                self.node_view_in(&context, node, complete_outcomes, true);
+            CachedCard {
+                view: Arc::new(view),
+                failure_routes,
+                port_details,
+            }
+        };
+        let mut failure_routes = HashMap::new();
+        let mut port_details = HashMap::new();
+        let mut into_view = |card: CachedCard| {
+            if card.failure_routes != FailureRoutes::default() {
+                let _ = failure_routes.insert(card.view.id, card.failure_routes);
+            }
+            if let Some(details) = card.port_details {
+                let _ = port_details.insert(card.view.id, details);
+            }
+            card.view
+        };
         let nodes: Vec<Arc<NodeView>> = match cache {
-            None => body
-                .nodes
-                .values()
-                .map(|node| Arc::new(self.node_view_in(&context, node)))
-                .collect(),
+            None => body.nodes.values().map(project).map(into_view).collect(),
             Some(cache) => {
-                cache.forget_changed(&context);
+                cache.forget_changed(&context, complete_outcomes);
                 body.nodes
                     .values()
                     .map(|node| {
                         let kept = cache
                             .nodes
                             .get(&node.id)
-                            .filter(|kept| kept.name == context.names.called(&node.id));
-                        let view = match kept {
+                            .filter(|kept| kept.view.name == context.names.called(&node.id));
+                        let card = match kept {
                             // Moving a node is a layout edit, which names no node.
                             Some(kept) => {
                                 let position = position_in(context.places, node.id);
-                                if kept.position == position {
-                                    Arc::clone(kept)
+                                if kept.view.position == position {
+                                    kept.clone()
                                 } else {
-                                    Arc::new(NodeView {
-                                        position,
-                                        ..NodeView::clone(kept)
-                                    })
+                                    CachedCard {
+                                        view: Arc::new(NodeView {
+                                            position,
+                                            ..NodeView::clone(&kept.view)
+                                        }),
+                                        failure_routes: kept.failure_routes,
+                                        port_details: kept.port_details.clone(),
+                                    }
                                 }
                             }
-                            None => Arc::new(self.node_view_in(&context, node)),
+                            None => project(node),
                         };
-                        let _ = cache.nodes.insert(node.id, Arc::clone(&view));
-                        view
+                        let _ = cache.nodes.insert(node.id, card.clone());
+                        into_view(card)
                     })
                     .collect()
             }
         };
-        let outputs: std::collections::HashMap<_, _> = nodes
+        let outputs: HashMap<_, _> = nodes
             .iter()
             .flat_map(|node| {
                 node.ports
@@ -559,12 +717,23 @@ impl Host {
                 }
             })
             .collect();
-        GraphView { nodes, wires }
+        AuthoringView {
+            graph: GraphView { nodes, wires },
+            failure_routes,
+            port_details,
+        }
     }
 
-    fn node_view_in(&self, context: &ViewContext<'_>, node: &NodeInstance) -> NodeView {
+    fn node_view_in(
+        &self,
+        context: &ViewContext<'_>,
+        node: &NodeInstance,
+        complete_outcomes: bool,
+        show_saved: bool,
+    ) -> (NodeView, FailureRoutes, Option<Arc<[PortDetails]>>) {
         let ViewContext {
             document,
+            locale,
             registry,
             names,
             labels,
@@ -576,11 +745,17 @@ impl Host {
                 .get(&(node, input))
                 .is_some_and(|ports| ports.contains(port))
         };
-        let contract = call_contract(document, node, registry)
-            .map(Cow::Owned)
-            .or_else(|| registry.contract(document, node).ok().flatten());
+        let port_authority::PortResolution { contract, missing } =
+            port_authority::port_resolution(document, node, registry);
+        let has_live_metadata =
+            missing.is_none() && (node.signature.is_none() || contract.is_some());
+        let known = has_live_metadata
+            .then(|| registry.definition(&node.definition))
+            .flatten();
         // What the node's definition file says about showing it.
-        let shown = self.presentations.get(&node.definition);
+        let shown = has_live_metadata
+            .then(|| self.presentations.get(&node.definition))
+            .flatten();
         // A generic port shows the type its parameter has now: the chosen one, else the
         // one found from the wires, so a value can be typed on it.
         let settled = (!node.type_args.is_empty() || !node.type_pins.is_empty()).then(|| {
@@ -590,8 +765,11 @@ impl Host {
         });
         let mut variadic = Vec::new();
         let mut declared: Vec<PortView> = Vec::new();
+        let mut details = Vec::new();
         for port in contract.iter().flat_map(|contract| contract.ports.iter()) {
             let input = port.direction == PortDirection::Input;
+            let label = locale.and_then(|locale| self.port_text(port, "label", locale));
+            let description = locale.and_then(|locale| self.port_text(port, "description", locale));
             // A variadic port is shown as its instances, `branch#0`, `branch#1`, … in
             // the node's order (11 §4.5).
             let instances: Vec<Option<u16>> = match port.variadic {
@@ -614,68 +792,125 @@ impl Host {
             for instance in instances {
                 let key = PortKey::new(port.port_id.clone(), instance);
                 let id = key.to_string();
-                if node.definition.id.as_str() == "org.orange.audio/multiband-spectrum"
-                    && id == "spectrum"
-                    && !wired(node.id, &id, input)
-                {
-                    continue;
-                }
                 let ty = port.ty.as_ref().map(|ty| match &settled {
-                    Some(args) => orange_model::signature::substitute_params(ty, args).to_string(),
-                    None => ty.to_string(),
+                    Some(args) => Cow::Owned(orange_model::signature::substitute_params(ty, args)),
+                    None => Cow::Borrowed(ty),
                 });
+                let type_text = ty.as_ref().map(ToString::to_string);
+                let stored_literal = input && node.inputs.contains_key(&key);
                 let value = node
                     .inputs
                     .get(&key)
                     .and_then(|literal| self.value_in(document, literal).ok())
-                    .map(|value| value_text(document, registry, ty.as_deref(), &value));
+                    .map(|value| value_text(document, registry, type_text.as_deref(), &value));
                 // Read as a value is: an enum's default by its choice's name.
                 let default = port
                     .default
                     .as_ref()
                     .filter(|_| input)
                     .and_then(|literal| self.value_in(document, literal).ok())
-                    .map(|value| value_text(document, registry, ty.as_deref(), &value));
+                    .map(|value| value_text(document, registry, type_text.as_deref(), &value));
+                if locale.is_some() {
+                    let data_input = input && port.kind == PortKind::Data;
+                    let editor = ty
+                        .as_deref()
+                        .filter(|_| data_input)
+                        .map_or(LiteralEditor::Unavailable, |ty| {
+                            literals::literal_editor(registry, ty)
+                        });
+                    let optional = port.optional == Some(true);
+                    if description.is_some()
+                        || optional
+                        || (data_input
+                            && matches!(
+                                editor,
+                                LiteralEditor::Option { .. } | LiteralEditor::Structured
+                            ))
+                        || (stored_literal && value.is_none())
+                        || (data_input && port.default.is_some() && default.is_none())
+                    {
+                        details.push(PortDetails {
+                            id: id.clone(),
+                            input,
+                            description: description.clone(),
+                            editor,
+                            optional,
+                            stored_literal,
+                            default_literal: port.default.clone(),
+                        });
+                    }
+                }
                 declared.push(PortView {
                     connected: wired(node.id, &id, input),
                     input,
                     exec: port.kind != PortKind::Data,
-                    ty,
+                    ty: type_text,
                     value: value.filter(|_| input),
                     default,
                     id,
-                    label: spectrum_band_label(node, &key),
+                    label: spectrum_band_label(node, &key).or_else(|| label.clone()),
+                });
+            }
+        }
+        // A node whose definition this host lacks keeps the ports its saved signature
+        // lists, so its wires still have somewhere to end while it waits for its package.
+        let saved = (show_saved && contract.is_none())
+            .then_some(node.signature.as_ref())
+            .flatten()
+            .and_then(|key| document.signatures().get(key));
+        for port in saved.iter().flat_map(|saved| saved.ports.iter()) {
+            let input = port.direction == PortDirection::Input;
+            let instances: Vec<Option<u16>> = match port.variadic {
+                Some(_) => node
+                    .variadic
+                    .get(&port.port_id)
+                    .map_or_else(Vec::new, |state| {
+                        state.order.iter().copied().map(Some).collect()
+                    }),
+                None => vec![None],
+            };
+            for instance in instances {
+                let id = PortKey::new(port.port_id.clone(), instance).to_string();
+                declared.push(PortView {
+                    connected: wired(node.id, &id, input),
+                    input,
+                    exec: port.kind != PortKind::Data,
+                    ty: port.ty.as_ref().map(ToString::to_string),
+                    value: None,
+                    default: None,
+                    id,
+                    label: None,
                 });
             }
         }
         // Names the contract declares itself, so an implicit port is not shown twice.
-        let declares = |name: &str, input: bool| {
+        let descriptors = || {
             contract
                 .iter()
                 .flat_map(|contract| contract.ports.iter())
-                .any(|port| {
-                    port.port_id.as_str() == name
-                        && (port.direction == PortDirection::Input) == input
-                })
+                .chain(saved.iter().flat_map(|saved| saved.ports.iter()))
+        };
+        let declares = |name: &str, input: bool| {
+            descriptors().any(|port| {
+                port.port_id.as_str() == name && (port.direction == PortDirection::Input) == input
+            })
         };
         // The ports a kind has without declaring them (11 §4.1): the way in and
-        // the way on come first; the routes for failure and cancelling are shown
-        // only once something is wired to them, so a card stays short.
+        // the way on come first; the compact view includes failure ports only
+        // when wired. The complete view lets the editor choose how to show them.
         let mut ports = Vec::with_capacity(declared.len() + 2);
         let mut after = Vec::new();
+        let mut failure_routes = FailureRoutes::default();
         // A node that is not set up yet (a variable node that names no variable)
         // has no contract; its kind still says which of these it has.
-        let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
-            registry
-                .definition(&node.definition)
-                .map(|found| found.kind)
-        });
+        let kind = contract
+            .as_ref()
+            .map(|contract| contract.kind)
+            .or_else(|| saved.map(|saved| saved.kind))
+            .or_else(|| known.map(|found| found.kind));
         if let Some(kind) = kind {
-            let outcomes = contract.as_ref().is_some_and(|contract| {
-                contract.ports.iter().any(|port| {
-                    port.kind == PortKind::Exec && port.direction == PortDirection::Output
-                })
-            });
+            let outcomes = descriptors()
+                .any(|port| port.kind == PortKind::Exec && port.direction == PortDirection::Output);
             for name in orange_model::catalog::implicit_port_names(
                 node.definition.id.as_str(),
                 kind,
@@ -685,13 +920,20 @@ impl Host {
                 if declares(name, input) {
                     continue;
                 }
+                let connected = wired(node.id, name, input);
+                let route = FailureRoutes::bit(name);
+                if complete_outcomes {
+                    failure_routes.0 |= route;
+                } else if route != 0 && !connected {
+                    continue;
+                }
                 let port = PortView {
                     id: name.to_owned(),
                     input,
                     exec: name != "error",
                     ty: (name == "error").then(|| "core/error@1".to_owned()),
                     value: None,
-                    connected: wired(node.id, name, input),
+                    connected,
                     default: None,
                     label: (name == "then")
                         .then(|| shown?.then_label.as_ref())
@@ -700,16 +942,13 @@ impl Host {
                 };
                 match name {
                     "in" | "then" => ports.push(port),
-                    "body" | "completed" => after.push(port),
-                    _ if port.connected => after.push(port),
-                    _ => {}
+                    _ => after.push(port),
                 }
             }
         }
         ports.extend(declared);
         ports.extend(after);
         let definition = node.definition.id.as_str().to_owned();
-        let known = registry.definition(&node.definition);
         let types = known
             .iter()
             .flat_map(|found| found.type_params.iter())
@@ -741,8 +980,14 @@ impl Host {
                 let ty = config("type").filter(|_| {
                     known.is_some_and(|found| matches!(found.ports, Ports::Nominal(_)))
                 })?;
+                // A graph's own type by the name it was given, not its `local/t…` ID.
+                let declared = document
+                    .types()
+                    .values()
+                    .find(|decl| decl.ty().to_string() == ty)
+                    .map(|decl| decl.name.as_str());
                 let short = ty.rsplit('/').next().unwrap_or(ty);
-                let short = short.split('@').next().unwrap_or(short);
+                let short = declared.unwrap_or_else(|| short.split('@').next().unwrap_or(short));
                 Some(match config("field").or_else(|| config("variant")) {
                     Some(member) => format!("{short}.{member}"),
                     None => short.to_owned(),
@@ -750,7 +995,7 @@ impl Host {
             })
             // A trigger shows what fires it.
             .or_else(|| trigger_detail(node.definition.id.as_str(), &node.config));
-        NodeView {
+        let view = NodeView {
             id: node.id,
             detail,
             name: names.called(&node.id),
@@ -781,7 +1026,10 @@ impl Host {
                 .collect(),
             types,
             paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
-        }
+            missing,
+        };
+        let details = (!details.is_empty()).then(|| Arc::from(details));
+        (view, failure_routes, details)
     }
 }
 

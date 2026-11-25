@@ -2,7 +2,7 @@
   "format": "orange.graph",
   "format_version": 1,
   "graph_id": "80000000-0000-4000-8000-000000000100",
-  "revision": 3,
+  "revision": 10,
   "package_lock": [
     {
       "id": "org.orange.json",
@@ -82,6 +82,36 @@
           "source": "computed"
         }
       ]
+    },
+    "sha256:9c57df605b22b53f631b3ce373c6096b1516cb9c988249daffb0a1701c8087ff": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/json@1"
+        },
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "fallback",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "computed"
+        }
+      ]
     }
   },
   "nodes": [
@@ -99,40 +129,6 @@
         "order": 0
       },
       "name": "Read sample JSON"
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000000004",
-      "definition_id": "core/coalesce",
-      "definition_version": 1,
-      "config_version": 1,
-      "config": {},
-      "type_pins": {
-        "T": "core/json@1"
-      },
-      "inputs": {
-        "fallback": {
-          "type": "core/json@1",
-          "value": "\"(field missing)\""
-        }
-      },
-      "name": "Use a fallback if the path is missing"
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000000006",
-      "definition_id": "core/coalesce",
-      "definition_version": 1,
-      "config_version": 1,
-      "config": {},
-      "type_pins": {
-        "T": "core/string@1"
-      },
-      "inputs": {
-        "fallback": {
-          "type": "core/string@1",
-          "value": "(field is not text)"
-        }
-      },
-      "name": "Use a fallback if the field is not text"
     },
     {
       "id": "80000000-0000-4000-8000-000000000007",
@@ -163,8 +159,8 @@
       }
     },
     {
-      "id": "80000000-0000-4000-8000-000000000003",
-      "definition_id": "org.orange.json/get-path",
+      "id": "3dab9e1d-400d-48c9-98d3-03eb375852d0",
+      "definition_id": "org.orange.json/read-text",
       "definition_version": 1,
       "config_version": 1,
       "config": {},
@@ -173,26 +169,18 @@
         "version": "0.0.0",
         "id": "native-v1"
       },
-      "signature": "sha256:86f4c8c5e0f76ca5d9bcf4238d7072752d8d9d362cbf14aa9bfd2444d31c731b",
+      "signature": "sha256:9c57df605b22b53f631b3ce373c6096b1516cb9c988249daffb0a1701c8087ff",
       "inputs": {
+        "fallback": {
+          "type": "core/string@1",
+          "value": "(missing or not text)"
+        },
         "path": {
           "type": "core/string@1",
           "value": "items[0].name"
         }
-      }
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000000005",
-      "definition_id": "org.orange.json/as-string",
-      "definition_version": 1,
-      "config_version": 1,
-      "config": {},
-      "provider": {
-        "package": "org.orange.json",
-        "version": "0.0.0",
-        "id": "native-v1"
       },
-      "signature": "sha256:04cb0de9ff68157db65a12f736bedc7b013f291561c635536ba50da4d5e2d797"
+      "name": "Read the name, or a fallback"
     }
   ],
   "edges": [
@@ -208,57 +196,24 @@
       }
     },
     {
-      "id": "80000000-0000-4000-8000-000000001005",
-      "from": {
-        "node": "80000000-0000-4000-8000-000000000006",
-        "port": "result"
-      },
-      "to": {
-        "node": "80000000-0000-4000-8000-000000000007",
-        "port": "value"
-      }
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000001001",
+      "id": "fc2c0db7-0312-4877-9e13-8baa477cd57f",
       "from": {
         "node": "80000000-0000-4000-8000-000000000002",
         "port": "result"
       },
       "to": {
-        "node": "80000000-0000-4000-8000-000000000003",
+        "node": "3dab9e1d-400d-48c9-98d3-03eb375852d0",
         "port": "value"
       }
     },
     {
-      "id": "80000000-0000-4000-8000-000000001002",
+      "id": "e0476168-b605-4669-a029-bb7c5676ac28",
       "from": {
-        "node": "80000000-0000-4000-8000-000000000003",
+        "node": "3dab9e1d-400d-48c9-98d3-03eb375852d0",
         "port": "result"
       },
       "to": {
-        "node": "80000000-0000-4000-8000-000000000004",
-        "port": "value"
-      }
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000001003",
-      "from": {
-        "node": "80000000-0000-4000-8000-000000000004",
-        "port": "result"
-      },
-      "to": {
-        "node": "80000000-0000-4000-8000-000000000005",
-        "port": "value"
-      }
-    },
-    {
-      "id": "80000000-0000-4000-8000-000000001004",
-      "from": {
-        "node": "80000000-0000-4000-8000-000000000005",
-        "port": "result"
-      },
-      "to": {
-        "node": "80000000-0000-4000-8000-000000000006",
+        "node": "80000000-0000-4000-8000-000000000007",
         "port": "value"
       }
     }
@@ -268,31 +223,19 @@
   "editor": {
     "nodes": {
       "80000000-0000-4000-8000-000000000001": {
-        "x": 0,
+        "x": 330,
         "y": 0
       },
       "80000000-0000-4000-8000-000000000002": {
         "x": 0,
         "y": 180
       },
-      "80000000-0000-4000-8000-000000000003": {
-        "x": 330,
-        "y": 180
-      },
-      "80000000-0000-4000-8000-000000000004": {
+      "80000000-0000-4000-8000-000000000007": {
         "x": 660,
         "y": 180
       },
-      "80000000-0000-4000-8000-000000000005": {
-        "x": 990,
-        "y": 180
-      },
-      "80000000-0000-4000-8000-000000000006": {
-        "x": 1320,
-        "y": 180
-      },
-      "80000000-0000-4000-8000-000000000007": {
-        "x": 1650,
+      "3dab9e1d-400d-48c9-98d3-03eb375852d0": {
+        "x": 330,
         "y": 180
       }
     }

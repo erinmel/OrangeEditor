@@ -16,30 +16,25 @@ impl Run {
         {
             let outcome = self.next_stream_inner(source);
             match outcome {
-                Ok(StreamRead::Pending(id)) => {
+                Ok(CheckedRead::Pending(id)) => {
                     hub.source_wait = Some(id);
                     return;
                 }
-                Ok(StreamRead::Item(value)) => {
+                Ok(CheckedRead::Item(CheckedItem { value, bytes })) => {
                     hub.source_wait = None;
-                    match hub
-                        .shape
-                        .checked_charge(&value, self.options.limits.max_stream_item_bytes)
-                    {
-                        Ok(bytes)
-                            if bytes <= hub.options.max_bytes && hub.retained.try_set(bytes) =>
-                        {
-                            hub.source_sequence = hub.source_sequence.saturating_add(1);
-                            hub.staged = Some((value, bytes));
-                        }
-                        _ => hub.fail(LIMIT),
+                    // Tee copies its source's pinned shape when creating the hub.
+                    if bytes <= hub.options.max_bytes && hub.retained.try_set(bytes) {
+                        hub.source_sequence = hub.source_sequence.saturating_add(1);
+                        hub.staged = Some((value, bytes));
+                    } else {
+                        hub.fail(LIMIT);
                     }
                 }
-                Ok(StreamRead::End) => {
+                Ok(CheckedRead::End) => {
                     hub.source_wait = None;
                     hub.terminal = Some(Ok(()));
                 }
-                Ok(StreamRead::Failed(fault)) => hub.fail(fault),
+                Ok(CheckedRead::Failed(fault)) => hub.fail(fault),
                 Err(StreamError::Limit) => hub.fail(LIMIT),
                 Err(StreamError::Contract) => hub.fail(CONTRACT),
                 Err(_) => hub.fail(REVOKED),

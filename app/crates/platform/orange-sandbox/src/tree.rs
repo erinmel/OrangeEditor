@@ -25,7 +25,7 @@ fn is_link(metadata: &Metadata) -> bool {
     }
 }
 
-fn metadata(path: &Path) -> Result<Metadata, FsError> {
+pub(super) fn metadata(path: &Path) -> Result<Metadata, FsError> {
     let metadata = fs::symlink_metadata(path).map_err(|e| io(&e))?;
     if is_link(&metadata) || !(metadata.is_file() || metadata.is_dir()) {
         return Err(FsError::InvalidPath);
@@ -44,7 +44,11 @@ fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), FsError> {
 impl Folder {
     /// Resolves a path without accepting symlinks, junctions or other reparse points
     /// at any component. A non-UTF-8 name is not addressable by the graph.
-    fn checked(&self, path: &str, root_allowed: bool) -> Result<(PathBuf, Metadata), FsError> {
+    pub(super) fn checked(
+        &self,
+        path: &str,
+        root_allowed: bool,
+    ) -> Result<(PathBuf, Metadata), FsError> {
         let full = inside(&self.root, path, root_allowed)?;
         let mut prefix = self.root.clone();
         let mut info = metadata(&prefix)?;

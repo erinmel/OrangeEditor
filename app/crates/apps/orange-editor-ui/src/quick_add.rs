@@ -13,6 +13,7 @@ pub(crate) struct QuickAdd {
     from: Option<(NodeId, String)>,
     /// The input the new node's output is wired to, when it goes into a wire.
     into: Option<(NodeId, String)>,
+    splice: Option<orange_host::EdgeId>,
     /// Where the node goes, in graph units.
     at: [f32; 2],
     /// Where the search is drawn, on the screen.
@@ -23,11 +24,13 @@ pub(crate) struct QuickAdd {
     highlighted: usize,
     choices_key: Option<(String, String, u64)>,
     choices: Vec<QuickChoice>,
+    splice_conversions: Option<(u64, Vec<orange_host::Conversion>)>,
 }
 
 impl QuickAdd {
     pub(crate) fn invalidate(&mut self) {
         self.choices_key = None;
+        self.splice_conversions = None;
     }
 }
 
@@ -38,6 +41,9 @@ pub struct QuickChoice {
     pub label: String,
     /// The input of the new node the wire goes to, when a wire was let go.
     pub input: Option<String>,
+    /// The output of the new node the wire comes from, when a wire dragged back from an
+    /// input was let go.
+    pub output: Option<String>,
     pub category: String,
     /// One line on what it does, or empty.
     pub purpose: String,
@@ -58,6 +64,7 @@ impl Editor {
         self.quick = Some(QuickAdd {
             from,
             into: None,
+            splice: None,
             at,
             screen,
             search: String::new(),
@@ -65,15 +72,33 @@ impl Editor {
             highlighted: 0,
             choices_key: None,
             choices: Vec::new(),
+            splice_conversions: None,
         });
     }
 
     /// Opens the search to put a node into the wire `wire` at `at`: the chosen node
     /// takes the wire's output and its own output goes on to the wire's input.
     pub fn open_insert_node(&mut self, wire: canvas::WireEnds, at: [f32; 2], screen: egui::Pos2) {
+        let splice = self.document.as_ref().and_then(|document| {
+            Host::splice_edge(
+                &document.draft,
+                (wire.0.0, &wire.0.1),
+                (wire.1.0, &wire.1.1),
+            )
+        });
         self.open_quick_add(Some(wire.0), at, screen);
         if let Some(quick) = &mut self.quick {
             quick.into = Some(wire.1);
+            quick.splice = splice;
+        }
+    }
+
+    /// Opens the search to add a node at `at` that feeds input `to`: it lists only the
+    /// kinds with an output that fits, and wires the chosen node's output into it.
+    pub fn open_quick_add_into(&mut self, to: (NodeId, String), at: [f32; 2], screen: egui::Pos2) {
+        self.open_quick_add(None, at, screen);
+        if let Some(quick) = &mut self.quick {
+            quick.into = Some(to);
         }
     }
 
@@ -87,18 +112,99 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return Vec::new();
         };
-        let found = host.search_nodes(search, self.language());
+        if quick.from.iter().chain(&quick.into).any(|(node, _)| {
+            self.document
+                .as_ref()
+                .and_then(|doc| doc.node_view(*node))
+                .is_none_or(|node| node.missing.is_some())
+        }) {
+            return Vec::new();
+        }
+        // Dragged back from an input: the kinds with an output that feeds it.
+        if let (None, Some(into), Some(document)) = (&quick.from, &quick.into, &self.document) {
+            let givers = host.givers(&document.draft, (into.0, &into.1));
+            return host
+                .search_nodes(search, self.language())
+                .into_iter()
+                .filter_map(|found| {
+                    let giver = givers
+                        .iter()
+                        .find(|giver| giver.definition == found.definition)?;
+                    Some(QuickChoice {
+                        output: Some(giver.output.clone()),
+                        definition: found.definition,
+                        label: found.label,
+                        input: None,
+                        category: found.category,
+                        purpose: found.purpose,
+                    })
+                })
+                .collect();
+        }
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
+            // Into a wire: the kinds that take its output and go on into its input, with
+            // the same type parameters on both sides.
+            (Some(from), Some(document)) if quick.into.is_some() => {
+                let Some(into) = &quick.into else {
+                    return Vec::new();
+                };
+                let Some(wire) = quick.splice else {
+                    return Vec::new();
+                };
+                let fits =
+                    host.splice_takers(&document.draft, (from.0, &from.1), (into.0, &into.1));
+                let fits: HashMap<_, _> = fits
+                    .iter()
+                    .map(|fit| (fit.definition.as_str(), fit))
+                    .collect();
+                let mut choices: Vec<_> = host
+                    .search_nodes(search, self.language())
+                    .into_iter()
+                    .filter_map(|found| {
+                        let fit = fits.get(found.definition.as_str())?;
+                        Some(QuickChoice {
+                            output: Some(fit.output.clone()),
+                            definition: found.definition,
+                            label: found.label,
+                            input: Some(fit.input.clone()),
+                            category: found.category,
+                            purpose: found.purpose,
+                        })
+                    })
+                    .collect();
+                let converters = match &quick.splice_conversions {
+                    Some((generation, conversions))
+                        if *generation == host.registry().generation() =>
+                    {
+                        std::borrow::Cow::Borrowed(conversions.as_slice())
+                    }
+                    _ => std::borrow::Cow::Owned(host.splice_conversions(&document.draft, wire)),
+                };
+                choices.extend(
+                    palette::matching_conversions(converters.iter(), search, self.language())
+                        .into_iter()
+                        .map(|item| QuickChoice {
+                            output: Some("result".into()),
+                            definition: item.id,
+                            label: item.label,
+                            input: Some("value".into()),
+                            category: t("conversions").to_owned(),
+                            purpose: item.purpose,
+                        }),
+                );
+                choices
+            }
             (Some(from), Some(document)) => {
                 let takers = host.takers(&document.draft, (from.0, &from.1));
                 // The search's order, keeping the kinds that take the wire.
-                found
+                host.search_nodes(search, self.language())
                     .into_iter()
                     .filter_map(|found| {
                         let taker = takers
                             .iter()
                             .find(|taker| taker.definition == found.definition)?;
                         Some(QuickChoice {
+                            output: None,
                             definition: found.definition,
                             label: found.label,
                             input: Some(taker.input.clone()),
@@ -108,9 +214,10 @@ impl Editor {
                     })
                     .collect()
             }
-            _ => palette::search_with_presets(found, search, self.language())
+            _ => palette::discover(host, search, self.language())
                 .into_iter()
                 .map(|found| QuickChoice {
+                    output: None,
                     definition: found.definition,
                     label: found.label,
                     input: None,
@@ -123,11 +230,9 @@ impl Editor {
             return choices;
         }
         let from_type = quick.from.as_ref().and_then(|(id, port)| {
-            let graph = self.graph()?;
-            graph
-                .nodes
-                .iter()
-                .find(|node| node.id == *id)?
+            self.document
+                .as_ref()?
+                .node_view(*id)?
                 .ports
                 .iter()
                 .find(|output| !output.input && output.id == *port)?
@@ -139,6 +244,7 @@ impl Editor {
                 palette::conversion_items(host, search, self.language(), from_type)
                     .into_iter()
                     .map(|item| QuickChoice {
+                        output: None,
                         definition: item.id,
                         label: item.label,
                         input: from_type.map(|_| "value".to_owned()),
@@ -150,12 +256,45 @@ impl Editor {
         choices
     }
 
-    /// Adds the chosen kind where the search was opened and, when a wire was let go,
-    /// wires it in; put into a wire, its first fitting output goes on to the wire's
-    /// input. Closes the search. Returns the new node.
+    /// Adds the chosen kind where the search was opened, wiring it in when requested.
+    /// A successful placement closes the search and returns the new node.
     pub fn pick_quick(&mut self, host: &mut Host, choice: &QuickChoice) -> Option<NodeId> {
         let quick = self.quick.take()?;
+        let placed = self.place_quick(host, choice, &quick);
+        if placed.is_none() {
+            self.quick = Some(quick);
+        }
+        placed
+    }
+
+    fn place_quick(
+        &mut self,
+        host: &mut Host,
+        choice: &QuickChoice,
+        quick: &QuickAdd,
+    ) -> Option<NodeId> {
         if let (Some(from), Some(to)) = (quick.from.as_ref(), quick.into.as_ref()) {
+            let current = Host::splice_edge(self.editing()?, (from.0, &from.1), (to.0, &to.1));
+            if current.is_none() || current != quick.splice {
+                let _ = self.edited(
+                    host,
+                    Err(HostError::Document(t("splice-wire-changed").into())),
+                );
+                return None;
+            }
+            if choice.definition.starts_with(palette::CONVERSION) {
+                let draft = self.editing()?;
+                let wire = current?;
+                let available = match &quick.splice_conversions {
+                    Some((_, conversions)) => std::borrow::Cow::Borrowed(conversions.as_slice()),
+                    None => std::borrow::Cow::Owned(host.splice_conversions(draft, wire)),
+                };
+                let converter = available
+                    .iter()
+                    .find(|candidate| palette::conversion_id(candidate) == choice.definition)?;
+                let result = host.splice_conversion(draft, wire, converter, quick.at);
+                return self.placed(host, result.map(|node| (node, None)));
+            }
             return self.add_node_into_wire(
                 host,
                 &choice.definition,
@@ -163,12 +302,35 @@ impl Editor {
                 &(from.clone(), to.clone()),
             );
         }
-        let node = self.add_node_at(host, &choice.definition, quick.at)?;
-        if let (Some(from), Some(input)) = (&quick.from, &choice.input) {
-            let _ = self.connect(host, (from.0, &from.1), (node, input));
+        if let (None, Some(into), Some(output)) = (&quick.from, &quick.into, &choice.output) {
+            // Placing and wiring into the input are one action, as from an output.
+            let draft = self.editing()?;
+            let result = host.grouped(draft, |host, draft| {
+                let placed = place_node(host, draft, &choice.definition, quick.at)?;
+                if host.connect(draft, (placed.0, output), (into.0, &into.1))? {
+                    Ok(placed)
+                } else {
+                    Err(HostError::Document("the wire could not be made".to_owned()))
+                }
+            });
+            return self.placed(host, result);
         }
-        self.canvas.select(Some(node));
-        Some(node)
+        let (Some(from), Some(input)) = (&quick.from, &choice.input) else {
+            return self.add_node_at(host, &choice.definition, quick.at);
+        };
+        // Placing and wiring are one action: one undo takes both back, and a wire the
+        // language refuses, or a document changed since the search opened, leaves the
+        // graph, the selection and the history as they were.
+        let draft = self.editing()?;
+        let result = host.grouped(draft, |host, draft| {
+            let placed = place_node(host, draft, &choice.definition, quick.at)?;
+            if host.connect(draft, (from.0, &from.1), (placed.0, input))? {
+                Ok(placed)
+            } else {
+                Err(HostError::Document("the wire could not be made".to_owned()))
+            }
+        });
+        self.placed(host, result)
     }
 
     /// Draws the open search over the canvas: a field to type in and the matching
@@ -178,7 +340,7 @@ impl Editor {
         let Some(quick) = &self.quick else {
             return;
         };
-        let wired = quick.from.is_some();
+        let wired = quick.from.is_some() || quick.into.is_some();
         let mut search = quick.search.clone();
         let mut focused = quick.focused;
         let mut highlighted = quick.highlighted;
@@ -188,137 +350,147 @@ impl Editor {
         let mut close = false;
         let mut dragged = false;
         let bounds = ctx.content_rect().shrink(6.0);
-        let shown = egui::Area::new(egui::Id::unique("orange-quick-add"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen)
-            .constrain_to(bounds)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(304.0_f32.min((bounds.width() - 20.0).max(48.0)));
-                    ui.strong(if wired {
-                        t("connect-a-node")
-                    } else {
-                        t("add-a-node")
-                    });
-                    // The arrows move the choice, not the caret.
-                    let (up, down) = ui.input_mut(|input| {
-                        (
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                        )
-                    });
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut search)
-                            .hint_text(if wired {
-                                t("quick-add-wire-hint")
-                            } else {
-                                t("quick-add-hint")
-                            })
-                            .desired_width(f32::INFINITY),
-                    );
-                    if field.changed() {
-                        highlighted = 0;
-                    }
-                    let key = (
-                        search.clone(),
-                        self.language().to_owned(),
-                        host.registry().generation(),
-                    );
-                    if self
-                        .quick
-                        .as_ref()
-                        .is_some_and(|quick| quick.choices_key.as_ref() != Some(&key))
-                    {
-                        let choices = self.quick_choices(host, &search);
-                        if let Some(quick) = &mut self.quick {
-                            quick.choices_key = Some(key);
-                            quick.choices = choices;
-                        }
-                    }
-                    let choices = self
-                        .quick
-                        .as_ref()
-                        .map_or(&[][..], |quick| quick.choices.as_slice());
-                    let last = choices.len().min(SHOWN).saturating_sub(1);
-                    highlighted = highlighted.min(last);
-                    if down {
-                        highlighted = (highlighted + 1).min(last);
-                    }
-                    if up {
-                        highlighted = highlighted.saturating_sub(1);
-                    }
-                    if !focused {
-                        if ui.input(|input| input.focused) {
-                            field.request_focus();
-                        }
-                        focused = true;
-                    }
-                    let (enter, escape) = ui.input(|input| {
-                        (
-                            input.key_pressed(egui::Key::Enter),
-                            input.key_pressed(egui::Key::Escape),
-                        )
-                    });
-                    if escape {
-                        close = true;
-                    }
-                    if enter {
-                        picked = choices.get(highlighted).cloned();
-                    }
-                    ui.separator();
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
-                        .show(ui, |ui| {
-                            if choices.is_empty() {
-                                ui.weak(t("quick-add-no-match"));
-                            }
-                            for (index, choice) in choices.iter().take(SHOWN).enumerate() {
-                                let on = index == highlighted;
-                                let target = choice.input.as_deref().map(port_label);
-                                let detail = if choice.purpose.is_empty() {
-                                    choice.category.clone()
-                                } else {
-                                    format!("{} · {}", choice.category, choice.purpose)
-                                };
-                                let draft = self.document.as_ref().map(|document| &document.draft);
-                                let card = self
-                                    .node_search_previews
-                                    .then(|| self.previews.card(host, None, &choice.definition))
-                                    .flatten();
-                                let row = palette::result_row(
-                                    ui,
-                                    &choice.label,
-                                    &detail,
-                                    target.as_deref(),
-                                    on,
-                                    card,
-                                );
-                                if row.drag_started() {
-                                    let card = self
-                                        .previews
-                                        .card(host, draft, &choice.definition)
-                                        .cloned();
-                                    row.dnd_set_drag_payload(palette::PaletteDrag {
-                                        item: PaletteItem {
-                                            id: choice.definition.clone(),
-                                            label: choice.label.clone(),
-                                            package: String::new(),
-                                            purpose: choice.purpose.clone(),
-                                        },
-                                        card,
-                                    });
-                                    dragged = true;
-                                }
-                                if on && (up || down) {
-                                    row.scroll_to_me(None);
-                                }
-                                if row.clicked() {
-                                    picked = Some(choice.clone());
-                                }
-                            }
-                        });
+        let shown = orange_ui_controls::anchored_popup(
+            ctx,
+            egui::Id::unique("orange-quick-add"),
+            screen,
+            304.0,
+            |ui| {
+                ui.strong(if wired {
+                    t("connect-a-node")
+                } else {
+                    t("add-a-node")
                 });
-            });
+                // The arrows move the choice, not the caret.
+                let [up, down] =
+                    controls::consume_plain_keys(ui, [egui::Key::ArrowUp, egui::Key::ArrowDown]);
+                let field = controls::search(
+                    ui,
+                    "quick-add-search",
+                    &mut search,
+                    if wired {
+                        t("quick-add-wire-hint")
+                    } else {
+                        t("quick-add-hint")
+                    },
+                );
+                if field.changed() {
+                    highlighted = 0;
+                }
+                let key = (
+                    search.clone(),
+                    self.language().to_owned(),
+                    host.registry().generation(),
+                );
+                if let Some(quick) = &mut self.quick
+                    && let (Some(wire), Some(document)) = (quick.splice, &self.document)
+                    && quick
+                        .splice_conversions
+                        .as_ref()
+                        .is_none_or(|(generation, _)| *generation != key.2)
+                {
+                    quick.splice_conversions =
+                        Some((key.2, host.splice_conversions(&document.draft, wire)));
+                }
+                if self
+                    .quick
+                    .as_ref()
+                    .is_some_and(|quick| quick.choices_key.as_ref() != Some(&key))
+                {
+                    let choices = self.quick_choices(host, &search);
+                    if let Some(quick) = &mut self.quick {
+                        quick.choices_key = Some(key);
+                        quick.choices = choices;
+                    }
+                }
+                let choices = self
+                    .quick
+                    .as_ref()
+                    .map_or(&[][..], |quick| quick.choices.as_slice());
+                let last = choices.len().min(SHOWN).saturating_sub(1);
+                highlighted = highlighted.min(last);
+                if down {
+                    highlighted = (highlighted + 1).min(last);
+                }
+                if up {
+                    highlighted = highlighted.saturating_sub(1);
+                }
+                if !focused {
+                    if ui.input(|input| input.focused) {
+                        field.request_focus();
+                    }
+                    focused = true;
+                }
+                let (enter, escape) = ui.input(|input| {
+                    (
+                        input.key_pressed(egui::Key::Enter),
+                        input.key_pressed(egui::Key::Escape),
+                    )
+                });
+                if escape {
+                    close = true;
+                }
+                if enter {
+                    picked = choices.get(highlighted).cloned();
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0_f32.min((bounds.height() - 110.0).max(48.0)))
+                    .show(ui, |ui| {
+                        if choices.is_empty() {
+                            ui.weak(t("quick-add-no-match"));
+                        }
+                        for (index, choice) in choices.iter().take(SHOWN).enumerate() {
+                            let on = index == highlighted;
+                            let target = match (choice.input.as_deref(), choice.output.as_deref()) {
+                                (Some(input), Some(output)) => {
+                                    Some(format!("{} → {}", port_label(input), port_label(output)))
+                                }
+                                (input, output) => input.or(output).map(port_label),
+                            };
+                            let detail = if choice.purpose.is_empty() {
+                                choice.category.clone()
+                            } else {
+                                format!("{} · {}", choice.category, choice.purpose)
+                            };
+                            let draft = self.document.as_ref().map(|document| &document.draft);
+                            let card = self
+                                .node_search_previews
+                                .then(|| self.previews.card(host, None, &choice.definition))
+                                .flatten();
+                            let row = palette::result_row(
+                                ui,
+                                &choice.label,
+                                &detail,
+                                target.as_deref(),
+                                on,
+                                card,
+                                Some(&choice.definition),
+                            );
+                            if !wired && row.drag_started() {
+                                let card =
+                                    self.previews.card(host, draft, &choice.definition).cloned();
+                                row.dnd_set_drag_payload(palette::PaletteDrag {
+                                    item: PaletteItem {
+                                        id: choice.definition.clone(),
+                                        label: choice.label.clone(),
+                                        package: String::new(),
+                                        purpose: choice.purpose.clone(),
+                                    },
+                                    card,
+                                });
+                                dragged = true;
+                            }
+                            if on && (up || down) {
+                                row.scroll_to_me(None);
+                            }
+                            if row.clicked() {
+                                picked = Some(choice.clone());
+                            }
+                        }
+                    });
+            },
+        );
         if shown.response.clicked_elsewhere() && focused && was_focused {
             close = true;
         }
@@ -395,5 +567,190 @@ mod presentation_tests {
             before
         );
         assert_eq!(editor.can_undo(), (false, false));
+    }
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    fn editor_with(host: &mut Host) -> (Editor, NodeId) {
+        let mut editor = Editor::new();
+        editor.open(host, "graph.json", orange_host::new_document().unwrap());
+        let trigger = editor.add_node(host, "core/on-manual").unwrap();
+        (editor, trigger)
+    }
+
+    /// Letting a wire go and choosing a kind places and wires the node as one action:
+    /// one undo takes both back.
+    #[test]
+    fn a_dropped_wire_and_its_choice_are_one_undo_step() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (mut editor, trigger) = editor_with(&mut host);
+        let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
+        let wires = |editor: &Editor| editor.graph().unwrap().wires.len();
+        editor.open_quick_add(
+            Some((trigger, "then".to_owned())),
+            [320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let choice = editor
+            .quick_choices(&host, "sequence")
+            .into_iter()
+            .find(|choice| choice.definition == "core/sequence")
+            .expect("a sequence takes a step");
+        let node = editor.pick_quick(&mut host, &choice).unwrap();
+        assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
+        assert_eq!(editor.canvas().selected(), Some(node));
+        editor.undo(&mut host);
+        assert_eq!((nodes(&editor), wires(&editor)), (1, 0));
+        editor.redo(&mut host);
+        assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
+    }
+
+    /// A choice whose wire is refused leaves the graph, the selection and the history
+    /// as they were.
+    #[test]
+    fn a_refused_choice_changes_nothing() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (mut editor, trigger) = editor_with(&mut host);
+        editor.canvas().select(Some(trigger));
+        let before = editor.document.as_ref().unwrap().draft.can_undo();
+        editor.open_quick_add(
+            Some((trigger, "then".to_owned())),
+            [320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let refused = QuickChoice {
+            definition: "core/sequence".to_owned(),
+            label: "Sequence".to_owned(),
+            input: Some("no-such-port".to_owned()),
+            output: None,
+            category: String::new(),
+            purpose: String::new(),
+        };
+        assert!(editor.pick_quick(&mut host, &refused).is_none());
+        assert_eq!(editor.graph().unwrap().nodes.len(), 1);
+        assert_eq!(editor.canvas().selected(), Some(trigger));
+        assert_eq!(editor.document.as_ref().unwrap().draft.can_undo(), before);
+    }
+    /// A wire dragged back from an input lists only kinds with an output that feeds it,
+    /// and the choice is placed and wired as one action.
+    #[test]
+    fn a_wire_dragged_back_from_an_input_offers_what_feeds_it() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+        let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
+        editor.open_quick_add_into(
+            (sequence, "in".to_owned()),
+            [-320.0, 0.0],
+            egui::pos2(10.0, 10.0),
+        );
+        let all = editor.quick_choices(&host, "");
+        assert!(!all.is_empty() && all.iter().all(|choice| choice.output.is_some()));
+        let manual = all
+            .iter()
+            .find(|choice| choice.definition == "core/on-manual")
+            .cloned()
+            .expect("a trigger starts a step");
+        let node = editor.pick_quick(&mut host, &manual).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.from == (node, "then".to_owned()) && wire.to.0 == sequence)
+        );
+        assert_eq!(nodes(&editor), 2);
+        editor.undo(&mut host);
+        assert_eq!(nodes(&editor), 1);
+        assert!(editor.graph().unwrap().wires.is_empty());
+    }
+
+    /// A conversion chosen for a dropped value wire is placed and wired as one action.
+    #[test]
+    fn a_conversion_for_a_dropped_wire_is_one_undo_step() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let number = editor
+            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .unwrap();
+        editor.open_quick_add(
+            Some((number, "result".into())),
+            [300.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        let conversion = editor
+            .quick_choices(&host, "duration milliseconds")
+            .into_iter()
+            .find(|choice| {
+                choice
+                    .definition
+                    .starts_with("convert:core/f64-to-duration")
+            })
+            .unwrap();
+        let node = editor.pick_quick(&mut host, &conversion).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.from.0 == number && wire.to.0 == node)
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 1);
+        assert!(editor.graph().unwrap().wires.is_empty());
+    }
+
+    #[test]
+    fn a_converter_can_be_selected_for_a_generic_splice() {
+        let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "graph.json",
+            orange_host::new_document().unwrap(),
+        );
+        let whole = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let target = editor
+            .add_node(&mut host, "org.orange.math/absolute")
+            .unwrap();
+        assert!(editor.connect(&mut host, (whole, "result"), (target, "value")));
+        let wire = ((whole, "result".into()), (target, "value".into()));
+        editor.open_insert_node(wire.clone(), [150.0, 0.0], egui::Pos2::ZERO);
+        let conversion = editor
+            .quick_choices(&host, "convert")
+            .into_iter()
+            .find(|choice| choice.definition.starts_with("convert:core/i64-to-f64"))
+            .expect("a generic numeric destination can re-infer as a decimal");
+        let node = editor.pick_quick(&mut host, &conversion).unwrap();
+        assert_eq!(editor.canvas().selected(), Some(node));
+        assert_eq!(editor.graph().unwrap().wires.len(), 2);
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().wires.len(), 1);
+
+        editor.open_insert_node(wire, [150.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.disconnect_wire(&mut host, (whole, "result"), (target, "value")));
+        assert!(editor.connect(&mut host, (whole, "result"), (target, "value")));
+        let before = editor.document.as_ref().unwrap().draft.text().unwrap();
+        assert!(editor.pick_quick(&mut host, &conversion).is_none());
+        assert!(editor.is_quick_add_open());
+        assert_eq!(
+            editor.document.as_ref().unwrap().draft.text().unwrap(),
+            before
+        );
     }
 }

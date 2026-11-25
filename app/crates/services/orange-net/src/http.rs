@@ -21,6 +21,9 @@ const RESPONSE_HEADERS: &str = "core/map@1<core/string@1,core/list@1<core/string
 const MAX_QUERY_PAIRS: usize = 64;
 const MAX_REQUEST_TARGET_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TIMEOUT_MS: u64 = 120_000;
+const MAX_STREAM_TIMEOUT_MS: u64 = 900_000;
 
 const NO_SESSION: KernelFault = fault(
     "org.orange.net/Connection",
@@ -53,17 +56,27 @@ struct HttpSession {
     agent: Agent,
     /// For responses read as they arrive: no limit on the whole exchange.
     stream_agent: Agent,
+    stream_timeout: Duration,
     base_url: String,
     headers: Vec<(String, String)>,
     oauth: Option<oauth::OAuth>,
+    retry_non_idempotent: bool,
     /// The entries that receive the lines of streamed responses.
     listeners: Arc<Listeners>,
 }
-/// Header values are left out: they can be credentials.
+impl Drop for HttpSession {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        for (_, value) in &mut self.headers {
+            value.zeroize();
+        }
+    }
+}
+/// Limit endpoint details to the origin and omit header values.
 impl std::fmt::Debug for HttpSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSession")
-            .field("base_url", &self.base_url)
+            .field("endpoint", &crate::EndpointDebug(&self.base_url))
             .field("headers", &self.headers.len())
             .finish_non_exhaustive()
     }
@@ -71,33 +84,44 @@ impl std::fmt::Debug for HttpSession {
 impl HttpSession {
     /// Sends one request with the connection's headers and the validated extras.
     /// With OAuth the request carries the current access token;
-    /// if the server answers 401 the token is replaced and the request sent once more.
+    /// A 401 refreshes the token. Automatic replay requires an idempotent method
+    /// or explicit permission on the connection.
     fn send(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &[u8],
         streamed: bool,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
         let Some(oauth) = &self.oauth else {
             return self.send_once(method, path, content_type, extra, body, streamed, None);
         };
-        let token = oauth.token(false).map_err(|_| AUTHORIZATION)?;
+        let token = oauth.token(None).map_err(|_| AUTHORIZATION)?;
         let response = self.send_once(
             method,
             path,
             content_type,
             extra,
-            body.clone(),
+            body,
             streamed,
             Some(&token),
         )?;
         if response.status().as_u16() != 401 {
             return Ok(response);
         }
-        let token = oauth.token(true).map_err(|_| AUTHORIZATION)?;
+        let token = oauth
+            .token(Some(token.as_str()))
+            .map_err(|_| AUTHORIZATION)?;
+        if !self.retry_non_idempotent
+            && !matches!(
+                method,
+                "GET" | "HEAD" | "PUT" | "DELETE" | "OPTIONS" | "TRACE"
+            )
+        {
+            return Ok(response);
+        }
         self.send_once(
             method,
             path,
@@ -116,7 +140,7 @@ impl HttpSession {
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &[u8],
         streamed: bool,
         token: Option<&str>,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
@@ -129,15 +153,15 @@ impl HttpSession {
         agent.run(request).map_err(|_| TRANSPORT)
     }
 
-    fn build_request(
+    fn build_request<'body>(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
         extra: &[(HeaderName, HeaderValue)],
-        body: Vec<u8>,
+        body: &'body [u8],
         token: Option<&str>,
-    ) -> Result<Request<Vec<u8>>, KernelFault> {
+    ) -> Result<Request<&'body [u8]>, KernelFault> {
         let header_bytes = extra
             .iter()
             .map(|(name, value)| name.as_str().len() + value.len())
@@ -236,6 +260,9 @@ impl ConnectionAdapter for HttpAdapter {
         ]);
         texts
     }
+    fn renewal_field(&self) -> Option<&'static str> {
+        Some("/oauth/refresh_token")
+    }
     fn open_renewing(
         &self,
         settings: &Map<String, Json>,
@@ -252,13 +279,14 @@ impl ConnectionAdapter for HttpAdapter {
             None => DEFAULT_TIMEOUT_MS,
             Some(value) => value
                 .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`timeout_ms` must be a positive integer")?,
+                .filter(|ms| (1..=MAX_TIMEOUT_MS).contains(ms))
+                .ok_or("`timeout_ms` must be from 1 through 120000")?,
         };
         let headers = auth_headers(settings)?;
         // Request and profile headers can carry credentials under any application name.
         let configure = || {
             Agent::config_builder()
+                .proxy(None)
                 .http_status_as_error(false)
                 .max_redirects(0)
         };
@@ -271,8 +299,8 @@ impl ConnectionAdapter for HttpAdapter {
             None => DEFAULT_STREAM_TIMEOUT_MS,
             Some(value) => value
                 .as_u64()
-                .filter(|ms| *ms > 0)
-                .ok_or("`stream_timeout_ms` must be a positive integer")?,
+                .filter(|ms| (1..=MAX_STREAM_TIMEOUT_MS).contains(ms))
+                .ok_or("`stream_timeout_ms` must be from 1 through 900000")?,
         };
         // A streamed response may last long: only reaching the server and the whole
         // body have limits.
@@ -293,12 +321,23 @@ impl ConnectionAdapter for HttpAdapter {
             }
             Some(setting) => Some(oauth::OAuth::from_setting(setting, renew)?),
         };
+        let retry_non_idempotent = settings
+            .get("retry_non_idempotent")
+            .map(|setting| {
+                setting
+                    .as_bool()
+                    .ok_or("`retry_non_idempotent` must be a boolean")
+            })
+            .transpose()?
+            .unwrap_or(false);
         Ok(Arc::new(HttpSession {
             agent,
             stream_agent,
+            stream_timeout: Duration::from_millis(stream_timeout),
             base_url: base_url.trim_end_matches('/').to_owned(),
             headers,
             oauth,
+            retry_non_idempotent,
             listeners: Arc::new(Listeners::new()),
         }))
     }
@@ -349,14 +388,15 @@ impl ServiceNode for HttpRequest {
         else {
             return Err(BAD_REQUEST);
         };
+        admit_body(call, body.len())?;
         let mut headers = parse_header_lines(headers.lines())?;
         append_header_fields(&mut headers, header_fields)?;
         let response = session.send(
             method,
             &request_path(path, query)?,
             content_type,
-            &headers,
-            body.as_bytes().to_vec(),
+            &headers.fields,
+            body.as_bytes(),
             false,
         )?;
         text_response(response, false)
@@ -378,14 +418,15 @@ impl ServiceNode for HttpRequestJson {
         else {
             return Err(BAD_REQUEST);
         };
-        let mut headers = Vec::new();
+        admit_body(call, body.as_str().len())?;
+        let mut headers = RequestHeaders::default();
         append_header_fields(&mut headers, fields)?;
         let response = session.send(
             method,
             &request_path(path, query)?,
             "application/json",
-            &headers,
-            body.as_str().as_bytes().to_vec(),
+            &headers.fields,
+            body.as_str().as_bytes(),
             false,
         )?;
         text_response(response, true)
@@ -416,10 +457,7 @@ fn text_response(
     Ok(outputs)
 }
 
-fn append_header_fields(
-    headers: &mut Vec<(HeaderName, HeaderValue)>,
-    fields: &MapRepr,
-) -> Result<(), KernelFault> {
+fn append_header_fields(headers: &mut RequestHeaders, fields: &MapRepr) -> Result<(), KernelFault> {
     for (name, value) in fields.entries() {
         let (Value::Str(name), Value::Str(value)) = (name, value) else {
             return Err(BAD_REQUEST);
@@ -431,8 +469,8 @@ fn append_header_fields(
 
 fn parse_header_lines<'a>(
     lines: impl IntoIterator<Item = &'a str>,
-) -> Result<Vec<(HeaderName, HeaderValue)>, KernelFault> {
-    let mut headers = Vec::new();
+) -> Result<RequestHeaders, KernelFault> {
+    let mut headers = RequestHeaders::default();
     for line in lines.into_iter().filter(|line| !line.trim().is_empty()) {
         let (name, value) = line.split_once(':').ok_or(BAD_REQUEST)?;
         add_header(&mut headers, name.trim(), value.trim())?;
@@ -440,13 +478,28 @@ fn parse_header_lines<'a>(
     Ok(headers)
 }
 
-fn add_header(
-    headers: &mut Vec<(HeaderName, HeaderValue)>,
-    name: &str,
-    value: &str,
-) -> Result<(), KernelFault> {
+struct RequestHeaders {
+    fields: Vec<(HeaderName, HeaderValue)>,
+    remaining: usize,
+}
+
+impl Default for RequestHeaders {
+    fn default() -> Self {
+        Self {
+            fields: Vec::new(),
+            remaining: MAX_REQUEST_HEADER_BYTES,
+        }
+    }
+}
+
+fn add_header(headers: &mut RequestHeaders, name: &str, value: &str) -> Result<(), KernelFault> {
+    let remaining = headers
+        .remaining
+        .checked_sub(name.len())
+        .and_then(|rest| rest.checked_sub(value.len()))
+        .ok_or(BAD_REQUEST)?;
     let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| BAD_REQUEST)?;
-    if headers.len() >= MAX_HEADERS
+    if headers.fields.len() >= MAX_HEADERS
         || matches!(
             name.as_str(),
             "authorization"
@@ -458,12 +511,13 @@ fn add_header(
                 | "upgrade"
                 | "trailer"
         )
-        || headers.iter().any(|(existing, _)| *existing == name)
+        || headers.fields.iter().any(|(existing, _)| *existing == name)
     {
         return Err(BAD_REQUEST);
     }
     let value = HeaderValue::from_str(value).map_err(|_| BAD_REQUEST)?;
-    headers.push((name, value));
+    headers.fields.push((name, value));
+    headers.remaining = remaining;
     Ok(())
 }
 
@@ -548,7 +602,8 @@ fn send_binary(
     else {
         return Err(BAD_REQUEST);
     };
-    let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
+    admit_body(call, body.len())?;
+    let ListRepr::Str(headers) = headers.as_ref() else {
         return Err(BAD_REQUEST);
     };
     let headers = parse_header_lines(headers.iter().map(|line| line.as_str()))?;
@@ -556,10 +611,20 @@ fn send_binary(
         method,
         path,
         content_type,
-        &headers,
-        body.as_ref().clone(),
+        &headers.fields,
+        body.as_slice(),
         streamed,
     )
+}
+
+fn admit_body(call: &Call<'_>, bytes: usize) -> Result<(), KernelFault> {
+    if call.lease.is_cancelled() {
+        return Err(TRANSPORT);
+    }
+    if bytes > MAX_REQUEST_BODY_BYTES {
+        return Err(BAD_REQUEST);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -603,7 +668,14 @@ impl ServiceNode for HttpStream {
         let mut reader = std::io::BufReader::new(response.body_mut().as_reader());
         let mut line = Vec::new();
         let mut lines = 0i64;
+        let deadline = std::time::Instant::now() + session.stream_timeout;
         loop {
+            if call.lease.is_cancelled() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(TRANSPORT);
+            }
             line.clear();
             // One byte over the limit tells a line that is too long from one that fits.
             let read = (&mut reader)
@@ -633,6 +705,9 @@ impl ServiceNode for HttpStream {
                 while emitter.emit(Some(payload.clone())) == Err(EmitError::Busy) {
                     if call.lease.is_cancelled() {
                         return Ok(vec![status, ok, Value::I64(lines)]);
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(TRANSPORT);
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
@@ -810,10 +885,12 @@ mod tests {
             );
             HttpSession {
                 stream_agent: agent.clone(),
+                stream_timeout: Duration::from_millis(DEFAULT_STREAM_TIMEOUT_MS),
                 agent,
                 base_url: base_url.to_owned(),
                 headers,
                 oauth: None,
+                retry_non_idempotent: false,
                 listeners: Arc::new(Listeners::new()),
             }
         }
@@ -893,8 +970,10 @@ mod tests {
                 "POST",
                 "/anything?test=1",
                 "application/json",
-                &parse_header_lines(["Accept: application/json", "X-Trace: sample"]).unwrap(),
-                json_body.to_vec(),
+                &parse_header_lines(["Accept: application/json", "X-Trace: sample"])
+                    .unwrap()
+                    .fields,
+                json_body,
                 false,
             )
             .unwrap();
@@ -949,7 +1028,7 @@ mod tests {
         let flow = host.open(&draft.text().unwrap()).unwrap();
         host.observe(flow, true).unwrap();
         host.trigger(flow, trigger, None).unwrap();
-        let mut results = std::collections::BTreeMap::new();
+        let mut results = BTreeMap::new();
         orange_testkit::until("the unwired response", || {
             while let Ok(event) = events.try_recv() {
                 if event.flow == flow
@@ -983,7 +1062,14 @@ mod tests {
         assert!(parse_header_lines(["Transfer-Encoding: chunked"]).is_err());
         assert!(parse_header_lines(["Content-Length: 1"]).is_err());
         assert!(parse_header_lines(["X-Test: 1", "x-test: 2"]).is_err());
-        assert!(add_header(&mut Vec::new(), "X-Test", "value\r\nOther: 1").is_err());
+        assert!(
+            add_header(
+                &mut RequestHeaders::default(),
+                "X-Test",
+                "value\r\nOther: 1"
+            )
+            .is_err()
+        );
 
         let session = MockApi(Arc::default()).session(
             "http://127.0.0.1",
@@ -992,8 +1078,52 @@ mod tests {
         let headers = parse_header_lines(["x-profile-key: replacement"]).unwrap();
         assert!(
             session
-                .build_request("GET", "/", "", &headers, Vec::new(), None)
+                .build_request("GET", "/", "", &headers.fields, &[], None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn text_and_map_headers_share_the_request_byte_limit() {
+        let line = format!(
+            "X-Pad: {}",
+            "a".repeat(MAX_REQUEST_HEADER_BYTES - "X-Pad".len())
+        );
+        let mut headers = parse_header_lines([line.as_str()]).unwrap();
+        assert_eq!(headers.remaining, 0);
+        let fields = MapRepr::new(vec![(
+            Value::Str(Arc::new("X-Extra".to_owned())),
+            Value::Str(Arc::new("a".to_owned())),
+        )])
+        .unwrap();
+        assert!(append_header_fields(&mut headers, &fields).is_err());
+        assert_eq!(headers.fields.len(), 1);
+        assert!(parse_header_lines([format!("{line}a").as_str()]).is_err());
+    }
+
+    #[test]
+    fn connection_debug_omits_url_paths_and_queries() {
+        let marker = "synthetic-private-endpoint";
+        let http = MockApi(Arc::default())
+            .session(&format!("https://example.invalid/{marker}"), Vec::new());
+        let oauth = oauth::OAuth::from_setting(
+            &serde_json::json!({
+                "token_url": format!("https://example.invalid/{marker}"),
+                "client_id": "example",
+                "client_secret": "synthetic-test-secret"
+            }),
+            Renew::none(),
+        )
+        .unwrap();
+        let ws = serde_json::json!({"url": format!("wss://example.invalid/socket?proof={marker}")});
+        let ws = crate::ws::WsAdapter.open(ws.as_object().unwrap()).unwrap();
+
+        let diagnostics = [format!("{http:?}"), format!("{oauth:?}"), format!("{ws:?}")];
+        for (diagnostic, scheme) in diagnostics.iter().zip(["https", "https", "wss"]) {
+            assert!(diagnostic.contains(&format!("scheme: \"{scheme}\"")));
+            assert!(diagnostic.contains("host: \"example.invalid\""));
+            assert!(!diagnostic.contains(marker));
+            assert!(!diagnostic.contains("synthetic-test-secret"));
+        }
     }
 }

@@ -209,6 +209,10 @@ fn body_mut(document: &mut GraphDocument, body: BodyRef) -> Result<&mut GraphBod
     }
 }
 
+fn replace_slot<V>(slot: Option<&mut V>, value: V) -> Option<V> {
+    slot.map(|slot| std::mem::replace(slot, value))
+}
+
 /// An ordered collection whose entries can be taken out and put back by position.
 trait Slots<K, V> {
     fn take(&mut self, key: &K) -> Option<Placed<V>>;
@@ -233,7 +237,7 @@ impl<K: Hash + Eq, V> Slots<K, V> for IndexMap<K, V> {
     }
 
     fn replace(&mut self, key: &K, value: V) -> Option<V> {
-        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
+        replace_slot(self.get_mut(key), value)
     }
 }
 
@@ -251,7 +255,7 @@ impl<K: Ord, V> Slots<K, V> for BTreeMap<K, V> {
     }
 
     fn replace(&mut self, key: &K, value: V) -> Option<V> {
-        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
+        replace_slot(self.get_mut(key), value)
     }
 }
 
@@ -353,7 +357,7 @@ impl Slots<String, Json> for Map<String, Json> {
     }
 
     fn replace(&mut self, key: &String, value: Json) -> Option<Json> {
-        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
+        replace_slot(self.get_mut(key), value)
     }
 }
 

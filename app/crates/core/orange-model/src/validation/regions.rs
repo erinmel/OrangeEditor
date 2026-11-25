@@ -17,7 +17,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::PortResolver;
-use super::scope::{NodeSubset, Scope, Tally, edges_of, nodes_of};
+use super::scope::{NodeSubset, Scope, Tally, nodes_of, valid_control_edges};
 
 /// The exec output port whose targets start a region.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -200,12 +200,7 @@ fn regions_among(
         incomplete_nodes: connections.incomplete_nodes.clone(),
         ..RegionValidation::default()
     };
-    let error_edges: BTreeSet<_> = connections
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .filter_map(|diagnostic| diagnostic.subject.edge)
-        .collect();
+    let error_edges = connections.error_edges();
     for (body_ref, body) in scope.bodies(document) {
         let function = match body_ref {
             BodyRef::Root => None,
@@ -286,14 +281,7 @@ fn check_body(
     // Exec adjacency from valid same-body edges.
     let mut out: BTreeMap<NodeId, Vec<ExecEdge>> = BTreeMap::new();
     let mut raw: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-    for edge in edges_of(body, only, tally) {
-        if error_edges.contains(&edge.id)
-            || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
-            || !body.nodes.contains_key(&edge.from.node)
-            || !body.nodes.contains_key(&edge.to.node)
-        {
-            continue;
-        }
+    for edge in valid_control_edges(body, only, error_edges, tally) {
         raw.entry(edge.from.node).or_default().push(edge.to.node);
         tally.add(|visits| visits.ports += 2);
         let (from, to) = (resolved.port(&edge.from), resolved.port(&edge.to));

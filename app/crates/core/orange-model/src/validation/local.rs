@@ -110,6 +110,20 @@ impl LocalValidation {
         }
     }
 
+    fn accepts_change(
+        &self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        change: &ChangeSet,
+    ) -> bool {
+        change.is_committed()
+            && !change.global_dirty()
+            && self.state == Some(change.from_state())
+            && change.to_state() == document.state_id()
+            && change.to_semantic_state() == document.semantic_state_id()
+            && self.registry_generation == Some(registry.generation())
+    }
+
     /// Moves the binding past a node or edge edit the session already checked. A node edit
     /// forgets the edited nodes' input, edge and component results, and the configuration
     /// result of a node whose configuration changed; declaration types read none of them.
@@ -121,25 +135,13 @@ impl LocalValidation {
         registry: &RegistrySnapshot,
         change: &ChangeSet,
     ) {
-        let bound = change.is_committed()
-            && !change.global_dirty()
-            && self.state == Some(change.from_state())
-            && change.to_state() == document.state_id()
-            && change.to_semantic_state() == document.semantic_state_id()
-            && self.registry_generation == Some(registry.generation());
+        let bound = self.accepts_change(document, registry, change);
         if bound && change.structure_edit().is_some() {
             self.invalidate(document, change);
             self.state = Some(document.state_id());
             return;
         }
-        let Some(edit) = change.node_edit().filter(|_| {
-            change.is_committed()
-                && !change.global_dirty()
-                && self.state == Some(change.from_state())
-                && change.to_state() == document.state_id()
-                && change.to_semantic_state() == document.semantic_state_id()
-                && self.registry_generation == Some(registry.generation())
-        }) else {
+        let Some(edit) = change.node_edit().filter(|_| bound) else {
             *self = Self::default();
             return;
         };
@@ -172,14 +174,7 @@ impl LocalValidation {
         registry: &RegistrySnapshot,
         change: Option<&ChangeSet>,
     ) -> LocalWork {
-        let incremental = change.filter(|change| {
-            change.is_committed()
-                && !change.global_dirty()
-                && self.state == Some(change.from_state())
-                && change.to_state() == document.state_id()
-                && change.to_semantic_state() == document.semantic_state_id()
-                && self.registry_generation == Some(registry.generation())
-        });
+        let incremental = change.filter(|change| self.accepts_change(document, registry, change));
         match incremental {
             Some(change) => self.invalidate(document, change),
             None => {
@@ -368,6 +363,21 @@ mod tests {
     use crate::{DocCommand, GraphDocument};
     use serde_json::{Value, json};
 
+    fn layout_edit() -> DocCommand {
+        DocCommand::Layout(crate::LayoutCommand::Set {
+            path: vec!["x".into()],
+            value: Some(json!(1)),
+        })
+    }
+
+    fn enable_node() -> DocCommand {
+        DocCommand::SetConfig {
+            node: id(1).parse().unwrap(),
+            config_version: 1,
+            config: serde_json::from_value(json!({"enabled": true})).unwrap(),
+        }
+    }
+
     fn id(n: u8) -> String {
         format!("10000000-0000-4000-8000-{n:012}")
     }
@@ -547,19 +557,8 @@ mod tests {
         let mut cache = LocalValidation::default();
         cache.refresh(&document, &registry, None);
         // Skip the semantic edit and present only its following layout edit.
-        let _ = document
-            .apply([DocCommand::SetConfig {
-                node: id(1).parse().unwrap(),
-                config_version: 1,
-                config: serde_json::from_value(json!({"enabled":true})).unwrap(),
-            }])
-            .unwrap();
-        let change = document
-            .apply([DocCommand::Layout(crate::LayoutCommand::Set {
-                path: vec!["x".into()],
-                value: Some(json!(1)),
-            })])
-            .unwrap();
+        let _ = document.apply([enable_node()]).unwrap();
+        let change = document.apply([layout_edit()]).unwrap();
         let work = cache.refresh(&document, &registry, Some(&change.change_set));
         assert_eq!((work.config_computed, work.config_hits), (1, 0));
         assert_equivalent(&cache, &document, &registry);
@@ -597,20 +596,9 @@ mod tests {
             .unwrap();
         let mut cache = LocalValidation::default();
         cache.refresh(&document, &registry, None);
-        let change = document
-            .apply([DocCommand::Layout(crate::LayoutCommand::Set {
-                path: vec!["x".into()],
-                value: Some(json!(1)),
-            })])
-            .unwrap();
+        let change = document.apply([layout_edit()]).unwrap();
         assert!(cache.advance_layout(&document, &change.change_set));
-        let change = document
-            .apply([DocCommand::SetConfig {
-                node: id(1).parse().unwrap(),
-                config_version: 1,
-                config: serde_json::from_value(json!({"enabled":true})).unwrap(),
-            }])
-            .unwrap();
+        let change = document.apply([enable_node()]).unwrap();
         let work = cache.refresh(&document, &registry, Some(&change.change_set));
         assert_eq!((work.config_computed, work.config_hits), (1, 0));
         assert_equivalent(&cache, &document, &registry);

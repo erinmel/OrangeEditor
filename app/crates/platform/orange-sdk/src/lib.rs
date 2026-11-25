@@ -93,20 +93,22 @@ pub trait SecretStore: std::fmt::Debug + Send + Sync + 'static {
 /// plain value, not a reference, is not stored anywhere.
 #[derive(Clone, Default)]
 pub struct Renew(Option<Arc<Keep>>);
-type Keep = dyn Fn(&str, &str) + Send + Sync;
+type Keep = dyn Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync;
 impl Renew {
     /// A renewal that stores nothing.
     pub fn none() -> Self {
         Self(None)
     }
-    pub fn new(keep: impl Fn(&str, &str) + Send + Sync + 'static) -> Self {
+    pub fn new(
+        keep: impl Fn(&str, &str, &str) -> Result<(), SecretError> + Send + Sync + 'static,
+    ) -> Self {
         Self(Some(Arc::new(keep)))
     }
     /// Reports that the secret given in `setting` is now `secret`.
-    pub fn keep(&self, setting: &str, secret: &str) {
-        if let Some(keep) = &self.0 {
-            keep(setting, secret);
-        }
+    pub fn keep(&self, setting: &str, current: &str, secret: &str) -> Result<(), SecretError> {
+        self.0
+            .as_ref()
+            .map_or(Ok(()), |keep| keep(setting, current, secret))
     }
 }
 impl std::fmt::Debug for Renew {
@@ -131,7 +133,54 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
     /// should not begin before the first call: what arrives earlier has no trigger to
     /// reach and would be lost. The default does nothing.
     fn start(&self) {}
+    /// Queues one outbound message on a connection that carries messages, such as a
+    /// WebSocket: what a sandboxed package node sends through the host's own session,
+    /// whose address, credentials, reconnection and bounded queue stay with the host.
+    /// Queued is not delivered. The default refuses: the connection carries no messages.
+    fn send_message(&self, message: Message) -> Result<(), MessageError> {
+        let _ = message;
+        Err(MessageError::Unsupported)
+    }
+    /// Starts handing every message that arrives on the connection to `emitter`, as
+    /// `Value::Str` for text and `Value::Bytes` for binary, until the returned guard is
+    /// dropped: how the host feeds a sandboxed package's trigger nodes. `emitter` is
+    /// called on the connection's own thread and must not block; a `Busy` answer drops
+    /// that message, as an entry's bounded mailbox requires. The default refuses: the
+    /// connection carries no messages.
+    fn listen_messages(&self, emitter: Emitter) -> Result<Box<dyn Send>, MessageError> {
+        let _ = emitter;
+        Err(MessageError::Unsupported)
+    }
 }
+
+/// One outbound message for [`Session::send_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Message {
+    Text(Arc<str>),
+    Binary(Arc<[u8]>),
+}
+
+/// Why [`Session::send_message`] did not queue a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MessageError {
+    /// The connection does not carry messages.
+    Unsupported,
+    /// The connection's queue is full; the host bounds what waits to be sent.
+    Full,
+    /// The message is larger than the connection allows.
+    TooLarge,
+}
+impl std::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unsupported => "the connection does not carry messages",
+            Self::Full => "the connection's queue is full",
+            Self::TooLarge => "the message is too large for the connection",
+        })
+    }
+}
+impl std::error::Error for MessageError {}
 
 /// Opens sessions of one adapter kind from declared settings.
 ///
@@ -150,6 +199,11 @@ pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     /// default offers none.
     fn texts(&self) -> Vec<SettingText> {
         Vec::new()
+    }
+    /// Secret field whose service protocol can rotate the existing credential.
+    /// This must also be a declared secret text setting, as a JSON pointer.
+    fn renewal_field(&self) -> Option<&'static str> {
+        None
     }
     /// True-or-false settings an editor can show as switches. The default offers none.
     fn toggles(&self) -> Vec<SettingToggle> {
@@ -511,11 +565,20 @@ impl ServiceNode for Streaming {
 /// The values a source's data inputs have, by input name: what a node's wires carry
 /// when the run arms its source (11 §10.5).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Arguments(Vec<(String, Value)>);
+pub struct Arguments(Vec<(String, Value)>, u64);
 impl Arguments {
     /// Arguments from input names and values, as the host hands them over.
     pub fn new(values: Vec<(String, Value)>) -> Self {
-        Self(values)
+        Self(values, 0)
+    }
+    /// Identifies the run providing the arguments, for ownership of live resources.
+    pub fn with_run_id(mut self, run_id: u64) -> Self {
+        self.1 = run_id;
+        self
+    }
+    /// The run this source belongs to. Zero denotes standalone SDK arguments.
+    pub fn run_id(&self) -> u64 {
+        self.1
     }
     /// The value of input `name`.
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -1164,7 +1227,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 9",
+        "orange-plugin 10",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",

@@ -1,0 +1,173 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "90000000-0000-4000-8000-000000000005",
+  "revision": 3,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Reading",
+      "type": "core/f64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/f64@1",
+        "bits": "0000000000000000"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "name": "Forwarded",
+      "type": "core/f64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/f64@1",
+        "bits": "0000000000000000"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000003",
+      "name": "Sent",
+      "type": "core/u64@1",
+      "scope": "run",
+      "init": {
+        "type": "core/u64@1",
+        "value": "0"
+      },
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "definition_id": "core/get-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000001"
+      },
+      "name": "Current reading"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "name": "Forward meaningful changes",
+      "definition_id": "core/on-watch",
+      "definition_version": 1,
+      "config_version": 2,
+      "config": {
+        "mode": "deadband",
+        "threshold": 1
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 8,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000002"
+      },
+      "name": "Save forwarded reading"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000006",
+      "definition_id": "core/update-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "20000000-0000-4000-8000-000000000003",
+        "operation": "add"
+      },
+      "inputs": {
+        "value": {
+          "type": "core/u64@1",
+          "value": "1"
+        }
+      },
+      "name": "Count forwarded readings"
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000002",
+        "port": "value"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "watch"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "value"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "value"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000005",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000006",
+        "port": "in"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "10000000-0000-4000-8000-000000000002": {
+        "x": 0,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000001": {
+        "x": 335,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000005": {
+        "x": 670,
+        "y": 0
+      },
+      "10000000-0000-4000-8000-000000000006": {
+        "x": 1005,
+        "y": 0
+      }
+    }
+  }
+}

@@ -2,12 +2,15 @@
 //! that go through one when the two ends differ. The language never converts on its own;
 //! every conversion is a visible `core/convert` node.
 use crate::edit::{PortEnd, port_ref};
-use crate::{Draft, Host, HostError, NodeId};
+use crate::{Draft, EdgeId, Host, HostError, NodeId, Severity, TypeExpr};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionRequest, ConversionClass, ConverterKey,
     ConverterProvider, ConverterRegistry, ExplicitConverterChoice, NamedPolicy, SelectionRejection,
     converter_node_commands, plan_connection,
 };
+use orange_model::document::{Edge, PortRef};
+use orange_model::fit::PortFit;
+use orange_model::{DocCommand, GraphDocument};
 use std::collections::BTreeMap;
 
 /// One conversion a person can choose: a converter with every policy choice fixed, such
@@ -112,6 +115,160 @@ fn conversions_of(
 }
 
 impl Host {
+    /// Finds a unique top-level wire to retain as the splice target.
+    pub fn splice_edge(draft: &Draft, from: PortEnd<'_>, to: PortEnd<'_>) -> Option<EdgeId> {
+        let (from, to) = (port_ref(from).ok()?, port_ref(to).ok()?);
+        let mut edges = draft
+            .document()
+            .root()
+            .edges
+            .values()
+            .filter(|edge| edge.from == from && edge.to == to);
+        match (edges.next(), edges.next()) {
+            (Some(edge), None) => Some(edge.id),
+            _ => None,
+        }
+    }
+
+    /// Explicit converters that can take the source and feed the destination after
+    /// the original wire stops binding the destination's generic parameters.
+    pub fn splice_conversions(&self, draft: &Draft, wire: EdgeId) -> Vec<Conversion> {
+        let Ok(edge) = self.data_splice_edge(draft, wire) else {
+            return Vec::new();
+        };
+        let registry = self.registry_for(draft.document());
+        let mut detached = Draft::new(draft.document().clone());
+        if detached
+            .commit(
+                &registry,
+                [
+                    DocCommand::Disconnect { edge: wire },
+                    DocCommand::SetLiteral {
+                        port: edge.to.clone(),
+                        literal: None,
+                    },
+                ],
+            )
+            .is_err()
+        {
+            return Vec::new();
+        }
+        let document = detached.document();
+        let from = edge.from.port.to_string();
+        let Some(source) = self.output_view(document, (edge.from.node, &from)) else {
+            return Vec::new();
+        };
+        let Some(target) = self.wire_node_view(document, edge.to.node) else {
+            return Vec::new();
+        };
+        let key = edge.to.port.to_string();
+        let target = target
+            .ports
+            .iter()
+            .find(|port| port.input && port.id == key);
+        let (Some(source), Some(target)) = (
+            source.ty.as_deref(),
+            target.and_then(|port| port.ty.as_deref()),
+        ) else {
+            return Vec::new();
+        };
+        let fit = document
+            .node(edge.to.node)
+            .and_then(|instance| registry.definition(&instance.definition))
+            .map(|definition| PortFit::new(definition, &registry));
+        let parsed_target: Option<TypeExpr> = target.parse().ok();
+        let converters = registry.converters();
+        converters
+            .entries()
+            .filter(|converter| {
+                converter.from.as_str() == source
+                    && converter.to.as_str() != source
+                    && (converter.to.as_str() == target
+                        || fit
+                            .clone()
+                            .zip(parsed_target.as_ref())
+                            .is_some_and(|(mut fit, target)| fit.meets(target, &converter.to)))
+            })
+            .flat_map(|converter| conversions_of(converters, &converter.key(), None))
+            .collect()
+    }
+
+    /// Inserts the selected converter into precisely this wire as one edit.
+    pub fn splice_conversion(
+        &self,
+        draft: &mut Draft,
+        wire: EdgeId,
+        conversion: &Conversion,
+        at: [f32; 2],
+    ) -> Result<NodeId, HostError> {
+        let edge = self.data_splice_edge(draft, wire)?;
+        let registry = self.registry_for(draft.document());
+        let node = draft
+            .fresh_id("conversion splice")
+            .parse()
+            .map_err(|_| HostError::Document("the new ID is not valid".into()))?;
+        let mut commands = vec![DocCommand::Disconnect { edge: wire }];
+        commands.extend(
+            converter_node_commands(&registry, conversion.choice(), node)
+                .map_err(|rejection| HostError::Document(rejection_text(&rejection)))?,
+        );
+        commands.push(crate::edit::place_command(node, Some(at)));
+        let into = port_ref((node, "value"))?;
+        let out = port_ref((node, "result"))?;
+        for (tag, from, to) in [
+            ("conversion splice input", edge.from, into),
+            ("conversion splice output", out, edge.to),
+        ] {
+            let id = draft
+                .fresh_id(tag)
+                .parse()
+                .map_err(|_| HostError::Document("the new ID is not valid".into()))?;
+            commands.push(DocCommand::Connect {
+                edge: Edge {
+                    id,
+                    from,
+                    to,
+                    extensions: Default::default(),
+                },
+            });
+        }
+        let mut staged = Draft::new(draft.document().clone());
+        let _ = staged.commit(&registry, commands.iter().cloned())?;
+        let before = self
+            .problems(draft)?
+            .into_iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.subject))
+            .collect::<std::collections::BTreeSet<_>>();
+        let problems: Vec<_> = self
+            .problems(&mut staged)?
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .filter(|diagnostic| !before.contains(&(diagnostic.code, diagnostic.subject.clone())))
+            .collect();
+        if !problems.is_empty() {
+            return Err(HostError::Invalid(problems));
+        }
+        let _ = draft.commit(&registry, commands)?;
+        Ok(node)
+    }
+
+    fn data_splice_edge(&self, draft: &Draft, wire: EdgeId) -> Result<Edge, HostError> {
+        let document = draft.document();
+        let edge = document
+            .root()
+            .edges
+            .get(&wire)
+            .filter(|edge| unique_input(document, &edge.to))
+            .ok_or_else(|| HostError::Document("the wire to insert into has changed".into()))?;
+        self.require_port_authority(document, edge.from.node)?;
+        self.require_port_authority(document, edge.to.node)?;
+        let source = self.output_view(document, (edge.from.node, &edge.from.port.to_string()));
+        if !source.is_some_and(|port| !port.exec && port.ty.is_some()) {
+            return Err(HostError::Document("the wire has no data output".into()));
+        }
+        Ok(edge.clone())
+    }
+
     /// Every conversion this host can add, one for each choice of its policies, in
     /// converter order.
     pub fn conversions(&self) -> Vec<Conversion> {
@@ -153,13 +310,10 @@ impl Host {
         to: PortEnd<'_>,
         through: Option<&Conversion>,
     ) -> Result<Connected, HostError> {
+        self.require_port_authority(draft.document(), from.0)?;
+        self.require_port_authority(draft.document(), to.0)?;
         let exec = self
-            .node_view(draft.document(), from.0)
-            .and_then(|node| {
-                node.ports
-                    .into_iter()
-                    .find(|port| !port.input && port.id == from.1)
-            })
+            .output_view(draft.document(), from)
             .is_some_and(|port| port.exec);
         if exec {
             return self.connect(draft, from, to).map(|_| Connected::Wired);
@@ -213,6 +367,17 @@ impl Host {
     }
 }
 
+fn unique_input(document: &GraphDocument, port: &PortRef) -> bool {
+    document
+        .root()
+        .edges
+        .values()
+        .filter(|edge| edge.to == *port)
+        .take(2)
+        .count()
+        == 1
+}
+
 fn rejection_text(rejection: &SelectionRejection) -> String {
     match rejection {
         SelectionRejection::NoDirectConverter { .. } => {
@@ -237,6 +402,100 @@ mod tests {
 
     fn host() -> Host {
         Host::new(crate::HostOptions::default()).unwrap().0
+    }
+
+    #[test]
+    fn an_explicit_splice_rebinds_a_generic_target_and_undo_restores_the_exact_wire() {
+        let host = host();
+        let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+        let source = host
+            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .unwrap();
+        let target = host
+            .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
+            .unwrap();
+        let other = host
+            .add_node(&mut draft, "org.orange.math/absolute", [300.0, 200.0])
+            .unwrap();
+        let from = (source, "result");
+        let into = (target, "value");
+        host.connect(&mut draft, from, into).unwrap();
+        host.set_input(&mut draft, into, Some("7")).unwrap();
+        host.connect(&mut draft, from, (other, "value")).unwrap();
+        let old = Host::splice_edge(&draft, from, into).unwrap();
+        let sibling = Host::splice_edge(&draft, from, (other, "value")).unwrap();
+        assert!(
+            draft
+                .set_wire_waypoint(from, into, Some([126.0, 75.0]))
+                .unwrap()
+        );
+        let original = draft.document().edge(old).unwrap().clone();
+        let choice = host
+            .splice_conversions(&draft, old)
+            .into_iter()
+            .find(|choice| choice.to == "core/f64@1")
+            .expect("the generic target takes decimals");
+        let node = host
+            .splice_conversion(&mut draft, old, &choice, [150.0, 0.0])
+            .unwrap();
+        assert!(draft.document().edge(old).is_none());
+        assert!(draft.document().edge(sibling).is_some());
+        assert!(Host::splice_edge(&draft, from, (node, "value")).is_some());
+        assert!(Host::splice_edge(&draft, (node, "result"), into).is_some());
+        assert_eq!(
+            host.wire_node_view(draft.document(), target)
+                .unwrap()
+                .ports
+                .iter()
+                .find(|port| port.input && port.id == "value")
+                .and_then(|port| port.ty.as_deref()),
+            Some("core/f64@1")
+        );
+        let after = crate::semantic(&draft.text().unwrap()).unwrap();
+        assert!(draft.undo());
+        assert_eq!(draft.document().edge(old), Some(&original));
+        assert_eq!(draft.wire_waypoints().next().unwrap().1, [126.0, 75.0]);
+        assert!(draft.document().edge(sibling).is_some());
+        assert!(draft.document().node(node).is_none());
+        assert_eq!(draft.document().node(target).unwrap().inputs.len(), 1);
+        assert!(draft.redo());
+        assert_eq!(crate::semantic(&draft.text().unwrap()).unwrap(), after);
+    }
+
+    #[test]
+    fn a_refused_splice_keeps_the_document_and_redo_history() {
+        let host = host();
+        let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
+        let source = host
+            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .unwrap();
+        let target = host
+            .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
+            .unwrap();
+        host.choose_type(&mut draft, target, "T", Some("core/i64@1"))
+            .unwrap();
+        let from = (source, "result");
+        let into = (target, "value");
+        host.connect(&mut draft, from, into).unwrap();
+        let old = Host::splice_edge(&draft, from, into).unwrap();
+        let _ = host
+            .add_node(&mut draft, "core/number", [0.0, 200.0])
+            .unwrap();
+        assert!(draft.undo());
+        let before = draft.text().unwrap();
+        let choice = host
+            .conversions()
+            .into_iter()
+            .find(|choice| choice.from == "core/i64@1" && choice.to == "core/f64@1")
+            .expect("whole-to-decimal converter");
+        assert!(host.splice_conversions(&draft, old).is_empty());
+        assert!(
+            host.splice_conversion(&mut draft, old, &choice, [150.0, 0.0])
+                .is_err()
+        );
+        assert_eq!(draft.text().unwrap(), before);
+        assert_eq!(draft.can_undo(), (true, true));
+        assert!(draft.redo());
     }
 
     /// Wiring between two number kinds offers the conversions that join them, and the

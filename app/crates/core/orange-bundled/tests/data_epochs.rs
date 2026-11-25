@@ -272,15 +272,15 @@ fn caught_dynamic_pure_callback_panic_interrupts_the_activation() {
 }
 
 #[test]
-#[ignore = "manual release-only local timing baseline; no NFR threshold"]
 fn root_data_epoch_timing_baseline() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-    assert!(
-        !black_box(cfg!(debug_assertions)),
-        "run this timing probe with --release"
-    );
     fn samples(label: &str, count: usize, mut operation: impl FnMut()) {
+        let count = if cfg!(debug_assertions) {
+            count / 100
+        } else {
+            count
+        };
         let mut nanos = Vec::with_capacity(30);
         for _ in 0..30 {
             let started = Instant::now();
@@ -328,9 +328,12 @@ fn root_data_epoch_timing_baseline() {
             .unwrap(),
         );
         let mut frame = start(plan.clone(), &doc, &snapshot, 17, 9, DataOptions::default());
+        // Establish the cached export even when the timed warmup is disabled.
+        frame.begin_epoch().unwrap();
+        black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
         // Ten seconds of actual graph execution per size, separate from samples.
         let warm = Instant::now();
-        while warm.elapsed() < Duration::from_secs(10) {
+        while !cfg!(debug_assertions) && warm.elapsed() < Duration::from_secs(10) {
             frame.begin_epoch().unwrap();
             black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
         }

@@ -7,12 +7,22 @@
 //! server, a recording. A fixed set of threads would let a few of those stall every other
 //! node of every flow, so the pool keeps `core` threads and adds more, up to `max`, when
 //! every thread is busy. An added thread leaves after it has been idle for [`LINGER`].
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 type Job = Box<dyn FnOnce() + Send>;
+
+pub(crate) fn guard<T>(call: impl FnOnce() -> T) -> Result<T, orange_kernel::KernelFault> {
+    catch_unwind(AssertUnwindSafe(call)).map_err(|_| orange_kernel::KernelFault {
+        code: orange_kernel::FaultText::Static("host/ProviderPanicked"),
+        message_key: orange_kernel::FaultText::Static("host/provider-panicked"),
+        message: "A service provider stopped unexpectedly.",
+    })
+}
 
 /// How long a thread above the core count waits for work before it ends.
 pub(crate) const LINGER: Duration = Duration::from_secs(10);
@@ -22,6 +32,15 @@ pub(crate) const LINGER: Duration = Duration::from_secs(10);
 pub(crate) struct Pool {
     jobs: Sender<Job>,
     shared: Arc<Shared>,
+    in_flight: Option<Arc<AtomicUsize>>,
+}
+
+struct Permit(Arc<AtomicUsize>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -55,6 +74,7 @@ impl Pool {
         let core = core.max(1);
         let pool = Self {
             jobs,
+            in_flight: None,
             shared: Arc::new(Shared {
                 queue: Mutex::new(queue),
                 counts: Mutex::new(Counts::default()),
@@ -70,10 +90,29 @@ impl Pool {
         Ok(pool)
     }
 
+    /// Gives a flow a shared-pool quota, reserving worker capacity for other flows.
+    pub(crate) fn scoped(&self) -> Self {
+        Self {
+            in_flight: Some(Arc::default()),
+            ..self.clone()
+        }
+    }
+
     /// Queues `job`, adding a thread when none is free and the pool may grow. Refused
     /// with [`Busy`] when the host already has as many jobs waiting as it may hold. A
     /// job submitted after the workers are gone is dropped.
     pub(crate) fn submit(&self, job: impl FnOnce() + Send + 'static) -> Result<(), Busy> {
+        let permit = if let Some(count) = &self.in_flight {
+            let limit = self.shared.max.div_ceil(2);
+            let held = count.fetch_add(1, Ordering::Relaxed);
+            let permit = Permit(Arc::clone(count));
+            if held >= limit {
+                return Err(Busy);
+            }
+            Some(permit)
+        } else {
+            None
+        };
         // Deciding to grow and counting the new thread happen under one lock, so two
         // submissions at once never both take the last free place.
         let grow = {
@@ -88,13 +127,20 @@ impl Pool {
             }
             grow
         };
-        if self.jobs.send(Box::new(job)).is_err() {
+        if self
+            .jobs
+            .send(Box::new(move || {
+                let _permit = permit;
+                job();
+            }))
+            .is_err()
+        {
             let mut counts = self.shared.counts();
             counts.waiting -= 1;
             if grow {
                 counts.threads -= 1;
             }
-            return Ok(());
+            return Err(Busy);
         }
         // A thread that cannot be started leaves the job to the ones there are.
         if grow {
@@ -141,7 +187,7 @@ fn work(shared: &Shared) {
             Ok(job) => {
                 counts.waiting = counts.waiting.saturating_sub(1);
                 drop(counts);
-                job();
+                let _ = guard(job);
             }
             // Idle beyond the core count: this thread is not needed now.
             Err(RecvTimeoutError::Timeout) if counts.threads > shared.core => {
@@ -162,6 +208,29 @@ mod tests {
     use super::*;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
+
+    #[test]
+    fn a_flow_cannot_take_every_worker_and_an_unwind_releases_its_permit() {
+        let pool = Pool::new(2, 2, 8).unwrap();
+        let first = pool.scoped();
+        let second = pool.scoped();
+        let (release, wait) = channel();
+        first
+            .submit(move || {
+                let _ = wait.recv();
+                panic!("synthetic provider failure");
+            })
+            .unwrap();
+        assert_eq!(first.submit(|| {}), Err(Busy));
+        let (done, receive) = channel();
+        second.submit(move || done.send(()).unwrap()).unwrap();
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        release.send(()).unwrap();
+        orange_testkit::until("the first flow's permit to be restored", || {
+            first.submit(|| {}).is_ok()
+        });
+        assert_eq!(pool.threads(), 2);
+    }
 
     #[test]
     fn long_jobs_do_not_stall_short_ones() {

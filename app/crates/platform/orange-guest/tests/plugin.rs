@@ -26,6 +26,9 @@ const LOG: Grants = Grants {
     log: true,
     files: false,
     http: false,
+    http_local: false,
+    compute: false,
+    websocket: false,
 };
 
 fn types() -> TypeRegistry {
@@ -66,6 +69,19 @@ fn typed_values_cross_the_boundary_and_node_errors_stay_data() {
         Ok(Ok(vec![Value::I64(i64::from(API_VERSION.0))]))
     );
     // A guest-reported node error does not poison the instance.
+    assert!(!probe.is_poisoned());
+    // A 1.0 component has no `events` export: it contributes no trigger, and asking it
+    // to receive is refused without poisoning it.
+    assert!(!probe.receives_events());
+    assert_eq!(
+        probe.receive(
+            &types,
+            "org.example.probe/add",
+            &orange_sdk::Message::Text("x".into()),
+            &[]
+        ),
+        Err(GuestError::Export)
+    );
     assert!(!probe.is_poisoned());
 }
 
@@ -161,6 +177,19 @@ fn decoded_outputs_share_one_budget_and_a_refusal_keeps_the_instance_usable() {
     let inputs = vec![(list_type.clone(), list.clone()); 2];
     let outputs = [list_type.clone(), list_type];
     let types = types();
+    let mut input_limited = plugin(
+        GuestLimits {
+            input_bytes: 600,
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        input_limited.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Err(GuestError::InputContract)
+    );
+    assert!(!input_limited.is_poisoned());
     // Both encoded literals fit, but two decoded lists charge 2*(16+32*16).
     let mut small = plugin(
         GuestLimits {
@@ -353,4 +382,17 @@ fn effects_keep_instance_state_and_report_their_own_errors() {
             .code,
         "org.example.probe/UnknownDefinition"
     );
+}
+
+#[test]
+fn every_grant_name_gives_exactly_its_own_grant() {
+    let names = Grants::default().named().map(|(name, _)| name);
+    for (index, name) in names.into_iter().enumerate() {
+        let mut grants = Grants::default();
+        assert!(grants.grant(name), "{name}");
+        let granted: Vec<_> = grants.named().iter().map(|&(_, on)| on).collect();
+        let expected: Vec<_> = (0..names.len()).map(|at| at == index).collect();
+        assert_eq!(granted, expected, "{name}");
+    }
+    assert!(!Grants::default().grant("network"));
 }

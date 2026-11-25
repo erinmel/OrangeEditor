@@ -112,7 +112,6 @@ pub fn popup(
     if !anchor.clicked() && !Popup::is_id_open(&anchor.ctx, id) {
         return None;
     }
-    let recent_id = Id::unique("orange-recent-colors");
     let current = if show_alpha {
         current
     } else {
@@ -123,108 +122,139 @@ pub fn popup(
             .ctx
             .data_mut(|data| data.insert_temp(id, Some(Draft::new(current, show_alpha))));
     }
-    let theme = super::Theme::of(parent);
     let mut applied = None;
     Popup::menu(anchor)
         .id(id)
-        .frame(
-            egui::Frame::popup(parent.style())
-                .fill(theme.dialog)
-                .stroke(Stroke::new(1.0, theme.border))
-                .corner_radius(super::CONTROL_RADIUS)
-                .inner_margin(12),
-        )
+        .frame(super::popup_frame(parent))
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            let mut draft = ui
-                .data_mut(|data| data.get_temp_mut_or_default::<Option<Draft>>(id).take())
-                .unwrap_or_else(|| Draft::new(current, show_alpha));
-            let width = 224.0;
-            let track = 16.0;
-            let gap = super::SPACE_MEDIUM;
-            let bars = if show_alpha { 2.0 } else { 1.0 };
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.x = gap;
-            let old = draft.color;
-            let sizes = Vec2::splat(width - bars * (track + gap));
-            ui.horizontal(|ui| {
-                let area = target(ui, sizes, labels.saturation_value);
-                let hue = target(ui, vec2(track, sizes.y), labels.hue);
-                let alpha =
-                    show_alpha.then(|| target(ui, vec2(track, sizes.y), labels.channels[3]));
-                if let Some(at) = pointer(&area) {
-                    draft.hsv.s = at.x;
-                    draft.hsv.v = 1.0 - at.y;
-                    draft.sample_rgb();
-                }
-                if let Some(at) = pointer(&hue) {
-                    draft.hsv.h = at.y;
-                    draft.sample_rgb();
-                }
-                if let Some(at) = alpha.as_ref().and_then(pointer) {
-                    draft.color[3] = linear_u8_from_linear_f32(1.0 - at.y);
-                }
-                let h = draft.hsv.h;
-                gradient(ui, area.rect, 8, |x, y| {
-                    HsvaGamma {
-                        h,
-                        s: x,
-                        v: 1.0 - y,
-                        a: 1.0,
-                    }
-                    .into()
-                });
-                gradient(ui, hue.rect, 24, |_, y| {
-                    HsvaGamma {
-                        h: y,
-                        s: 1.0,
-                        v: 1.0,
-                        a: 1.0,
-                    }
-                    .into()
-                });
-                let marker = area
-                    .rect
-                    .shrink(4.5)
-                    .clamp(area.rect.lerp_inside(vec2(draft.hsv.s, 1.0 - draft.hsv.v)));
-                ui.painter()
-                    .circle_stroke(marker, 4.5, Stroke::new(2.5, Color32::BLACK));
-                ui.painter()
-                    .circle_stroke(marker, 4.5, Stroke::new(1.0, Color32::WHITE));
-                bar_mark(ui, hue.rect, draft.hsv.h);
-                if let Some(alpha) = alpha {
-                    checkers(ui, alpha.rect, theme);
-                    let [r, g, b, _] = draft.color;
-                    gradient(ui, alpha.rect, 24, |_, y| {
-                        Color32::from_rgba_unmultiplied(r, g, b, linear_u8_from_linear_f32(1.0 - y))
-                    });
-                    bar_mark(ui, alpha.rect, 1.0 - f32::from(draft.color[3]) / 255.0);
-                }
-            });
-            ui.horizontal(|ui| {
-                let mut edited = false;
-                let count = if show_alpha { 4 } else { 3 };
-                let columns = if show_alpha { 4.0 } else { 3.0 };
-                let cell_width = (width + gap) / columns - gap;
-                for (&name, channel) in labels.channels.iter().zip(&mut draft.color).take(count) {
-                    edited |= ui
-                        .add_sized(
-                            [cell_width, ui.spacing().interact_size.y],
-                            egui::DragValue::new(channel)
-                                .range(0..=255)
-                                .prefix(format!("{name} ")),
-                        )
-                        .changed();
-                }
-                if edited {
-                    draft.hsv = opaque_hsv(draft.color);
-                }
-            });
-            if draft.color != old {
-                draft.refresh_text(show_alpha);
+            applied = inline(ui, id, current, show_alpha, labels);
+        });
+    applied
+}
+
+/// Discards uncommitted changes in an inline color picker.
+pub fn reset(data: &mut egui::util::IdTypeMap, id: Id) {
+    data.remove::<Option<Draft>>(id);
+}
+
+/// Draws a color picker in an existing menu. The menu closes on Apply or Cancel.
+pub fn inline(
+    ui: &mut Ui,
+    id: Id,
+    current: [u8; 4],
+    show_alpha: bool,
+    labels: Labels<'_>,
+) -> Option<[u8; 4]> {
+    let recent_id = Id::unique("orange-recent-colors");
+    let theme = super::Theme::of(ui);
+    let mut applied = None;
+    let mut draft = ui
+        .data_mut(|data| data.get_temp_mut_or_default::<Option<Draft>>(id).take())
+        .unwrap_or_else(|| Draft::new(current, show_alpha));
+    let width = (ui.ctx().content_rect().width() - 28.0).clamp(176.0, 280.0);
+    let track = 18.0;
+    let gap = super::SPACE_MEDIUM;
+    let bars = if show_alpha { 2.0 } else { 1.0 };
+    ui.set_width(width);
+    ui.spacing_mut().item_spacing.x = gap;
+    let old = draft.color;
+    let sizes = vec2(width - bars * (track + gap), 150.0);
+    ui.add_space(super::SPACE_SMALL);
+    ui.horizontal(|ui| {
+        let area = target(ui, sizes, labels.saturation_value);
+        let hue = target(ui, vec2(track, sizes.y), labels.hue);
+        let alpha = show_alpha.then(|| target(ui, vec2(track, sizes.y), labels.channels[3]));
+        if let Some(at) = pointer(&area) {
+            draft.hsv.s = at.x;
+            draft.hsv.v = 1.0 - at.y;
+            draft.sample_rgb();
+        }
+        if let Some(at) = pointer(&hue) {
+            draft.hsv.h = at.y;
+            draft.sample_rgb();
+        }
+        if let Some(at) = alpha.as_ref().and_then(pointer) {
+            draft.color[3] = linear_u8_from_linear_f32(1.0 - at.y);
+        }
+        let h = draft.hsv.h;
+        gradient(ui, area.rect, 8, |x, y| {
+            HsvaGamma {
+                h,
+                s: x,
+                v: 1.0 - y,
+                a: 1.0,
             }
-            let label = ui.label(labels.value);
-            let format = draft.format;
+            .into()
+        });
+        gradient(ui, hue.rect, 24, |_, y| {
+            HsvaGamma {
+                h: y,
+                s: 1.0,
+                v: 1.0,
+                a: 1.0,
+            }
+            .into()
+        });
+        let marker = area
+            .rect
+            .shrink(4.5)
+            .clamp(area.rect.lerp_inside(vec2(draft.hsv.s, 1.0 - draft.hsv.v)));
+        ui.painter()
+            .circle_stroke(marker, 4.5, Stroke::new(2.5, Color32::BLACK));
+        ui.painter()
+            .circle_stroke(marker, 4.5, Stroke::new(1.0, Color32::WHITE));
+        bar_mark(ui, hue.rect, draft.hsv.h);
+        if let Some(alpha) = alpha {
+            checkers(ui, alpha.rect, theme);
+            let [r, g, b, _] = draft.color;
+            gradient(ui, alpha.rect, 24, |_, y| {
+                Color32::from_rgba_unmultiplied(r, g, b, linear_u8_from_linear_f32(1.0 - y))
+            });
+            bar_mark(ui, alpha.rect, 1.0 - f32::from(draft.color[3]) / 255.0);
+        }
+    });
+    ui.horizontal_top(|ui| {
+        let mut edited = false;
+        let count = if show_alpha { 4 } else { 3 };
+        let columns = if show_alpha { 4.0 } else { 3.0 };
+        let cell_width = (width + gap) / columns - gap;
+        for (&name, channel) in labels.channels.iter().zip(&mut draft.color).take(count) {
+            edited |= ui
+                .allocate_ui_with_layout(
+                    vec2(
+                        cell_width,
+                        16.0 + ui.spacing().item_spacing.y + ui.spacing().interact_size.y,
+                    ),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        let label = ui.add_sized(
+                            [cell_width, 16.0],
+                            egui::Label::new(egui::RichText::new(name).weak()).truncate(),
+                        );
+                        ui.add_sized(
+                            [cell_width, ui.spacing().interact_size.y],
+                            egui::DragValue::new(channel).range(0..=255),
+                        )
+                        .labelled_by(label.id)
+                        .changed()
+                    },
+                )
+                .inner;
+        }
+        if edited {
+            draft.hsv = opaque_hsv(draft.color);
+        }
+    });
+    if draft.color != old {
+        draft.refresh_text(show_alpha);
+    }
+    ui.separator();
+    let format = draft.format;
+    let label = ui
+        .horizontal_wrapped(|ui| {
+            let label = ui.strong(labels.value);
+
             super::segmented(
                 ui,
                 super::Surface::Dialog,
@@ -235,92 +265,99 @@ pub fn popup(
                     (Format::Rgb, if show_alpha { "RGBA" } else { "RGB" }),
                 ],
             );
-            if draft.format != format {
-                draft.refresh_text(show_alpha);
+            label
+        })
+        .inner;
+    if draft.format != format {
+        draft.refresh_text(show_alpha);
+    }
+    let field = super::input_frame(ui, super::Surface::Dialog, super::CONTROL_RADIUS);
+    let response = ui
+        .add(
+            egui::TextEdit::singleline(&mut draft.text)
+                .id(id.with("value"))
+                .frame(field)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(vec2(0.0, super::CONTROL_HEIGHT))
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        )
+        .labelled_by(label.id);
+    super::paint_input_focus(ui, &response, super::CONTROL_RADIUS);
+    if response.changed() {
+        let color = parse(&draft.text);
+        draft.invalid = color.is_none();
+        if let Some(mut color) = color {
+            if !show_alpha {
+                color[3] = 255;
             }
-            let response = ui
-                .add(
-                    egui::TextEdit::singleline(&mut draft.text)
-                        .id(id.with("value"))
-                        .align(egui::Align2::LEFT_CENTER)
-                        .margin(egui::Margin::symmetric(8, 3))
-                        .min_size(vec2(0.0, super::CONTROL_HEIGHT))
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Monospace),
-                )
-                .labelled_by(label.id);
-            if response.changed() {
-                let color = parse(&draft.text);
-                draft.invalid = color.is_none();
-                if let Some(mut color) = color {
-                    if !show_alpha {
-                        color[3] = 255;
-                    }
+            draft.set_color(color);
+        }
+    }
+    if draft.invalid {
+        ui.colored_label(theme.danger, labels.invalid_value);
+    }
+    let recent = ui
+        .data_mut(|data| data.get_temp::<Vec<[u8; 4]>>(recent_id))
+        .unwrap_or_default();
+    if !recent.is_empty() {
+        ui.label(labels.recent);
+        ui.horizontal_wrapped(|ui| {
+            for color in recent {
+                let color = if show_alpha {
+                    color
+                } else {
+                    [color[0], color[1], color[2], 255]
+                };
+                let response = ui
+                    .add(egui::Button::new("").min_size(vec2(18.0, 18.0)))
+                    .on_hover_text(hex(color, show_alpha));
+                swatch(ui, response.rect.shrink(2.0), color);
+                if response.clicked() {
                     draft.set_color(color);
+                    draft.refresh_text(show_alpha);
                 }
             }
-            if draft.invalid {
-                ui.colored_label(theme.danger, labels.invalid_value);
-            }
-            let recent = ui
-                .data_mut(|data| data.get_temp::<Vec<[u8; 4]>>(recent_id))
-                .unwrap_or_default();
-            if !recent.is_empty() {
-                ui.label(labels.recent);
-                ui.horizontal_wrapped(|ui| {
-                    for color in recent {
-                        let color = if show_alpha {
-                            color
-                        } else {
-                            [color[0], color[1], color[2], 255]
-                        };
-                        let response = ui
-                            .add(egui::Button::new("").min_size(vec2(18.0, 18.0)))
-                            .on_hover_text(hex(color, show_alpha));
-                        swatch(ui, response.rect.shrink(2.0), color);
-                        if response.clicked() {
-                            draft.set_color(color);
-                            draft.refresh_text(show_alpha);
-                        }
-                    }
-                });
-            }
-            ui.add_space(super::SPACE_SMALL);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if super::button(
-                    ui,
-                    super::Surface::Dialog,
-                    super::Action::Primary,
-                    !draft.invalid,
-                    egui::Button::new(labels.apply).min_size(vec2(76.0, 0.0)),
-                )
-                .clicked()
-                {
-                    applied = Some(draft.color);
-                    ui.data_mut(|data| {
-                        let mut colors =
-                            data.get_temp::<Vec<[u8; 4]>>(recent_id).unwrap_or_default();
-                        colors.retain(|color| *color != draft.color);
-                        colors.insert(0, draft.color);
-                        colors.truncate(8);
-                        data.insert_temp(recent_id, colors);
-                    });
-                    ui.close();
-                }
-                if super::button(
-                    ui,
-                    super::Surface::Dialog,
-                    super::Action::Outline,
-                    true,
-                    egui::Button::new(labels.cancel).min_size(vec2(76.0, 0.0)),
-                )
-                .clicked()
-                {
-                    ui.close();
-                }
-            });
-            ui.data_mut(|data| *data.get_temp_mut_or_default::<Option<Draft>>(id) = Some(draft));
         });
+    }
+    ui.separator();
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if super::button(
+                ui,
+                super::Surface::Dialog,
+                super::Action::Primary,
+                !draft.invalid,
+                egui::Button::new(labels.apply).min_size(vec2(76.0, 0.0)),
+            )
+            .clicked()
+            {
+                applied = Some(draft.color);
+                ui.data_mut(|data| {
+                    let mut colors = data.get_temp::<Vec<[u8; 4]>>(recent_id).unwrap_or_default();
+                    colors.retain(|color| *color != draft.color);
+                    colors.insert(0, draft.color);
+                    colors.truncate(8);
+                    data.insert_temp(recent_id, colors);
+                });
+                ui.close();
+            }
+            if super::button(
+                ui,
+                super::Surface::Dialog,
+                super::Action::Outline,
+                true,
+                egui::Button::new(labels.cancel).min_size(vec2(76.0, 0.0)),
+            )
+            .clicked()
+            {
+                ui.close();
+            }
+        },
+    );
+    ui.data_mut(|data| *data.get_temp_mut_or_default::<Option<Draft>>(id) = Some(draft));
     applied
 }
 
@@ -555,7 +592,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(square.width(), square.height());
+        assert!(square.width() > square.height());
         output.drop_without_applying_deltas();
         let (_, picked, output) = click(square.center());
         assert!(picked.is_none());

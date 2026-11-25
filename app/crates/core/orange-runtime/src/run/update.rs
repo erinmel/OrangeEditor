@@ -35,6 +35,8 @@ enum UpdatePoll {
     Fault(ConstantFault),
     Ready(UpdateOperands),
 }
+/// What a completed update gave on each output, by port name.
+type UpdateSeen = Vec<(&'static str, Value)>;
 struct UpdateCommit<'a> {
     frame: Option<FrameId>,
     owner: ControlIx,
@@ -88,7 +90,9 @@ impl Cells<'_> {
         }
     }
 
-    /// `None` while the ordered demand is pending; otherwise the node's step.
+    /// `None` while the ordered demand is pending; otherwise the node's step. With
+    /// `observe`, a completed update also gives its outputs by port name, so a front end
+    /// can show them even when no wire reads them.
     pub(super) fn execute_update(
         &mut self,
         plan: &ControlPlan,
@@ -96,7 +100,8 @@ impl Cells<'_> {
         shared: &mut ActivationState,
         owner: ControlIx,
         budget: &mut usize,
-    ) -> Result<Option<Step>, RunError> {
+        observe: bool,
+    ) -> Result<Option<(Step, UpdateSeen)>, RunError> {
         let node = &plan.nodes()[owner.index()];
         let ControlOperation::Update {
             variable,
@@ -146,9 +151,18 @@ impl Cells<'_> {
             Err(step) => {
                 // A failed update clears its value outputs before its Failed edge.
                 Run::publish_match_value(plan, self.layout, shared, owner, None, limit)?;
-                return Ok(Some(step));
+                return Ok(Some((step, Vec::new())));
             }
         };
+        let compare = matches!(operation, UpdateOperation::CompareAndSet);
+        let mut seen = Vec::new();
+        if observe {
+            seen.push(("old", old.clone()));
+            seen.push(("new", new.clone()));
+            if compare {
+                seen.push(("exchanged", Value::Bool(write)));
+            }
+        }
         let work = self.publish_update(
             plan,
             shared,
@@ -159,11 +173,11 @@ impl Cells<'_> {
                 old: &old,
                 new,
                 write,
-                compare: matches!(operation, UpdateOperation::CompareAndSet),
+                compare,
             },
         )?;
         *budget = budget.saturating_sub(work);
-        Ok(Some((node.then(), ControlOutcome::Then, None)))
+        Ok(Some(((node.then(), ControlOutcome::Then, None), seen)))
     }
 }
 

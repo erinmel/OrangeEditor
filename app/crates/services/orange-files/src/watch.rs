@@ -169,6 +169,7 @@ impl Watch {
         self,
         session: Option<Arc<dyn Session>>,
         path: String,
+        wait_for_folder: bool,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
         let session = session.ok_or("the entry needs a folder connection")?;
@@ -183,14 +184,22 @@ impl Watch {
             .name("orange-files-watch".into())
             .spawn(move || {
                 if let Some(folder) = folder(Some(session.as_ref())) {
-                    self.watch(folder, &path, &emitter, &life, MAX_ENTRIES);
+                    self.watch(folder, &path, wait_for_folder, &emitter, &life, MAX_ENTRIES);
                 }
             })
             .map_err(|_| "the file watcher could not start")?;
         Ok(Box::new(Watching(stop)))
     }
 
-    fn watch(self, folder: &Folder, path: &str, emitter: &Emitter, life: &Lifecycle, limit: usize) {
+    fn watch(
+        self,
+        folder: &Folder,
+        path: &str,
+        wait_for_folder: bool,
+        emitter: &Emitter,
+        life: &Lifecycle,
+        limit: usize,
+    ) {
         let mut before = None;
         let mut last_error = None;
         loop {
@@ -211,6 +220,11 @@ impl Watch {
                 }
                 Err(FsError::Cancelled) => return,
                 Err(FsError::Changed) => {}
+                Err(FsError::NotFound)
+                    if wait_for_folder
+                        && before.is_none()
+                        && last_error.is_none()
+                        && !path.is_empty() => {}
                 Err(error) => {
                     before = None;
                     if last_error != Some(error) {
@@ -269,7 +283,7 @@ impl ServiceSource for Watch {
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        self.start_thread(session, String::new(), emitter)
+        self.start_thread(session, String::new(), false, emitter)
     }
 
     fn start_with_arguments(
@@ -282,7 +296,8 @@ impl ServiceSource for Watch {
         let Some(Value::Str(path)) = arguments.get("folder") else {
             return Err(BAD_INPUT.message.into());
         };
-        self.start_thread(session, path.to_string(), emitter)
+        let wait_for_folder = matches!(arguments.get("wait_for_folder"), Some(Value::Bool(true)));
+        self.start_thread(session, path.to_string(), wait_for_folder, emitter)
     }
 }
 
@@ -313,7 +328,8 @@ mod tests {
         );
         let life = Arc::new(Lifecycle::new());
         let guard = Watching(life.clone());
-        let worker = thread::spawn(move || Watch.watch(&folder, "chosen", &emitter, &life, 2));
+        let worker =
+            thread::spawn(move || Watch.watch(&folder, "chosen", false, &emitter, &life, 2));
         assert_eq!(
             observed.recv_timeout(Duration::from_secs(5)),
             Ok(Err(TOO_LARGE))

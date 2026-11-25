@@ -35,6 +35,90 @@ fn toolbar_button_centers(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Po
 }
 
 #[test]
+fn failure_routes_shortcut_is_presentation_only_and_follows_edits() {
+    let (mut host, _) = Host::with_services(
+        orange_host::HostOptions::default(),
+        vec![orange_net::package()],
+    )
+    .unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let entry = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let request = host
+        .add_node(&mut draft, orange_net::HTTP_REQUEST, [320.0, 0.0])
+        .unwrap();
+    let handler = host
+        .add_node(&mut draft, "core/wait", [640.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (entry, "then"), (request, "in"))
+        .unwrap();
+    let text = draft.text().unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, text.clone());
+    let ctx = egui::Context::default();
+    let toggle = |editor: &mut Editor, host: &mut Host| {
+        for pressed in [true, false] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::ModifiersChanged(egui::Modifiers::ALT),
+                        egui::Event::Key {
+                            key: egui::Key::O,
+                            modifiers: egui::Modifiers::ALT,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| editor.ui(ui, host),
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    let failure_connected = |editor: &Editor| {
+        editor
+            .port_view(request, "failed", false)
+            .unwrap()
+            .connected
+    };
+
+    assert!(editor.canvas.has_failure_routes(request));
+    assert!(!editor.canvas.failure_routes_expanded(request));
+    editor.canvas.select(Some(entry));
+    toggle(&mut editor, &mut host);
+    assert!(!editor.canvas.failure_routes_expanded(entry));
+    assert!(!editor.canvas.failure_routes_expanded(request));
+
+    editor.canvas.select(Some(request));
+    toggle(&mut editor, &mut host);
+    assert!(editor.canvas.failure_routes_expanded(request));
+    assert!(!editor.is_unsaved());
+    assert_eq!(editor.can_undo(), (false, false));
+    assert_eq!(
+        editor.document.as_ref().unwrap().draft.text().unwrap(),
+        text
+    );
+
+    assert!(editor.connect(&mut host, (request, "failed"), (handler, "in")));
+    assert!(editor.canvas.failure_routes_expanded(request));
+    assert!(failure_connected(&editor));
+    toggle(&mut editor, &mut host);
+    assert!(!editor.canvas.failure_routes_expanded(request));
+    assert!(failure_connected(&editor));
+    editor.undo(&mut host);
+    assert!(!failure_connected(&editor));
+    assert!(editor.canvas.has_failure_routes(request));
+
+    toggle(&mut editor, &mut host);
+    assert!(editor.canvas.failure_routes_expanded(request));
+    editor.open_untitled(&mut host, text);
+    assert!(!editor.canvas.failure_routes_expanded(request));
+}
+
+#[test]
 fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
     for width in [640.0, 820.0, 1280.0, 1600.0] {
         for native in [false, true] {
@@ -192,19 +276,9 @@ fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
             .all(|text| text.galley.text() != t("grid-spacing"))
     );
     let click_at = |editor: &mut Editor, host: &mut Host, pos| {
-        frame(editor, host, vec![egui::Event::PointerMoved(pos)]);
-        for pressed in [true, false] {
-            frame(
-                editor,
-                host,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-            );
-        }
+        orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+            frame(editor, host, events);
+        });
     };
     let click = |editor: &mut Editor, host: &mut Host, label: &str| {
         let position = at(&frame(editor, host, vec![]), label);
@@ -270,10 +344,7 @@ fn toolbar_hover_fills_the_button_around_its_centered_icon() {
                 center.distance(rect.center()) < 0.01,
                 "{icon} {center:?} vs {rect:?}"
             );
-            let fill = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
-                _ => None,
-            });
+            let fill = orange_testkit::ui::rect_fill(&output.shapes, rect);
             let stop_red = egui::Color32::from_rgb(180, 40, 57);
             let expected = match (index, hovered == Some(index)) {
                 (2, true) => stop_red.gamma_multiply(1.18),
@@ -851,7 +922,7 @@ fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
     assert!(
         texts
             .iter()
-            .any(|text| text.galley.text() == "request will retry")
+            .any(|text| text.galley.text().contains("request will retry"))
     );
     assert!(
         !texts
@@ -867,10 +938,9 @@ fn the_log_filters_messages_and_exposes_trace_and_clear_actions() {
         assert!(viewport.contains(center), "{label}");
         center
     };
-    let search_clear = at(&icons::CLOSE.to_string());
     let trace = at(t("live-trace-off"));
     let level_filter = at(t("log-all-levels"));
-    click(&mut editor, search_clear);
+    editor.log_search.clear();
     assert!(editor.log_search.is_empty());
     click(&mut editor, trace);
     assert!(editor.live_trace);

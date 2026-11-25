@@ -33,6 +33,8 @@ pub const GAIN: &str = "org.orange.audio/gain";
 pub const FILTER: &str = "org.orange.audio/filter";
 /// The record output of Audio format, with U64 fields `rate` and `channels`.
 pub const FORMAT_TYPE: &str = "org.orange.audio/format@1";
+/// Per-channel RMS, sample peak and full-scale latch, in stream channel order.
+pub(crate) const CHANNEL_LEVELS_TYPE: &str = "org.orange.audio/channel-levels@1";
 /// Measures a stream's level in dBFS continuously.
 pub const LIVE_LEVEL: &str = "org.orange.audio/live-level";
 /// Fires when a stream has a hit in a selected band.
@@ -71,6 +73,7 @@ fn input_stream(arguments: &Arguments) -> Result<Arc<InputShared>, String> {
         arguments
             .get("stream")
             .ok_or("the entry needs an audio stream")?,
+        arguments.run_id(),
     )
     .map_err(|fault| fault.message.to_string())
 }
@@ -81,11 +84,12 @@ impl LiveSource for AudioSource {
         &self,
         session: Option<Arc<dyn Session>>,
         _settings: &Map<String, Json>,
-        _arguments: &Arguments,
+        arguments: &Arguments,
         publisher: Publisher,
     ) -> Result<Box<dyn Send>, String> {
         let session = input_of(session.as_ref())?;
-        let value = stream_value(session.id).map_err(|fault| fault.message.to_string())?;
+        let value = stream_value(&session, arguments.run_id())
+            .map_err(|fault| fault.message.to_string())?;
         let life = Arc::new(Lifecycle::new());
         let running = Arc::clone(&life);
         thread::Builder::new()
@@ -117,6 +121,7 @@ impl LiveSource for Processor {
             input_stream(arguments)?,
             make(settings, arguments)?,
             publisher,
+            arguments.run_id(),
         )
     }
 }
@@ -279,7 +284,7 @@ impl ServiceSource for ReactiveAudio {
     ) -> Result<Box<dyn Send>, String> {
         let stream = input_stream(arguments)?;
         if self.spectrum {
-            crate::reactive::spectrum(stream, settings, emitter, self.streams)
+            crate::reactive::spectrum(stream, settings, emitter, self.streams, arguments.run_id())
         } else {
             crate::reactive::noise(stream, settings, emitter)
         }
@@ -326,7 +331,7 @@ impl ServiceNode for SourceTransport {
             4 => SourceControl::Seek,
             _ => return Err(BAD_INPUT),
         };
-        let input = source(stream)?;
+        let input = source(stream, call.lease.run_id())?;
         control.apply(&input, std::slice::from_ref(seconds))
     }
 }
@@ -410,9 +415,10 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .source_outputs("finished", None, 0);
     let audio_format = stream_input(live(
         "audio-format",
-        "Audio format",
-        "Reports the rate and channel count of a stream.",
+        "Stream info",
+        "Shows the sample rate in Hz and the number of channels in a live audio stream.",
     ))
+    .keywords("audio format, sample rate, hz, channels, mono, stereo")
     .live("format", FORMAT_TYPE);
     let frequency_splitter = entry(
         "multiband-spectrum",
@@ -431,10 +437,13 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         "Audio Level Trigger",
         "Measure overall volume and trigger after staying above or below a threshold.",
     )
+    .version(2)
+    .replaces("noise-level", 1, &[])
     .keywords("microphone, noise level, loudness, volume, rms, dbfs, threshold")
     .then_label("Triggered")
     .live("level", F64)
     .live("condition_met", "core/bool@1")
+    .live("channel_levels", CHANNEL_LEVELS_TYPE)
     .setting(
         "direction",
         json!({"type": "string", "enum": ["above", "below"], "default": "above"}),
@@ -473,7 +482,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     let filter = crate::processors::filter_settings(stream_input(live(
         "filter",
         "Filter",
-        "Keeps the low (low-pass), high (high-pass) or middle (band-pass) frequencies of a stream around the cutoff.",
+        "Keeps the frequencies below, above, or around the cutoff. The notch mode rejects a narrow band around the cutoff.",
     )))
     .keywords("eq, equalizer, low pass, high pass, band pass, bass, treble, frequency, audio effect")
     .live("filtered_stream", STREAM_TYPE);
@@ -495,7 +504,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     let finished = entry(
         "source-finished",
         "Source finished",
-        "Fires when the wired sound file plays to its end.",
+        "Fires when a wired sound file or HTTP audio source reaches the end. Use Audio Level Trigger for a live capture device.",
     )
     .keywords("end, done, track over");
     let transport = stream_input(action(
@@ -518,6 +527,14 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         .record(
             "format",
             &[("rate", "core/u64@1"), ("channels", "core/u64@1")],
+        )
+        .record(
+            "channel-levels",
+            &[
+                ("rms", "core/list@1<core/f64@1>"),
+                ("peak", "core/list@1<core/f64@1>"),
+                ("clipped", "core/list@1<core/bool@1>"),
+            ],
         )
         .enumeration("source-command", SOURCE_COMMANDS)
         .enumeration("sound-command", SOUND_COMMANDS)

@@ -55,6 +55,9 @@ check('Core graph, desktop, host, files and audio', [
   '--no-fail-fast', '-p', 'orange-model', '-p', 'orange-bundled', '-p', 'orange-compiler',
   '-p', 'orange-runtime', '-p', 'orange-host', '-p', 'orange-desktop', '-p', 'orange-editor-ui',
   '-p', 'orange-files', '-p', 'orange-audio',
+], [
+  '--skip', 'automation::desktop_http_request_sends_graph_built_json_and_reports_the_socket_response',
+  '--skip', 'remote_file_plays_before_http_response_finishes',
 ]);
 check('Network codec, validation and in-memory HTTP', ['-p', 'orange-net', '--lib']);
 check('Saved connection graph and failure branches', ['-p', 'orange-net', '--test', 'connection_smoke'],
@@ -76,9 +79,11 @@ if (options.has('--network')) {
   if (reachable) {
     check('HTTP, WebSocket, MQTT and AMQP socket fixtures', ['--no-fail-fast', '-p', 'orange-net']);
     check('Saved graph over real HTTP and WebSocket sockets', ['-p', 'orange-net', '--test', 'connection_smoke'],
-      ['the_same_graph_parses_http_and_websocket_responses', '--ignored', '--exact']);
+      ['the_same_graph_parses_http_and_websocket_responses', '--exact']);
     check('Desktop editor HTTP request and result', ['-p', 'orange-desktop', '--bin', 'orange-editor'],
-      ['automation::desktop_http_request_reports_the_actual_socket_response', '--ignored', '--exact']);
+      ['automation::desktop_http_request_sends_graph_built_json_and_reports_the_socket_response', '--exact']);
+    check('Stream audio from a local HTTP server', ['-p', 'orange-audio', '--test', 'audio'],
+      ['remote_file_plays_before_http_response_finishes', '--exact']);
   }
 } else {
   results.push(['TCP integration fixtures', 'SKIPPED (enable with --network)']);

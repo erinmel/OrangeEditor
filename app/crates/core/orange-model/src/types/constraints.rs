@@ -96,7 +96,7 @@ pub enum CapabilityRequest {
 impl CapabilityRequest {
     /// Parses a constraint as declared on a type parameter: a core name (`num`) or a
     /// package constraint ID (`ns/name@1`). Anything else is `None`.
-    pub(crate) fn from_declared(constraint: &str) -> Option<Self> {
+    pub fn from_declared(constraint: &str) -> Option<Self> {
         if let Some(core) = Constraint::from_id_name(constraint) {
             return Some(Self::Constraint(core));
         }

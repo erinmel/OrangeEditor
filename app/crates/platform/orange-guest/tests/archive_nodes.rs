@@ -178,6 +178,9 @@ fn an_archived_guest_node_compiles_beside_bundled_math_and_keeps_fault_sources()
             log: true,
             files: false,
             http: false,
+            http_local: false,
+            compute: false,
+            websocket: false,
         },
     )
     .unwrap();

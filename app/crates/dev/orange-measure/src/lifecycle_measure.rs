@@ -77,12 +77,6 @@ struct ForkStats {
     drop_bytes: u64,
 }
 
-fn percentile(values: &[Duration], percent: usize) -> Duration {
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    sorted[(sorted.len() * percent).div_ceil(100).saturating_sub(1)]
-}
-
 fn measure_wide_fork(config: Config) {
     let (document, plan) = wide_fork();
     let total = id(9_000).parse().expect("total variable identity");
@@ -155,8 +149,8 @@ fn measure_wide_fork(config: Config) {
             stats.drop_bytes += drop_counts.allocated_bytes;
         }
     }
-    stats.fork_p50 = percentile(&durations, 50);
-    stats.fork_p95 = percentile(&durations, 95);
+    stats.fork_p50 = crate::harness::sample_percentile(&durations, 50);
+    stats.fork_p95 = crate::harness::sample_percentile(&durations, 95);
     println!(
         "wide fork 4k: fixture=100 4000-branch races in one Run, warmup={} measured={} pumps/run={:.1} start+fork allocations/run={:.0} cumulative_bytes/run={:.0} peak_live={}B steady_retained_after_fork={}B fork_p50={:.3}ms fork_p95={:.3}ms; request_stop allocations/run={:.1} bytes/run={:.1}; stop-pump allocations/run={:.1} bytes/run={:.1}; dispose allocations/run={:.1} bytes/run={:.1} released_max={}B; drop released_max={}B allocations/run={:.1} bytes/run={:.1}",
         config.warmup,

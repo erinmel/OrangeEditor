@@ -30,44 +30,62 @@ impl NodeRename {
         font: impl Into<egui::FontSelection>,
     ) -> Option<bool> {
         let id = ui.make_persistent_id(("rename-node", self.node));
-        let (save, cancel) = if ui.memory(|memory| memory.has_focus(id)) {
-            ui.input_mut(|input| {
-                (
-                    input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
-                    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                )
-            })
-        } else {
-            (false, false)
-        };
-        let mut field = egui::TextEdit::singleline(&mut self.name)
-            .id(id)
-            .font(font)
-            .align(egui::Align2::LEFT_CENTER)
-            .min_size(egui::vec2(0.0, ui.available_height()))
-            .margin(egui::Margin::symmetric(3, 0))
-            .text_color(crate::canvas::node_title_color(ui.visuals()))
-            .desired_width(f32::INFINITY)
-            .hint_text(t("rename-node-default"))
-            .show(ui);
-        let response = field
-            .response
-            .response
-            .on_hover_text(t("rename-inline-hint"));
-        if std::mem::take(&mut self.focus) {
-            use egui::text::{CCursor, CCursorRange};
-            response.request_focus();
-            field.state.cursor.set_char_range(Some(CCursorRange::two(
-                CCursor::new(0),
-                CCursor::new(self.name.chars().count()),
-            )));
-            field.state.store(ui.ctx(), id);
-        } else if save || cancel || response.lost_focus() {
-            response.surrender_focus();
-            return Some(save && !cancel);
-        }
-        None
+        let height = ui.available_height();
+        rename_field(
+            ui,
+            id,
+            &mut self.name,
+            &mut self.focus,
+            font,
+            height,
+            Some(t("rename-node-default")),
+        )
     }
+}
+
+/// Edits a title in place. Enter commits; Escape and focus loss discard it.
+pub(crate) fn rename_field(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    name: &mut String,
+    focus: &mut bool,
+    font: impl Into<egui::FontSelection>,
+    height: f32,
+    hint: Option<&str>,
+) -> Option<bool> {
+    let [save, cancel] = if ui.memory(|memory| memory.has_focus(id)) {
+        controls::consume_plain_keys(ui, [egui::Key::Enter, egui::Key::Escape])
+    } else {
+        [false, false]
+    };
+    let end = name.chars().count();
+    let mut field = egui::TextEdit::singleline(name)
+        .id(id)
+        .font(font)
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(egui::vec2(0.0, height))
+        .margin(egui::Margin::symmetric(3, 0))
+        .text_color(crate::canvas::node_title_color(ui.visuals()))
+        .desired_width(f32::INFINITY)
+        .hint_text(hint.unwrap_or_default())
+        .show(ui);
+    let response = field
+        .response
+        .response
+        .on_hover_text(t("rename-inline-hint"));
+    if std::mem::take(focus) {
+        use egui::text::{CCursor, CCursorRange};
+        response.request_focus();
+        field
+            .state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
+        field.state.store(ui.ctx(), id);
+    } else if save || cancel || response.lost_focus() {
+        response.surrender_focus();
+        return Some(save && !cancel);
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -141,29 +159,28 @@ impl Editor {
         let Some(export) = &mut self.function_export else {
             return;
         };
-        let modal = egui::Modal::new(egui::Id::unique("function-export")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading(t("export-function-title"));
-            ui.strong(&export.label);
-            let Ok(preview) = &export.preview else {
-                if let Err(error) = &export.preview {
-                    ui.label(error);
-                }
-                return (
-                    controls::button(
-                        ui,
-                        Surface::Dialog,
-                        Action::Outline,
-                        true,
-                        egui::Button::new(t("close")),
-                    )
-                    .clicked(),
-                    false,
-                );
-            };
-            egui::Grid::new("function-package-fields")
-                .num_columns(2)
-                .show(ui, |ui| {
+        let modal =
+            orange_ui_controls::modal(ctx, egui::Id::unique("function-export")).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(t("export-function-title"));
+                ui.strong(&export.label);
+                let Ok(preview) = &export.preview else {
+                    if let Err(error) = &export.preview {
+                        ui.label(error);
+                    }
+                    return (
+                        controls::button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Outline,
+                            true,
+                            egui::Button::new(t("close")),
+                        )
+                        .clicked(),
+                        false,
+                    );
+                };
+                orange_ui_controls::form_grid("function-package-fields").show(ui, |ui| {
                     for (label, field) in [
                         (t("function-package-id"), &mut export.package),
                         (t("function-package-version"), &mut export.version),
@@ -174,48 +191,37 @@ impl Editor {
                         ui.end_row();
                     }
                 });
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .show(ui, |ui| {
-                    for (heading, ports) in [
-                        (t("inputs"), &preview.inputs),
-                        (t("outputs"), &preview.outputs),
-                    ] {
-                        ui.strong(heading);
-                        if ports.is_empty() {
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        preview_ports(ui, &preview.inputs, &preview.outputs);
+                        ui.strong(t("function-package-dependencies"));
+                        if preview.dependencies.is_empty() {
                             ui.weak(t("function-package-none"));
                         }
-                        for (name, ty) in ports {
-                            ui.label(format!("{name}: {}", crate::type_name(ty)));
+                        for (id, version) in &preview.dependencies {
+                            ui.label(format!("{id} {version}"));
                         }
-                    }
-                    ui.strong(t("function-package-dependencies"));
-                    if preview.dependencies.is_empty() {
-                        ui.weak(t("function-package-none"));
-                    }
-                    for (id, version) in &preview.dependencies {
-                        ui.label(format!("{id} {version}"));
-                    }
-                    if let Some(adapter) = &preview.connection_adapter {
-                        ui.label(tf(
-                            "function-package-connection",
-                            &[("adapter", adapter.as_str().into())],
-                        ));
-                    }
-                });
-            if let Some(error) = &export.error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            }
-            let (cancel, save) = controls::dialog_actions(
-                ui,
-                Action::Primary,
-                [&export.package, &export.version, &export.node]
-                    .iter()
-                    .all(|field| !field.trim().is_empty()),
-                egui::Button::new(t("function-package-save")),
-            );
-            (cancel.clicked(), save.clicked())
-        });
+                        if let Some(adapter) = &preview.connection_adapter {
+                            ui.label(tf(
+                                "function-package-connection",
+                                &[("adapter", adapter.as_str().into())],
+                            ));
+                        }
+                    });
+                if let Some(error) = &export.error {
+                    orange_ui_controls::notice(ui, controls::ButtonTone::Danger, error);
+                }
+                let (cancel, save) = controls::dialog_actions(
+                    ui,
+                    Action::Primary,
+                    [&export.package, &export.version, &export.node]
+                        .iter()
+                        .all(|field| !field.trim().is_empty()),
+                    egui::Button::new(t("function-package-save")),
+                );
+                (cancel.clicked(), save.clicked())
+            });
         let (cancel, save) = modal.inner;
         if cancel || modal.should_close() {
             self.function_export = None;
@@ -273,16 +279,8 @@ impl Editor {
     pub fn group_selection(&mut self, host: &mut Host, name: &str) -> Option<String> {
         let selection = self.canvas.selection();
         let draft = self.editing()?;
-        match draft.group(&selection, name) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = draft.group(&selection, name);
+        self.edited_value(host, result)
     }
 
     /// Renames, recolours, collapses or opens a group, as one edit.
@@ -405,7 +403,7 @@ impl Editor {
         let mut open = true;
         let mut make = false;
         let mut cancel = false;
-        egui::Window::new(t("make-a-function"))
+        orange_ui_controls::dialog_window(ctx, t("make-a-function"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -448,18 +446,7 @@ impl Editor {
                             ("count", extracting.nodes.len().into()),
                         ],
                     ));
-                    for (title, ports) in [
-                        (t("inputs"), &preview.inputs),
-                        (t("outputs"), &preview.outputs),
-                    ] {
-                        ui.strong(title);
-                        if ports.is_empty() {
-                            ui.weak(t("function-package-none"));
-                        }
-                        for (name, ty) in ports {
-                            ui.label(format!("{name}: {}", crate::type_name(ty)));
-                        }
-                    }
+                    preview_ports(ui, &preview.inputs, &preview.outputs);
                     let (dismiss, confirm) = controls::dialog_actions(
                         ui,
                         Action::Primary,
@@ -509,6 +496,18 @@ fn export_error(error: &HostError) -> String {
         );
     }
     error.to_string()
+}
+
+fn preview_ports(ui: &mut egui::Ui, inputs: &[(String, String)], outputs: &[(String, String)]) {
+    for (heading, ports) in [(t("inputs"), inputs), (t("outputs"), outputs)] {
+        ui.strong(heading);
+        if ports.is_empty() {
+            ui.weak(t("function-package-none"));
+        }
+        for (name, ty) in ports {
+            ui.label(format!("{name}: {}", crate::type_name(ty)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -657,19 +656,9 @@ mod tests {
             })
             .unwrap();
         output.drop_without_applying_deltas();
-        frame(&mut editor, vec![egui::Event::PointerMoved(save)]).drop_without_applying_deltas();
-        for pressed in [true, false] {
-            frame(
-                &mut editor,
-                vec![egui::Event::PointerButton {
-                    pos: save,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-            )
-            .drop_without_applying_deltas();
-        }
+        orange_testkit::ui::click(save, egui::PointerButton::Primary, |events| {
+            frame(&mut editor, events).drop_without_applying_deltas();
+        });
         let Some(FileRequest::ExportPackage { name, archive }) = editor.take_request() else {
             panic!("the application did not receive the archive");
         };

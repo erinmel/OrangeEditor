@@ -125,6 +125,8 @@ impl Host {
     /// whose definition this host does not have is refused by name.
     pub fn bind(&self, json: &str) -> Result<String, HostError> {
         let refused = |reason: String| HostError::Document(reason);
+        orange_model::document::codec::check_json_envelope(json)
+            .map_err(|error| refused(error.to_string()))?;
         let mut saved: Json =
             serde_json::from_str(json).map_err(|error| refused(error.to_string()))?;
         let is_unbound = |node: &Json| {

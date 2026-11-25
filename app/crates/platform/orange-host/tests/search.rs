@@ -174,6 +174,8 @@ fn node_category_and_port_names_follow_the_language_and_fall_back_to_english() {
     assert!(ids(&host.search_nodes("datos", "es")).contains(&"org.orange.json/get"));
     let ports = host.port_names("es");
     assert!(ports.contains(&("result".to_owned(), "resultado".to_owned())));
+    assert!(ports.contains(&("failed".to_owned(), "Falló".to_owned())));
+    assert!(ports.contains(&("cancelled".to_owned(), "Cancelado".to_owned())));
     assert!(
         host.port_names("en")
             .contains(&("completed".to_owned(), "Done".to_owned()))

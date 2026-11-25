@@ -230,6 +230,73 @@ fn paths_validate_the_whole_selector_even_when_a_segment_is_missing() {
     );
 }
 
+/// Read nodes go from JSON to a typed value in one step: the value at the path, or the
+/// fallback when it is missing, of another kind, not whole or out of range.
+#[test]
+fn reads_give_the_typed_value_or_the_fallback() {
+    let doc = j(
+        r#"{"user":{"name":"Ada \"A\"","age":36,"score":9.5,"admin":true,"none":null},
+        "items":[{"id":7}],"big":99999999999999999999,"whole":2.0}"#,
+    );
+    let read = |op: Op, path: &str, fallback: Value| eval(op, &[doc.clone(), s(path), fallback]);
+
+    assert_eq!(read(Op::ReadText, "user.name", s("-")), Ok(s("Ada \"A\"")));
+    assert_eq!(
+        read(Op::ReadInt, "user.age", Value::I64(0)),
+        Ok(Value::I64(36))
+    );
+    assert_eq!(
+        read(Op::ReadInt, "items[0].id", Value::I64(0)),
+        Ok(Value::I64(7))
+    );
+    assert_eq!(
+        read(Op::ReadNumber, "user.score", Value::F64(0.0)),
+        Ok(Value::F64(9.5))
+    );
+    assert_eq!(
+        read(Op::ReadNumber, "user.age", Value::F64(0.0)),
+        Ok(Value::F64(36.0))
+    );
+    assert_eq!(
+        read(Op::ReadBool, "user.admin", Value::Bool(false)),
+        Ok(Value::Bool(true))
+    );
+
+    // Missing, null, another kind, not whole, or too big: the fallback.
+    assert_eq!(read(Op::ReadText, "user.missing", s("-")), Ok(s("-")));
+    assert_eq!(read(Op::ReadText, "user.none", s("-")), Ok(s("-")));
+    assert_eq!(read(Op::ReadText, "user.age", s("-")), Ok(s("-")));
+    assert_eq!(
+        read(Op::ReadInt, "user.name", Value::I64(-1)),
+        Ok(Value::I64(-1))
+    );
+    assert_eq!(
+        read(Op::ReadInt, "whole", Value::I64(-1)),
+        Ok(Value::I64(-1))
+    );
+    assert_eq!(read(Op::ReadInt, "big", Value::I64(-1)), Ok(Value::I64(-1)));
+    assert_eq!(
+        read(Op::ReadBool, "items[5]", Value::Bool(false)),
+        Ok(Value::Bool(false))
+    );
+
+    // An empty path reads the whole value.
+    assert_eq!(
+        eval(Op::ReadInt, &[j("42"), s(" "), Value::I64(0)]),
+        Ok(Value::I64(42))
+    );
+    // A broken path is a mistake in the graph, not missing data.
+    assert_eq!(
+        read(Op::ReadText, "user..name", s("-")),
+        Err(KernelError::Domain)
+    );
+    // The fallback must have the node's type.
+    assert_eq!(
+        read(Op::ReadInt, "user.age", s("0")),
+        Err(KernelError::InputContract)
+    );
+}
+
 #[test]
 fn string_json_converters_validate_and_keep_text() {
     let (_, snapshot) = catalog();

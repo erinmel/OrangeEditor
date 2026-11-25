@@ -1,6 +1,10 @@
 //! Sources a flow's run arms with arguments, and the live values their providers
 //! publish (11 §10.5). Everything here runs on the flow's own thread.
-use crate::{FlowEvent, FlowId, flow::Sink};
+use crate::{
+    DefinitionRef, FlowEvent, FlowId, ServiceOperation,
+    flow::Sink,
+    services::{Gate, declared_connection},
+};
 use orange_model::Value;
 use orange_model::id::{NodeId, PortKey};
 use orange_runtime::{HostInput, InboxError, Run, RunInbox};
@@ -21,6 +25,7 @@ pub(crate) enum Provider {
 /// A package entry with data inputs, or a live node, ready to be armed.
 pub(crate) struct Armable {
     pub node: NodeId,
+    pub definition: DefinitionRef,
     pub provider: Provider,
     pub session: Option<Arc<dyn Session>>,
     pub settings: serde_json::Map<String, Json>,
@@ -57,8 +62,8 @@ impl Drop for ArmedProvider {
 }
 
 /// The armed sources of one flow and the live values waiting for its run.
-#[derive(Default)]
 pub(crate) struct Armed {
+    gate: Gate,
     armables: BTreeMap<NodeId, Armable>,
     guards: BTreeMap<NodeId, ArmedProvider>,
     slots: BTreeMap<NodeId, BTreeMap<PortKey, OutputSlot>>,
@@ -72,16 +77,18 @@ impl std::fmt::Debug for Armed {
     }
 }
 impl Armed {
-    pub(crate) fn new(armables: Vec<Armable>) -> Self {
+    pub(crate) fn new(armables: Vec<Armable>, gate: Gate) -> Self {
         Self {
+            gate,
             armables: armables.into_iter().map(|a| (a.node, a)).collect(),
-            ..Self::default()
+            guards: BTreeMap::new(),
+            slots: BTreeMap::new(),
         }
     }
 
     /// Stops every provider and takes the sources of an edited graph instead.
     pub(crate) fn replace(&mut self, armables: Vec<Armable>) {
-        *self = Self::new(armables);
+        *self = Self::new(armables, self.gate.clone());
     }
 
     /// Starts the live nodes that take no arguments. The others, and entries with data
@@ -89,6 +96,7 @@ impl Armed {
     /// provider refused to start, with why.
     pub(crate) fn start(
         &mut self,
+        run_id: u64,
         inbox: &RunInbox,
         flow: &Thread,
         events: (&Sink, FlowId),
@@ -101,7 +109,7 @@ impl Armed {
             .collect();
         idle.into_iter()
             .filter_map(|node| {
-                self.arm(node, &[], inbox, flow, events)
+                self.arm(node, &[], run_id, inbox, flow, events)
                     .err()
                     .map(|e| (node, e))
             })
@@ -114,6 +122,7 @@ impl Armed {
         &mut self,
         node: NodeId,
         values: &[Value],
+        run_id: u64,
         inbox: &RunInbox,
         flow: &Thread,
         events: (&Sink, FlowId),
@@ -123,6 +132,19 @@ impl Armed {
         };
         drop(self.guards.remove(&node));
         self.slots.remove(&node);
+        let operation = match &armable.provider {
+            Provider::Entry(_) => ServiceOperation::Entry,
+            Provider::Live(_) => ServiceOperation::LiveValue,
+        };
+        if !self.gate.allows(
+            node,
+            &armable.definition,
+            operation,
+            declared_connection(&armable.settings),
+            values,
+        ) {
+            return Err("the host denied the service source".into());
+        }
         let arguments = Arguments::new(
             armable
                 .ports
@@ -130,7 +152,8 @@ impl Armed {
                 .cloned()
                 .zip(values.iter().cloned())
                 .collect(),
-        );
+        )
+        .with_run_id(run_id);
         let session = armable.session.clone();
         let active = Arc::new(AtomicBool::new(true));
         let slots: BTreeMap<_, _> = armable

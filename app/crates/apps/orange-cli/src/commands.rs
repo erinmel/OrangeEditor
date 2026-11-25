@@ -27,7 +27,7 @@ fn usage<T>(message: impl Into<String>) -> Result<T, Stop> {
 
 /// A file as text.
 pub(crate) fn text(path: &str) -> Result<String, String> {
-    String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))
+    orange_host::read_document(Path::new(path)).map_err(|error| format!("{path}: {error}"))
 }
 
 fn write(path: &str, bytes: impl AsRef<[u8]>) -> Result<(), String> {
@@ -120,7 +120,9 @@ pub(crate) fn devices() -> Done {
     Ok(())
 }
 
-/// The network client of installed packages that hold the `http` grant.
+/// The network client of installed packages that hold the `http` or `http-local` grant.
+/// The plugin engine has already checked each address; an `http://` URL reaches it only
+/// for a local address under `http-local`.
 #[derive(Debug)]
 struct PluginHttp;
 impl orange_host::HttpClient for PluginHttp {
@@ -129,14 +131,19 @@ impl orange_host::HttpClient for PluginHttp {
         request: &orange_host::HttpRequest,
     ) -> Result<orange_host::HttpResponse, String> {
         let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch(
+        orange_net::fetch_response(
             &request.method,
             &request.url,
             &request.headers,
             &request.body,
             limit,
+            request.url.starts_with("http://"),
         )
-        .map(|(status, body)| orange_host::HttpResponse { status, body })
+        .map(|response| orange_host::HttpResponse {
+            status: response.status,
+            headers: response.headers,
+            body: response.body,
+        })
     }
 }
 
@@ -160,7 +167,10 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         for (path, package) in loaded {
             match package {
                 Ok(package) => {
-                    println!("loaded plugin {} {}", package.id(), package.version());
+                    notice(
+                        arguments,
+                        format_args!("loaded plugin {} {}", package.id(), package.version()),
+                    );
                     plugin_files.push((package.id().to_owned(), path));
                     services.push(package);
                 }
@@ -204,30 +214,36 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         let asks = host
             .permissions(&bytes)
             .map_err(|error| format!("{path}: {error}"))?;
-        let given = Grants {
-            log: asks.log && arguments.grants.log,
-            files: asks.files && arguments.grants.files,
-            http: asks.http && arguments.grants.http,
-        };
-        for (name, asked, granted) in [
-            ("log", asks.log, given.log),
-            ("files", asks.files, given.files),
-            ("http", asks.http, given.http),
-        ] {
+        let given = asks.within(arguments.grants);
+        for ((name, asked), (_, granted)) in asks.named().into_iter().zip(given.named()) {
             if asked && !granted {
-                println!("{path}: asks for `{name}`, not granted (--grant-{name})");
+                notice(
+                    arguments,
+                    format_args!("{path}: asks for `{name}`, not granted (--grant-{name})"),
+                );
             }
         }
         let key = host
             .install(&bytes, given)
             .map_err(|error| format!("{path}: {error}"))?;
-        println!("installed {} {}", key.id.as_str(), key.version.as_str());
+        notice(
+            arguments,
+            format_args!("installed {} {}", key.id.as_str(), key.version.as_str()),
+        );
     }
     Ok(Started {
         host,
         events,
         plugin_files,
     })
+}
+
+fn notice(arguments: &Arguments, message: std::fmt::Arguments<'_>) {
+    if arguments.catalog_json {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
 }
 
 pub(crate) fn packages(host: &Host) {
@@ -252,7 +268,25 @@ pub(crate) fn packages(host: &Host) {
     }
 }
 
-pub(crate) fn nodes(host: &Host) {
+pub(crate) fn nodes(host: &Host, json_output: bool) {
+    if json_output {
+        let nodes: Vec<_> = host.nodes().map(|info| {
+            let def = info.definition;
+            serde_json::json!({
+                "id": def.definition.id.as_str(),
+                "version": def.definition.version,
+                "kind": def.kind,
+                "suspends": def.suspends,
+                "provider": info.provider.map(|provider| provider.package.as_str()),
+                "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es") },
+                "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es") },
+                "ports": info.declared_ports(),
+                "config_schema": def.config_schema,
+            })
+        }).collect();
+        println!("{}", serde_json::json!({"nodes": nodes}));
+        return;
+    }
     for info in host.nodes() {
         let definition = &info.definition.definition;
         println!(
@@ -451,6 +485,11 @@ fn share(host: &mut Host, id: &str, adapter: &str, settings: &[u8]) -> Result<()
 /// `check` and `run`: nothing runs unless every graph asked for can.
 pub(crate) fn graphs(started: &mut Started, arguments: &Arguments) -> Done {
     let host = &mut started.host;
+    if !arguments.credential_approvals.is_empty()
+        && (arguments.command != "run" || arguments.graphs.len() != 1)
+    {
+        return usage("--approve-connection requires run with exactly one graph");
+    }
     for [id, adapter, path] in &arguments.shared {
         read(path)
             .and_then(|bytes| share(host, id, adapter, &bytes))
@@ -479,7 +518,16 @@ pub(crate) fn graphs(started: &mut Started, arguments: &Arguments) -> Done {
                 }
             })
         } else {
-            host.open(&text).map(|flow| {
+            (|| {
+                if !arguments.credential_approvals.is_empty() {
+                    let draft = host.draft(&text)?;
+                    for id in &arguments.credential_approvals {
+                        host.approve_connection_credentials(&draft, id)?;
+                    }
+                }
+                host.open(&text)
+            })()
+            .map(|flow| {
                 if arguments.watch {
                     let _ = host.observe(flow, true);
                 }

@@ -56,3 +56,13 @@ pub use preview::{PreviewLimits, PreviewReset, PreviewSnapshot, PreviewStats, Pu
 pub use zones::{DataZone, ZoneIx};
 
 pub(crate) use orange_model::value::shape::{ValueCheckError, ValueShape};
+
+/// Plans depend on semantic graph edits and the definitions available at compilation.
+fn plan_inputs_current(
+    state: u64,
+    compiled_registry: &orange_model::catalog::RegistrySnapshot,
+    document: &orange_model::GraphDocument,
+    registry: &orange_model::catalog::RegistrySnapshot,
+) -> bool {
+    state == document.semantic_state_id() && compiled_registry.generation() == registry.generation()
+}

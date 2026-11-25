@@ -86,6 +86,21 @@ pub(crate) fn edges_of<'a>(
     }
 }
 
+/// Edges suitable for following control flow, after structural validation.
+pub(crate) fn valid_control_edges<'a>(
+    body: &'a GraphBody,
+    only: Option<&NodeSubset<'a>>,
+    error_edges: &std::collections::BTreeSet<crate::id::EdgeId>,
+    tally: Tally<'_>,
+) -> impl Iterator<Item = &'a crate::document::Edge> {
+    edges_of(body, only, tally).into_iter().filter(move |edge| {
+        !error_edges.contains(&edge.id)
+            && only.is_none_or(|only| only.nodes.contains(&edge.from.node))
+            && body.nodes.contains_key(&edge.from.node)
+            && body.nodes.contains_key(&edge.to.node)
+    })
+}
+
 /// Bodies a pass visits. Every body-local pass gives a body the same result in either scope,
 /// so function acceptance can check one function body at a time, callee first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,6 +4,48 @@ use std::time::Duration;
 use ureq::Agent;
 use ureq::http::{Method, Request};
 
+/// Opens a finite HTTP media response for an explicitly configured source.
+/// Redirects are disabled and the response reader enforces the byte limit.
+pub fn media_reader(url: &str, max_bytes: u64) -> Result<impl std::io::Read + Send + Sync, String> {
+    let address = url
+        .parse::<ureq::http::Uri>()
+        .map_err(|_| "invalid audio URL")?;
+    if !matches!(address.scheme_str(), Some("http" | "https"))
+        || address
+            .authority()
+            .is_none_or(|origin| origin.as_str().contains('@'))
+    {
+        return Err("an audio URL must be HTTP or HTTPS without embedded credentials".into());
+    }
+    let response = Agent::config_builder()
+        .proxy(None)
+        .max_redirects(0)
+        .timeout_global(Some(Duration::from_secs(60)))
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_recv_response(Some(Duration::from_secs(10)))
+        .timeout_recv_body(Some(Duration::from_secs(60)))
+        .build()
+        .new_agent()
+        .get(address)
+        .call()
+        .map_err(|_| "the audio server could not be reached")?;
+    if response.status().as_u16() != 200 {
+        return Err("the audio server did not return a complete file response".into());
+    }
+    if response
+        .body()
+        .content_length()
+        .is_some_and(|size| size > max_bytes)
+    {
+        return Err("the audio file exceeds the download limit".into());
+    }
+    Ok(response
+        .into_body()
+        .into_with_config()
+        .limit(max_bytes)
+        .reader())
+}
+
 /// Downloads an `https://` URL, following redirects only to other `https://` URLs: how
 /// an application reads a package's update feed or a release archive. Anything but
 /// status 200, or a body over `max_bytes`, is an error. This is not a graph node and
@@ -44,12 +86,39 @@ pub fn fetch(
     body: &[u8],
     max_bytes: u64,
 ) -> Result<(u16, Vec<u8>), String> {
-    if !url.starts_with("https://") {
+    fetch_response(method, url, headers, body, max_bytes, false)
+        .map(|response| (response.status, response.body))
+}
+
+/// The answer to [`fetch_response`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchResponse {
+    pub status: u16,
+    /// Headers in the order received. A value that is not UTF-8 is converted lossily.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// Sends one request like [`fetch`] and also returns the response headers. With
+/// `plain_http` an `http://` URL is sent too: the caller has checked that its address
+/// is one the request may reach in plain text, as the `http-local` plugin grant does.
+/// Redirects are never followed, so that check holds for the whole request. Headers and
+/// body together must fit `max_bytes`.
+pub fn fetch_response(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    max_bytes: u64,
+    plain_http: bool,
+) -> Result<FetchResponse, String> {
+    let secure = url.starts_with("https://");
+    if !secure && !(plain_http && url.starts_with("http://")) {
         return Err("the URL must start with https://".into());
     }
     let agent: Agent = Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)))
-        .https_only(true)
+        .https_only(secure)
         .max_redirects(0)
         .http_status_as_error(false)
         .build()
@@ -66,13 +135,33 @@ pub fn fetch(
         .run(request)
         .map_err(|_| "the request could not be completed".to_owned())?;
     let status = response.status().as_u16();
+    let mut header_bytes = 0u64;
+    let headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            let pair = (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            );
+            header_bytes = header_bytes.saturating_add((pair.0.len() + pair.1.len()) as u64);
+            pair
+        })
+        .collect();
+    let Some(left) = max_bytes.checked_sub(header_bytes) else {
+        return Err("the response is too large or was cut short".to_owned());
+    };
     let body = response
         .body_mut()
         .with_config()
-        .limit(max_bytes)
+        .limit(left)
         .read_to_vec()
         .map_err(|_| "the response is too large or was cut short".to_owned())?;
-    Ok((status, body))
+    Ok(FetchResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

@@ -10,9 +10,10 @@ use orange_kernel::{
     ResolveError,
 };
 use orange_model::Value;
+use orange_model::catalog::ReferenceKind;
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
 use orange_model::document::{NodeKind, PortDirection, PortKind};
-use orange_model::id::{PortKey, TypeExpr};
+use orange_model::id::{ConnectionId, PortKey, TypeExpr};
 use orange_packages::{Execution, MemorySink, VerifiedArchive};
 use thiserror::Error;
 
@@ -20,8 +21,10 @@ use crate::{
     Grants, GuestAccess, GuestCancellation, GuestComponent, GuestEngine, GuestError, GuestPlugin,
 };
 
-/// Worlds of this major version are loadable; the host offers 1.0 (`API_VERSION`).
+/// Worlds of this major version are loadable; the host offers 1.1 (`API_VERSION`).
 pub const PLUGIN_WORLD_PREFIX: &str = "orange:expansion/plugin@1.";
+/// The 1.1 world of a package that also contributes trigger nodes.
+pub const PLUGIN_EVENTS_WORLD_PREFIX: &str = "orange:expansion/plugin-events@1.";
 /// Longest guest error code or message key retained in a fault.
 pub const MAX_FAULT_TEXT_BYTES: usize = 128;
 
@@ -55,6 +58,14 @@ pub struct GuestPackage {
 }
 
 impl GuestPackage {
+    /// Replaces the grants of instances made from now on, so a revoked grant is not
+    /// linked into them. Instances already made keep theirs.
+    #[must_use]
+    pub fn with_grants(mut self, grants: Grants) -> Self {
+        self.grants = grants;
+        self
+    }
+
     /// Sets what the package's instances reach with their `files` and `http` grants.
     #[must_use]
     pub fn with_access(mut self, access: GuestAccess) -> Self {
@@ -76,7 +87,9 @@ impl GuestPackage {
         let Some(Execution::WasmComponent { entry, world }) = manifest.execution() else {
             return Err(GuestLoadError::NotAComponent);
         };
-        if !world.as_str().starts_with(PLUGIN_WORLD_PREFIX) {
+        if !world.as_str().starts_with(PLUGIN_WORLD_PREFIX)
+            && !world.as_str().starts_with(PLUGIN_EVENTS_WORLD_PREFIX)
+        {
             return Err(GuestLoadError::World);
         }
         if !manifest
@@ -214,9 +227,20 @@ impl GuestPackage {
         {
             return Err(ResolveError::Unavailable);
         }
-        if !request.config().is_empty() {
-            return Err(ResolveError::Contract);
-        }
+        // Settings reach the instance as JSON (1.1); a connection they name is opened by
+        // the host, which hands its session to the node's effect calls.
+        let settings =
+            serde_json::to_string(request.config()).map_err(|_| ResolveError::Contract)?;
+        let connection = request
+            .snapshot()
+            .definition(request.definition())
+            .filter(|definition| {
+                definition
+                    .references
+                    .iter()
+                    .any(|field| field.kind == ReferenceKind::Connection)
+            })
+            .and_then(|_| request.config().get("connection")?.as_str()?.parse().ok());
         let (mut inputs, mut input_types) = (Vec::new(), Vec::new());
         let (mut outputs, mut output_types) = (Vec::new(), Vec::new());
         for port in &request.signature().ports {
@@ -245,8 +269,14 @@ impl GuestPackage {
                 output_types.push(ty);
             }
         }
-        let plugin = GuestPlugin::with_access(&self.component, self.grants, self.access.clone())
+        let access = if request.signature().kind == NodeKind::Async {
+            self.access.clone()
+        } else {
+            GuestAccess::default()
+        };
+        let mut plugin = GuestPlugin::with_access(&self.component, self.grants, access)
             .map_err(|_| ResolveError::Unavailable)?;
+        plugin.set_settings(settings);
         let cancellation = plugin.cancellation();
         Ok((
             inputs.into(),
@@ -258,6 +288,8 @@ impl GuestPackage {
                 definition: request.definition().id.as_str().to_owned(),
                 inputs: input_types,
                 outputs: output_types,
+                connection,
+                definition_ref: request.definition().clone(),
             },
         ))
     }
@@ -271,6 +303,9 @@ struct GuestNode {
     definition: String,
     inputs: Vec<TypeExpr>,
     outputs: Vec<TypeExpr>,
+    /// The connection the node's settings name, when its definition refers to one.
+    connection: Option<ConnectionId>,
+    definition_ref: orange_model::document::DefinitionRef,
 }
 
 impl std::fmt::Debug for GuestNode {
@@ -352,6 +387,35 @@ impl GuestEffect {
     pub fn run(&self, inputs: &[Value]) -> Result<Vec<Value>, KernelFault> {
         self.0.call(true, inputs)
     }
+
+    /// Runs the node once like [`run`](Self::run), with the host session of the
+    /// connection it names for its `websocket` import during this call only.
+    pub fn run_on(
+        &self,
+        inputs: &[Value],
+        session: Option<Arc<dyn orange_sdk::Session>>,
+    ) -> Result<Vec<Value>, KernelFault> {
+        self.0
+            .plugin
+            .lock()
+            .map_err(|_| guest_fault(GuestError::Poisoned))?
+            .set_session(session);
+        let result = self.0.call(true, inputs);
+        if let Ok(mut plugin) = self.0.plugin.lock() {
+            plugin.set_session(None);
+        }
+        result
+    }
+
+    /// The connection the node's settings name, which the host opens for it.
+    pub fn connection(&self) -> Option<ConnectionId> {
+        self.0.connection
+    }
+
+    /// The node's definition, for the host's connection policy.
+    pub fn definition(&self) -> &orange_model::document::DefinitionRef {
+        &self.0.definition_ref
+    }
     /// Interrupts this node's instance, for an effect whose lease was cancelled.
     /// Cancellation is terminal for the instance.
     pub fn cancellation(&self) -> GuestCancellation {
@@ -389,6 +453,112 @@ fn node_fault(error: crate::GuestNodeError) -> KernelFault {
     }
 }
 
+/// A package trigger (entry) node (1.1): started by the host for each such node of a
+/// running flow, on the session of the connection the node's settings name. Every
+/// message that arrives there goes to the package's `events.receive` on this node's own
+/// instance, whose answer fires the node, lets the message pass or reports a fault. The
+/// host keeps the connection, its credentials and reconnection; the instance has no
+/// file, network or connection access while it decides.
+pub struct GuestSource {
+    component: GuestComponent,
+    grants: Grants,
+    definition: String,
+    outputs: Vec<TypeExpr>,
+    snapshot: Arc<RegistrySnapshot>,
+}
+
+impl std::fmt::Debug for GuestSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuestSource")
+            .field("definition", &self.definition)
+            .finish_non_exhaustive()
+    }
+}
+
+impl GuestPackage {
+    /// The trigger source for entry node `definition` of this package, when the user
+    /// granted it `websocket`: an entry has at most one data output (`payload`) of a
+    /// concrete type. `None` for anything else.
+    pub fn trigger(
+        &self,
+        definition: &orange_model::catalog::NodeDefinition,
+        snapshot: Arc<RegistrySnapshot>,
+    ) -> Option<GuestSource> {
+        if definition.kind != NodeKind::Entry || !self.grants.websocket {
+            return None;
+        }
+        let orange_model::catalog::Ports::Declared(ports) = &definition.ports else {
+            return None;
+        };
+        let outputs: Vec<TypeExpr> = ports
+            .iter()
+            .filter(|port| port.direction == PortDirection::Output && port.kind == PortKind::Data)
+            .map(|port| port.ty.clone())
+            .collect::<Option<_>>()?;
+        if outputs.len() > 1 || outputs.iter().any(|ty| ty.as_str().contains('$')) {
+            return None;
+        }
+        Some(GuestSource {
+            component: self.component.clone(),
+            grants: self.grants,
+            definition: definition.definition.id.as_str().to_owned(),
+            outputs,
+            snapshot,
+        })
+    }
+}
+
+impl orange_sdk::ServiceSource for GuestSource {
+    fn start_with(
+        &self,
+        session: Option<Arc<dyn orange_sdk::Session>>,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        emitter: orange_sdk::Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let session = session.ok_or("the trigger names no connection")?;
+        // The deciding instance gets the node's settings and nothing to reach.
+        let mut plugin =
+            GuestPlugin::with_access(&self.component, self.grants, GuestAccess::default())
+                .map_err(|error| error.to_string())?;
+        plugin.set_settings(
+            serde_json::to_string(settings).map_err(|_| "the settings are not JSON".to_owned())?,
+        );
+        if !plugin.receives_events() {
+            return Err("the package does not receive events".to_owned());
+        }
+        let plugin = Mutex::new(plugin);
+        let (snapshot, definition, outputs) = (
+            Arc::clone(&self.snapshot),
+            self.definition.clone(),
+            self.outputs.clone(),
+        );
+        let incoming = orange_sdk::Emitter::new(move |payload| {
+            let message = match payload {
+                Some(Value::Str(text)) => orange_sdk::Message::Text(Arc::from(text.as_str())),
+                Some(Value::Bytes(data)) => orange_sdk::Message::Binary(Arc::from(data.as_slice())),
+                _ => return Ok(()),
+            };
+            let mut plugin = plugin.lock().map_err(|_| orange_sdk::EmitError::Closed)?;
+            match plugin.receive(snapshot.types(), &definition, &message, &outputs) {
+                Ok(Ok(Some(mut values))) => emitter.emit(values.pop()),
+                Ok(Ok(None)) => Ok(()),
+                Ok(Err(error)) => emitter.fault(node_fault(error)),
+                Err(error) => {
+                    emitter.fault(guest_fault(error))?;
+                    // A trapped instance decides nothing more: stop listening.
+                    if plugin.is_poisoned() {
+                        Err(orange_sdk::EmitError::Closed)
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        });
+        session
+            .listen_messages(incoming)
+            .map_err(|error| error.to_string())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -64,7 +64,11 @@ HTTP Request and HTTP JSON Request accept optional wireable text maps for
 `header_fields` and `query`. Query names and values are UTF-8 percent-encoded
 and appended to any query supplied in the path. Requests accept at most 64 query
 pairs, a 16 KiB relative request target, and 32 additional headers bounded to
-32 KiB including the node's content type. Header names are case-insensitive.
+32 KiB including the node's content type. Text and map headers share the same
+budget, checked before copying each header. Header names are case-insensitive.
+HTTP, WebSocket and OAuth connection debug output shows the scheme, host and
+explicit port. Credentials, paths and query strings stay out of diagnostic
+formatting.
 Graph headers cannot override profile headers or set authorization or HTTP
 framing headers. Response header names are lowercase and each maps to a list
 of values in response order. Invalid UTF-8 in header values is replaced.
@@ -95,9 +99,22 @@ is typed masked; `Host::declare_connection_with_secrets` stores it with
 `SecretStore::replace` under `connection/<connection ID>/<setting>` before the
 declaration is committed and writes only the reference, so nothing is declared when the
 store refuses. Undoing the declaration leaves the stored secret; it is replaced when
-the same setting is typed again. `Host::test_connection` resolves the references and
-opens the adapter once and releases it. Adapters that connect on first use may only
-validate settings. The editor shows a host-owned error if the adapter refuses to open
+the same setting is typed again. A reference is accepted only in a secret setting the
+adapter declares. Opening a graph-scoped profile requires local approval for its
+graph ID, connection ID, adapter and complete settings. The editor's **Save and approve
+credential use** action records that approval in the OS vault. For the CLI, use
+`orange run graph.json --approve-connection <connection-id>` after reviewing that
+profile. A destination or settings change requires renewed approval. The application
+can supply session-only approval when using a read-only vault. Shared profiles are
+supplied by the application and may additionally be restricted with a
+`HostOptions::connection_authorizer`. Its connection check receives unresolved
+settings. Its operation check receives the definition, connection, and evaluated
+inputs before an effect runs or a source starts. Policies that only allow
+connections still deny service operations until explicitly allowed.
+
+`Host::test_connection` opens the adapter with candidate settings and releases it.
+The editor substitutes a placeholder when checking a saved reference. It shows a
+host-owned error if the adapter refuses to open
 so that an adapter's error text cannot expose a credential. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
@@ -116,14 +133,19 @@ or `{token_url, client_id, refresh_token}` (with an optional `client_secret`) fo
 refresh grant, plus optional `scope` and `client_auth` (`body`, the default, or
 `basic`). The token endpoint must be `https://`, or `http://` on this machine only.
 Nothing is requested when the connection opens. The first request fetches an access
-token; it is reused until 30 seconds before `expires_in` runs out; a request answered
-with 401 fetches a new token and is sent once more. A connection set up with a refresh
+token; it is reused until 30 seconds before its expiry. The in-memory lifetime is
+capped at one hour, with five minutes when the endpoint omits expiry. A 401 rejects
+the token used by that request and can reuse a newer token from another request.
+The HTTP connection retries idempotent methods by default. Set
+`retry_non_idempotent` only for APIs where retrying the request is safe.
+A connection set up with a refresh
 token follows the server's rotation of it; when the token came from the credential
 store (`"refresh_token": "credential://<name>"`) the replacement is also stored under
 that name, so the sign-in survives a restart. The adapter never sees the store or the
 name: the host gives each connection it opens a `Renew`, the adapter reports the
-setting whose secret changed, and the host writes it through `SecretStore::replace`,
-which a read-only store refuses. A connection using client credentials never changes
+setting and previous value. The host accepts rotation only for the adapter's
+declared refresh field and checks the current vault value before replacement. The
+request reports an authorization fault if the replacement cannot be saved. A connection using client credentials never changes
 grant. A token endpoint that refuses takes the node's failed
 route with `org.orange.net/Authorization`; errors repeat the status and the
 standard's error code, never a secret or token. `orange oauth login <settings.json>
@@ -175,7 +197,11 @@ Files (2026-11-12; `orange-files`, package `org.orange.files`). A
 `move`, `copy`, `make-directory`, `remove-directory` (empty directories only),
 `size` (output `bytes`), `read-range` (`offset`, `length`; fewer bytes at the end of
 the file, none past it), `append-bytes`
-and the entry `on-change` (payload: the changed file's path). Paths are relative to
+and the entry `on-change` (payload: the change kind, relative path, previous path
+for a rename and directory flag). A watcher takes a baseline of the selected tree
+before emitting changes. With `wait_for_folder` enabled, a missing subfolder at
+startup is polled until it appears. Its first snapshot becomes the baseline.
+Paths are relative to
 the folder with `/` between plain names; `..`, absolute and drive forms, device names
 and links leading out of the folder are refused. A write goes to a temporary file in
 the same directory, is flushed and renamed over the target. A read or write of a
@@ -336,8 +362,10 @@ back on a second bounded channel so their memory is freed on a control thread. I
 not allocate, lock, log or read files. The capture callback only sums squares and
 steps the threshold; a session thread turns crossings into entry firings.
 
-Playback controls and formats (2026-11-12): `play` and `loop` read WAV, FLAC, MP3 and
-Ogg Vorbis files, told apart by content (MP3 and Ogg through Symphonia 0.6.1); `loop` starts the sound again each time it ends and continues
+Playback controls and formats (2026-11-12): `play`, `loop` and file-backed audio
+sources read WAV, AIFF (PCM), FLAC, MP3, Ogg Vorbis, M4A (AAC-LC or ALAC) and
+Opus in Ogg or WebM. Files are identified by content.
+`loop` starts the sound again each time it ends and continues
 only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
 `set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
 sounds that need separate control play on separate connections. A paused output is
@@ -347,8 +375,9 @@ however long its sound is paused or repeats, and reports a stalled device when t
 device has asked for no samples for two seconds. The callback rules are unchanged.
 
 Folder playback (2026-11-13): `play-from` (inputs `folder`, `pick`, `gain`;
-output `file`) plays the sound file a number chooses among the folder's WAV, FLAC, MP3
-and Ogg files in name order, counting round; a counter makes a playlist and a seeded
+output `file`) plays the sound file a number chooses among the folder's WAV, AIFF,
+FLAC, MP3, Ogg, M4A, Opus and WebM files in name order, counting round; a counter makes a
+playlist and a seeded
 random number a repeatable shuffle, so the node itself draws no randomness. A folder
 without sound files is the fault `org.orange.audio/Empty`.
 
@@ -399,7 +428,9 @@ connection captures as a value of the package record type `org.orange.audio/stre
 take it. The value names a live input and holds no samples, so it is not a
 `core/stream@1` (11 §12): sample-rate audio is not pulled through the graph item by
 item, and package effects cannot take core stream inputs. Copying it fans out by
-design; each consumer reads independently. It is refused (`org.orange.audio/Ended`)
+design; each consumer reads independently. Only a live handle issued in the same
+run generation resolves the source. Checkpoints, JSON literals and other runs
+cannot turn a recorded ID into access to an input. It is refused (`org.orange.audio/Ended`)
 once its input connection has closed, and a value of another shape is
 `org.orange.audio/Input`.
 
@@ -488,13 +519,26 @@ A future TTS or other generator plugin can return a validated asset handle or fe
 
 An **audio source** connection (`org.orange.audio/input`) is a microphone or other input, what the system plays (loopback), or a **sound file**. It is opened once per flow and shared: the capture callback only stores samples in the source's ring and measures the whole-sound level. A file source plays into the same ring at real-time pace once Play source (or "Play at start") starts it, optionally also heard on an output ("Hear it"), so whatever listens to a microphone listens to a file the same way.
 
+To play a sound produced on another machine, have that machine serve the file
+over HTTP or HTTPS. Enter its URL in the Audio Source connection's **Sound file**
+field, enable **Play at start** or use **Source control**, and wire the stream
+to **Audio out** or an analyzer. For example, use
+`http://192.168.1.20:8080/clip.wav` on a trusted local network. The response can
+arrive in chunks and playback can start during transfer. Use a format that can
+be decoded sequentially, such as PCM WAV with a valid header or Ogg Opus.
+
+Each URL supplies one finite sound. Looping and seeking reuse the decoded
+samples from that response. Redirects and credentials embedded in the URL
+are rejected. The response is limited to 64 MiB and a 60-second request
+budget. Retained PCM is bounded to 57.6 million samples and ten minutes.
+
 Listening is done by **entries and nodes with their own settings**, not by the connection: On band level (band, threshold, release, hold, window; replaces the first On level), On transient (band, sensitivity, floor, minimum gap; 45–120 Hz by default for kicks) and Band level (a band of a stream). Each analyzer reads the ring with its own cursor on its own thread. A band is a 2nd-order Butterworth high-pass at `low_hz` and low-pass at `high_hz` (12 dB per octave each), so neighbouring frequencies leak in at reduced level; a side left at 0 is open. On transient fires on a rise of the band's level of 3 to 12 dB (by sensitivity) above its recent energy average, above a floor and after a minimum gap, and re-arms only once the level falls back, so a held note is one hit. This is a band-energy onset detector, not spectral flux or pitch tracking.
 
 Transport belongs to the file source: Play, Pause, Resume, Stop and Jump to time act on that source alone, and On finished fires at its end. Pause sounds, Resume sounds, Jump to time and Set volume still act on every sound of an output connection.
 
 The live Audio source node publishes the existing `org.orange.audio/stream@1`
 record. Level and Band level take that stream and publish `f64` dBFS values.
-Audio format returns its sample rate and channel count. Transient and Source
+Stream info returns its sample rate in Hz and channel count on the existing format output. Filter also offers a notch mode that rejects a band around the cutoff. Transient and Source
 finished take the stream as a root argument. Source control applies transport to
 that file source, and Sound control applies transport and gain to the chosen
 output. Band trigger takes the stream directly and emits the measured dBFS on
@@ -509,10 +553,17 @@ its voice on the shared mixer. The `playing` output reports that the voice is
 active. A stream, enable or gain change re-arms the source. Version 1 remains
 available to saved graphs with execution wires.
 
-Frequency Splitter uses one capture cursor and worker per node. Its chart uses 96
-logarithmic peak-amplitude buckets from 20 Hz to 24 kHz in dBFS, measured over
-4,096 Hann-windowed frames and published at most once per 50 ms. Buckets between
-measured Fourier bins are interpolated for display. Versions 2 and 3
+Frequency Splitter uses one capture cursor and worker per node. Its chart uses 246
+logarithmic (1/24 octave) peak-amplitude buckets from 20 Hz to 24 kHz in dBFS,
+published at most once per 33 ms from the latest samples, so snapshots overlap.
+Buckets narrower than two bins of a 4,096-frame transform (below about 800 Hz)
+are measured over 8,192 frames, and the rest over 4,096 frames, both with a
+4-term Blackman-Harris window. A tone's level is estimated from the
+log-parabola through its loudest bin and their neighbors and credited to the
+bucket of the estimated frequency. Buckets with no Fourier bin read the line
+between the neighboring bins. Until 8,192 frames have arrived, all buckets use
+the short transform. Each snapshot stands alone, with no hold or decay, so the
+line rises and falls with the sound. Versions 2 and 3
 publishes a distinct audio stream for each selected band. A derived ring keeps
 the input sample rate and channel count, with each channel filtered independently
 by two cascaded band-pass sections, with a high-pass fallback when the upper

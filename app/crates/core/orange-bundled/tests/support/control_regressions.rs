@@ -358,13 +358,9 @@ fn consumer_projection_metadata_has_an_admission_bound() {
 }
 
 #[test]
-#[ignore = "manual release-only scaling probe; no NFR claim"]
 fn review_unrelated_host_input_scaling() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-    if cfg!(debug_assertions) {
-        panic!("run this manual scaling probe with --release");
-    }
     for unrelated in [0u32, 64, 512] {
         let mut nodes = vec![core(1, "on-start"), count(2, 1000), set_bool(3, 100, false)];
         let mut edges = vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "body", 3, "in")];
@@ -410,7 +406,7 @@ fn review_unrelated_host_input_scaling() {
             black_box(operations)
         };
         let warmup = Instant::now();
-        while warmup.elapsed() < Duration::from_secs(1) {
+        while !cfg!(debug_assertions) && warmup.elapsed() < Duration::from_secs(1) {
             black_box(execute());
         }
         let mut samples = vec![];
@@ -431,13 +427,9 @@ fn review_unrelated_host_input_scaling() {
 }
 
 #[test]
-#[ignore = "manual activation preparation scaling; not NFR acceptance"]
 fn activation_preparation_by_owner_count() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-    if cfg!(debug_assertions) {
-        panic!("release only");
-    }
     for owners in [1u32, 32, 128] {
         let mut nodes = (1..=owners)
             .map(|i| core(i, "on-start"))
@@ -472,7 +464,7 @@ fn activation_preparation_by_owner_count() {
             );
         };
         let warmup = Instant::now();
-        while warmup.elapsed() < Duration::from_millis(500) {
+        while !cfg!(debug_assertions) && warmup.elapsed() < Duration::from_millis(500) {
             start_drop();
         }
         let mut samples = vec![];

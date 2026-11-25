@@ -9,6 +9,31 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+// Keep each operation and its stable definition ID in a single table. Its order
+// is also the public ALL order used when registering the catalogue.
+macro_rules! operation_catalog {
+    ($(#[$attr:meta])* pub enum $name:ident { $($variant:ident => $id:literal),+ $(,)? }) => {
+        $(#[$attr])*
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub const ALL: [Self; [$($id),+].len()] = [$(Self::$variant),+];
+
+            pub const fn definition_id(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $id),+
+                }
+            }
+
+            pub fn from_definition_id(id: &str) -> Option<Self> {
+                Self::ALL.into_iter().find(|op| op.definition_id() == id)
+            }
+        }
+    };
+}
+
 mod catalog;
 mod collections;
 mod comparison;

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use orange_host::{BASE_PACKAGE, PackageKind};
 use orange_host::{
-    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, RunState,
-    StopMode, Value, VariableId,
+    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions,
+    PackageAccess, RunState, StopMode, Value, VariableId,
 };
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
@@ -222,6 +222,9 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
             }
         ),
         Err(HostError::Archive(_))
@@ -233,6 +236,9 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
             },
         )
         .unwrap();
@@ -550,6 +556,9 @@ fn the_host_lists_every_node_a_document_can_use() {
                 log: true,
                 files: false,
                 http: false,
+                http_local: false,
+                compute: false,
+                websocket: false,
             },
         )
         .unwrap();
@@ -1220,6 +1229,56 @@ fn persistent_graph(graph: u32) -> String {
 }
 
 #[test]
+fn panicking_inspector_does_not_stop_the_run() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&persistent_graph(1)).unwrap();
+    assert!(matches!(
+        host.inspect::<()>(flow, |_| panic!("synthetic inspector failure")),
+        Err(HostError::Run(_))
+    ));
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph's write", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+}
+
+#[test]
+fn replacement_persists_new_variable_ids_even_when_the_values_are_equal() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-replace-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let (mut host, _) = Host::new(HostOptions {
+        state_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    })
+    .unwrap();
+    let original = persistent_graph(1);
+    let replacement = TOTAL + 2;
+    let edit = original.replace(&id(TOTAL), &id(replacement));
+    let graph = empty(1).graph_id();
+    let zero =
+        serde_json::from_value::<orange_host::Literal>(json!({"type": I64, "value": "0"})).unwrap();
+    let is_stored = |host: &Host, variable| {
+        let saved = host.stored_variables(Some(graph)).unwrap();
+        matches!(saved.as_slice(), [entry] if entry.id == variable && entry.literal == zero)
+    };
+    let flow = host.open(&original).unwrap();
+    until("the original variable to be stored", || {
+        is_stored(&host, total())
+    });
+    assert!(host.update(flow, &edit).unwrap().changed);
+    let replacement = id(replacement).parse().unwrap();
+    until("the replacement variable to be stored", || {
+        is_stored(&host, replacement)
+    });
+    host.close(flow).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn persistent_variables_survive_a_restart_and_can_be_edited() {
     let directory = std::env::temp_dir().join(format!(
         "orange-host-state-{}-{:?}",
@@ -1281,6 +1340,10 @@ fn persistent_variables_survive_a_restart_and_can_be_edited() {
                 == Some(Value::I64(40))
         });
         until("the edit to be stored", || stored(&host) == as_stored(40));
+        assert!(matches!(
+            start().store_variable(Some(graph), total(), literal(99)),
+            Err(HostError::State(_))
+        ));
         // A value of another type, or an unknown variable, changes nothing.
         assert!(matches!(
             host.set_variable(flow, total(), Value::Bool(true)),
@@ -1350,6 +1413,20 @@ fn persistent_shared_variables_are_stored_and_edited_through_the_host() {
     {
         let mut host = start();
         assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+        let (mut other, _) = Host::new(HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            other.share_variables(&declaration(true)),
+            Err(HostError::State(_))
+        ));
+        let literal = serde_json::from_value(json!({"type": I64, "value": "50"})).unwrap();
+        assert!(matches!(
+            other.store_variable(None, counter, literal),
+            Err(HostError::State(_))
+        ));
         let flow = host.open(&counting_graph(1)).unwrap();
         host.trigger(flow, node(1), Some(Value::I64(5))).unwrap();
         until("the flow's write", || {
@@ -1617,6 +1694,9 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         log: true,
         files: true,
         http: false,
+        http_local: false,
+        compute: false,
+        websocket: false,
     };
     assert!(matches!(
         host.install(&probe, too_much),
@@ -1631,6 +1711,9 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         log: true,
         files: false,
         http: false,
+        http_local: false,
+        compute: false,
+        websocket: false,
     };
     assert!(matches!(
         host.install(&graph, logging),
@@ -1697,4 +1780,180 @@ fn a_document_written_by_hand_is_bound_and_then_runs() {
         panic!("an unknown definition is refused");
     };
     assert!(reason.contains(&id(3)), "{reason}");
+}
+
+/// A document whose On Start calls the probe package's node once.
+fn probe_document(host: &Host) -> String {
+    let definition = DefinitionRef {
+        id: ACCUMULATE.parse().unwrap(),
+        version: 1,
+    };
+    let mut document = empty(3);
+    let mut call = NewNode::new(node(3), definition);
+    call.inputs = serde_json::from_value(json!({"amount": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    with_total(
+        saved,
+        vec![core(1, "on-start")],
+        json!([edge(1, 1, "then", 3, "in")]),
+    )
+}
+
+#[test]
+fn package_access_is_kept_per_package_and_can_be_revoked() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-access-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        plugin_http_hosts: Some(vec!["app-wide.example".into()]),
+        ..HostOptions::default()
+    };
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let own = PackageAccess {
+        grants: logging,
+        http_hosts: Some(vec!["api.example.org".into(), ".example.net".into()]),
+        data_quota: Some(4096),
+    };
+    let key = {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        let key = host.install_with(&probe_archive(), own.clone()).unwrap();
+        assert_eq!(host.access(&key), Some(&own));
+        key
+    };
+    // The package's own limits and grants come back after a restart.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert!(host.not_restored().is_empty());
+    assert_eq!(host.access(&key), Some(&own));
+    let flow = host.open(&probe_document(&host)).unwrap();
+
+    // A grant the package does not ask for is refused and changes nothing.
+    let too_much = PackageAccess {
+        grants: Grants {
+            files: true,
+            ..logging
+        },
+        ..own.clone()
+    };
+    assert!(matches!(
+        host.set_access(&key, too_much),
+        Err(HostError::Install(_))
+    ));
+    assert_eq!(host.access(&key), Some(&own));
+
+    // Revoking `log`: the probe imports it, so a flow opened now cannot bind its node,
+    // while the flow opened before keeps the instance it started with.
+    let revoked = PackageAccess::default();
+    host.set_access(&key, revoked.clone()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    assert!(host.flows().any(|id| id == flow));
+    host.close(flow).unwrap();
+    drop(host);
+
+    // The revocation is stored, and granting again works without reinstalling.
+    let (mut host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.access(&key), Some(&revoked));
+    assert!(host.open(&probe_document(&host)).is_err());
+    host.set_access(&key, own.clone()).unwrap();
+    let flow = host.open(&probe_document(&host)).unwrap();
+    host.close(flow).unwrap();
+
+    // An uninstalled package has no access left to change.
+    host.uninstall(&key).unwrap();
+    assert_eq!(host.access(&key), None);
+    assert!(host.set_access(&key, own).is_err());
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_node_of_a_missing_package_names_it_and_keeps_its_wired_ports() {
+    let (mut with, _events) = Host::new(HostOptions::default()).unwrap();
+    let logging = Grants {
+        log: true,
+        ..Grants::default()
+    };
+    let _ = with.install(&probe_archive(), logging).unwrap();
+    let text = probe_document(&with);
+    let installed = with.view(&text).unwrap();
+    let card = |graph: &orange_host::GraphView| {
+        graph
+            .nodes
+            .iter()
+            .find(|card| card.id == node(3))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(card(&installed).missing, None);
+
+    let (without, _events) = Host::new(HostOptions::default()).unwrap();
+    let shown = without.view(&text).unwrap();
+    let missing = card(&shown);
+    assert_eq!(
+        missing.missing,
+        Some(orange_host::MissingPackage {
+            package: "org.example.probe".into(),
+            version: "1.0.0".into(),
+        })
+    );
+    // The saved signature gives the card its ports, and the wire into it is kept.
+    let ports: Vec<_> = missing.ports.iter().map(|port| port.id.as_str()).collect();
+    for port in ["in", "amount", "result"] {
+        assert!(ports.contains(&port), "{ports:?}");
+    }
+    assert!(
+        missing
+            .ports
+            .iter()
+            .any(|port| port.id == "in" && port.connected)
+    );
+    assert_eq!(shown.wires.len(), installed.wires.len());
+    // Built-in nodes never count as missing.
+    assert!(
+        shown
+            .nodes
+            .iter()
+            .filter(|card| card.id != node(3))
+            .all(|card| card.missing.is_none())
+    );
+}
+
+#[test]
+fn an_unwired_variable_update_output_is_reported_once_it_completes() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../apps/orange-cli/graphs/counter-with-reset.json"
+    ))
+    .unwrap();
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    let increment = node(1);
+    let add_one = node(2);
+    host.trigger(flow, increment, None).unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    until("Add one's old and new", || {
+        for event in events.try_iter() {
+            if let FlowEvent::Ports(values) = event.kind {
+                for (node, port, value) in values {
+                    if node == add_one {
+                        seen.insert(port.to_string(), value);
+                    }
+                }
+            }
+        }
+        seen.len() == 2
+    });
+    assert!(matches!(seen["old"], Value::I64(0)), "{seen:?}");
+    assert!(matches!(seen["new"], Value::I64(1)), "{seen:?}");
+    host.close(flow).unwrap();
 }

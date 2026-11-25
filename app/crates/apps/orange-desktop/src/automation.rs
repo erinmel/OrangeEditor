@@ -294,7 +294,9 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
         .filter(|port| !port.input && !port.exec)
         .map(|port| port.id.as_str())
         .collect();
-    assert_eq!(outputs, ["value"]);
+    // The function's result, then the implicit `error` the authoring view offers on the
+    // failure route of a call that can fail.
+    assert_eq!(outputs, ["value", "error"]);
     assert!(
         graph
             .wires
@@ -431,6 +433,35 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     "missing card for {}",
                     found.definition
                 );
+                let node_view = &graph.nodes[0];
+                let size = orange_editor_ui::canvas::node_size(node_view);
+                let mut positions = std::collections::HashSet::new();
+                for port in &node_view.ports {
+                    if found.definition == "core/gate" && port.input && port.id == "enter" {
+                        assert!(
+                            orange_editor_ui::canvas::port_offset(node_view, &port.id, true)
+                                .is_none()
+                        );
+                        continue;
+                    }
+                    let offset =
+                        orange_editor_ui::canvas::port_offset(node_view, &port.id, port.input)
+                            .unwrap_or_else(|| {
+                                panic!("{} lacks a canvas anchor for {}", found.definition, port.id)
+                            });
+                    assert_eq!(offset.x, if port.input { 0.0 } else { size.x });
+                    assert!(
+                        (32.0..size.y).contains(&offset.y),
+                        "{} port {} is outside the card body at {offset:?}",
+                        found.definition,
+                        port.id,
+                    );
+                    assert!(
+                        positions.insert((offset.x.to_bits(), offset.y.to_bits())),
+                        "{} has overlapping ports at {offset:?}",
+                        found.definition
+                    );
+                }
                 editor.canvas().focus(&graph, node);
                 let output = context.run_ui(
                     egui::RawInput {
@@ -442,6 +473,9 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     },
                     |ui| {
                         editor.ui_with_layout(ui, &mut host, |editor, ui, host| {
+                            egui::Panel::right("catalogue-audit-properties")
+                                .default_size(280.0)
+                                .show(ui, |ui| editor.right_panel(ui, host));
                             editor.canvas_panel(ui, host);
                         })
                     },
@@ -491,6 +525,85 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     );
 }
 
+#[test]
+fn a_catalogue_gate_keeps_a_connected_entry_alias_visible() {
+    let (host, _) = desktop_host();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [20.0, 20.0])
+        .unwrap();
+    let gate = host
+        .add_node(&mut draft, "core/gate", [340.0, 20.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (gate, "enter"))
+        .unwrap();
+    let graph = host.draft_view(&draft).unwrap();
+    let card = graph.nodes.iter().find(|node| node.id == gate).unwrap();
+    let position = |port| orange_editor_ui::canvas::port_offset(card, port, true).unwrap();
+    assert_ne!(position("enter"), position("in"));
+    assert!(
+        graph
+            .wires
+            .iter()
+            .any(|wire| wire.to == (gate, "enter".to_owned()))
+    );
+}
+
+/// Export palette snapshots in screen-sized batches for desktop screenshot review.
+#[test]
+fn export_desktop_catalogue_audit_graphs() {
+    let fixture = Fixture::new();
+    let out = std::env::var_os("ORANGE_CATALOGUE_AUDIT_DIR")
+        .map_or_else(|| fixture.0.join("catalogue"), PathBuf::from);
+    std::fs::create_dir_all(&out).unwrap();
+    let (host, _) = desktop_host();
+    let template = typed_template();
+    let mut entries = host.search_nodes("", "en");
+    entries.sort_by(|a, b| (&a.category, &a.label).cmp(&(&b.category, &b.label)));
+    let mut all = host.draft(&template).unwrap();
+    let save = |draft: &mut orange_host::Draft, path| {
+        for mut connection in host.declarations(draft).connections {
+            if matches!(
+                connection.adapter.as_str(),
+                orange_audio::INPUT_ADAPTER | orange_audio::OUTPUT_ADAPTER
+            ) {
+                connection.settings = json!({"device": orange_audio::NULL_DEVICE});
+                host.declare_connection(draft, &connection).unwrap();
+            }
+        }
+        std::fs::write(path, draft.text().unwrap()).unwrap();
+    };
+    for (page, batch) in entries.chunks(6).enumerate() {
+        let mut draft = host.draft(&template).unwrap();
+        let mut row_top = 20.0;
+        for line in batch.chunks(3) {
+            let mut left = 20.0;
+            let mut tallest = 0.0_f32;
+            for entry in line {
+                let node = host
+                    .add_node(&mut draft, &entry.definition, [left, row_top])
+                    .unwrap();
+                #[expect(clippy::cast_precision_loss, reason = "catalogue page grid is bounded")]
+                let grid = [(page % 6) as f32 * 1500.0, (page / 6) as f32 * 1500.0];
+                host.add_node(
+                    &mut all,
+                    &entry.definition,
+                    [left + grid[0], row_top + grid[1]],
+                )
+                .unwrap();
+                let view = host.draft_view(&draft).unwrap();
+                let card = view.nodes.iter().find(|card| card.id == node).unwrap();
+                let size = orange_editor_ui::canvas::node_size(card);
+                left += size.x + 40.0;
+                tallest = tallest.max(size.y);
+            }
+            row_top += tallest + 46.0;
+        }
+        save(&mut draft, out.join(format!("page-{:02}.json", page + 1)));
+    }
+    save(&mut all, out.join("all-nodes.json"));
+}
+
 /// The template's enum, whose `message` choice carries text.
 const MODE_TYPE: &str = "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d";
 /// The template's record, with one text field `name`.
@@ -531,15 +644,15 @@ fn check_round_trip(host: &Host, draft: &orange_host::Draft, label: &str) -> Str
 }
 
 #[test]
-fn the_saved_json_example_extracts_fields_and_uses_its_fallbacks() {
+fn the_saved_json_example_reads_fields_in_one_step_and_uses_its_fallback() {
     let (mut host, _) = desktop_host();
     let example = include_str!("../../orange-cli/graphs/json-extraction.json");
     let mut editor = Editor::new();
     for (path, expected) in [
         ("items[0].name", "Studio mic"),
         (r#"headers["Content-Type"]"#, "application/json"),
-        ("items[0].missing", "(field missing)"),
-        ("items[0].level", "(field is not text)"),
+        ("items[0].missing", "(missing or not text)"),
+        ("items[0].level", "(missing or not text)"),
     ] {
         editor.open_untitled(&mut host, example.to_owned());
         let graph = editor.graph().unwrap();
@@ -552,7 +665,7 @@ fn the_saved_json_example_extracts_fields_and_uses_its_fallbacks() {
         let extract = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "org.orange.json/get-path")
+            .find(|node| node.definition == "org.orange.json/read-text")
             .unwrap()
             .id;
         let variable: orange_host::VariableId = editor.declarations().unwrap().variables[0]
@@ -604,6 +717,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.0.join("sample.json"));
+        let _ = std::fs::remove_dir_all(self.0.join("catalogue"));
         let _ = std::fs::remove_dir(&self.0);
     }
 }
@@ -983,6 +1097,15 @@ fn compute(host: &mut Host, template: &str, definition: &str, ty: &str, variant:
             ("org.orange.time/parse-timestamp", "text") => Some(
                 json!({"type": "core/string@1", "value": "2026-11-20T12:34:56.123456789-06:00"}),
             ),
+            ("org.orange.math/map-range", "from_max" | "to_max") => match port.ty.as_deref() {
+                Some("core/f64@1") => Some(json!({
+                    "type": "core/f64@1", "bits": format!("{:016x}", 1.5_f64.to_bits())
+                })),
+                Some("core/f32@1") => Some(json!({
+                    "type": "core/f32@1", "bits": format!("{:08x}", 1.5_f32.to_bits())
+                })),
+                _ => None,
+            },
             _ => port.ty.as_deref().and_then(|ty| sample(ty, variant)),
         };
         if let Some(literal) = literal {

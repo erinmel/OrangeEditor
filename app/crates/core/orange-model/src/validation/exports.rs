@@ -58,7 +58,7 @@ pub(crate) fn validate_exports_with_ports(
     }
     for export in document.exports() {
         let subject = Subject::new(Some(export.node), Some(export.port.clone()), None)
-            .with_port_direction(crate::document::PortDirection::Output);
+            .with_port_direction(PortDirection::Output);
         let mut report = |code| diagnostics.push(Diagnostic::new(code, subject.clone(), origin));
         if !seen.insert(export.id.as_str()) {
             report(DiagnosticCode::ExportDuplicate);

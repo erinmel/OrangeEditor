@@ -60,6 +60,8 @@ pub(crate) enum Listen {
     Connected,
     /// An open socket has closed or failed.
     Disconnected,
+    /// Every text or binary message: a package trigger reads both.
+    Messages,
 }
 
 /// One message waiting to be sent.
@@ -193,10 +195,18 @@ struct Shared {
     /// Started once a flow has attached its triggers; the socket is not opened before.
     life: Lifecycle,
 }
+impl Drop for Shared {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        for (_, value) in &mut self.headers {
+            value.zeroize();
+        }
+    }
+}
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shared")
-            .field("url", &self.url)
+            .field("endpoint", &crate::EndpointDebug(&self.url))
             .field("headers", &self.headers.len())
             .finish_non_exhaustive()
     }
@@ -208,8 +218,10 @@ impl Shared {
     /// Fires every entry listening for `what`. A flow that has ended is forgotten; one
     /// whose mailbox is full misses this firing, as its bounded mailbox requires.
     fn deliver(&self, what: Listen, payload: &Value) {
-        self.listeners
-            .emit(|listens| (*listens == what).then(|| payload.clone()));
+        let message = matches!(what, Listen::Text | Listen::Binary);
+        self.listeners.emit(|listens| {
+            (*listens == what || (message && *listens == Listen::Messages)).then(|| payload.clone())
+        });
     }
 }
 
@@ -222,6 +234,34 @@ impl Session for WsSession {
     }
     fn start(&self) {
         self.0.life.start();
+    }
+    /// Queues a message on this socket for a package node, through the same bounded
+    /// queue as Send: the socket may be reconnecting, and queued is not delivered.
+    fn send_message(&self, message: orange_sdk::Message) -> Result<(), orange_sdk::MessageError> {
+        use orange_sdk::{Message as Outbound, MessageError};
+        let message = match message {
+            Outbound::Text(text) => Outgoing::Text(Arc::new(text.to_string())),
+            Outbound::Binary(data) => Outgoing::Binary(Arc::new(data.to_vec())),
+        };
+        if message.len() > MAX_QUEUED_BYTES {
+            return Err(MessageError::TooLarge);
+        }
+        self.0
+            .outgoing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(message)
+            .map_err(|_| MessageError::Full)
+    }
+    /// Hands every incoming message to `emitter` until the guard is dropped, through
+    /// the same listener list as the Message and Binary triggers.
+    fn listen_messages(&self, emitter: Emitter) -> Result<Box<dyn Send>, orange_sdk::MessageError> {
+        Ok(Listeners::listen(
+            Arc::clone(&self.0),
+            |shared| &shared.listeners,
+            Listen::Messages,
+            emitter,
+        ))
     }
 }
 impl Drop for WsSession {

@@ -26,6 +26,7 @@ lcov.info
 # Local tool settings and working notes (never committed)
 .claude/settings.local.json
 .artifacts/
+/orange-audio-qa-86dc/
 
 # OS files
 .DS_Store
@@ -37,3 +38,4 @@ Desktop.ini
 .agents/
 .claude/
 skills-lock.json
+reports/

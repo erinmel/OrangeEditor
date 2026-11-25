@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs Linux, a PipeWire/WirePlumber session and a selected app playing audio"]
+    #[cfg(feature = "audio-device-tests")]
     fn the_selected_application_feeds_the_capture_ring() {
         let selected = std::env::var("ORANGE_AUDIO_TEST_APP")
             .expect("set ORANGE_AUDIO_TEST_APP to a unique substring of the playing app's name");

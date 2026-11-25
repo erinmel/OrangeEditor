@@ -98,6 +98,156 @@ fn view_connectivity_matches_edges_after_disconnect_and_reconnect() {
 }
 
 #[test]
+fn authoring_view_exposes_implicit_outcomes_without_changing_the_compact_view() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let wait = host.add_node(&mut draft, "core/wait", [0.0, 0.0]).unwrap();
+    let result = host
+        .add_node(&mut draft, "core/match-result", [320.0, 0.0])
+        .unwrap();
+    let ports = |view: &orange_host::GraphView, id| {
+        view.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .ports
+            .iter()
+            .map(|port| port.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let compact = host.draft_view(&draft).unwrap();
+    assert_eq!(ports(&compact, wait), ["then", "in", "duration"]);
+    let complete = host.draft_authoring_view(&draft).unwrap();
+    assert_eq!(
+        ports(&complete.graph, wait),
+        ["then", "in", "duration", "failed", "error", "cancelled"]
+    );
+    let routes = complete.failure_routes[&wait];
+    assert!(routes.contains("failed") && routes.contains("error") && routes.contains("cancelled"));
+    assert!(!routes.contains("then"));
+    let routes = complete.failure_routes[&result];
+    assert!(routes.contains("failed") && !routes.contains("error"));
+    assert!(ports(&complete.graph, result).contains(&"error".to_owned()));
+    let repeated = host.draft_authoring_view(&draft).unwrap();
+    assert!(
+        complete
+            .graph
+            .nodes
+            .iter()
+            .zip(&repeated.graph.nodes)
+            .all(|(before, after)| std::sync::Arc::ptr_eq(before, after))
+    );
+    assert_eq!(host.draft_view(&draft).unwrap(), compact);
+    assert_eq!(host.view(&draft.text().unwrap()).unwrap(), compact);
+}
+
+#[test]
+fn first_failure_and_cancellation_wires_connect_and_error_uses_the_failure_path() {
+    use orange_host::Connected;
+    use orange_model::validation::DiagnosticCode;
+    use orange_sdk::Definition;
+
+    let read = Definition::node("acme.kit", "read-failure", "Read failure")
+        .input("fault", "core/error@1")
+        .build();
+    let package = orange_host::ServicePackage::new("acme.kit", "1.0.0")
+        .node(&read, Nothing)
+        .unwrap();
+    let (host, _) = Host::with_services(HostOptions::default(), vec![package]).unwrap();
+    let (mut draft, trigger, cancelled) = built(&host);
+    let wait = host
+        .add_node(&mut draft, "core/wait", [320.0, 0.0])
+        .unwrap();
+    let read = host
+        .add_node(&mut draft, "acme.kit/read-failure", [640.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_input(&mut draft, (wait, "duration"), Some("1000000"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (trigger, "then"), (wait, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (wait, "then"), (read, "in"))
+            .unwrap()
+    );
+    let content = |draft: &Draft| {
+        let mut saved: Json = serde_json::from_str(&draft.text().unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("revision");
+        saved
+    };
+    let before = content(&draft);
+    match host.connect(&mut draft, (wait, "error"), (read, "fault")) {
+        Err(HostError::Invalid(issues)) => {
+            assert!(
+                issues
+                    .iter()
+                    .any(|issue| issue.code == DiagnosticCode::UnavailableValue)
+            );
+        }
+        other => panic!("Expected the success path to refuse the error value, got {other:?}"),
+    }
+    assert_eq!(content(&draft), before);
+    assert!(
+        host.disconnect_wire(&mut draft, (wait, "then"), (read, "in"))
+            .unwrap()
+    );
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "error"), (read, "fault"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    let mut cancellation_consumes_error = host.draft(&draft.text().unwrap()).unwrap();
+    // The wire itself is a valid continuation. The existing data edge becomes
+    // unavailable once this continuation owns the consumer.
+    assert_eq!(
+        host.connect_through(
+            &mut cancellation_consumes_error,
+            (wait, "cancelled"),
+            (read, "in"),
+            None,
+        )
+        .unwrap(),
+        Connected::Wired
+    );
+    assert!(
+        host.problems(&mut cancellation_consumes_error)
+            .unwrap()
+            .iter()
+            .any(|issue| issue.code == DiagnosticCode::UnavailableValue)
+    );
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "failed"), (read, "in"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    let without_cancelled = content(&draft);
+    assert_eq!(
+        host.connect_through(&mut draft, (wait, "cancelled"), (cancelled, "in"), None)
+            .unwrap(),
+        Connected::Wired
+    );
+    assert_eq!(same_problems(&host, &mut draft), 0);
+    let wired = content(&draft);
+    let reopened = host.draft(&draft.text().unwrap()).unwrap();
+    let legacy = host.draft_view(&reopened).unwrap();
+    for (route, exec) in [("failed", true), ("error", false), ("cancelled", true)] {
+        assert!(
+            legacy
+                .wires
+                .iter()
+                .any(|edge| edge.from == (wait, route.to_owned()) && edge.exec == exec)
+        );
+    }
+    assert!(draft.undo());
+    assert_eq!(content(&draft), without_cancelled);
+    assert!(draft.redo());
+    assert_eq!(content(&draft), wired);
+}
+
+#[test]
 fn a_graph_is_built_from_an_empty_document_and_runs() {
     let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     // Half built, the document says what it still needs instead of being refused.
@@ -137,6 +287,136 @@ fn a_graph_is_built_from_an_empty_document_and_runs() {
     assert!(host.update(flow, &draft.text().unwrap()).unwrap().changed);
     host.trigger(flow, trigger, None).unwrap();
     until("the edited value", || count(&host) == Some(Value::I64(8)));
+}
+
+#[test]
+fn two_wireless_senders_deliver_their_payloads_to_both_receivers() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let emitter = host
+        .add_node(&mut draft, "preset:signal", [300.0, 0.0])
+        .unwrap();
+    let first = draft
+        .document()
+        .root()
+        .nodes
+        .values()
+        .find(|node| node.definition.id.as_str() == "core/on-event")
+        .unwrap()
+        .id;
+    let second = host
+        .add_signal_receiver(&mut draft, emitter, [600.0, 200.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (emitter, "in"))
+        .unwrap();
+
+    let other_trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 200.0])
+        .unwrap();
+    let other_sender = host
+        .add_signal_sender(&mut draft, first, [300.0, 200.0])
+        .unwrap();
+    host.set_input(&mut draft, (other_sender, "payload"), Some("false"))
+        .unwrap();
+    host.connect(&mut draft, (other_trigger, "then"), (other_sender, "in"))
+        .unwrap();
+    assert_eq!(draft.document().events().len(), 1);
+
+    let mut results = Vec::new();
+    for (receiver, name) in [(first, "first"), (second, "second")] {
+        let variable = host
+            .declare_variable(
+                &mut draft,
+                &orange_host::Variable {
+                    id: None,
+                    name: name.to_owned(),
+                    ty: "core/bool@1".to_owned(),
+                    scope: orange_host::VarScope::Run,
+                    persistent: false,
+                    initial: None,
+                },
+            )
+            .unwrap();
+        let set = host
+            .add_node(&mut draft, "core/set-variable", [900.0, 0.0])
+            .unwrap();
+        host.set_config(&mut draft, set, &json!({"variable": variable}))
+            .unwrap();
+        host.connect(&mut draft, (receiver, "then"), (set, "in"))
+            .unwrap();
+        host.connect(&mut draft, (receiver, "payload"), (set, "value"))
+            .unwrap();
+        results.push(variable.parse().unwrap());
+    }
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    let results: [_; 2] = results.try_into().unwrap();
+    for (source, value) in [(trigger, true), (other_trigger, false)] {
+        host.trigger(flow, source, None).unwrap();
+        until("both wireless receivers wrote the sender's payload", || {
+            host.inspect(flow, move |run| {
+                results
+                    .iter()
+                    .all(|&variable| run.variable(variable) == Some(&Value::Bool(value)))
+            })
+            .unwrap()
+        });
+    }
+}
+
+#[test]
+fn a_wireless_sender_without_receivers_continues_and_can_be_reconnected() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, set) = built(&host);
+    let sender = host
+        .add_node(&mut draft, "preset:signal", [300.0, 100.0])
+        .unwrap();
+    let receiver = draft
+        .document()
+        .root()
+        .nodes
+        .values()
+        .find(|node| node.definition.id.as_str() == "core/on-event")
+        .unwrap()
+        .id;
+    assert!(host.remove_nodes(&mut draft, &[receiver]).unwrap());
+    assert_eq!(draft.document().events().len(), 1);
+    host.connect(&mut draft, (trigger, "then"), (sender, "in"))
+        .unwrap();
+    host.connect(&mut draft, (sender, "then"), (set, "in"))
+        .unwrap();
+
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    until("Emit continued with no receivers", || {
+        host.inspect(flow, |run| {
+            run.variable(id(100).parse().unwrap()) == Some(&Value::I64(7))
+        })
+        .unwrap()
+    });
+
+    let replacement = host
+        .add_signal_receiver(&mut draft, sender, [700.0, 100.0])
+        .unwrap();
+    assert!(host.remove_nodes(&mut draft, &[sender]).unwrap());
+    assert_eq!(draft.document().events().len(), 1);
+    assert!(draft.document().root().nodes.contains_key(&replacement));
+    assert!(draft.undo());
+    assert!(draft.document().root().nodes.contains_key(&sender));
+    assert!(draft.redo());
+    assert!(!draft.document().root().nodes.contains_key(&sender));
+    assert!(draft.document().root().nodes.contains_key(&replacement));
+    let new_sender = host
+        .add_signal_sender(&mut draft, replacement, [300.0, 100.0])
+        .unwrap();
+    let event = *draft.document().events().keys().next().unwrap();
+    assert!(
+        host.remove_nodes(&mut draft, &[new_sender, replacement])
+            .unwrap()
+    );
+    assert!(draft.document().events().contains_key(&event));
 }
 
 #[test]
@@ -334,6 +614,31 @@ fn variables_and_connections_are_declared_changed_and_removed() {
     assert_eq!(found.settings["bearer"], "credential://api/token");
     assert!(host.remove_connection(&mut draft, &made).unwrap());
     assert!(host.declarations(&draft).connections.is_empty());
+}
+
+#[test]
+fn a_new_timer_runs_as_placed() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let timer = host
+        .add_node(&mut draft, "core/on-timer", [0.0, 0.0])
+        .unwrap();
+    let timeout = host
+        .add_node(&mut draft, "core/on-timeout", [0.0, 200.0])
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let node = |id: NodeId| view.nodes.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(node(timer).settings["interval"], "1000000000");
+    assert_eq!(node(timeout).settings["delay"], "1000000000");
+    // Both are complete: neither is reported as needing set-up.
+    let text = draft.text().unwrap();
+    let problems = host.check(&text).unwrap();
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| format!("{:?}", problem.code).contains("Timer")),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -1142,6 +1447,7 @@ fn a_draft_view_after_each_edit_is_the_view_of_its_text() {
 #[test]
 fn for_each_follows_a_wired_map_or_list() {
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let host = &host;
     let mut doc: Json = serde_json::from_str(&empty()).unwrap();
     doc["variables"] = json!([
         {"id": id(101), "name": "scores", "type": "core/map@1<core/string@1,core/i64@1>",
@@ -1176,7 +1482,7 @@ fn for_each_follows_a_wired_map_or_list() {
         ids
     };
     assert_eq!(ports(&draft), ["element", "index"]);
-    let value = output(&host, &draft, scores);
+    let value = output(host, &draft, scores);
     assert!(
         host.takers(&draft, (scores, &value))
             .iter()
@@ -1195,7 +1501,14 @@ fn for_each_follows_a_wired_map_or_list() {
         host.connect(&mut draft, (each, "key"), (key, "value"))
             .unwrap()
     );
-    let value = output(&host, &draft, names);
+    let value = output(host, &draft, names);
+    let impact = host
+        .for_each_wire_impact(&draft, (names, &value), (each, "items"))
+        .unwrap();
+    assert_eq!(
+        (impact.mode, impact.items_wire, impact.body_wires),
+        ("list", true, 1)
+    );
     assert!(matches!(
         host.connect_through(&mut draft, (names, &value), (each, "items"), None)
             .unwrap(),
@@ -1214,4 +1527,182 @@ fn for_each_follows_a_wired_map_or_list() {
     assert!(draft.undo());
     assert_eq!(ports(&draft), ["index", "key", "value"]);
     assert_eq!(host.draft_view(&draft).unwrap().wires.len(), 2);
+}
+
+/// A draft with `nums` (list of whole numbers) and `count` read by Get Variable nodes,
+/// `nums` wired into a Set Variable of another list of whole numbers.
+fn lists(host: &Host) -> (Draft, NodeId, String, NodeId, NodeId) {
+    let mut doc: Json = serde_json::from_str(&empty()).unwrap();
+    doc["variables"] = json!([
+        {"id": id(100), "name": "count", "type": "core/i64@1",
+            "scope": "run", "persistent": false, "conflict": "reject"},
+        {"id": id(101), "name": "nums", "type": "core/list@1<core/i64@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"},
+        {"id": id(102), "name": "kept", "type": "core/list@1<core/i64@1>",
+            "scope": "run", "persistent": false, "conflict": "reject"}]);
+    let mut draft = host.draft(&doc.to_string()).unwrap();
+    let read = |draft: &mut Draft, variable| {
+        let node = host
+            .add_node(draft, "core/get-variable", [0.0, 0.0])
+            .unwrap();
+        assert!(
+            host.set_config(draft, node, &json!({"variable": id(variable)}))
+                .unwrap()
+        );
+        node
+    };
+    let nums = read(&mut draft, 101);
+    let count = read(&mut draft, 100);
+    let keep = host
+        .add_node(&mut draft, "core/set-variable", [640.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, keep, &json!({"variable": id(102)}))
+            .unwrap()
+    );
+    let value = output(host, &draft, nums);
+    assert!(
+        host.connect(&mut draft, (nums, &value), (keep, "value"))
+            .unwrap()
+    );
+    (draft, nums, value, count, keep)
+}
+
+#[test]
+fn suggestions_bind_parameters_instead_of_matching_any_open_type() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, nums, value, count, keep) = lists(&host);
+    let offered = |from: (NodeId, &str)| -> Vec<String> {
+        host.takers(&draft, from)
+            .into_iter()
+            .map(|taker| taker.definition)
+            .collect()
+    };
+    let length = "org.orange.collections/list-length";
+    let reverse = "org.orange.collections/list-reverse";
+    // A whole number is not a list: no list node takes it, whatever its parameter.
+    let whole = output(&host, &draft, count);
+    let from_whole = offered((count, &whole));
+    assert!(!from_whole.iter().any(|definition| definition == length));
+    assert!(!from_whole.iter().any(|definition| definition == reverse));
+    // A list is taken by both.
+    let from_list = offered((nums, &value));
+    assert!(from_list.iter().any(|definition| definition == length));
+    assert!(from_list.iter().any(|definition| definition == reverse));
+
+    // Into the list wire: Reverse gives the list on, Length's count cannot go on.
+    let splice = host.splice_takers(&draft, (nums, &value), (keep, "value"));
+    let reversing = splice
+        .iter()
+        .find(|candidate| candidate.definition == reverse)
+        .expect("reverse fits the wire");
+    assert_eq!(
+        (reversing.input.as_str(), reversing.output.as_str()),
+        ("items", "result")
+    );
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| candidate.definition != length)
+    );
+    // Nothing is offered that goes on through a failure route or a loop body.
+    for candidate in &splice {
+        assert!(!["failed", "cancelled", "error", "body"].contains(&candidate.output.as_str()));
+    }
+}
+
+#[test]
+fn a_step_wire_is_spliced_through_then_or_completed_never_a_body() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, trigger, set) = built(&host);
+    let splice = host.splice_takers(&draft, (trigger, "then"), (set, "in"));
+    let each = splice
+        .iter()
+        .find(|candidate| candidate.definition == "core/for-each")
+        .expect("a loop can be put into a step wire");
+    assert_eq!(each.output, "completed");
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| !["failed", "cancelled", "body"].contains(&candidate.output.as_str()))
+    );
+    // A trigger never goes into a wire.
+    assert!(
+        splice
+            .iter()
+            .all(|candidate| candidate.definition != "core/on-manual")
+    );
+}
+
+#[test]
+fn a_grouped_action_is_one_undo_step_and_a_refused_one_leaves_history_alone() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut draft, trigger, _set) = built(&host);
+    // The content, without the revision counter, which every edit and undo advances.
+    let content = |draft: &Draft| {
+        let mut text: Json = serde_json::from_str(&draft.text().unwrap()).unwrap();
+        let _ = text.as_object_mut().unwrap().remove("revision");
+        text
+    };
+    let before = content(&draft);
+
+    // Place a node and wire it in: one action.
+    let node = host
+        .grouped(&mut draft, |host, draft| {
+            let node = host.add_node(draft, "core/sequence", [320.0, 200.0])?;
+            let _ = host.disconnect(draft, (trigger, "then"), false)?;
+            assert!(host.connect(draft, (trigger, "then"), (node, "in"))?);
+            Ok(node)
+        })
+        .unwrap();
+    assert!(draft.document().root().nodes.contains_key(&node));
+    assert!(draft.undo());
+    assert_eq!(
+        content(&draft),
+        before,
+        "one undo takes back the whole action"
+    );
+    assert!(draft.redo());
+    assert!(draft.document().root().nodes.contains_key(&node));
+    assert!(draft.undo());
+
+    // A refused action leaves the document and both histories as they were.
+    let (undo, redo) = draft.can_undo();
+    let refused = host.grouped(&mut draft, |host, draft| {
+        let node = host.add_node(draft, "core/sequence", [320.0, 200.0])?;
+        host.connect(draft, (node, "no-such-port"), (trigger, "in"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(content(&draft), before);
+    assert_eq!(draft.can_undo(), (undo, redo));
+    assert!(redo, "the redo history survives a refused action");
+}
+
+#[test]
+fn givers_offer_only_outputs_that_fit_the_input_and_triggers_for_steps() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, _nums, _value, _count, keep) = lists(&host);
+    let into_list = host.givers(&draft, (keep, "value"));
+    let reverse = into_list
+        .iter()
+        .find(|giver| giver.definition == "org.orange.collections/list-reverse")
+        .expect("a reversed list of whole numbers fits");
+    assert_eq!(reverse.output, "result");
+    assert!(
+        into_list
+            .iter()
+            .all(|giver| giver.definition != "org.orange.collections/list-length")
+    );
+    // A step input can be started by a trigger, never from a failure route.
+    let into_step = host.givers(&draft, (keep, "in"));
+    let manual = into_step
+        .iter()
+        .find(|giver| giver.definition == "core/on-manual")
+        .expect("a trigger starts a step");
+    assert_eq!(manual.output, "then");
+    assert!(
+        into_step
+            .iter()
+            .all(|giver| !["failed", "cancelled", "error", "body"].contains(&giver.output.as_str()))
+    );
 }

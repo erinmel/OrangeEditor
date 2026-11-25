@@ -877,6 +877,9 @@ impl Frame {
         if self.outputs.len() != node.outputs().len() {
             return Err(DataError::KernelContract { node: node.node() });
         }
+        if let Some(value) = self.outputs.pop_if(|_| node.outputs().len() == 1) {
+            return self.publish_value(plan, node, value);
+        }
         let stamp = self.stamp(node)?;
         let mut new = 0usize;
         self.output_charges.clear();
@@ -911,9 +914,13 @@ impl Frame {
         node: &DataNode,
         value: Value,
     ) -> Result<(), DataError> {
-        self.outputs.clear();
-        self.outputs.push(value);
-        self.publish_values(plan, node)
+        let contract = DataError::KernelContract { node: node.node() };
+        let [slot] = node.outputs() else {
+            return Err(contract);
+        };
+        let charge = value_charge(plan, *slot, &value, self.limits.max_retained_bytes)
+            .map_err(value_check(contract))?;
+        self.publish_checked(node, Ok(value), charge)
     }
     fn callback(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
         self.inputs.clear();

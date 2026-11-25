@@ -10,10 +10,36 @@ use orange_model::catalog::{
 use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
+use orange_model::id::TypeExpr;
 use serde_json::json;
 
 use crate::kernel::{FloatPolicy, Overflow, Scalar};
 use crate::{BindingError, CatalogError, Operation, ResolvedKernel};
+
+pub(crate) fn input_ports(inputs: &[(&str, &str)]) -> Result<Vec<PortDescriptor>, CatalogError> {
+    inputs
+        .iter()
+        .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
+        .collect()
+}
+
+pub(crate) fn require_specialization(
+    snapshot: &RegistrySnapshot,
+    provider: &ProviderKey,
+    definition: &DefinitionRef,
+    ty: &TypeExpr,
+) -> Result<(), BindingError> {
+    let args = TypeArgs::from([("T".into(), ty.clone())]);
+    if snapshot
+        .provider(provider)
+        .and_then(|p| p.specializations.get(definition))
+        .is_some_and(|list| list.contains(&args))
+    {
+        Ok(())
+    } else {
+        Err(BindingError::UnsupportedType)
+    }
+}
 
 const NUMERIC_TYPES: [&str; 6] = [
     "core/i32@1",
@@ -30,7 +56,7 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     let mut definitions = Vec::with_capacity(Operation::ALL.len());
     for operation in Operation::ALL {
         let boolean = !operation.is_numeric();
-        let ty: orange_model::id::TypeExpr = if boolean { "core/bool@1" } else { "$T" }.parse()?;
+        let ty: TypeExpr = if boolean { "core/bool@1" } else { "$T" }.parse()?;
         let mut ports: Vec<_> = operation
             .input_ports()
             .iter()
@@ -105,13 +131,7 @@ pub struct MathPackage {
 impl MathPackage {
     pub fn new(content_digest: impl Into<String>) -> Result<Self, CatalogError> {
         let content_digest = content_digest.into();
-        let valid = content_digest.strip_prefix("sha256:").is_some_and(|hex| {
-            hex.len() == 64
-                && hex
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        });
-        if !valid {
+        if !orange_model::origin::is_sha256(&content_digest) {
             return Err(CatalogError::InvalidBuildDigest);
         }
         let key = |package: &str| ProviderKey {

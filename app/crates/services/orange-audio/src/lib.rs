@@ -6,13 +6,14 @@
 //! `org.orange.audio/input` connections and use the nodes below. An application that
 //! does not want audio leaves the package out.
 //!
-//! Playback reads WAV (integer or float PCM), FLAC, MP3 and Ogg Vorbis files, converts them to the
-//! device's rate and channels, and mixes up to [`MAX_VOICES`] sounds per output. A
-//! sound plays once or repeats until stopped; an output's sounds can be paused,
+//! Playback reads WAV, AIFF, FLAC, MP3, Ogg Vorbis, M4A and Opus files, converts
+//! them to the device's rate and channels, and mixes up to
+//! [`MAX_VOICES`] sounds per output. A sound plays once or repeats until stopped;
+//! an output's sounds can be paused,
 //! resumed, moved to a position and scaled by one volume. The device callback only
 //! mixes prepared samples. These controls act on every sound of an output connection:
-//! sounds that need separate control play on separate connections. Streaming from disk
-//! and playlists are not provided.
+//! sounds that need separate control play on separate connections. File-backed
+//! audio sources can also receive progressive HTTP(S) responses.
 //!
 //! [`AUDIO_SOURCE`] publishes an audio stream ([`STREAM_TYPE`]) from a device or
 //! sound file. [`LIVE_LEVEL`], [`MULTIBAND_SPECTRUM`], [`NOISE_GATE`], [`TRANSIENT`], [`AUDIO_OUT`]
@@ -53,8 +54,8 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 use analysis::{BandMeter, Listening, Onsets};
 use device::{Ended, Levels, Output};
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Lifecycle,
-    Listeners, Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, KernelFault, Lifecycle, Listeners,
+    Probe, RecordRepr, ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -77,7 +78,8 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// sound file, as [`AUDIO_SOURCE`] gives it. Settings: `device` as for an output, or
 /// `file`; `window_ms` (5 to 1,000, default 50), the length of each level measurement.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
-/// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
+/// Plays a WAV, AIFF, FLAC, MP3, Ogg Vorbis or M4A file on an output connection.
+/// Execution continues when playback ends. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
 pub const PLAY: &str = "org.orange.audio/play";
 /// Plays one of the sound files of a folder and continues when it has ended. Inputs
@@ -115,59 +117,52 @@ const DEVICE_CHECK: Duration = Duration::from_millis(100);
 const FIRST_RETRY: Duration = Duration::from_millis(500);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 
-const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
-    KernelFault {
-        code: FaultText::Static(code),
-        message_key: FaultText::Static(key),
-        message,
-    }
-}
-const NO_SESSION: KernelFault = fault(
+const NO_SESSION: KernelFault = KernelFault::from_static(
     "org.orange.audio/Connection",
     "org.orange.audio/connection-kind",
     "The node needs an audio connection of the right kind.",
 );
-const DEVICE: KernelFault = fault(
+const DEVICE: KernelFault = KernelFault::from_static(
     "org.orange.audio/Device",
     "org.orange.audio/device-unavailable",
     "The audio device could not be opened or has stopped.",
 );
-const BAD_INPUT: KernelFault = fault(
+const BAD_INPUT: KernelFault = KernelFault::from_static(
     "org.orange.audio/Input",
     "org.orange.audio/input-invalid",
     "The path, gain or position is not valid.",
 );
-const FILE: KernelFault = fault(
+const FILE: KernelFault = KernelFault::from_static(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
-    "The sound file is missing or is not a supported WAV, FLAC, MP3 or Ogg Vorbis file.",
+    "The sound file is missing or uses an unsupported audio format.",
 );
-const TOO_LARGE: KernelFault = fault(
+const TOO_LARGE: KernelFault = KernelFault::from_static(
     "org.orange.audio/TooLarge",
     "org.orange.audio/file-too-large",
     "The sound file is too large or too long.",
 );
-const EMPTY: KernelFault = fault(
+const EMPTY: KernelFault = KernelFault::from_static(
     "org.orange.audio/Empty",
     "org.orange.audio/folder-empty",
     "The folder has no sound files.",
 );
-const BUSY: KernelFault = fault(
+const BUSY: KernelFault = KernelFault::from_static(
     "org.orange.audio/Busy",
     "org.orange.audio/too-many-sounds",
     "Too many sounds are already playing on the device.",
 );
-const NOT_FILE: KernelFault = fault(
+const NOT_FILE: KernelFault = KernelFault::from_static(
     "org.orange.audio/NotFile",
     "org.orange.audio/source-not-file",
     "The node controls a sound file source, and this source is a device.",
 );
-const ENDED: KernelFault = fault(
+const ENDED: KernelFault = KernelFault::from_static(
     "org.orange.audio/Ended",
     "org.orange.audio/stream-ended",
     "The audio stream's input is closed.",
 );
-const WRITE: KernelFault = fault(
+const WRITE: KernelFault = KernelFault::from_static(
     "org.orange.audio/Write",
     "org.orange.audio/file-unwritable",
     "The recording could not be written to the file.",
@@ -374,7 +369,7 @@ fn choose(folder: &Path, pick: u64) -> Result<std::path::PathBuf, KernelFault> {
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .is_some_and(|extension| {
-                        ["wav", "flac", "mp3", "ogg"]
+                        SOUND_FILES
                             .iter()
                             .any(|known| extension.eq_ignore_ascii_case(known))
                     })
@@ -463,6 +458,7 @@ impl ServiceNode for Control {
 }
 
 struct InputShared {
+    streams: Mutex<BTreeMap<u64, Weak<RecordRepr>>>,
     /// What a stream value names this input by (see [`SOURCES`]).
     id: u64,
     /// The ring of the device while it is open.
@@ -538,15 +534,22 @@ impl Drop for InputShared {
 }
 
 /// The stream value of an input.
-fn stream_value(id: u64) -> Result<Value, KernelFault> {
-    Ok(Value::Record(Arc::new(RecordRepr {
+fn stream_value(input: &InputShared, run_id: u64) -> Result<Value, KernelFault> {
+    let mut streams = input.streams.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(record) = streams.get(&run_id).and_then(Weak::upgrade) {
+        return Ok(Value::Record(record));
+    }
+    streams.retain(|_, record| record.strong_count() > 0);
+    let record = Arc::new(RecordRepr {
         ty: STREAM_TYPE.parse().map_err(|_| BAD_INPUT)?,
-        fields: Box::new([Some(Value::U64(id))]),
-    })))
+        fields: Box::new([Some(Value::U64(input.id))]),
+    });
+    let _ = streams.insert(run_id, Arc::downgrade(&record));
+    Ok(Value::Record(record))
 }
 
 /// The input a stream value names, while it is open.
-fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
+fn source(value: &Value, run_id: u64) -> Result<Arc<InputShared>, KernelFault> {
     let Value::Record(record) = value else {
         return Err(BAD_INPUT);
     };
@@ -561,7 +564,18 @@ fn source(value: &Value) -> Result<Arc<InputShared>, KernelFault> {
         .unwrap_or_else(PoisonError::into_inner)
         .get(id)
         .and_then(Weak::upgrade);
-    source.filter(|source| !source.stopped()).ok_or(ENDED)
+    source
+        .filter(|source| {
+            !source.stopped()
+                && source
+                    .streams
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&run_id)
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|issued| Arc::ptr_eq(record, &issued))
+        })
+        .ok_or(ENDED)
 }
 
 impl InputShared {
@@ -571,6 +585,7 @@ impl InputShared {
         window: Duration,
     ) -> Arc<Self> {
         let shared = Arc::new(Self {
+            streams: Mutex::new(BTreeMap::new()),
             id: next_source(),
             ring: Mutex::new(None),
             file,
@@ -669,7 +684,7 @@ impl InputShared {
 /// Owns the capture stream; analyzers read its ring. A device that cannot be opened, or
 /// that fails while open, is opened again with backoff, so a microphone plugged in
 /// later is heard.
-fn listen(shared: &InputShared) {
+fn listen(shared: &Arc<InputShared>) {
     while !shared.started.load(Ordering::Acquire) {
         if shared.stopped() {
             return;
@@ -771,7 +786,7 @@ impl ConnectionAdapter for InputAdapter {
         vec![orange_sdk::SettingText {
             setting: "file".into(),
             label: "Sound file".into(),
-            help: "Play and listen to this file instead of a device.".into(),
+            help: "Enter a local sound file or an HTTP(S) audio URL.".into(),
             hint: "C:/Music/track.ogg".into(),
             secret: false,
             required: false,
@@ -847,7 +862,23 @@ impl Drop for Analyzing {
 fn watch_windows(
     input: Arc<InputShared>,
     listening: Listening,
-    mut observe: impl FnMut(Option<f64>) -> bool + Send + 'static,
+    observe: impl FnMut(Option<f64>) -> bool + Send + 'static,
+) -> Result<Box<dyn Send>, String> {
+    watch_window_measurements(
+        input,
+        listening.window,
+        move |ring| BandMeter::new(ring, &listening),
+        |meter, samples, report| meter.push(samples, report),
+        observe,
+    )
+}
+
+fn watch_window_measurements<M, T>(
+    input: Arc<InputShared>,
+    window: Duration,
+    make: impl Fn(&Ring) -> M + Send + 'static,
+    push: impl Fn(&mut M, &[f32], &mut dyn FnMut(T)) + Send + 'static,
+    mut observe: impl FnMut(Option<T>) -> bool + Send + 'static,
 ) -> Result<Box<dyn Send>, String> {
     let life = Arc::new(Lifecycle::new());
     let running = Arc::clone(&life);
@@ -859,10 +890,10 @@ fn watch_windows(
                 let Ok(ring) = input.wait_ring(None, &|| running.stopped()) else {
                     return;
                 };
-                let mut meter = BandMeter::new(&ring, &listening);
+                let mut meter = make(&ring);
                 let mut cursor = Cursor::new(Arc::clone(&ring));
                 // Read about four times per window: often enough to fire within one.
-                let pace = (listening.window / 4).clamp(Duration::from_millis(2), POLL);
+                let pace = (window / 4).clamp(Duration::from_millis(2), POLL);
                 while !running.stopped() {
                     let previous_dropped = cursor.dropped;
                     let read = cursor.read(&mut block);
@@ -874,13 +905,13 @@ fn watch_windows(
                         continue;
                     }
                     if previous_dropped != cursor.dropped {
-                        meter = BandMeter::new(&ring, &listening);
+                        meter = make(&ring);
                         if !observe(None) {
                             return;
                         }
                     }
                     let mut active = true;
-                    meter.push(&block[..read], |level| {
+                    push(&mut meter, &block[..read], &mut |level| {
                         active = active && observe(Some(level))
                     });
                     if !active {
@@ -984,7 +1015,14 @@ impl SourceControl {
             Self::Pause => transport.pause(),
             Self::Resume => transport.resume(),
             Self::Stop => transport.stop(),
-            Self::Seek => transport.seek(seconds),
+            Self::Seek => {
+                let (rate, channels) = shared
+                    .current_ring()
+                    .map_or((file_source::RATE, file_source::CHANNELS), |ring| {
+                        (ring.rate, ring.channels)
+                    });
+                transport.seek(seconds, rate, channels);
+            }
         }
         Ok(Vec::new())
     }
@@ -992,7 +1030,9 @@ impl SourceControl {
 
 fn when_finished(shared: Arc<InputShared>, emitter: Emitter) -> Result<Box<dyn Send>, String> {
     if shared.file.is_none() {
-        return Err("Source finished needs a sound file source".into());
+        return Err(
+            "Connect Source finished to a Sound source set to a file or an HTTP audio URL.".into(),
+        );
     }
     Ok(Listeners::listen(
         shared,
@@ -1057,7 +1097,7 @@ impl ServiceNode for Record {
         if path.is_empty() || !(*seconds > 0.0 && *seconds <= MAX_RECORD_SECONDS) {
             return Err(BAD_INPUT);
         }
-        let source = source(stream)?;
+        let source = source(stream, call.lease.run_id())?;
         let cancelled = || call.lease.is_cancelled();
         let ring = source.wait_ring(Some(OPEN_WAIT), &cancelled)?;
         record(
@@ -1142,7 +1182,9 @@ fn play_definition() -> String {
 }
 
 /// The file name extensions of the sound files played.
-const SOUND_FILES: &[&str] = &["wav", "flac", "mp3", "ogg"];
+const SOUND_FILES: &[&str] = &[
+    "wav", "flac", "mp3", "ogg", "m4a", "aif", "aiff", "opus", "webm",
+];
 
 fn play_from_definition() -> String {
     Definition::node(PACKAGE, "play-from", "Play sound from folder")
@@ -1161,7 +1203,7 @@ fn play_from_definition() -> String {
 
 fn loop_definition() -> String {
     Definition::node(PACKAGE, "loop", "Loop sound")
-        .description("Plays a sound file again and again on an output device until it is stopped.")
+        .description("Repeats the sound file until Sound control sends Stop to the same output. The next step runs after the loop stops.")
         .category("audio", "Audio")
         .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")
@@ -1244,7 +1286,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(folder.join("sub.wav")).unwrap();
         assert_eq!(choose(&folder, 0), Err(EMPTY));
-        for name in ["b.WAV", "a.ogg", "notes.txt", "c.mp3"] {
+        for name in ["b.WAV", "a.ogg", "notes.txt", "c.mp3", "d.M4A", "e.AIF"] {
             std::fs::write(folder.join(name), b"").unwrap();
         }
         let chosen = |pick| {
@@ -1253,9 +1295,10 @@ mod tests {
         };
         // Text files and folders are not sounds; the count goes round.
         assert_eq!(
-            [chosen(0), chosen(1), chosen(2), chosen(3), chosen(u64::MAX)],
-            ["a.ogg", "b.WAV", "c.mp3", "a.ogg", "a.ogg"]
+            (0..6).map(chosen).collect::<Vec<_>>(),
+            ["a.ogg", "b.WAV", "c.mp3", "d.M4A", "e.AIF", "a.ogg"]
         );
+        assert_eq!(chosen(u64::MAX), "a.ogg");
         assert_eq!(choose(&folder.join("missing"), 0), Err(FILE));
         std::fs::remove_dir_all(&folder).unwrap();
     }
@@ -1275,9 +1318,9 @@ mod tests {
         // Audio source, Noise Gate, Compressor, Limiter, Gain, Filter, Audio format,
         // Level.
         assert_eq!(package.lives().len(), 8);
-        assert!(package.replacements().is_empty());
+        assert_eq!(package.replacements().len(), 1);
         assert_eq!(package.adapters().len(), 2);
-        assert_eq!(package.types().len(), 4);
+        assert_eq!(package.types().len(), 5);
     }
 
     #[test]
@@ -1381,7 +1424,11 @@ mod tests {
     fn sound_inputs_offer_a_file_or_folder_chooser() {
         let (_, play) = orange_sdk::NodeDefinition::described(&play_definition()).unwrap();
         assert_eq!(play.paths[0].port, "path");
-        assert!(!play.paths[0].folder && play.paths[0].extensions.contains(&"ogg".to_owned()));
+        assert!(!play.paths[0].folder);
+        assert!(play.paths[0].extensions.contains(&"ogg".to_owned()));
+        assert!(play.paths[0].extensions.contains(&"m4a".to_owned()));
+        assert!(play.paths[0].extensions.contains(&"aif".to_owned()));
+        assert!(play.paths[0].extensions.contains(&"aiff".to_owned()));
         let (_, from) = orange_sdk::NodeDefinition::described(&play_from_definition()).unwrap();
         assert!(from.paths[0].folder);
     }
@@ -1399,8 +1446,17 @@ mod tests {
     #[test]
     fn a_stream_names_its_input_until_the_input_closes() {
         let input = tone_input();
-        let value = stream_value(input.0.id).unwrap();
-        assert!(Arc::ptr_eq(&source(&value).unwrap(), &input.0));
+        let value = stream_value(&input.0, 10).unwrap();
+        assert!(Arc::ptr_eq(&source(&value, 10).unwrap(), &input.0));
+        assert_eq!(source(&value, 11).err(), Some(ENDED));
+        let Value::Record(record) = &value else {
+            unreachable!()
+        };
+        let restored = Value::Record(Arc::new(RecordRepr {
+            ty: record.ty.clone(),
+            fields: record.fields.clone(),
+        }));
+        assert_eq!(source(&restored, 10).err(), Some(ENDED));
         let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
         assert_eq!((ring.rate, ring.channels), (48_000, 2));
         let shared = Arc::downgrade(&input.0);
@@ -1411,8 +1467,8 @@ mod tests {
             thread::sleep(POLL);
         }
         assert!(ring.closed());
-        assert_eq!(source(&value).err(), Some(ENDED));
-        assert_eq!(source(&Value::U64(1)).err(), Some(BAD_INPUT));
+        assert_eq!(source(&value, 10).err(), Some(ENDED));
+        assert_eq!(source(&Value::U64(1), 10).err(), Some(BAD_INPUT));
     }
 
     #[test]
@@ -1530,9 +1586,9 @@ mod tests {
 
     /// Captures what the default output plays (WASAPI loopback), first while this test
     /// plays nothing, then while it plays a quiet 0.6 s tone. Makes a faint sound, so
-    /// it is not part of the normal run: `cargo test -p orange-audio --lib -- --ignored`.
+    /// qualify it on a machine with a default output device: `cargo test -p orange-audio --features audio-device-tests the_default_microphone_is_measured_livefeatures audio-device-tests --lib what_the_default_output_plays`.
     #[test]
-    #[ignore = "needs an audio output device and makes a faint sound"]
+    #[cfg(feature = "audio-device-tests")]
     fn what_the_default_output_plays_is_captured_by_loopback() {
         let input = InputSession(
             spawn_input(&settings(serde_json::json!({"device": LOOPBACK_PREFIX}))).unwrap(),
@@ -1580,7 +1636,7 @@ mod tests {
 
     /// Records one second of the default microphone through Audio in's ring.
     #[test]
-    #[ignore = "needs an audio input device"]
+    #[cfg(feature = "audio-device-tests")]
     fn the_default_microphone_is_recorded_to_a_file() {
         let input = InputSession(spawn_input(&Map::new()).unwrap());
         let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
@@ -1600,9 +1656,9 @@ mod tests {
     }
 
     /// Needs a microphone, so it is not part of the normal run:
-    /// `cargo test -p orange-audio -- --ignored`.
+    /// `cargo test -p orange-audio --features audio-device-tests the_default_microphone_is_measured_live`.
     #[test]
-    #[ignore = "needs an audio input device"]
+    #[cfg(feature = "audio-device-tests")]
     fn the_default_microphone_is_measured_live() {
         let probe = InputAdapter.probe(&Map::new()).unwrap().unwrap();
         let mut loudest = SILENCE_DB;

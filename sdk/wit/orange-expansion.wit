@@ -1,5 +1,11 @@
 /// OrangeEditor package interface (ADR-03, K02b). Versioned with the host API.
-package orange:expansion@1.0.0;
+///
+/// 1.1 adds the `settings` and `websocket` imports and changes nothing that 1.0 has, so
+/// a component built against 1.0 links against a 1.1 host unchanged (component names
+/// resolve by semver compatibility). Values keep their 1.0 form: interface types cannot
+/// be recursive, so records, enums, lists and maps cross as `orange.value.v1` literals
+/// that the host checks against the registered type on both sides.
+package orange:expansion@1.1.0;
 
 /// Shared types.
 interface types {
@@ -59,21 +65,25 @@ interface files {
     remove: func(path: string) -> result<_, string>;
 }
 
-/// Granted only with the `http` permission: HTTPS requests through the application's
-/// network client. A call blocks the node until the answer arrives, so it belongs in an
-/// async node. Errors are one of `invalid-request`, `not-allowed`, `too-large`,
-/// `unavailable` and `failed`.
+/// Granted with the `http` permission (HTTPS to any host the application allows), the
+/// `http-local` permission (HTTP or HTTPS to this computer or the local network: an
+/// address such as `127.0.0.1`, `192.168.1.20` or `[::1]`, `localhost`, or a `.local`
+/// name), or both. Requests go through the application's network client. A call blocks
+/// the node until the answer arrives, so it belongs in an async node. Errors are one of
+/// `invalid-request`, `not-allowed`, `too-large`, `unavailable` and `failed`.
 interface http {
     record request {
         /// `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`.
         method: string,
-        /// An `https://` URL.
+        /// An `https://` URL, or an `http://` URL to a local address.
         url: string,
         headers: list<tuple<string, string>>,
         body: list<u8>,
     }
     record response {
         status: u16,
+        /// Response headers in the order received; names as the server sent them.
+        headers: list<tuple<string, string>>,
         body: list<u8>,
     }
     send: func(request: request) -> result<response, string>;
@@ -102,11 +112,56 @@ interface effects {
     execute: func(definition: string, inputs: list<value>) -> result<list<value>, node-error>;
 }
 
+/// Always linked (1.1): the settings of the node being called, as the JSON text of its
+/// saved `config`. Settings name declarations, such as a connection by its ID, and
+/// never hold secrets: a connection's credentials stay in the host's credential store.
+interface settings {
+    /// The node's settings; `{}` when it has none.
+    get: func() -> string;
+}
+
+/// Granted only with the `websocket` permission (1.1): messages on the WebSocket
+/// connection the node's settings name (`connection`). The host owns the socket: it
+/// opens it with the connection's declared settings and the user's approved
+/// credentials, reconnects it and bounds what waits to be sent. The package never sees
+/// the address or a token. Only action and async nodes may send. Queued is not
+/// delivered. Errors are one of `unavailable` (the node names no open connection, or it
+/// carries no messages), `not-allowed`, `too-large` and `quota-exceeded` (the queue is
+/// full).
+interface websocket {
+    send-text: func(text: string) -> result<_, string>;
+    send-binary: func(data: list<u8>) -> result<_, string>;
+}
+
+/// Exported by a package that contributes trigger (entry) nodes (1.1): its manifest
+/// names them and the world it targets is `plugin-events`. The host owns the
+/// connection a trigger's settings name and calls `receive` once for each message that
+/// arrives on it, under the same fuel and transfer limits as other calls, with nothing
+/// but the message: the instance cannot reach files, the network or the connection
+/// from here. A package without this export still loads; its triggers do not start.
+interface events {
+    use types.{value, node-error};
+
+    /// A message arrived for trigger `definition`: exactly one of `text` and `binary`
+    /// is set. Return the trigger's outputs to fire it (its `payload`, or nothing for a
+    /// trigger without one), `none` to let the message pass, or an error to report a
+    /// fault on the trigger without firing it.
+    receive: func(definition: string, text: option<string>, binary: option<list<u8>>) -> result<option<list<value>>, node-error>;
+}
+
 world plugin {
     import host;
     import log;
     import files;
     import http;
+    import settings;
+    import websocket;
     export nodes;
     export effects;
+}
+
+/// The plugin world of a package that also contributes trigger nodes (1.1).
+world plugin-events {
+    include plugin;
+    export events;
 }

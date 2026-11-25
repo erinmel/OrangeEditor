@@ -1,8 +1,69 @@
 use super::*;
-use crate::declarations::{AUDIO_SILENCE_DB as SILENCE_DB, audio_level_fraction};
+use crate::declarations::audio_level_fraction;
+use orange_ui_controls::{
+    UiTokens,
+    audio_meter::{ChannelReading, RmsMeter},
+    eq_plot::{PlotAxes, frequency_fraction, paint_cached_trace},
+};
 
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 24_000.0;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChannelLevels {
+    Mono(ChannelReading),
+    Stereo([ChannelReading; 2]),
+    Multichannel { peak: f32, clipped: bool },
+}
+
+impl ChannelLevels {
+    #[expect(clippy::cast_possible_truncation, reason = "audio display only")]
+    pub(crate) fn from_value(value: &orange_host::Value) -> Option<Self> {
+        use orange_host::Value;
+        let Value::Record(record) = value else {
+            return None;
+        };
+        if record.ty.as_str() != "org.orange.audio/channel-levels@1" {
+            return None;
+        }
+        let [
+            Some(Value::List(rms)),
+            Some(Value::List(peak)),
+            Some(Value::List(clipped)),
+        ] = &record.fields[..]
+        else {
+            return None;
+        };
+        if rms.len() != peak.len() || rms.len() != clipped.len() {
+            return None;
+        }
+        let reading = |index| {
+            let (Some(Value::F64(rms)), Some(Value::F64(peak)), Some(Value::Bool(clipped))) =
+                (rms.get(index), peak.get(index), clipped.get(index))
+            else {
+                return None;
+            };
+            (rms.is_finite() && peak.is_finite()).then_some(ChannelReading {
+                rms: rms as f32,
+                peak: peak as f32,
+                clipped,
+            })
+        };
+        match rms.len() {
+            0 => None,
+            1 => Some(Self::Mono(reading(0)?)),
+            2 => Some(Self::Stereo([reading(0)?, reading(1)?])),
+            n => {
+                let (peak, clipped) =
+                    (0..n).try_fold((-120.0_f32, false), |(peak, clipped), index| {
+                        let channel = reading(index)?;
+                        Some((peak.max(channel.peak), clipped || channel.clipped))
+                    })?;
+                Some(Self::Multichannel { peak, clipped })
+            }
+        }
+    }
+}
 const SPECTRUM_PLOT_TOP: f32 = 29.0;
 const SPECTRUM_PLOT_BOTTOM: f32 = 185.0;
 pub(super) const NOISE_CHART: f32 = 204.0;
@@ -15,16 +76,19 @@ pub(crate) enum BandEdit {
 
 pub(super) fn combined(node: &NodeView) -> bool {
     node.definition == "org.orange.audio/multiband-spectrum"
+        && has_stream_input(node)
+        && node.ports.iter().any(|port| {
+            !port.input
+                && !port.exec
+                && port.id == "spectrum"
+                && port.ty.as_deref() == Some("core/list@1<core/f64@1>")
+        })
 }
 
-/// The band a splitter output belongs to: `band_stream#3` is band 3.
-pub(super) fn band_of(port: &str) -> Option<u16> {
-    port.strip_prefix("band_stream#")?.parse().ok()
-}
-
-/// Where band `band` of a splitter starts, in Hz.
-pub(super) fn band_low(node: &NodeView, band: u16) -> Option<f64> {
-    node.settings["bands"][band.to_string()]["low_hz"].as_f64()
+/// Where the band described by a splitter port starts, in Hz.
+pub(super) fn band_low(node: &NodeView, port: &str) -> Option<f64> {
+    let key = port.strip_prefix("band_stream#")?;
+    node.settings["bands"][key]["low_hz"].as_f64()
 }
 
 /// Where a splitter card at `rect` draws its plot.
@@ -42,11 +106,28 @@ pub(super) fn plot_rect(rect: Rect, zoom: f32) -> Rect {
 pub(super) fn plot_fraction(hz: f64) -> f32 {
     #[expect(clippy::cast_possible_truncation, reason = "screen positions")]
     let hz = hz as f32;
-    ((hz / MIN_HZ).ln() / (MAX_HZ / MIN_HZ).ln()).clamp(0.0, 1.0)
+    frequency_fraction(hz, MIN_HZ, MAX_HZ)
 }
 
-pub(super) fn is_noise(node: &NodeView) -> bool {
+pub(crate) fn is_noise(node: &NodeView) -> bool {
     node.definition == "org.orange.audio/noise-level"
+        && has_stream_input(node)
+        && node.ports.iter().filter(|port| port.input).count() == 1
+        && node.ports.iter().any(|port| {
+            !port.input
+                && !port.exec
+                && port.id == "level"
+                && port.ty.as_deref() == Some("core/f64@1")
+        })
+}
+
+fn has_stream_input(node: &NodeView) -> bool {
+    node.ports.iter().any(|port| {
+        port.input
+            && !port.exec
+            && port.id == "stream"
+            && port.ty.as_deref() == Some("org.orange.audio/stream@1")
+    })
 }
 
 pub(super) fn chart_height(node: &NodeView, open: bool) -> f32 {
@@ -82,27 +163,45 @@ fn db_y(plot: Rect, db: f64) -> f32 {
     plot.bottom() - plot.height() * audio_level_fraction(db)
 }
 
-fn trace(painter: &egui::Painter, plot: Rect, samples: &[f64], zoom: f32, color: Color32) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the spectrum has a bounded bucket count"
-    )]
-    let bucket_width = plot.width() / samples.len() as f32;
-    #[expect(clippy::cast_precision_loss, reason = "bounded spectrum bucket count")]
-    let points = samples
+fn trace(painter: &egui::Painter, id: egui::Id, plot: Rect, samples: &[f64], stroke: Stroke) {
+    paint_cached_trace(painter, id, plot, stroke, samples, || {
+        let len = samples.len();
+        #[expect(clippy::cast_precision_loss, reason = "bounded display buckets")]
+        samples
+            .iter()
+            .enumerate()
+            .map(|(index, db)| {
+                Pos2::new(
+                    egui::lerp(plot.x_range(), (index as f32 + 0.5) / len as f32),
+                    db_y(plot, *db),
+                )
+            })
+            .collect()
+    });
+}
+
+pub(crate) fn audio_status(node: &NodeView, running: bool, has_reading: bool) -> &'static str {
+    audio_status_labels(node, running, has_reading).0
+}
+
+fn audio_status_labels(
+    node: &NodeView,
+    running: bool,
+    has_reading: bool,
+) -> (&'static str, &'static str) {
+    if !node
+        .ports
         .iter()
-        .enumerate()
-        .map(|(index, db)| {
-            let x = plot.left() + (index as f32 + 0.5) * bucket_width;
-            Pos2::new(x, db_y(plot, *db))
-        })
-        .collect();
-    painter
-        .with_clip_rect(painter.clip_rect().intersect(plot))
-        .add(egui::Shape::line(
-            points,
-            Stroke::new((1.5 * zoom).max(1.0), color),
-        ));
+        .any(|p| p.input && p.id == "stream" && p.connected)
+    {
+        (t("spectrum-connect"), t("audio-display-no-input"))
+    } else if !running {
+        (t("audio-display-preview"), t("audio-display-preview-short"))
+    } else if has_reading {
+        (t("audio-display-live"), t("audio-display-live"))
+    } else {
+        (t("spectrum-await-audio"), t("audio-display-waiting-short"))
+    }
 }
 
 fn select_range(
@@ -368,19 +467,21 @@ pub(super) fn draw_combined(
     samples: Option<&[f64]>,
     controls: bool,
     pointed: Option<u16>,
+    running: bool,
 ) -> Option<BandEdit> {
     let plot = plot_rect(rect, zoom);
+    if !ui.is_rect_visible(plot) {
+        return None;
+    }
     let id = ui.scope_id().with(("spectrum", node.id));
     let colors = Palette::of(ui);
-    let bands = node.settings["bands"].as_object();
-    let ids: Vec<u16> = node
-        .ports
-        .iter()
-        .filter_map(|port| port.id.strip_prefix("band_stream#")?.parse().ok())
-        .filter(|band: &u16| bands.is_some_and(|bands| bands.contains_key(&band.to_string())))
-        .collect();
-    let settings = |band: u16| bands.and_then(|bands| bands.get(&band.to_string()));
-    let full = ids.len() >= 12;
+    let bands = node.ports.iter().filter_map(|port| {
+        let key = port.id.strip_prefix("band_stream#")?;
+        let band = key.parse::<u16>().ok()?;
+        let settings = node.settings["bands"].get(key)?;
+        Some((band, settings))
+    });
+    let full = bands.clone().count() >= 12;
     if full {
         ui.interact(plot, id.with("full"), Sense::hover())
             .on_hover_text(t("spectrum-band-limit"));
@@ -391,25 +492,28 @@ pub(super) fn draw_combined(
     let valid = |[low, high]: &[u32; 2]| low < high && *high <= MAX_HZ as u32;
     let added = completed
         .map(|range| range.map(hertz))
-        .filter(|range| ids.len() < 12 && valid(range))
+        .filter(|range| !full && valid(range))
         .map(BandEdit::Add);
-    painter.rect_filled(plot, 4.0 * zoom, colors.background);
-    let font = FontId::proportional(10.5 * zoom);
-    for db in [0, -30, -60, -90, -120] {
-        let y = db_y(plot, f64::from(db));
-        painter.hline(plot.x_range(), y, Stroke::new(1.0, colors.grid));
-        painter.text(
-            Pos2::new(plot.left() - 4.0 * zoom, y),
-            Align2::RIGHT_CENTER,
-            db.to_string(),
-            font.clone(),
-            colors.weak,
-        );
-    }
-    for band in ids.iter().copied() {
-        if let Some(settings) = settings(band)
-            && let (Some(low), Some(high)) =
-                (settings["low_hz"].as_f64(), settings["high_hz"].as_f64())
+    let theme = UiTokens::for_surface(ui, orange_ui_controls::Surface::Card).theme;
+    let axes = PlotAxes { plot, theme, zoom };
+    axes.frame(painter, plot.expand(0.5 * zoom));
+    axes.db(
+        painter,
+        [-120.0, 0.0],
+        &[
+            (0.0, "0"),
+            (-30.0, "-30"),
+            (-60.0, "-60"),
+            (-90.0, "-90"),
+            (-120.0, "-120"),
+        ],
+        false,
+        true,
+    );
+    axes.frequency(painter, [MIN_HZ, MAX_HZ], Some("Hz"));
+    let font = FontId::monospace(10.0 * zoom);
+    for (band, settings) in bands.clone() {
+        if let (Some(low), Some(high)) = (settings["low_hz"].as_f64(), settings["high_hz"].as_f64())
         {
             let color = if pointed == Some(band) {
                 colors.exec
@@ -428,63 +532,36 @@ pub(super) fn draw_combined(
         highlight(painter, plot, range, colors.exec);
     }
     let resized = if controls {
-        resize_edges(
-            ui,
-            painter,
-            plot,
-            zoom,
-            id.with("edges"),
-            &ids,
-            &settings,
-            &colors,
-        )
+        resize_edges(ui, painter, plot, zoom, id.with("edges"), bands, &colors)
     } else {
         None
     };
-    for (hz, label) in [
-        (20.0, "20"),
-        (100.0, "100"),
-        (500.0, "500"),
-        (1_000.0, "1k"),
-        (5_000.0, "5k"),
-        (10_000.0, "10k"),
-    ] {
-        let x = plot.left() + plot.width() * fraction(hz);
-        painter.vline(x, plot.y_range(), Stroke::new(1.0, colors.grid));
-        painter.text(
-            Pos2::new(x, plot.bottom() + 4.0 * zoom),
-            Align2::LEFT_TOP,
-            label,
-            font.clone(),
-            colors.weak,
+    let samples = samples.filter(|samples| samples.len() > 1);
+    let status = audio_status(node, running, samples.is_some());
+    if let Some(samples) = samples {
+        trace(
+            painter,
+            id.with("trace"),
+            plot,
+            samples,
+            Stroke::new((1.3 * zoom).max(1.0), theme.info),
         );
     }
     painter.text(
-        plot.right_bottom() + Vec2::new(0.0, 4.0 * zoom),
-        Align2::RIGHT_TOP,
-        "Hz",
-        font.clone(),
+        if samples.is_some() {
+            plot.left_top() + Vec2::splat(5.0 * zoom)
+        } else {
+            plot.center()
+        },
+        if samples.is_some() {
+            Align2::LEFT_TOP
+        } else {
+            Align2::CENTER_CENTER
+        },
+        status,
+        font,
         colors.weak,
     );
-    if let Some(samples) = samples.filter(|samples| samples.len() > 1) {
-        trace(painter, plot, samples, zoom, colors.selected);
-    } else {
-        painter.text(
-            plot.center(),
-            Align2::CENTER_CENTER,
-            if node
-                .ports
-                .iter()
-                .any(|p| p.input && p.id == "stream" && p.connected)
-            {
-                t("spectrum-await-audio")
-            } else {
-                t("spectrum-connect")
-            },
-            font,
-            colors.weak,
-        );
-    }
     if controls
         && let Some(pointer) = ui
             .input(|input| input.pointer.hover_pos())
@@ -505,15 +582,13 @@ pub(super) fn draw_combined(
 
 /// The edges of each band on the chart: dragged sideways, an edge moves and the band
 /// keeps its new size when let go. Returns the change once the drag ends.
-#[expect(clippy::too_many_arguments, reason = "one chart's drawing state")]
 fn resize_edges<'a>(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     plot: Rect,
     zoom: f32,
     id: egui::Id,
-    bands: &[u16],
-    settings: &dyn Fn(u16) -> Option<&'a serde_json::Value>,
+    bands: impl Iterator<Item = (u16, &'a serde_json::Value)>,
     colors: &Palette,
 ) -> Option<BandEdit> {
     let fraction = plot_fraction;
@@ -522,10 +597,7 @@ fn resize_edges<'a>(
         f64::from((MIN_HZ * (MAX_HZ / MIN_HZ).powf(ratio)).round())
     };
     let mut done = None;
-    for &band in bands {
-        let Some(saved) = settings(band) else {
-            continue;
-        };
+    for (band, saved) in bands {
         let (Some(low), Some(high)) = (saved["low_hz"].as_f64(), saved["high_hz"].as_f64()) else {
             continue;
         };
@@ -592,7 +664,7 @@ fn number_field(
     response.lost_focus() || response.drag_stopped() || (response.changed() && !response.dragged())
 }
 
-pub(super) fn direction(mode: &str) -> &'static str {
+pub(crate) fn direction(mode: &str) -> &'static str {
     match mode {
         "below" => t("audio-goes-below"),
         "both" => t("audio-both-directions"),
@@ -600,167 +672,94 @@ pub(super) fn direction(mode: &str) -> &'static str {
     }
 }
 
-const METER_RELEASE_DB_PER_SECOND: f64 = 55.0;
-const METER_PEAK_HOLD_SECONDS: f64 = 0.55;
-
-#[derive(Clone, Copy)]
-struct MeterMotion {
-    fill: f64,
-    peak: f64,
-    peak_until: f64,
-    last: f64,
-}
-
-impl MeterMotion {
-    fn new(now: f64) -> Self {
-        Self {
-            fill: SILENCE_DB,
-            peak: SILENCE_DB,
-            peak_until: now,
-            last: now,
-        }
-    }
-
-    fn advance(&mut self, reading: Option<f64>, now: f64) -> bool {
-        let target = reading.unwrap_or(SILENCE_DB).clamp(SILENCE_DB, 0.0);
-        let elapsed = (now - self.last).max(0.0);
-        self.fill = target.max(self.fill - elapsed * METER_RELEASE_DB_PER_SECOND);
-        if target >= self.peak {
-            self.peak = target;
-            self.peak_until = now + METER_PEAK_HOLD_SECONDS;
-        } else {
-            let release = (now - self.last.max(self.peak_until)).max(0.0);
-            self.peak = self
-                .fill
-                .max(self.peak - release * METER_RELEASE_DB_PER_SECOND);
-        }
-        self.last = now;
-        self.fill > target || self.peak > self.fill
-    }
-}
-
-fn meter_gradient(bar: Rect, y: impl Fn(f64) -> f32, brightness: f32) -> egui::Mesh {
-    let mut mesh = egui::Mesh::default();
-    for (index, (db, red, green, blue)) in (0_u32..).zip([
-        (SILENCE_DB, 22, 154, 82),
-        (-24.0, 53, 217, 100),
-        (-18.0, 242, 211, 65),
-        (-12.0, 255, 190, 50),
-        (-7.0, 244, 82, 66),
-        (0.0, 255, 61, 76),
-    ]) {
-        let row = y(db);
-        let color = Color32::from_rgb(red, green, blue).gamma_multiply(brightness);
-        let next = index * 2;
-        mesh.colored_vertex(Pos2::new(bar.left(), row), color);
-        mesh.colored_vertex(Pos2::new(bar.right(), row), color);
-        if next != 0 {
-            mesh.add_triangle(next - 2, next - 1, next);
-            mesh.add_triangle(next, next - 1, next + 1);
-        }
-    }
-    mesh
-}
-
+#[expect(clippy::too_many_arguments, reason = "one meter’s drawing state")]
 pub(super) fn draw_noise(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     node: &NodeView,
     rect: Rect,
     zoom: f32,
-    reading: Option<f64>,
+    readings: (Option<f64>, Option<ChannelLevels>),
     controls: bool,
+    running: bool,
 ) -> Option<f64> {
+    let (reading, channels) = readings;
     let colors = Palette::of(ui);
     let bar = Rect::from_min_size(
-        rect.min + Vec2::new(21.0, BODY_TOP + 10.0) * zoom,
-        Vec2::new(40.0, 185.0) * zoom,
+        rect.min + Vec2::new(17.0, BODY_TOP + 18.0) * zoom,
+        Vec2::new(49.0, 163.0) * zoom,
     );
     let id = ui.scope_id().with(("noise-threshold", node.id));
-    let motion_id = id.with("motion");
-    let now = ui.input(|input| input.time);
-    let mut motion = ui
-        .data(|data| data.get_temp::<MeterMotion>(motion_id))
-        .unwrap_or_else(|| MeterMotion::new(now));
-    if motion.advance(reading, now) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(16));
-    }
-    ui.data_mut(|data| data.insert_temp(motion_id, motion));
-    let threshold = node.settings["threshold_db"].as_f64().unwrap_or(-35.0);
-    let mut current = ui
-        .data(|data| data.get_temp::<f64>(id))
-        .unwrap_or(threshold);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded display measurements"
+    )]
+    let mut meter = RmsMeter {
+        lane: bar,
+        zoom,
+        reading: reading.map(|db| db as f32),
+        target: None,
+    };
+    let threshold = crate::properties::ThresholdEdit::for_node(node);
     let mut changed = None;
-    if controls {
-        let drag = ui
+    if controls && let Some(threshold) = threshold {
+        let mut drag = ui
             .interact(
-                bar.expand2(Vec2::new(12.0, 2.0) * zoom),
+                bar.expand2(Vec2::new(8.0, 2.0) * zoom),
                 id,
                 Sense::click_and_drag(),
             )
             .on_hover_text(t("noise-drag-threshold"));
+        let mut value = threshold.shown(ui.ctx());
         if (drag.dragged() || drag.clicked() || drag.drag_stopped())
             && let Some(pointer) = drag.interact_pointer_pos()
         {
-            let fraction = f64::from((bar.bottom() - pointer.y) / bar.height()).clamp(0.0, 1.0);
-            current = (SILENCE_DB * (1.0 - fraction)).round();
-            ui.data_mut(|data| data.insert_temp(id, current));
+            value = f64::from(meter.db_at(pointer).round());
+            drag.mark_changed();
         }
-        if drag.drag_stopped() || drag.clicked() {
-            ui.data_mut(|data| {
-                data.remove::<f64>(id);
-            });
-            if current != threshold {
-                changed = Some(current);
-            }
-        }
+        changed = threshold.update(&drag, value);
     }
-    let y = |db| db_y(bar, db);
-    let channel = |low, high| {
-        Rect::from_min_max(
-            Pos2::new(bar.left(), y(high)),
-            Pos2::new(bar.right(), y(low)),
-        )
+    if let Some(threshold) = threshold {
+        #[expect(clippy::cast_possible_truncation, reason = "display coordinate")]
+        let dbfs = changed.unwrap_or_else(|| threshold.shown(ui.ctx())) as f32;
+        meter.target = Some((dbfs, colors.exec));
+    }
+    let stereo = match channels {
+        Some(ChannelLevels::Stereo([left, right])) => Some([("L", left), ("R", right)]),
+        _ => None,
     };
-    painter.rect_filled(bar, 0.0, colors.background);
-    painter.add(egui::Shape::mesh(meter_gradient(bar, y, 0.23)));
-    if motion.fill > SILENCE_DB {
-        let clip = painter
-            .clip_rect()
-            .intersect(channel(SILENCE_DB, motion.fill));
-        painter
-            .with_clip_rect(clip)
-            .add(egui::Shape::mesh(meter_gradient(bar, y, 1.0)));
+    let single = match channels {
+        Some(ChannelLevels::Mono(reading)) => Some((t("meter-mono"), reading)),
+        Some(ChannelLevels::Multichannel { peak, clipped }) => meter
+            .reading
+            .map(|rms| (t("meter-mix"), ChannelReading { rms, peak, clipped })),
+        _ => None,
+    };
+    let lanes = stereo
+        .as_ref()
+        .map_or(single.as_slice(), |pair| pair.as_slice());
+    let meter_id = id.with("meter");
+    let tokens = UiTokens::for_surface(ui, orange_ui_controls::Surface::Card);
+    let preview = reading.is_none() && lanes.is_empty();
+    if preview {
+        meter.show_stereo_preview(ui, painter, meter_id, tokens, ["L", "R"]);
+    } else {
+        meter.show_channels(ui, painter, meter_id, tokens, lanes);
     }
-    if motion.peak > motion.fill + 0.5 {
-        painter.hline(
-            bar.x_range(),
-            y(motion.peak),
-            Stroke::new(1.5 * zoom, Color32::from_gray(240)),
-        );
+    if preview || !lanes.is_empty() {
+        let lights = Rect::from_min_max(bar.min - Vec2::new(0.0, 15.0) * zoom, bar.right_top());
+        ui.interact(lights, id.with("clip-status"), Sense::hover())
+            .on_hover_text(t("meter-clip-hint"));
     }
-    let font = FontId::proportional(10.5 * zoom);
-    for db in [0, -10, -20, -30, -40, -60, -80, -100, -120] {
-        let y = y(f64::from(db));
-        painter.hline(
-            bar.right()..=bar.right() + 4.0 * zoom,
-            y,
-            Stroke::new(1.0, colors.weak),
-        );
-        painter.text(
-            Pos2::new(bar.right() + 7.0 * zoom, y),
-            Align2::LEFT_CENTER,
-            db.to_string(),
-            font.clone(),
-            colors.weak,
-        );
-    }
-    painter.hline(
-        bar.left() - 5.0 * zoom..=bar.right() + 6.0 * zoom,
-        y(current),
-        Stroke::new(2.0, colors.exec),
+    let (status, short) = audio_status_labels(node, running, reading.is_some());
+    let caption = Rect::from_min_size(
+        Pos2::new(bar.left() - 4.0 * zoom, bar.bottom() + 14.0 * zoom),
+        Vec2::new(97.0, 17.0) * zoom,
     );
+    ui.interact(caption, id.with("status"), Sense::hover())
+        .on_hover_text(status);
+    fields::field_text_in(painter, caption, zoom, short, colors.weak, None);
+
     changed
 }
 
@@ -778,17 +777,45 @@ mod tests {
     }
 
     #[test]
-    fn meter_rises_immediately_and_decays_with_a_held_peak() {
-        let mut meter = MeterMotion::new(0.0);
-        assert!(!meter.advance(Some(-3.0), 0.0));
-        assert_eq!(meter.fill, -3.0);
-        assert!(meter.advance(Some(-80.0), 0.2));
-        assert_eq!(meter.fill, -14.0);
-        assert_eq!(meter.peak, -3.0);
-        assert!(meter.advance(Some(-80.0), 0.8));
-        assert!(meter.fill < meter.peak && meter.peak < -3.0);
-        assert!(!meter.advance(None, 3.0));
-        assert_eq!(meter.fill, SILENCE_DB);
-        assert_eq!(meter.peak, SILENCE_DB);
+    fn profile_trace_geometry() {
+        use std::time::Instant;
+        let ctx = egui::Context::default();
+        let mut results: [Vec<f64>; 2] = Default::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for (mode, times) in results.iter_mut().enumerate() {
+                let left = Rect::from_min_size(Pos2::ZERO, Vec2::new(420.0, 156.0));
+                let right = left.translate(Vec2::new(440.0, 0.0));
+                let mut samples = [-45.0; 96];
+                for frame in 0..600 {
+                    if mode == 1 {
+                        for (bin, value) in (0..96).zip(&mut samples) {
+                            *value = -20.0 - f64::from((bin + frame) % 73);
+                        }
+                    }
+                    let now = Instant::now();
+                    for (id, plot) in [left, right].into_iter().enumerate() {
+                        trace(
+                            ui.painter(),
+                            ui.make_persistent_id(id),
+                            plot,
+                            &samples,
+                            Stroke::new(1.5, Color32::WHITE),
+                        );
+                    }
+                    if frame >= 40 {
+                        times.push(now.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+            }
+        });
+        output.drop_without_applying_deltas();
+        for (mode, times) in ["unchanged", "new samples"].into_iter().zip(&mut results) {
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "two traces {mode}: median {:.4} ms p95 {:.4} ms",
+                times[times.len() / 2],
+                times[times.len() * 95 / 100]
+            );
+        }
     }
 }

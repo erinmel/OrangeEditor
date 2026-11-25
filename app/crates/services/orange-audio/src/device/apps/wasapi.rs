@@ -512,7 +512,7 @@ mod tests {
     /// Plays a tone from this process on the default output and captures this
     /// process alone: what it plays must reach the capture, at its level.
     #[test]
-    #[ignore = "needs a Windows output device"]
+    #[cfg(feature = "audio-device-tests")]
     fn captures_what_one_process_plays() {
         let tone = Ring::new(RATE, CHANNELS);
         let (writer, playing) = (Arc::clone(&tone), Arc::new(AtomicBool::new(true)));
@@ -555,7 +555,7 @@ mod tests {
     /// Lists the applications playing sound on this machine; run it while some app
     /// plays audio.
     #[test]
-    #[ignore = "needs a Windows audio session"]
+    #[cfg(feature = "audio-device-tests")]
     fn lists_the_applications_playing_sound() {
         let choices = choices().unwrap();
         eprintln!("{choices:#?}");

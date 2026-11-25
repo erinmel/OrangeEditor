@@ -21,34 +21,36 @@ const MAX_REGEX_COMPILED_BYTES: usize = 1024 * 1024;
 const MAX_CSV_BYTES: usize = 1024 * 1024;
 const MAX_CSV_FIELDS: usize = 16_384;
 
-/// Pure string operations. Inputs are strict; every operation is deterministic for a
-/// given toolchain (case mapping and White_Space use its Unicode tables).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextOperation {
-    ByteLength,
-    ScalarLength,
-    Concat,
-    Contains,
-    StartsWith,
-    EndsWith,
-    Find,
-    Substring,
-    Replace,
-    Trim,
-    ToUppercase,
-    ToLowercase,
-    Split,
-    Join,
-    Format,
-    InspectError,
-    EncodeBase64,
-    DecodeBase64,
-    EncodeHex,
-    DecodeHex,
-    RegexMatch,
-    RegexExtract,
-    ParseCsv,
-    WriteCsv,
+operation_catalog! {
+    /// Pure string operations. Inputs are strict; every operation is deterministic for a
+    /// given toolchain (case mapping and White_Space use its Unicode tables).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TextOperation {
+        ByteLength => "org.orange.text/byte-length",
+        ScalarLength => "org.orange.text/scalar-length",
+        Concat => "org.orange.text/concat",
+        Contains => "org.orange.text/contains",
+        StartsWith => "org.orange.text/starts-with",
+        EndsWith => "org.orange.text/ends-with",
+        Find => "org.orange.text/find",
+        Substring => "org.orange.text/substring",
+        Replace => "org.orange.text/replace",
+        Trim => "org.orange.text/trim",
+        ToUppercase => "org.orange.text/to-uppercase",
+        ToLowercase => "org.orange.text/to-lowercase",
+        Split => "org.orange.text/split",
+        Join => "org.orange.text/join",
+        Format => "org.orange.text/format",
+        InspectError => "org.orange.text/inspect-error",
+        EncodeBase64 => "org.orange.text/encode-base64",
+        DecodeBase64 => "org.orange.text/decode-base64",
+        EncodeHex => "org.orange.text/encode-hex",
+        DecodeHex => "org.orange.text/decode-hex",
+        RegexMatch => "org.orange.text/regex-match",
+        RegexExtract => "org.orange.text/regex-extract",
+        ParseCsv => "org.orange.text/parse-csv",
+        WriteCsv => "org.orange.text/write-csv",
+    }
 }
 
 /// Which ends of the text `trim` takes whitespace from.
@@ -74,66 +76,6 @@ const LIST: &str = "core/list@1<core/string@1>";
 const CSV_ROWS: &str = "core/list@1<core/list@1<core/string@1>>";
 
 impl TextOperation {
-    pub const ALL: [Self; 24] = [
-        Self::ByteLength,
-        Self::ScalarLength,
-        Self::Concat,
-        Self::Contains,
-        Self::StartsWith,
-        Self::EndsWith,
-        Self::Find,
-        Self::Substring,
-        Self::Replace,
-        Self::Trim,
-        Self::ToUppercase,
-        Self::ToLowercase,
-        Self::Split,
-        Self::Join,
-        Self::Format,
-        Self::InspectError,
-        Self::EncodeBase64,
-        Self::DecodeBase64,
-        Self::EncodeHex,
-        Self::DecodeHex,
-        Self::RegexMatch,
-        Self::RegexExtract,
-        Self::ParseCsv,
-        Self::WriteCsv,
-    ];
-
-    pub const fn definition_id(self) -> &'static str {
-        match self {
-            Self::ByteLength => "org.orange.text/byte-length",
-            Self::ScalarLength => "org.orange.text/scalar-length",
-            Self::Concat => "org.orange.text/concat",
-            Self::Contains => "org.orange.text/contains",
-            Self::StartsWith => "org.orange.text/starts-with",
-            Self::EndsWith => "org.orange.text/ends-with",
-            Self::Find => "org.orange.text/find",
-            Self::Substring => "org.orange.text/substring",
-            Self::Replace => "org.orange.text/replace",
-            Self::Trim => "org.orange.text/trim",
-            Self::ToUppercase => "org.orange.text/to-uppercase",
-            Self::ToLowercase => "org.orange.text/to-lowercase",
-            Self::Split => "org.orange.text/split",
-            Self::Join => "org.orange.text/join",
-            Self::Format => "org.orange.text/format",
-            Self::InspectError => "org.orange.text/inspect-error",
-            Self::EncodeBase64 => "org.orange.text/encode-base64",
-            Self::DecodeBase64 => "org.orange.text/decode-base64",
-            Self::EncodeHex => "org.orange.text/encode-hex",
-            Self::DecodeHex => "org.orange.text/decode-hex",
-            Self::RegexMatch => "org.orange.text/regex-match",
-            Self::RegexExtract => "org.orange.text/regex-extract",
-            Self::ParseCsv => "org.orange.text/parse-csv",
-            Self::WriteCsv => "org.orange.text/write-csv",
-        }
-    }
-
-    pub fn from_definition_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|op| op.definition_id() == id)
-    }
-
     /// Strict executable inputs with their types.
     pub const fn inputs(self) -> &'static [(&'static str, &'static str)] {
         match self {
@@ -206,11 +148,7 @@ pub fn text_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     TextOperation::ALL
         .into_iter()
         .map(|operation| {
-            let mut ports = operation
-                .inputs()
-                .iter()
-                .map(|(name, ty)| Ok(PortDescriptor::data_in(name, ty.parse::<TypeExpr>()?)))
-                .collect::<Result<Vec<_>, CatalogError>>()?;
+            let mut ports = crate::catalog::input_ports(operation.inputs())?;
             ports.push(PortDescriptor::data_out(
                 operation.output_port(),
                 operation.output_type().parse::<TypeExpr>()?,
@@ -252,6 +190,41 @@ pub struct ResolvedText {
     operation: TextOperation,
     unit: TextUnit,
     ends: TrimEnds,
+    regex_cache: Option<Arc<RegexCache>>,
+}
+
+#[derive(Default)]
+struct RegexCache(std::sync::Mutex<Option<(String, regex::Regex)>>);
+
+impl std::fmt::Debug for RegexCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegexCache").finish_non_exhaustive()
+    }
+}
+
+impl RegexCache {
+    fn get(&self, pattern: &str) -> Result<regex::Regex, KernelError> {
+        let mut cached = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((previous, regex)) = cached.as_ref()
+            && previous == pattern
+        {
+            return Ok(regex.clone());
+        }
+        let regex = regex::RegexBuilder::new(pattern)
+            .size_limit(MAX_REGEX_COMPILED_BYTES)
+            .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
+            .nest_limit(32)
+            .build()
+            .map_err(|error| match error {
+                regex::Error::CompiledTooBig(_) => KernelError::LimitExceeded,
+                _ => KernelError::Domain,
+            })?;
+        *cached = Some((pattern.to_owned(), regex.clone()));
+        Ok(regex)
+    }
 }
 
 /// A field and the unconsumed delimiter (or end of input).
@@ -532,15 +505,11 @@ impl ResolvedText {
                 if source.len() > MAX_REGEX_TEXT_BYTES || pattern.len() > MAX_REGEX_PATTERN_BYTES {
                     return Err(KernelError::LimitExceeded);
                 }
-                let regex = regex::RegexBuilder::new(pattern)
-                    .size_limit(MAX_REGEX_COMPILED_BYTES)
-                    .dfa_size_limit(MAX_REGEX_COMPILED_BYTES)
-                    .nest_limit(32)
-                    .build()
-                    .map_err(|error| match error {
-                        regex::Error::CompiledTooBig(_) => KernelError::LimitExceeded,
-                        _ => KernelError::Domain,
-                    })?;
+                let regex = self
+                    .regex_cache
+                    .as_ref()
+                    .ok_or(KernelError::InputContract)?
+                    .get(pattern)?;
                 if self.operation == RegexMatch {
                     Value::Bool(regex.is_match(source))
                 } else {
@@ -772,6 +741,11 @@ impl MathPackage {
             operation,
             unit,
             ends,
+            regex_cache: matches!(
+                operation,
+                TextOperation::RegexMatch | TextOperation::RegexExtract
+            )
+            .then(Arc::default),
         })
     }
 }

@@ -223,29 +223,111 @@ pub fn said(outcome: ControlOutcome) -> String {
     words.to_owned()
 }
 
-/// A value as a person reads it: `7`, `"text"`, `true`, `<12 bytes>`. Long text is cut.
+/// A value as a person reads it: `7`, `"text"`, `true`, `<12 bytes>`, JSON as its
+/// text, `[1, 2, 3]`, `{"a": 1}`, `point(1, 2)`. Long values are cut at 120 characters.
 pub fn plain(value: &Value) -> String {
+    let mut budget = TextBudget {
+        text: String::new(),
+        remaining: 120,
+    };
+    if write_plain(&mut budget, value, 0).is_err() {
+        budget.text.push('…');
+    }
+    budget.text
+}
+
+/// Items of a list or map [`plain`] shows before counting the rest.
+const PLAIN_ITEMS: usize = 8;
+
+fn write_plain(out: &mut impl Write, value: &Value, depth: usize) -> fmt::Result {
     match value {
-        Value::Bool(v) => v.to_string(),
-        Value::I32(v) => v.to_string(),
-        Value::U32(v) => v.to_string(),
-        Value::I64(v) => v.to_string(),
-        Value::Timestamp(v) | Value::Duration(v) => v.to_string(),
-        Value::U64(v) => v.to_string(),
-        Value::F32(v) => v.to_string(),
-        Value::F64(v) => v.to_string(),
-        Value::Str(text) => {
-            let mut shown: String = text.chars().take(120).collect();
-            if shown.len() < text.len() {
-                shown.push('…');
+        Value::Unit => out.write_str("()"),
+        Value::Bool(v) => write!(out, "{v}"),
+        Value::I32(v) => write!(out, "{v}"),
+        Value::U32(v) => write!(out, "{v}"),
+        Value::I64(v) | Value::Timestamp(v) | Value::Duration(v) => write!(out, "{v}"),
+        Value::U64(v) => write!(out, "{v}"),
+        Value::F32(v) => write!(out, "{v}"),
+        Value::F64(v) => write!(out, "{v}"),
+        Value::Str(text) => write!(out, "{:?}", text.as_str()),
+        Value::Bytes(bytes) => write!(out, "<{} bytes>", bytes.len()),
+        Value::Json(text) => {
+            // Pretty JSON stays on one line.
+            let mut words = text.as_str().split_whitespace();
+            if let Some(first) = words.next() {
+                out.write_str(first)?;
             }
-            format!("{shown:?}")
+            words.try_for_each(|word| write!(out, " {word}"))
         }
-        Value::Bytes(bytes) => format!("<{} bytes>", bytes.len()),
-        Value::Record(record) if record.ty.as_str() == crate::RGBA_TYPE => record
-            .rgba_channels()
-            .map_or_else(|| "—".to_owned(), orange_model::value::rgba_hex),
-        other => bounded_text(format_args!("{other:?}"), 120, "…"),
+        Value::Record(record) if record.ty.as_str() == crate::RGBA_TYPE => out.write_str(
+            &record
+                .rgba_channels()
+                .map_or_else(|| "—".to_owned(), orange_model::value::rgba_hex),
+        ),
+        _ if depth >= 2 && matches!(value, Value::List(_) | Value::Map(_) | Value::Record(_)) => {
+            out.write_str("…")
+        }
+        Value::List(list) => {
+            out.write_str("[")?;
+            for (index, item) in list.iter().take(PLAIN_ITEMS).enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                write_plain(out, &item, depth + 1)?;
+            }
+            if list.len() > PLAIN_ITEMS {
+                write!(out, ", … {} more", list.len() - PLAIN_ITEMS)?;
+            }
+            out.write_str("]")
+        }
+        Value::Map(map) => {
+            let entries = map.entries();
+            out.write_str("{")?;
+            for (index, (key, item)) in entries.iter().take(PLAIN_ITEMS).enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                write_plain(out, key, depth + 1)?;
+                out.write_str(": ")?;
+                write_plain(out, item, depth + 1)?;
+            }
+            if entries.len() > PLAIN_ITEMS {
+                write!(out, ", … {} more", entries.len() - PLAIN_ITEMS)?;
+            }
+            out.write_str("}")
+        }
+        Value::Record(record) => {
+            // `org.example/point@1` reads as `point`.
+            let name = record.ty.as_str();
+            let name = name.split('@').next().unwrap_or(name);
+            out.write_str(name.rsplit(['/', '.']).next().unwrap_or(name))?;
+            out.write_str("(")?;
+            for (index, field) in record.fields.iter().enumerate() {
+                if index > 0 {
+                    out.write_str(", ")?;
+                }
+                match field {
+                    Some(field) => write_plain(out, field, depth + 1)?,
+                    None => out.write_str("—")?,
+                }
+            }
+            out.write_str(")")
+        }
+        Value::Enum { tag, payload } => {
+            write!(out, "case {}", u64::from(*tag) + 1)?;
+            if let Some(payload) = payload {
+                out.write_str("(")?;
+                write_plain(out, payload, depth + 1)?;
+                out.write_str(")")?;
+            }
+            Ok(())
+        }
+        Value::None => out.write_str("none"),
+        Value::Some(inner) | Value::Ok(inner) => write_plain(out, inner, depth),
+        Value::Err(error) => write!(out, "error {}", error.code),
+        Value::Handle(_) => out.write_str("<handle>"),
+        Value::Stream(_) => out.write_str("<stream>"),
+        other => write!(out, "{other:?}"),
     }
 }
 
@@ -563,5 +645,36 @@ mod tests {
             plain(&Value::Bytes(std::sync::Arc::new(vec![1, 2]))),
             "<2 bytes>"
         );
+    }
+
+    #[test]
+    fn composite_values_read_as_json_lists_maps_and_named_records() {
+        use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
+        use std::sync::Arc;
+        let json = |text: &str| Value::Json(Arc::new(JsonText::new(text.to_owned()).unwrap()));
+        assert_eq!(plain(&json("null")), "null");
+        assert_eq!(plain(&json("{\n  \"a\": [1, 2]\n}")), "{ \"a\": [1, 2] }");
+        let strings = ListRepr::Str(Box::new([]));
+        assert_eq!(plain(&Value::List(Arc::new(strings))), "[]");
+        let numbers = ListRepr::I64((1..=10).collect());
+        assert_eq!(
+            plain(&Value::List(Arc::new(numbers))),
+            "[1, 2, 3, 4, 5, 6, 7, 8, … 2 more]"
+        );
+        assert_eq!(plain(&Value::Map(Arc::new(MapRepr::default()))), "{}");
+        let record = RecordRepr {
+            ty: "org.example/point@1".parse().unwrap(),
+            fields: Box::new([Some(Value::I32(1)), None]),
+        };
+        assert_eq!(plain(&Value::Record(Arc::new(record))), "point(1, —)");
+        let tagged = Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(Value::Bool(true))),
+        };
+        assert_eq!(plain(&tagged), "case 2(true)");
+        assert_eq!(plain(&Value::Some(Arc::new(Value::U32(3)))), "3");
+        let long = Value::Str(Arc::new("x".repeat(300)));
+        assert_eq!(plain(&long).chars().count(), 121);
+        assert!(plain(&long).ends_with('…'));
     }
 }

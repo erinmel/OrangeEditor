@@ -11,8 +11,12 @@ build = "../../../build/locales.rs"
 windows.workspace = true
 windows-core.workspace = true
 
+[features]
+audio-device-tests = []
+
 [dependencies]
 orange-sdk = { path = "../../platform/orange-sdk", version = "=0.0.0" }
+orange-net = { path = "../orange-net", version = "=0.0.0" }
 serde_json.workspace = true
 # Device input and output. Linux builds need the ALSA development headers.
 cpal.workspace = true
@@ -20,8 +24,9 @@ cpal.workspace = true
 claxon.workspace = true
 # WAV decoding.
 hound.workspace = true
-# MP3 and Ogg Vorbis decoding.
+# AIFF, MP3, Ogg Vorbis, and M4A decoding.
 symphonia.workspace = true
+symphonia-opus.workspace = true
 
 [dev-dependencies]
 orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0" }

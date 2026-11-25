@@ -292,6 +292,32 @@ fn an_installed_package_brings_its_types_and_a_refused_one_leaves_none() {
     let _ = std::fs::remove_dir_all(&store);
 }
 
+/// A node that reads a graph's own record says so by the record's name, never by its
+/// `local/t…` type ID.
+#[test]
+fn a_local_record_node_is_described_by_the_type_name() {
+    let graph = json!({"format": "orange.graph", "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-0000000000a9", "revision": 1,
+        "package_lock": [], "type_lock": [], "events": [], "connections": [],
+        "signatures": {}, "functions": [], "exports": [], "editor": {},
+        "types": [{"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6e", "name": "Item",
+            "kind": "record", "fields": [{"id": "name", "name": "Name",
+            "type": "core/string@1"}]}],
+        "variables": [], "nodes": [], "edges": []})
+    .to_string();
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&graph).unwrap();
+    let get = host
+        .add_node(&mut draft, "org.orange.collections/get-field", [0.0, 0.0])
+        .unwrap();
+    let local = "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6e@1";
+    host.set_config(&mut draft, get, &json!({"type": local, "field": "name"}))
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let node = view.nodes.iter().find(|node| node.id == get).unwrap();
+    assert_eq!(node.detail.as_deref(), Some("Item.name"));
+}
+
 #[test]
 fn record_and_enum_nodes_start_with_a_registered_type() {
     let blank = json!({"format": "orange.graph", "format_version": 1,

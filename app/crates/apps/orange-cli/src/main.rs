@@ -27,10 +27,11 @@ const USAGE: &str = "\
 usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>] [--watch]
+              [--approve-connection <connection-id>]...
   orange bind  <graph.json>... [--package <file.orangeplug>]... [--store <dir>]
   orange preview <graph.json> [<node> <port>]... [--package <file.orangeplug>]... [--store <dir>]
   orange pack  <package-dir> <out.orangeplug>
-  orange nodes [--package <file.orangeplug>]... [--store <dir>]
+  orange nodes [--json] [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
   orange enable <package-id> --store <dir>
   orange disable <package-id> --store <dir>
@@ -123,6 +124,8 @@ files there are JSON and can be edited while nothing runs.
 operating system's credential store; a connection's settings name it as
 `credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
 hold no secrets. `secret check` says whether one is stored without showing it.
+On one reviewed graph, `run --approve-connection <connection-id>` authorizes
+credential use for that connection's exact settings on this machine.
 
 `oauth login <settings.json> <name>` signs you in to a service in a browser
 (authorization code with PKCE) and keeps the refresh token in the credential store; an
@@ -136,7 +139,10 @@ credential store and prints the `update.key` to put in a package's manifest; `fe
 
 `--grant-log` lets installed package code write log lines, `--grant-files` lets it
 read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
-store), and `--grant-http` lets it send HTTPS requests. A package receives a grant
+store), `--grant-http` lets it send HTTPS requests, `--grant-http-local` lets it send HTTP
+or HTTPS requests to this computer and the local network, and `--grant-compute` gives
+each call more fuel and transfer room for heavy work, and `--grant-websocket` lets
+it send on the WebSocket connection its node names. A package receives a grant
 only if its manifest asks for it (`permissions`), and an install says what a package
 asked for and was not given. A grant is given to the
 packages installed by that command and is kept with them in the store.
@@ -149,6 +155,8 @@ pub(crate) struct Arguments {
     pub graphs: Vec<String>,
     pub packages: Vec<String>,
     pub shared: Vec<[String; 3]>,
+    pub credential_approvals: Vec<String>,
+    pub catalog_json: bool,
     pub grants: Grants,
     pub duration: Option<Duration>,
     pub store: Option<String>,
@@ -174,6 +182,8 @@ fn arguments() -> Result<Arguments, String> {
         graphs: Vec::new(),
         packages: Vec::new(),
         shared: Vec::new(),
+        credential_approvals: Vec::new(),
+        catalog_json: false,
         grants: Grants::default(),
         duration: None,
         store: None,
@@ -203,9 +213,15 @@ fn arguments() -> Result<Arguments, String> {
                 };
                 parsed.shared.push([next()?, next()?, next()?]);
             }
-            "--grant-log" => parsed.grants.log = true,
-            "--grant-files" => parsed.grants.files = true,
-            "--grant-http" => parsed.grants.http = true,
+            "--approve-connection" => parsed.credential_approvals.push(
+                words
+                    .next()
+                    .ok_or("--approve-connection needs a connection ID")?,
+            ),
+            "--json" if parsed.command == "nodes" => parsed.catalog_json = true,
+            flag if flag
+                .strip_prefix("--grant-")
+                .is_some_and(|name| parsed.grants.grant(name)) => {}
             "--state" => parsed.state = Some(words.next().ok_or("--state needs a directory")?),
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
@@ -280,7 +296,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
     let host = &mut started.host;
     match name {
         "packages" => packages(host),
-        "nodes" => nodes(host),
+        "nodes" => nodes(host, arguments.catalog_json),
         "bind" => bind(host, &arguments.graphs)?,
         "preview" => preview(host, &arguments.graphs)?,
         "publish" => publish(host, &arguments.graphs)?,

@@ -107,6 +107,12 @@ struct Settings {
     prefetch: u16,
     heartbeat: u16,
 }
+impl Drop for Settings {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.password.zeroize();
+    }
+}
 
 fn short_text(text: &str) -> bool {
     text.len() <= usize::from(u8::MAX) && !text.chars().any(char::is_control)

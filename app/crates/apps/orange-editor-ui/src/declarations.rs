@@ -130,6 +130,23 @@ impl ConnectionForm {
     }
 
     fn check(&self, host: &Host, mut settings: Json) -> Result<(), String> {
+        // Check the shape without looking up a credential from an imported profile.
+        for field in host
+            .adapter_texts(&self.adapter)
+            .into_iter()
+            .filter(|field| field.secret)
+        {
+            if text_at(&settings, &field.setting)
+                .and_then(Json::as_str)
+                .is_some_and(|text| text.starts_with(SECRET_PREFIX))
+            {
+                set_text(
+                    &mut settings,
+                    &field.setting,
+                    Some(Json::from("credential-check")),
+                );
+            }
+        }
         for (setting, secret) in &self.secrets.0 {
             if !secret.is_empty() {
                 set_text(&mut settings, setting, Some(Json::from(secret.as_str())));
@@ -507,16 +524,8 @@ impl Editor {
     /// Declares a variable, or changes the one with `variable.id`. Returns its ID.
     pub fn declare_variable(&mut self, host: &mut Host, variable: &Variable) -> Option<String> {
         let draft = self.editing()?;
-        match host.declare_variable(draft, variable) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = host.declare_variable(draft, variable);
+        self.edited_value(host, result)
     }
 
     /// Declares a variable and makes `node` name it at the setting `pointer` (such as
@@ -556,16 +565,8 @@ impl Editor {
         connection: &Connection,
     ) -> Option<String> {
         let draft = self.editing()?;
-        match host.declare_connection(draft, connection) {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = host.declare_connection(draft, connection);
+        self.edited_value(host, result)
     }
 
     /// The setting choices of `adapter`, listed the first time they are asked for and
@@ -637,7 +638,8 @@ impl Editor {
     }
 
     /// Adds a Get node for variable `id` where it was let go, or a Set node with `set`.
-    /// Returns the node.
+    /// A variable shared by graphs is written with Set shared, the only write the
+    /// language accepts for it (11 §11.1). Returns the node.
     pub fn drop_variable(
         &mut self,
         host: &mut Host,
@@ -645,10 +647,15 @@ impl Editor {
         set: bool,
         at: [f32; 2],
     ) -> Option<NodeId> {
-        let definition = if set {
-            "core/set-variable"
-        } else {
-            "core/get-variable"
+        let shared = self.declarations().is_some_and(|declared| {
+            declared.variables.iter().any(|variable| {
+                variable.id.as_deref() == Some(id) && variable.scope == VarScope::Workspace
+            })
+        });
+        let definition = match (set, shared) {
+            (false, _) => "core/get-variable",
+            (true, false) => "core/set-variable",
+            (true, true) => "core/set-shared",
         };
         let node = self.add_node_at(host, definition, at)?;
         let _ = self.set_setting(host, node, "/variable", Some(Json::from(id)));
@@ -718,6 +725,18 @@ impl Editor {
             .unwrap_or_default();
         let mut remove = None;
         let mut change: Option<Variable> = None;
+        let mut place: Option<(String, bool)> = None;
+        let mut find: Option<Vec<NodeId>> = None;
+        // The nodes that name each variable: Get, Set, Update, On variable changed.
+        let mut users_of: HashMap<String, Vec<NodeId>> = HashMap::new();
+        for node in self.graph().map_or(&[][..], |graph| graph.nodes.as_slice()) {
+            if let Some(variable) = node.settings.get("variable").and_then(Json::as_str) {
+                users_of
+                    .entry(variable.to_owned())
+                    .or_default()
+                    .push(node.id);
+            }
+        }
         let query = self.declaration_search[0].trim().to_lowercase();
         let mut visible: Vec<_> = declared
             .variables
@@ -772,10 +791,22 @@ impl Editor {
                                 let mut kept = variable.clone();
                                 ui.label(t("lasts"));
                                 for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                                    let _ =
-                                        ui.radio_value(&mut kept.scope, scope, scope_name(scope));
+                                    let _ = orange_ui_controls::radio(
+                                        ui,
+                                        Surface::Dialog,
+                                        orange_ui_controls::RadioStyle::Simple,
+                                        &mut kept.scope,
+                                        scope,
+                                        scope_name(scope),
+                                    );
                                 }
-                                let _ = ui.checkbox(&mut kept.persistent, t("keep-between-runs"));
+                                let _ = orange_ui_controls::checkbox(
+                                    ui,
+                                    Surface::Dialog,
+                                    orange_ui_controls::CheckStyle::Emphasis,
+                                    &mut kept.persistent,
+                                    t("keep-between-runs"),
+                                );
                                 if kept != *variable {
                                     change = Some(kept);
                                 }
@@ -860,6 +891,7 @@ impl Editor {
                             ..variable.clone()
                         });
                     }
+                    ui.weak(t("starts-at-lower"));
                     if let Some(choices) = self.canvas.enums.get(&variable.ty) {
                         let mut initial = variable.initial.clone();
                         choice_list(
@@ -889,7 +921,56 @@ impl Editor {
                 })
                 .response
                 .on_hover_text(t("starts-at"));
+                // Where it is used, which finds those nodes, and a Get or a Set
+                // without dragging.
+                ui.horizontal(|ui| {
+                    let users = users_of.get(id.as_str()).map_or(&[][..], Vec::as_slice);
+                    if users.is_empty() {
+                        ui.weak(t("variable-unused"));
+                    } else if ui
+                        .link(
+                            egui::RichText::new(tf(
+                                "variable-use-count",
+                                &[("count", users.len().into())],
+                            ))
+                            .weak(),
+                        )
+                        .on_hover_text(t("variable-find-uses-hint"))
+                        .clicked()
+                    {
+                        find = Some(users.to_vec());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let named = [("name", variable.name.as_str().into())];
+                        if ui
+                            .small_button(t("variable-set"))
+                            .on_hover_text(tf("variable-set-hint", &named))
+                            .clicked()
+                        {
+                            place = Some((id.clone(), true));
+                        }
+                        if ui
+                            .small_button(t("variable-get"))
+                            .on_hover_text(tf("variable-get-hint", &named))
+                            .clicked()
+                        {
+                            place = Some((id.clone(), false));
+                        }
+                    });
+                });
             });
+        }
+        if let Some((id, set)) = place {
+            let at = self.canvas.paste_place();
+            let _ = self.drop_variable(host, &id, set, at);
+        }
+        if let Some(users) = find
+            && let Some(document) = &self.document
+        {
+            if let Some(first) = users.first() {
+                self.canvas.focus(&document.graph, *first);
+            }
+            self.canvas.select_many(&users);
         }
         if declared.variables.is_empty() && !self.forms.variable_open {
             ui.weak(t("no-variables"));
@@ -930,72 +1011,69 @@ impl Editor {
                         &[("name", name.as_str().into())],
                     ));
                 }
-                egui::Grid::new("orange-variable-form")
-                    .num_columns(2)
-                    .spacing([8.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label(t("name"));
+                orange_ui_controls::form_grid("orange-variable-form").show(ui, |ui| {
+                    ui.label(t("name"));
+                    let _ = ui.add(
+                        egui::TextEdit::singleline(&mut form.name)
+                            .hint_text(t("variable-name-hint"))
+                            .desired_width(ui.available_width()),
+                    );
+                    ui.end_row();
+                    ui.label(t("type"));
+                    let _ = egui::ComboBox::from_id_salt("orange-variable-type")
+                        .selected_text(type_name(&form.ty))
+                        .show_select(ui, Surface::Panel, |ui| {
+                            for ty in COMMON_TYPES {
+                                let _ =
+                                    ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
+                            }
+                            for (local, name) in types_tab::choices() {
+                                let _ = ui.selectable_value(&mut form.ty, local, name);
+                            }
+                        });
+                    ui.end_row();
+                    ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
+                    let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
+                        .selected_text(scope_name(form.scope))
+                        .show_select(ui, Surface::Panel, |ui| {
+                            for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
+                                if scope == VarScope::Workspace && !can_use_workspace {
+                                    continue;
+                                }
+                                let _ =
+                                    ui.selectable_value(&mut form.scope, scope, scope_name(scope));
+                            }
+                        });
+                    ui.end_row();
+                    ui.label(t("starts-at"));
+                    if let Some(choices) = enums.get(&form.ty) {
+                        let mut initial =
+                            Some(form.initial.clone()).filter(|text| !text.is_empty());
+                        choice_list(
+                            ui,
+                            egui::IdSalt::new("orange-new-variable-initial"),
+                            choices,
+                            &mut initial,
+                        );
+                        form.initial = initial.unwrap_or_default();
+                    } else {
                         let _ = ui.add(
-                            egui::TextEdit::singleline(&mut form.name)
-                                .hint_text(t("variable-name-hint"))
+                            egui::TextEdit::singleline(&mut form.initial)
+                                .hint_text(t("empty-until-written"))
                                 .desired_width(ui.available_width()),
                         );
-                        ui.end_row();
-                        ui.label(t("type"));
-                        let _ = egui::ComboBox::from_id_salt("orange-variable-type")
-                            .selected_text(type_name(&form.ty))
-                            .show_select(ui, Surface::Panel, |ui| {
-                                for ty in COMMON_TYPES {
-                                    let _ = ui.selectable_value(
-                                        &mut form.ty,
-                                        ty.to_owned(),
-                                        type_name(ty),
-                                    );
-                                }
-                                for (local, name) in types_tab::choices() {
-                                    let _ = ui.selectable_value(&mut form.ty, local, name);
-                                }
-                            });
-                        ui.end_row();
-                        ui.label(t("lasts")).on_hover_text(t("lasts-hint"));
-                        let _ = egui::ComboBox::from_id_salt("orange-variable-scope")
-                            .selected_text(scope_name(form.scope))
-                            .show_select(ui, Surface::Panel, |ui| {
-                                for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                                    if scope == VarScope::Workspace && !can_use_workspace {
-                                        continue;
-                                    }
-                                    let _ = ui.selectable_value(
-                                        &mut form.scope,
-                                        scope,
-                                        scope_name(scope),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                        ui.label(t("starts-at"));
-                        if let Some(choices) = enums.get(&form.ty) {
-                            let mut initial =
-                                Some(form.initial.clone()).filter(|text| !text.is_empty());
-                            choice_list(
-                                ui,
-                                egui::IdSalt::new("orange-new-variable-initial"),
-                                choices,
-                                &mut initial,
-                            );
-                            form.initial = initial.unwrap_or_default();
-                        } else {
-                            let _ = ui.add(
-                                egui::TextEdit::singleline(&mut form.initial)
-                                    .hint_text(t("empty-until-written"))
-                                    .desired_width(ui.available_width()),
-                            );
-                        }
-                        ui.end_row();
-                        ui.label("");
-                        let _ = ui.checkbox(&mut form.persistent, t("keep-between-runs"));
-                        ui.end_row();
-                    });
+                    }
+                    ui.end_row();
+                    ui.label("");
+                    let _ = orange_ui_controls::checkbox(
+                        ui,
+                        Surface::Dialog,
+                        orange_ui_controls::CheckStyle::Emphasis,
+                        &mut form.persistent,
+                        t("keep-between-runs"),
+                    );
+                    ui.end_row();
+                });
                 ui.horizontal(|ui| {
                     let ready = !form.name.trim().is_empty();
                     declare = ui.add_enabled(ready, egui::Button::new(t("add"))).clicked();
@@ -1044,27 +1122,26 @@ impl Editor {
         secrets: &[(String, String)],
     ) -> Option<String> {
         let draft = self.editing()?;
-        let result = host.declare_connection_with_secrets(draft, connection, secrets);
-        match result {
-            Ok(id) => {
-                let _ = self.edited(host, Ok(true));
-                Some(id)
-            }
-            Err(error) => {
-                let _ = self.edited(host, Err(error));
-                None
-            }
-        }
+        let result = host
+            .declare_connection_with_secrets(draft, connection, secrets)
+            .and_then(|id| {
+                if secrets.is_empty() {
+                    host.approve_connection_credentials(draft, &id)?;
+                }
+                Ok(id)
+            });
+        self.edited_value(host, result)
     }
 
     /// The nodes that use connection `id`, by what they are called.
-    fn connection_users(&self, host: &Host, id: &str) -> Vec<String> {
+    /// The nodes that use connection `id`, with what each is called.
+    fn connection_users(&self, host: &Host, id: &str) -> Vec<(NodeId, String)> {
         let Some(document) = &self.document else {
             return Vec::new();
         };
         host.connection_users(&document.draft, id)
-            .iter()
-            .map(|node| document.names.called(node))
+            .into_iter()
+            .map(|node| (node, document.names.called(&node)))
             .collect()
     }
 
@@ -1325,7 +1402,11 @@ impl Editor {
                     });
                 ui.horizontal_wrapped(|ui| {
                     let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
-                    let label = if form.changing.is_some() {
+                    let label = if form.settings.contains(SECRET_PREFIX)
+                        || form.secrets.0.values().any(|secret| !secret.is_empty())
+                    {
+                        t("save-and-approve-credentials")
+                    } else if form.changing.is_some() {
                         t("save")
                     } else {
                         t("add")
@@ -1406,6 +1487,7 @@ impl Editor {
         if visible.is_empty() && !declared.connections.is_empty() {
             ui.weak(t("no-declaration-matches"));
         }
+        let mut find: Option<Vec<NodeId>> = None;
         let mut previous_adapter = None;
         for connection in visible {
             if previous_adapter != Some(connection.adapter.as_str()) {
@@ -1425,9 +1507,22 @@ impl Editor {
                             &[("adapter", label_of(&connection.adapter).into())],
                         ));
                     } else {
-                        let _ = ui
-                            .weak(tf("connection-use-count", &[("count", users.len().into())]))
-                            .on_hover_text(users.join("\n"));
+                        let names: Vec<&str> =
+                            users.iter().map(|(_, name)| name.as_str()).collect();
+                        // Clicking it selects and shows those nodes.
+                        if ui
+                            .link(
+                                egui::RichText::new(tf(
+                                    "connection-use-count",
+                                    &[("count", users.len().into())],
+                                ))
+                                .weak(),
+                            )
+                            .on_hover_text(names.join("\n"))
+                            .clicked()
+                        {
+                            find = Some(users.iter().map(|(node, _)| *node).collect());
+                        }
                     }
                     pressed
                 })
@@ -1439,6 +1534,14 @@ impl Editor {
             if delete {
                 remove = connection.id.clone();
             }
+        }
+        if let Some(users) = find
+            && let Some(document) = &self.document
+        {
+            if let Some(first) = users.first() {
+                self.canvas.focus(&document.graph, *first);
+            }
+            self.canvas.select_many(&users);
         }
         if declared.connections.is_empty() {
             ui.weak(t("no-connections"));
@@ -1872,6 +1975,42 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_variable_is_written_with_set_shared_and_the_graph_runs() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let shared = editor
+            .declare_variable(
+                &mut host,
+                &Variable {
+                    id: None,
+                    name: "shared".into(),
+                    ty: "core/i64@1".into(),
+                    scope: VarScope::Workspace,
+                    persistent: false,
+                    initial: Some("0".into()),
+                },
+            )
+            .unwrap();
+        let node = editor
+            .drop_variable(&mut host, &shared, true, [40.0, 80.0])
+            .unwrap();
+        let graph = editor.graph().unwrap();
+        let set = graph.nodes.iter().find(|found| found.id == node).unwrap();
+        assert_eq!(set.definition, "core/set-shared");
+        assert_eq!(set.settings["variable"], json!(shared));
+
+        // The host learns the shared variables on the first run, so it starts.
+        editor.run(&mut host);
+        assert!(editor.is_running());
+        assert_eq!(host.shared_variables().len(), 1);
+        editor.stop(&mut host);
+        // A second run finds them already shared.
+        editor.run(&mut host);
+        assert!(editor.is_running());
+    }
+
+    #[test]
     fn every_adapter_is_offered_and_a_typed_secret_never_reaches_the_document() {
         let store = Arc::new(Store::default());
         let package = orange_host::ServicePackage::new("acme.kit", "1.0.0")
@@ -1916,7 +2055,15 @@ mod tests {
             "credential://{}",
             orange_host::secret_name(&id, "token")
         )));
-        assert_eq!(store.0.lock().unwrap().len(), 1);
+        assert_eq!(
+            store
+                .0
+                .lock()
+                .unwrap()
+                .get(&orange_host::secret_name(&id, "token"))
+                .map(String::as_str),
+            Some("s3cret-value")
+        );
         draw(&mut editor, &mut host);
     }
 

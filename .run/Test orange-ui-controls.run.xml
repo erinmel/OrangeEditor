@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Test orange-ui-controls" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="test -p orange-ui-controls --locked --all-targets --all-features" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="channel" value="DEFAULT" />
+    <option name="requiredFeatures" value="false" />
+    <option name="allFeatures" value="false" />
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

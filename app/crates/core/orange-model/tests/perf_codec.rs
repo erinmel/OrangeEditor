@@ -1,4 +1,4 @@
-//! Descriptive load/save timings; run explicitly with --release --ignored --nocapture.
+//! Descriptive load/save timings; run explicitly with --release --nocapture.
 //! Excludes file I/O, semantic validation and compilation. No NFR threshold assertion.
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -47,9 +47,12 @@ fn median<T>(mut operation: impl FnMut() -> T) -> Duration {
 }
 
 #[test]
-#[ignore = "descriptive release-only codec measurement"]
 fn json_load_save_cost_by_document_size() {
-    for count in [1_000, 10_000] {
+    for count in if cfg!(debug_assertions) {
+        [16, 128]
+    } else {
+        [1_000, 10_000]
+    } {
         let source = fixture(count);
         let document = from_json(&source).unwrap();
         assert_eq!(document.root().nodes.len(), count);

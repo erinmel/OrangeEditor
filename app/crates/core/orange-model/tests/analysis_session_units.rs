@@ -280,11 +280,10 @@ fn published_session_and_analysis_are_send_and_sync() {
     assert_send_sync::<ValidationAnalysis>();
 }
 
-/// Descriptive Windows release probe, not a gate or timing assertion.
-/// Run: cargo test -p orange-model --test analysis_session_units --release --locked
-/// --offline measure_config_unit_reuse -- --ignored --nocapture
+/// Descriptive timing of one scoped configuration edit against the full analysis.
+/// Run: cargo test -p orange-model --lib --release --locked
+/// --offline measure_config_unit_reuse -- --nocapture
 #[test]
-#[ignore = "manual descriptive release timing; full global passes remain"]
 fn measure_config_unit_reuse() {
     use std::time::Instant;
     const WARMUPS: usize = 5;
@@ -295,7 +294,11 @@ fn measure_config_unit_reuse() {
             |percent: usize| samples[(samples.len() * percent).div_ceil(100) - 1] as f64 / 1000.0;
         (at(50), at(95))
     }
-    for count in [128, 1024] {
+    for count in if cfg!(debug_assertions) {
+        [16, 64]
+    } else {
+        [128, 1024]
+    } {
         let (mut document, registry) = fixture(count);
         let mut session = AnalysisSession::new(
             &document,
@@ -307,7 +310,7 @@ fn measure_config_unit_reuse() {
         let (mut full_ns, mut session_ns, mut materialize_ns) =
             (Vec::new(), Vec::new(), Vec::new());
         for sample in 0..WARMUPS + SAMPLES {
-            let change = document.apply([config(1, json!(sample % 2 == 0))]).unwrap();
+            let change = document.apply([config(1, json!(sample % 2 != 0))]).unwrap();
             let start = Instant::now();
             let oracle = full(&document, &registry);
             let full_elapsed = start.elapsed().as_nanos();
@@ -325,9 +328,10 @@ fn measure_config_unit_reuse() {
             // Correctness checks and rendering are outside all timed sections.
             assert_eq!(materialized, oracle);
             assert_eq!(stats.local.config_computed, 1);
-            assert_eq!(stats.local.config_hits, count - 1);
-            assert_eq!(stats.local.nodes_visited, count);
-            assert_eq!(stats.full_analysis_runs, 1);
+            assert_eq!(stats.work, SessionWork::Scoped);
+            assert_eq!(stats.local.config_hits, 0);
+            assert_eq!(stats.local.nodes_visited, 0);
+            assert_eq!(stats.full_analysis_runs, 0);
             if sample >= WARMUPS {
                 full_ns.push(full_elapsed);
                 session_ns.push(session_elapsed);
@@ -338,8 +342,7 @@ fn measure_config_unit_reuse() {
         let session = percentiles(&mut session_ns);
         let materialize = percentiles(&mut materialize_ns);
         println!(
-            "config units={count} warmups={WARMUPS} samples={SAMPLES} full_us_p50_p95={full:?} session_us_p50_p95={session:?} materialize_us_p50_p95={materialize:?}; per edit: config computed=1 hits={} visited={count}, full_global_runs=1; allocations/retained-memory not measured",
-            count - 1
+            "config units={count} warmups={WARMUPS} samples={SAMPLES} full_us_p50_p95={full:?} session_us_p50_p95={session:?} materialize_us_p50_p95={materialize:?}; per edit: config computed=1 hits=0 visited=0, full_global_runs=0; allocations/retained-memory not measured"
         );
     }
 }

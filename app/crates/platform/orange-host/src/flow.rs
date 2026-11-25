@@ -92,11 +92,14 @@ impl Space {
     /// Stores the persistent shared variables as they are now.
     pub(crate) fn store(&self) -> Result<(), String> {
         let keep = self.keep.lock().unwrap_or_else(PoisonError::into_inner);
-        let (Some(keep), Some(snapshot)) = (keep.as_ref(), self.snapshot()) else {
+        let Some(keep) = keep.as_ref() else {
+            return Ok(());
+        };
+        let Some(snapshot) = self.snapshot() else {
             return Ok(());
         };
         let now = state::snapshot(&keep.variables, keep.registry.types(), |id| {
-            snapshot.get(id).ok().flatten().cloned()
+            snapshot.get(id).ok().flatten()
         });
         state::save(&keep.directory, &keep.name, &now)
     }
@@ -134,7 +137,8 @@ pub(crate) struct Swap {
     pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
     pub keep: Option<Keep>,
     pub armables: Vec<crate::armed::Armable>,
-    pub reply: Sender<Result<Swapped, RunError>>,
+    pub feeds: Vec<crate::Feed>,
+    pub reply: Sender<Result<Swapped, crate::HostError>>,
 }
 
 /// What the host needs to reach the replacement run.
@@ -143,6 +147,7 @@ pub(crate) struct Swapped {
     pub sources: BTreeMap<EventDeclId, RunEventSource>,
     pub kept: usize,
     pub reset: usize,
+    pub feeds: Vec<crate::flows::ActiveFeed>,
 }
 
 /// Registers a host source for every event the run opens to the host.
@@ -165,7 +170,14 @@ pub(crate) fn event_sources(
 /// The new run is started first, with the value of every run variable whose identity and
 /// type are unchanged; only then is the old run stopped. If the new run cannot start,
 /// the old one is untouched and keeps running.
-fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapped, RunError> {
+fn replace(
+    driver: &mut RunDriver,
+    cx: &mut Context,
+    mut swap: Swap,
+) -> Result<Swapped, crate::HostError> {
+    if let Some(keep) = &mut swap.keep {
+        keep.acquire(cx.keep.as_ref())?;
+    }
     let old = driver.run();
     let mut values = BTreeMap::new();
     let (mut kept, mut reset) = (0, 0);
@@ -217,6 +229,21 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
     let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let (mut next, inbox) = RunDriver::new(run, swap.inbox_capacity, now);
     let sources = event_sources(&mut next, &swap.plan);
+    let feeds = crate::Host::stage_feeds(
+        &cx.sink,
+        cx.id,
+        &cx.shared,
+        &inbox,
+        &thread::current(),
+        swap.feeds,
+        &cx.gate,
+    )?;
+    crate::effects::guard(|| {
+        for session in swap.sessions.values() {
+            session.start();
+        }
+    })
+    .map_err(|fault| crate::HostError::Start(fault.message.to_string()))?;
 
     // Retire the old run: cancel what it was doing and let its cleanup finish. Its
     // On Stop entries do not run, because the graph is being edited, not stopped.
@@ -245,18 +272,20 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
     cx.sessions = swap.sessions;
     cx.plan = swap.plan;
     cx.keep = swap.keep;
+    for feed in &feeds {
+        feed.activate();
+    }
     Ok(Swapped {
         inbox,
         sources,
         kept,
         reset,
+        feeds,
     })
 }
 
-/// Bounded, never-blocking delivery of observations. A slow observer loses telemetry
-/// (steps, values) and can see how many; it never slows a run. Lifecycle events (state,
-/// faults, refusals, a replaced graph, the end of a flow) are never lost to a full
-/// queue: they wait in a small overflow list the observer reads once the queue is empty.
+/// Bounded observation delivery. A slow observer cannot block a producer on
+/// queue capacity. Lifecycle events can use a bounded overflow list.
 #[derive(Debug, Clone)]
 pub(crate) struct Sink {
     pub events: SyncSender<HostEvent>,
@@ -264,8 +293,7 @@ pub(crate) struct Sink {
     pub overflow: Arc<Mutex<VecDeque<HostEvent>>>,
 }
 
-/// Most lifecycle events waiting beside a full queue; past it even they are counted
-/// as dropped. Each flow sends only a few.
+/// Most lifecycle events waiting beside a full queue.
 pub(crate) const MAX_OVERFLOW: usize = 1024;
 
 /// Whether an observer must see this event even when it reads slowly.
@@ -284,29 +312,42 @@ fn lifecycle(kind: &FlowEvent) -> bool {
 
 impl Sink {
     pub(crate) fn send(&self, flow: FlowId, kind: FlowEvent) {
-        let event = HostEvent { flow, kind };
-        let Err(full) = self.events.try_send(event) else {
-            return;
-        };
-        let event = match full {
-            std::sync::mpsc::TrySendError::Full(event) => event,
-            // No one observes any more.
-            std::sync::mpsc::TrySendError::Disconnected(_) => return,
+        let _ = self.offer(flow, kind);
+    }
+
+    fn offer(&self, flow: FlowId, kind: FlowEvent) -> bool {
+        let mut overflow = self.overflow.lock().unwrap_or_else(PoisonError::into_inner);
+        let event = if overflow.is_empty() {
+            match self.events.try_send(HostEvent { flow, kind }) {
+                Ok(()) | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return true,
+                Err(std::sync::mpsc::TrySendError::Full(event)) => event,
+            }
+        } else {
+            HostEvent { flow, kind }
         };
         if lifecycle(&event.kind) {
-            let mut overflow = self.overflow.lock().unwrap_or_else(PoisonError::into_inner);
+            // Reserve the oldest replaceable notification for the end of a flow.
+            if overflow.len() == MAX_OVERFLOW
+                && matches!(event.kind, FlowEvent::Finished)
+                && let Some(position) = overflow
+                    .iter()
+                    .position(|held| !matches!(held.kind, FlowEvent::Finished))
+            {
+                let _ = overflow.remove(position);
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
             if overflow.len() < MAX_OVERFLOW {
                 overflow.push_back(event);
-                return;
+                return true;
             }
         }
         let _ = self.dropped.fetch_add(1, Ordering::Relaxed);
+        false
     }
 }
 
-/// What a host observes of its flows, in order. Telemetry comes through a bounded queue;
-/// lifecycle events that did not fit wait beside it and are read once it is empty, so
-/// the end of a flow is always seen.
+/// Ordered best-effort observations. Lifecycle notifications can use a bounded
+/// overflow queue. Query `Host::state` for authoritative terminal state.
 #[derive(Debug)]
 pub struct Events {
     pub(crate) queue: Receiver<HostEvent>,
@@ -334,9 +375,10 @@ impl Events {
 
     /// The next event if there is one now.
     pub fn try_recv(&self) -> Result<HostEvent, TryRecvError> {
+        let mut overflow = self.overflow.lock().unwrap_or_else(PoisonError::into_inner);
         match self.queue.try_recv() {
             Ok(event) => Ok(event),
-            Err(error) => self.waiting().ok_or(error),
+            Err(error) => overflow.pop_front().ok_or(error),
         }
     }
 
@@ -376,9 +418,27 @@ pub(crate) struct Keep {
     pub name: String,
     pub variables: Vec<Kept>,
     pub registry: Arc<RegistrySnapshot>,
+    pub lock: Option<Arc<std::fs::File>>,
+}
+
+impl Keep {
+    pub(crate) fn acquire(&mut self, previous: Option<&Self>) -> Result<(), crate::HostError> {
+        if let Some(previous) = previous
+            && previous.directory == self.directory
+            && previous.name == self.name
+            && let Some(lock) = &previous.lock
+        {
+            self.lock = Some(Arc::clone(lock));
+            return Ok(());
+        }
+        let lock = state::lock(&self.directory, &self.name).map_err(crate::HostError::State)?;
+        self.lock = Some(Arc::new(lock));
+        Ok(())
+    }
 }
 
 pub(crate) struct Context {
+    pub gate: crate::services::Gate,
     pub keep: Option<Keep>,
     pub id: FlowId,
     pub shared: Arc<Shared>,
@@ -415,6 +475,12 @@ pub(crate) const BUSY: KernelFault = KernelFault {
     message: "The host has too much work waiting; try again.",
 };
 
+const DENIED: KernelFault = KernelFault {
+    code: FaultText::Static("host/ServiceDenied"),
+    message_key: FaultText::Static("host/service-denied"),
+    message: "The host denied this service operation.",
+};
+
 const NO_CONNECTION: KernelFault = KernelFault {
     code: FaultText::Static("host/ConnectionUnavailable"),
     message_key: FaultText::Static("host/connection-unavailable"),
@@ -438,9 +504,30 @@ fn deliver(inbox: &RunInbox, input: HostInput, flow: &Thread) {
     flow.unpark();
 }
 
-pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
+fn start_sources(cx: &mut Context, thread: &Thread, run_id: u64) {
+    for (node, reason) in cx.armed.start(run_id, &cx.inbox, thread, (&cx.sink, cx.id)) {
+        cx.sink
+            .send(cx.id, FlowEvent::SourceRefused { node, reason });
+    }
+}
+
+pub(crate) fn drive(driver: RunDriver, cx: Context) {
+    let shared = Arc::clone(&cx.shared);
+    let sink = cx.sink.clone();
+    let id = cx.id;
+    if crate::effects::guard(|| drive_inner(driver, cx)).is_err() {
+        shared.closing.store(true, Ordering::Release);
+        finish_requests(&shared);
+        *shared.state.lock().unwrap_or_else(PoisonError::into_inner) = RunState::Faulted;
+        sink.send(id, FlowEvent::Fault(RunError::Interrupted));
+        sink.send(id, FlowEvent::State(RunState::Faulted));
+        sink.send(id, FlowEvent::Finished);
+    }
+}
+
+fn drive_inner(mut driver: RunDriver, mut cx: Context) {
     let me = thread::current();
-    let mut recorded = 0u64;
+    let mut trace_cursor = orange_runtime::TraceCursor::default();
     let mut last_state = None;
     let mut guest_work: Vec<(EffectLease, GuestCancellation)> = Vec::new();
     let mut errors = 0u8;
@@ -456,11 +543,8 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut shared_dirty = false;
     // The value of each output port as last reported to the observer.
     let mut ports: PortValues = PortValues::new();
-    for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
-        cx.sink
-            .send(cx.id, FlowEvent::SourceRefused { node, reason });
-    }
-    loop {
+    start_sources(&mut cx, &me, driver.run().id());
+    let interrupted = loop {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
             let _ = driver.run_mut().request_stop(StopMode::Immediate);
@@ -473,20 +557,29 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             .take();
         if let Some(swap) = pending {
             let reply = swap.reply.clone();
+            let same_checkpoint = match (&cx.keep, &swap.keep) {
+                (None, None) => true,
+                (Some(old), Some(new)) => {
+                    old.variables == new.variables
+                        && Arc::ptr_eq(old.registry.types(), new.registry.types())
+                }
+                _ => false,
+            };
             let outcome = replace(&mut driver, &mut cx, swap);
             if let Ok(swapped) = &outcome {
                 // Work issued by the old run has nowhere to return to.
                 for (_, cancellation) in guest_work.drain(..) {
                     cancellation.cancel();
                 }
-                recorded = 0;
+                trace_cursor = orange_runtime::TraceCursor::default();
                 last_state = None;
                 reported.clear();
                 ports.clear();
-                for (node, reason) in cx.armed.start(&cx.inbox, &me, (&cx.sink, cx.id)) {
-                    cx.sink
-                        .send(cx.id, FlowEvent::SourceRefused { node, reason });
+                // The new plan may retain different variables with the same values.
+                if !same_checkpoint {
+                    stored = None;
                 }
+                start_sources(&mut cx, &me, driver.run().id());
                 cx.sink.send(
                     cx.id,
                     FlowEvent::Updated {
@@ -516,7 +609,12 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         let mut refused = |refusal: Refused| {
             cx.sink.send(cx.id, FlowEvent::Refused(refusal.reason));
         };
-        let turn = driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused);
+        let turn = match crate::effects::guard(|| {
+            driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused)
+        }) {
+            Ok(turn) => turn,
+            Err(_) => break true,
+        };
 
         let mut issued = false;
         // Shared writes are applied here, on the flow's thread, one at a time across
@@ -553,6 +651,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             if let Err(reason) = cx.armed.arm(
                 arguments.node,
                 &arguments.values,
+                driver.run().id(),
                 &cx.inbox,
                 &me,
                 (&cx.sink, cx.id),
@@ -570,16 +669,43 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             issued = true;
             let EffectRequest {
                 id,
+                node,
                 context,
                 inputs,
                 lease,
                 ..
             } = request;
             if let Some(effect) = guest_effect(&context) {
+                // A package node that names a connection sends through the session the
+                // host opened for it, under the same policy as the host's own nodes.
+                let connection = effect.connection();
+                if connection.is_some()
+                    && !cx.gate.allows(
+                        node,
+                        effect.definition(),
+                        crate::ServiceOperation::Effect,
+                        connection,
+                        &inputs,
+                    )
+                {
+                    let _ = driver.run_mut().complete_effect(id, Err(DENIED));
+                    continue;
+                }
+                let session = match connection {
+                    None => None,
+                    Some(connection) => match cx.sessions.get(&connection) {
+                        Some(session) => Some(Arc::clone(session)),
+                        None => {
+                            let _ = driver.run_mut().complete_effect(id, Err(NO_CONNECTION));
+                            continue;
+                        }
+                    },
+                };
                 let cancellation = effect.cancellation();
                 let (inbox, flow) = (cx.inbox.clone(), me.clone());
                 let submitted = cx.pool.submit(move || {
-                    let outcome = effect.run(&inputs);
+                    let outcome = crate::effects::guard(|| effect.run_on(&inputs, session))
+                        .and_then(|value| value);
                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                 });
                 // Work the host cannot hold now fails at once instead of queueing.
@@ -589,6 +715,16 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                     let _ = driver.run_mut().complete_effect(id, Err(BUSY));
                 }
             } else if let Ok(service) = context.downcast::<ServiceEffect>() {
+                if !cx.gate.allows(
+                    node,
+                    &service.definition,
+                    crate::ServiceOperation::Effect,
+                    service.connection,
+                    &inputs,
+                ) {
+                    let _ = driver.run_mut().complete_effect(id, Err(DENIED));
+                    continue;
+                }
                 // A node that names a connection this flow did not open cannot run.
                 let session = match service.connection {
                     None => Ok(None),
@@ -608,12 +744,13 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                                 lease: &lease,
                             };
                             let Some(item) = service.stream.clone() else {
-                                let outcome = service.node.run(&call);
+                                let outcome = crate::effects::guard(|| service.node.run(&call))
+                                    .and_then(|value| value);
                                 deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                                 return;
                             };
-                            match service.node.items(&call) {
-                                Some(Ok(items)) => {
+                            match crate::effects::guard(|| service.node.items(&call)) {
+                                Ok(Some(Ok(items))) => {
                                     let producer = crate::streams::Pulled::new(
                                         items,
                                         pool,
@@ -633,11 +770,11 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                                         }
                                     });
                                 }
-                                Some(Err(fault)) => {
+                                Ok(Some(Err(fault))) | Err(fault) => {
                                     let outcome = Err(fault);
                                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                                 }
-                                None => {
+                                Ok(None) => {
                                     let outcome = Err(UNAVAILABLE);
                                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                                 }
@@ -659,6 +796,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             !lease.is_finished()
         });
 
+        let mut observations_pending = false;
         if observed {
             let mut changed = Vec::new();
             let mut cleared = Vec::new();
@@ -668,7 +806,6 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 }
                 let key = (*node, port.clone());
                 if ports.get(&key) != Some(value) {
-                    let _ = ports.insert(key, value.clone());
                     changed.push((*node, port.clone(), value.clone()));
                 }
             }
@@ -676,21 +813,37 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             for live in cx.plan.lives() {
                 let key = (live.node(), live.port().clone());
                 let Some(value) = driver.run().live_port_value(live.node(), live.port()) else {
-                    if ports.remove(&key).is_some() {
+                    if ports.contains_key(&key) {
                         cleared.push(key);
                     }
                     continue;
                 };
                 if ports.get(&key) != Some(value) {
-                    let _ = ports.insert(key, value.clone());
                     changed.push((live.node(), live.port().clone(), value.clone()));
                 }
             }
             if !changed.is_empty() {
-                cx.sink.send(cx.id, FlowEvent::Ports(changed));
+                if cx.sink.offer(cx.id, FlowEvent::Ports(changed.clone())) {
+                    ports.extend(
+                        changed
+                            .into_iter()
+                            .map(|(node, key, value)| ((node, key), value)),
+                    );
+                } else {
+                    observations_pending = true;
+                }
             }
             if !cleared.is_empty() {
-                cx.sink.send(cx.id, FlowEvent::PortsCleared(cleared));
+                if cx
+                    .sink
+                    .offer(cx.id, FlowEvent::PortsCleared(cleared.clone()))
+                {
+                    for key in cleared {
+                        let _ = ports.remove(&key);
+                    }
+                } else {
+                    observations_pending = true;
+                }
             }
         } else if !ports.is_empty() {
             ports.clear();
@@ -699,29 +852,27 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         // New trace entries since the last turn. The run keeps a bounded window, so a
         // burst larger than the window is reported as lost rather than replayed.
         let run = driver.run();
-        let total = run.trace_dropped() + run.trace().len() as u64;
-        let fresh = total.saturating_sub(recorded);
-        let kept = usize::try_from(fresh).map_or(run.trace().len(), |n| n.min(run.trace().len()));
-        if fresh > kept as u64 {
-            cx.sink
-                .send(cx.id, FlowEvent::TraceLost(fresh - kept as u64));
+        let (lost, events) = run.trace_since(&mut trace_cursor);
+        if lost != 0 {
+            cx.sink.send(cx.id, FlowEvent::TraceLost(lost));
         }
-        for event in run.trace().iter().skip(run.trace().len() - kept) {
+        for event in events {
             cx.sink.send(cx.id, FlowEvent::Node(event.clone()));
         }
-        recorded = total;
 
         if observed {
             let mut changed = Vec::new();
-            for cell in cx.plan.variables() {
-                let value = run.variable(cell.id()).cloned();
-                if reported.get(&cell.id()) != Some(&value) {
-                    let _ = reported.insert(cell.id(), value.clone());
-                    changed.push((cell.id(), value));
+            for (id, value) in run.variable_values() {
+                if reported.get(&id).map(Option::as_ref) != Some(value) {
+                    changed.push((id, value.cloned()));
                 }
             }
             if !changed.is_empty() {
-                cx.sink.send(cx.id, FlowEvent::Variables(changed));
+                if cx.sink.offer(cx.id, FlowEvent::Variables(changed.clone())) {
+                    reported.extend(changed);
+                } else {
+                    observations_pending = true;
+                }
             }
         } else if !reported.is_empty() {
             reported.clear();
@@ -740,21 +891,27 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         }
         let run = driver.run();
         if let Some(keep) = &cx.keep {
-            // Values are compared as they are; encoding and writing happen only when
-            // one differs from what was last stored.
-            let now: Vec<Option<Value>> = keep
-                .variables
-                .iter()
-                .map(|kept| run.variable(kept.id).cloned())
-                .collect();
-            if stored.as_ref() != Some(&now) {
-                let mut values = now.iter();
-                let encoded = state::snapshot(&keep.variables, keep.registry.types(), |_| {
-                    values.next().cloned().flatten()
+            let unchanged = stored.as_ref().is_some_and(|last| {
+                last.len() == keep.variables.len()
+                    && last
+                        .iter()
+                        .zip(&keep.variables)
+                        .all(|(value, kept)| value.as_ref() == run.variable(kept.id))
+            });
+            if !unchanged {
+                let encoded = state::snapshot(&keep.variables, keep.registry.types(), |id| {
+                    run.variable(id)
                 });
                 // A failed write is tried again at the next turn.
                 if state::save(&keep.directory, &keep.name, &encoded).is_ok() {
-                    stored = Some(now);
+                    let last =
+                        stored.get_or_insert_with(|| Vec::with_capacity(keep.variables.len()));
+                    last.clear();
+                    last.extend(
+                        keep.variables
+                            .iter()
+                            .map(|kept| run.variable(kept.id).cloned()),
+                    );
                 }
             }
         }
@@ -772,14 +929,14 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             cx.sink.send(cx.id, FlowEvent::State(state));
         }
         if terminal(state) || closing_since.is_some_and(|since| since.elapsed() > CLOSE_GRACE) {
-            break;
+            break false;
         }
         match turn {
             Err(error) => {
                 cx.sink.send(cx.id, FlowEvent::Fault(error));
                 errors += 1;
                 if errors == 3 {
-                    break;
+                    break false;
                 }
                 let _ = driver.run_mut().request_stop(StopMode::Immediate);
             }
@@ -796,21 +953,51 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                         .next_wakeup
                         .map(|at| Duration::from_nanos(at.saturating_sub(driver.run().now()))),
                     live_deadline,
-                    !guest_work.is_empty() || closing_since.is_some(),
+                    !guest_work.is_empty() || closing_since.is_some() || observations_pending,
                 );
                 if !wait.is_zero() {
                     thread::park_timeout(wait);
                 }
             }
         }
+    };
+    if interrupted {
+        cx.shared.closing.store(true, Ordering::Release);
     }
     cx.armed.stop();
     for (_, cancellation) in &guest_work {
         cancellation.cancel();
     }
     // A replacement that arrives now is refused by dropping its reply channel.
+    finish_requests(&cx.shared);
+    let mut run = driver.into_run();
+    if interrupted {
+        let _ = run.request_stop(StopMode::Immediate);
+        if run.state() == RunState::Cancelling {
+            // The failed generation must not execute more kernel code.
+            let _ = run.request_stop(StopMode::Immediate);
+        }
+    }
+    let _ = run.dispose();
+    let state = if interrupted {
+        RunState::Faulted
+    } else {
+        run.state()
+    };
+    *cx.shared
+        .state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = state;
+    if interrupted {
+        cx.sink.send(cx.id, FlowEvent::Fault(RunError::Interrupted));
+        cx.sink.send(cx.id, FlowEvent::State(state));
+    }
+    cx.sink.send(cx.id, FlowEvent::Finished);
+}
+
+fn finish_requests(shared: &Shared) {
     drop(
-        cx.shared
+        shared
             .swap
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -818,19 +1005,12 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     );
     // Refuse queries from here on, and release any that were waiting.
     drop(
-        cx.shared
+        shared
             .queries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take(),
     );
-    let mut run = driver.into_run();
-    let _ = run.dispose();
-    *cx.shared
-        .state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = run.state();
-    cx.sink.send(cx.id, FlowEvent::Finished);
 }
 
 // Sample the clock after the turn so work already done counts toward its deadlines.

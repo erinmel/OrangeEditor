@@ -74,6 +74,7 @@ use regions::Regions;
 use timers::TimerTarget;
 use timers::{TimerKey, Timers};
 use trace::Trace;
+pub use trace::TraceCursor;
 pub(crate) use update::workspace_update;
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
@@ -783,8 +784,7 @@ pub struct Run {
     last_segment: Option<u64>,
     segment: SegmentWrites,
     /// Reused cancellation traversal buffers; empty between calls.
-    cancel_regions: Vec<RegionId>,
-    cancel_timers: Vec<TimerKey>,
+    cancellation: ownership::Cancellation,
     /// Temporary Fork children, drained before any child can execute.
     fork_children: Vec<Strand>,
     /// Set while `pump` runs. Still set on the next call only if a trusted callback
@@ -798,8 +798,8 @@ pub struct Run {
     replay: Option<replay::Session>,
     watches: watch::Watches,
     /// Published values and the coalesced ingress waiting for an epoch boundary.
-    lives: Vec<Option<Value>>,
-    pending_lives: BTreeMap<usize, Option<Value>>,
+    lives: Vec<Option<watch::LiveValue>>,
+    pending_lives: BTreeMap<usize, Option<watch::LiveValue>>,
     live_bytes: Tally,
     /// The last value seen on each output port, while the host asks for them.
     port_values: Option<PortValues>,
@@ -1234,8 +1234,7 @@ impl Run {
             segment_owner: None,
             last_segment: None,
             segment: SegmentWrites::new(variable_count, state_count),
-            cancel_regions: vec![],
-            cancel_timers: vec![],
+            cancellation: ownership::Cancellation::default(),
             fork_children: vec![],
             pump_open: false,
             resources: resources::Resources::default(),
@@ -1387,6 +1386,10 @@ impl Run {
     pub fn trace_dropped(&self) -> u64 {
         self.trace.dropped()
     }
+    /// Advances an observer of this run and returns missing and retained new events.
+    pub fn trace_since(&self, cursor: &mut TraceCursor) -> (u64, impl Iterator<Item = &RunEvent>) {
+        self.trace.since(cursor)
+    }
     /// Unambiguous run-owned source state; repeated call sites require `control_state`.
     pub fn node_state(&self, id: NodeId) -> Option<&Value> {
         let plan = self.plan.as_ref()?;
@@ -1421,13 +1424,23 @@ impl Run {
     }
     /// Explicit run-state inspection; activation-local cells are not shared.
     pub fn variable(&self, id: VariableId) -> Option<&Value> {
-        let index = self
-            .plan
-            .as_ref()?
-            .variables()
-            .iter()
-            .position(|v| v.id() == id && v.scope() == VarScope::Run)?;
+        let index = self.plan.as_ref()?.run_variable_index(id)?;
         self.variables[self.layout.variables[index]].as_ref()
+    }
+    /// Inspects referenced variables in plan order. Unset and non-run cells have no value.
+    pub fn variable_values(&self) -> impl Iterator<Item = (VariableId, Option<&Value>)> {
+        self.plan
+            .iter()
+            .flat_map(|plan| plan.variables())
+            .zip(self.layout.variables.iter().copied())
+            .map(|(cell, index)| {
+                let value = if cell.scope() == VarScope::Run {
+                    self.variables[index].as_ref()
+                } else {
+                    None
+                };
+                (cell.id(), value)
+            })
     }
     fn record(&mut self, event: RunEvent) {
         self.trace.record(event, self.options.limits.max_trace);
@@ -2231,11 +2244,23 @@ impl Run {
                 }
             }
             ControlOperation::Update { .. } => {
+                let observe = self.port_values.is_some();
                 match self
                     .cells()
-                    .execute_update(plan, activation, shared, ix, budget)?
+                    .execute_update(plan, activation, shared, ix, budget, observe)?
                 {
-                    Some(step) => step,
+                    Some((step, seen)) => {
+                        // An update has a result even when no graph wire reads it.
+                        if let Some(values) = &mut self.port_values {
+                            let node = plan.nodes()[ix.index()].node();
+                            for (port, value) in seen {
+                                if let Ok(port) = port.parse() {
+                                    record_port(values, node, &port, &value);
+                                }
+                            }
+                        }
+                        step
+                    }
                     None => return Ok(()),
                 }
             }
@@ -2703,8 +2728,7 @@ impl Run {
         self.segment_owner = None;
         self.last_segment = None;
         self.trace.release();
-        self.cancel_regions = Vec::new();
-        self.cancel_timers = Vec::new();
+        self.cancellation = ownership::Cancellation::default();
         self.fork_children = Vec::new();
         self.resources = resources::Resources::default();
         self.changes.release();

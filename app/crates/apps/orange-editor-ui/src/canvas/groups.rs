@@ -2,7 +2,7 @@
 //! and collapsed to a small card that hides them; and arranging selected nodes along
 //! their wires. The groups themselves belong to the document ([`Group`]);
 //! the canvas draws them and says what a person asked of them.
-use super::{CanvasResponse, NODE_WIDTH, Palette, auto_layout, node_size, snapped};
+use super::{CanvasResponse, NODE_WIDTH, Palette, TITLE_ZOOM, snapped};
 use crate::canvas::Canvas;
 use crate::i18n::{t, tf};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -88,7 +88,7 @@ impl Canvas {
             .filter_map(|id| {
                 Some(Rect::from_min_size(
                     *self.places.get(id)?,
-                    node_size(nodes.get(id)?),
+                    self.card(nodes.get(id)?).size,
                 ))
             })
             .reduce(|all, rect| all.union(rect))?;
@@ -150,6 +150,7 @@ impl Canvas {
         graph: &GraphView,
         screen: impl Fn(Rect) -> Rect,
         base: egui::Id,
+        dismiss_menu: bool,
         done: &mut CanvasResponse,
     ) {
         let zoom = self.zoom;
@@ -200,50 +201,171 @@ impl Canvas {
                     self.select_many(&group.nodes);
                 }
             }
-            let _ = touched.context_menu(|ui| {
+            if dismiss_menu {
+                let popup_id = egui::Popup::default_response_id(&touched);
+                if egui::Popup::is_id_open(ui.ctx(), popup_id) {
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                    ui.memory_mut(|memory| memory.surrender_focus(touched.id.with("group-name")));
+                    self.renaming = None;
+                }
+                continue;
+            }
+            let opening = touched.secondary_clicked();
+            if opening {
+                self.renaming = Some((group.id.clone(), group.name.clone(), true));
+            }
+            let touched = touched.on_hover_text_at_pointer(&group.name);
+            let popup = egui::Popup::context_menu(&touched)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            let _ = popup.show(|ui| {
+                ui.set_width(244.0);
                 let renaming = self
                     .renaming
-                    .get_or_insert_with(|| (group.id.clone(), group.name.clone()));
+                    .get_or_insert_with(|| (group.id.clone(), group.name.clone(), true));
                 if renaming.0 != group.id {
-                    *renaming = (group.id.clone(), group.name.clone());
+                    *renaming = (group.id.clone(), group.name.clone(), true);
                 }
-                ui.label(t("name"));
-                let typed = ui.text_edit_singleline(&mut renaming.1);
-                let name = renaming.1.trim().to_owned();
-                if typed.lost_focus() && !name.is_empty() && name != group.name {
-                    let mut changed = group.clone();
-                    changed.name = name;
-                    done.group = Some(GroupEdit::Change(changed));
-                }
-                ui.horizontal(|ui| {
-                    for choice in GROUP_COLORS {
-                        let [r, g, b] = choice;
-                        let swatch = egui::Button::new("  ")
-                            .fill(Color32::from_rgb(r, g, b))
-                            .selected(choice == group.color);
-                        if ui.add(swatch).clicked() {
-                            let mut changed = group.clone();
-                            changed.color = choice;
-                            done.group = Some(GroupEdit::Change(changed));
-                        }
+                let (_, name, focus) = renaming;
+                let height = ui.spacing().interact_size.y;
+                let result = crate::organise::rename_field(
+                    ui,
+                    touched.id.with("group-name"),
+                    name,
+                    focus,
+                    egui::TextStyle::Body,
+                    height,
+                    Some(t("name")),
+                );
+                if result == Some(true) {
+                    let name = name.trim();
+                    if !name.is_empty() && name != group.name {
+                        let mut changed = group.clone();
+                        changed.name = name.to_owned();
+                        done.group = Some(GroupEdit::Change(changed));
+                        ui.close();
+                        return;
                     }
-                });
+                }
+                if result.is_some() {
+                    name.clone_from(&group.name);
+                }
+                ui.add_space(6.0);
+                let custom_id = touched.id.with("custom-group-color");
+                let was_open =
+                    !opening && ui.data(|data| data.get_temp::<bool>(custom_id).unwrap_or(false));
+                let custom_clicked = ui
+                    .horizontal(|ui| {
+                        for (choice, label) in GROUP_COLORS.into_iter().zip([
+                            "group-color-blue",
+                            "group-color-green",
+                            "group-color-orange",
+                            "group-color-purple",
+                            "group-color-red",
+                            "group-color-teal",
+                        ]) {
+                            let [r, g, b] = choice;
+                            let (rect, response) =
+                                ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                            let selected = choice == group.color;
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::RadioButton,
+                                    true,
+                                    selected,
+                                    t(label),
+                                )
+                            });
+                            let response = response.on_hover_text(t(label));
+                            let fill = Color32::from_rgb(r, g, b);
+                            ui.painter().rect_filled(rect.shrink(3.0), 4.0, fill);
+                            if selected || response.hovered() || response.has_focus() {
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    5.0,
+                                    Stroke::new(1.0, ui.visuals().text_color()),
+                                    StrokeKind::Inside,
+                                );
+                            }
+                            if response.clicked() {
+                                let mut changed = group.clone();
+                                changed.color = choice;
+                                done.group = Some(GroupEdit::Change(changed));
+                                ui.close();
+                            }
+                        }
+                        let custom = ui
+                            .add(
+                                egui::Button::new(crate::icons::centered(crate::icons::ADD))
+                                    .min_size(Vec2::splat(26.0))
+                                    .selected(was_open || !GROUP_COLORS.contains(&group.color)),
+                            )
+                            .on_hover_text(t("group-custom-color"));
+                        custom.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::Role::Button,
+                                true,
+                                was_open,
+                                t("group-custom-color"),
+                            )
+                        });
+                        custom.clicked()
+                    })
+                    .inner;
+                let custom_open = was_open ^ custom_clicked;
+                if opening || custom_clicked {
+                    ui.data_mut(|data| {
+                        data.insert_temp(custom_id, custom_open);
+                        orange_ui_controls::color_picker::reset(data, custom_id);
+                    });
+                }
+                if custom_open {
+                    let [r, g, b] = group.color;
+                    if let Some([r, g, b, _]) = orange_ui_controls::color_picker::inline(
+                        ui,
+                        custom_id,
+                        [r, g, b, 255],
+                        false,
+                        crate::properties::color_picker_labels(),
+                    ) {
+                        let mut changed = group.clone();
+                        changed.color = [r, g, b];
+                        done.group = Some(GroupEdit::Change(changed));
+                    }
+                    return;
+                }
                 let fold = if group.collapsed {
                     t("expand")
                 } else {
                     t("collapse")
                 };
-                if ui.button(fold).clicked() {
+                ui.add_space(6.0);
+                let menu_action = |ui: &mut egui::Ui, icon, label, enabled| {
+                    use crate::controls::{self, Action, Surface};
+                    let button = egui::Button::new((crate::icons::centered(icon), label))
+                        .min_size(Vec2::new(ui.available_width(), 28.0));
+                    controls::button(ui, Surface::Panel, Action::Menu, enabled, button).clicked()
+                };
+                let fold_icon = if group.collapsed {
+                    crate::icons::EXPAND
+                } else {
+                    crate::icons::COLLAPSE
+                };
+                if menu_action(ui, fold_icon, fold, true) {
                     let mut changed = group.clone();
                     changed.collapsed = !changed.collapsed;
                     done.group = Some(GroupEdit::Change(changed));
                     ui.close();
                 }
-                if ui.button(t("group-select-nodes")).clicked() && !group.collapsed {
+                if menu_action(
+                    ui,
+                    crate::icons::SELECT_ALL,
+                    t("group-select-nodes"),
+                    !group.collapsed,
+                ) {
                     self.select_many(&group.nodes);
                     ui.close();
                 }
-                if ui.button(t("ungroup")).clicked() {
+                if menu_action(ui, crate::icons::UNGROUP, t("ungroup"), true) {
                     done.group = Some(GroupEdit::Ungroup(group.id.clone()));
                     ui.close();
                 }
@@ -299,7 +421,11 @@ impl Canvas {
                 ),
                 StrokeKind::Inside,
             );
-            let font = FontId::proportional(13.0 * zoom.max(0.5));
+            if zoom < TITLE_ZOOM {
+                continue;
+            }
+            let painter = painter.with_clip_rect(shown);
+            let font = FontId::proportional(13.0 * zoom);
             // The caret is from the bundled icon font, the name from the text font.
             let mark = if group.collapsed {
                 crate::icons::EXPAND
@@ -313,11 +439,15 @@ impl Canvas {
                 FontId::new(font.size, crate::icons::family()),
                 colors.text,
             );
-            let _ = painter.text(
-                Pos2::new(caret.right() + 4.0 * zoom, title.center().y),
-                Align2::LEFT_CENTER,
-                group.name.as_str(),
-                font.clone(),
+            let name_at = Pos2::new(caret.right() + 4.0 * zoom, title.center().y);
+            let mut name =
+                egui::text::LayoutJob::simple_singleline(group.name.clone(), font, colors.text);
+            name.wrap.max_width = (title.right() - name_at.x - 10.0 * zoom).max(0.0);
+            name.wrap.max_rows = 1;
+            let name = painter.layout_job(name);
+            painter.galley(
+                name_at - Vec2::new(0.0, name.size().y / 2.0),
+                name,
                 colors.text,
             );
             if group.collapsed {
@@ -372,7 +502,7 @@ impl Canvas {
                 .collect(),
         };
         let mut moved = false;
-        for (node, at) in auto_layout(&part) {
+        for (node, at) in self.auto_layout(&part) {
             let at = start + at.to_vec2();
             if let Some(place) = self.places.get_mut(&node)
                 && *place != at
@@ -389,6 +519,226 @@ impl Canvas {
 mod tests {
     use super::*;
     use orange_host::{Host, HostOptions};
+
+    #[test]
+    fn the_group_menu_commits_renaming_and_a_custom_color() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let node = host
+            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let mut group = Group {
+            id: "group".into(),
+            name: "Original".into(),
+            color: GROUP_COLORS[0],
+            nodes: vec![node],
+            collapsed: true,
+        };
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.set_groups(vec![group.clone()]);
+        let frame_group = group.clone();
+        let title_at = std::cell::Cell::new(Pos2::ZERO);
+        let context = egui::Context::default();
+        crate::icons::install(&context);
+        let mut frame = |events, replacement: Option<&Group>| {
+            if let Some(replacement) = replacement {
+                canvas.set_groups(vec![replacement.clone()]);
+            }
+            let mut result = CanvasResponse::default();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 680.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let canvas_start = ui.cursor().min;
+                    result = canvas.show(ui, &graph, &[]);
+                    let title = canvas.group_frame(&graph, &frame_group).unwrap().center();
+                    title_at.set(canvas_start + (title - canvas.origin) * canvas.zoom);
+                },
+            );
+            (output, result.group)
+        };
+        let pointer = |pos, button, pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let button_center = |output: &egui::FullOutput, label: &str| {
+            orange_testkit::ui::text_center(&output.shapes, label).expect(label)
+        };
+        frame(vec![], None).0.drop_without_applying_deltas();
+        let at = title_at.get();
+        orange_testkit::ui::click(at, egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
+        frame(vec![], None).0.drop_without_applying_deltas();
+        frame(
+            vec![
+                key(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text("QA playback".into()),
+            ],
+            None,
+        )
+        .0
+        .drop_without_applying_deltas();
+        let (output, changed) = frame(vec![key(egui::Key::Enter, egui::Modifiers::NONE)], None);
+        output.drop_without_applying_deltas();
+        group.name = "QA playback".into();
+        assert_eq!(changed, Some(GroupEdit::Change(group.clone())));
+
+        frame(vec![], Some(&group)).0.drop_without_applying_deltas();
+        orange_testkit::ui::click(at, egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
+        let (output, _) = frame(vec![], None);
+        let custom = button_center(&output, &crate::icons::ADD.to_string());
+        output.drop_without_applying_deltas();
+        let mut click = |pos| {
+            frame(
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    pointer(pos, egui::PointerButton::Primary, true),
+                ],
+                None,
+            )
+            .0
+            .drop_without_applying_deltas();
+            frame(
+                vec![pointer(pos, egui::PointerButton::Primary, false)],
+                None,
+            )
+        };
+        click(custom).0.drop_without_applying_deltas();
+        let (output, _) = frame(vec![], None);
+        assert!(orange_testkit::ui::text_center(&output.shapes, "#569CD6").is_some());
+        output.drop_without_applying_deltas();
+
+        let (output, changed) = frame(
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 80.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            None,
+        );
+        assert!(orange_testkit::ui::text_center(&output.shapes, "#569CD6").is_none());
+        assert_eq!(changed, None);
+        output.drop_without_applying_deltas();
+        orange_testkit::ui::click(title_at.get(), egui::PointerButton::Secondary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
+        let (output, _) = frame(vec![], None);
+        let custom = button_center(&output, &crate::icons::ADD.to_string());
+        output.drop_without_applying_deltas();
+        orange_testkit::ui::click(custom, egui::PointerButton::Primary, |events| {
+            frame(events, None).0.drop_without_applying_deltas();
+        });
+        let (output, _) = frame(vec![], None);
+        let field = button_center(&output, "#569CD6");
+        output.drop_without_applying_deltas();
+        frame(
+            vec![
+                egui::Event::PointerMoved(field),
+                pointer(field, egui::PointerButton::Primary, true),
+            ],
+            None,
+        )
+        .0
+        .drop_without_applying_deltas();
+        frame(
+            vec![pointer(field, egui::PointerButton::Primary, false)],
+            None,
+        )
+        .0
+        .drop_without_applying_deltas();
+        let (output, _) = frame(
+            vec![
+                key(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text("#193B75".into()),
+            ],
+            None,
+        );
+        let apply = button_center(&output, t("color-apply"));
+        output.drop_without_applying_deltas();
+        frame(
+            vec![
+                egui::Event::PointerMoved(apply),
+                pointer(apply, egui::PointerButton::Primary, true),
+            ],
+            None,
+        )
+        .0
+        .drop_without_applying_deltas();
+        let (output, changed) = frame(
+            vec![pointer(apply, egui::PointerButton::Primary, false)],
+            None,
+        );
+        output.drop_without_applying_deltas();
+        group.color = [25, 59, 117];
+        assert_eq!(changed, Some(GroupEdit::Change(group)));
+    }
+
+    #[test]
+    fn a_collapsed_group_has_a_clipped_title_and_hides_text_at_overview_zoom() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let node = host
+            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let group = Group {
+            id: "group".into(),
+            name: "An intentionally long group title that has nowhere to go".into(),
+            color: GROUP_COLORS[0],
+            nodes: vec![node],
+            collapsed: true,
+        };
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        canvas.set_groups(vec![group.clone()]);
+        let frame = canvas.group_frame(&graph, &group).unwrap();
+        let context = egui::Context::default();
+        for zoom in [1.0, 0.25] {
+            canvas.zoom = zoom;
+            let scale = |rect: Rect| {
+                Rect::from_min_max(
+                    Pos2::ZERO + rect.min.to_vec2() * zoom,
+                    Pos2::ZERO + rect.max.to_vec2() * zoom,
+                )
+            };
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                canvas.draw_groups(ui.painter(), &graph, scale, &Palette::of(ui));
+            });
+            let title = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("An intentionally") => {
+                    Some((text, shape.clip_rect))
+                }
+                _ => None,
+            });
+            if zoom >= TITLE_ZOOM {
+                let (text, clip) = title.unwrap();
+                assert!(text.galley.elided);
+                assert!(clip.right() <= scale(frame).right());
+            } else {
+                assert!(title.is_none());
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
 
     #[test]
     fn dragging_the_group_title_snaps_the_frame_and_moves_members_together() {
@@ -445,6 +795,7 @@ mod tests {
                             &graph,
                             |rect| rect,
                             egui::Id::unique("group-test"),
+                            false,
                             &mut done,
                         );
                     },

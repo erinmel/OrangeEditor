@@ -1,6 +1,6 @@
 //! Release timing of one semantic edit, and of validation, in large documents.
 //!
-//! Run with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored
+//! Run with `cargo test --release -p orange-model --test perf_edit_baseline --
 //! --nocapture`. It asserts nothing: it prints timings for the machine it runs on.
 
 use crate::behaviour::common;
@@ -24,7 +24,6 @@ const DIGEST: &str = "sha256:abababababababababababababababababababababababababa
 const RUNS: u32 = 5;
 
 #[test]
-#[ignore = "release timing evidence, not NFR acceptance"]
 fn data_cycles_cost_by_port_width() {
     use crate::catalog::NodeContract;
     use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
@@ -57,7 +56,11 @@ fn data_cycles_cost_by_port_width() {
     facts.provider(definition, 1, provider);
     let registry = facts.snapshot();
     let snapshot = crate::signature::project(NodeKind::Pure, ports, &Default::default());
-    for width in [64usize, 256, 512] {
+    for width in if cfg!(debug_assertions) {
+        [8, 16, 32]
+    } else {
+        [64usize, 256, 512]
+    } {
         let mut node = json!({"id":node_id(0),"definition_id":"org.test/wide","definition_version":1,
             "config_version":1,"config":{},"signature":"wide",
             "provider":{"package":"org.test","version":"1.0.0","id":"wide"},
@@ -178,10 +181,13 @@ fn best(doc: &GraphDocument, mut f: impl FnMut(&mut GraphDocument)) -> Duration 
 }
 
 #[test]
-#[ignore = "release timing; run with --ignored --nocapture"]
 fn edit_cost_by_document_size() {
     let registry = registry_with_provider(key());
-    for n in [1_000usize, 10_000] {
+    for n in if cfg!(debug_assertions) {
+        [16, 128]
+    } else {
+        [1_000usize, 10_000]
+    } {
         let doc = chain(n);
         let report = validate(&doc, &registry);
         assert!(report.is_valid(), "{:?}", report.diagnostics);
@@ -229,16 +235,16 @@ fn edit_cost_by_document_size() {
 }
 
 #[test]
-#[ignore = "manual connection planning comparison; not NFR acceptance"]
 fn isolated_connection_planning_by_document_size() {
     use crate::conversion::{
         ConnectionOutcome, ConnectionRequest, plan_connection, plan_connection_indexed,
     };
-    if cfg!(debug_assertions) {
-        panic!("release only");
-    }
     let registry = registry_with_provider(key());
-    for n in [100usize, 1_000, 10_000] {
+    for n in if cfg!(debug_assertions) {
+        [10, 32, 100]
+    } else {
+        [100usize, 1_000, 10_000]
+    } {
         let mut doc = chain(n);
         let before = doc.clone();
         let mut index = DocIndex::build(&doc);
@@ -328,10 +334,13 @@ fn call_chain(depth: usize) -> GraphDocument {
 }
 
 #[test]
-#[ignore = "release timing; run with --ignored --nocapture"]
 fn validate_cost_by_call_chain_depth() {
     let registry = registry_with_provider(key());
-    for depth in [200usize, 1_000, 4_000] {
+    for depth in if cfg!(debug_assertions) {
+        [16, 32, 64]
+    } else {
+        [200usize, 1_000, 4_000]
+    } {
         let doc = call_chain(depth);
         let report = validate(&doc, &registry);
         assert!(report.diagnostics.is_empty());
@@ -344,10 +353,13 @@ fn validate_cost_by_call_chain_depth() {
 }
 
 #[test]
-#[ignore = "release timing; run with --ignored --nocapture"]
 fn export_cone_cost_by_document_size() {
     let registry = registry_with_provider(key());
-    for n in [1_000usize, 10_000] {
+    for n in if cfg!(debug_assertions) {
+        [16, 128]
+    } else {
+        [1_000usize, 10_000]
+    } {
         let doc = from_json(&minimal_document(json!({
             "package_lock": [{"id": "org.test", "version": "1.0.0", "content_digest": DIGEST}],
             "nodes": add_nodes(n, 0),
@@ -367,12 +379,15 @@ fn export_cone_cost_by_document_size() {
 }
 
 #[test]
-#[ignore = "release timing; run with --ignored --nocapture"]
 fn availability_cost_by_action_chain_size() {
     let registry = registry_with_provider(key());
     let variable = "40000000-0000-4000-8000-000000000001";
     let event = "40000000-0000-4000-8000-000000000002";
-    for n in [200usize, 1_000, 2_000, 4_000, 16_000] {
+    for &n in if cfg!(debug_assertions) {
+        &[16, 64][..]
+    } else {
+        &[200usize, 1_000, 2_000, 4_000, 16_000]
+    } {
         let mut nodes = vec![json!({"id":node_id(0),"definition_id":"core/on-event",
             "definition_version":1,"config_version":1,"config":{"event":event},
             "activation":{"mode":"queue","capacity":8,"overflow":"drop-oldest","on_fault":"continue","order":0}})];
@@ -416,19 +431,23 @@ fn availability_cost_by_action_chain_size() {
 }
 
 #[test]
-#[ignore = "release timing; run with --ignored --nocapture"]
 fn availability_cost_by_shared_pure_cone() {
     let registry = registry_with_provider(key());
     let variable = "40000000-0000-4000-8000-000000000001";
     let event = "40000000-0000-4000-8000-000000000002";
     // An event payload feeds a chain of `cone` pure adds; `consumers` chained actions all
     // read the chain's last sum.
-    for (cone, consumers) in [
-        (1_000usize, 10usize),
-        (1_000, 100),
-        (1_000, 1_000),
-        (4_000, 1_000),
-    ] {
+    let sizes: &[(usize, usize)] = if cfg!(debug_assertions) {
+        &[(16, 4), (64, 16)]
+    } else {
+        &[
+            (1_000usize, 10usize),
+            (1_000, 100),
+            (1_000, 1_000),
+            (4_000, 1_000),
+        ]
+    };
+    for &(cone, consumers) in sizes {
         let mut nodes = vec![json!({"id":node_id(0),"definition_id":"core/on-event",
             "definition_version":1,"config_version":1,"config":{"event":event},
             "activation":{"mode":"queue","capacity":8,"overflow":"drop-oldest","on_fault":"continue","order":0}})];

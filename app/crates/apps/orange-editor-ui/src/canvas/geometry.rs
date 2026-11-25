@@ -34,23 +34,26 @@ impl<'a> Geometry<'a> {
         let mut sole_exec_outputs = HashMap::new();
         for node in &graph.nodes {
             let layout = card(node);
-            for port in &node.ports {
-                let Some(offset) = layout.offset(port) else {
-                    continue;
-                };
-                let _ = ports
-                    .entry((node.id, port.input, port.id.as_str()))
-                    .or_insert(PortGeometry {
-                        offset,
-                        ty: port.ty.as_deref(),
-                        exec: port.exec,
-                    });
+            for row in &layout.rows {
+                for (port, x, y) in [
+                    (row.input(), 0.0, row.input_anchor()),
+                    (row.right, layout.size.x, row.anchor()),
+                ] {
+                    if let Some(port) = port {
+                        ports
+                            .entry((node.id, port.input, port.id.as_str()))
+                            .or_insert(PortGeometry {
+                                offset: Vec2::new(x, y),
+                                ty: port.ty.as_deref(),
+                                exec: port.exec,
+                            });
+                    }
+                }
+            }
+            if let Some(port) = layout.sole_primary_exit {
+                let _ = sole_exec_outputs.insert(node.id, port);
             }
             let _ = cards.insert(node.id, layout);
-            let mut exec = node.ports.iter().filter(|port| port.exec && !port.input);
-            if let (Some(port), None) = (exec.next(), exec.next()) {
-                let _ = sole_exec_outputs.insert(node.id, port.id.as_str());
-            }
         }
         let mut incoming = HashMap::with_capacity(graph.wires.len());
         for wire in &graph.wires {
@@ -72,6 +75,10 @@ impl<'a> Geometry<'a> {
 
     pub fn card(&self, node: NodeId) -> &Card<'a> {
         &self.cards[&node]
+    }
+
+    pub fn card_if_present(&self, node: NodeId) -> Option<&Card<'a>> {
+        self.cards.get(&node)
     }
 
     pub fn source(&self, node: NodeId, port: &str) -> Option<(NodeId, &'a str)> {

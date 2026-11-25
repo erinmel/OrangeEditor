@@ -78,12 +78,6 @@ fn encoded(profile: &str) -> (String, ImportLimits, &'static str) {
     (text, limits, outcome)
 }
 
-fn percentile(values: &[Duration], percent: usize) -> Duration {
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable();
-    sorted[(sorted.len() * percent).div_ceil(100).saturating_sub(1)]
-}
-
 fn measure(profile: &str, config: Config) {
     let (text, limits, expected) = encoded(profile);
     let encoded_bytes = text.len();
@@ -136,8 +130,8 @@ fn measure(profile: &str, config: Config) {
         encoded_bytes,
         durations.len(),
         config.warmup,
-        ms(percentile(&durations, 50)),
-        ms(percentile(&durations, 95)),
+        ms(crate::harness::sample_percentile(&durations, 50)),
+        ms(crate::harness::sample_percentile(&durations, 95)),
         ms(min),
         ms(max),
         allocation_total as f64 / measured as f64,

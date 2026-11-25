@@ -8,7 +8,8 @@
 //! refused. Identities are generated once, here, and the plan records the document content
 //! state and registry snapshot it was made against.
 
-use crate::catalog::intrinsic_id as ids;
+use crate::catalog::language::active_port_key;
+use crate::catalog::{ProviderKey, intrinsic_id as ids};
 use std::collections::BTreeMap;
 
 use thiserror::Error;
@@ -231,14 +232,7 @@ pub fn plan_connection_indexed(
             let node = NodeId::from_uuid(new_id())?;
             let (instance, snapshot) = convert_node(node, &resolved, definition);
             let key = semantic_key(&snapshot);
-            if let ConverterProvider::Package(package) = &resolved.provider {
-                edit.push(DocCommand::PutPackageLock(PackageLockEntry {
-                    id: package.package.clone(),
-                    version: package.version.clone(),
-                    content_digest: package.content_digest.clone(),
-                    extensions: Extensions::new(),
-                }));
-            }
+            edit.extend(converter_package_lock(&resolved.provider));
             edit.push(DocCommand::PutSignature {
                 key: key.clone(),
                 snapshot,
@@ -308,14 +302,7 @@ pub fn converter_node_commands(
     let (instance, snapshot) = convert_node(node, &resolved, definition);
     let key = semantic_key(&snapshot);
     let mut commands = Vec::new();
-    if let ConverterProvider::Package(package) = &resolved.provider {
-        commands.push(DocCommand::PutPackageLock(PackageLockEntry {
-            id: package.package.clone(),
-            version: package.version.clone(),
-            content_digest: package.content_digest.clone(),
-            extensions: Extensions::new(),
-        }));
-    }
+    commands.extend(converter_package_lock(&resolved.provider));
     commands.push(DocCommand::PutSignature {
         key: key.clone(),
         snapshot,
@@ -328,6 +315,18 @@ pub fn converter_node_commands(
         },
     });
     Ok(commands)
+}
+
+fn converter_package_lock(provider: &ConverterProvider) -> Option<DocCommand> {
+    let ConverterProvider::Package(package) = provider else {
+        return None;
+    };
+    Some(DocCommand::PutPackageLock(PackageLockEntry {
+        id: package.package.clone(),
+        version: package.version.clone(),
+        content_digest: package.content_digest.clone(),
+        extensions: Extensions::new(),
+    }))
 }
 
 /// How the endpoints are joined.
@@ -383,7 +382,19 @@ fn endpoint_type(
         port: port.port.clone(),
     };
     let contract = registry.contract(document, node).ok().flatten();
+    if !node.definition.id.is_core()
+        && node.provider.as_ref().is_some_and(|binding| {
+            ProviderKey::of(document, binding).is_none_or(|provider| {
+                !registry.provides(&node.definition, node.config_version, &provider)
+            })
+        })
+    {
+        return Err(not_data());
+    }
     let declared = declared_port(document, registry, port).ok_or_else(not_data)?;
+    if !active_port_key(node, &port.port, declared.variadic.is_some()) {
+        return Err(not_data());
+    }
     let ty = declared
         .ty
         .as_ref()

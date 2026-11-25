@@ -203,6 +203,10 @@ Order: connected edge → instance literal → definition default → `None` for
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
 - Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces a diagnostic. Edges to vanished ports become **orphan edges**: preserved, displayed and not compiled. An edge is orphaned when its endpoint is not a port of the node: an undeclared port, a variadic instance missing from the node's variadic state, or a bare variadic base port. `DocIndex::orphan_edges` applies the same rule as `E-PORT-UNKNOWN`, given the node and its fresh resolved signature, so editors and the validator agree.
+- Saved snapshots support inspection and detaching existing wires. New connections
+  and literal edits require the current contract. A missing exact provider leaves
+  a passive rendering whose implicit ports follow its saved kind and saved
+  declared outcomes. Orphan markers supply neither a port nor type evidence.
 
 ## 5. Types
 
@@ -308,8 +312,8 @@ Bit And/Or/Xor/Not operate on exact-width two's-complement bits.
 
 Shift `count` is always `core/u32@1`, independent of T. Left shift discards high
 bits; signed right shift extends the sign, unsigned right shift inserts zeros.
-Only checked(default) and wrapping `int_overflow` are supported: checked count
->= bit width faults with `core/OutOfRange`, wrapping uses count modulo width.
+Only checked(default) and wrapping `int_overflow` are supported: a checked count
+at or above the bit width faults with `core/OutOfRange`, wrapping uses count modulo width.
 Checked shift does not promise preservation of high value bits. Saturating shift
 config is rejected, rather than inventing a saturation rule. All other new nodes
 have empty config. Kernel errors carry safe static text and no operand values.
@@ -348,6 +352,8 @@ Square root, rounding, negate, absolute, minimum, maximum, clamp and remainder a
 exact IEEE operations. Exponential, the logarithms and power use the platform
 library: last-bit results may differ between platforms, and replay determinism is
 scoped to the locked implementation and platform ([03](03-data-and-execution.md)).
+**Map Range.** `org.orange.math/map-range@1` maps a float from one interval to another. All five inputs and the result have the same f32 or f64 type. Reversed intervals are accepted. Equal source endpoints fault with DivideByZero. The `clamp` boolean defaults to true and confines the result to the target interval. When false, the operation extrapolates. It follows the math package's finite and IEEE policies.
+
 The remaining casts are a later L02 increment.
 
 L02c trigonometry, float predicates and XOR (2026-11-08): seventeen more `T: float`
@@ -502,6 +508,13 @@ index is None, and reading the wrong kind is an error.
   another kind. Integer reads need integer form (an optional `-` and digits; `1.0`
   and `1e2` are `core/Domain`) and must fit (`core/OutOfRange`). `as-f64` rounds
   once to nearest and reports overflow as `core/OutOfRange`.
+- `read-text`, `read-int`, `read-number` and `read-bool` take `value`, `path` and a
+  `fallback` of their type (`core/string@1`, `core/i64@1`, `core/f64@1`,
+  `core/bool@1`) and go from JSON to that type in one step. They read the value at
+  `path` like `get-path`, or the whole value for an empty path, and return
+  `fallback` when it is absent, null, of another kind, not in integer form or out of
+  range. Invalid path syntax still faults with `core/Domain`. Use `get-path` with
+  Match Option when a missing field needs its own branch.
 
 Core converters `core/string-to-json` (checked: `core/Parse`, or
 `core/LimitExceeded` beyond the 1 MiB / nesting limits of `JsonText`) and
@@ -947,6 +960,8 @@ C05 refuses this external profile. Contracts/limits/verification are in03/10/12.
 
 **Clock reader (C04b3, 2026-11-06).** `core/now@1` is the registered `clock` volatile intrinsic: no inputs, no config fields, determinism `external` and one output `elapsed: core/duration@1`, the run's virtual time since its clock's zero (the same scale as a timer tick's `scheduled_at`). Like a state read, it is a host input read in the epoch prologue, so every consumption sees the actor clock at that moment and is never folded as a constant; a Wait resumed late or a late timer tick reads the later time. It is admitted in root control/data demands and in Volatile graph-local function bodies, but not in Pure plans. A run clock beyond the duration range yields `core/OutOfRange` at the consuming site. Wall-clock time is not a core clock read: hosts supply `wall_ns` where an API accepts it.
 
+**Watch deadband.** A When with configuration version 2 and `mode: "deadband"` uses a nonnegative `threshold` in the exact numeric input type. The first finite sample establishes a baseline without firing. Later finite samples qualify only when their absolute distance from that baseline exceeds the threshold. Qualification advances the baseline even if delivery is dropped by event policy. Unchanged, in-band and nonfinite samples leave it untouched.
+
 **Variable-changed entries (C06, 2026-11-06).** `core/on-variable-changed@1` is a registered host-owned Entry with config version 1 whose `config.variable` names a run-scope variable with an initial value and a type with `eq`; anything else reports `E-VARIABLE-CHANGED`. It outputs `value` and `previous`, both of the variable type, and needs the ordinary persisted activation policy. The run keeps a watched variable's value from before its first write in a segment. At segment end it compares that value with the final value under the type's `eq`: equal values, including a value restored within the segment, are silent; otherwise every watching entry receives one delivery in handler order, through the same bounded admission as On Event, with origin `Change`, target `VariableChanged(node)`, a per-entry source sequence, the writing activation as cause and its causal depth plus one. A segment ends when its strand suspends, yields, retires or the scheduler selects another strand; a host pump budget alone does not end it. A refused delivery, including one past `max_cause_depth`, counts as an overflow and never faults the run, and no notification is admitted unless the run is Running. Compiler admission requires the type's `eq` to run on the host (`ValueShape::host_eq`); Watch remains open.
 
 **Graph resources (C08a/C08b, 2026-11-07).** A run owns registered handle-kind resources through a generation-checked table. Direct `core/handle@1<K>` values are admitted on trusted effect ports, Action/Async function interfaces and `core/close-handle@1`; a handle-valued effect must have exactly one data result. Async acquisition through `complete_effect_resource` belongs to the executing dynamic region, while `resource_value` on an existing host resource preserves its run owner. Descendants borrow ancestor handles; sibling resources are unavailable. Successful Return transfers returned callee-owned handles to the caller; unreturned resources close on scope retirement. Cancellation retains acquired objects through connected bounded cleanup, then closes them once. The generic Close Handle Action has one required `handle` input, no data outputs/config, ordinary `then`/`failed`, never suspends and is cleanup-safe; authentic already-closed aliases close idempotently. Host revocation invalidates aliases and pending dependent completions. Consumption and publication authenticate issuer, run, generation, exact kind and owner ancestry; a stale reference faults `core/StaleHandle`, wrong owner `core/ResourceOwner`, other invalid references `core/InvalidHandle`. The bounded executable profile excludes resource containers, variables/registers/events, pure handle kernels, serialization and graph streams. [03](03-data-and-execution.md#graph-resource-ownership-c08b-2026-11-07) defines host admission, quotas and cleanup; verification is in 10.
@@ -1320,10 +1335,12 @@ A document declares the external services its nodes talk to, beside its variable
 events:
 
 ```json
-"connections": [
-  {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
-   "settings": {"base_url": "http://127.0.0.1:4455"}}
-]
+{
+  "connections": [
+    {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
+     "settings": {"base_url": "http://127.0.0.1:4455"}}
+  ]
+}
 ```
 
 `adapter` is a namespaced adapter kind that the host must have. `scope` is `graph` or

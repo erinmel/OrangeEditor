@@ -11,7 +11,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::manifest::{ManifestError, PackageId, decode};
+use crate::manifest::{ManifestError, PackageId, decode, is_number};
 use crate::path::ArchivePath;
 
 /// Most panels one package may contribute.
@@ -471,11 +471,4 @@ fn is_locale_tag(text: &str) -> bool {
             (1..=8).contains(&subtag.len())
                 && subtag.bytes().all(|byte| byte.is_ascii_alphanumeric())
         })
-}
-
-fn is_number(text: &str) -> bool {
-    !text.is_empty()
-        && text.bytes().all(|byte| byte.is_ascii_digit())
-        && (text == "0" || !text.starts_with('0'))
-        && text.parse::<u32>().is_ok()
 }

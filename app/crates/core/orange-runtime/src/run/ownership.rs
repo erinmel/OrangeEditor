@@ -2,6 +2,37 @@
 use super::events::Awaiter;
 use super::*;
 
+/// Actor-owned storage for one cancellation pass. Keep the allocations across
+/// turns and drop all pending work before returning from the pass.
+#[derive(Default)]
+pub(super) struct Cancellation {
+    regions: Vec<RegionId>,
+    strands: Vec<StrandId>,
+    waits: Vec<CancelWait>,
+    cleanup: Vec<Strand>,
+}
+
+enum CancelWait {
+    Timer(TimerKey),
+    Await(Awaiter),
+    Effect(effects::PendingEffect),
+    Stream(streams::PendingRead),
+}
+
+impl CancelWait {
+    fn order(&self) -> (u64, u64, u8) {
+        match self {
+            Self::Timer((at, token)) => (*at, *token, 0),
+            Self::Await(waiter) => {
+                let (at, token) = waiter.timer.unwrap_or((u64::MAX, waiter.token));
+                (at, token, 1)
+            }
+            Self::Effect(effect) => (u64::MAX, effect.token, 2),
+            Self::Stream(read) => (u64::MAX, read.token, 3),
+        }
+    }
+}
+
 /// Region ownership is usually a singleton. Keep that case allocation-free;
 /// only Fork/cleanup fan-out needs an ordered spill set.
 #[derive(Default)]
@@ -729,32 +760,28 @@ impl Run {
     /// Retire normal descendants immediately, retaining cancelled wait cleanup
     /// in the same region so ancestors still observe its lifetime barrier.
     pub(super) fn cancel_region(&mut self, root: RegionId) -> Result<(), RunError> {
-        // Reuse the actor's traversal buffers; they are empty between calls.
-        let mut ids = std::mem::take(&mut self.cancel_regions);
-        let mut timer_keys = std::mem::take(&mut self.cancel_timers);
-        let result = self.cancel_owned_regions(root, &mut ids, &mut timer_keys);
-        ids.clear();
-        timer_keys.clear();
-        self.cancel_regions = ids;
-        self.cancel_timers = timer_keys;
+        let mut scratch = std::mem::take(&mut self.cancellation);
+        let result = self.cancel_owned_regions(root, &mut scratch);
+        scratch.regions.clear();
+        scratch.strands.clear();
+        scratch.waits.clear();
+        scratch.cleanup.clear();
+        self.cancellation = scratch;
         result
     }
     fn cancel_owned_regions(
         &mut self,
         root: RegionId,
-        ids: &mut Vec<RegionId>,
-        timer_keys: &mut Vec<(u64, u64)>,
+        scratch: &mut Cancellation,
     ) -> Result<(), RunError> {
-        // Traverse only owned descendants. Logical strand IDs may also identify
-        // held serial continuations; only one queued/timed strand has that ID.
-        let retired = self.regions.subtree(root, ids)?;
-        let mut awaiters = Vec::new();
-        let mut effects = Vec::new();
-        let mut stream_reads = Vec::new();
+        // A serial continuation can share its child's logical ID. There is only
+        // one ready or suspended strand for that ID across the scheduler stores.
+        let retired = self.regions.subtree(root, &mut scratch.regions)?;
         let mut stream_cursors = Vec::new();
-        for &id in ids.iter() {
+        for &id in &scratch.regions {
+            let region = self.regions.get(id)?;
             if id != root
-                && let Some(caller) = self.regions.get(id)?.continuation.as_ref()
+                && let Some(caller) = region.continuation.as_ref()
             {
                 for cursor in &caller.stack {
                     if let Cursor::Stream(cursor) = cursor {
@@ -762,25 +789,21 @@ impl Run {
                     }
                 }
             }
-            let live: Vec<_> = self.regions.get(id)?.live.iter().collect();
-            for strand in live {
+            scratch.strands.extend(region.live.iter());
+            for strand in scratch.strands.drain(..) {
                 if let Some(queued) = self.ready.remove(strand) {
                     self.close_stream_cursors(&queued)?;
                     self.cleanup_truncated = self
                         .cleanup_truncated
                         .saturating_add(u64::from(queued.cleanup));
-                }
-                if let Some(key) = self.timers.detach(strand) {
-                    timer_keys.push(key);
-                }
-                if let Some(waiter) = self.take_waiter_for_cancel(strand) {
-                    awaiters.push(waiter);
-                }
-                if let Some(effect) = self.take_effect_for_cancel(strand) {
-                    effects.push(effect);
-                }
-                if let Some(read) = self.take_stream_read_for_cancel(strand) {
-                    stream_reads.push(read);
+                } else if let Some(key) = self.timers.detach(strand) {
+                    scratch.waits.push(CancelWait::Timer(key));
+                } else if let Some(waiter) = self.take_waiter_for_cancel(strand) {
+                    scratch.waits.push(CancelWait::Await(waiter));
+                } else if let Some(effect) = self.take_effect_for_cancel(strand) {
+                    scratch.waits.push(CancelWait::Effect(effect));
+                } else if let Some(read) = self.take_stream_read_for_cancel(strand) {
+                    scratch.waits.push(CancelWait::Stream(read));
                 }
             }
         }
@@ -788,44 +811,20 @@ impl Run {
             self.close_graph_resource(&reference, region)
                 .map_err(|_| RunError::InvalidState)?;
         }
-        let mut cleanup = Vec::new();
+        scratch.waits.sort_unstable_by_key(CancelWait::order);
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        enum CancelWait {
-            Timer(TimerKey),
-            Await(Awaiter),
-            Effect(effects::PendingEffect),
-            Stream(streams::PendingRead),
-        }
-        let mut waiters = std::mem::take(timer_keys)
-            .into_iter()
-            .map(CancelWait::Timer)
-            .chain(awaiters.into_iter().map(CancelWait::Await))
-            .chain(effects.into_iter().map(CancelWait::Effect))
-            .chain(stream_reads.into_iter().map(CancelWait::Stream))
-            .collect::<Vec<_>>();
-        waiters.sort_unstable_by_key(|waiter| match waiter {
-            CancelWait::Timer(key) => (key.0, key.1, 0),
-            CancelWait::Await(waiter) => {
-                let key = waiter.timer.unwrap_or((u64::MAX, waiter.token));
-                (key.0, key.1, 1)
-            }
-            CancelWait::Effect(effect) => (u64::MAX, effect.token, 2),
-            CancelWait::Stream(read) => (u64::MAX, read.token, 3),
-        });
-        for waiter in waiters {
-            match waiter {
+        for waiter in scratch.waits.drain(..) {
+            let (owner, strand) = match waiter {
                 CancelWait::Stream(read) => {
                     self.cancel_stream_read(&read)?;
-                    self.cancel_waiting(&plan, read.owner, read.strand, root, &mut cleanup);
+                    (read.owner, read.strand)
                 }
-                CancelWait::Effect(pending) => {
-                    self.cancel_waiting(&plan, pending.owner, pending.strand, root, &mut cleanup);
-                }
+                CancelWait::Effect(pending) => (pending.owner, pending.strand),
                 CancelWait::Timer(key) => {
                     let Some(TimerTarget::Wait(timer)) = self.timers.remove(key) else {
                         return Err(RunError::InvalidState);
                     };
-                    self.cancel_waiting(&plan, timer.owner, timer.activation, root, &mut cleanup);
+                    (timer.owner, timer.activation)
                 }
                 CancelWait::Await(waiter) => {
                     if let Some(key) = self.timers.detach_await(waiter.token) {
@@ -837,14 +836,19 @@ impl Run {
                     } else if waiter.timer.is_some() {
                         return Err(RunError::InvalidState);
                     }
-                    self.cancel_waiting(&plan, waiter.owner, waiter.strand, root, &mut cleanup);
+                    (waiter.owner, waiter.strand)
                 }
-            }
+            };
+            scratch
+                .cleanup
+                .extend(self.cancel_waiting(&plan, owner, strand, root));
         }
-        self.resources.reparent_resources(ids, root)?;
-        let activation =
-            self.regions
-                .prune(ids, retired, cleanup.iter().map(|s| s.id).collect())?;
+        self.resources.reparent_resources(&scratch.regions, root)?;
+        let activation = self.regions.prune(
+            &scratch.regions,
+            retired,
+            scratch.cleanup.iter().map(|strand| strand.id).collect(),
+        )?;
         if let Some(shared) = self
             .activations
             .get_mut(activation)
@@ -855,7 +859,7 @@ impl Run {
             }
             shared.pull_owner = None;
         }
-        for strand in cleanup {
+        for strand in scratch.cleanup.drain(..) {
             self.ready.push_back(strand.id, strand);
         }
         // Completion is performed by the caller after its own bookkeeping.
@@ -869,8 +873,7 @@ impl Run {
         owner: ControlIx,
         mut strand: Strand,
         root: RegionId,
-        cleanup: &mut Vec<Strand>,
-    ) {
+    ) -> Option<Strand> {
         let node = &plan.nodes()[owner.index()];
         self.record(RunEvent {
             route: None,
@@ -879,9 +882,7 @@ impl Run {
             outcome: ControlOutcome::Cancelled,
             fault: None,
         });
-        let Some(target) = node.cancelled() else {
-            return;
-        };
+        let target = node.cancelled()?;
         strand.region = root;
         strand.pc = Some(target);
         strand.stack.clear();
@@ -893,7 +894,7 @@ impl Run {
         let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
         strand.cleanup_deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         strand.cleanup_remaining = self.options.max_cleanup_operations;
-        cleanup.push(strand);
+        Some(strand)
     }
     pub(super) fn unwind_loop(
         &mut self,

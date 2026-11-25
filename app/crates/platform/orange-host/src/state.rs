@@ -49,6 +49,21 @@ fn file(directory: &Path, name: &str) -> PathBuf {
     directory.join(format!("{name}.variables.json"))
 }
 
+/// Grants exclusive write ownership for a graph or the shared workspace.
+pub(crate) fn lock(directory: &Path, name: &str) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(directory).map_err(|error| io("create the state directory", &error))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(format!("{name}.variables.lock")))
+        .map_err(|error| io("open the persistent state lock", &error))?;
+    lock.try_lock()
+        .map_err(|_| "could not acquire exclusive ownership of persistent state".to_owned())?;
+    Ok(lock)
+}
+
 fn io(what: &str, error: &std::io::Error) -> String {
     // An I/O message can name paths; only the operation and error kind are kept.
     format!("{what}: {:?}", error.kind())
@@ -140,14 +155,14 @@ pub(crate) fn restore(
 
 /// What to store for `kept` given each variable's value now. An unset variable, or
 /// one whose value cannot be written as a literal, is left out.
-pub(crate) fn snapshot(
+pub(crate) fn snapshot<'a>(
     kept: &[Kept],
     types: &TypeRegistry,
-    mut value: impl FnMut(VariableId) -> Option<Value>,
+    mut value: impl FnMut(VariableId) -> Option<&'a Value>,
 ) -> Vec<StoredVariable> {
     kept.iter()
         .filter_map(|kept| {
-            let literal = literal_codec::encode(&kept.ty, &value(kept.id)?, types).ok()?;
+            let literal = literal_codec::encode(&kept.ty, value(kept.id)?, types).ok()?;
             Some(StoredVariable {
                 id: kept.id,
                 name: kept.name.clone(),

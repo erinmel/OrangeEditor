@@ -22,8 +22,7 @@
 
 use orange_sandbox::FsError;
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, FaultText, KernelFault, ServiceNode, ServicePackage,
-    Session, Value,
+    Call, ConnectionAdapter, Definition, KernelFault, ServiceNode, ServicePackage, Session, Value,
 };
 use serde_json::{Map, Value as Json, json};
 use std::any::Any;
@@ -95,64 +94,57 @@ pub const MAX_ENTRIES: usize = 10_000;
 pub const MAX_COPY_TREE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_POLL_MS: u64 = 500;
 
-const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
-    KernelFault {
-        code: FaultText::Static(code),
-        message_key: FaultText::Static(key),
-        message,
-    }
-}
-const NO_SESSION: KernelFault = fault(
+const NO_SESSION: KernelFault = KernelFault::from_static(
     "org.orange.files/Connection",
     "org.orange.files/connection-kind",
     "The node needs a folder connection.",
 );
-const BAD_INPUT: KernelFault = fault(
+const BAD_INPUT: KernelFault = KernelFault::from_static(
     "org.orange.files/Input",
     "org.orange.files/input-invalid",
     "The node's inputs are not of the expected types.",
 );
-const BAD_PATH: KernelFault = fault(
+const BAD_PATH: KernelFault = KernelFault::from_static(
     "org.orange.files/Path",
     "org.orange.files/path-invalid",
     "The path is not a relative path inside the folder.",
 );
-const NOT_FOUND: KernelFault = fault(
+const NOT_FOUND: KernelFault = KernelFault::from_static(
     "org.orange.files/NotFound",
     "org.orange.files/not-found",
     "The file or directory does not exist.",
 );
-const TOO_LARGE: KernelFault = fault(
+const TOO_LARGE: KernelFault = KernelFault::from_static(
     "org.orange.files/TooLarge",
     "org.orange.files/too-large",
     "The file or listing is over the size limit.",
 );
-const NOT_TEXT: KernelFault = fault(
+const NOT_TEXT: KernelFault = KernelFault::from_static(
     "org.orange.files/Encoding",
     "org.orange.files/not-utf8",
     "The file is not UTF-8 text.",
 );
-const READ_ONLY: KernelFault = fault(
+const READ_ONLY: KernelFault = KernelFault::from_static(
     "org.orange.files/ReadOnly",
     "org.orange.files/read-only",
     "The folder connection is read-only.",
 );
-const FAILED: KernelFault = fault(
+const FAILED: KernelFault = KernelFault::from_static(
     "org.orange.files/Io",
     "org.orange.files/io-failed",
     "The operating system refused the file operation.",
 );
-const INVALID_GLOB: KernelFault = fault(
+const INVALID_GLOB: KernelFault = KernelFault::from_static(
     "org.orange.files/Glob",
     "org.orange.files/glob-invalid",
     "The glob must contain plain path components and be at most 128 bytes.",
 );
-const CANCELLED: KernelFault = fault(
+const CANCELLED: KernelFault = KernelFault::from_static(
     "org.orange.files/Cancelled",
     "org.orange.files/operation-cancelled",
     "The folder operation was cancelled.",
 );
-const TREE_CHANGED: KernelFault = fault(
+const TREE_CHANGED: KernelFault = KernelFault::from_static(
     "org.orange.files/TreeChanged",
     "org.orange.files/tree-changed",
     "The folder changed while it was being read.",
@@ -650,9 +642,14 @@ pub fn package() -> ServicePackage {
     }
     let on_change = described(
         Definition::entry(PACKAGE, "on-change", "On file change"),
-        "Fires when a file or folder is created, changed, deleted or renamed, with what changed: its kind, its path, its previous path on a rename, and whether it is a folder. Folder narrows it to a subfolder.",
+        "Fires when a file or folder is created, changed, deleted or renamed, with what changed: its kind, its path, its previous path on a rename, and whether it is a folder. Folder narrows it to a subfolder. Enable Wait for folder if that subfolder will be created after the graph starts.",
     )
     .input_default("folder", STRING, json!({"type": STRING, "value": ""}))
+    .input_default(
+        "wait_for_folder",
+        "core/bool@1",
+        json!({"type": "core/bool@1", "value": false}),
+    )
     .payload(CHANGE_TYPE)
     .build();
     let list = described(
@@ -889,11 +886,7 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
-    #[cfg(any(unix, windows))]
-    #[cfg_attr(
-        windows,
-        ignore = "requires a Windows directory that permits creating junctions"
-    )]
+    #[cfg(any(unix, all(windows, feature = "windows-junction-tests")))]
     #[test]
     fn recursive_actions_and_enumeration_do_not_follow_a_real_escape_link() {
         use std::fs;

@@ -16,6 +16,7 @@ mod armed;
 mod authoring;
 mod clip;
 mod convert;
+mod credentials;
 mod declare;
 mod documents;
 mod draft;
@@ -27,10 +28,12 @@ pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
 mod flows;
 mod graphs;
 pub mod i18n;
+mod literals;
 mod names;
 mod organise;
 mod packages;
 mod persist;
+mod port_authority;
 mod preview;
 mod search;
 mod services;
@@ -79,24 +82,29 @@ pub use convert::{Connected, Conversion};
 pub use declare::{AdapterInfo, Connection, Declarations, Variable, secret_name};
 pub use documents::{
     Bundle, FunctionPackagePreview, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement,
-    autosave_document, discard_autosave, publish_function, recover_document, save_document,
+    autosave_document, discard_autosave, publish_function, read_document, recover_document,
+    save_document,
 };
 pub use draft::{Draft, MAX_UNDO, OpenReport};
-pub use edit::{NEW_WHILE_BOUND, PortEnd, new_document};
+pub use edit::{ForEachModeImpact, NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
+pub use flows::ManualPayload;
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
+pub use literals::{InputState, LiteralEditor, PortDetails};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
-pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
+pub use orange_guest::{
+    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, is_local,
+};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
-pub use orange_model::document::literal::Literal;
+pub use orange_model::document::literal::{Literal, LiteralPayload};
 pub use orange_model::document::{FieldDecl, LocalTypeDecl, TypeShape, VariantDecl};
-pub use orange_model::id::{ConnectionId, PortKey};
+pub use orange_model::id::{ConnectionId, EdgeId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, TypeDeclId, TypeExpr, VariableId};
 pub use orange_model::validation::{Diagnostic, EditStats, SessionWork, Severity};
 pub use orange_packages::{
@@ -114,11 +122,12 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
-pub use search::{CONCEPTS, Found, Match};
+pub use search::{CONCEPTS, Found, Match, fold_search};
 pub use state::StoredVariable;
-pub use suggest::Suggestion;
+pub use suggest::{Giver, SpliceSuggestion, Suggestion};
 pub use view::{
-    EnumChoice, GraphView, NodeView, PortView, TypeChoice, VariadicView, WireView, formula,
+    AuthoringView, EnumChoice, FailureRoutes, GraphView, MissingPackage, NodeView, PortView,
+    TypeChoice, VariadicView, WireView, formula,
 };
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -177,6 +186,60 @@ pub enum FlowEvent {
     Finished,
 }
 
+/// What a graph asks to open. For a shared connection, settings come from the
+/// host's registration. Credential references in these settings are unresolved.
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionRequest<'a> {
+    pub graph: GraphId,
+    pub id: ConnectionId,
+    pub adapter: &'a str,
+    pub scope: ConnectionScope,
+    pub settings: &'a serde_json::Map<String, serde_json::Value>,
+}
+
+/// Native service work that a graph asks the host to carry out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceOperation {
+    Effect,
+    Entry,
+    LiveValue,
+}
+
+/// An operation at the service boundary. Inputs are in the provider's declared
+/// order and have already been validated by the runtime.
+#[derive(Clone, Copy)]
+pub struct ServiceRequest<'a> {
+    pub graph: GraphId,
+    pub node: NodeId,
+    pub definition: &'a DefinitionRef,
+    pub operation: ServiceOperation,
+    pub connection: Option<ConnectionId>,
+    pub inputs: &'a [Value],
+}
+
+impl std::fmt::Debug for ServiceRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceRequest")
+            .field("graph", &self.graph)
+            .field("node", &self.node)
+            .field("definition", self.definition)
+            .field("operation", &self.operation)
+            .field("connection", &self.connection)
+            .field("input_count", &self.inputs.len())
+            .finish()
+    }
+}
+
+/// Embedding policy for service connections and operations. Keep checks local and
+/// cheap. A policy that only authorizes connections refuses all service operations.
+pub trait ConnectionAuthorizer: std::fmt::Debug + Send + Sync + 'static {
+    fn allows(&self, request: ConnectionRequest<'_>) -> bool;
+
+    fn allows_operation(&self, _request: ServiceRequest<'_>) -> bool {
+        false
+    }
+}
+
 /// Sizes and limits of a host. Defaults suit an interactive session.
 #[derive(Debug, Clone)]
 pub struct HostOptions {
@@ -219,14 +282,19 @@ pub struct HostOptions {
     /// The network client for packages holding the `http` grant. `None` leaves that
     /// grant with nothing to reach.
     pub plugin_http: Option<Arc<dyn HttpClient>>,
-    /// Most bytes each package's data directory may hold. `None` is no limit.
+    /// Most bytes each package's data directory may hold, for a package whose
+    /// [`PackageAccess::data_quota`] sets none. `None` is no limit.
     pub plugin_data_quota: Option<u64>,
-    /// The hosts packages holding the `http` grant may reach; a name starting with
-    /// `.` allows every host under that domain. `None` allows any host.
+    /// The hosts packages holding the `http` grant may reach, for a package whose
+    /// [`PackageAccess::http_hosts`] sets none; a name starting with `.` allows every
+    /// host under that domain. `None` allows any host.
     pub plugin_http_hosts: Option<Vec<String>>,
     /// Where connection settings' `credential://<name>` references are read from.
     /// `None` refuses a connection that names a credential.
     pub secrets: Option<Arc<dyn SecretStore>>,
+    /// Optional per-graph policy evaluated before opening sessions and operating
+    /// native services. Credential and Wasm grants apply independently.
+    pub connection_authorizer: Option<Arc<dyn ConnectionAuthorizer>>,
     /// Where variables declared `persistent` are stored. With a directory, a flow's
     /// persistent run variables are saved as they change and a flow opened later on
     /// the same graph starts with them; persistent shared variables likewise. `None`
@@ -253,6 +321,7 @@ impl Default for HostOptions {
             plugin_data_quota: None,
             plugin_http_hosts: None,
             secrets: None,
+            connection_authorizer: None,
             state_dir: None,
         }
     }
@@ -355,6 +424,7 @@ type Opened = BTreeMap<ConnectionId, (ConnectionDecl, Arc<dyn Session>)>;
 /// An entry to start: its node, its source, the session it names and its settings.
 type Feed = (
     NodeId,
+    DefinitionRef,
     Arc<dyn ServiceSource>,
     Option<Arc<dyn Session>>,
     orange_model::document::ConfigValue,
@@ -403,93 +473,49 @@ pub struct Updated {
     pub reset_variables: usize,
 }
 
-/// The settings an adapter receives: every string that is exactly
-/// `credential://<name>`, at any depth, replaced by that secret. The result is handed
-/// to the adapter and never stored, logged or compared.
-fn with_secrets(
-    secrets: Option<&Arc<dyn SecretStore>>,
-    settings: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(serde_json::Map<String, serde_json::Value>, Renew), String> {
-    use serde_json::Value as Json;
-    // Each setting that named a credential, as a JSON pointer, with the name.
-    fn resolve(
-        value: &mut Json,
-        at: &mut String,
-        store: Option<&Arc<dyn SecretStore>>,
-        named: &mut Vec<(String, String)>,
-    ) -> Result<(), String> {
-        let mut inside = |part: &str, value: &mut Json, at: &mut String| {
-            let length = at.len();
-            at.push('/');
-            at.push_str(&part.replace('~', "~0").replace('/', "~1"));
-            let done = resolve(value, at, store, named);
-            at.truncate(length);
-            done
-        };
-        match value {
-            Json::String(text) => {
-                if let Some(name) = text.strip_prefix(SECRET_PREFIX) {
-                    let store = store.ok_or_else(|| {
-                        format!(
-                            "it names credential `{name}` and the application has no credential store"
-                        )
-                    })?;
-                    let secret = store
-                        .get(name)
-                        .map_err(|error| format!("credential `{name}`: {error}"))?;
-                    named.push((at.clone(), name.to_owned()));
-                    *text = secret;
-                }
-                Ok(())
-            }
-            Json::Array(items) => items
-                .iter_mut()
-                .enumerate()
-                .try_for_each(|(index, item)| inside(&index.to_string(), item, at)),
-            Json::Object(fields) => fields
-                .iter_mut()
-                .try_for_each(|(name, field)| inside(name, field, at)),
-            _ => Ok(()),
+/// What the user lets one installed package's code reach: its grants and its own
+/// limits. It is kept with the package between sessions, and
+/// [`Host::set_access`] changes or revokes it. Flows opened afterwards use the new
+/// access; running flows keep the instances they started with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageAccess {
+    /// Capabilities the user approved; never more than the package asks for.
+    pub grants: Grants,
+    /// The hosts its `http` grant may reach (a name starting with `.` allows every host
+    /// under that domain). `None` uses [`HostOptions::plugin_http_hosts`]. Local
+    /// addresses reached through `http-local` are not limited by it.
+    pub http_hosts: Option<Vec<String>>,
+    /// Most bytes its data directory may hold. `None` uses
+    /// [`HostOptions::plugin_data_quota`].
+    pub data_quota: Option<u64>,
+}
+
+impl From<Grants> for PackageAccess {
+    fn from(grants: Grants) -> Self {
+        Self {
+            grants,
+            ..Self::default()
         }
     }
-    let mut resolved = Json::Object(settings.clone());
-    let mut named = Vec::new();
-    resolve(&mut resolved, &mut String::new(), secrets, &mut named)?;
-    let Json::Object(resolved) = resolved else {
-        unreachable!("resolving keeps an object an object")
-    };
-    let renew = match secrets {
-        Some(store) if !named.is_empty() => {
-            let store = Arc::clone(store);
-            Renew::new(move |setting, secret| {
-                if let Some((_, name)) = named.iter().find(|(at, _)| at == setting) {
-                    // A store that refuses leaves the old secret: the connection keeps
-                    // working and the next start asks for a new sign-in.
-                    let _ = store.replace(name, secret);
-                }
-            })
-        }
-        _ => Renew::none(),
-    };
-    Ok((resolved, renew))
 }
 
 /// The grants a manifest's `permissions` section asks for: a list of `"log"`,
-/// `"files"` and `"http"`. No section asks for nothing.
+/// `"files"`, `"http"`, `"http-local"`, `"compute"` and `"websocket"`. No section asks
+/// for nothing.
 fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
     let refused = || {
-        HostError::Install("`permissions` must be a list of `log`, `files` and `http`".to_owned())
+        HostError::Install(
+            "`permissions` must be a list of `log`, `files`, `http`, `http-local`, `compute` and `websocket`"
+                .to_owned(),
+        )
     };
     let mut grants = Grants::default();
     let Some(section) = manifest.permissions() else {
         return Ok(grants);
     };
     for permission in section.as_array().ok_or_else(refused)? {
-        match permission.as_str() {
-            Some("log") => grants.log = true,
-            Some("files") => grants.files = true,
-            Some("http") => grants.http = true,
-            _ => return Err(refused()),
+        if !permission.as_str().is_some_and(|name| grants.grant(name)) {
+            return Err(refused());
         }
     }
     Ok(grants)
@@ -514,12 +540,15 @@ impl std::fmt::Debug for SharedConnection {
 
 struct Flow {
     info: FlowInfo,
+    manual_types: BTreeMap<NodeId, TypeExpr>,
+    manual_registry: Arc<RegistrySnapshot>,
+    manual_generation: Arc<()>,
     inbox: orange_runtime::RunInbox,
     sources: BTreeMap<EventDeclId, RunEventSource>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     /// Guards of the running service sources; dropping them stops the sources.
-    feeds: Vec<Box<dyn Send>>,
+    feeds: Vec<flows::ActiveFeed>,
     /// The connections this flow holds, with the declarations they were opened from.
     opened: Opened,
     /// The saved document without layout, to tell a real edit from a moved node.
@@ -534,6 +563,22 @@ impl std::fmt::Debug for Flow {
     }
 }
 impl Flow {
+    fn enqueue_query(&self, query: Query, capacity: usize) -> Result<(), HostError> {
+        let mut pending = self
+            .shared
+            .queries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let queries = pending.as_mut().ok_or(HostError::FlowEnded)?;
+        if queries.len() >= capacity.max(1) {
+            return Err(HostError::Busy);
+        }
+        queries.push_back(query);
+        drop(pending);
+        self.wake();
+        Ok(())
+    }
+
     fn wake(&self) {
         if let Some(thread) = &self.thread {
             thread.thread().unpark();
@@ -554,17 +599,23 @@ pub struct NodeInfo<'a> {
     pub provider: Option<&'a ProviderKey>,
 }
 impl NodeInfo<'_> {
+    /// The complete static port contract, or `None` when declarations or
+    /// configuration determine the ports.
+    pub fn declared_ports(&self) -> Option<&[orange_model::document::PortDescriptor]> {
+        match &self.definition.ports {
+            orange_model::catalog::Ports::Declared(ports) => Some(ports),
+            _ => None,
+        }
+    }
+
     /// The names and directions of fixed ports visible before a node is placed.
     /// Configuration-dependent ports are resolved for the placement preview.
     pub fn declared_port_names(&self) -> impl Iterator<Item = (&str, bool)> {
-        let ports = match &self.definition.ports {
-            orange_model::catalog::Ports::Declared(ports) => ports.as_slice(),
-            _ => &[],
-        };
+        let ports = self.declared_ports().unwrap_or_default();
         ports.iter().map(|port| {
             (
                 port.port_id.as_str(),
-                port.direction == orange_model::document::PortDirection::Input,
+                port.direction == PortDirection::Input,
             )
         })
     }
@@ -692,6 +743,7 @@ pub struct Host {
     guests: Vec<GuestPackage>,
     graphs: Graphs,
     adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
+    credential_approvals: Mutex<BTreeSet<String>>,
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
@@ -702,6 +754,8 @@ pub struct Host {
     /// The words the node search finds nodes by.
     catalogs: Catalogs,
     not_restored: Vec<(String, HostError)>,
+    /// What the user lets each installed package reach, by package ID and version.
+    access: BTreeMap<(String, String), PackageAccess>,
     /// The base nodes and each service package the application was started with.
     built_in: Vec<BuiltIn>,
     /// IDs of the packages a host started like this one leaves out.
@@ -840,11 +894,11 @@ fn wall_ns() -> Option<i64> {
 #[derive(Debug)]
 struct UtcTimestamp;
 
-impl orange_sdk::ServiceNode for UtcTimestamp {
-    fn run(&self, _call: &orange_sdk::Call<'_>) -> Result<Vec<Value>, orange_sdk::KernelFault> {
+impl ServiceNode for UtcTimestamp {
+    fn run(&self, _call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         wall_ns()
             .map(|now| vec![Value::Timestamp(now)])
-            .ok_or(orange_sdk::KernelFault {
+            .ok_or(KernelFault {
                 code: "org.orange.clock/OutOfRange".into(),
                 message_key: "core/kernel-out-of-range".into(),
                 message: "The host clock is outside the timestamp range.",
@@ -1019,6 +1073,7 @@ impl Host {
         let host = Self {
             native: Native(Arc::new(math), services),
             adapters,
+            credential_approvals: Mutex::default(),
             shared: BTreeMap::new(),
             engine,
             guests: Vec::new(),
@@ -1029,6 +1084,7 @@ impl Host {
             local_registries: Mutex::new(Vec::new()),
             catalogs,
             not_restored: Vec::new(),
+            access: BTreeMap::new(),
             built_in,
             disabled,
             inactive: Vec::new(),
@@ -1057,7 +1113,7 @@ impl Host {
             let installed = package
                 .archive
                 .map_err(HostError::Storage)
-                .and_then(|archive| host.install_archive(&archive, package.grants, None));
+                .and_then(|archive| host.install_archive(&archive, &package.access, None));
             if let Err(error) = installed {
                 host.not_restored.push((package.file, error));
             }
@@ -1126,14 +1182,51 @@ impl Host {
                 .adapters
                 .get(&decl.adapter)
                 .ok_or_else(|| refused(format!("no adapter `{}` is available", decl.adapter)))?;
+            if let Some(policy) = &self.options.connection_authorizer {
+                let settings = match decl.scope {
+                    ConnectionScope::Graph => &decl.settings,
+                    ConnectionScope::Shared => {
+                        &self
+                            .shared
+                            .get(&decl.id)
+                            .ok_or_else(|| {
+                                refused("the host shares no connection with this ID".into())
+                            })?
+                            .settings
+                    }
+                };
+                let allowed = effects::guard(|| {
+                    policy.allows(ConnectionRequest {
+                        graph: document.graph_id(),
+                        id: decl.id,
+                        adapter: &decl.adapter,
+                        scope: decl.scope,
+                        settings,
+                    })
+                })
+                .unwrap_or(false);
+                if !allowed {
+                    return Err(refused(
+                        "the host denied the graph's connection request".into(),
+                    ));
+                }
+            }
             let session = match decl.scope {
                 ConnectionScope::Graph => match previous.and_then(|opened| opened.get(&decl.id)) {
                     Some((before, session)) if before == decl => Arc::clone(session),
                     _ => {
-                        let (settings, renew) =
-                            with_secrets(self.options.secrets.as_ref(), &decl.settings)
-                                .map_err(refused)?;
-                        adapter.open_renewing(&settings, renew).map_err(refused)?
+                        self.check_connection_credentials(
+                            document.graph_id(),
+                            decl,
+                            adapter.as_ref(),
+                        )
+                        .map_err(refused)?;
+                        credentials::open_session(
+                            self.options.secrets.as_ref(),
+                            adapter.as_ref(),
+                            &decl.settings,
+                        )
+                        .map_err(refused)?
                     }
                 },
                 ConnectionScope::Shared => {
@@ -1149,11 +1242,12 @@ impl Host {
                     match &shared.session {
                         Some(session) => Arc::clone(session),
                         None => {
-                            let (settings, renew) =
-                                with_secrets(self.options.secrets.as_ref(), &shared.settings)
-                                    .map_err(refused)?;
-                            let session =
-                                adapter.open_renewing(&settings, renew).map_err(refused)?;
+                            let session = credentials::open_session(
+                                self.options.secrets.as_ref(),
+                                adapter.as_ref(),
+                                &shared.settings,
+                            )
+                            .map_err(refused)?;
                             shared.session = Some(Arc::clone(&session));
                             session
                         }
@@ -1206,14 +1300,21 @@ impl Host {
 
     /// Decodes a saved document and links the graph-implemented package nodes it uses.
     fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
+        self.link_document(Self::decode_document(json)?)
+    }
+
+    fn decode_document(json: &str) -> Result<GraphDocument, HostError> {
+        from_json(json).map_err(|error| HostError::Document(error.to_string()))
+    }
+
+    fn link_document(&self, mut linked: GraphDocument) -> Result<GraphDocument, HostError> {
         let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
-        let mut linked = if self.graphs.is_empty() {
-            from_json(json).map_err(|e| document(&e))?
-        } else {
-            let mut saved = serde_json::from_str(json).map_err(|e| document(&e))?;
-            graphs::link(&mut saved, &self.graphs);
-            from_json(&saved.to_string()).map_err(|e| document(&e))?
-        };
+        if !self.graphs.is_empty() {
+            let admitted = to_json(&linked).map_err(|error| document(&error))?;
+            let mut saved = serde_json::from_str(&admitted).map_err(|error| document(&error))?;
+            graphs::link(&mut saved, &self.graphs, admitted.len()).map_err(HostError::Document)?;
+            linked = Self::decode_document(&saved.to_string())?;
+        }
         let _ = self.replace_definitions(&mut linked)?;
         Ok(linked)
     }

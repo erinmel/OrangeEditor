@@ -22,38 +22,22 @@ impl Drop for IterationFrame {
 }
 impl IterationFrame {
     pub(super) fn stream(
-        plan: &ControlPlan,
         shared: &ActivationState,
         owner: ControlIx,
         index: u64,
-        first: Value,
+        item: streams::CheckedItem,
         parent: Option<Arc<Self>>,
         limit: usize,
     ) -> Result<Self, RunError> {
-        let ControlOperation::ForEachItem { stream, .. } = plan.nodes()[owner.index()].operation()
-        else {
-            return Err(RunError::InvalidState);
-        };
-        let orange_model::value::shape::ValueShape::Stream(item) =
-            &plan.data().slot_types()[plan.data().exports()[*stream].slot.index()]
-        else {
-            return Err(RunError::InvalidState);
-        };
-        let shape = orange_model::value::shape::ValueShape::of_in(
-            item,
-            plan.data().snapshot().types().as_ref(),
-        )
-        .ok_or(RunError::InvalidState)?;
-        let bytes = shape
-            .checked_charge(&first, limit)
-            .map_err(|_| RunError::ResourceLimit)?
-            .checked_add(16)
+        let bytes = item
+            .bytes
+            .checked_add(orange_model::value::shape::VALUE_CHARGE)
             .ok_or(RunError::ResourceLimit)?;
         Ok(Self {
             owner,
             parent,
             index: i64::try_from(index).map_err(|_| RunError::ResourceLimit)?,
-            first,
+            first: item.value,
             second: None,
             hold: Hold::new(shared, bytes, 0, limit)?,
         })

@@ -2,14 +2,61 @@
 //! while it runs, controlling and observing it, and closing it.
 use super::*;
 
-struct ActiveFeed {
-    active: Arc<AtomicBool>,
+/// A typed manual input captured from one incarnation of a running flow.
+/// The type and its codec stay tied to that run while a front end edits a sample.
+#[derive(Debug, Clone)]
+pub struct ManualPayload {
+    flow: FlowId,
+    node: NodeId,
+    generation: Arc<()>,
+    pub ty: TypeExpr,
+    pub editor: LiteralEditor,
+}
+
+fn manual_types(prepared: &Prepared) -> BTreeMap<NodeId, TypeExpr> {
+    prepared
+        .manual_entries
+        .iter()
+        .filter_map(|(id, payload)| {
+            if !payload {
+                return None;
+            }
+            let node = prepared.document.root().nodes.get(id)?;
+            let contract = prepared
+                .registry
+                .contract(&prepared.document, node)
+                .ok()??;
+            let ty = contract
+                .ports
+                .iter()
+                .find(|port| port.port_id.as_str() == "payload")?
+                .ty
+                .as_ref()?;
+            Some((*id, ty.clone()))
+        })
+        .collect()
+}
+use orange_runtime::RunInbox;
+use std::sync::atomic::AtomicU8;
+
+const STAGED: u8 = 0;
+const ACTIVE: u8 = 1;
+const CLOSED: u8 = 2;
+
+pub(crate) struct ActiveFeed {
+    active: Arc<AtomicU8>,
     _guard: Box<dyn Send>,
+}
+
+impl ActiveFeed {
+    pub(crate) fn activate(&self) {
+        self.active.store(ACTIVE, Ordering::Release);
+    }
 }
 
 impl Drop for ActiveFeed {
     fn drop(&mut self) {
-        self.active.store(false, Ordering::Release);
+        self.active.store(CLOSED, Ordering::Release);
     }
 }
 
@@ -17,8 +64,13 @@ impl Host {
     /// Validates and compiles a saved document and resolves everything it needs from
     /// the host, without starting anything. `previous` are the sessions of the flow
     /// being edited, reused where a connection's declaration is unchanged.
-    fn prepare(&mut self, json: &str, previous: Option<&Opened>) -> Result<Prepared, HostError> {
-        let document = self.linked(json)?;
+    fn prepare(
+        &mut self,
+        document: GraphDocument,
+        semantic: String,
+        previous: Option<&Opened>,
+    ) -> Result<Prepared, HostError> {
+        let document = self.link_document(document)?;
         let registry = self.registry_for(&document);
         let analysis = analyzed(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
@@ -28,14 +80,19 @@ impl Host {
         for guest in &self.guests {
             resolver.add(guest.clone());
         }
-        let plan = Arc::new(compile_control_with_effects(
-            &document,
-            Arc::clone(&registry),
-            &analysis,
-            &resolver,
-            &resolver,
-            CompileOptions::default(),
-        )?);
+        let plan = Arc::new(
+            effects::guard(|| {
+                compile_control_with_effects(
+                    &document,
+                    Arc::clone(&registry),
+                    &analysis,
+                    &resolver,
+                    &resolver,
+                    CompileOptions::default(),
+                )
+            })
+            .map_err(|_| RunError::Interrupted)??,
+        );
         let opened = self.sessions(&document, &registry, previous)?;
         // The session of a node that uses a connection: the one it names.
         let session_of = |node: &orange_model::document::NodeInstance,
@@ -54,9 +111,11 @@ impl Host {
         };
         // The data inputs a source is armed with, by name, in the run's order.
         let arguments = |node: NodeId| -> Option<Vec<String>> {
-            plan.sources()
-                .iter()
-                .find(|source| source.node() == node)
+            let sources = plan.sources();
+            let index = sources.partition_point(|source| source.node() < node);
+            sources
+                .get(index)
+                .filter(|source| source.node() == node)
                 .map(|source| source.ports().iter().map(ToString::to_string).collect())
         };
         let mut armables = Vec::new();
@@ -104,6 +163,7 @@ impl Host {
                 .native
                 .1
                 .source(&provider, &node.definition)
+                .or_else(|| self.guest_trigger(&provider, &node.definition, &registry))
                 .ok_or_else(|| refused("no service provides this entry"))?;
             let session = if uses_connection {
                 session_of(node, &refused)?
@@ -119,6 +179,7 @@ impl Host {
             {
                 armables.push(armed::Armable {
                     node: node.id,
+                    definition: node.definition.clone(),
                     provider: armed::Provider::Entry(source),
                     session,
                     settings: node.config.clone(),
@@ -127,7 +188,13 @@ impl Host {
                     routes,
                 });
             } else {
-                feeds.push((node.id, source, session, node.config.clone()));
+                feeds.push((
+                    node.id,
+                    node.definition.clone(),
+                    source,
+                    session,
+                    node.config.clone(),
+                ));
             }
         }
         // Every live node needs the provider that publishes its value.
@@ -156,6 +223,7 @@ impl Host {
             };
             armables.push(armed::Armable {
                 node: node.id,
+                definition: node.definition.clone(),
                 provider: armed::Provider::Live(source),
                 session,
                 settings: node.config.clone(),
@@ -165,7 +233,7 @@ impl Host {
             });
         }
         Ok(Prepared {
-            semantic: semantic(json)?,
+            semantic,
             document,
             registry,
             plan,
@@ -178,20 +246,39 @@ impl Host {
 
     /// Starts the source of every package entry of a flow. On a failure the sources
     /// already started are stopped again.
-    fn feed(sink: &Sink, id: FlowId, flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
-        for (node, source, session, settings) in feeds {
-            let inbox = flow.inbox.clone();
-            let thread = flow
-                .thread
-                .as_ref()
-                .map_or_else(thread::current, |t| t.thread().clone());
-            let (sink, shared) = (sink.clone(), Arc::clone(&flow.shared));
-            let active = Arc::new(AtomicBool::new(true));
+    pub(crate) fn stage_feeds(
+        sink: &Sink,
+        id: FlowId,
+        shared: &Arc<Shared>,
+        inbox: &RunInbox,
+        thread: &thread::Thread,
+        feeds: Vec<Feed>,
+        gate: &services::Gate,
+    ) -> Result<Vec<ActiveFeed>, HostError> {
+        let mut staged = Vec::with_capacity(feeds.len());
+        for (node, definition, source, session, settings) in feeds {
+            if !gate.allows(
+                node,
+                &definition,
+                ServiceOperation::Entry,
+                services::declared_connection(&settings),
+                &[],
+            ) {
+                return Err(HostError::Source(
+                    node,
+                    "the host denied the service entry".into(),
+                ));
+            }
+            let inbox = inbox.clone();
+            let thread = thread.clone();
+            let (sink, shared) = (sink.clone(), Arc::clone(shared));
+            let active = Arc::new(AtomicU8::new(STAGED));
             let (can_emit, can_fault) = (Arc::clone(&active), Arc::clone(&active));
             let emitter = Emitter::with_faults(
                 move |payload| {
-                    if !can_emit.load(Ordering::Acquire) {
-                        return Err(EmitError::Closed);
+                    match can_emit.load(Ordering::Acquire) {
+                        STAGED | ACTIVE => {}
+                        _ => return Err(EmitError::Closed),
                     }
                     let input = HostInput::Trigger {
                         node,
@@ -206,7 +293,8 @@ impl Host {
                     Ok(())
                 },
                 move |fault| {
-                    if !can_fault.load(Ordering::Acquire) || shared.closing.load(Ordering::Acquire)
+                    if can_fault.load(Ordering::Acquire) != ACTIVE
+                        || shared.closing.load(Ordering::Acquire)
                     {
                         return Err(EmitError::Closed);
                     }
@@ -223,29 +311,46 @@ impl Host {
                     Ok(())
                 },
             );
-            match source.start_with(session, &settings, emitter) {
-                Ok(guard) => flow.feeds.push(Box::new(ActiveFeed {
+            let started = effects::guard(|| source.start_with(session, &settings, emitter))
+                .map_err(|fault| fault.message.to_string())
+                .and_then(|result| result);
+            match started {
+                Ok(guard) => staged.push(ActiveFeed {
                     active,
                     _guard: guard,
-                })),
+                }),
                 Err(reason) => {
-                    active.store(false, Ordering::Release);
-                    flow.feeds.clear();
+                    active.store(CLOSED, Ordering::Release);
                     return Err(HostError::Source(node, reason));
                 }
             }
         }
-        Ok(())
+        Ok(staged)
     }
 
     /// Validates, compiles and starts a document as a new flow on its own thread.
     pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
-        let prepared = self.prepare(json, None)?;
-        let keep = self.keep(&prepared.document, &prepared.registry);
+        let document = Self::decode_document(json)?;
+        let prepared = self.prepare(document, semantic(json)?, None)?;
+        let mut keep = self.keep(&prepared.document, &prepared.registry);
+        if keep.is_some()
+            && self.flows.values().any(|flow| {
+                flow.info.graph == prepared.document.graph_id()
+                    && flow
+                        .thread
+                        .as_ref()
+                        .is_some_and(|thread| !thread.is_finished())
+            })
+        {
+            return Err(HostError::State(
+                "a run already owns this graph's persistent state".into(),
+            ));
+        }
         // Stored values that no longer fit the document are left out; a file that
         // cannot be read refuses the flow rather than silently starting it empty.
         let mut values = BTreeMap::new();
-        if let Some(keep) = &keep {
+        if let Some(keep) = &mut keep {
+            keep.acquire(None)?;
             let stored = state::load(&keep.directory, &keep.name).map_err(HostError::State)?;
             let restored = state::restore(&stored, &keep.variables, keep.registry.types());
             values.extend(restored.into_iter().map(|(id, value)| (id, Some(value))));
@@ -279,6 +384,7 @@ impl Host {
         let now = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let (mut driver, inbox) = RunDriver::new(run, self.options.inbox_capacity.max(1), now);
         let sources = flow::event_sources(&mut driver, &prepared.plan);
+        let manual_types = manual_types(&prepared);
         let info = FlowInfo {
             graph: prepared.document.graph_id(),
             manual_entries: prepared.manual_entries,
@@ -294,12 +400,16 @@ impl Host {
             observed: AtomicBool::new(false),
             swap: Mutex::new(None),
         });
+        let gate = services::Gate {
+            graph: prepared.document.graph_id(),
+            policy: self.options.connection_authorizer.clone(),
+        };
         let context = Context {
             keep,
             id,
             shared: Arc::clone(&shared),
             sink: self.sink.clone(),
-            pool: self.pool.clone(),
+            pool: self.pool.scoped(),
             inbox: inbox.clone(),
             plan: prepared.plan,
             sessions: sessions_of(&prepared.opened),
@@ -307,41 +417,68 @@ impl Host {
             clock: self.clock,
             turn_inputs: self.options.turn_inputs.max(1),
             turn_budget: self.options.turn_budget.max(1),
-            armed: armed::Armed::new(prepared.armables),
+            armed: armed::Armed::new(prepared.armables, gate.clone()),
+            gate: gate.clone(),
         };
+        let (launch, ready) = channel();
         let thread = thread::Builder::new()
             .name(format!("orange-flow-{id}"))
-            .spawn(move || flow::drive(driver, context))
+            .spawn(move || {
+                if ready.recv().is_ok() {
+                    flow::drive(driver, context);
+                }
+            })
             .map_err(|error| HostError::Start(error.to_string()))?;
+        let feeds = Self::stage_feeds(
+            &self.sink,
+            id,
+            &shared,
+            &inbox,
+            thread.thread(),
+            prepared.feeds,
+            &gate,
+        )
+        .and_then(|feeds| {
+            for feed in &feeds {
+                feed.activate();
+            }
+            effects::guard(|| {
+                for (_, session) in prepared.opened.values() {
+                    session.start();
+                }
+            })
+            .map_err(|fault| HostError::Start(fault.message.to_string()))?;
+            Ok(feeds)
+        });
+        let feeds = match feeds {
+            Ok(feeds) => feeds,
+            Err(error) => {
+                // The actor has not pumped On Start or any queued input.
+                drop(launch);
+                let _ = thread.join();
+                return Err(error);
+            }
+        };
+        launch.send(()).map_err(|_| HostError::FlowEnded)?;
         let _ = self
             .space
             .flows
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id, thread.thread().clone());
-        let mut flow = Flow {
+        let flow = Flow {
             info,
+            manual_types,
+            manual_registry: Arc::clone(&prepared.registry),
+            manual_generation: Arc::new(()),
             inbox,
             sources,
             shared,
+            feeds,
             thread: Some(thread),
-            feeds: Vec::new(),
             opened: prepared.opened,
             semantic: prepared.semantic,
         };
-        if let Err(error) = Self::feed(&self.sink, id, &mut flow, prepared.feeds) {
-            // Nothing has been reported as opened: stop the flow again.
-            flow.shared.closing.store(true, Ordering::Relaxed);
-            flow.wake();
-            if let Some(thread) = flow.thread.take() {
-                let _ = thread.join();
-            }
-            return Err(error);
-        }
-        // Every trigger is attached: the flow's connections may begin receiving.
-        for (_, session) in flow.opened.values() {
-            session.start();
-        }
         let _ = self.flows.insert(id, flow);
         Ok(id)
     }
@@ -358,17 +495,37 @@ impl Host {
     /// nothing.
     pub fn update(&mut self, flow: FlowId, json: &str) -> Result<Updated, HostError> {
         let current = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
-        if semantic(json)? == current.semantic {
+        let document = Self::decode_document(json)?;
+        let semantic = semantic(json)?;
+        if semantic == current.semantic {
             return Ok(Updated::default());
         }
         let previous = current.opened.clone();
         let graph = current.info.graph;
-        let prepared = self.prepare(json, Some(&previous))?;
-        if prepared.document.graph_id() != graph {
+        if document.graph_id() != graph {
             return Err(HostError::Document(
                 "the edit belongs to another graph".into(),
             ));
         }
+        let next_keeps_state =
+            self.options.state_dir.is_some() && !state::kept(&document, VarScope::Run).is_empty();
+        if next_keeps_state
+            && self.flows.iter().any(|(id, other)| {
+                *id != flow
+                    && other.info.graph == graph
+                    && other
+                        .thread
+                        .as_ref()
+                        .is_some_and(|thread| !thread.is_finished())
+            })
+        {
+            return Err(HostError::State(
+                "another run owns this graph's persistent state".into(),
+            ));
+        }
+        let prepared = self.prepare(document, semantic, Some(&previous))?;
+        let payload_types = manual_types(&prepared);
+        let payload_registry = Arc::clone(&prepared.registry);
         let keep = self.keep(&prepared.document, &prepared.registry);
         let (reply, answer) = channel();
         let swap = flow::Swap {
@@ -380,6 +537,7 @@ impl Host {
             inbox_capacity: self.options.inbox_capacity.max(1),
             sessions: sessions_of(&prepared.opened),
             armables: prepared.armables,
+            feeds: prepared.feeds,
             reply,
         };
         let current = self.flows.get_mut(&flow).ok_or(HostError::UnknownFlow)?;
@@ -389,6 +547,7 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(swap);
         current.wake();
+        let waiting_since = Instant::now();
         let swapped = loop {
             match answer.recv_timeout(std::time::Duration::from_millis(20)) {
                 Ok(outcome) => break outcome?,
@@ -398,21 +557,32 @@ impl Host {
                     if current.thread.as_ref().is_none_or(JoinHandle::is_finished) {
                         return Err(HostError::FlowEnded);
                     }
+                    if waiting_since.elapsed() >= std::time::Duration::from_secs(2)
+                        && current
+                            .shared
+                            .swap
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take()
+                            .is_some()
+                    {
+                        return Err(HostError::Busy);
+                    }
                 }
             }
         };
         // Sources of the old graph fed its mailbox; replace them with the new graph's.
         current.feeds.clear();
         current.inbox = swapped.inbox;
+        current.manual_types = payload_types;
+        current.manual_registry = payload_registry;
+        current.manual_generation = Arc::new(());
         current.info.manual_entries = prepared.manual_entries;
         current.info.events = swapped.sources.keys().copied().collect();
         current.sources = swapped.sources;
         current.opened = prepared.opened;
         current.semantic = prepared.semantic;
-        Self::feed(&self.sink, flow, current, prepared.feeds)?;
-        for (_, session) in current.opened.values() {
-            session.start();
-        }
+        current.feeds = swapped.feeds;
         Ok(Updated {
             changed: true,
             kept_variables: swapped.kept,
@@ -479,6 +649,45 @@ impl Host {
             },
         )
     }
+
+    /// Gets a typed sample request from the running plan, including its exact codec.
+    pub fn manual_payload(&self, flow: FlowId, node: NodeId) -> Option<ManualPayload> {
+        let running = self.flows.get(&flow)?;
+        let ty = running.manual_types.get(&node)?.clone();
+        Some(ManualPayload {
+            flow,
+            node,
+            generation: Arc::clone(&running.manual_generation),
+            editor: literals::literal_editor(&running.manual_registry, &ty),
+            ty,
+        })
+    }
+
+    /// Validates and fires a transient sample using the pinned run registry.
+    pub fn fire_manual_literal(
+        &self,
+        request: &ManualPayload,
+        literal: &Literal,
+    ) -> Result<(), HostError> {
+        let flow = self
+            .flows
+            .get(&request.flow)
+            .ok_or(HostError::UnknownFlow)?;
+        if !Arc::ptr_eq(&request.generation, &flow.manual_generation) {
+            return Err(HostError::FlowEnded);
+        }
+        if request.ty != literal.ty || flow.manual_types.get(&request.node) != Some(&literal.ty) {
+            return Err(HostError::Variable(
+                "the sample must match the entry payload type".into(),
+            ));
+        }
+        let value = orange_model::value::literal_codec::decode(
+            literal,
+            flow.manual_registry.types().as_ref(),
+        )
+        .map_err(|error| HostError::Variable(error.to_string()))?;
+        self.trigger(request.flow, request.node, Some(value))
+    }
     /// Raises a declared event in the flow, as an external source would.
     pub fn emit(&self, flow: FlowId, event: EventDeclId, payload: Value) -> Result<(), HostError> {
         let source = *self
@@ -533,18 +742,23 @@ impl Host {
         let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
         let (answer, result) = channel();
         let query: Query = Box::new(move |run| {
-            let _ = answer.send(read(&*run));
+            let _ = answer.send(effects::guard(|| read(&*run)));
             false
         });
-        flow.shared
-            .queries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-            .ok_or(HostError::FlowEnded)?
-            .push_back(query);
-        flow.wake();
-        result.recv().map_err(|_| HostError::FlowEnded)
+        flow.enqueue_query(query, self.options.inbox_capacity)?;
+        result
+            .recv()
+            .map_err(|_| HostError::FlowEnded)?
+            .map_err(|_| HostError::Run(RunError::Interrupted))
+    }
+
+    /// Reads one variable at an actor turn boundary.
+    pub fn variable_value(
+        &self,
+        flow: FlowId,
+        variable: VariableId,
+    ) -> Result<Option<Value>, HostError> {
+        self.inspect(flow, move |run| run.variable(variable).cloned())
     }
 
     /// Stops the flow at once if it is still running, waits for its thread and forgets

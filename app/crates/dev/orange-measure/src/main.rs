@@ -17,6 +17,7 @@ mod harness;
 mod import_measure;
 mod index_measure;
 mod lifecycle_measure;
+mod verification;
 mod workloads;
 
 use harness::{Config, Row};
@@ -77,6 +78,9 @@ fn main() {
         execution || cfg!(feature = "allocation-counting"),
         "profiles without allocation-counting require --execution; memory profiles need the default features"
     );
+    if verification::run(config, &filter) {
+        return;
+    }
     if execution {
         execution::run(config, &filter);
         return;
