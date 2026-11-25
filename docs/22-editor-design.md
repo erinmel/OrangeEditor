@@ -254,17 +254,20 @@ combination in the selected language.
   post-EQ waveform. Its stereo dBFS meters use separate peak, RMS and held
   values, 6 dB ticks, and per-channel clipping latches. The demonstration runs
   on the UI side and uses a pausable signal. Visible signal displays target 60 Hz and the spectrum targets 30 Hz. Pausing or scrolling all live displays out of view suspends signal processing. EQ response samples are cached by band settings, sample rate and plot resolution.
-  Continuous and stepped sliders share a thin rail and circular thumb. The
-  stepped control blends its stops into the active or inactive rail, places
-  optional labels just below it and changes by one step with the arrow keys.
+  Continuous and stepped sliders share a thin rail and circular thumb. Stops and
+  guides are thin notches under the rail, never marks on it: taller where a label
+  sits, lit once the value has passed them, so a dense range reads as a ruler. Labels
+  sit below the notches. A logarithmic slider notches 1, 2 and 5 of each decade, the
+  powers of ten taller. A stepped slider changes by one step with the arrow keys.
   Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound. A dial (`orange_ui_controls::dial`) is the self-contained form: a ring of fine ticks lit up to the value, the value and unit inside, and its name in the ring's open bottom quarter, so it needs no label row.
-  Drag up or right to increase the value, hold Shift for a fine adjustment,
-  focus the knob to nudge it with the wheel or arrow keys, or double-click the centered readout
-  to enter a number.
+  Drag up or right to increase the value; a full sweep takes 200 points, Shift is ten
+  times finer and Ctrl (Command on macOS) a hundred times. Focus the knob to nudge it one
+  step with the wheel or arrow keys, ten with Page Up and Page Down, or double-click the
+  centered readout to enter a number.
   Continuous marked sliders show guide notches without snapping. Canvas zoom
   uses guides at 50%, 75%, 100%, 125%, 150% and 175%, but accepts every value within 20–175%.
-  A guided slider may hide guides, show only pills, show only labels, or show
-  pills and labels. A strict guided slider snaps to its configured step; a free
+  A guided slider may hide guides, show only notches, show only labels, or show
+  notches and labels. A strict guided slider snaps to its configured step; a free
   guided slider never snaps. Circular controls share the same guide and step
   concepts for values that suit a dial.
 

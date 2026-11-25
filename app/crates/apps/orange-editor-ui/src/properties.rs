@@ -534,6 +534,7 @@ impl AudioRange {
         dial: AudioDial,
         label: &str,
         caption: &str,
+        diameter: Option<f32>,
     ) -> Option<f64> {
         let (step, unit) = dial.controls();
         let key = id.with("rotary-draft");
@@ -546,7 +547,11 @@ impl AudioRange {
                     &mut shown,
                     self.min as f32..=self.max as f32,
                     step,
-                    orange_ui_controls::DialFace { caption, unit },
+                    orange_ui_controls::DialFace {
+                        caption,
+                        unit,
+                        diameter,
+                    },
                 )
             })
             .inner;
@@ -582,7 +587,11 @@ impl AudioRange {
             value as f32,
             self.min as f32..=self.max as f32,
             step,
-            orange_ui_controls::DialFace { caption, unit },
+            orange_ui_controls::DialFace {
+                caption,
+                unit,
+                diameter: None,
+            },
         );
     }
 
@@ -1595,7 +1604,7 @@ impl Editor {
                         let id = ui.make_persistent_id((&node.id, &pointer));
                         let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
                             if let Some(value) =
-                                range.dial(ui, Surface::Panel, id, value, dial, &label, "")
+                                range.dial(ui, Surface::Panel, id, value, dial, &label, "", None)
                             {
                                 changed =
                                     Some(Change::Setting(pointer.clone(), Some(json!(value))));

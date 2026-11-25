@@ -777,6 +777,7 @@ impl Canvas {
                                                 dial,
                                                 &caption,
                                                 &caption,
+                                                Some(knob.height()),
                                             )
                                         },
                                     )

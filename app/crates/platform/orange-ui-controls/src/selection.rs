@@ -660,7 +660,34 @@ pub fn logarithmic_slider(
         reason = "normalized screen coordinate"
     )]
     let fraction = ((f64::from(*value).clamp(start, end) / start).ln() / (end / start).ln()) as f32;
-    SliderTrack::new(response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
+    let track = SliderTrack::new(response.rect, fraction);
+    track.paint(ui, surface, Some(&response), |painter, active, idle| {
+        // 1, 2 and 5 of every decade, the powers of ten taller.
+        let mut decade = 10f64.powf(start.log10().floor());
+        while decade <= end {
+            for (factor, major) in [(1.0, true), (2.0, false), (5.0, false)] {
+                let at = decade * factor;
+                if at < start || at > end {
+                    continue;
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "normalized screen coordinate"
+                )]
+                let x = egui::lerp(
+                    track.travel,
+                    ((at / start).ln() / (end / start).ln()) as f32,
+                );
+                track.notch(
+                    painter,
+                    x,
+                    major,
+                    if x <= track.thumb.x { active } else { idle },
+                );
+            }
+            decade *= 10.0;
+        }
+    });
     response
 }
 
@@ -686,11 +713,13 @@ pub fn continuous_marked_slider(
     };
     let track = SliderTrack::new(response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
-        for mark in marks {
+        for (index, mark) in marks.iter().enumerate() {
             let x = egui::lerp(track.travel, mark.clamp(0.0, 1.0));
-            painter.rect_filled(
-                Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                CONTROL_RADIUS - 2,
+            let major = index == 0 || index + 1 == marks.len();
+            track.notch(
+                painter,
+                x,
+                major,
                 if x <= track.thumb.x { active } else { idle },
             );
         }
@@ -731,9 +760,10 @@ pub fn guided_slider(
         if matches!(marks, SliderMarks::Notches | SliderMarks::NotchesAndValues) {
             for guide in guides {
                 let x = egui::lerp(track.travel, guide.fraction.clamp(0.0, 1.0));
-                painter.rect_filled(
-                    Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                    CONTROL_RADIUS - 2,
+                track.notch(
+                    painter,
+                    x,
+                    true,
                     if x <= track.thumb.x { active } else { idle },
                 );
             }
@@ -753,8 +783,11 @@ pub fn guided_slider(
             let x = (egui::lerp(track.travel, guide.fraction.clamp(0.0, 1.0)) - width * 0.5)
                 .clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
-                ui.painter()
-                    .galley(pos2(x, track.thumb.y + 7.0), galley, theme.muted_text);
+                ui.painter().galley(
+                    pos2(x, track.thumb.y + LABEL_DROP),
+                    galley,
+                    theme.muted_text,
+                );
                 right = x + width;
             }
         }
@@ -789,7 +822,8 @@ pub enum KnobStyle {
     Loop,
 }
 /// Draws a rotary value control with optional snapping and visual marks.
-/// Drag up or right to increase it. Hold Shift while dragging for finer control.
+/// Drag up or right to increase it: Shift is ten times finer, Ctrl (Command on macOS) a
+/// hundred times. Arrows move one step, Page Up and Page Down ten.
 ///
 /// The marks are normalized positions from 0.0 to 1.0 and do not themselves
 /// constrain the value. This is suitable for continuous, stepped and logarithmic
@@ -807,10 +841,12 @@ pub fn knob(
 }
 
 /// What a dial shows inside its ring: its name, and the unit after its value.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DialFace<'a> {
     pub caption: &'a str,
     pub unit: &'a str,
+    /// The dial's diameter. Without one it takes a knob's size, narrowed to fit.
+    pub diameter: Option<f32>,
 }
 
 /// A self-contained rotary control: a ring of fine ticks lit up to the value, with the
@@ -883,14 +919,10 @@ fn rotary_with(
     let looping = style == KnobStyle::Loop;
     let normalize = |raw| rotary_value(raw, &range, None, looping);
     let commit = |raw| rotary_value(raw, &range, step, looping);
-    let available = ui.available_size();
-    let diameter = (ui.spacing().interact_size.y.max(24.0) + 45.0)
-        .min(available.x.max(1.0))
-        .min(if face.is_some() {
-            available.y.max(1.0)
-        } else {
-            f32::INFINITY
-        });
+    let diameter = face
+        .and_then(|face| face.diameter)
+        .unwrap_or(ui.spacing().interact_size.y.max(24.0) + 45.0)
+        .min(ui.available_width().max(1.0));
     let (rect, mut response) =
         ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::click_and_drag());
     if response.clicked() || response.drag_started() {
@@ -937,14 +969,24 @@ fn rotary_with(
     let mut next = *value;
     if span > 0.0 && response.dragged() {
         let delta = response.drag_delta();
-        let sensitivity = ui.input(|input| if input.modifiers.shift { 0.2 } else { 1.0 });
+        // A full sweep takes 200 points; Shift is ten times finer, Ctrl (Command on
+        // macOS) a hundred times, so a wide range can still be set to its last step.
+        let sensitivity = ui.input(|input| {
+            if input.modifiers.command {
+                0.01
+            } else if input.modifiers.shift {
+                0.1
+            } else {
+                1.0
+            }
+        });
         next = ui.ctx().data_mut(|data| {
             let previous = if response.drag_started() {
                 *value
             } else {
                 data.get_temp(drag_id).unwrap_or(*value)
             };
-            let raw = normalize(previous + span * (delta.x - delta.y) * sensitivity / 160.0);
+            let raw = normalize(previous + span * (delta.x - delta.y) * sensitivity / 200.0);
             data.insert_temp(drag_id, raw);
             raw
         });
@@ -952,14 +994,17 @@ fn rotary_with(
         ui.ctx().data_mut(|data| data.remove::<f32>(drag_id));
     }
     if span > 0.0 && response.has_focus() {
-        let keyboard_step = step.unwrap_or(span / 100.0);
-        let [left, down, right, up] = super::consume_plain_keys(
+        // Arrows move one step, Page Up and Page Down ten.
+        let keyboard_step = step.unwrap_or(span / 200.0);
+        let [left, down, right, up, page_down, page_up] = super::consume_plain_keys(
             ui,
             [
                 Key::ArrowLeft,
                 Key::ArrowDown,
                 Key::ArrowRight,
                 Key::ArrowUp,
+                Key::PageDown,
+                Key::PageUp,
             ],
         );
         if left || down {
@@ -967,6 +1012,12 @@ fn rotary_with(
         }
         if right || up {
             next += keyboard_step;
+        }
+        if page_down {
+            next -= keyboard_step * 10.0;
+        }
+        if page_up {
+            next += keyboard_step * 10.0;
         }
     }
     if span > 0.0 && response.hovered() && response.has_focus() {
@@ -984,7 +1035,7 @@ fn rotary_with(
             wheel
         });
         if wheel != 0.0 {
-            next += wheel.signum() * step.unwrap_or(span / 100.0);
+            next += wheel.signum() * step.unwrap_or(span / 200.0);
         }
     }
     if style == KnobStyle::Bipolar && response.dragged() && next.abs() < span * 0.018 {
@@ -1053,6 +1104,10 @@ fn paint_dial(
     let enabled = response.is_none_or(Response::enabled);
     let painter = ui.painter();
     let diameter = rect.width().min(rect.height());
+    // Too small for its ticks and text: nothing legible fits.
+    if diameter < 24.0 {
+        return;
+    }
     let center = rect.center();
     let outer = diameter * 0.5 - 1.0;
     let length = (diameter * 0.085).max(3.0);
@@ -1075,15 +1130,12 @@ fn paint_dial(
     let count = ((diameter * 0.6) as u16).clamp(24, 48);
     for index in 0..=count {
         let at = f32::from(index) / f32::from(count);
+        // Lit and unlit ticks differ in color only, like the knob's arc and track.
         let lit = fraction > 0.0 && at <= fraction + 0.5 / f32::from(count);
-        let (color, stroke) = if lit {
-            (ink, width * 1.4)
-        } else {
-            (theme.muted_text.gamma_multiply(0.3), width)
-        };
+        let color = if lit { ink } else { theme.border };
         painter.line_segment(
             [point(at, inner), point(at, outer)],
-            Stroke::new(stroke, color),
+            Stroke::new(width, color),
         );
     }
     let needle = if enabled {
@@ -1107,11 +1159,9 @@ fn paint_dial(
     let fit = |text: String, size: f32, color, room: f32| {
         let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(size), color);
         if galley.size().x > room {
-            painter.layout_no_wrap(
-                text,
-                egui::FontId::proportional(size * room / galley.size().x),
-                color,
-            )
+            // Never below a size egui can lay out, however narrow the room.
+            let shrunk = (size * room.max(1.0) / galley.size().x).max(4.0);
+            painter.layout_no_wrap(text, egui::FontId::proportional(shrunk), color)
         } else {
             galley
         }
@@ -1356,8 +1406,21 @@ pub fn stepped_slider(
         f32::from(value.saturating_sub(start)) / f32::from((end - start).max(1)),
     );
     let theme = Theme::of(ui);
-    let stride = tick_stride(stops, track.travel.span(), 12.0);
+    let stride = tick_stride(stops, track.travel.span(), 6.0);
     let x_at = |tick| egui::lerp(track.travel, f32::from(tick) / f32::from(stops.max(1)));
+    let mut font = egui::TextStyle::Monospace.resolve(ui.style());
+    font.size *= 0.85;
+    let size = ui
+        .painter()
+        .layout_no_wrap(end.to_string(), font.clone(), theme.muted_text)
+        .size();
+    // A labeled stop is a major one; without labels, every fifth.
+    let label_stride = tick_stride(stops, track.travel.span(), size.x + 10.0);
+    let major_stride = if matches!(labels, StepLabels::Values) {
+        label_stride
+    } else {
+        stride * 5
+    };
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         for tick in mark_indices(stops, stride) {
             let x = x_at(tick);
@@ -1366,21 +1429,12 @@ pub fn stepped_slider(
             } else {
                 idle
             };
-            painter.rect_filled(
-                Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                CONTROL_RADIUS - 2,
-                color,
-            );
+            let major = tick == stops || usize::from(tick) % major_stride == 0;
+            track.notch(painter, x, major, color);
         }
     });
     if matches!(labels, StepLabels::Values) {
-        let mut font = egui::TextStyle::Monospace.resolve(ui.style());
-        font.size *= 0.85;
-        let size = ui
-            .painter()
-            .layout_no_wrap(end.to_string(), font.clone(), theme.muted_text)
-            .size();
-        let stride = tick_stride(stops, track.travel.span(), size.x + 10.0);
+        let stride = label_stride;
         let (_, row) = ui.allocate_space(vec2(response.rect.width(), size.y));
         let mut right = row.left() - SPACE_SMALL;
         for tick in mark_indices(stops, stride) {
@@ -1398,7 +1452,7 @@ pub fn stepped_slider(
                 (x_at(tick) - width * 0.5).clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
                 ui.painter()
-                    .galley(pos2(x, track.thumb.y + 7.0), galley, color);
+                    .galley(pos2(x, track.thumb.y + LABEL_DROP), galley, color);
                 right = x + width;
             }
         }
@@ -1419,6 +1473,12 @@ fn mark_indices(stops: u16, stride: usize) -> impl Iterator<Item = u16> {
 }
 
 const HANDLE_ASPECT: f32 = 0.72;
+/// From the rail's middle to the top of its notches.
+const NOTCH_GAP: f32 = 4.5;
+const NOTCH_MAJOR: f32 = 5.0;
+const NOTCH_MINOR: f32 = 3.0;
+/// From the rail's middle to the top of its value labels, below the notches.
+const LABEL_DROP: f32 = NOTCH_GAP + NOTCH_MAJOR + 2.0;
 
 struct SliderTrack {
     rect: Rect,
@@ -1441,19 +1501,22 @@ impl SliderTrack {
 
     fn marked(&self, ui: &Ui, surface: Surface, response: Option<&Response>, marks: &[f32]) {
         self.paint(ui, surface, response, |painter, active, idle| {
-            for mark in marks {
+            for (index, mark) in marks.iter().enumerate() {
                 let x = egui::lerp(self.travel, *mark);
-                painter.rect_filled(
-                    Rect::from_center_size(pos2(x, self.thumb.y), vec2(10.5, 7.0)),
-                    CONTROL_RADIUS - 2,
-                    if x <= self.thumb.x && response.is_none_or(Response::enabled) {
-                        active
-                    } else {
-                        idle
-                    },
-                );
+                let major = index == 0 || index + 1 == marks.len();
+                let lit = x <= self.thumb.x && response.is_none_or(Response::enabled);
+                self.notch(painter, x, major, if lit { active } else { idle });
             }
         });
+    }
+
+    /// One stop: a thin tick under the rail, taller for a major stop and lit once the
+    /// value has passed it, so the rail itself stays clean however many stops there are.
+    fn notch(&self, painter: &egui::Painter, x: f32, major: bool, color: egui::Color32) {
+        let top = self.thumb.y + NOTCH_GAP;
+        let length = if major { NOTCH_MAJOR } else { NOTCH_MINOR };
+        let bottom = (top + length).min(self.rect.bottom() + LABEL_DROP - NOTCH_GAP - 1.0);
+        painter.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.5, color));
     }
 
     fn paint(
@@ -1812,7 +1875,7 @@ mod tests {
     }
 
     #[test]
-    fn stepped_slider_centers_pill_stops_on_the_rail_and_keeps_labels_optional() {
+    fn stepped_slider_marks_stops_under_the_rail_and_keeps_labels_optional() {
         for labels in [StepLabels::Hidden, StepLabels::Values] {
             let ctx = egui::Context::default();
             let mut value = 24;
@@ -1842,19 +1905,16 @@ mod tests {
                 .shapes
                 .iter()
                 .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(stop) if stop.rect.size() == vec2(10.5, 7.0) => {
-                        assert_eq!(stop.stroke, Stroke::NONE);
-                        Some((stop.rect.center(), stop.fill))
+                    egui::Shape::LineSegment { points, stroke }
+                        if (points[0].y - rect.center().y - NOTCH_GAP).abs() < 0.01 =>
+                    {
+                        assert_eq!(points[0].x, points[1].x, "a notch is vertical");
+                        Some((points[0], stroke.color))
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
             assert_eq!(track.len(), 4);
-            assert!(
-                track
-                    .iter()
-                    .all(|(p, _)| (p.y - rect.center().y).abs() < 0.01)
-            );
             let (active, idle) = colors.unwrap();
             assert_eq!(
                 track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
@@ -1875,7 +1935,7 @@ mod tests {
                 .iter()
                 .filter_map(|shape| match &shape.shape {
                     egui::Shape::Text(text) => {
-                        assert!((text.pos.y - rect.center().y - 7.0).abs() < 0.01);
+                        assert!((text.pos.y - rect.center().y - LABEL_DROP).abs() < 0.01);
                         Some(text.galley.text())
                     }
                     _ => None,
@@ -2042,6 +2102,74 @@ mod tests {
         }]);
         assert!(rect.width() >= 44.0);
         assert_eq!(value, 1.0);
+    }
+
+    /// A dial with almost no room, as on a first layout pass, draws nothing rather than
+    /// laying out text at a negative size.
+    #[test]
+    fn a_dial_with_no_room_paints_nothing_and_never_panics() {
+        let ctx = egui::Context::default();
+        for (width, diameter) in [(4.0, None), (300.0, Some(6.0)), (30.0, Some(30.0))] {
+            let mut value = 150.0;
+            ctx.run_ui(input(width, vec![]), |ui| {
+                let _ = dial(
+                    ui,
+                    Surface::Card,
+                    &mut value,
+                    0.0..=10_000.0,
+                    Some(1.0),
+                    DialFace {
+                        caption: "Reset margin",
+                        unit: "ms",
+                        diameter,
+                    },
+                );
+            })
+            .drop_without_applying_deltas();
+        }
+    }
+
+    /// Ctrl (Command on macOS) drags a hundred times finer, so a wide range reaches
+    /// every step.
+    #[test]
+    fn a_precise_drag_moves_a_wide_dial_by_single_steps() {
+        let ctx = egui::Context::default();
+        let mut value = 0.0;
+        let mut frame = |events| {
+            let mut rect = Rect::NOTHING;
+            ctx.run_ui(input(240.0, events), |ui| {
+                rect = dial(
+                    ui,
+                    Surface::Panel,
+                    &mut value,
+                    0.0..=10_000.0,
+                    Some(1.0),
+                    DialFace::default(),
+                )
+                .rect;
+            })
+            .drop_without_applying_deltas();
+            (rect, value)
+        };
+        let pos = frame(vec![]).0.center();
+        frame(vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+            egui::Event::PointerMoved(pos),
+        ]);
+        frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::COMMAND,
+        }]);
+        for delta in 1u8..=4 {
+            frame(vec![egui::Event::PointerMoved(
+                pos + vec2(f32::from(delta) * 10.0, 0.0),
+            )]);
+        }
+        // Forty points at a hundredth of 10,000 per 200 points: twenty units, where a
+        // plain drag would have moved 2,000.
+        assert_eq!(frame(vec![]).1, 20.0);
     }
 
     #[test]

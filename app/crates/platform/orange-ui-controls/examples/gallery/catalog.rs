@@ -838,7 +838,7 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                     let label = ui.label("Mix (%)");
                     knob(ui, Surface::Card, &mut fixture.knob, 0.0..=100.0, None, &[])
                         .labelled_by(label.id)
-                        .on_hover_text("Drag up or right · Shift for fine control");
+                        .on_hover_text("Drag up or right · Shift fine · Ctrl precise");
                 }
                 1 => {
                     let label = ui.label("Trim (dB)");
@@ -898,6 +898,7 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                     DialFace {
                         caption: "Hold",
                         unit: "ms",
+                        ..DialFace::default()
                     },
                 ),
                 1 => dial(
@@ -909,6 +910,7 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                     DialFace {
                         caption: "Reset",
                         unit: "dB",
+                        ..DialFace::default()
                     },
                 ),
                 _ => dial(
@@ -920,6 +922,7 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                     DialFace {
                         caption: "Mix",
                         unit: "%",
+                        ..DialFace::default()
                     },
                 ),
             };
