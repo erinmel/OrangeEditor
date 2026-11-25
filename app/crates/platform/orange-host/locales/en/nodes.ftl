@@ -66,3 +66,5 @@ name-org-orange-json-read-text = Read JSON Text
 name-org-orange-json-read-int = Read JSON Whole Number
 name-org-orange-json-read-number = Read JSON Number
 name-org-orange-json-read-bool = Read JSON True or False
+name-core-all-conditions = And
+name-core-any-conditions = Or

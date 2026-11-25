@@ -743,7 +743,10 @@ choices expose field names to assistive tools.
 - Give the canvas the largest area. Group related controls into stable docks and keep
   the active graph, run state and problems visible. Use a neutral canvas and reserve
   strong colors for selection, execution and faults. Use the same node family cue in
-  the palette and card headers when adding family icons.
+  the palette and card headers when adding family icons. And, Or, Not and Xor share the
+  Logic family whatever package provides them. The palette offers And and Or as the
+  growable `core/all-conditions` and `core/any-conditions`; the two-input `core/and`
+  and `core/or` stay loadable but are not listed (`orange_host::UNLISTED`).
 - Keep titles, port labels and values scannable in that order. Prefer one compact
   primary action per card. Use consistent row heights and padding, keep long values
   within the card, and show full precision in the inspector. At distant zoom, keep

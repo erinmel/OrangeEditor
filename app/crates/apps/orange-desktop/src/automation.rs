@@ -400,6 +400,8 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
         .map(|info| &info.definition.definition.id)
         .filter(|id| id.is_core())
         .map(|id| id.as_str().to_owned())
+        // Loadable but replaced in the palette by the growable And and Or.
+        .filter(|id| !orange_host::UNLISTED.contains(&id.as_str()))
         .collect();
     let hidden: Vec<_> = registered_core
         .iter()

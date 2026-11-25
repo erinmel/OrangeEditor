@@ -3093,6 +3093,7 @@ mod tests {
         let offered = host
             .nodes()
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .filter(|info| !orange_host::UNLISTED.contains(&info.definition.definition.id.as_str()))
             .count();
         let presets = all
             .iter()

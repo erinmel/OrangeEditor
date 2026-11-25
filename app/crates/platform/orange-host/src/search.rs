@@ -21,6 +21,10 @@ pub const CONCEPTS: &[&str] = &[
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
+/// Kinds that stay loadable but are not offered: the two-input And and Or, which the
+/// growable forms (`core/all-conditions`, `core/any-conditions`) replace as And and Or.
+pub const UNLISTED: [&str; 2] = ["core/and", "core/or"];
+
 static BUILT_IN: LazyLock<Catalogs> = LazyLock::new(|| {
     let mut catalogs = Catalogs::default();
     for (locale, text) in CATALOGS {
@@ -127,6 +131,7 @@ impl Host {
             .nodes()
             .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .filter(|info| !UNLISTED.contains(&info.definition.definition.id.as_str()))
             .filter_map(|info| {
                 let matched = if words.is_empty() {
                     None
