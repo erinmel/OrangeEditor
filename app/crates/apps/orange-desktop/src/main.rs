@@ -167,9 +167,13 @@ impl eframe::App for Desktop {
         }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
         let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
-        self.keyboard.handle(&events, focused, |key, modifiers| {
+        let problems = self.keyboard.handle(&events, focused, |key, modifiers| {
             !editing && self.editor.accepts_graph_key(key, modifiers)
         });
+        for problem in &problems {
+            self.editor
+                .note(orange_editor_ui::NoteLevel::Warning, problem);
+        }
         // Flows report on their own threads: look again shortly while one runs.
         if self.editor.is_running() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));

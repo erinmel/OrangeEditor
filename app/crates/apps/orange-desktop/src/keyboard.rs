@@ -1,5 +1,9 @@
-//! Focused-window logical key presses enter through run-owned SDK subscriptions.
+//! Logical key presses enter through run-owned SDK subscriptions: while the editor has
+//! focus, or anywhere for a binding set to Anywhere (see [`global`]).
+mod global;
+
 use eframe::egui::{Event, Key, Modifiers};
+use global::{Chord, Signal};
 use orange_sdk::{Arguments, Definition, Emitter, ServicePackage, ServiceSource, Session, Value};
 use serde_json::{Map, Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,9 +18,21 @@ struct Binding {
     /// Exactly the modifiers that must be held, each one named on its own.
     modifiers: Modifiers,
     repeat: bool,
+    /// Also while the editor is in the background, when the system allows the chord.
+    anywhere: bool,
 }
 
 impl Binding {
+    fn chord(&self) -> Chord {
+        Chord {
+            key: self.key,
+            ctrl: self.modifiers.ctrl,
+            shift: self.modifiers.shift,
+            alt: self.modifiers.alt,
+            command: self.modifiers.mac_cmd,
+        }
+    }
+
     fn matches(&self, held: Modifiers) -> bool {
         // egui reports Ctrl as `command` too on Windows and Linux; Command is the
         // macOS key only.
@@ -35,10 +51,62 @@ fn flag(arguments: &Arguments, name: &str) -> Option<bool> {
     }
 }
 
+/// Most problems kept for the Log between frames.
+const MAX_PROBLEMS: usize = 32;
+
 #[derive(Debug, Default)]
 struct State {
     next: u64,
     entries: BTreeMap<u64, (Binding, Emitter)>,
+    /// Chords the system delivers from anywhere.
+    active: BTreeSet<Chord>,
+    /// Background chords held down, so a held key fires once.
+    pressed: BTreeSet<Chord>,
+    problems: Vec<String>,
+}
+
+impl State {
+    /// Takes in what the background backend reports and returns whom to fire.
+    fn signal(&mut self, signal: Signal) -> Vec<Emitter> {
+        match signal {
+            Signal::Pressed(chord) => {
+                if !self.active.contains(&chord) || !self.pressed.insert(chord) {
+                    return Vec::new();
+                }
+                self.entries
+                    .values()
+                    .filter(|(binding, _)| binding.anywhere && binding.chord() == chord)
+                    .map(|(_, emitter)| emitter.clone())
+                    .collect()
+            }
+            Signal::Released(chord) => {
+                let _ = self.pressed.remove(&chord);
+                Vec::new()
+            }
+            Signal::Active(active) => {
+                self.pressed.retain(|chord| active.contains(chord));
+                self.active = active;
+                Vec::new()
+            }
+            Signal::Problem(text) => {
+                if self.problems.len() < MAX_PROBLEMS {
+                    self.problems.push(text);
+                }
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Fires the entries a background signal reaches, outside the registry lock.
+fn deliver(state: &Mutex<State>, signal: Signal) {
+    let emitters = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .signal(signal);
+    for emitter in emitters {
+        let _ = emitter.emit(None);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -46,6 +114,12 @@ pub struct Keyboard {
     state: Arc<Mutex<State>>,
     held: BTreeSet<Key>,
     armed: BTreeSet<Key>,
+    /// Started on the first frame that has a binding set to Anywhere.
+    backend: Option<global::Backend>,
+    /// Why the backend could not start, reported once per change of the wanted chords.
+    unavailable: Option<String>,
+    /// The chords last asked of the backend.
+    applied: BTreeSet<Chord>,
 }
 
 #[derive(Debug)]
@@ -97,7 +171,11 @@ impl ServiceSource for Source {
                 command: false,
             },
             repeat: flag(arguments, "repeat").unwrap_or(false),
+            anywhere: flag(arguments, "anywhere").unwrap_or(false),
         };
+        if binding.anywhere {
+            global::check(&binding.chord())?;
+        }
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state
             .next
@@ -118,7 +196,7 @@ impl Keyboard {
         let off = || json!({"type": "core/bool@1", "value": false});
         let definition = Definition::entry("org.orange.input", "on-key-pressed", "On key pressed")
             .version(3)
-            .description("Fires when the chosen key is pressed with exactly the modifiers set to Yes, while this editor has focus. Editing text and editor shortcuts take priority. Command is the macOS key. Release the key to fire again, unless Repeat is Yes. No global keyboard hook.")
+            .description("Fires when the chosen key is pressed with exactly the modifiers set to Yes, while this editor has focus. Editing text and editor shortcuts take priority. Command is the macOS key. Release the key to fire again, unless Repeat is Yes. With Anywhere set to Yes it also fires while other applications are in front, once per press; a key that types text then needs Ctrl, Alt or Command.")
             .category("input", "Input")
             .keywords("keyboard, hotkey, shortcut, keybind, key press, input, trigger")
             .setting("key", json!({"title":"Key", "type":"string", "enum": Key::ALL.iter().copied().map(Key::name).collect::<Vec<_>>(), "default":"F8"}))
@@ -127,26 +205,74 @@ impl Keyboard {
             .input_default("alt", "core/bool@1", off())
             .input_default("command", "core/bool@1", off())
             .input_default("repeat", "core/bool@1", off())
+            .input_default("anywhere", "core/bool@1", off())
             .build();
         ServicePackage::new("org.orange.input", "0.1.0")
             .about(
                 "Keyboard",
-                "Starts flows when keys are pressed while this editor has focus.",
+                "Starts flows when keys are pressed, while this editor has focus or anywhere.",
             )
             .with_catalogs(crate::CATALOGS)
             .source(&definition, Source(Arc::clone(&self.state)))
     }
 
+    /// Makes the chords set to Anywhere the ones the system delivers. Call it from the
+    /// thread that runs the window's event loop.
+    fn sync_anywhere(&mut self) {
+        let wanted: BTreeSet<Chord> = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .values()
+            .filter(|(binding, _)| binding.anywhere)
+            .map(|(binding, _)| binding.chord())
+            .collect();
+        if wanted == self.applied {
+            return;
+        }
+        if self.backend.is_none() && self.unavailable.is_none() && !wanted.is_empty() {
+            let state = Arc::downgrade(&self.state);
+            let sink: global::Sink = Arc::new(move |signal| {
+                if let Some(state) = state.upgrade() {
+                    deliver(&state, signal);
+                }
+            });
+            match global::Backend::start(sink) {
+                Ok(backend) => self.backend = Some(backend),
+                Err(reason) => self.unavailable = Some(reason),
+            }
+        }
+        match (&mut self.backend, &self.unavailable) {
+            (Some(backend), _) => backend.apply(&wanted),
+            (None, Some(reason)) if !wanted.is_empty() => {
+                deliver(&self.state, Signal::Problem(reason.clone()));
+            }
+            _ => {}
+        }
+        self.applied = wanted;
+    }
+
+    /// Fires the bindings this frame's key events reach and keeps the Anywhere chords
+    /// registered. Returns what the person should read in the Log.
     pub fn handle(
         &mut self,
         events: &[Event],
         focused: bool,
         allowed: impl Fn(Key, Modifiers) -> bool,
-    ) {
+    ) -> Vec<String> {
+        self.sync_anywhere();
+        let problems = std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .problems,
+        );
         if !focused {
             self.held.clear();
             self.armed.clear();
-            return;
+            return problems;
         }
         for event in events {
             let Event::Key {
@@ -173,23 +299,25 @@ impl Keyboard {
                 continue;
             }
             // Release the registry lock before entering the host's bounded ingress.
-            let emitters: Vec<_> = self
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let emitters: Vec<_> = state
                 .entries
                 .values()
                 .filter(|(binding, _)| {
                     binding.key == *key
                         && binding.matches(*modifiers)
                         && ((!was_down && !repeat) || binding.repeat)
+                        // The system delivers an active Anywhere chord itself.
+                        && !(binding.anywhere && state.active.contains(&binding.chord()))
                 })
                 .map(|(_, emitter)| emitter.clone())
                 .collect();
+            drop(state);
             for emitter in emitters {
                 let _ = emitter.emit(None);
             }
         }
+        problems
     }
 }
 
@@ -248,6 +376,88 @@ mod tests {
         });
         assert_eq!(count.load(Ordering::Relaxed), 2);
         assert!(keyboard.state.lock().unwrap().entries.is_empty());
+    }
+
+    fn start(
+        keyboard: &Keyboard,
+        key: &str,
+        flags: &[&str],
+        count: &Arc<AtomicUsize>,
+    ) -> Result<Box<dyn Send>, String> {
+        let seen = Arc::clone(count);
+        let mut settings = Map::new();
+        let _ = settings.insert("key".into(), json!(key));
+        let arguments = Arguments::new(
+            flags
+                .iter()
+                .map(|name| ((*name).to_owned(), Value::Bool(true)))
+                .collect(),
+        );
+        Source(Arc::clone(&keyboard.state)).start_with_arguments(
+            None,
+            &settings,
+            &arguments,
+            Emitter::new(move |_| {
+                seen.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }),
+        )
+    }
+
+    #[test]
+    fn anywhere_presses_fire_once_per_press_and_never_twice_with_focus() {
+        let mut keyboard = Keyboard::default();
+        let count = Arc::new(AtomicUsize::new(0));
+        let lease = start(&keyboard, "F9", &["anywhere"], &count).unwrap();
+        let chord = Chord {
+            key: Key::F9,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            command: false,
+        };
+        // As if the backend had registered it; no system hotkey is taken by the test.
+        keyboard.applied = BTreeSet::from([chord]);
+        // Not yet active: the system has not confirmed it, so only focus fires it.
+        deliver(&keyboard.state, Signal::Pressed(chord));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        let _ = keyboard.handle(&[event_for(Key::F9, true, false)], true, |_, _| true);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        let _ = keyboard.handle(&[event_for(Key::F9, false, false)], true, |_, _| true);
+
+        deliver(&keyboard.state, Signal::Active(BTreeSet::from([chord])));
+        deliver(&keyboard.state, Signal::Pressed(chord));
+        deliver(&keyboard.state, Signal::Pressed(chord));
+        assert_eq!(count.load(Ordering::Relaxed), 2, "a held key fires once");
+        // The focused path leaves an active chord to the system.
+        let _ = keyboard.handle(&[event_for(Key::F9, true, false)], true, |_, _| true);
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        deliver(&keyboard.state, Signal::Released(chord));
+        deliver(&keyboard.state, Signal::Pressed(chord));
+        assert_eq!(count.load(Ordering::Relaxed), 3);
+
+        deliver(&keyboard.state, Signal::Problem("taken".into()));
+        assert_eq!(keyboard.handle(&[], false, |_, _| true), ["taken"]);
+        assert!(keyboard.handle(&[], false, |_, _| true).is_empty());
+        drop(lease);
+        deliver(&keyboard.state, Signal::Released(chord));
+        deliver(&keyboard.state, Signal::Pressed(chord));
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            3,
+            "a stopped entry never fires"
+        );
+    }
+
+    #[test]
+    fn a_typing_key_set_to_anywhere_is_refused_when_the_flow_starts() {
+        let keyboard = Keyboard::default();
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(start(&keyboard, "K", &["anywhere"], &count).is_err());
+        assert!(start(&keyboard, "K", &["anywhere", "shift"], &count).is_err());
+        assert!(start(&keyboard, "K", &["anywhere", "ctrl"], &count).is_ok());
+        // Focus-only bindings keep accepting any key.
+        assert!(start(&keyboard, "K", &[], &count).is_ok());
     }
 
     #[test]

@@ -17,11 +17,22 @@ Global registration, permission/session restrictions, conflict handling, release
 The desktop's On key pressed definition version 3 takes the key from a list of
 logical key names (F8 by default) and Ctrl, Shift, Alt, Command and Repeat as
 separate Yes/No inputs; the chosen modifiers must be held exactly. Focused editing and
-reserved editor shortcuts retain priority. It fires
-only while the editor window has keyboard focus, on every platform: a minimized or
-background window receives no key presses, while flows and their other triggers keep
-running. The desktop has no tray icon. Global registration requires a separate
-platform adapter.
+reserved editor shortcuts retain priority. By default it fires only while the editor
+window has keyboard focus.
+
+With its Anywhere input set to Yes, the binding also fires while the editor is
+minimized or other applications are in front, once per press (Repeat applies only
+with focus). A key that types text needs Ctrl, Alt or Command; function keys F1–F24,
+media keys and Pause may stand alone. Command is macOS only. A binding outside these
+rules is refused when its flow starts, with the reason. Windows, macOS and X11 register a system hotkey
+through `global-hotkey` 0.10, applied from the desktop's event-loop thread on the next
+frame. Presses arrive through the platform's event loop, also while the window is
+minimized. On macOS letters follow their US position. Wayland asks the desktop's
+GlobalShortcuts portal (`ashpd`), which lets the person approve or change each
+shortcut; a desktop without the portal keeps such bindings focus-only. A chord that is
+taken, refused or unavailable keeps working with focus, and the reason appears in the
+Log. While an Anywhere chord is registered it is taken from other applications, until
+its flow stops. The desktop has no tray icon.
 
 ## Files and paths
 
