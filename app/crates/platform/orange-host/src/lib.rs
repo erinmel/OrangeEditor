@@ -25,6 +25,7 @@ mod effects;
 mod flow;
 pub use flow::Events;
 pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
+mod bundled_hints;
 mod flows;
 mod graphs;
 pub mod i18n;
@@ -1072,6 +1073,10 @@ impl Host {
         // A made-up language for checking layouts, from every English catalogue.
         if cfg!(debug_assertions) {
             catalogs.add_pseudo();
+        }
+        // The bundled definitions' own control hints; a package's presentation wins.
+        for (definition, shown) in bundled_hints::presentations(&base) {
+            let _ = presentations.entry(definition).or_insert(shown);
         }
         let host = Self {
             native: Native(Arc::new(math), services),

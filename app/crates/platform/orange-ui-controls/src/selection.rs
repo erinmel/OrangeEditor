@@ -108,6 +108,173 @@ impl BinaryChoice<'_> {
     }
 }
 
+/// Two to five fixed-width choices drawn into a given rectangle, such as a card's
+/// field: the many-option form of [`BinaryChoice`]. Long names shrink to fit.
+#[derive(Debug, Clone, Copy)]
+pub struct ChoiceRow<'a> {
+    pub labels: &'a [&'a str],
+    pub selected: Option<usize>,
+    /// The value is the default, not chosen: its choice is shown paler.
+    pub defaulted: bool,
+    pub surface: Surface,
+    pub zoom: f32,
+}
+
+impl ChoiceRow<'_> {
+    fn parts(&self, rect: Rect) -> Vec<Rect> {
+        let count = self.labels.len().max(1);
+        #[expect(clippy::cast_precision_loss, reason = "a handful of choices")]
+        let width = rect.width() / count as f32;
+        (0..count)
+            .map(|index| {
+                #[expect(clippy::cast_precision_loss, reason = "a handful of choices")]
+                let left = rect.left() + width * index as f32;
+                Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()))
+            })
+            .collect()
+    }
+
+    /// Draws the choices and returns the one clicked, if it changes the value.
+    pub fn show(self, ui: &Ui, rect: Rect, id: egui::Id) -> Option<usize> {
+        self.show_named(ui, rect, id, "")
+    }
+
+    /// Draws the choices as a group named `name` for assistive tools, such as the field
+    /// they set.
+    pub fn show_named(self, ui: &Ui, rect: Rect, id: egui::Id, name: &str) -> Option<usize> {
+        if !name.is_empty() {
+            let group = ui.interact(rect, id.with("group"), egui::Sense::hover());
+            group.widget_info(|| egui::WidgetInfo::labeled(egui::Role::RadioGroup, true, name));
+        }
+        let mut picked = None;
+        let responses: Vec<Response> = self
+            .parts(rect)
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| {
+                let response = ui.interact(part, id.with(index), egui::Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::RadioButton,
+                        response.enabled(),
+                        self.selected == Some(index),
+                        self.labels[index],
+                    )
+                });
+                if response.clicked() && (self.defaulted || self.selected != Some(index)) {
+                    picked = Some(index);
+                }
+                response
+            })
+            .collect();
+        self.paint(ui, rect, Some(&responses));
+        picked
+    }
+
+    pub fn paint_preview(self, ui: &Ui, rect: Rect) {
+        self.paint(ui, rect, None);
+    }
+
+    fn paint(self, ui: &Ui, rect: Rect, responses: Option<&[Response]>) {
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let theme = crate::UiTokens::for_surface(ui, self.surface).theme;
+        let painter = ui.painter();
+        let zoom = self.zoom;
+        let fill = theme.bg_input();
+        painter.rect(
+            rect,
+            5.0 * zoom,
+            fill,
+            theme.control_border(),
+            StrokeKind::Inside,
+        );
+        for (index, part) in self.parts(rect).into_iter().enumerate() {
+            let bounds = part.shrink(2.0 * zoom);
+            let response = responses.and_then(|items| items.get(index));
+            let mut ink = theme.text;
+            if self.selected == Some(index) {
+                let highlight = if self.defaulted {
+                    fill.lerp_to_gamma(theme.primary, 0.55)
+                } else {
+                    theme.primary
+                };
+                ink = crate::theme::ensure_contrast(theme.on_primary, highlight, 4.5);
+                painter.rect_filled(bounds, 4.0 * zoom, highlight);
+            } else if response.is_some_and(Response::hovered) {
+                painter.rect_filled(bounds, 4.0 * zoom, theme.bg_elevated());
+            }
+            let size = 12.5 * zoom;
+            let galley = painter.layout_no_wrap(
+                self.labels[index].to_owned(),
+                egui::FontId::proportional(size),
+                ink,
+            );
+            let room = bounds.width() - 4.0 * zoom;
+            let galley = if galley.size().x > room && room > 0.0 {
+                let shrunk = (size * room / galley.size().x).max(6.0);
+                painter.layout_no_wrap(
+                    self.labels[index].to_owned(),
+                    egui::FontId::proportional(shrunk),
+                    ink,
+                )
+            } else {
+                galley
+            };
+            painter.galley(bounds.center() - galley.size() * 0.5, galley, ink);
+            if response.is_some_and(Response::has_focus) {
+                painter.rect_stroke(bounds, 4.0 * zoom, theme.focus_ring, StrokeKind::Inside);
+            }
+        }
+    }
+}
+
+/// Minus and plus buttons at the two ends of `rect`, around a number the caller draws
+/// in between. Returns -1 or +1 for the button clicked. `rect`'s height sets their size.
+pub fn step_buttons(ui: &Ui, rect: Rect, id: egui::Id, surface: Surface, zoom: f32) -> Option<i8> {
+    let side = rect.height();
+    let minus = Rect::from_min_size(rect.min, vec2(side, side));
+    let plus = Rect::from_min_size(pos2(rect.right() - side, rect.top()), vec2(side, side));
+    let theme = crate::UiTokens::for_surface(ui, surface).theme;
+    let mut step = None;
+    for (button, sign, glyph) in [(minus, -1, "\u{2212}"), (plus, 1, "+")] {
+        let response = ui.interact(button, id.with(sign), egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                response.enabled(),
+                if sign < 0 { "Decrease" } else { "Increase" },
+            )
+        });
+        if ui.is_rect_visible(button) {
+            let fill = if response.hovered() {
+                theme.bg_elevated()
+            } else {
+                theme.bg_input()
+            };
+            ui.painter().rect(
+                button,
+                5.0 * zoom,
+                fill,
+                theme.control_border(),
+                StrokeKind::Inside,
+            );
+            ui.painter().text(
+                button.center(),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(15.0 * zoom),
+                theme.text,
+            );
+        }
+        if response.clicked() {
+            step = Some(sign);
+        }
+    }
+    step
+}
+
 /// Intrinsic pill group with a sliding selection and a stacked narrow layout.
 pub fn pill_segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
@@ -1538,6 +1705,18 @@ impl SliderStyle {
     /// Makes `style` the style of every slider from now on.
     pub fn install(ctx: &egui::Context, style: Self) {
         ctx.data_mut(|data| data.insert_temp(Self::id(), style));
+    }
+
+    /// Runs `paint` with sliders in `style`, then restores the previous style: for
+    /// painting where only a shared `Ui` is at hand, such as a read-only preview.
+    pub fn apply<R>(ctx: &egui::Context, style: Self, paint: impl FnOnce() -> R) -> R {
+        let previous: Self = ctx
+            .data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default();
+        ctx.data_mut(|data| data.insert_temp(Self::id(), style));
+        let result = paint();
+        ctx.data_mut(|data| data.insert_temp(Self::id(), previous));
+        result
     }
 
     /// Draws `add` with sliders in `style`, then restores the previous style.

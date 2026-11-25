@@ -3,7 +3,7 @@
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use orange_host::controls::{Control, Scale, Widget};
-use orange_host::{Connection, EventTiming, NodeView, ReferenceKind};
+use orange_host::{Connection, EventTiming, NodeView, PortView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
 const HTTP_METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -321,6 +321,53 @@ pub(crate) struct NumberRange {
     min: f64,
     max: f64,
     logarithmic: bool,
+    /// The slider's notch style, when the hint names one.
+    notch: Option<orange_ui_controls::NotchStyle>,
+}
+
+/// The hint of setting `name`, when it asks for `widget`.
+pub(crate) fn setting_hint<'a>(
+    node: &'a NodeView,
+    name: &str,
+    widget: Widget,
+) -> Option<&'a Control> {
+    node.controls
+        .settings
+        .get(name)
+        .filter(|control| control.widget == widget)
+}
+
+/// The slider or dial hint of a numeric input, when it gives the range to offer:
+/// an input has no schema bounds of its own (ADR-33).
+pub(crate) fn input_hint<'a>(node: &'a NodeView, port: &PortView) -> Option<&'a Control> {
+    let numeric = matches!(
+        port.ty.as_deref(),
+        Some(
+            "core/f64@1" | "core/f32@1" | "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1"
+        )
+    );
+    node.controls.inputs.get(&port.id).filter(|control| {
+        numeric
+            && matches!(control.widget, Widget::Slider | Widget::Dial)
+            && control.range.is_some()
+    })
+}
+
+fn notch_style(control: &Control) -> Option<orange_ui_controls::NotchStyle> {
+    use orange_host::controls::Notch;
+    control.notch.map(|notch| match notch {
+        Notch::Pill => orange_ui_controls::NotchStyle::Pill,
+        Notch::Tick => orange_ui_controls::NotchStyle::Tick,
+        Notch::Dot => orange_ui_controls::NotchStyle::Dot,
+    })
+}
+
+/// A number as the hint shows it: with its decimals, when the hint gives them.
+pub(crate) fn hinted_number(control: Option<&Control>, value: f64) -> String {
+    match control.and_then(|control| control.precision) {
+        Some(digits) => format!("{value:.*}", usize::from(digits)),
+        None => value.to_string(),
+    }
 }
 
 /// The dial hint of setting `name`, when the node's definition asks for a dial.
@@ -463,7 +510,26 @@ impl NumberRange {
             min,
             max,
             logarithmic: control.scale == Scale::Log && min > 0.0,
+            notch: notch_style(control),
         })
+    }
+
+    /// The range a hinted input offers ([`input_hint`]).
+    pub(crate) fn of_input(control: &Control) -> Option<Self> {
+        let [min, max] = control.range?;
+        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
+            min,
+            max,
+            logarithmic: control.scale == Scale::Log && min > 0.0,
+            notch: notch_style(control),
+        })
+    }
+
+    fn style(self) -> orange_ui_controls::SliderStyle {
+        orange_ui_controls::SliderStyle {
+            notch: self.notch.unwrap_or_default(),
+            ..Default::default()
+        }
     }
 
     #[expect(
@@ -503,7 +569,10 @@ impl NumberRange {
         let mut fraction = ui
             .data(|data| data.get_temp::<f32>(id))
             .unwrap_or_else(|| self.fraction(value));
-        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
+        let marks = self.marks();
+        let response = orange_ui_controls::SliderStyle::scope(ui, self.style(), |ui| {
+            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks)
+        });
         let value = self.value(fraction);
         response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), value, label));
         if response.dragged() {
@@ -592,13 +661,16 @@ impl NumberRange {
     }
 
     pub(crate) fn paint_slider(self, ui: &egui::Ui, rect: egui::Rect, value: f64) {
-        orange_ui_controls::marked_slider_preview(
-            ui,
-            rect,
-            Surface::Card,
-            self.fraction(value),
-            &self.marks(),
-        );
+        let marks = self.marks();
+        orange_ui_controls::SliderStyle::apply(ui.ctx(), self.style(), || {
+            orange_ui_controls::marked_slider_preview(
+                ui,
+                rect,
+                Surface::Card,
+                self.fraction(value),
+                &marks,
+            );
+        });
     }
 
     fn marks(self) -> [f32; 5] {
@@ -1538,6 +1610,33 @@ impl Editor {
             );
             let mut said = None;
             row(ui, &label, hover, |ui| match &field {
+                Field::Choice(options) if setting_hint(node, name, Widget::Segmented).is_some() => {
+                    // The same row of choices as on the card (ADR-33).
+                    let selected = current.as_str().or_else(|| schema["default"].as_str());
+                    let labels: Vec<String> = options
+                        .iter()
+                        .map(|option| setting_choice_label(node, option).into_owned())
+                        .collect();
+                    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                        egui::Sense::hover(),
+                    );
+                    let row = orange_ui_controls::ChoiceRow {
+                        labels: &labels,
+                        selected: options.iter().position(|option| selected == Some(*option)),
+                        defaulted: current.is_null(),
+                        surface: Surface::Panel,
+                        zoom: 1.0,
+                    };
+                    let id = ui.make_persistent_id(("orange-setting-choices", name.as_str()));
+                    if let Some(picked) = row.show_named(ui, rect, id, &label) {
+                        changed = Some(Change::Setting(
+                            pointer.clone(),
+                            Some(json!(options[picked])),
+                        ));
+                    }
+                }
                 Field::Choice(options) => {
                     let selected = current.as_str().or_else(|| schema["default"].as_str());
                     let shown = selected.map_or_else(
@@ -1626,6 +1725,46 @@ impl Editor {
                             };
                             changed = Some(Change::Setting(pointer.clone(), Some(literal)));
                         }
+                    }
+                    if let Some(stepper) = setting_hint(node, name, Widget::Stepper)
+                        && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
+                    {
+                        // Minus and plus around the number, as on the card (ADR-33).
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                            egui::Sense::hover(),
+                        );
+                        let id = ui.make_persistent_id(("orange-setting-steps", name.as_str()));
+                        if let Some(sign) =
+                            orange_ui_controls::step_buttons(ui, rect, id, Surface::Panel, 1.0)
+                        {
+                            let step = stepper.step.unwrap_or(1.0);
+                            let low = stepper
+                                .range
+                                .map(|[low, _]| low)
+                                .or(schema["minimum"].as_f64())
+                                .unwrap_or(f64::MIN);
+                            let high = stepper
+                                .range
+                                .map(|[_, high]| high)
+                                .or(schema["maximum"].as_f64())
+                                .unwrap_or(f64::MAX);
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "a stepper holds a whole number"
+                            )]
+                            let next =
+                                (value + f64::from(sign) * step).clamp(low, high).round() as i64;
+                            changed = Some(Change::Setting(pointer.clone(), Some(json!(next))));
+                        }
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            hinted_number(Some(stepper), value),
+                            egui::TextStyle::Monospace.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        );
+                        return;
                     }
                     let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();

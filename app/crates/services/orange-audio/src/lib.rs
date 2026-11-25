@@ -1165,6 +1165,16 @@ fn record(
 }
 
 /// Gain 1, the sound as it is, for a `gain` input left empty.
+/// Playback gain as a slider from silence to twice as loud (ADR-33); a larger value
+/// can still be typed.
+fn gain_control() -> orange_sdk::Control {
+    orange_sdk::Control::slider()
+        .range(0.0, 2.0)
+        .precision(2)
+        .unit("×")
+        .marks(&[0.0, 1.0, 2.0])
+}
+
 fn unit_gain() -> Json {
     serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 1.0f64.to_bits())})
 }
@@ -1178,6 +1188,7 @@ fn play_definition() -> String {
         .input("path", "core/string@1")
         .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .build()
 }
 
@@ -1197,6 +1208,7 @@ fn play_from_definition() -> String {
         .path_input("folder", true, &[])
         .input_default("pick", "core/u64@1", serde_json::json!({"type": "core/u64@1", "value": "0"}))
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .output("file", "core/string@1")
         .build()
 }
@@ -1209,6 +1221,7 @@ fn loop_definition() -> String {
         .input("path", "core/string@1")
         .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .build()
 }
 

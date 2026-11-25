@@ -18,11 +18,12 @@ pub use theme::{Density, Divider, SpacingScale, ThemeMode, UiTokens};
 mod selection;
 pub mod visualizations;
 pub use selection::{
-    BinaryChoice, DialFace, KnobStyle, NotchStyle, NotebookOrientation, NotebookPadding,
+    BinaryChoice, ChoiceRow, DialFace, KnobStyle, NotchStyle, NotebookOrientation, NotebookPadding,
     NotebookWidth, SliderBehavior, SliderGuide, SliderMarks, SliderStyle, StepLabels, ThumbStyle,
     continuous_marked_slider, continuous_slider, dial, dial_preview, guided_slider, knob,
     logarithmic_slider, marked_slider, marked_slider_preview, notebook, notebook_flex,
-    notebook_styled, pill_segmented, rotary, rotary_preview, segmented, stepped_slider,
+    notebook_styled, pill_segmented, rotary, rotary_preview, segmented, step_buttons,
+    stepped_slider,
 };
 pub use visualizations::{
     ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,

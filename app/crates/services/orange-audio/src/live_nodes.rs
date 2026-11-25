@@ -414,6 +414,7 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
         json!({"type": "core/bool@1", "value": true}),
     )
     .input_default("gain", F64, unit_gain())
+    .input_control("gain", crate::gain_control())
     .live("playing", "core/bool@1")
     .source_outputs("finished", None, 0);
     let audio_format = stream_input(live(
@@ -544,7 +545,8 @@ pub(crate) fn add(package: ServicePackage) -> Result<ServicePackage, DefinitionE
     .uses(OUTPUT_ADAPTER)
     .input_default("command", SOUND_COMMAND, choice(SOUND_COMMAND, "stop"))
     .input_default("seconds", F64, zero())
-    .input_default("gain", F64, unit_gain());
+    .input_default("gain", F64, unit_gain())
+    .input_control("gain", crate::gain_control());
     package
         .record(
             "format",

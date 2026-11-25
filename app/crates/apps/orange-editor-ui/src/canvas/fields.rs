@@ -123,6 +123,16 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                 port.value.is_none(),
             )
         }
+        FieldOf::HintedInput(port, control) => {
+            let value = port.value.as_deref().or(port.default.as_deref());
+            match value.and_then(|text| field_text(text).parse::<f64>().ok()) {
+                Some(number) => (
+                    crate::properties::hinted_number(Some(control), number),
+                    port.value.is_none(),
+                ),
+                None => ("-".to_owned(), true),
+            }
+        }
         FieldOf::Input(port) => match (&port.value, &port.default) {
             (Some(value), _) => (
                 crate::properties::choice_caption(port, &field_text(value)).into_owned(),
@@ -201,9 +211,10 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
 /// The name line's text of a field.
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
-        FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            input_caption(node, port)
-        }
+        FieldOf::Input(port)
+        | FieldOf::HintedInput(port, _)
+        | FieldOf::TextArea(port, ..)
+        | FieldOf::Path(port, _) => input_caption(node, port),
         FieldOf::Setting(name, schema, _) => {
             if node.definition == "core/on-watch" {
                 watch_label(name).to_owned()
@@ -325,6 +336,54 @@ pub(super) fn paint_still(
             if dim { colors.weak } else { colors.text },
             None,
         );
+        return;
+    }
+    if let FieldOf::HintedInput(port, control) = field
+        && let Some(range) = crate::properties::NumberRange::of_input(control)
+    {
+        let value = port
+            .value
+            .as_deref()
+            .or(port.default.as_deref())
+            .and_then(|text| field_text(text).parse::<f64>().ok())
+            .unwrap_or(0.0);
+        if control.widget == orange_host::controls::Widget::Dial {
+            range.paint_dial(
+                ui,
+                dial_slot(rect),
+                value,
+                control,
+                &self::name(node, field, None),
+            );
+            return;
+        }
+        let (track, number) = slider_slots(rect, zoom);
+        range.paint_slider(ui, track, value);
+        frame(painter, number, zoom, colors, false);
+        let (text, dim) = shown(node, field);
+        let _ = field_text_in(
+            painter,
+            number,
+            zoom,
+            &text,
+            if dim { colors.weak } else { colors.text },
+            None,
+        );
+        return;
+    }
+    if let FieldOf::Setting(name, schema, _) = field
+        && let Some(choices) = segmented_choices(node, name, schema)
+    {
+        let value = setting_value(node, name, schema);
+        let labels: Vec<&str> = choices.iter().map(|(_, label)| label.as_str()).collect();
+        orange_ui_controls::ChoiceRow {
+            labels: &labels,
+            selected: choices.iter().position(|(option, _)| *option == value),
+            defaulted: node.settings.get(name).is_none(),
+            surface: Surface::Card,
+            zoom,
+        }
+        .paint_preview(ui, rect);
         return;
     }
     let switch_value = match field {
@@ -505,6 +564,77 @@ impl Canvas {
                     }
                 }
                 None
+            }
+            FieldOf::HintedInput(port, control) => {
+                let range = crate::properties::NumberRange::of_input(control)?;
+                let whole = matches!(
+                    port.ty.as_deref(),
+                    Some("core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1")
+                );
+                let current = port
+                    .value
+                    .as_deref()
+                    .or(port.default.as_deref())
+                    .and_then(|text| field_text(text).parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let typed = |value: f64| {
+                    let text = if whole {
+                        format!("{}", value.round())
+                    } else {
+                        value.to_string()
+                    };
+                    Some(FieldEdit::Input(port.id.clone(), text))
+                };
+                if control.widget == orange_host::controls::Widget::Dial {
+                    let knob = dial_slot(slot);
+                    return ui
+                        .scope_builder(
+                            UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
+                            |ui| {
+                                ui.set_clip_rect(ui.clip_rect().intersect(knob));
+                                ui.spacing_mut().interact_size.y = knob.height();
+                                let caption = label();
+                                range.dial(
+                                    ui,
+                                    Surface::Card,
+                                    id,
+                                    current,
+                                    control,
+                                    &caption,
+                                    &caption,
+                                    Some(knob.height()),
+                                )
+                            },
+                        )
+                        .inner
+                        .and_then(typed);
+                }
+                let (track, number) = slider_slots(slot, zoom);
+                let slid = ui
+                    .scope_builder(
+                        UiBuilder::new().max_rect(track).id_salt(id.with("slider")),
+                        |ui| {
+                            ui.set_clip_rect(ui.clip_rect().intersect(track));
+                            ui.spacing_mut().interact_size.y = track.height();
+                            range.slider(ui, Surface::Card, id, current, &label())
+                        },
+                    )
+                    .inner;
+                if let Some(value) = slid {
+                    return typed(value);
+                }
+                let ty = port.ty.clone().unwrap_or_default();
+                let shown_value = crate::properties::hinted_number(Some(control), current);
+                let unit = control.unit.as_deref().unwrap_or_default();
+                self.number_control(
+                    ui,
+                    (node.id, &port.id),
+                    number,
+                    id,
+                    (Some(&shown_value), port.default.as_deref(), &label()),
+                    (whole, &ty, unit),
+                )
+                .map(|text| FieldEdit::Input(port.id.clone(), text))
             }
             FieldOf::Input(port) => {
                 let details = self.port_details(node.id, &port.id, true);
@@ -704,6 +834,20 @@ impl Canvas {
                             &label(),
                         )
                         .and_then(|on| set(on.into())),
+                    Kind::Choice if segmented_choices(node, name, schema).is_some() => {
+                        let choices = segmented_choices(node, name, schema)?;
+                        let labels: Vec<&str> =
+                            choices.iter().map(|(_, label)| label.as_str()).collect();
+                        let picked = orange_ui_controls::ChoiceRow {
+                            labels: &labels,
+                            selected: choices.iter().position(|(option, _)| *option == value),
+                            defaulted: node.settings.get(name).is_none(),
+                            surface: Surface::Card,
+                            zoom,
+                        }
+                        .show_named(ui, slot, id, &label())?;
+                        set(choices[picked].0.clone())
+                    }
                     Kind::Choice => {
                         let options = schema["enum"].as_array().cloned().unwrap_or_default();
                         let (text, dim) = shown(node, field);
@@ -753,8 +897,63 @@ impl Canvas {
                                 .and_then(|number| set(number.into()));
                         }
                         let whole = kind == Kind::Whole;
-                        let current = (!value.is_null()).then(|| value.to_string());
+                        let hint = node.controls.settings.get(name);
+                        let current = (!value.is_null()).then(|| match value.as_f64() {
+                            Some(number) if hint.is_some_and(|h| h.precision.is_some()) => {
+                                crate::properties::hinted_number(hint, number)
+                            }
+                            _ => value.to_string(),
+                        });
                         let key = pointer_of(name);
+                        let unit = hint
+                            .and_then(|hint| hint.unit.as_deref())
+                            .unwrap_or_else(|| unit(name));
+                        // A stepper: minus and plus around the typed number.
+                        if let Some(stepper) = crate::properties::setting_hint(
+                            node,
+                            name,
+                            orange_host::controls::Widget::Stepper,
+                        ) {
+                            let side = slot.height();
+                            let middle = slot.shrink2(egui::vec2(side + 4.0 * zoom, 0.0));
+                            if let Some(sign) = orange_ui_controls::step_buttons(
+                                ui,
+                                slot,
+                                id.with("steps"),
+                                Surface::Card,
+                                zoom,
+                            ) {
+                                let step = stepper.step.unwrap_or(1.0);
+                                let next = value.as_f64().unwrap_or(0.0) + f64::from(sign) * step;
+                                let low = stepper
+                                    .range
+                                    .map(|[low, _]| low)
+                                    .or(schema["minimum"].as_f64());
+                                let high = stepper
+                                    .range
+                                    .map(|[_, high]| high)
+                                    .or(schema["maximum"].as_f64());
+                                let next = next
+                                    .max(low.unwrap_or(f64::MIN))
+                                    .min(high.unwrap_or(f64::MAX));
+                                return setting_number(
+                                    node,
+                                    name,
+                                    schema,
+                                    &format!("{}", next.round()),
+                                )
+                                .and_then(set);
+                            }
+                            let typed = self.number_control(
+                                ui,
+                                (node.id, &key),
+                                middle,
+                                id,
+                                (current.as_deref(), None, &label()),
+                                (true, "core/i64@1", unit),
+                            )?;
+                            return setting_number(node, name, schema, &typed).and_then(set);
+                        }
                         let ty = if whole { "core/i64@1" } else { "core/f64@1" };
                         let (slider, number_slot) = if let Some(range) =
                             crate::properties::NumberRange::of(node, name, schema)
@@ -810,7 +1009,7 @@ impl Canvas {
                             number_slot,
                             id,
                             (current.as_deref(), None, &label()),
-                            (whole, ty, unit(name)),
+                            (whole, ty, unit),
                         )?;
                         setting_number(node, name, schema, &typed).and_then(set)
                     }
@@ -1404,4 +1603,66 @@ fn styled(ui: &mut egui::Ui, zoom: f32) {
     widgets.hovered.bg_stroke = Stroke::new(1.0, colors.selected);
     widgets.active.bg_stroke = Stroke::new(1.0, colors.selected);
     widgets.open.bg_stroke = Stroke::new(1.0, colors.selected);
+}
+
+/// The options of an enumeration setting hinted `segmented`, with their labels.
+fn segmented_choices(
+    node: &NodeView,
+    name: &str,
+    schema: &serde_json::Value,
+) -> Option<Vec<(serde_json::Value, String)>> {
+    crate::properties::setting_hint(node, name, orange_host::controls::Widget::Segmented)?;
+    let options = schema["enum"].as_array()?;
+    Some(
+        options
+            .iter()
+            .map(|option| {
+                let label = option.as_str().map_or_else(
+                    || option.to_string(),
+                    |text| crate::properties::setting_choice_label(node, text).into_owned(),
+                );
+                (option.clone(), label)
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+    use orange_host::controls::{Control, Widget};
+
+    /// A choice setting hinted `segmented` lists its options for a row of choices;
+    /// without the hint it keeps its dropdown.
+    #[test]
+    fn a_segmented_hint_lists_the_options_and_none_keeps_the_dropdown() {
+        let (host, _events) = orange_host::Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_audio::package()],
+        )
+        .unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let id = host
+            .add_node(&mut draft, orange_audio::NOISE_LEVEL, [0.0, 0.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let mut node = NodeView::clone(graph.nodes.iter().find(|node| node.id == id).unwrap());
+        let schema = node.schema.clone().unwrap()["properties"]["direction"].clone();
+        assert!(segmented_choices(&node, "direction", &schema).is_none());
+        let _ = node.controls.settings.insert(
+            "direction".into(),
+            Control {
+                widget: Widget::Segmented,
+                ..Control::default()
+            },
+        );
+        let choices = segmented_choices(&node, "direction", &schema).unwrap();
+        assert_eq!(
+            choices
+                .iter()
+                .map(|(value, _)| value.clone())
+                .collect::<Vec<_>>(),
+            [serde_json::json!("above"), serde_json::json!("below")]
+        );
+    }
 }

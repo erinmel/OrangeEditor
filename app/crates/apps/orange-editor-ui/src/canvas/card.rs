@@ -28,6 +28,9 @@ pub(super) const END: f32 = 8.0;
 pub(super) enum FieldOf<'a> {
     /// A value typed on an input that no wire feeds.
     Input(&'a PortView),
+    /// An input whose definition asks for a slider or a dial over a given range
+    /// (ADR-33).
+    HintedInput(&'a PortView, &'a orange_host::controls::Control),
     /// An inline text area with a fixed height for this frame.
     TextArea(&'a PortView, crate::properties::TextInput, f32),
     /// A file or folder on an input, chosen with the system's chooser.
@@ -53,7 +56,10 @@ impl<'a> FieldOf<'a> {
     /// The input this field edits.
     pub(super) const fn port(&self) -> Option<&'a PortView> {
         match self {
-            Self::Input(port) | Self::TextArea(port, ..) | Self::Path(port, _) => Some(port),
+            Self::Input(port)
+            | Self::HintedInput(port, _)
+            | Self::TextArea(port, ..)
+            | Self::Path(port, _) => Some(port),
             _ => None,
         }
     }
@@ -62,6 +68,11 @@ impl<'a> FieldOf<'a> {
         match self {
             Self::TextArea(_, _, height) => height,
             Self::Setting(_, _, Some(_)) => DIAL_CONTROL,
+            Self::HintedInput(_, control)
+                if control.widget == orange_host::controls::Widget::Dial =>
+            {
+                DIAL_CONTROL
+            }
             _ => CONTROL,
         }
     }
@@ -224,8 +235,8 @@ impl<'a> Card<'a> {
         };
         let mut rows = Vec::new();
         // An audio analysis card's chart comes first, under the header; its rows follow.
-        let mut y = BODY_TOP + spectrum::chart_height(node, chart_open);
-        let mut push =
+        let y = std::cell::Cell::new(BODY_TOP + spectrum::chart_height(node, chart_open));
+        let push =
             |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right: Option<&'a PortView>| {
                 let height = match left {
                     Some(Left::Field { editor, named }) => {
@@ -234,14 +245,14 @@ impl<'a> Card<'a> {
                     _ => LINE,
                 };
                 rows.push(Row {
-                    top: y,
+                    top: y.get(),
                     height,
                     left,
                     right,
                     field_inset: CARD_PADDING,
                     field_end: None,
                 });
-                y += height;
+                y.set(y.get() + height);
             };
         if let Some(role) = crate::node_ergonomics::loop_role(node) {
             push(&mut rows, Some(Left::LoopRole(role)), None);
@@ -338,17 +349,34 @@ impl<'a> Card<'a> {
                     named: true,
                 },
                 // A stream is only ever wired: nothing can be typed for it.
-                None if !stream_type(port.ty.as_deref()) && typed(port, details) => Left::Field {
-                    editor: FieldOf::Input(port),
-                    named: !literal,
-                },
+                None if !stream_type(port.ty.as_deref()) && typed(port, details) => {
+                    match crate::properties::input_hint(node, port) {
+                        Some(control) => Left::Field {
+                            editor: FieldOf::HintedInput(port, control),
+                            // A dial names itself.
+                            named: control.widget != orange_host::controls::Widget::Dial,
+                        },
+                        None => Left::Field {
+                            editor: FieldOf::Input(port),
+                            named: !literal,
+                        },
+                    }
+                }
                 None => Left::Port(port),
             });
         }
-        lefts.extend(settings::fields(node).map(|(name, schema)| Left::Field {
-            editor: FieldOf::Setting(name, schema, None),
-            named: true,
+        lefts.extend(settings::fields(node).map(|(name, schema)| {
+            let dial = crate::properties::dial_of(node, name);
+            Left::Field {
+                editor: FieldOf::Setting(name, schema, dial),
+                named: dial.is_none(),
+            }
         }));
+        // Fields hinted `header` come first, so they share the outputs' rows (ADR-33).
+        lefts.sort_by_key(|left| {
+            region_of(node, left).map(|(region, _)| region)
+                != Some(orange_host::controls::Region::Header)
+        });
         if paired_map {
             lefts.push(Left::Field {
                 editor: FieldOf::MapPairs,
@@ -392,10 +420,41 @@ impl<'a> Card<'a> {
             });
         }
         let mut outputs = outputs.into_iter().peekable();
-        for left in lefts {
+        let mut lefts = lefts.into_iter().peekable();
+        while let Some(left) = lefts.next() {
             let hosts = !matches!(left, Left::Field { named: false, .. }) || literal;
             let right = if hosts { outputs.next() } else { None };
             push(&mut rows, Some(left), right);
+            // Two fields of a region arranged in a row share one, each taking half.
+            let paired = region_of(node, &left)
+                .filter(|(_, arrange)| *arrange != orange_host::controls::Arrange::Column);
+            if let Some(place) = paired
+                && let Some(next) = lefts.peek()
+                && region_of(node, next) == Some(place)
+                && let Some(next) = lefts.next()
+                && let Some(first) = rows.last_mut()
+            {
+                let middle = f32::midpoint(CARD_PADDING, width - CARD_PADDING);
+                first.field_end = Some(middle - 6.0);
+                let height = match next {
+                    Left::Field { editor, named } => {
+                        (if named { NAME } else { 0.0 }) + editor.control_height() + GAP
+                    }
+                    _ => LINE,
+                };
+                let (top, first_height) = (first.top, first.height);
+                rows.push(Row {
+                    top,
+                    height: first_height.max(height),
+                    left: Some(next),
+                    right: None,
+                    field_inset: middle,
+                    field_end: None,
+                });
+                if height > first_height {
+                    y.set(y.get() + height - first_height);
+                }
+            }
         }
         for output in outputs {
             push(&mut rows, None, Some(output));
@@ -450,7 +509,7 @@ impl<'a> Card<'a> {
             }
         }
         Self {
-            size: Vec2::new(width, y + END),
+            size: Vec2::new(width, y.get() + END),
             rows,
             sole_primary_exit,
             empty,
@@ -576,6 +635,24 @@ impl<'a> Card<'a> {
     }
 }
 
+/// The hinted region of a field and how that region lays it out (ADR-33).
+fn region_of(
+    node: &NodeView,
+    left: &Left<'_>,
+) -> Option<(
+    orange_host::controls::Region,
+    orange_host::controls::Arrange,
+)> {
+    let Left::Field { editor, .. } = left else {
+        return None;
+    };
+    let name = match editor {
+        FieldOf::Setting(name, ..) => *name,
+        other => other.port()?.id.as_str(),
+    };
+    node.controls.region_of(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +673,65 @@ mod tests {
         let graph = host.draft_view(&draft).unwrap();
         let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
         test(node, &Card::new(node));
+    }
+
+    fn row_of<'c>(card: &'c Card<'_>, id: &str) -> &'c Row<'c> {
+        card.rows
+            .iter()
+            .find(|row| match row.left {
+                Some(Left::Field { editor, .. }) => match editor {
+                    FieldOf::Setting(name, ..) => name == id,
+                    other => other.port().is_some_and(|port| port.id == id),
+                },
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("no row for {id}"))
+    }
+
+    /// Map Range's hints (ADR-33) put each range's two ends side by side, and its
+    /// value on the result's row.
+    #[test]
+    fn map_range_pairs_each_range_on_one_row() {
+        let host = host();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let id = host
+            .add_node(&mut draft, "org.orange.math/map-range", [0.0, 0.0])
+            .unwrap();
+        // Typed, its inputs become fields that can be laid out.
+        host.choose_type(&mut draft, id, "T", Some("core/f64@1"))
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+        let card = Card::new(node);
+        {
+            let card = &card;
+            for (low, high) in [("from_min", "from_max"), ("to_min", "to_max")] {
+                let (low, high) = (row_of(card, low), row_of(card, high));
+                assert_eq!(low.top, high.top, "a pair shares its row");
+                assert!(low.field_end.is_some_and(|end| end < high.field_inset));
+            }
+            assert_ne!(row_of(card, "from_min").top, row_of(card, "to_min").top);
+            assert!(
+                row_of(card, "value")
+                    .right
+                    .is_some_and(|port| port.id == "result")
+            );
+        }
+    }
+
+    /// A setting hinted as a dial is a dial on any card, and names itself.
+    #[test]
+    fn a_dial_hint_makes_a_dial_on_an_ordinary_card() {
+        card_of(orange_audio::GAIN, |_, card| {
+            let row = row_of(card, "gain_db");
+            assert!(matches!(
+                row.left,
+                Some(Left::Field {
+                    editor: FieldOf::Setting(_, _, Some(_)),
+                    named: false
+                })
+            ));
+        });
     }
 
     /// Every port has one dot, inputs on the left edge and outputs on the right, and

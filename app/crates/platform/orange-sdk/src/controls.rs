@@ -31,7 +31,8 @@ impl Control {
     pub fn toggle() -> Self {
         Self::widget("toggle")
     }
-    /// A row of choices, for an enumeration of two to five.
+    /// A row of choices, for an enumeration of two to five with short names; longer
+    /// names read better in a dropdown.
     pub fn segmented() -> Self {
         Self::widget("segmented")
     }

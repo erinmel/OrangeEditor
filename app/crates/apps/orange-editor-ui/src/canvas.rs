@@ -2785,6 +2785,7 @@ impl Canvas {
                 let id = match field {
                     card::FieldOf::TextArea(port, ..)
                     | card::FieldOf::Input(port)
+                    | card::FieldOf::HintedInput(port, _)
                     | card::FieldOf::Path(port, _) => id.with(("port", &port.id)),
                     card::FieldOf::Setting(name, ..) => id.with(("setting", name)),
                     card::FieldOf::Variable(pointer) => id.with(("variable", pointer)),

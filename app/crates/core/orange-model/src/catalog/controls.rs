@@ -177,6 +177,21 @@ pub enum HintReason {
     Malformed,
 }
 
+impl HintReason {
+    /// Why, in words for a package author reading a check's output.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::UnknownField => "no setting or data input has that name",
+            Self::UnknownWord => "it uses a word this version does not know",
+            Self::DoesNotFit => "the widget does not suit the field's type",
+            Self::BadRange => {
+                "its range is empty, not finite, outside the value's bounds, or not above zero on a log scale"
+            }
+            Self::Malformed => "it is not shaped as a hint",
+        }
+    }
+}
+
 /// What a field holds, as far as choosing a control goes.
 #[derive(Debug, Clone, PartialEq)]
 enum FieldKind {
@@ -382,7 +397,7 @@ fn placement(entry: &Json) -> Result<Placement, HintReason> {
 
 /// Reads `editor.controls` and `editor.layout` against a definition's config schema and
 /// ports. Every hint that does not fit is left out and reported.
-pub(crate) fn read(
+pub fn read(
     controls: Option<&Json>,
     layout: Option<&Json>,
     schema: Option<&Json>,

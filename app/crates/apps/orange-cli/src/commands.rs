@@ -496,6 +496,24 @@ pub(crate) fn graphs(started: &mut Started, arguments: &Arguments) -> Done {
             .map_err(|message| format!("--share {id}: {message}"))?;
     }
     let check = arguments.command == "check";
+    if check {
+        // Control hints a definition gives but that do not fit are dropped, never
+        // failing a check; a package author still wants to know (ADR-33).
+        for info in host.nodes() {
+            for problem in info
+                .presentation
+                .iter()
+                .flat_map(|shown| &shown.hint_problems)
+            {
+                eprintln!(
+                    "warning: {}: control hint for `{}` dropped: {}",
+                    info.definition.definition.id.as_str(),
+                    problem.field,
+                    problem.reason.describe()
+                );
+            }
+        }
+    }
     let mut failed = false;
     let mut flows = Vec::new();
     for path in &arguments.graphs {
