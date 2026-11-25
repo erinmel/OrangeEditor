@@ -981,6 +981,7 @@ fn paint_rotary(
         let span = end - start;
         let looping = style == KnobStyle::Loop;
         let diameter = rect.width();
+        let scale = (diameter / 60.0).clamp(0.35, 1.2);
         let enabled = response.is_none_or(Response::enabled);
         let painter = ui.painter();
         let fraction = if span > 0.0 {
@@ -989,8 +990,7 @@ fn paint_rotary(
             0.0
         };
         let center = rect.center();
-        // Leaves a fifth of the diameter outside the ring, so the marks read at card size.
-        let radius = rect.width() * 0.3;
+        let radius = rect.width() * 0.35;
         let point = |normalized: f32, ring: f32| {
             let angle = if looping {
                 -90.0 + 360.0 * normalized
@@ -1053,11 +1053,11 @@ fn paint_rotary(
             let active = !looping && (zero.min(fraction)..=zero.max(fraction)).contains(&mark);
             painter.line_segment(
                 [
-                    point(mark, radius + diameter * 0.05),
-                    point(mark, radius + diameter * if major { 0.19 } else { 0.14 }),
+                    point(mark, radius + 3.0 * scale),
+                    point(mark, radius + if major { 7.0 * scale } else { 5.0 * scale }),
                 ],
                 Stroke::new(
-                    if major { 2.0 } else { 1.4 },
+                    if major { 1.6 } else { 1.0 },
                     if active { ink } else { theme.muted_text },
                 ),
             );
