@@ -340,15 +340,14 @@ impl AudioDial {
         }
     }
 
-    fn controls(self) -> (Option<f32>, orange_ui_controls::KnobStyle) {
+    /// The dial's step and the unit shown inside it.
+    fn controls(self) -> (Option<f32>, &'static str) {
         match self {
-            Self::Hold => (Some(1.0), orange_ui_controls::KnobStyle::Notched),
-            Self::Reset => (None, orange_ui_controls::KnobStyle::Arc),
+            Self::Hold => (Some(1.0), "ms"),
+            Self::Reset => (None, "dB"),
         }
     }
 }
-
-const AUDIO_DIAL_MARKS: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0];
 
 #[derive(Clone, Copy)]
 pub(crate) struct ThresholdEdit {
@@ -523,6 +522,9 @@ impl AudioRange {
         clippy::cast_possible_truncation,
         reason = "bounded audio controls use f32 for painting and retain the typed editor"
     )]
+    /// A dial for the setting. `caption` is shown inside it; leave it empty where a
+    /// label already sits beside the dial.
+    #[allow(clippy::too_many_arguments, reason = "one dial's state and face")]
     pub(crate) fn dial(
         self,
         ui: &mut egui::Ui,
@@ -531,20 +533,20 @@ impl AudioRange {
         value: f64,
         dial: AudioDial,
         label: &str,
+        caption: &str,
     ) -> Option<f64> {
-        let (step, style) = dial.controls();
+        let (step, unit) = dial.controls();
         let key = id.with("rotary-draft");
         let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
         let response = ui
             .push_id(id, |ui| {
-                orange_ui_controls::rotary(
+                orange_ui_controls::dial(
                     ui,
                     surface,
                     &mut shown,
                     self.min as f32..=self.max as f32,
                     step,
-                    AUDIO_DIAL_MARKS,
-                    style,
+                    orange_ui_controls::DialFace { caption, unit },
                 )
             })
             .inner;
@@ -564,17 +566,23 @@ impl AudioRange {
         clippy::cast_possible_truncation,
         reason = "bounded audio display values"
     )]
-    pub(crate) fn paint_dial(self, ui: &egui::Ui, rect: egui::Rect, value: f64, dial: AudioDial) {
-        let (step, style) = dial.controls();
-        orange_ui_controls::rotary_preview(
+    pub(crate) fn paint_dial(
+        self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        value: f64,
+        dial: AudioDial,
+        caption: &str,
+    ) {
+        let (step, unit) = dial.controls();
+        orange_ui_controls::dial_preview(
             ui,
             rect,
             Surface::Card,
             value as f32,
             self.min as f32..=self.max as f32,
             step,
-            AUDIO_DIAL_MARKS,
-            style,
+            orange_ui_controls::DialFace { caption, unit },
         );
     }
 
@@ -1587,7 +1595,7 @@ impl Editor {
                         let id = ui.make_persistent_id((&node.id, &pointer));
                         let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
                             if let Some(value) =
-                                range.dial(ui, Surface::Panel, id, value, dial, &label)
+                                range.dial(ui, Surface::Panel, id, value, dial, &label, "")
                             {
                                 changed =
                                     Some(Change::Setting(pointer.clone(), Some(json!(value))));

@@ -941,9 +941,7 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
     });
     assert!(is_hold_dial(&preview.shapes));
     preview.drop_without_applying_deltas();
-    let rect = session.control(hold);
-    let at = Pos2::new(rect.left() + rect.height() * 0.5, rect.center().y);
-    let _ = session.click(at);
+    let _ = session.click(session.control(hold).center());
     let done = session.frame(vec![egui::Event::Key {
         key: egui::Key::ArrowRight,
         physical_key: None,
@@ -958,9 +956,11 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
 
     session.canvas.zoom = *ZOOM_RANGE.end();
     let (_, canvas) = session.frame_output(vec![]);
+    // The dial is centered in its slot; its well sits inside the ring of ticks.
     let slot = session.control(hold);
-    let center = Pos2::new(slot.left() + slot.height() * 0.5, slot.center().y);
-    let radius = slot.height() * 0.35 * 0.76;
+    let center = slot.center();
+    let diameter = slot.height().min(slot.width());
+    let radius = diameter * 0.5 - 1.0 - (diameter * 0.085).max(3.0) - 2.0;
     assert!(canvas.shapes.iter().any(|item| {
         matches!(&item.shape, egui::Shape::Circle(circle)
             if circle.center.distance(center) < 0.5 && (circle.radius - radius).abs() < 0.1)

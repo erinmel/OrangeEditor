@@ -16,7 +16,8 @@ pub(super) const LINE: f32 = 28.0;
 const NAME: f32 = 18.0;
 /// A field's control.
 pub(super) const CONTROL: f32 = 30.0;
-const DIAL_CONTROL: f32 = 50.0;
+/// A dial, with its name, value and unit inside it.
+const DIAL_CONTROL: f32 = 66.0;
 /// The space under a field block's control.
 const GAP: f32 = 8.0;
 /// The space under a card's last row.
@@ -476,7 +477,9 @@ impl<'a> Card<'a> {
         for (name, schema) in settings::fields(node) {
             let dial = crate::properties::AudioDial::for_setting(node, name);
             let editor = FieldOf::Setting(name, schema, dial);
-            let height = NAME + editor.control_height() + GAP;
+            // A dial names itself, so it needs no name line.
+            let name_line = if dial.is_some() { 0.0 } else { NAME };
+            let height = name_line + editor.control_height() + GAP;
             let (top, inset, end) = if dial.is_some() {
                 if dial_count == 0 {
                     dial_y = y;
@@ -498,7 +501,7 @@ impl<'a> Card<'a> {
                 height,
                 left: Some(Left::Field {
                     editor,
-                    named: true,
+                    named: dial.is_none(),
                 }),
                 right: None,
                 field_inset: inset,

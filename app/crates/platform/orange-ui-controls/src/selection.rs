@@ -806,6 +806,49 @@ pub fn knob(
     rotary(ui, surface, value, range, step, marks, KnobStyle::Arc)
 }
 
+/// What a dial shows inside its ring: its name, and the unit after its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialFace<'a> {
+    pub caption: &'a str,
+    pub unit: &'a str,
+}
+
+/// A self-contained rotary control: a ring of fine ticks lit up to the value, with the
+/// name, value and unit inside, so it needs no label beside it. It fills the space it
+/// is given, up to the size of a knob, and edits like [`knob`].
+pub fn dial(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+) -> Response {
+    rotary_with(
+        ui,
+        surface,
+        value,
+        range,
+        step,
+        &[],
+        KnobStyle::Arc,
+        Some(face),
+    )
+}
+
+/// Paints the same dial face in a read-only card preview.
+pub fn dial_preview(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+) {
+    paint_dial(ui, rect, surface, value, &range, step, face, None);
+}
+
 /// Relative rotary control with an optional center detent or outer tick marks.
 pub fn rotary(
     ui: &mut Ui,
@@ -816,6 +859,23 @@ pub fn rotary(
     marks: &[f32],
     style: KnobStyle,
 ) -> Response {
+    rotary_with(ui, surface, value, range, step, marks, style, None)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one rotary control's state and face"
+)]
+fn rotary_with(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    marks: &[f32],
+    style: KnobStyle,
+    face: Option<DialFace<'_>>,
+) -> Response {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
@@ -823,8 +883,14 @@ pub fn rotary(
     let looping = style == KnobStyle::Loop;
     let normalize = |raw| rotary_value(raw, &range, None, looping);
     let commit = |raw| rotary_value(raw, &range, step, looping);
-    let diameter =
-        (ui.spacing().interact_size.y.max(24.0) + 45.0).min(ui.available_width().max(1.0));
+    let available = ui.available_size();
+    let diameter = (ui.spacing().interact_size.y.max(24.0) + 45.0)
+        .min(available.x.max(1.0))
+        .min(if face.is_some() {
+            available.y.max(1.0)
+        } else {
+            f32::INFINITY
+        });
     let (rect, mut response) =
         ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::click_and_drag());
     if response.clicked() || response.drag_started() {
@@ -933,18 +999,158 @@ pub fn rotary(
     }
     response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), f64::from(*value), ""));
 
-    paint_rotary(
-        ui,
-        rect,
-        surface,
-        *value,
-        &range,
-        step,
-        marks,
-        style,
-        Some(&response),
-    );
+    if let Some(face) = face {
+        paint_dial(
+            ui,
+            rect,
+            surface,
+            *value,
+            &range,
+            step,
+            face,
+            Some(&response),
+        );
+    } else {
+        paint_rotary(
+            ui,
+            rect,
+            surface,
+            *value,
+            &range,
+            step,
+            marks,
+            style,
+            Some(&response),
+        );
+    }
     response
+}
+
+/// The dial face: ticks over three quarters of a turn, those up to the value in the
+/// primary color, a longer one at the value, and the caption, value and unit inside.
+#[allow(clippy::too_many_arguments, reason = "one dial face's display state")]
+fn paint_dial(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: &RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+    response: Option<&Response>,
+) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let theme = Theme::of(ui);
+    let (start, end) = (*range.start(), *range.end());
+    let span = end - start;
+    let fraction = if span > 0.0 {
+        ((value - start) / span).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let enabled = response.is_none_or(Response::enabled);
+    let painter = ui.painter();
+    let diameter = rect.width().min(rect.height());
+    let center = rect.center();
+    let outer = diameter * 0.5 - 1.0;
+    let length = (diameter * 0.085).max(3.0);
+    let inner = outer - length;
+    let point = |normalized: f32, ring: f32| {
+        let angle = (135.0 + 270.0 * normalized).to_radians();
+        center + vec2(angle.cos() * ring, angle.sin() * ring)
+    };
+    let ink = if enabled {
+        theme.primary
+    } else {
+        theme.muted_text
+    };
+    let well = theme.background(surface).lerp_to_gamma(theme.text, 0.05);
+    painter.circle_filled(center, inner - 2.0, well);
+    if response.is_some_and(Response::has_focus) {
+        painter.circle_stroke(center, inner - 2.0, Stroke::new(1.0, theme.focus));
+    }
+    let width = (diameter / 50.0).clamp(0.8, 1.6);
+    let count = ((diameter * 0.6) as u16).clamp(24, 48);
+    for index in 0..=count {
+        let at = f32::from(index) / f32::from(count);
+        let lit = fraction > 0.0 && at <= fraction + 0.5 / f32::from(count);
+        let (color, stroke) = if lit {
+            (ink, width * 1.4)
+        } else {
+            (theme.muted_text.gamma_multiply(0.3), width)
+        };
+        painter.line_segment(
+            [point(at, inner), point(at, outer)],
+            Stroke::new(stroke, color),
+        );
+    }
+    let needle = if enabled {
+        theme.text
+    } else {
+        theme.muted_text
+    };
+    painter.line_segment(
+        [
+            point(fraction, inner - length * 0.7),
+            point(fraction, outer + 0.5),
+        ],
+        Stroke::new(width * 1.8, needle),
+    );
+    let number = if step.is_some() {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    };
+    // Shrinks text that would be wider than `room`.
+    let fit = |text: String, size: f32, color, room: f32| {
+        let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(size), color);
+        if galley.size().x > room {
+            painter.layout_no_wrap(
+                text,
+                egui::FontId::proportional(size * room / galley.size().x),
+                color,
+            )
+        } else {
+            galley
+        }
+    };
+    let well = inner - 3.0;
+    let value_text = fit(
+        number,
+        (diameter * 0.26).clamp(7.0, 22.0),
+        theme.text,
+        well * 1.8,
+    );
+    let value_at = pos2(
+        center.x - value_text.size().x * 0.5,
+        center.y - diameter * 0.04 - value_text.size().y * 0.5,
+    );
+    painter.galley(value_at, value_text, theme.text);
+    let small = (diameter * 0.14).clamp(6.5, 11.0);
+    if !face.unit.is_empty() {
+        let unit = fit(face.unit.to_owned(), small, theme.muted_text, well * 1.2);
+        let at = pos2(
+            center.x - unit.size().x * 0.5,
+            center.y + diameter * 0.17 - unit.size().y * 0.5,
+        );
+        painter.galley(at, unit, theme.muted_text);
+    }
+    // The name sits in the open quarter at the bottom of the ring.
+    if !face.caption.is_empty() {
+        let caption = fit(
+            face.caption.to_owned(),
+            small,
+            theme.muted_text,
+            diameter * 0.95,
+        );
+        let at = pos2(
+            center.x - caption.size().x * 0.5,
+            center.y + outer * 0.9 - caption.size().y * 0.5,
+        );
+        painter.galley(at, caption, theme.muted_text);
+    }
 }
 
 /// Paints the same rotary face in a read-only card preview.

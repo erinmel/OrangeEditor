@@ -257,7 +257,7 @@ combination in the selected language.
   Continuous and stepped sliders share a thin rail and circular thumb. The
   stepped control blends its stops into the active or inactive rail, places
   optional labels just below it and changes by one step with the arrow keys.
-  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound.
+  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound. A dial (`orange_ui_controls::dial`) is the self-contained form: a ring of fine ticks lit up to the value, the value and unit inside, and its name in the ring's open bottom quarter, so it needs no label row.
   Drag up or right to increase the value, hold Shift for a fine adjustment,
   focus the knob to nudge it with the wheel or arrow keys, or double-click the centered readout
   to enter a number.
@@ -676,8 +676,9 @@ and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
 the meter. Drag the threshold line or type a threshold in the settings column.
 The direction, hold duration and reset margin sit in the same column.
-Hold and Reset margin use the same rotary controls as Properties, with a smaller
-face on the canvas and a side-by-side layout. The knob face shows the value and can be double-clicked to type.
+Hold and Reset margin are dials, side by side. On the card each dial carries its
+own name, so the pair takes one row; in Properties the row label names it. Double-click
+the value to type.
 The meter marker, slider and numeric threshold control mirror the active drag.
 Release commits one undoable edit. A typed threshold commits when editing ends.
 Threshold, Hold, and Reset margin configure the trigger's subscription.

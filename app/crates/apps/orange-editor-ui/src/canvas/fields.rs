@@ -302,7 +302,13 @@ pub(super) fn paint_still(
         && let Some(value) = setting_value(node, name, schema).as_f64()
     {
         let number = if let Some(dial) = dial {
-            range.paint_dial(ui, dial_slot(rect), value, dial);
+            range.paint_dial(
+                ui,
+                dial_slot(rect),
+                value,
+                dial,
+                &self::name(node, field, None),
+            );
             return;
         } else {
             let (track, number) = slider_slots(rect, zoom);
@@ -354,8 +360,9 @@ pub(super) fn paint_still(
     );
 }
 
+/// A dial's square, centered in its half of the card.
 fn dial_slot(slot: Rect) -> Rect {
-    Rect::from_min_size(slot.min, Vec2::splat(slot.height()))
+    Rect::from_center_size(slot.center(), Vec2::splat(slot.height().min(slot.width())))
 }
 
 fn slider_slots(slot: Rect, zoom: f32) -> (Rect, Rect) {
@@ -760,8 +767,17 @@ impl Canvas {
                                         UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
                                         |ui| {
                                             ui.set_clip_rect(ui.clip_rect().intersect(knob));
-                                            ui.spacing_mut().interact_size.y = card::CONTROL * zoom;
-                                            range.dial(ui, Surface::Card, id, value, dial, &label())
+                                            ui.spacing_mut().interact_size.y = knob.height();
+                                            let caption = label();
+                                            range.dial(
+                                                ui,
+                                                Surface::Card,
+                                                id,
+                                                value,
+                                                dial,
+                                                &caption,
+                                                &caption,
+                                            )
                                         },
                                     )
                                     .inner;
