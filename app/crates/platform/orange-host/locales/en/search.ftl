@@ -168,3 +168,7 @@ purpose-core-update-shared = Changes a variable shared by all graphs from its cu
 purpose-core-emit = Dispatches an event on a channel to every Listen, with an optional payload, and continues.
 alias-core-emit = emit, send, broadcast, fan out, event, payload, wireless, signal, emitter, publish
 alias-core-on-event = on event, receive, subscribe, subscriber, event, trigger, payload, wireless, signal, receiver
+purpose-core-bridge-out = Exposes a value on a named channel for every Bridge In, without a wire and without starting a flow.
+purpose-core-bridge-in = Reads its Bridge Out's value when something pulls it. It never starts a flow and is not a variable.
+alias-core-bridge-out = bridge, value, pull, wireless, send value, share, expose, emitter, out
+alias-core-bridge-in = bridge, value, pull, wireless, read value, receive, get, subscriber, in

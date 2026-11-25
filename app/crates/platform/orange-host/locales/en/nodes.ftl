@@ -70,3 +70,5 @@ name-core-all-conditions = And
 name-core-any-conditions = Or
 name-core-emit = Dispatch
 name-core-on-event = Listen
+name-core-bridge-out = Bridge Out
+name-core-bridge-in = Bridge In

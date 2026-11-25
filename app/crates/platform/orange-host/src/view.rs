@@ -147,6 +147,12 @@ fn core_schema(definition: &str) -> Option<Json> {
             "additionalProperties": false})),
         "core/on-timeout" => Some(json!({"type": "object", "required": ["delay"],
             "properties": {"delay": time}, "additionalProperties": false})),
+        // A bridge names its channel; a Bridge In's follows its Bridge Out and is
+        // chosen from the channels, not typed.
+        "core/bridge-out" => Some(json!({"type": "object",
+            "properties": {"channel": {"type": "string", "title": "Channel"}}})),
+        "core/bridge-in" => Some(json!({"type": "object",
+            "properties": {"channel": {"type": "string", "readOnly": true}}})),
         _ => None,
     }
 }

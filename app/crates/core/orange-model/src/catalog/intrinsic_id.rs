@@ -65,4 +65,9 @@ pub const WHOLE_NUMBER: &str = "core/whole-number";
 pub const TEXT: &str = "core/text";
 pub const TRUE_OR_FALSE: &str = "core/true-or-false";
 pub const VALUE: &str = "core/value";
+/// Bridge Out: exposes its `value` input on a named channel without a wire or a flow.
+pub const BRIDGE_OUT: &str = "core/bridge-out";
+/// Bridge In: reads its Bridge Out's value when pulled, through the data edge that binds
+/// them. Neither starts a flow.
+pub const BRIDGE_IN: &str = "core/bridge-in";
 pub const CONVERT: &str = "core/convert";

@@ -1007,3 +1007,23 @@ Every bounded number setting of the audio package asks for a slider with a typed
 
 **Contracts.** 04 (SDK builders, `orange-plugin 11`), 12 §4, 22.
 
+## ADR-34 - Bridges share a value through a hidden data edge
+
+**Decision.** A value shared without a visible wire uses two core intrinsics,
+`core/bridge-out` and `core/bridge-in`, shaped like `core/value`. A Bridge In is
+bound by an ordinary data edge from its Bridge Out; the editor hides those two ports
+and draws the edge as a dashed wireless link. The channel name is `config.channel`
+on both nodes and is presentation only. The Wireless Value preset (a Set and Get
+of a run variable) is retired: a bridge is pulled on demand, holds no state and needs
+no exec flow, so a variable was the wrong tool.
+
+**Why.** Reusing a data edge keeps pull semantics, typing, inference, cycle and zone
+checks, diagnostics and the compiler unchanged; bridges lower as the value-node
+projection. A name-based binding would need a new resolution step, new diagnostics
+and its own cycle rules. Keeping the channel name in config lets a Bridge In whose
+Bridge Out was deleted stay Unbound with the name it had, to be rebound or recreated.
+
+**Alternatives.** Run variables (state and writes the user did not ask for); a
+binding by channel name resolved in the compiler (new rules for little gain).
+
+**Contracts.** 11 §8.4 (bridge nodes), 22.

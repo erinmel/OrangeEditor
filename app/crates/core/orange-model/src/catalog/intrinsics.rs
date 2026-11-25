@@ -188,6 +188,10 @@ fn value_definitions() -> Vec<NodeDefinition> {
         ),
         value(ids::TRUE_OR_FALSE, "core/bool@1", Some(Value::Bool(false))),
         generic(value(ids::VALUE, "$T", None), "T", &[]),
+        // A bridge is a pair of value nodes bound by an ordinary data edge from Bridge
+        // Out's result to Bridge In's value, which an editor draws as a wireless link.
+        generic(value(ids::BRIDGE_OUT, "$T", None), "T", &[]),
+        generic(value(ids::BRIDGE_IN, "$T", None), "T", &[]),
     ]
 }
 

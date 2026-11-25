@@ -202,7 +202,7 @@ const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
 const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
-const INTRINSICS: [Intrinsic; 64] = [
+const INTRINSICS: [Intrinsic; 66] = [
     rule(ids::ON_START, ENTRY, None),
     rule(ids::ON_STOP, ENTRY, None),
     rule(ids::ON_MANUAL, ENTRY, None),
@@ -279,6 +279,8 @@ const INTRINSICS: [Intrinsic; 64] = [
     rule(ids::TEXT, PURE, None),
     rule(ids::TRUE_OR_FALSE, PURE, None),
     rule(ids::VALUE, PURE, None),
+    rule(ids::BRIDGE_OUT, PURE, None),
+    rule(ids::BRIDGE_IN, PURE, None),
 ];
 
 /// The intrinsic with this exact ID. Intrinsic status comes from this table, never from the

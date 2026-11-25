@@ -32,9 +32,13 @@ impl Projection {
             ids::ANY_CONDITIONS => Self::Conditions { stop: true },
             ids::COALESCE => Self::Coalesce,
             ids::TRY => Self::Try,
-            ids::NUMBER | ids::WHOLE_NUMBER | ids::TEXT | ids::TRUE_OR_FALSE | ids::VALUE => {
-                Self::Value
-            }
+            ids::NUMBER
+            | ids::WHOLE_NUMBER
+            | ids::TEXT
+            | ids::TRUE_OR_FALSE
+            | ids::VALUE
+            | ids::BRIDGE_OUT
+            | ids::BRIDGE_IN => Self::Value,
             _ => return Ok(None),
         };
         let bad = || CompileError::KernelContract { node: node.id };

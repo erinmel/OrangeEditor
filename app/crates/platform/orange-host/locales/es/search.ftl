@@ -178,3 +178,7 @@ purpose-core-update-shared = Cambia una variable compartida por todos los grafos
 purpose-core-emit = Despacha un evento por un canal a cada Escuchar, con una carga útil opcional, y continúa.
 alias-core-emit = emitir, enviar, difundir, evento, carga útil, inalámbrico, señal, emisor, publicar
 alias-core-on-event = al evento, recibir, suscribir, suscriptor, evento, disparador, carga útil, inalámbrico, señal, receptor
+purpose-core-bridge-out = Expone un valor en un canal con nombre para cada Puente entrada, sin cable y sin iniciar un flujo.
+purpose-core-bridge-in = Lee el valor de su Puente salida cuando algo lo pide. Nunca inicia un flujo y no es una variable.
+alias-core-bridge-out = puente, valor, leer, inalámbrico, enviar valor, compartir, exponer, emisor, salida
+alias-core-bridge-in = puente, valor, leer, inalámbrico, recibir valor, obtener, suscriptor, entrada
