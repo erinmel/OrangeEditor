@@ -361,7 +361,10 @@ and fire a named outcome using `Emitter::emit_on`. The resolved port includes
 the stable counter for a variadic instance. The host binds these callbacks to
 the running provider guard and its checked ports. The native ABI identifier
 is `orange-plugin 9` for the changed emitter layout. See [11](11-graph-language.md).
-It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`.
+It is `orange-plugin 10` (2026-11-24) since `Session` has `send_message`, and
+`orange-plugin 11` (2026-11-25) since `Presentation` carries `controls` and
+`hint_problems` (ADR-33). `Definition::setting_control`, `input_control` and `layout`
+write a definition's control hints with the `Control` and `Layout` builders.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`

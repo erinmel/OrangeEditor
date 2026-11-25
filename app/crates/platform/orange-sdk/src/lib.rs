@@ -18,7 +18,9 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod controls;
 mod lifecycle;
+pub use controls::{Control, Layout};
 pub use lifecycle::Lifecycle;
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
@@ -870,6 +872,39 @@ impl Definition {
         );
         self
     }
+    /// How an editor should present setting `name` (ADR-33), such as a dial.
+    #[must_use]
+    pub fn setting_control(self, name: &str, control: Control) -> Self {
+        self.control_hint("settings", name, control)
+    }
+    /// How an editor should present data input `name` (ADR-33), such as a slider.
+    #[must_use]
+    pub fn input_control(self, name: &str, control: Control) -> Self {
+        self.control_hint("inputs", name, control)
+    }
+    fn control_hint(mut self, kind: &str, name: &str, control: Control) -> Self {
+        let editor = self
+            .json
+            .entry("editor")
+            .or_insert_with(|| Json::Object(Map::new()));
+        if let Json::Object(editor) = editor
+            && let Json::Object(controls) = editor
+                .entry("controls")
+                .or_insert_with(|| Json::Object(Map::new()))
+            && let Json::Object(fields) = controls
+                .entry(kind)
+                .or_insert_with(|| Json::Object(Map::new()))
+        {
+            let _ = fields.insert(name.to_owned(), control.into_json());
+        }
+        self
+    }
+    /// Where the node's fields go on its card, and the visual it shows (ADR-33).
+    #[must_use]
+    pub fn layout(mut self, layout: Layout) -> Self {
+        self.editor("layout", layout.into_json());
+        self
+    }
     /// Keep this definition available to saved graphs while omitting it from node search.
     #[must_use]
     pub fn hidden(mut self) -> Self {
@@ -1227,7 +1262,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 10",
+        "orange-plugin 11",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
