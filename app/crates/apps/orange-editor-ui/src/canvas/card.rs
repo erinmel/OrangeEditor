@@ -72,6 +72,8 @@ pub(super) enum Left<'a> {
     /// On manual's Fire button.
     Fire,
     LoopRole(&'static str),
+    /// What a variable write does, such as `Counter ← Counter + 1`.
+    Operation,
     FailureRoutes {
         expanded: bool,
     },
@@ -274,6 +276,10 @@ impl<'a> Card<'a> {
             push(&mut rows, ins.get(index).copied(), outs.get(index).copied());
         }
 
+        if crate::node_ergonomics::operation_caption(node).is_some() {
+            push(&mut rows, Some(Left::Operation), None);
+        }
+
         // What the node names, then its inputs in declared order, then its settings.
         let mut lefts: Vec<Left<'a>> = settings::variable_pointers(node)
             .map(|pointer| Left::Field {
@@ -330,7 +336,8 @@ impl<'a> Card<'a> {
                     editor: FieldOf::Path(port, path),
                     named: true,
                 },
-                None if typed(port, details) => Left::Field {
+                // A stream is only ever wired: nothing can be typed for it.
+                None if !stream_type(port.ty.as_deref()) && typed(port, details) => Left::Field {
                     editor: FieldOf::Input(port),
                     named: !literal,
                 },
@@ -598,6 +605,21 @@ mod tests {
                 assert_eq!(card.size.y, y + END);
             });
         }
+    }
+
+    /// A stream input is only ever wired, so its row is the port alone, never a field
+    /// asking for a value.
+    #[test]
+    fn a_stream_input_never_gets_a_field() {
+        card_of("org.orange.audio/transient", |node, card| {
+            let stream = node
+                .ports
+                .iter()
+                .find(|port| port.input && port.id == "stream")
+                .unwrap();
+            let row = card.row_of(stream).unwrap();
+            assert!(matches!(row.left, Some(Left::Port(_))), "{:?}", row.left);
+        });
     }
 
     #[test]

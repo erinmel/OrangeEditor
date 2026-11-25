@@ -91,9 +91,9 @@ show-live-level = Show the live level
 live-level-hint = Listens to the device now, apart from any run.
 invalid-setting-json = Enter valid JSON.
 settings-not-json = The settings are not JSON.
-scope-local = local
-scope-run = each run
-scope-workspace = workspace
+scope-local = This trigger only
+scope-run = While the graph runs
+scope-workspace = Shared by all graphs
 open-graph-variables = Open a graph to see its variables.
 open-graph-connections = Open a graph to see its connections.
 variables = Variables
@@ -101,7 +101,7 @@ variable = Variable
 add-variable = Add a variable
 variable-drag-hint = Drag onto the graph to read it (Get); hold Alt to write it (Set).
 lasts = Lasts
-keep-between-runs = Keep between runs
+keep-between-runs = Remember after stopping
 delete = Delete
 value-now-hint = Its value now, in this run.
 value-last-run-hint = Its value when the last run stopped.
@@ -832,3 +832,25 @@ catalog-functions = Functions
 catalog-values = Values
 catalog-logic = Logic
 catalog-control = Control flow
+
+# What a variable write does, shown under its flow row. { $name } is the variable,
+# { $value } and { $expected } what is typed or the name of the wired input.
+variable-op-set = { $name } ← { $value }
+variable-op-add = { $name } ← { $name } + { $value }
+variable-op-sub = { $name } ← { $name } − { $value }
+variable-op-min = { $name } ← min({ $name }, { $value })
+variable-op-max = { $name } ← max({ $name }, { $value })
+variable-op-and = { $name } ← { $name } and { $value }
+variable-op-or = { $name } ← { $name } or { $value }
+variable-op-xor = { $name } ← { $name } xor { $value }
+variable-op-append = { $name } ← { $name } + { $value }
+variable-op-compare-and-set = { $name } ← { $value } if { $name } = { $expected }
+variable-unused = Not used yet
+variable-use-count =
+    { $count ->
+        [one] Used by one node
+       *[other] Used by { $count } nodes
+    }
+variable-find-uses-hint = Select and show the nodes that use it.
+canvas-empty-title = Start with a trigger
+canvas-empty-hint = Press Tab or right-click to add a node, or drag one from the Nodes panel.

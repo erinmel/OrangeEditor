@@ -105,7 +105,12 @@ impl TextInput {
             }
             "headers" if http_request(node) => Some(Self::Headers),
             "headers" if http_request_variant(node) => Some(Self::HeaderList),
-            "path" if node.definition == "org.orange.json/get-path" => Some(Self::JsonPath),
+            "path"
+                if node.definition == "org.orange.json/get-path"
+                    || node.definition.starts_with("org.orange.json/read-") =>
+            {
+                Some(Self::JsonPath)
+            }
             "text"
                 if matches!(
                     node.definition.as_str(),
@@ -1149,6 +1154,11 @@ impl Editor {
             ui.add_space(4.0);
             let _ = ui.add(egui::Label::new(description).wrap());
         }
+        // A variable write says what it does, as its card does.
+        if let Some(caption) = node_ergonomics::operation_caption(&node) {
+            ui.add_space(2.0);
+            let _ = ui.add(egui::Label::new(egui::RichText::new(caption).monospace()).wrap());
+        }
         if matches!(
             node.definition.as_str(),
             "org.orange.audio/noise-level" | "org.orange.audio/multiband-spectrum"
@@ -1274,6 +1284,7 @@ impl Editor {
                 if !http {
                     self.values_section(ui, &node);
                 }
+                Self::outputs_section(ui, &node);
                 if let Some(current) = self
                     .document
                     .as_ref()
@@ -1283,7 +1294,15 @@ impl Editor {
                     change = Some(Change::EventTiming(timing));
                 }
                 ui.add_space(10.0);
-                if ui.button(t("delete-node")).clicked() {
+                if controls::button(
+                    ui,
+                    Surface::Panel,
+                    controls::Action::Destructive,
+                    true,
+                    egui::Button::new(t("delete-node")),
+                )
+                .clicked()
+                {
                     change = Some(Change::Delete);
                 }
             });
@@ -2549,6 +2568,39 @@ impl Editor {
     }
 
     /// The last observed values and any failure, with copyable result text.
+    /// What the node gives, with the type of each, so a person can tell what to wire
+    /// where before anything has run.
+    fn outputs_section(ui: &mut egui::Ui, node: &NodeView) {
+        let outputs: Vec<_> = node
+            .ports
+            .iter()
+            .filter(|port| !port.input && !port.exec)
+            .collect();
+        if outputs.is_empty() {
+            return;
+        }
+        section(ui, t("outputs"));
+        for port in outputs {
+            let caption = node_ergonomics::loop_result(node, port)
+                .map(str::to_owned)
+                .or_else(|| port.label.clone())
+                .unwrap_or_else(|| port_label(&port.id));
+            let ty = port.ty.as_deref().unwrap_or_default();
+            ui.horizontal(|ui| {
+                let _ = ui.add(egui::Label::new(&caption).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let _ = ui
+                        .label(
+                            egui::RichText::new(canvas::short_type(ty))
+                                .small()
+                                .color(canvas::type_color(Some(ty))),
+                        )
+                        .on_hover_text(exact_type(ty));
+                });
+            });
+        }
+    }
+
     fn values_section(&self, ui: &mut egui::Ui, node: &NodeView) {
         let Some(graph) = self.graph() else {
             return;

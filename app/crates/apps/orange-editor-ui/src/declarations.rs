@@ -638,7 +638,8 @@ impl Editor {
     }
 
     /// Adds a Get node for variable `id` where it was let go, or a Set node with `set`.
-    /// Returns the node.
+    /// A variable shared by graphs is written with Set shared, the only write the
+    /// language accepts for it (11 §11.1). Returns the node.
     pub fn drop_variable(
         &mut self,
         host: &mut Host,
@@ -646,10 +647,15 @@ impl Editor {
         set: bool,
         at: [f32; 2],
     ) -> Option<NodeId> {
-        let definition = if set {
-            "core/set-variable"
-        } else {
-            "core/get-variable"
+        let shared = self.declarations().is_some_and(|declared| {
+            declared.variables.iter().any(|variable| {
+                variable.id.as_deref() == Some(id) && variable.scope == VarScope::Workspace
+            })
+        });
+        let definition = match (set, shared) {
+            (false, _) => "core/get-variable",
+            (true, false) => "core/set-variable",
+            (true, true) => "core/set-shared",
         };
         let node = self.add_node_at(host, definition, at)?;
         let _ = self.set_setting(host, node, "/variable", Some(Json::from(id)));
@@ -719,6 +725,18 @@ impl Editor {
             .unwrap_or_default();
         let mut remove = None;
         let mut change: Option<Variable> = None;
+        let mut place: Option<(String, bool)> = None;
+        let mut find: Option<Vec<NodeId>> = None;
+        // The nodes that name each variable: Get, Set, Update, On variable changed.
+        let mut users_of: HashMap<String, Vec<NodeId>> = HashMap::new();
+        for node in self.graph().map_or(&[][..], |graph| graph.nodes.as_slice()) {
+            if let Some(variable) = node.settings.get("variable").and_then(Json::as_str) {
+                users_of
+                    .entry(variable.to_owned())
+                    .or_default()
+                    .push(node.id);
+            }
+        }
         let query = self.declaration_search[0].trim().to_lowercase();
         let mut visible: Vec<_> = declared
             .variables
@@ -873,6 +891,7 @@ impl Editor {
                             ..variable.clone()
                         });
                     }
+                    ui.weak(t("starts-at-lower"));
                     if let Some(choices) = self.canvas.enums.get(&variable.ty) {
                         let mut initial = variable.initial.clone();
                         choice_list(
@@ -902,7 +921,56 @@ impl Editor {
                 })
                 .response
                 .on_hover_text(t("starts-at"));
+                // Where it is used, which finds those nodes, and a Get or a Set
+                // without dragging.
+                ui.horizontal(|ui| {
+                    let users = users_of.get(id.as_str()).map_or(&[][..], Vec::as_slice);
+                    if users.is_empty() {
+                        ui.weak(t("variable-unused"));
+                    } else if ui
+                        .link(
+                            egui::RichText::new(tf(
+                                "variable-use-count",
+                                &[("count", users.len().into())],
+                            ))
+                            .weak(),
+                        )
+                        .on_hover_text(t("variable-find-uses-hint"))
+                        .clicked()
+                    {
+                        find = Some(users.to_vec());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let named = [("name", variable.name.as_str().into())];
+                        if ui
+                            .small_button(t("variable-set"))
+                            .on_hover_text(tf("variable-set-hint", &named))
+                            .clicked()
+                        {
+                            place = Some((id.clone(), true));
+                        }
+                        if ui
+                            .small_button(t("variable-get"))
+                            .on_hover_text(tf("variable-get-hint", &named))
+                            .clicked()
+                        {
+                            place = Some((id.clone(), false));
+                        }
+                    });
+                });
             });
+        }
+        if let Some((id, set)) = place {
+            let at = self.canvas.paste_place();
+            let _ = self.drop_variable(host, &id, set, at);
+        }
+        if let Some(users) = find
+            && let Some(document) = &self.document
+        {
+            if let Some(first) = users.first() {
+                self.canvas.focus(&document.graph, *first);
+            }
+            self.canvas.select_many(&users);
         }
         if declared.variables.is_empty() && !self.forms.variable_open {
             ui.weak(t("no-variables"));
@@ -1066,13 +1134,14 @@ impl Editor {
     }
 
     /// The nodes that use connection `id`, by what they are called.
-    fn connection_users(&self, host: &Host, id: &str) -> Vec<String> {
+    /// The nodes that use connection `id`, with what each is called.
+    fn connection_users(&self, host: &Host, id: &str) -> Vec<(NodeId, String)> {
         let Some(document) = &self.document else {
             return Vec::new();
         };
         host.connection_users(&document.draft, id)
-            .iter()
-            .map(|node| document.names.called(node))
+            .into_iter()
+            .map(|node| (node, document.names.called(&node)))
             .collect()
     }
 
@@ -1418,6 +1487,7 @@ impl Editor {
         if visible.is_empty() && !declared.connections.is_empty() {
             ui.weak(t("no-declaration-matches"));
         }
+        let mut find: Option<Vec<NodeId>> = None;
         let mut previous_adapter = None;
         for connection in visible {
             if previous_adapter != Some(connection.adapter.as_str()) {
@@ -1437,9 +1507,22 @@ impl Editor {
                             &[("adapter", label_of(&connection.adapter).into())],
                         ));
                     } else {
-                        let _ = ui
-                            .weak(tf("connection-use-count", &[("count", users.len().into())]))
-                            .on_hover_text(users.join("\n"));
+                        let names: Vec<&str> =
+                            users.iter().map(|(_, name)| name.as_str()).collect();
+                        // Clicking it selects and shows those nodes.
+                        if ui
+                            .link(
+                                egui::RichText::new(tf(
+                                    "connection-use-count",
+                                    &[("count", users.len().into())],
+                                ))
+                                .weak(),
+                            )
+                            .on_hover_text(names.join("\n"))
+                            .clicked()
+                        {
+                            find = Some(users.iter().map(|(node, _)| *node).collect());
+                        }
                     }
                     pressed
                 })
@@ -1451,6 +1534,14 @@ impl Editor {
             if delete {
                 remove = connection.id.clone();
             }
+        }
+        if let Some(users) = find
+            && let Some(document) = &self.document
+        {
+            if let Some(first) = users.first() {
+                self.canvas.focus(&document.graph, *first);
+            }
+            self.canvas.select_many(&users);
         }
         if declared.connections.is_empty() {
             ui.weak(t("no-connections"));
@@ -1881,6 +1972,42 @@ mod tests {
         editor.panels.nodes = true;
         editor.tab = Tab::Variables;
         draw(&mut editor, &mut host);
+    }
+
+    #[test]
+    fn a_shared_variable_is_written_with_set_shared_and_the_graph_runs() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let shared = editor
+            .declare_variable(
+                &mut host,
+                &Variable {
+                    id: None,
+                    name: "shared".into(),
+                    ty: "core/i64@1".into(),
+                    scope: VarScope::Workspace,
+                    persistent: false,
+                    initial: Some("0".into()),
+                },
+            )
+            .unwrap();
+        let node = editor
+            .drop_variable(&mut host, &shared, true, [40.0, 80.0])
+            .unwrap();
+        let graph = editor.graph().unwrap();
+        let set = graph.nodes.iter().find(|found| found.id == node).unwrap();
+        assert_eq!(set.definition, "core/set-shared");
+        assert_eq!(set.settings["variable"], json!(shared));
+
+        // The host learns the shared variables on the first run, so it starts.
+        editor.run(&mut host);
+        assert!(editor.is_running());
+        assert_eq!(host.shared_variables().len(), 1);
+        editor.stop(&mut host);
+        // A second run finds them already shared.
+        editor.run(&mut host);
+        assert!(editor.is_running());
     }
 
     #[test]

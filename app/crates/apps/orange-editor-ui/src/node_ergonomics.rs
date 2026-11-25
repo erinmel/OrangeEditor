@@ -17,6 +17,54 @@ pub(crate) fn loop_role(node: &NodeView) -> Option<&'static str> {
     }))
 }
 
+/// What a variable write does, in one line under its flow row: `Counter ← Counter + 1`.
+/// A renamed card ("Add one") still shows its operation. `None` for other nodes and for
+/// a write whose variable is not chosen yet.
+pub(crate) fn operation_caption(node: &NodeView) -> Option<String> {
+    let update = match node.definition.as_str() {
+        "core/set-variable" | "core/set-shared" => false,
+        "core/update-variable" | "core/update-shared" => true,
+        _ => return None,
+    };
+    let name = node.detail.as_deref()?;
+    // A typed value as it is; a wired one by its port's name.
+    let input = |id: &str| -> String {
+        node.ports
+            .iter()
+            .find(|port| port.input && !port.exec && port.id == id)
+            .map_or_else(
+                || id.to_owned(),
+                |port| match (&port.value, port.connected) {
+                    (Some(value), false) => value.clone(),
+                    _ => port.label.clone().unwrap_or_else(|| port.id.clone()),
+                },
+            )
+    };
+    let value = input("value");
+    let args = [("name", name.to_owned().into()), ("value", value.into())];
+    if !update {
+        return Some(tf("variable-op-set", &args));
+    }
+    Some(match node.settings["operation"].as_str()? {
+        "add" => tf("variable-op-add", &args),
+        "sub" => tf("variable-op-sub", &args),
+        "min" => tf("variable-op-min", &args),
+        "max" => tf("variable-op-max", &args),
+        "and" => tf("variable-op-and", &args),
+        "or" => tf("variable-op-or", &args),
+        "xor" => tf("variable-op-xor", &args),
+        "append" => tf("variable-op-append", &args),
+        "compare-and-set" => {
+            let [name, value] = args;
+            tf(
+                "variable-op-compare-and-set",
+                &[name, value, ("expected", input("expected").into())],
+            )
+        }
+        _ => return None,
+    })
+}
+
 pub(crate) fn loop_result(node: &NodeView, port: &orange_host::PortView) -> Option<&'static str> {
     (!port.input && port.id == "result" && loop_role(node).is_some()).then(|| t("loop-role-result"))
 }
@@ -163,5 +211,55 @@ impl Editor {
             let result = host.set_input_literals(draft, [((node, port), literal)]);
             let _ = self.edited(host, result);
         }
+    }
+}
+
+#[cfg(test)]
+mod operation_caption_tests {
+    use super::operation_caption;
+    use crate::Editor;
+    use orange_host::{Host, HostOptions};
+
+    /// Renamed writes ("Add one", "Subtract one", "Reset to zero") each say what they do
+    /// to their variable, with the typed value, and no two read the same.
+    #[test]
+    fn renamed_variable_writes_show_their_operation() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(
+            &mut host,
+            "counter.json",
+            include_str!("../../orange-cli/graphs/counter-with-reset.json").to_owned(),
+        );
+        let graph = editor.graph().unwrap();
+        let captions: Vec<String> = graph
+            .nodes
+            .iter()
+            .filter_map(|node| operation_caption(node))
+            .collect();
+        assert_eq!(captions.len(), 3);
+        for caption in &captions {
+            assert!(caption.contains("Counter"), "{caption}");
+        }
+        assert!(
+            captions
+                .iter()
+                .filter(|caption| caption.contains('1'))
+                .count()
+                == 2
+        );
+        assert!(captions.iter().any(|caption| caption.contains('0')));
+        let mut distinct = captions.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 3);
+        // Nodes that write nothing have no caption.
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.definition == "core/on-manual")
+                .all(|node| operation_caption(node).is_none())
+        );
     }
 }

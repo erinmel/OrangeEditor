@@ -90,9 +90,9 @@ show-live-level = Mostrar el nivel en vivo
 live-level-hint = Escucha el dispositivo ahora, aparte de cualquier ejecución.
 invalid-setting-json = Introduce JSON válido.
 settings-not-json = Los ajustes no son JSON.
-scope-local = local
-scope-run = cada ejecución
-scope-workspace = espacio de trabajo
+scope-local = Solo este disparador
+scope-run = Mientras el grafo se ejecuta
+scope-workspace = Compartida por todos los grafos
 open-graph-variables = Abre un grafo para ver sus variables.
 open-graph-connections = Abre un grafo para ver sus conexiones.
 variables = Variables
@@ -100,7 +100,7 @@ variable = Variable
 add-variable = Añadir una variable
 variable-drag-hint = Arrástrala al grafo para leerla (Obtener); mantén Alt para escribirla (Fijar).
 lasts = Dura
-keep-between-runs = Conservar entre ejecuciones
+keep-between-runs = Recordar al detener
 delete = Eliminar
 value-now-hint = Su valor ahora, en esta ejecución.
 value-last-run-hint = Su valor cuando se detuvo la última ejecución.
@@ -829,3 +829,23 @@ catalog-functions = Funciones
 catalog-values = Valores
 catalog-logic = Lógica
 catalog-control = Control de flujo
+
+variable-op-set = { $name } ← { $value }
+variable-op-add = { $name } ← { $name } + { $value }
+variable-op-sub = { $name } ← { $name } − { $value }
+variable-op-min = { $name } ← mín({ $name }, { $value })
+variable-op-max = { $name } ← máx({ $name }, { $value })
+variable-op-and = { $name } ← { $name } y { $value }
+variable-op-or = { $name } ← { $name } o { $value }
+variable-op-xor = { $name } ← { $name } xor { $value }
+variable-op-append = { $name } ← { $name } + { $value }
+variable-op-compare-and-set = { $name } ← { $value } si { $name } = { $expected }
+variable-unused = Sin usar todavía
+variable-use-count =
+    { $count ->
+        [one] La usa un nodo
+       *[other] La usan { $count } nodos
+    }
+variable-find-uses-hint = Selecciona y muestra los nodos que la usan.
+canvas-empty-title = Empieza con un disparador
+canvas-empty-hint = Pulsa Tab o haz clic derecho para añadir un nodo, o arrastra uno desde el panel Nodos.

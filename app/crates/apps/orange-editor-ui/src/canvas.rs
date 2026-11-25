@@ -1717,6 +1717,31 @@ impl Canvas {
 
         painter.rect_filled(area, 0.0, colors.background);
         self.draw_grid(&painter, area, &colors);
+        // An empty graph says how to begin, where the work happens.
+        if graph.nodes.is_empty() {
+            painter.rect_filled(
+                Rect::from_center_size(
+                    area.center() + Vec2::new(0.0, 1.0),
+                    Vec2::new(460.0_f32.min(area.width()), 64.0),
+                ),
+                8.0,
+                colors.background,
+            );
+            let _ = painter.text(
+                area.center() - Vec2::new(0.0, 12.0),
+                Align2::CENTER_CENTER,
+                t("canvas-empty-title"),
+                FontId::proportional(16.0),
+                colors.text,
+            );
+            let _ = painter.text(
+                area.center() + Vec2::new(0.0, 14.0),
+                Align2::CENTER_CENTER,
+                t("canvas-empty-hint"),
+                FontId::proportional(12.5),
+                colors.weak,
+            );
+        }
 
         // Groups: their title bars are handled under the cards, and their frames drawn
         // behind them.
@@ -3400,6 +3425,19 @@ fn draw_node<'a>(
                     );
                 }
             }
+            Some(card::Left::Operation) => {
+                if readable && let Some(caption) = crate::node_ergonomics::operation_caption(node) {
+                    let mono = FontId::monospace(12.0 * zoom);
+                    let (shown, _) = elide(painter, &caption, &mono, rect.width() - 2.0 * pad);
+                    painter.text(
+                        Pos2::new(rect.left() + pad, y),
+                        Align2::LEFT_CENTER,
+                        shown,
+                        mono,
+                        colors.text,
+                    );
+                }
+            }
             Some(card::Left::FailureRoutes { expanded }) if readable => {
                 let height = (row.height - 4.0) * zoom;
                 let button = Rect::from_center_size(
@@ -3768,7 +3806,7 @@ fn port_type_label(definition: &str, ty: &str) -> String {
     short_type(ty)
 }
 
-fn short_type(ty: &str) -> String {
+pub(crate) fn short_type(ty: &str) -> String {
     let name = crate::type_name(ty.strip_prefix('$').unwrap_or(ty));
     let mut short: String = name.chars().take(14).collect();
     if short.len() < name.len() {

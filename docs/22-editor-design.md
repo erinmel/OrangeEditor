@@ -73,6 +73,7 @@ combination in the selected language.
 | Values | Data ports show compact previews inside the card, with room reserved for the port labels. Clicking a preview or its label opens a scrollable, read-only inspector. Copy includes the complete observed text or JSON even when the preview is shortened. The editor previews pure outputs whose authoring inputs are known and shows completed effect and variable-update outputs even without outgoing wires. Previews read JSON as its text, enum values by choice name, collections as `[1, 2, …]` and `{key: value}` summaries, and records by type name; long decimals in number fields show five places. |
 | Problems | A small red or amber indicator at the top-right of the header reveals details on hover. Faulty ports and wires use the same diagnostic colour. A port outline shares the connector centre and follows its diamond, square or circle at every zoom. Clicking a validation marker opens Problems and clicking a runtime failure opens Log. The two views have independent search, filters and scroll positions. |
 | Run feedback | The reported execution route glows along the whole wire and fades in 160 ms. A stream wire with a current runtime sample shows small moving dots. A failed step retains its diagnostic dot until it succeeds. |
+| Empty | A graph with no nodes shows, at the centre of the canvas, how to begin: Tab or right-click to add a node, or drag one from the Nodes panel. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
 ## 3. Cards
@@ -128,6 +129,12 @@ combination in the selected language.
   trigger with the corresponding transition and a boolean input.
   Guard places a Branch with a boolean condition. Wire its True output to
   continue when the condition passes.
+  A new On timer fires every second, first after one interval, and a new On timeout
+  after one second, so a placed timer runs without further set-up.
+* **Variable writes.** Set and Update cards show what they do under the flow row,
+  with the typed value or the wired input's name: `Counter ← Counter + 1`,
+  `Counter ← 0`. A renamed card ("Add one") keeps showing its operation. Properties
+  repeats the line.
 * **Value nodes** (Int, Float, Bool, Text) are compact: one row, the value itself.
 * **Arithmetic.** Add and other arithmetic cards use their named ports and values.
   Comparison cards may retain a comparison expression. Ordinary arithmetic has
@@ -142,6 +149,9 @@ combination in the selected language.
   errors name the connection when it is known. Embeddings without a dialog handler
   show a text field.
   Device nodes have an inline device selector. Fields preserve their JSON types.
+* **Properties** shows the node's name, kind, description and set-up, its inputs, an
+  Outputs list with each output's type, observed values, and a destructive Delete
+  node. A record or enum node names a graph's own type by its declared name.
 * **Language.** Canvas titles use the same localized catalogue labels as search.
   User-assigned node names are preserved. Port labels use the host's supplied text.
 * **Composition.** Embedding applications may call `Editor::ui_with_layout` and
@@ -555,7 +565,13 @@ the shared-control and editor tests before adopting the change more broadly.
 
 * **Variables** filter by name, type or scope. Each scope groups editable names,
   types and initial values, with the current value shown while running. Drag a
-  variable onto the canvas for Get or Alt-drag for Set. The node tree also lists
+  variable onto the canvas for Get or Alt-drag for Set; a variable shared by all
+  graphs gets Set shared, the only write the language accepts for it. Each row also
+  has Get and Set buttons that place the node in view, and says how many nodes use
+  the variable; clicking that selects and shows them. Scopes read *This trigger
+  only*, *While the graph runs* and *Shared by all graphs*, and persistence reads
+  *Remember after stopping*. The first run of a graph that declares shared variables
+  declares them in the host. The node tree also lists
   draggable Get variable and Set variable nodes. Each picks the variable by name and
   type. Declaring from a node opens the same Variables form and selects the new
   variable on the originating node.
@@ -566,7 +582,8 @@ the shared-control and editor tests before adopting the change more broadly.
   adapter's settings are drawn from its schema; a secret field (password, token, key)
   is entered in a masked field and stored in the operating system's credential store,
   and the document keeps only the `credential://` reference (12, ADR-21). A connection
-  shows whether it is in use, by which nodes, and can be tested (open, ping, list
+  shows whether it is in use, by which nodes (clicking the count selects and shows
+  them), and can be tested (open, ping, list
   devices). Saving edits to an existing connection keeps its form open and
   reloads the persisted values and credential references. Done closes the form.
 * Text, binary and streamed HTTP requests use the same Method dropdown on the

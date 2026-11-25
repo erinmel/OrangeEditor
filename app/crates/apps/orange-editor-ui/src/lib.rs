@@ -1374,10 +1374,19 @@ impl Editor {
         if document.flow.is_some() || document.run_blocked {
             return;
         }
-        match document
-            .runtime_text(host)
-            .and_then(|text| host.open(&text))
-        {
+        // Variables shared by graphs live in the host. The first graph that declares
+        // them declares them there too; later graphs read and write the same ones.
+        let shares = document
+            .declared
+            .variables
+            .iter()
+            .any(|variable| variable.scope == orange_host::VarScope::Workspace);
+        match document.runtime_text(host).and_then(|text| {
+            if shares && host.shared_variables().is_empty() {
+                host.share_variables(&text)?;
+            }
+            host.open(&text)
+        }) {
             Ok(flow) => {
                 self.canvas.begin_run();
                 let _ = host.observe(flow, true);
