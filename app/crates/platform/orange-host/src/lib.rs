@@ -102,6 +102,7 @@ pub use orange_guest::{
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
+pub use orange_model::catalog::controls;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::{Literal, LiteralPayload};

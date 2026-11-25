@@ -149,6 +149,7 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
         types: Vec::new(),
         variadic: Vec::new(),
         paths: Vec::new(),
+        controls: Default::default(),
         missing: None,
     })
 }

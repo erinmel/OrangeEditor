@@ -4,6 +4,7 @@
 mod availability;
 mod call;
 mod codec;
+pub mod controls;
 pub mod definition;
 pub mod intrinsic_id;
 pub(crate) mod intrinsics;

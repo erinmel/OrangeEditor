@@ -37,6 +37,7 @@ fn graph(count: u32) -> GraphView {
                 types: Vec::new(),
                 variadic: Vec::new(),
                 paths: Vec::new(),
+                controls: Default::default(),
                 missing: None,
             }
             .into()

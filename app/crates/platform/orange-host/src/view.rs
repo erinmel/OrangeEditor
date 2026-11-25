@@ -87,6 +87,8 @@ pub struct NodeView {
     /// Text inputs that hold a path on this machine, from the node's definition file,
     /// so the editor can offer the system's file or folder chooser beside them.
     pub paths: Vec<PathInput>,
+    /// How the node's definition asks an editor to present its fields (ADR-33).
+    pub controls: orange_model::catalog::controls::Controls,
     /// The package the node needs when its exact provider is unavailable. The
     /// node, its settings and its wires stay in the document, and the view can
     /// draw its saved signature.
@@ -1026,6 +1028,9 @@ impl Host {
                 .collect(),
             types,
             paths: shown.map(|shown| shown.paths.clone()).unwrap_or_default(),
+            controls: shown
+                .map(|shown| shown.controls.clone())
+                .unwrap_or_default(),
             missing,
         };
         let details = (!details.is_empty()).then(|| Arc::from(details));

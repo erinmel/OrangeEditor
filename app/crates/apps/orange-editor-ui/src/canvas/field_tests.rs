@@ -125,6 +125,7 @@ fn node() -> NodeView {
         types: Vec::new(),
         variadic: Vec::new(),
         paths: Vec::new(),
+        controls: Default::default(),
         missing: None,
     }
 }
