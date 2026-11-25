@@ -14,11 +14,14 @@ The manual node exposes an accessible on-node test button; it enqueues one activ
 
 Global registration, permission/session restrictions, conflict handling, release detection and teardown require per-OS evidence (P-07), not an inference from editor keyboard shortcuts. A plugin-defined trigger registers its payload schema and source lifetime through the normal event-source service; it cannot invoke a graph handler directly or inject arbitrary OS hooks into the core.
 
-The desktop's On key pressed definition version 2 accepts a logical key name
-through its `key` input. An empty input uses the node's configured key (F8 by
-default), modifiers and repeat rules remain settings, and focused editing and
-reserved editor shortcuts retain priority. Version 1 remains loadable. Global
-registration requires a separate platform adapter.
+The desktop's On key pressed definition version 3 takes the key from a list of
+logical key names (F8 by default) and Ctrl, Shift, Alt, Command and Repeat as
+separate Yes/No inputs; the chosen modifiers must be held exactly. Focused editing and
+reserved editor shortcuts retain priority. It fires
+only while the editor window has keyboard focus, on every platform: a minimized or
+background window receives no key presses, while flows and their other triggers keep
+running. The desktop has no tray icon. Global registration requires a separate
+platform adapter.
 
 ## Files and paths
 
