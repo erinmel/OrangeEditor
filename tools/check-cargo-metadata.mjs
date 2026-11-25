@@ -18,7 +18,7 @@ const policy = {
   'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
   // Host-side Wasm component execution (ADR-03); graph core never depends on it.
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
-  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages', 'orange-sandbox'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
+  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages', 'orange-sandbox', 'orange-sdk'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
   // Session host: composes every layer into running flows. Front ends depend on it alone.
   'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sdk'], dev: ['orange-testkit']},
   // Plugin SDK: the traits and types a native plugin crate implements. No package
@@ -47,7 +47,7 @@ const policy = {
   // The editor reaches services through the host. UI tests install real bundled adapters.
   'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net', 'orange-testkit']},
   // Desktop application: the window, the editor interface and the built-in service packages.
-  'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault'], dev: ['orange-testkit']},
+  'orange-desktop': {core: false, normal: ['orange-editor-ui', 'orange-host', 'orange-sdk', 'orange-native', 'orange-net', 'orange-audio', 'orange-files', 'orange-vault'], dev: ['orange-testkit']},
   // Base audio service package: the only crate with an audio device library. Built on
   // the plugin SDK and reuses the network package for HTTP file sources.
   'orange-audio': {core: false, normal: ['orange-sdk', 'orange-net'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
