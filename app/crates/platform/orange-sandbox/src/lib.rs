@@ -52,13 +52,30 @@ fn io(error: &std::io::Error) -> FsError {
     }
 }
 
-/// Names Windows gives to devices in every directory.
+/// Names Windows gives to devices in every directory. Windows 10 and earlier also
+/// resolve the stem before any extension with trailing spaces removed (`nul .txt`), and
+/// accept superscript digits after `COM` and `LPT`, so those forms are refused too.
 fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.ends_with(|c: char| c.is_ascii_digit()))
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
+                && chars.next().is_none()
+        })
+    };
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
 }
 
 /// The path inside `root` that `path` names. `""` is the root when `root_allowed`.
@@ -421,6 +438,14 @@ mod tests {
             "trailing.",
             "space ",
             "a\0b",
+            "nul .txt",
+            "Aux  .log",
+            "COM¹",
+            "lpt³.txt",
+            "COM0",
+            "CONIN$",
+            "conout$.txt",
+            "a:stream",
         ] {
             assert_eq!(
                 inside(root, bad, false),
@@ -432,6 +457,10 @@ mod tests {
             inside(root, &"a".repeat(MAX_PATH_BYTES + 1), false),
             Err(FsError::InvalidPath)
         );
+        // Names that only look like devices are ordinary files.
+        for plain in ["console", "COM10", "LPT", "nul_.txt", "comic.txt", "xnul"] {
+            assert!(inside(root, plain, false).is_ok(), "{plain:?}");
+        }
     }
 
     #[test]
