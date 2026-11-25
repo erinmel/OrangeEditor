@@ -216,6 +216,19 @@ fn new_config(
     if found.definition.id.as_str() == "core/on-watch" {
         let _ = config.insert("mode".to_owned(), json!("changed"));
     }
+    // A new timer runs as placed: every second, first tick after one interval, late
+    // ticks coalesced (the language's defaults, written out so the card shows them).
+    match found.definition.id.as_str() {
+        "core/on-timer" => {
+            let _ = config.insert("interval".to_owned(), json!("1000000000"));
+            let _ = config.insert("first".to_owned(), json!("after-interval"));
+            let _ = config.insert("missed".to_owned(), json!("coalesce"));
+        }
+        "core/on-timeout" => {
+            let _ = config.insert("delay".to_owned(), json!("1000000000"));
+        }
+        _ => {}
+    }
     if let Ports::Nominal(access) = found.ports {
         let record = matches!(
             access,

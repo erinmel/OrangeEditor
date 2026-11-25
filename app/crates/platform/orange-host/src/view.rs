@@ -980,8 +980,14 @@ impl Host {
                 let ty = config("type").filter(|_| {
                     known.is_some_and(|found| matches!(found.ports, Ports::Nominal(_)))
                 })?;
+                // A graph's own type by the name it was given, not its `local/t…` ID.
+                let declared = document
+                    .types()
+                    .values()
+                    .find(|decl| decl.ty().to_string() == ty)
+                    .map(|decl| decl.name.as_str());
                 let short = ty.rsplit('/').next().unwrap_or(ty);
-                let short = short.split('@').next().unwrap_or(short);
+                let short = declared.unwrap_or_else(|| short.split('@').next().unwrap_or(short));
                 Some(match config("field").or_else(|| config("variant")) {
                     Some(member) => format!("{short}.{member}"),
                     None => short.to_owned(),

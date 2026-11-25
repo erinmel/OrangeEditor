@@ -617,6 +617,31 @@ fn variables_and_connections_are_declared_changed_and_removed() {
 }
 
 #[test]
+fn a_new_timer_runs_as_placed() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let timer = host
+        .add_node(&mut draft, "core/on-timer", [0.0, 0.0])
+        .unwrap();
+    let timeout = host
+        .add_node(&mut draft, "core/on-timeout", [0.0, 200.0])
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let node = |id: NodeId| view.nodes.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(node(timer).settings["interval"], "1000000000");
+    assert_eq!(node(timeout).settings["delay"], "1000000000");
+    // Both are complete: neither is reported as needing set-up.
+    let text = draft.text().unwrap();
+    let problems = host.check(&text).unwrap();
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| format!("{:?}", problem.code).contains("Timer")),
+        "{problems:?}"
+    );
+}
+
+#[test]
 fn a_view_says_what_a_node_settles_and_a_generic_type_is_chosen() {
     use orange_host::ReferenceKind;
     let (host, _events) = Host::new(HostOptions::default()).unwrap();
