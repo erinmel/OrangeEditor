@@ -3581,6 +3581,9 @@ dependencies = [
 [[package]]
 name = "orange-sandbox"
 version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "orange-sdk"

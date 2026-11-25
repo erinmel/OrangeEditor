@@ -17,7 +17,9 @@ use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod pin;
 mod tree;
+use pin::{Pins, open_file, open_read};
 pub use tree::TreeEntry;
 
 /// Longest path that can be named, in bytes.
@@ -150,40 +152,43 @@ impl Folder {
         }
     }
 
-    /// An existing file, checked for reading.
-    fn source(&self, path: &str) -> Result<PathBuf, FsError> {
-        let (full, metadata) = self.checked(path, false)?;
+    /// An existing file, checked for reading, with its directories held.
+    fn source(&self, path: &str) -> Result<(PathBuf, Pins), FsError> {
+        let (full, metadata, held) = self.checked(path, false)?;
         if !metadata.is_file() {
             return Err(FsError::NotFound);
         }
-        Ok(full)
+        Ok((full, held))
     }
 
     /// The target of a write: its directory is created and checked, and a link at
     /// the file's own name is refused because the write would follow it.
-    fn target(&self, path: &str) -> Result<PathBuf, FsError> {
+    fn target(&self, path: &str) -> Result<(PathBuf, Pins), FsError> {
         self.writable()?;
         let full = inside(&self.root, path, false)?;
         let parent = full.parent().ok_or(FsError::InvalidPath)?;
-        self.create_inside(parent)?;
+        let held = self.create_inside(parent)?;
         match tree::metadata(&full) {
             Ok(info) if info.is_file() => {}
             Err(FsError::NotFound) => {}
             Ok(_) | Err(FsError::InvalidPath) => return Err(FsError::InvalidPath),
             Err(error) => return Err(error),
         }
-        Ok(full)
+        Ok((full, held))
     }
 
     /// Create one component at a time and verify every existing parent before any
     /// mutation. The root itself is the capability explicitly supplied by the host.
-    fn create_inside(&self, directory: &Path) -> Result<(), FsError> {
+    /// Each directory on the way stays held while the returned [`Pins`] live.
+    fn create_inside(&self, directory: &Path) -> Result<Pins, FsError> {
         let relative = directory
             .strip_prefix(&self.root)
             .map_err(|_| FsError::InvalidPath)?;
         std::fs::create_dir_all(&self.root).map_err(|error| io(&error))?;
         let mut current = self.root.clone();
         let _ = tree::metadata(&current)?;
+        let mut held = Pins::default();
+        held.hold(&current)?;
         for component in relative.components() {
             self.contained(&current)?;
             current.push(component);
@@ -195,14 +200,16 @@ impl Folder {
             if !tree::metadata(&current)?.is_dir() {
                 return Err(FsError::InvalidPath);
             }
+            held.hold(&current)?;
         }
-        self.contained(&current)
+        self.contained(&current)?;
+        Ok(held)
     }
 
     /// Reads a whole file of at most `max_bytes`.
     pub fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, FsError> {
-        let full = self.source(path)?;
-        let file = std::fs::File::open(&full).map_err(|error| io(&error))?;
+        let (full, _held) = self.source(path)?;
+        let file = open_read(&full)?;
         let size = file.metadata().map_err(|error| io(&error))?.len();
         if size > max_bytes {
             return Err(FsError::TooLarge);
@@ -219,8 +226,8 @@ impl Folder {
 
     /// The size of a file in bytes.
     pub fn size(&self, path: &str) -> Result<u64, FsError> {
-        let full = self.source(path)?;
-        Ok(std::fs::metadata(&full).map_err(|e| io(&e))?.len())
+        let (full, _held) = self.source(path)?;
+        Ok(open_read(&full)?.metadata().map_err(|e| io(&e))?.len())
     }
 
     /// Reads up to `length` bytes of a file starting at `offset`: fewer at the end of
@@ -236,8 +243,8 @@ impl Folder {
         if length > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let full = self.source(path)?;
-        let mut file = std::fs::File::open(&full).map_err(|e| io(&e))?;
+        let (full, _held) = self.source(path)?;
+        let mut file = open_read(&full)?;
         let _ = file.seek(SeekFrom::Start(offset)).map_err(|e| io(&e))?;
         let mut data = Vec::new();
         let _ = file
@@ -249,7 +256,7 @@ impl Folder {
 
     /// Creates or replaces a file atomically, creating the directories on its path.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
-        let full = self.target(path)?;
+        let (full, _held) = self.target(path)?;
         self.replace_with(&full, |file| {
             file.write_all(data).map_err(|error| io(&error))
         })
@@ -308,13 +315,14 @@ impl Folder {
         if data.len() as u64 > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let full = self.target(path)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&full)
-            .map_err(|error| io(&error))?;
+        let (full, _held) = self.target(path)?;
+        let mut file = open_file(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true),
+            &full,
+        )?;
         file.lock().map_err(|error| io(&error))?;
         let size = file.metadata().map_err(|error| io(&error))?.len();
         if size.saturating_add(data.len() as u64) > max_bytes {
@@ -330,7 +338,7 @@ impl Folder {
         if path.is_empty() && !full.exists() {
             return Ok(Vec::new());
         }
-        let _ = self.checked(path, true)?;
+        let (_, _, _held) = self.checked(path, true)?;
         let mut names = Vec::new();
         for entry in std::fs::read_dir(&full).map_err(|e| io(&e))? {
             let entry = entry.map_err(|_| FsError::Failed)?;
@@ -364,25 +372,26 @@ impl Folder {
     /// Deletes a file.
     pub fn remove(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let full = self.source(path)?;
+        let (full, _held) = self.source(path)?;
         std::fs::remove_file(&full).map_err(|e| io(&e))
     }
 
     /// Moves or renames a file, replacing a file already at `to`.
     pub fn rename(&self, path: &str, to: &str) -> Result<(), FsError> {
         self.writable()?;
-        let from = self.source(path)?;
-        std::fs::rename(&from, self.target(to)?).map_err(|e| io(&e))
+        let (from, _from_held) = self.source(path)?;
+        let (to, _to_held) = self.target(to)?;
+        std::fs::rename(&from, &to).map_err(|e| io(&e))
     }
 
     /// Copies a file of at most `max_bytes`, replacing a file already at `to`.
     pub fn copy(&self, path: &str, to: &str, max_bytes: u64) -> Result<(), FsError> {
-        let from = self.source(path)?;
-        let input = std::fs::File::open(from).map_err(|error| io(&error))?;
+        let (from, _from_held) = self.source(path)?;
+        let input = open_read(&from)?;
         if input.metadata().map_err(|error| io(&error))?.len() > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let target = self.target(to)?;
+        let (target, _target_held) = self.target(to)?;
         self.replace_with(&target, |output| {
             let count = std::io::copy(&mut input.take(max_bytes.saturating_add(1)), output)
                 .map_err(|error| io(&error))?;
@@ -397,16 +406,17 @@ impl Folder {
     pub fn make_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
         let full = inside(&self.root, path, false)?;
-        self.create_inside(&full)
+        self.create_inside(&full).map(drop)
     }
 
     /// Removes an empty directory.
     pub fn remove_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let (full, info) = self.checked(path, false)?;
+        let (full, info, mut held) = self.checked(path, false)?;
         if !info.is_dir() {
             return Err(FsError::NotFound);
         }
+        held.release_last();
         std::fs::remove_dir(&full).map_err(|_| FsError::Failed)
     }
 }

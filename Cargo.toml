@@ -28,6 +28,8 @@ windows = { version = "=0.62.2", features = [
 ] }
 windows-core = "=0.62.2"
 hound = "=3.5.1"
+# O_NOFOLLOW and ELOOP for confined file access on Unix (orange-sandbox only).
+libc = "=0.2.191"
 # Dynamic library loading for native plugins (orange-native only).
 libloading = "=0.9.0"
 # Operating-system credential stores (orange-vault only).

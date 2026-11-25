@@ -1,5 +1,6 @@
 //! Bounded operations on directory trees. Directory traversal excludes reparse points.
 
+use super::pin::{Pins, open_read};
 use super::{Folder, FsError, inside, io};
 use std::fs::{self, Metadata};
 use std::io::Write;
@@ -12,7 +13,7 @@ pub struct TreeEntry {
     pub metadata: Metadata,
 }
 
-fn is_link(metadata: &Metadata) -> bool {
+pub(super) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -43,29 +44,36 @@ fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), FsError> {
 
 impl Folder {
     /// Resolves a path without accepting symlinks, junctions or other reparse points
-    /// at any component. A non-UTF-8 name is not addressable by the graph.
+    /// at any component. A non-UTF-8 name is not addressable by the graph. Every
+    /// directory on the path, the last one included, stays held while the returned
+    /// [`Pins`] live, so keep them until the operation on the path is done.
     pub(super) fn checked(
         &self,
         path: &str,
         root_allowed: bool,
-    ) -> Result<(PathBuf, Metadata), FsError> {
+    ) -> Result<(PathBuf, Metadata, Pins), FsError> {
         let full = inside(&self.root, path, root_allowed)?;
+        let mut pins = Pins::default();
         let mut prefix = self.root.clone();
         let mut info = metadata(&prefix)?;
+        pins.hold(&prefix)?;
         for name in path.split('/').filter(|_| !path.is_empty()) {
             if !info.is_dir() {
                 return Err(FsError::NotFound);
             }
             prefix.push(name);
             info = metadata(&prefix)?;
+            if info.is_dir() {
+                pins.hold(&prefix)?;
+            }
         }
         self.contained(&full)?;
-        Ok((full, info))
+        Ok((full, info, pins))
     }
 
     /// Metadata for one addressable regular file or directory.
     pub fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
-        self.checked(path, true).map(|(_, info)| info)
+        self.checked(path, true).map(|(_, info, _)| info)
     }
 
     /// Lists regular files and directories, skipping links and nonportable names.
@@ -89,7 +97,7 @@ impl Folder {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<TreeEntry>, FsError> {
         check_cancelled(cancelled)?;
-        let (_, info) = self.checked(path, !strict)?;
+        let (_, info, _held) = self.checked(path, !strict)?;
         if !info.is_dir() {
             return Err(FsError::NotFound);
         }
@@ -98,7 +106,8 @@ impl Folder {
         let mut remaining = max_entries;
         while let Some(prefix) = directories.pop() {
             let directory = join(path, &prefix);
-            let (full, directory_info) = self.checked(&directory, !strict).map_err(changed)?;
+            let (full, directory_info, _listed) =
+                self.checked(&directory, !strict).map_err(changed)?;
             for entry in fs::read_dir(&full).map_err(|e| changed(io(&e)))? {
                 check_cancelled(cancelled)?;
                 remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
@@ -110,7 +119,7 @@ impl Folder {
                     .map(|name| join(&prefix, &name));
                 let item = relative.ok_or(FsError::InvalidPath).and_then(|relative| {
                     let name = join(path, &relative);
-                    let (_, metadata) = self.checked(&name, false).map_err(changed)?;
+                    let (_, metadata, _) = self.checked(&name, false).map_err(changed)?;
                     Ok(TreeEntry {
                         path: relative,
                         metadata,
@@ -139,16 +148,17 @@ impl Folder {
         Ok(entries)
     }
 
-    fn tree_target(&self, from: &Path, to: &str) -> Result<PathBuf, FsError> {
+    /// A new path for a tree, outside `from`, with its parent's directories held.
+    fn tree_target(&self, from: &Path, to: &str) -> Result<(PathBuf, Pins), FsError> {
         let full = inside(&self.root, to, false)?;
         let (parent, _) = to.rsplit_once('/').unwrap_or(("", to));
-        let (parent, info) = self.checked(parent, true)?;
+        let (parent, info, held) = self.checked(parent, true)?;
         let real_parent = parent.canonicalize().map_err(|e| io(&e))?;
         if !info.is_dir() || real_parent.starts_with(from) {
             return Err(FsError::InvalidPath);
         }
         match fs::symlink_metadata(&full) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(full),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((full, held)),
             _ => Err(FsError::InvalidPath),
         }
     }
@@ -164,8 +174,9 @@ impl Folder {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), FsError> {
         self.writable()?;
-        let (source, _) = self.checked(path, false)?;
-        let target = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
+        let (source, _, _source_held) = self.checked(path, false)?;
+        let real_source = source.canonicalize().map_err(|e| io(&e))?;
+        let _ = self.tree_target(&real_source, to)?;
         let entries = self.collect_tree(path, true, true, max_entries, cancelled)?;
         let mut bytes = max_bytes;
         for entry in &entries {
@@ -177,17 +188,18 @@ impl Folder {
             }
         }
         check_cancelled(cancelled)?;
-        let _ = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
+        let (target, target_held) = self.tree_target(&real_source, to)?;
         fs::create_dir(target).map_err(|e| io(&e))?;
+        drop(target_held);
         let mut made = Vec::new();
         let result = (|| {
             for entry in &entries {
                 check_cancelled(cancelled)?;
                 let source_name = join(path, &entry.path);
-                let (source, current) = self.checked(&source_name, false)?;
+                let (source, current, _source_held) = self.checked(&source_name, false)?;
                 let name = join(to, &entry.path);
                 let parent = name.rsplit_once('/').ok_or(FsError::InvalidPath)?.0;
-                let _ = self.checked(parent, true)?;
+                let (_, _, _parent_held) = self.checked(parent, true)?;
                 let target = inside(&self.root, &name, false)?;
                 let directory = entry.metadata.is_dir();
                 if current.is_dir() != directory {
@@ -206,15 +218,17 @@ impl Folder {
         })();
         if result.is_err() {
             for (name, directory) in made.into_iter().rev() {
-                if let Ok((target, _)) = self.checked(&name, false) {
+                if let Ok((target, _, mut held)) = self.checked(&name, false) {
                     let _ = if directory {
+                        held.release_last();
                         fs::remove_dir(target)
                     } else {
                         fs::remove_file(target)
                     };
                 }
             }
-            if let Ok((target, _)) = self.checked(to, false) {
+            if let Ok((target, _, mut held)) = self.checked(to, false) {
+                held.release_last();
                 let _ = fs::remove_dir(target);
             }
         }
@@ -236,9 +250,12 @@ impl Folder {
             let _ = inside(&self.root, &join(to, &entry.path), false)?;
         }
         check_cancelled(cancelled)?;
-        let (source, _) = self.checked(path, false)?;
-        let target = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
+        let (source, _, mut source_held) = self.checked(path, false)?;
+        let (target, _target_held) =
+            self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
         check_cancelled(cancelled)?;
+        // The tree itself is renamed, so it cannot stay held; its parents do.
+        source_held.release_last();
         fs::rename(source, target).map_err(|e| io(&e))
     }
 
@@ -254,18 +271,20 @@ impl Folder {
         let entries = self.collect_tree(path, true, true, max_entries, cancelled)?;
         for entry in entries.into_iter().rev() {
             check_cancelled(cancelled)?;
-            let (target, current) = self.checked(&join(path, &entry.path), false)?;
+            let (target, current, mut held) = self.checked(&join(path, &entry.path), false)?;
             if current.is_dir() != entry.metadata.is_dir() {
                 return Err(FsError::Failed);
             }
             if current.is_dir() {
+                held.release_last();
                 fs::remove_dir(target).map_err(|e| io(&e))?;
             } else {
                 fs::remove_file(target).map_err(|e| io(&e))?;
             }
         }
         check_cancelled(cancelled)?;
-        let (target, _) = self.checked(path, false)?;
+        let (target, _, mut held) = self.checked(path, false)?;
+        held.release_last();
         fs::remove_dir(target).map_err(|e| io(&e))
     }
 }
@@ -292,7 +311,7 @@ fn copy_exact(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), FsError> {
     use std::io::Read;
-    let mut source = fs::File::open(source).map_err(|e| io(&e))?;
+    let mut source = open_read(source)?;
     let mut buffer = [0; 8192];
     while remaining > 0 {
         check_cancelled(cancelled)?;

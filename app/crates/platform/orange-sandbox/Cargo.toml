@@ -8,5 +8,8 @@ publish.workspace = true
 
 [dependencies]
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [lints]
 workspace = true

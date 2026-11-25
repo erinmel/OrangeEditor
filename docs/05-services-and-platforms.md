@@ -204,7 +204,15 @@ before emitting changes. With `wait_for_folder` enabled, a missing subfolder at
 startup is polled until it appears. Its first snapshot becomes the baseline.
 Paths are relative to
 the folder with `/` between plain names; `..`, absolute and drive forms, device names
-and links leading out of the folder are refused. A write goes to a temporary file in
+and links leading out of the folder are refused. Windows 10 device forms (`nul .txt`,
+`COM¹`, `CONIN$`) count as device names. A file is opened without following a link at
+its own name and the opened handle is checked again. On Windows every directory on the
+path is held open without delete sharing until the operation ends, so none can be
+renamed or replaced by a junction after it was checked. Other systems do not hold
+directories in place: a process that can write to the folder can still race an
+intermediate directory. Hard-linked files are ordinary files; creating a link to
+another user's file needs write access to it on Windows and is refused by default on
+Linux. A write goes to a temporary file in
 the same directory, is flushed and renamed over the target. A read or write of a
 whole file, and one piece read or appended, is at most 64 MiB; a larger file is walked
 with `size`, `read-range` and `append-bytes`, and `copy` and `move` have no size limit
