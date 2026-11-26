@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock};
 
 use orange_model::document::NodeKind;
 
-use crate::i18n::{CatalogError, Catalogs};
+use crate::i18n::{CatalogError, Catalogs, primary_language};
 use crate::{Host, NodeInfo};
 use orange_model::catalog::TextRef;
 
@@ -88,6 +88,11 @@ impl SearchRank {
 
     pub fn kind(self) -> Match {
         self.kind
+    }
+
+    /// This rank, but no stronger than `kind`, keeping its language preference.
+    pub fn no_stronger_than(self, kind: Match) -> Self {
+        Self::new(self.kind.max(kind), self.fallback)
     }
 }
 
@@ -472,16 +477,16 @@ impl Host {
             description: fold_search(id),
             ..SearchText::default()
         };
-        let primary = locale.trim().split(['-', '_']).next().unwrap_or_default();
+        let primary = primary_language(locale);
         self.add_search_text(
             &mut active,
             info,
             &key,
             locale,
-            primary.eq_ignore_ascii_case("en"),
+            primary == crate::SOURCE_LANGUAGE,
         );
         for tag in SEARCH_LANGUAGES {
-            if !primary.eq_ignore_ascii_case(tag) {
+            if primary != tag {
                 self.add_search_text(
                     &mut fallback,
                     info,

@@ -38,6 +38,12 @@ fn lookup_tag(tag: &str) -> String {
     tag.trim().replace('_', "-").to_ascii_lowercase()
 }
 
+/// The language subtag of `tag`, lower case: `es` for `es-MX` or `ES_mx`.
+pub(crate) fn primary_language(tag: &str) -> String {
+    let tag = lookup_tag(tag);
+    tag.split('-').next().unwrap_or_default().to_owned()
+}
+
 type Bundle = fluent_bundle::concurrent::FluentBundle<Arc<FluentResource>>;
 
 /// Fluent catalogues by lower-case language tag.
@@ -228,7 +234,7 @@ impl Catalogs {
 
     /// A search caption from the requested language or its regional parents.
     pub fn localized_message(&self, locale: &str, id: &str) -> Option<Cow<'_, str>> {
-        let source = lookup_tag(locale).split('-').next() == Some(SOURCE_LANGUAGE);
+        let source = primary_language(locale) == SOURCE_LANGUAGE;
         self.chain(locale)
             .filter(|language| source || !language.is_source())
             .find_map(|language| language.format(id, &[]))

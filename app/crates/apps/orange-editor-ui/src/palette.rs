@@ -1072,25 +1072,29 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
         }
         let alias = family(&found.definition).and_then(|(key, label, words)| {
             let caption = text_in(language, key, label);
-            query.relevance([words, caption.as_str()])
+            query.rank([words, caption.as_str()], [])
         });
         let catalog = catalog_group(&found.definition).and_then(|group| {
-            let section = catalog_section(&found.definition)
-                .map_or_else(String::new, |(key, _)| {
-                    format!("{} {}", text_in(language, key, ""), text_in("en", key, ""))
-                });
+            let section_key = catalog_section(&found.definition).map(|(key, _)| key);
+            let section = section_key.map_or_else(String::new, |key| text_in(language, key, ""));
+            let other_sections = section_key.map_or_else(Vec::new, |key| {
+                orange_host::SEARCH_LANGUAGES
+                    .map(|tag| text_in(tag, key, ""))
+                    .to_vec()
+            });
             let localized = group.name(language);
-            query.relevance([
-                localized.as_str(),
-                group.fallback,
-                found.label.as_str(),
-                section.as_str(),
-            ])
+            query.rank(
+                [localized.as_str(), found.label.as_str(), section.as_str()],
+                [group.fallback]
+                    .into_iter()
+                    .chain(other_sections.iter().map(String::as_str)),
+            )
         });
         if let Some(rank) = [alias, catalog].into_iter().flatten().min() {
-            let kind = rank.max(orange_host::Match::Concept);
-            found.matched = Some(kind);
-            nodes.push((found, Some(orange_host::SearchRank::new(kind, false))));
+            // Found through its family or catalogue group, not its own words.
+            let rank = rank.no_stronger_than(orange_host::Match::Concept);
+            found.matched = Some(rank.kind());
+            nodes.push((found, Some(rank)));
         }
     }
     nodes.sort_by_key(|(_, rank)| *rank);
