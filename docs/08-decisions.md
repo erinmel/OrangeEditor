@@ -1027,3 +1027,28 @@ Bridge Out was deleted stay Unbound with the name it had, to be rebound or recre
 binding by channel name resolved in the compiler (new rules for little gain).
 
 **Contracts.** 11 §8.4 (bridge nodes), 22.
+
+## ADR-35 - The host carries workspace events between flows on one held bus
+
+**Decision.** The host keeps one `WorkspaceBus` behind a lock in its shared
+workspace state. A flow whose graph dispatches or listens to workspace events holds
+that lock for its whole turn: it admits what others dispatched to it, pumps with the
+bus, and wakes the other flows when it enqueued something. Flows without workspace
+events never take the lock. Runs attach on open and on replacement; the endpoint of
+a stopped, faulted or replaced run closes with it.
+
+**Why.** The runtime contract (C12c) borrows the bus exclusively for a pump, so
+Dispatch admission is synchronous and needs no acknowledgement or callback. Each
+flow already runs on its own thread; a lock keeps that and needs no new actor or
+channel. Turns are bounded by the turn budget, so the hold is bounded too.
+
+**Alternatives.** A bus actor thread with channels (a new hop and a second owner of
+event order); one bus per pair of flows (fan-out and ordering spread across
+objects); running every flow that uses events on one thread (one slow graph would
+delay the others).
+
+**Consequences.** Flows that use workspace events take turns with each other, so a
+heavy one slows the others' event turns but never flows without events. Deliveries
+queued for a run that is replaced are dropped, as messages to a stopped run are.
+
+**Contracts.** 02 (the host), 03 (C12c host transport).

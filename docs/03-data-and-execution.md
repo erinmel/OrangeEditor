@@ -94,6 +94,18 @@ boundary. Nominal bounds exclude pinned registry, host-made Value copies,
 allocator/RSS and physical latency claims. C05 refuses workspace-event plans.
 Supported-value checkpoints remain C13 work. Verification is in10.
 
+**Host transport (2026-11-26, ADR-35).** `orange-host` owns one `WorkspaceBus`,
+built by `Host::share_variables` from the declaring document when it has
+workspace events, beside the shared-variable `Workspace`. A run whose plan has
+workspace events starts in the workspace and attaches with the default
+`WorkspaceQueue` (256 items, 1 MiB, fault on overflow) when the host opens or
+replaces its flow. A document whose events do not match the declaration does not
+open. Each turn, with the bus held, the flow admits its pending deliveries, pumps
+through `RunDriver::turn_with_workspace_bus`, then wakes the other flows if it
+enqueued anything. A delivery refused for capacity waits for the next turn; one
+refused because the run or endpoint closed is dropped. Deliveries waiting for a
+replaced run are not carried to its successor.
+
 ### Graph workspace values (C12b, 2026-11-07)
 
 The control compiler now lowers workspace Get in root/called scopes and exact
