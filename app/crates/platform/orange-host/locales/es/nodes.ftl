@@ -67,7 +67,7 @@ name-org-orange-collections-option-some = Presente
 name-org-orange-collections-option-none = Ausente
 name-core-do-once = Hacer una vez
 name-core-emit = Despachar
-name-core-filter-begin = Filtrar
+name-core-filter-begin = Filtrar lista
 name-core-filter-end = Fin de filtro
 name-core-flip-flop = Alternar
 name-core-fold-begin = Reducir
@@ -301,3 +301,15 @@ name-org-orange-json-read-number = Leer número JSON
 name-org-orange-json-read-bool = Leer verdadero o falso JSON
 name-core-bridge-out = Puente salida
 name-core-bridge-in = Puente entrada
+
+org-orange-clock-utc-timestamp-label = Marca de tiempo UTC
+org-orange-clock-utc-timestamp-description = Lee el reloj del sistema y devuelve la fecha y hora actuales en UTC.
+org-orange-clock-category-time = Tiempo
+palette-time = Tiempo
+palette-clock = Reloj
+palette-color = Color
+
+name-core-call = Llamar función
+name-core-function-entry = Entradas de la función
+name-core-function-outputs = Salidas de la función
+name-core-return = Retornar de la función

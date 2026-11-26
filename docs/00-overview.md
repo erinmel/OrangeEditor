@@ -26,7 +26,7 @@ a package node is pinned to the exact provider a graph was built with.
 | Triggers | Manual, start, timers, keys, custom events, conditions on values ("When"), file changes, network messages, audio levels and hits |
 | Services | HTTP/HTTPS, WebSocket, MQTT, AMQP 0-9-1, files in a granted folder, credentials in the OS store |
 | Audio | Play and control sound files, input devices, system and per-application capture, levels, frequency bands, transients, and stream effects: noise gate, compressor, limiter, gain and filters |
-| Editor | Canvas with editable cards, palette search in English and Spanish, properties, declarations, connections, packages, problems, log, undo |
+| Editor | Canvas with editable cards, palette search in English, Spanish and preview Japanese, properties, declarations, connections, packages, problems, log, undo |
 | Extension | Installed packages with hot install, update and removal; native plugin libraries |
 
 Specialized integrations (OBS, Twitch, TTS, browser sources) belong in plugins, not in

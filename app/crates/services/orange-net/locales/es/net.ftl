@@ -52,3 +52,6 @@ port-routing-key = clave de enrutamiento
 port-retain = retener
 port-connected = conectado
 port-queued = en cola
+
+org-orange-net-ws-send-then = En cola
+org-orange-net-ws-send-bytes-then = En cola
