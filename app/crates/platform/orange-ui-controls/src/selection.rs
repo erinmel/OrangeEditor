@@ -1238,19 +1238,7 @@ fn rotary_with(
         }
     }
     if span > 0.0 && response.hovered() && response.has_focus() {
-        let wheel = ui.input_mut(|input| {
-            let wheel = input
-                .raw
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                    _ => None,
-                })
-                .sum::<f32>();
-            input.smooth_scroll_delta.y = 0.0;
-            wheel
-        });
+        let wheel = crate::take_wheel(ui);
         if wheel != 0.0 {
             next += wheel.signum() * step.unwrap_or(span / 200.0);
         }
@@ -1993,6 +1981,17 @@ fn slider_input(ui: &mut Ui, slider: Slider<'_>, height: f32) -> Response {
 mod tests {
     use super::*;
 
+    /// The slider thumb among painted shapes: the one rectangle of its size.
+    fn slider_thumb(shapes: &[egui::epaint::ClippedShape]) -> &egui::epaint::RectShape {
+        shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
+                _ => None,
+            })
+            .expect("a slider thumb is painted")
+    }
+
     #[test]
     fn stepped_encoder_wraps_in_both_directions_and_pan_clamps() {
         assert_eq!(rotary_value(360.0, &(0.0..=360.0), Some(5.0), true), 0.0);
@@ -2303,14 +2302,7 @@ mod tests {
                 track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
                 [active, active, idle, idle]
             );
-            let thumb = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
-                    _ => None,
-                })
-                .unwrap();
+            let thumb = slider_thumb(&output.shapes);
             assert_eq!(thumb.rect.center().y, rect.center().y);
             assert!((thumb.rect.center().x - track[1].0.x).abs() < 0.01);
             let values = output
@@ -2384,14 +2376,7 @@ mod tests {
                 track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
                 [active, active, idle, idle]
             );
-            let thumb = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
-                    _ => None,
-                })
-                .unwrap();
+            let thumb = slider_thumb(&output.shapes);
             assert_eq!(thumb.rect.center().y, rect.center().y);
             assert!((thumb.rect.center().x - track[1].0.x).abs() < 0.01);
             let values = output

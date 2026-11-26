@@ -1071,6 +1071,24 @@ pub fn search_sized(
     field.response
 }
 
+/// Takes this frame's mouse-wheel turns for a control under the pointer: the summed
+/// vertical delta, with egui's smooth scrolling cleared so nothing behind it scrolls.
+pub(crate) fn take_wheel(ui: &Ui) -> f32 {
+    ui.input_mut(|input| {
+        let wheel = input
+            .raw
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                _ => None,
+            })
+            .sum::<f32>();
+        input.smooth_scroll_delta.y = 0.0;
+        wheel
+    })
+}
+
 /// Consumes unmodified navigation keys reserved by a focused control.
 pub fn consume_plain_keys<const N: usize>(ui: &Ui, keys: [egui::Key; N]) -> [bool; N] {
     ui.input_mut(|input| keys.map(|key| input.consume_key(egui::Modifiers::NONE, key)))

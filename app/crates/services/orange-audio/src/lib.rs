@@ -30,6 +30,7 @@
 mod analysis;
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 mod device;
+pub mod fft;
 mod file_source;
 mod level;
 mod live_nodes;

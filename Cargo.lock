@@ -3672,6 +3672,7 @@ dependencies = [
  "egui_extras",
  "egui_material_icons",
  "hound",
+ "orange-audio",
  "orange-testkit",
  "rfd",
 ]

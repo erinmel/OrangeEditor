@@ -1172,13 +1172,7 @@ mod tests {
             retain: false,
         };
         let valid = publish_packet(&message, 2, 9, false);
-        let mut state = 0x2545_F491_4F6C_DD1D_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            usize::try_from(state % (1 << 31)).unwrap()
-        };
+        let mut next = crate::xorshift(0x2545_F491_4F6C_DD1D);
         for _ in 0..20_000 {
             let mut bytes = valid.clone();
             for _ in 0..=next() % 4 {

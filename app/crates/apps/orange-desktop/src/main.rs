@@ -540,33 +540,6 @@ fn window_title(path: Option<&str>) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy())
 }
 
-/// The network client of installed packages that hold the `http` or `http-local`
-/// grant. The plugin engine has already checked each address, so an `http://` URL
-/// reaches it only for a local address under `http-local`. Redirects are not followed.
-#[derive(Debug)]
-struct PluginHttp;
-impl orange_host::HttpClient for PluginHttp {
-    fn send(
-        &self,
-        request: &orange_host::HttpRequest,
-    ) -> Result<orange_host::HttpResponse, String> {
-        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch_response(
-            &request.method,
-            &request.url,
-            &request.headers,
-            &request.body,
-            limit,
-            request.url.starts_with("http://"),
-        )
-        .map(|response| orange_host::HttpResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-        })
-    }
-}
-
 fn built_in_services(
     keyboard: &keyboard::Keyboard,
     logbook: &logbook::LogBook,
@@ -593,7 +566,7 @@ fn start(
         secrets: Some(Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
         package_dir: beside("packages"),
         plugin_data_dir: beside("plugin-data"),
-        plugin_http: Some(Arc::new(PluginHttp)),
+        plugin_http: Some(Arc::new(orange_host::PluginHttp(orange_net::fetch_parts))),
         ..HostOptions::default()
     };
     let keyboard = keyboard::Keyboard::default();

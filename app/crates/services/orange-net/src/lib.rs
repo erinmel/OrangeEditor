@@ -23,8 +23,8 @@ mod transport;
 mod ws;
 
 pub use feed::{
-    FetchResponse, download, fetch, fetch_response, media_reader, new_feed_key, sha256, sign_feed,
-    verify_feed,
+    FetchResponse, download, fetch, fetch_parts, fetch_response, media_reader, new_feed_key,
+    sha256, sign_feed, verify_feed,
 };
 pub use ws::MAX_QUEUED_MESSAGES;
 
@@ -85,6 +85,17 @@ impl std::fmt::Debug for EndpointDebug<'_> {
             endpoint.field("port", &port);
         }
         endpoint.finish()
+    }
+}
+
+/// A repeatable xorshift stream from `seed`, for tests that corrupt protocol bytes.
+#[cfg(test)]
+pub(crate) fn xorshift(mut state: u64) -> impl FnMut() -> usize {
+    move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        usize::try_from(state % (1 << 31)).unwrap_or_default()
     }
 }
 

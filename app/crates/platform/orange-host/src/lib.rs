@@ -1484,3 +1484,39 @@ fn short_label(id: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// Sends one package request: method, URL, headers, body, the largest response body,
+/// and whether a plain `http://` URL may be used. Returns the status, the headers in
+/// the order received and the body. `orange_net::fetch_parts` is one.
+pub type HttpTransport =
+    fn(&str, &str, &[(String, String)], &[u8], u64, bool) -> Result<HttpParts, String>;
+
+/// A response as an [`HttpTransport`] returns it: status, headers, body.
+pub type HttpParts = (u16, Vec<(String, String)>, Vec<u8>);
+
+/// The network client of installed packages that hold the `http` or `http-local`
+/// grant, over the transport an application supplies. The plugin engine has already
+/// checked each address, so a plain `http://` URL reaches it only for a local address
+/// under `http-local`.
+#[derive(Debug, Clone, Copy)]
+pub struct PluginHttp(pub HttpTransport);
+
+impl HttpClient for PluginHttp {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
+        let (send, plain) = (self.0, request.url.starts_with("http://"));
+        send(
+            &request.method,
+            &request.url,
+            &request.headers,
+            &request.body,
+            limit,
+            plain,
+        )
+        .map(|(status, headers, body)| HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+}

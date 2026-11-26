@@ -104,6 +104,21 @@ pub struct FetchResponse {
 /// is one the request may reach in plain text, as the `http-local` plugin grant does.
 /// Redirects are never followed, so that check holds for the whole request. Headers and
 /// body together must fit `max_bytes`.
+/// [`fetch_response`] with its answer as (status, headers, body), the shape an
+/// application hands the plugin engine as its transport.
+#[expect(clippy::type_complexity, reason = "the transport's plain shape")]
+pub fn fetch_parts(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    max_bytes: u64,
+    plain_http: bool,
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+    fetch_response(method, url, headers, body, max_bytes, plain_http)
+        .map(|response| (response.status, response.headers, response.body))
+}
+
 pub fn fetch_response(
     method: &str,
     url: &str,

@@ -261,22 +261,12 @@ impl EqPlot<'_> {
                     *self.selected = index;
                 }
                 if handle.hovered() {
-                    let direction = ui.input_mut(|input| {
-                        if !input.modifiers.shift {
-                            return 0.0;
-                        }
-                        let wheel = input
-                            .raw
-                            .events
-                            .iter()
-                            .filter_map(|event| match event {
-                                egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                                _ => None,
-                            })
-                            .sum::<f32>();
-                        input.smooth_scroll_delta.y = 0.0;
-                        wheel
-                    });
+                    // Shift and the wheel change the band's width.
+                    let direction = if ui.input(|input| input.modifiers.shift) {
+                        crate::take_wheel(ui)
+                    } else {
+                        0.0
+                    };
                     if direction != 0.0 {
                         band.q = (band.q * if direction > 0.0 { 1.1 } else { 1.0 / 1.1 })
                             .clamp(0.1, 18.0);

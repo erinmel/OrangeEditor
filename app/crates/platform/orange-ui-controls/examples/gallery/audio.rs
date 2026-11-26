@@ -9,7 +9,7 @@ use orange_ui_controls::{
     },
     continuous_slider,
     eq_plot::{EqPlot, EqView},
-    frequency::{Biquad, EqBand, FFT_SIZE, FilterKind, Spectrum},
+    frequency::{Biquad, EqBand, FFT_SIZE, FilterKind},
     pill_segmented,
     waveform::{Waveform, paint_waveform},
 };
@@ -573,5 +573,46 @@ mod scheduling_tests {
             "600 signal blocks including FFT, CPU microseconds: median {} p95 {} p99 {}",
             times[300], times[570], times[594]
         );
+    }
+}
+
+/// The gallery's live analyser: a Hann-windowed transform of the last `FFT_SIZE`
+/// samples, allocation-free after it is made, through the audio package's FFT. Bin `i`
+/// is `RATE * i / FFT_SIZE`; the output is single-sided peak amplitude in dBFS.
+#[derive(Debug)]
+struct Spectrum {
+    window: Vec<f64>,
+    twiddles: Vec<(f64, f64)>,
+    data: Vec<(f64, f64)>,
+}
+
+impl Default for Spectrum {
+    #[expect(clippy::cast_precision_loss, reason = "a small transform size")]
+    fn default() -> Self {
+        Self {
+            window: (0..FFT_SIZE)
+                .map(|i| 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / FFT_SIZE as f64).cos())
+                .collect(),
+            twiddles: orange_audio::fft::twiddles(FFT_SIZE),
+            data: vec![(0.0, 0.0); FFT_SIZE],
+        }
+    }
+}
+
+impl Spectrum {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "a small transform size and display levels"
+    )]
+    fn measure(&mut self, samples: &[f32; FFT_SIZE], output: &mut [f32; FFT_SIZE / 2]) {
+        for (i, (&sample, &window)) in samples.iter().zip(&self.window).enumerate() {
+            self.data[orange_audio::fft::reversed(i, FFT_SIZE)] = (f64::from(sample) * window, 0.0);
+        }
+        orange_audio::fft::transform(&mut self.data, &self.twiddles);
+        for (i, (out, &(real, imag))) in output.iter_mut().zip(&self.data).enumerate() {
+            let scale = if i == 0 { 2.0 } else { 4.0 };
+            *out = amplitude_dbfs((real.hypot(imag) * scale / FFT_SIZE as f64) as f32);
+        }
     }
 }

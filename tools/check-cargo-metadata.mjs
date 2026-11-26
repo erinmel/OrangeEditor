@@ -43,7 +43,7 @@ const policy = {
   // Example native plugin library, loaded by orange-native's tests.
   'orange-plugin-example': {core: false, normal: ['orange-sdk']},
   // Theme-aware egui controls, free of graph and host types.
-  'orange-ui-controls': {core: false, normal: [], dev: ['orange-testkit']},
+  'orange-ui-controls': {core: false, normal: [], dev: ['orange-testkit', 'orange-audio']},
   // The editor reaches services through the host. UI tests install real bundled adapters.
   'orange-editor-ui': {core: false, normal: ['orange-host', 'orange-ui-controls'], dev: ['orange-audio', 'orange-net', 'orange-testkit']},
   // Desktop application: the window, the editor interface and the built-in service packages.

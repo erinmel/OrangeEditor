@@ -762,23 +762,7 @@ pub fn clock_wheels(
                                 egui::CursorIcon::Grab
                             });
                         }
-                        let scroll = if hover {
-                            ui.input_mut(|input| {
-                                let scroll = input
-                                    .raw
-                                    .events
-                                    .iter()
-                                    .filter_map(|event| match event {
-                                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                                        _ => None,
-                                    })
-                                    .sum::<f32>();
-                                input.smooth_scroll_delta.y = 0.0;
-                                scroll
-                            })
-                        } else {
-                            0.0
-                        };
+                        let scroll = if hover { crate::take_wheel(ui) } else { 0.0 };
                         let [up, down] = if wheel.has_focus() {
                             crate::consume_plain_keys(
                                 ui,

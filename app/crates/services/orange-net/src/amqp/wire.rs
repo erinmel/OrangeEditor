@@ -705,13 +705,7 @@ mod tests {
         valid.frame(BODY, 1, &[0, 255, 2, 3, 4, 5]);
         let valid = valid.broker.into_inner();
         let settings = settings();
-        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            usize::try_from(state % (1 << 31)).unwrap()
-        };
+        let mut next = crate::xorshift(0x9E37_79B9_7F4A_7C15);
         for _ in 0..4000 {
             let mut bytes = valid.clone();
             for _ in 0..=next() % 3 {
