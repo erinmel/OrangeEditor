@@ -207,6 +207,16 @@ pub(crate) fn default_activation() -> Json {
 /// The bound a new while loop starts with, so it is valid until a person changes it.
 pub const NEW_WHILE_BOUND: u64 = 1000;
 
+/// One second in nanoseconds, as text: the interval of a new On Timer and the delay of
+/// a new On Timeout.
+const NEW_TIMER_PERIOD_NANOS: &str = "1000000000";
+/// Most items a new Collect gathers.
+const NEW_COLLECT_MAX_ITEMS: u32 = 1024;
+/// Values a new Tee buffers for each consumer.
+const NEW_TEE_CAPACITY: u32 = 32;
+/// Bytes a new Tee buffers for each consumer: 1 MiB.
+const NEW_TEE_MAX_BYTES: u32 = 1 << 20;
+
 /// Graph units between the left edges of cards the host places side by side: a card's
 /// width with room for the wire between them.
 pub(crate) const COLUMN_STEP: f32 = 360.0;
@@ -239,19 +249,19 @@ fn new_config(
     // ticks coalesced (the language's defaults, written out so the card shows them).
     match found.definition.id.as_str() {
         intrinsic::ON_TIMER => {
-            let _ = config.insert("interval".to_owned(), json!("1000000000"));
+            let _ = config.insert("interval".to_owned(), json!(NEW_TIMER_PERIOD_NANOS));
             let _ = config.insert("first".to_owned(), json!("after-interval"));
             let _ = config.insert("missed".to_owned(), json!("coalesce"));
         }
         intrinsic::ON_TIMEOUT => {
-            let _ = config.insert("delay".to_owned(), json!("1000000000"));
+            let _ = config.insert("delay".to_owned(), json!(NEW_TIMER_PERIOD_NANOS));
         }
         intrinsic::COLLECT => {
-            let _ = config.insert("max_items".to_owned(), json!(1024));
+            let _ = config.insert("max_items".to_owned(), json!(NEW_COLLECT_MAX_ITEMS));
         }
         intrinsic::TEE => {
-            let _ = config.insert("capacity".to_owned(), json!(32));
-            let _ = config.insert("max_bytes".to_owned(), json!(1_048_576));
+            let _ = config.insert("capacity".to_owned(), json!(NEW_TEE_CAPACITY));
+            let _ = config.insert("max_bytes".to_owned(), json!(NEW_TEE_MAX_BYTES));
             let _ = config.insert("overflow".to_owned(), json!("backpressure"));
         }
         _ => {}
