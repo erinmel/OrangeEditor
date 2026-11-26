@@ -161,7 +161,7 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
 /// Own only the currently displayed result, not old searches or provider snapshots.
 #[derive(Debug, Default)]
 pub(crate) struct PaletteCache {
-    generation: Option<u64>,
+    revision: Option<(u64, u64)>,
     search: String,
     language: String,
     channels: Vec<(String, String)>,
@@ -180,11 +180,17 @@ pub(crate) fn channel_items(
     listen: &str,
     language: &str,
 ) -> Vec<PaletteItem> {
-    let localized = text_in(language, "listen-search-words", "");
-    let english = text_in("en", "listen-search-words", "");
-    let terms: Vec<_> = localized
-        .split_whitespace()
-        .chain(english.split_whitespace())
+    let direct = orange_host::SearchQuery::new(search);
+    if !direct.is_valid() || direct.is_empty() {
+        return Vec::new();
+    }
+    let captions: Vec<_> = std::iter::once(language)
+        .chain(orange_host::SEARCH_LANGUAGES)
+        .map(|tag| text_in(tag, "listen-search-words", ""))
+        .collect();
+    let terms: Vec<_> = captions
+        .iter()
+        .flat_map(|caption| caption.split_whitespace())
         .collect();
     let query = orange_host::fold_search(search.trim());
     let words: Vec<&str> = query.split_whitespace().collect();
@@ -196,22 +202,46 @@ pub(crate) fn channel_items(
                 || (word.chars().count() >= 4 && orange_host::word_finds(word, term))
         })
     };
-    let rest: Vec<&str> = words
-        .iter()
-        .copied()
-        .filter(|word| !names_kind(word))
-        .collect();
-    let kind_named = listen_found || rest.len() < words.len();
-    channels
-        .iter()
-        .filter(|(_, name)| {
-            !words.is_empty()
-                && if rest.is_empty() {
-                    kind_named
-                } else {
-                    rest.iter().all(|word| orange_host::word_finds(word, name))
-                }
-        })
+    let explicit_kind = listen_found || orange_host::fold_search(listen) == query;
+    let matching_channels = |query: &orange_host::SearchQuery| {
+        channels
+            .iter()
+            .filter_map(|channel| {
+                query
+                    .relevance([channel.1.as_str()])
+                    .map(|rank| (rank, channel))
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut named = matching_channels(&direct);
+    let intent_words = words.iter().take_while(|word| names_kind(word)).count();
+    for prefix in 1..=intent_words.min(words.len().saturating_sub(1)) {
+        if !named.is_empty() {
+            break;
+        }
+        let remaining = orange_host::SearchQuery::new(&words[prefix..].join(" "));
+        named = matching_channels(&remaining);
+    }
+    if named.is_empty() && intent_words < words.len() {
+        let name_words: Vec<_> = words
+            .iter()
+            .copied()
+            .filter(|word| !names_kind(word))
+            .collect();
+        if name_words.len() < words.len() {
+            named = matching_channels(&orange_host::SearchQuery::new(&name_words.join(" ")));
+        }
+    }
+    if named.is_empty() && intent_words == words.len() && explicit_kind {
+        named.extend(
+            channels
+                .iter()
+                .map(|channel| (orange_host::Match::Exact, channel)),
+        );
+    }
+    named.sort_by_key(|(rank, _)| *rank);
+    let chosen = named.into_iter().map(|(_, channel)| channel);
+    chosen
         .map(|(id, name)| PaletteItem {
             id: format!("{BIND_LISTEN}{id}"),
             label: format!("{listen} · {name}"),
@@ -239,8 +269,8 @@ impl PaletteCache {
         language: &str,
         channels: &[(String, String)],
     ) -> PaletteResults<'_> {
-        let generation = host.registry().generation();
-        if self.generation != Some(generation)
+        let revision = host.search_revision();
+        if self.revision != Some(revision)
             || self.search != search
             || self.language != language
             || self.channels != channels
@@ -288,7 +318,7 @@ impl PaletteCache {
             self.search.push_str(search);
             self.language.clear();
             self.language.push_str(language);
-            self.generation = Some(generation);
+            self.revision = Some(revision);
         }
         PaletteResults {
             groups: &self.groups,
@@ -370,7 +400,7 @@ pub fn palette(host: &Host, search: &str) -> Vec<(String, Vec<PaletteItem>)> {
     palette_in(host, search, orange_host::SOURCE_LANGUAGE)
 }
 
-/// The host's nodes that match `search` in `language` or English, grouped by category.
+/// The host's nodes that match `search` in `language` or a bundled search language.
 /// With a search, the best match comes first in its category and the category of the
 /// best match first; without one both are in alphabetical order.
 pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec<PaletteItem>)> {
@@ -447,24 +477,49 @@ pub(crate) fn matching_conversions<'a>(
     search: &str,
     language: &str,
 ) -> Vec<PaletteItem> {
-    let wanted = orange_host::fold_search(search);
-    conversions
+    let wanted = orange_host::SearchQuery::new(search);
+    if !wanted.is_valid() {
+        return Vec::new();
+    }
+    if wanted.is_empty() {
+        return conversions
+            .map(|conversion| conversion_item(conversion, language))
+            .collect();
+    }
+    let mut found: Vec<_> = conversions
         .filter_map(|conversion| {
             let item = conversion_item(conversion, language);
-            let terms = orange_host::fold_search(&format!(
-                "{} {} {} {} {}",
-                item.label,
-                item.purpose,
-                conversion_label_in(conversion, "en"),
-                text_in(language, "conversion-search-words", ""),
-                conversion_words(&item.id)
-            ));
-            wanted
-                .split_whitespace()
-                .all(|word| terms.contains(word))
-                .then_some(item)
+            let keywords = text_in(language, "conversion-search-words", "");
+            let aliases = conversion_words(&item.id);
+            let active = [
+                item.label.as_str(),
+                item.purpose.as_str(),
+                keywords.as_str(),
+            ];
+            let local = wanted.relevance(active).map(|rank| (rank, false));
+            let other_labels =
+                orange_host::SEARCH_LANGUAGES.map(|tag| conversion_label_in(conversion, tag));
+            let other_keywords = orange_host::SEARCH_LANGUAGES
+                .map(|tag| text_in(tag, "conversion-search-words", ""));
+            let fallback = wanted
+                .relevance(
+                    active
+                        .into_iter()
+                        .chain(
+                            other_labels
+                                .iter()
+                                .chain(&other_keywords)
+                                .map(String::as_str),
+                        )
+                        .chain([aliases.as_str()]),
+                )
+                .map(|rank| (rank, true));
+            let rank = local.into_iter().chain(fallback).min()?;
+            Some((rank, item))
         })
-        .collect()
+        .collect();
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, item)| item).collect()
 }
 
 pub(crate) const BRIDGE_OUT: &str = intrinsic::BRIDGE_OUT;
@@ -615,14 +670,20 @@ const LOOP_ENDS: CatalogGroup = CatalogGroup {
     help: "catalog-loop-ends-help",
 };
 
-pub(crate) fn placement_label(definition: &str, label: String, language: &str) -> String {
-    let count = match definition {
+fn template_card_count(definition: &str) -> Option<u32> {
+    Some(match definition {
         "preset:watchdog" => 3,
         intrinsic::REPEAT_BEGIN
         | intrinsic::MAP_BEGIN
         | intrinsic::FILTER_BEGIN
         | intrinsic::FOLD_BEGIN => 2,
-        _ => return label,
+        _ => return None,
+    })
+}
+
+pub(crate) fn placement_label(definition: &str, label: String, language: &str) -> String {
+    let Some(count) = template_card_count(definition) else {
+        return label;
     };
     crate::i18n::catalogs()
         .format(
@@ -632,6 +693,13 @@ pub(crate) fn placement_label(definition: &str, label: String, language: &str) -
         )
         .map(std::borrow::Cow::into_owned)
         .unwrap_or(label)
+}
+
+fn template_match(query: &orange_host::SearchQuery, id: &str, label: &str, language: &str) -> bool {
+    template_card_count(id).is_some()
+        && !query.is_empty()
+        && query.relevance([placement_label(id, label.to_owned(), language).as_str()])
+            == Some(orange_host::Match::Exact)
 }
 
 const FLOW: CatalogGroup = CatalogGroup {
@@ -870,36 +938,67 @@ fn family(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
 }
 
 pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_host::Found> {
-    let mut nodes = host.search_nodes(search, language);
-    let query = orange_host::fold_search(search.trim());
+    let query = orange_host::SearchQuery::new(search);
+    if !query.is_valid() {
+        return Vec::new();
+    }
+    let mut nodes = host.ranked_search_nodes(search, language);
     if !query.is_empty() {
-        for found in host.search_nodes("", language) {
-            if nodes.iter().any(|node| node.definition == found.definition) {
+        for mut found in host.search_nodes("", language) {
+            let template = template_match(&query, &found.definition, &found.label, language);
+            if let Some((current, rank)) = nodes
+                .iter_mut()
+                .find(|(node, _)| node.definition == found.definition)
+            {
+                if template {
+                    current.matched = Some(orange_host::Match::Exact);
+                    *rank = Some(orange_host::SearchRank::new(
+                        orange_host::Match::Exact,
+                        false,
+                    ));
+                }
                 continue;
             }
-            let alias = family(&found.definition).is_some_and(|(key, label, words)| {
-                let terms =
-                    orange_host::fold_search(&format!("{words} {}", text_in(language, key, label)));
-                query.split_whitespace().all(|word| terms.contains(word))
+            if template {
+                found.matched = Some(orange_host::Match::Exact);
+                nodes.push((
+                    found,
+                    Some(orange_host::SearchRank::new(
+                        orange_host::Match::Exact,
+                        false,
+                    )),
+                ));
+                continue;
+            }
+            let alias = family(&found.definition).and_then(|(key, label, words)| {
+                let caption = text_in(language, key, label);
+                query.relevance([words, caption.as_str()])
             });
-            let catalog = catalog_group(&found.definition).is_some_and(|group| {
+            let catalog = catalog_group(&found.definition).and_then(|group| {
                 let section = catalog_section(&found.definition)
                     .map_or_else(String::new, |(key, _)| {
                         format!("{} {}", text_in(language, key, ""), text_in("en", key, ""))
                     });
-                let terms = orange_host::fold_search(&format!(
-                    "{} {} {} {section}",
-                    group.name(language),
+                let localized = group.name(language);
+                query.relevance([
+                    localized.as_str(),
                     group.fallback,
-                    found.label
-                ));
-                query.split_whitespace().all(|word| terms.contains(word))
+                    found.label.as_str(),
+                    section.as_str(),
+                ])
             });
-            let preset = PRESETS.iter().any(|&(parent, _, key, label, _)| {
-                parent == found.definition && preset_match(&query, language, key, label)
-            });
-            if alias || catalog || preset {
-                nodes.push(found);
+            let preset = PRESETS
+                .iter()
+                .filter(|&&(parent, ..)| parent == found.definition)
+                .filter_map(|&(_, id, key, label, _)| {
+                    preset_match(&query, language, id, key, label)
+                })
+                .map(orange_host::SearchRank::kind)
+                .min();
+            if let Some(rank) = [alias, catalog, preset].into_iter().flatten().min() {
+                let kind = rank.max(orange_host::Match::Concept);
+                found.matched = Some(kind);
+                nodes.push((found, Some(orange_host::SearchRank::new(kind, false))));
             }
         }
     }
@@ -951,29 +1050,51 @@ const PRESETS: [(&str, &str, &str, &str, &str); 6] = [
     ),
 ];
 
-fn preset_match(query: &str, language: &str, key: &str, label: &str) -> bool {
+fn preset_match(
+    query: &orange_host::SearchQuery,
+    language: &str,
+    id: &str,
+    key: &str,
+    label: &str,
+) -> Option<orange_host::SearchRank> {
     let aliases = match key {
         "when-deadband" => "change tolerance",
         "watchdog-preset" => "heartbeat timeout",
-        "counter-increment" => "bump+ bump + count up",
-        "counter-decrement" => "bump- bump - count down",
+        "counter-increment" => "bump+,bump +,count up",
+        "counter-decrement" => "bump-,bump -,count down",
         _ => "",
     };
-    let terms = orange_host::fold_search(&format!(
-        "{label} {} {aliases}",
-        text_in(language, key, label)
-    ));
-    query.split_whitespace().all(|word| terms.contains(word))
+    let localized = text_in(language, key, label);
+    if template_match(query, id, &localized, language) {
+        return Some(orange_host::SearchRank::new(
+            orange_host::Match::Exact,
+            false,
+        ));
+    }
+    let captions = orange_host::SEARCH_LANGUAGES.map(|tag| text_in(tag, key, label));
+    let active = crate::i18n::catalogs()
+        .localized_message(language, key)
+        .and_then(|caption| query.relevance([caption.as_ref()]))
+        .map(|rank| orange_host::SearchRank::new(rank, false));
+    let fallback = query
+        .relevance(
+            [label, localized.as_str()]
+                .into_iter()
+                .chain(captions.iter().map(String::as_str))
+                .chain(aliases.split(',')),
+        )
+        .map(|rank| orange_host::SearchRank::new(rank, true));
+    active.into_iter().chain(fallback).min()
 }
 
-pub(crate) fn search_with_presets(
-    results: Vec<orange_host::Found>,
+fn search_with_presets(
+    results: Vec<(orange_host::Found, Option<orange_host::SearchRank>)>,
     search: &str,
     language: &str,
 ) -> Vec<orange_host::Found> {
-    let query = orange_host::fold_search(search.trim());
+    let query = orange_host::SearchQuery::new(search);
     let mut choices = Vec::with_capacity(results.len());
-    for base in results {
+    for (base, base_rank) in results {
         choices.extend(
             PRESETS
                 .iter()
@@ -982,19 +1103,24 @@ pub(crate) fn search_with_presets(
                 .filter_map(|(_, id, key, fallback, purpose)| {
                     let label = text_in(language, key, fallback);
                     let purpose = text_in(language, &format!("{key}-help"), purpose);
-                    preset_match(&query, language, key, fallback).then(|| orange_host::Found {
+                    let rank = preset_match(&query, language, id, key, fallback)?;
+                    let found = orange_host::Found {
                         definition: id.to_owned(),
                         label,
                         package: base.package.clone(),
                         category: base.category.clone(),
                         purpose,
-                        matched: base.matched,
-                    })
+                        matched: (!query.is_empty()).then_some(rank.kind()),
+                    };
+                    Some((found, (!query.is_empty()).then_some(rank)))
                 }),
         );
-        choices.push(base);
+        choices.push((base, base_rank));
     }
-    choices
+    if !query.is_empty() {
+        choices.sort_by_key(|(_, rank)| *rank);
+    }
+    choices.into_iter().map(|(item, _)| item).collect()
 }
 
 /// Other words for the two types a conversion ID names, so "whole number text" finds
@@ -1169,6 +1295,61 @@ mod tests {
     use orange_host::HostOptions;
 
     #[test]
+    fn displayed_template_labels_find_their_items_in_each_locale() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for locale in ["en-US", "es-MX", "ja-JP"] {
+            let shown = palette_in(&host, "", locale);
+            let templates: Vec<_> = shown
+                .iter()
+                .flat_map(|(_, items)| items)
+                .filter(|item| template_card_count(&item.id).is_some())
+                .collect();
+            assert_eq!(templates.len(), 5, "{locale}");
+            for item in templates {
+                assert!(
+                    palette_in(&host, &item.label, locale)
+                        .iter()
+                        .flat_map(|(_, items)| items)
+                        .any(|found| found.id == item.id),
+                    "{locale}: {}",
+                    item.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn palette_cache_refreshes_after_a_catalog_edit_with_the_same_query() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut cache = PaletteCache::default();
+        let query = "zqxword";
+        let generation = host.registry().generation();
+        assert!(cache.get(&host, query, "en-US", &[]).groups.is_empty());
+        host.add_catalog("en", "alias-core-wait = zqxword").unwrap();
+        assert_eq!(host.registry().generation(), generation);
+        assert!(
+            cache
+                .get(&host, query, "en-US", &[])
+                .groups
+                .iter()
+                .flat_map(|(_, items)| items)
+                .any(|item| item.id == "core/wait")
+        );
+    }
+
+    #[test]
+    fn palette_keeps_the_preferred_name_prefix_on_top() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for (query, expected) in [
+            ("int", "core/try"),
+            ("obtener campo", "org.orange.json/get"),
+        ] {
+            let groups = palette_in(&host, query, "es-MX");
+            assert_eq!(groups[0].1[0].id, expected, "{query}");
+        }
+    }
+
+    #[test]
     fn the_catalog_names_templates_and_numeric_conversions_unambiguously() {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         for (language, templates, cards) in [
@@ -1302,10 +1483,23 @@ mod tests {
         let named = channel_items(&channels, "door", false, "Listen", "en-US");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].id, format!("{BIND_LISTEN}e2"));
+        assert_eq!(
+            channel_items(&channels, "door listen", true, "Listen", "en-US"),
+            named
+        );
         assert!(channel_items(&channels, "", true, "Listen", "en-US").is_empty());
         let localized = channel_items(&channels, "受信 door", false, "イベントを受信", "ja-JP");
         assert_eq!(localized.len(), 1);
         assert!(localized[0].purpose.contains("チャンネル"));
+        let channels = [
+            ("e1".to_owned(), "Canal".to_owned()),
+            ("e2".to_owned(), "Other".to_owned()),
+        ];
+        for query in ["canal", "listen canal"] {
+            let found = channel_items(&channels, query, true, "Listen", "en-US");
+            assert_eq!(found.len(), 1, "{query}");
+            assert_eq!(found[0].id, format!("{BIND_LISTEN}e1"));
+        }
     }
 
     #[test]
@@ -1860,7 +2054,7 @@ mod tests {
             cache.get(&host, "disparador", "es", &[]).groups,
             palette_in(&host, "disparador", "es")
         );
-        assert!(cache.get(&host, "disparador", "en", &[]).groups.is_empty());
+        assert!(!cache.get(&host, "disparador", "en", &[]).groups.is_empty());
         // Registry generations are process-unique, including when one editor is
         // reused with another host. Old provider labels must not survive that switch.
         let (core, _events) = Host::new(HostOptions {
@@ -1872,5 +2066,29 @@ mod tests {
         assert_ne!(palette(&core, ""), palette(&host, ""));
         assert_eq!(cache.get(&core, "", "en", &[]).groups, palette(&core, ""));
         assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
+    }
+
+    #[test]
+    fn palette_preserves_locale_order_and_search_cannot_edit_the_document() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        host.add_catalog("es", "alias-core-wait = capturamx")
+            .unwrap();
+        host.add_catalog("en", "alias-core-branch = capturamx")
+            .unwrap();
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let before = editor.text().unwrap();
+        let found = palette_in(&host, "capturmax", "es-MX");
+        let ids: Vec<_> = found
+            .iter()
+            .flat_map(|(_, items)| items.iter())
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids.first(), Some(&"core/wait"));
+        assert!(ids.contains(&"core/branch"));
+        for input in ["[{<>}]", "capturamx\0", &"x".repeat(4097)] {
+            assert!(palette_in(&host, input, "es-MX").is_empty());
+        }
+        assert_eq!(editor.text().unwrap(), before);
     }
 }

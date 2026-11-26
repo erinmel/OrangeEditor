@@ -139,9 +139,18 @@ fn shortcut_search_matches_localized_groups_and_labels_together() {
     crate::i18n::set_language("es");
     let editor = Editor::new();
     let action = "save";
-    assert!(editor.shortcut_matches(action, "save", "shortcut-files", "archivos guardar", None));
-    assert!(!editor.shortcut_matches(action, "save", "shortcut-files", "portapapeles", None));
-    assert!(editor.shortcut_matches_any("ejecucion"));
+    let matches = |query| {
+        editor.shortcut_rank(
+            action,
+            "save",
+            "shortcut-files",
+            &orange_host::SearchQuery::new(query),
+            None,
+        )
+    };
+    assert!(matches("archivos guardar").is_some());
+    assert!(matches("portapapeles").is_none());
+    assert!(editor.shortcut_search_rank("ejecucion").is_some());
     assert_eq!(
         parse_shortcut("ctrl+mayús+intro"),
         Some(normalized(

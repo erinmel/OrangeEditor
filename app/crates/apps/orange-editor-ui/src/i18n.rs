@@ -117,21 +117,34 @@ pub fn nearest_language(tag: &str) -> String {
     DEFAULT_LOCALE.to_owned()
 }
 
-/// Match every query term across the translated and source captions of a setting.
-pub(crate) fn matches_messages(query: &str, ids: &[&str]) -> bool {
-    if query.is_empty() {
-        return true;
-    }
+/// Rank an active-language caption ahead of an equally strong fallback caption.
+pub(crate) fn message_relevance(
+    query: &orange_host::SearchQuery,
+    ids: &[&str],
+    extra: &[&str],
+) -> Option<(orange_host::Match, bool)> {
     LANGUAGE.with_borrow(|locale| {
-        let terms: Vec<_> = ids
+        let active: Vec<_> = ids
             .iter()
-            .flat_map(|id| [locale.as_str(), SOURCE_LANGUAGE].map(|tag| TEXT.message(tag, id)))
-            .flatten()
-            .map(|text| orange_host::fold_search(&text))
+            .filter_map(|id| TEXT.localized_message(locale, id))
             .collect();
-        query
-            .split_whitespace()
-            .all(|word| terms.iter().any(|text| text.contains(word)))
+        let fallback: Vec<_> = ids
+            .iter()
+            .flat_map(|id| {
+                orange_host::SEARCH_LANGUAGES
+                    .into_iter()
+                    .filter_map(|tag| TEXT.message(tag, id))
+            })
+            .collect();
+        let fields = active
+            .iter()
+            .map(std::borrow::Cow::as_ref)
+            .chain(extra.iter().copied());
+        let local = query.relevance(fields.clone()).map(|rank| (rank, false));
+        let all = query
+            .relevance(fields.chain(fallback.iter().map(std::borrow::Cow::as_ref)))
+            .map(|rank| (rank, true));
+        local.into_iter().chain(all).min()
     })
 }
 

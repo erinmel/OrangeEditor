@@ -1651,6 +1651,7 @@ fn pick_channel<K: Clone + PartialEq>(
     let mut search: String = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
     let field = ui.add(
         egui::TextEdit::singleline(&mut search)
+            .char_limit(orange_ui_controls::MAX_SEARCH_CHARS)
             .hint_text(t("search-channels"))
             .desired_width(f32::INFINITY),
     );
@@ -1659,22 +1660,24 @@ fn pick_channel<K: Clone + PartialEq>(
     if ui.memory(|memory| memory.focused().is_none()) {
         field.request_focus();
     }
-    let matching: Vec<&(K, String)> = channels
+    let query = orange_host::SearchQuery::new(&search);
+    let mut matching: Vec<_> = channels
         .iter()
-        .filter(|(_, name)| {
-            search
-                .split_whitespace()
-                .all(|word| orange_host::word_finds(word, name))
+        .filter_map(|channel| {
+            query
+                .relevance([channel.1.as_str()])
+                .map(|rank| (rank, channel))
         })
         .collect();
+    matching.sort_by_key(|(rank, _)| *rank);
     let mut chosen = None;
     if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-        chosen = matching.first().map(|(key, _)| key.clone());
+        chosen = matching.first().map(|(_, (key, _))| key.clone());
     }
     if matching.is_empty() {
         ui.weak(t("no-matching-channels"));
     }
-    for (key, name) in matching {
+    for (_, (key, name)) in matching {
         if ui
             .selectable_label(current.as_ref() == Some(key), name)
             .clicked()

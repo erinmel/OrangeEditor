@@ -128,7 +128,10 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
-pub use search::{CONCEPTS, Found, Match, UNLISTED, fold_search, word_finds};
+pub use search::{
+    CONCEPTS, Found, Match, SEARCH_LANGUAGES, SearchQuery, SearchRank, UNLISTED, fold_search,
+    word_finds,
+};
 pub use state::StoredVariable;
 pub use suggest::{Giver, SpliceSuggestion, Suggestion};
 pub use view::{
@@ -751,7 +754,7 @@ pub struct Host {
     adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
     credential_approvals: Mutex<BTreeSet<String>>,
     /// The node search's setting words per node, built once per language and registry.
-    setting_words: Mutex<search::SettingWords>,
+    search_index: Mutex<search::SearchIndex>,
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
@@ -1086,7 +1089,7 @@ impl Host {
             native: Native(Arc::new(math), services),
             adapters,
             credential_approvals: Mutex::default(),
-            setting_words: Mutex::default(),
+            search_index: Mutex::default(),
             shared: BTreeMap::new(),
             engine,
             guests: Vec::new(),

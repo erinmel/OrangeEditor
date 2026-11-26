@@ -754,10 +754,24 @@ mod tests {
         .unwrap();
         let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
         let offered: std::collections::HashSet<_> = host
+            .nodes()
+            .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
+            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .map(|info| info.definition.definition.id.as_str())
+            .filter(|id| !orange_host::UNLISTED.contains(id))
+            .collect();
+        let listed: std::collections::HashSet<_> = host
             .search_nodes("", "en-US")
             .into_iter()
-            .map(|found| found.definition)
+            .map(|node| node.definition)
             .collect();
+        assert_eq!(
+            listed
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::HashSet<_>>(),
+            offered
+        );
         for locale in ["es", "ja"] {
             let mut missing = Vec::new();
             for info in host.nodes() {
@@ -780,6 +794,41 @@ mod tests {
                 missing.is_empty(),
                 "{locale} missing node labels: {missing:?}"
             );
+        }
+    }
+
+    #[test]
+    fn every_desktop_node_is_searchable_by_all_three_captions_and_id_in_every_locale() {
+        const LOCALES: [&str; 3] = ["en-US", "es-MX", "ja-JP"];
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let mut queries = std::collections::BTreeMap::<_, Vec<_>>::new();
+        for locale in LOCALES {
+            for found in host.search_nodes("", locale) {
+                queries
+                    .entry(found.definition)
+                    .or_default()
+                    .push(found.label);
+            }
+        }
+        println!("Auditing {} desktop definitions", queries.len());
+        for locale in LOCALES {
+            assert_eq!(host.search_nodes("", locale).len(), queries.len());
+            for (id, captions) in &queries {
+                assert_eq!(captions.len(), LOCALES.len(), "missing locale: {id}");
+                for query in captions.iter().map(String::as_str).chain([id.as_str()]) {
+                    assert!(
+                        host.search_nodes(query, locale)
+                            .iter()
+                            .any(|row| row.definition == *id),
+                        "{locale}: {query:?} misses {id}"
+                    );
+                }
+            }
         }
     }
 

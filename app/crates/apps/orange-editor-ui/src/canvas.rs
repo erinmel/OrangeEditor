@@ -472,7 +472,7 @@ pub struct Canvas {
     /// Problems drawn on nodes and wires.
     marks: Marks,
     draft_marks: BTreeSet<NodeId>,
-    help_revision: Option<(u64, String)>,
+    help_revision: Option<((u64, u64), String)>,
     descriptions: HashMap<String, String>,
     labels: HashMap<String, String>,
     /// Titles of nodes named by what they hold rather than their kind: a conversion is
@@ -704,7 +704,7 @@ impl Canvas {
     }
 
     pub(crate) fn update_help(&mut self, host: &orange_host::Host, language: &str) {
-        let generation = host.registry().generation();
+        let generation = host.search_revision();
         if self
             .help_revision
             .as_ref()

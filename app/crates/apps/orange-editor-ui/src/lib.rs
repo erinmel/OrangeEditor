@@ -640,6 +640,9 @@ fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
 }
 
 fn contains_query(query: &str, fields: &[&str]) -> bool {
+    if !orange_host::SearchQuery::accepts(query) {
+        return false;
+    }
     if query.is_empty() {
         return true;
     }
@@ -2793,18 +2796,14 @@ impl Editor {
             t("search-packages-hint"),
         );
         ui.add_space(4.0);
-        let wanted = self.package_search.trim().to_lowercase();
+        let wanted = orange_host::SearchQuery::new(&self.package_search);
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut shown = 0;
             let mut access_change = None;
             for package in host.packages() {
                 let name = package.name().unwrap_or(package.id);
                 let about = package.description().unwrap_or_default();
-                if !wanted.is_empty()
-                    && ![name, package.id, about]
-                        .iter()
-                        .any(|text| text.to_lowercase().contains(&wanted))
-                {
+                if !wanted.matches([name, package.id, about]) {
                     continue;
                 }
                 shown += 1;

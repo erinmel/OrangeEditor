@@ -44,6 +44,7 @@ type Bundle = fluent_bundle::concurrent::FluentBundle<Arc<FluentResource>>;
 #[derive(Clone, Default)]
 pub struct Catalogs {
     languages: BTreeMap<String, Language>,
+    revision: u64,
 }
 
 #[derive(Clone)]
@@ -123,6 +124,10 @@ impl fmt::Debug for Catalogs {
 }
 
 impl Catalogs {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Catalogues read from `(language tag, Fluent text)` pairs, such as the list
     /// `app/build/locales.rs` makes. A pair that cannot be read is reported with its tag.
     pub fn from_sources(sources: &[(&str, &str)]) -> Result<Self, (String, CatalogError)> {
@@ -161,6 +166,7 @@ impl Catalogs {
             .or_insert_with(|| Language::new(id, Vec::new(), false));
         language.resources.push(Arc::new(resource));
         language.rebuild();
+        self.revision += 1;
         Ok(())
     }
 
@@ -172,6 +178,7 @@ impl Catalogs {
                 .unwrap_or_else(|_| english.id.clone());
             let pseudo = Language::new(id, english.resources.clone(), true);
             self.languages.insert(PSEUDO_LANGUAGE.to_owned(), pseudo);
+            self.revision += 1;
         }
     }
 
@@ -219,6 +226,14 @@ impl Catalogs {
         ids
     }
 
+    /// A search caption from the requested language or its regional parents.
+    pub fn localized_message(&self, locale: &str, id: &str) -> Option<Cow<'_, str>> {
+        let source = lookup_tag(locale).split('-').next() == Some(SOURCE_LANGUAGE);
+        self.chain(locale)
+            .filter(|language| source || !language.is_source())
+            .find_map(|language| language.format(id, &[]))
+    }
+
     /// The languages a lookup in `locale` tries, nearest first, each once.
     pub(crate) fn chain(&self, locale: &str) -> impl Iterator<Item = &Language> {
         let locale = lookup_tag(locale);
@@ -236,6 +251,10 @@ impl Catalogs {
 }
 
 impl Language {
+    pub(crate) fn is_source(&self) -> bool {
+        self.id.language.as_str() == SOURCE_LANGUAGE && !self.pseudo
+    }
+
     /// The IDs of the messages of this language itself, in file order.
     pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
         self.resources

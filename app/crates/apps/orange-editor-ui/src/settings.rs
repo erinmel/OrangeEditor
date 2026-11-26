@@ -41,9 +41,9 @@ impl Section {
         t(self.title_key())
     }
 
-    fn matches(self, query: &str) -> bool {
+    fn relevance(self, query: &orange_host::SearchQuery) -> Option<(orange_host::Match, bool)> {
         if query.is_empty() {
-            return true;
+            return Some((orange_host::Match::Exact, false));
         }
         let mut labels = vec![self.title_key()];
         labels.extend_from_slice(match self {
@@ -75,7 +75,7 @@ impl Section {
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
         });
-        i18n::matches_messages(query, &labels)
+        i18n::message_relevance(query, &labels, &[])
     }
 }
 
@@ -155,22 +155,36 @@ impl Editor {
                 ),
             ),
         );
-        self.settings_search_ui(&mut header);
+        let changed = self.settings_search_ui(&mut header);
 
         let previous = self.settings_tab;
-        let query = orange_host::fold_search(self.settings_search.trim());
-        let matches = Section::ALL.map(|section| {
-            section.matches(&query)
-                || section == Section::Shortcuts && self.shortcut_matches_any(&query)
+        let query = self.settings_search.trim().to_owned();
+        let prepared = orange_host::SearchQuery::new(&query);
+        let ranks = Section::ALL.map(|section| {
+            let rank = section.relevance(&prepared);
+            if section == Section::Shortcuts {
+                rank.into_iter()
+                    .chain(self.shortcut_search_rank(&query))
+                    .min()
+            } else {
+                rank
+            }
         });
-        if !Section::ALL
+        let current = Section::ALL
             .iter()
-            .zip(matches)
-            .any(|(&section, found)| section == self.settings_tab && found)
-            && let Some(first) = matches.iter().position(|&found| found)
+            .zip(ranks)
+            .find_map(|(&section, rank)| (section == self.settings_tab).then_some(rank).flatten());
+        if let Some((best, rank)) = Section::ALL
+            .iter()
+            .copied()
+            .zip(ranks)
+            .filter_map(|(section, rank)| rank.map(|rank| (section, rank)))
+            .min_by_key(|&(_, rank)| rank)
+            && current.is_none_or(|current| changed && rank < current)
         {
-            self.settings_tab = Section::ALL[first];
+            self.settings_tab = best;
         }
+        let matches = ranks.map(|rank| rank.is_some());
 
         let navigation = if compact {
             ui.painter()
@@ -226,7 +240,7 @@ impl Editor {
             match self.settings_tab {
                 Section::Shortcuts => self.keybindings_ui(
                     &mut page,
-                    if self.settings_tab.matches(&query) {
+                    if self.settings_tab.relevance(&prepared).is_some() {
                         ""
                     } else {
                         &query
@@ -287,20 +301,21 @@ impl Editor {
         .clicked()
     }
 
-    fn settings_search_ui(&mut self, header: &mut egui::Ui) {
+    fn settings_search_ui(&mut self, header: &mut egui::Ui) -> bool {
         let search_id = header.make_persistent_id("field");
         if self.shortcut_edit.is_none()
             && header.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
         {
             header.memory_mut(|memory| memory.request_focus(search_id));
         }
-        let _ = controls::search(
+        controls::search(
             header,
             "field",
             &mut self.settings_search,
             t("settings-search-hint"),
         )
-        .on_hover_text(t("settings-search-all"));
+        .on_hover_text(t("settings-search-all"))
+        .changed()
     }
 
     fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 3], compact: bool) {

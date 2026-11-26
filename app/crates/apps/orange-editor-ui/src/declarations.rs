@@ -945,20 +945,17 @@ impl Editor {
                     .push(node.id);
             }
         }
-        let query = self.declaration_search[0].trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.declaration_search[0]);
         let mut visible: Vec<_> = declared
             .variables
             .iter()
             .filter(|variable| {
-                contains_query(
-                    &query,
-                    &[
-                        &variable.name,
-                        &variable.ty,
-                        &type_name(&variable.ty),
-                        scope_name(variable.scope),
-                    ],
-                )
+                query.matches([
+                    variable.name.as_str(),
+                    variable.ty.as_str(),
+                    type_name(&variable.ty).as_str(),
+                    scope_name(variable.scope),
+                ])
             })
             .collect();
         visible.sort_by_cached_key(|variable| (variable.scope as u8, variable.name.to_lowercase()));
@@ -1469,19 +1466,16 @@ impl Editor {
             self.declaration_search[1].clear();
         }
         let mut remove = None;
-        let query = self.declaration_search[1].trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.declaration_search[1]);
         let mut visible: Vec<_> = declared
             .connections
             .iter()
             .filter(|connection| {
-                contains_query(
-                    &query,
-                    &[
-                        &connection.name,
-                        &connection.adapter,
-                        &label_of(&connection.adapter),
-                    ],
-                )
+                query.matches([
+                    connection.name.as_str(),
+                    connection.adapter.as_str(),
+                    label_of(&connection.adapter).as_str(),
+                ])
             })
             .collect();
         visible.sort_by_cached_key(|connection| {

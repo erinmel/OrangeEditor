@@ -182,7 +182,29 @@ The host rejects malformed source catalogues, duplicate keys, namespace violatio
 
 Catalogue bytes participate in the package integrity digest and immutable generation. Install/update/removal publishes definitions and their catalogues atomically. A translation fix shipped as a package update still creates a new exact digest; existing graph/provider locks never silently move. Running diagnostics resolve against their pinned origin catalogue, and the editor can display multiple package versions by origin. If origin bytes are unavailable after import/removal, use safe fallback text or stable IDs. There is no separate downloadable language-pack override contract in 1.0.
 
-Node search uses Fluent resources under `orange-host/locales/<tag>/`. The stable messages `concept-<id>`, `alias-<node key>` and `category-<slug>` supply search terms, and `purpose-<node key>` supplies a short description. A concept groups nodes by their kind, IDs and declared categories. The same search serves the palette and quick add. It matches the active language and English, folds case, Latin accents and full-width ASCII, and supports matches inside Japanese text without spaces. Schema field keys and string choices also match. Common settings and choices share the `setting-<field>` and `setting-choice-<value>` captions with the properties panel. Settings and shortcut searches allow terms from the active language and English in the same query.
+Node search uses Fluent resources under `orange-host/locales/<tag>/`. The stable
+messages `concept-<id>`, `alias-<node key>` and `category-<slug>` supply search terms,
+and `purpose-<node key>` supplies a short description. A concept groups nodes by
+their kind, IDs and declared categories. The palette and quick add can mix the
+active language and the bundled English, Spanish and Japanese terms in one query.
+Direct matches rank ahead of contextual matches and typos. Direct names and aliases
+in the active language rank before direct matches in fallback languages. Separate
+keyword hits count as matches without claiming an exact phrase. Search folds case,
+common Latin accents, full-width ASCII and half-width kana, and composes Japanese
+voicing marks. Whitespace, underscores and separators such as hyphens match alike
+between words. Japanese also matches inside text without spaces.
+Schema field keys and string choices match alongside common translated configuration
+captions, shared with Properties through `setting-<field>` and `setting-choice-<value>`.
+Catalogue entries and captions are prepared once per active locale and registry
+generation. A changed catalogue invalidates the prepared search data and open
+picker results. The palette also recognizes the displayed labels of templates,
+including their card counts. Search tries the whole channel name query before
+removing subscriber intent words.
+Settings and shortcut searches use the same tolerant matching against their captions.
+Queries are compared as literal text against local search data. Search fields cap
+input at 1,024 characters. The matcher accepts up to 4,096 UTF-8 bytes and 64
+normalized terms. Control characters other than
+whitespace make the query ineligible for matching.
 
 ### Catalogue files and lookup (2026-11-17)
 

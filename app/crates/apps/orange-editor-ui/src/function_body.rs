@@ -24,6 +24,7 @@ pub(crate) struct FunctionBody {
 struct NodeSearch {
     query: String,
     choices: Option<Vec<Found>>,
+    revision: Option<(u64, u64)>,
 }
 
 impl FunctionBody {
@@ -166,18 +167,21 @@ impl Editor {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut search.query)
                     .id(id)
+                    .char_limit(orange_ui_controls::MAX_SEARCH_CHARS)
                     .hint_text(t("add-node-ellipsis")),
             );
             if new_search {
                 field.request_focus();
             }
-            if field.changed() || new_search {
+            let revision = host.search_revision();
+            if field.changed() || new_search || search.revision != Some(revision) {
                 search.choices = Some(host.search_function_nodes(
                     &document.draft,
                     &body.id,
                     &search.query,
                     locale,
                 ));
+                search.revision = Some(revision);
             }
             egui::ScrollArea::vertical()
                 .max_height(140.0)

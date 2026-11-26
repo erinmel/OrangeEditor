@@ -3,7 +3,7 @@
 //! by Insert node… on a wire, which also wires the new node on to where the wire went,
 //! or by Tab, Space or Add node… over the canvas, which lists every kind. The search is
 //! the host's: names, aliases, categories, concepts and descriptions, in the editor's
-//! language and English.
+//! language and the bundled search languages.
 use super::*;
 use orange_host::intrinsic;
 
@@ -28,13 +28,10 @@ fn typed_wire_choices(host: &Host, draft: &Draft, ty: &str, search: &str) -> Vec
         return Vec::new();
     }
     let named_type = type_name(ty);
+    let query = orange_host::SearchQuery::new(search);
     let mut choices = Vec::new();
     let mut offer = |definition, label: String, input, purpose: &str, aliases: &str| {
-        let terms = format!("{label} {named_type} {aliases}");
-        if search
-            .split_whitespace()
-            .all(|word| orange_host::word_finds(word, &terms))
-        {
+        if query.matches([label.as_str(), named_type.as_str(), aliases]) {
             choices.push(QuickChoice {
                 definition,
                 label,
@@ -102,7 +99,7 @@ pub(crate) struct QuickAdd {
     focused: bool,
     /// The choice the arrow keys are on.
     highlighted: usize,
-    choices_key: Option<(String, String, u64)>,
+    choices_key: Option<(String, String, (u64, u64))>,
     choices: Vec<QuickChoice>,
     splice_conversions: Option<(u64, Vec<orange_host::Conversion>)>,
 }
@@ -522,17 +519,17 @@ impl Editor {
                 let key = (
                     search.clone(),
                     self.language().to_owned(),
-                    host.registry().generation(),
+                    host.search_revision(),
                 );
                 if let Some(quick) = &mut self.quick
                     && let (Some(wire), Some(document)) = (quick.splice, &self.document)
                     && quick
                         .splice_conversions
                         .as_ref()
-                        .is_none_or(|(generation, _)| *generation != key.2)
+                        .is_none_or(|(generation, _)| *generation != key.2.0)
                 {
                     quick.splice_conversions =
-                        Some((key.2, host.splice_conversions(&document.draft, wire)));
+                        Some((key.2.0, host.splice_conversions(&document.draft, wire)));
                 }
                 if self
                     .quick

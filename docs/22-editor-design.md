@@ -447,12 +447,17 @@ Names only on the left and Node cards on the right.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts, descriptions and common configuration captions in the
-  active language and in English. Concepts group nodes by purpose: *trigger / when /
+  active language and in the bundled search languages. Concepts group nodes by purpose: *trigger / when /
   start* finds every entry kind (On manual, On timer, On start, On event, On level);
   *math*, *compare*, *text*, *time*, *audio*, *network*, *file*, *variable*, *loop*.
-* Results rank: exact name, name start, word start, alias, concept, description, fuzzy
-  (one typo). Each result has a category and a purpose available on hover; arrow keys move,
-  Enter adds.
+* Direct names and aliases in the active language rank above direct matches in
+  fallback languages. Within each language tier, exact phrases precede prefixes
+  and word matches. Concepts, descriptions and approximate matches follow.
+  Spaces, hyphens and underscores between
+  words are interchangeable. Search accepts one insertion, deletion, substitution
+  or adjacent swap per word of four or more letters. Settings, shortcuts, channels,
+  declarations and package pickers use the same matching rules. Each node result
+  has a category and purpose on hover. Arrow keys move through results and Enter adds.
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
 * **What a wire offers** (2026-11-24). A wire let go on empty canvas lists the kinds

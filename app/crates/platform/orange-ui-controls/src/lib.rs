@@ -982,6 +982,9 @@ fn style(ui: &mut Ui, surface: Surface, action: Action) {
     widgets.open.expansion = 0.0;
 }
 
+/// Maximum characters in an interactive search field.
+pub const MAX_SEARCH_CHARS: usize = 1024;
+
 /// Search row with a label for assistive technology and a clear action that
 /// returns focus to the field.
 pub fn search(
@@ -1028,6 +1031,7 @@ pub fn search_sized(
     let mut field = with_style(ui, Surface::Panel, Action::Outline, |ui| {
         let mut edit = egui::TextEdit::singleline(query)
             .id(id)
+            .char_limit(MAX_SEARCH_CHARS)
             .frame(input_frame(ui, Surface::Panel, 255))
             .align(egui::Align2::LEFT_CENTER)
             .min_size(egui::vec2(
@@ -1468,6 +1472,38 @@ pub fn icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_limits_a_multibyte_paste_before_matching() {
+        let ctx = egui::Context::default();
+        let mut query = String::new();
+        for events in [
+            vec![],
+            vec![egui::Event::Paste("検".repeat(MAX_SEARCH_CHARS + 1))],
+        ] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    search(
+                        ui,
+                        "bounded",
+                        &mut query,
+                        "Find",
+                        "Find".into(),
+                        "Clear".into(),
+                        "Clear",
+                    )
+                    .request_focus();
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(query.chars().count(), MAX_SEARCH_CHARS);
+        assert!(query.chars().all(|c| c == '検'));
+    }
 
     #[test]
     fn search_and_clear_fit_narrow_and_wide_panels() {

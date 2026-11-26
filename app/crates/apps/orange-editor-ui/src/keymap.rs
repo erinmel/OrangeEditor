@@ -503,32 +503,37 @@ impl crate::Editor {
         });
     }
 
-    pub(crate) fn shortcut_matches_any(&self, query: &str) -> bool {
+    pub(crate) fn shortcut_search_rank(&self, query: &str) -> Option<(orange_host::Match, bool)> {
+        let prepared = orange_host::SearchQuery::new(query);
+        if !prepared.is_valid() {
+            return None;
+        }
         let chord = parse_shortcut(query);
-        ACTION_GROUPS.iter().any(|(group, actions)| {
-            actions.iter().any(|(action, label, _, _)| {
-                self.shortcut_matches(action, label, group, query, chord)
+        ACTION_GROUPS
+            .iter()
+            .flat_map(|(group, actions)| {
+                actions.iter().filter_map(|(action, label, _, _)| {
+                    self.shortcut_rank(action, label, group, &prepared, chord)
+                })
             })
-        })
+            .min()
     }
 
-    fn shortcut_matches(
+    fn shortcut_rank(
         &self,
         action: &str,
         label: &str,
         group: &'static str,
-        query: &str,
+        query: &orange_host::SearchQuery,
         chord: Option<KeyboardShortcut>,
-    ) -> bool {
-        if query.is_empty() {
-            return true;
+    ) -> Option<(orange_host::Match, bool)> {
+        if query.is_empty()
+            || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
+        {
+            return Some((orange_host::Match::Exact, false));
         }
         let key = self.canvas.keys.label(action);
-        let terms = orange_host::fold_search(&key);
-        query.split_whitespace().all(|word| {
-            terms.contains(word)
-                || crate::i18n::matches_messages(word, &[group, group_help(group), label])
-        }) || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
+        crate::i18n::message_relevance(query, &[group, group_help(group), label], &[&key])
     }
 
     pub(crate) fn keybindings_ui(&mut self, ui: &mut egui::Ui, query: &str) {
@@ -557,7 +562,8 @@ impl crate::Editor {
             self.canvas.keys = Keymap::default();
             self.shortcut_edit = None;
         }
-        let searched_chord = parse_shortcut(query);
+        let prepared = orange_host::SearchQuery::new(query);
+        let searched_chord = prepared.is_valid().then(|| parse_shortcut(query)).flatten();
         let table_width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - 6.0).max(0.0);
         let (header, [action, binding]) = shortcut_row(ui, table_width, CONTROL_HEIGHT);
@@ -585,7 +591,9 @@ impl crate::Editor {
                             .shortcut_edit
                             .as_ref()
                             .is_some_and(|edit| edit.action == action)
-                            && !self.shortcut_matches(action, label, group, query, searched_chord)
+                            && self
+                                .shortcut_rank(action, label, group, &prepared, searched_chord)
+                                .is_none()
                         {
                             continue;
                         }

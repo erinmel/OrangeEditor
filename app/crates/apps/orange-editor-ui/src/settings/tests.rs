@@ -4,16 +4,17 @@ use super::*;
 fn settings_and_shortcuts_search_accept_localized_and_english_terms() {
     let mut editor = Editor::new();
     for (saved, tag, display, shortcut) in [
-        ("es_mx", "es-MX", "cuadricula spacing", "archivos save"),
+        ("es_mx", "es-MX", "cuadricual-spacing", "archvios save"),
         ("ja_jp", "ja-JP", "グリッド spacing", "ファイル save"),
-        ("en", "en-US", "grid spacing", "files save"),
+        ("en", "en-US", "grid_spacing", "fiels-save"),
     ] {
         editor.restore_preferences(&serde_json::json!({ "version": 1, "language": saved }));
         assert_eq!(editor.language(), tag);
         assert_eq!(editor.preferences()["language"], tag);
-        assert!(Section::Display.matches(display));
-        assert!(!Section::Search.matches(display));
-        assert!(editor.shortcut_matches_any(shortcut));
+        let display = orange_host::SearchQuery::new(display);
+        assert!(Section::Display.relevance(&display).is_some());
+        assert!(Section::Search.relevance(&display).is_none());
+        assert!(editor.shortcut_search_rank(shortcut).is_some());
     }
 }
 

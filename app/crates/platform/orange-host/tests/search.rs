@@ -41,11 +41,8 @@ fn results_rank_exact_names_and_aliases_above_prefixes_and_concepts() {
     assert!(typo.iter().all(|found| found.matched == Some(Match::Typo)));
     assert!(host.search_nodes("zzzz qqqq", "en").is_empty());
     // Ranks never go down the list.
-    let all = host.search_nodes("a", "en");
-    assert!(
-        all.windows(2)
-            .all(|pair| pair[0].matched <= pair[1].matched)
-    );
+    let all = host.ranked_search_nodes("a", "en");
+    assert!(all.windows(2).all(|pair| pair[0].1 <= pair[1].1));
 }
 
 #[test]
@@ -96,8 +93,68 @@ fn spanish_words_without_accents_find_nodes_and_english_still_works() {
     assert_eq!(first("integer", "es"), "core/whole-number");
     let text = host.search_nodes("texto", "es");
     assert!(ids(&text).contains(&"org.orange.text/trim"));
-    // English searches do not see Spanish words.
-    assert!(!ids(&host.search_nodes("temporizador", "en")).contains(&"core/on-timer"));
+    assert!(ids(&host.search_nodes("temporizador", "en")).contains(&"core/on-timer"));
+}
+
+#[test]
+fn the_active_language_breaks_alias_and_typo_ties_without_hiding_fallbacks() {
+    let mut host = host();
+    host.add_catalog("es", "alias-core-wait = capturamx")
+        .unwrap();
+    host.add_catalog("en", "alias-core-branch = capturamx, englishonlyword")
+        .unwrap();
+    for query in ["capturamx", "capturmax"] {
+        for (locale, expected, fallback) in [
+            ("es-MX", "core/wait", "core/branch"),
+            ("en-US", "core/branch", "core/wait"),
+        ] {
+            let found = host.search_nodes(query, locale);
+            assert_eq!(found[0].definition, expected, "{locale} / {query}");
+            assert!(ids(&found).contains(&fallback));
+        }
+    }
+    assert_eq!(
+        host.search_nodes("englishonlyword", "es-MX")[0].definition,
+        "core/branch"
+    );
+}
+
+#[test]
+fn search_handles_literal_punctuation_and_rejects_excessive_or_control_input() {
+    let mut host = host();
+    host.add_catalog("en", "alias-core-wait = [tag]").unwrap();
+    assert_eq!(
+        host.search_nodes("[tag]", "en-US")[0].definition,
+        "core/wait"
+    );
+    for query in ["[{<>}]", "wait\0", &"x".repeat(4097), &"wait-".repeat(65)] {
+        assert!(host.search_nodes(query, "en-US").is_empty(), "{query:?}");
+    }
+    assert_eq!(
+        host.search_nodes("wait", "en-US")[0].definition,
+        "core/wait"
+    );
+}
+
+#[test]
+fn spanish_name_prefixes_beat_fallback_aliases_and_separate_keywords() {
+    let host = host();
+    for (query, expected, lower) in [
+        ("int", "core/try", "core/whole-number"),
+        (
+            "obtener campo",
+            "org.orange.json/get",
+            "org.orange.json/read-int",
+        ),
+    ] {
+        let found = host.search_nodes(query, "es-MX");
+        assert_eq!(found[0].definition, expected, "{query}");
+        assert!(ids(&found).contains(&lower), "{query}");
+    }
+    assert_eq!(
+        host.search_nodes("int", "en-US")[0].definition,
+        "core/whole-number"
+    );
 }
 
 #[test]
@@ -120,6 +177,41 @@ fn regional_search_accepts_japanese_substrings_and_localized_configuration() {
             "{query} misses {id}"
         );
     }
+}
+
+#[test]
+fn separator_variants_and_misspellings_find_the_expected_nodes() {
+    let host = host();
+    for (typed, spaced, locale, id) in [
+        ("on-manual", "on manual", "en-US", "core/on-manual"),
+        (
+            "  número__entero ",
+            "numero entero",
+            "es-MX",
+            "core/whole-number",
+        ),
+        (
+            "JSON—パス",
+            "JSON パス",
+            "ja-JP",
+            "org.orange.json/get-path",
+        ),
+    ] {
+        let results = host.search_nodes(typed, locale);
+        assert_eq!(results, host.search_nodes(spaced, locale), "{typed}");
+        assert!(ids(&results).contains(&id));
+    }
+    let typo = host.search_nodes("temporizdor", "es-MX");
+    assert!(
+        typo.iter()
+            .any(|row| row.definition == "core/on-timer" && row.matched == Some(Match::Typo))
+    );
+    let exact = host.search_nodes("temporizador", "es-MX");
+    assert_eq!(
+        exact.first().map(|row| row.definition.as_str()),
+        Some("core/on-timer")
+    );
+    assert!(exact[0].matched < Some(Match::Typo));
 }
 
 #[test]
