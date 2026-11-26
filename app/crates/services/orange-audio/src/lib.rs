@@ -1528,13 +1528,16 @@ mod tests {
 
     #[test]
     fn a_stream_is_recorded_to_a_wav_file_at_its_rate_and_channels() {
+        // The test tone never runs ahead of real time since it started, but one that
+        // fell behind on a busy machine catches up in a burst. So the recording is
+        // timed from before the input starts, not from when recording begins.
+        let started = Instant::now();
         let input = tone_input();
         let ring = input.0.wait_ring(Some(OPEN_WAIT), &|| false).unwrap();
         let path =
             std::env::temp_dir().join(format!("orange-audio-record-{}.wav", std::process::id()));
-        let started = Instant::now();
         let seconds = record(Cursor::new(Arc::clone(&ring)), &path, 0.25, &|| false).unwrap();
-        // It took about as long as it recorded: it waited for the samples.
+        // It waited for the samples rather than writing what was not captured yet.
         assert!(started.elapsed() >= Duration::from_millis(200));
         assert!((seconds - 0.25).abs() < 1e-9);
         let mut reader = hound::WavReader::open(&path).unwrap();
