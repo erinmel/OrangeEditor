@@ -4173,11 +4173,11 @@ fn luminance(color: Color32) -> f32 {
 }
 
 fn family_icon(node: &NodeView) -> char {
-    let (icon, _, family) = crate::palette::badge(&node.definition);
-    if node.entry && family == "node-family-package" {
+    let family = crate::palette::NodeFamily::of(&node.definition);
+    if node.entry && family == crate::palette::NodeFamily::Package {
         crate::icons::FLOW
     } else {
-        icon
+        family.glyph()
     }
 }
 
@@ -4278,14 +4278,12 @@ pub(crate) fn short_type(ty: &str) -> String {
 /// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
 /// so every node of one package shares it.
 fn family_color(definition: &str) -> Color32 {
-    let (_, color, category) = crate::palette::badge(definition);
-    if category != "node-family-package" {
-        return color;
+    let family = crate::palette::NodeFamily::of(definition);
+    if family != crate::palette::NodeFamily::Package {
+        return family.color();
     }
+    // Every core kind has a family of its own, so this is a package's namespace.
     let family = definition.split('/').next().unwrap_or(definition);
-    if family == "core" {
-        return Color32::from_rgb(232, 140, 48);
-    }
     // FNV-1a: stable across runs and platforms, unlike the standard hasher.
     let hash = family.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)

@@ -643,64 +643,135 @@ fn audio_section(definition: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
-    use crate::icons;
-    if definition == intrinsic::CONVERT || definition.starts_with(CONVERSION) {
-        return (
-            icons::REFRESH,
-            egui::Color32::from_rgb(74, 152, 165),
-            "catalog-conversions-help",
-        );
+/// The family a node kind is drawn in: its badge glyph, its color and the message that
+/// explains the family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeFamily {
+    Conversions,
+    Signals,
+    Triggers,
+    Functions,
+    Logic,
+    Loops,
+    State,
+    Math,
+    Text,
+    Time,
+    Audio,
+    Network,
+    Files,
+    Log,
+    Data,
+    Flow,
+    /// A kind from a package without a family of its own.
+    Package,
+}
+
+impl NodeFamily {
+    pub(crate) fn of(definition: &str) -> Self {
+        if definition == intrinsic::CONVERT || definition.starts_with(CONVERSION) {
+            return Self::Conversions;
+        }
+        let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
+        match (namespace, name) {
+            ("core", "emit" | "on-event") | (preset::SIGNAL | preset::WATCHDOG, _) => Self::Signals,
+            ("core", name) if name.starts_with("on-") => Self::Triggers,
+            ("core", "call" | "function-entry" | "function-outputs" | "return") => Self::Functions,
+            ("core", "and" | "or" | "all-conditions" | "any-conditions")
+            | ("org.orange.math", "not" | "xor") => Self::Logic,
+            ("core", name) if loop_name(name) => Self::Loops,
+            ("core", name) if name.contains("variable") || name.contains("shared") => Self::State,
+            ("core", "increment-counter" | "decrement-counter") => Self::State,
+            ("core", "number" | "whole-number") | ("org.orange.math", _) => Self::Math,
+            ("core", "text") | ("org.orange.text", _) => Self::Text,
+            ("core", "wait" | "now") | ("org.orange.time" | "org.orange.clock", _) => Self::Time,
+            ("org.orange.audio", _) => Self::Audio,
+            ("org.orange.net", _) => Self::Network,
+            ("org.orange.files", _) => Self::Files,
+            ("org.orange.logging", _) => Self::Log,
+            ("org.orange.json" | "org.orange.collections", _) => Self::Data,
+            (
+                "core"
+                | preset::GUARD
+                | preset::RISING_EDGE
+                | preset::FALLING_EDGE
+                | preset::DEADBAND,
+                _,
+            ) => Self::Flow,
+            _ => Self::Package,
+        }
     }
-    let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
-    let (glyph, rgb, description) = match (namespace, name) {
-        ("core", "emit" | "on-event") | (preset::SIGNAL | preset::WATCHDOG, _) => {
-            (icons::SIGNAL, [67, 152, 193], "node-family-events")
+
+    pub(crate) fn glyph(self) -> char {
+        use crate::icons;
+        match self {
+            Self::Conversions | Self::Loops => icons::REFRESH,
+            Self::Signals => icons::SIGNAL,
+            Self::Triggers => icons::FLOW,
+            Self::Functions => icons::FUNCTION,
+            Self::Logic => icons::BOOLEAN,
+            Self::State | Self::Data => icons::VARIABLE,
+            Self::Math => icons::MATH,
+            Self::Text => icons::TEXT,
+            Self::Time => icons::CLOCK,
+            Self::Audio => icons::AUDIO,
+            Self::Network => icons::NETWORK,
+            Self::Files => icons::OPEN,
+            Self::Log => icons::LOG,
+            Self::Flow => icons::LOGIC,
+            Self::Package => icons::PACKAGES,
         }
-        ("core", name) if name.starts_with("on-") => {
-            (icons::FLOW, [205, 124, 58], "node-family-events")
+    }
+
+    pub(crate) fn color(self) -> egui::Color32 {
+        let [r, g, b] = match self {
+            Self::Conversions | Self::Time => [74, 152, 165],
+            Self::Signals => [67, 152, 193],
+            Self::Triggers => [205, 124, 58],
+            Self::Functions => [137, 114, 207],
+            Self::Logic => [196, 160, 52],
+            Self::Loops => [51, 151, 163],
+            Self::State => [60, 156, 112],
+            Self::Math => [64, 145, 213],
+            Self::Text => [183, 110, 174],
+            Self::Audio => [151, 119, 213],
+            Self::Network => [56, 150, 189],
+            Self::Files => [190, 144, 65],
+            Self::Log => [172, 129, 74],
+            Self::Data => [62, 152, 130],
+            Self::Flow => [211, 131, 66],
+            Self::Package => [132, 132, 143],
+        };
+        egui::Color32::from_rgb(r, g, b)
+    }
+
+    /// The catalogue message that explains this family.
+    pub(crate) fn help_key(self) -> &'static str {
+        match self {
+            Self::Conversions => "catalog-conversions-help",
+            Self::Signals | Self::Triggers => "node-family-events",
+            Self::Functions => "node-family-functions",
+            Self::Logic => "node-family-logic",
+            Self::Loops => "node-family-loops",
+            Self::State => "node-family-state",
+            Self::Math => "node-family-math",
+            Self::Text => "node-family-text",
+            Self::Time => "node-family-time",
+            Self::Audio => "node-family-audio",
+            Self::Network => "node-family-network",
+            Self::Files => "node-family-files",
+            Self::Log => "node-family-log",
+            Self::Data => "node-family-data",
+            Self::Flow => "node-family-flow",
+            Self::Package => "node-family-package",
         }
-        ("core", "call" | "function-entry" | "function-outputs" | "return") => {
-            (icons::FUNCTION, [137, 114, 207], "node-family-functions")
-        }
-        ("core", "and" | "or" | "all-conditions" | "any-conditions")
-        | ("org.orange.math", "not" | "xor") => {
-            (icons::BOOLEAN, [196, 160, 52], "node-family-logic")
-        }
-        ("core", name) if loop_name(name) => (icons::REFRESH, [51, 151, 163], "node-family-loops"),
-        ("core", name) if name.contains("variable") || name.contains("shared") => {
-            (icons::VARIABLE, [60, 156, 112], "node-family-state")
-        }
-        ("core", "increment-counter" | "decrement-counter") => {
-            (icons::VARIABLE, [60, 156, 112], "node-family-state")
-        }
-        ("core", "number" | "whole-number") | ("org.orange.math", _) => {
-            (icons::MATH, [64, 145, 213], "node-family-math")
-        }
-        ("core", "text") | ("org.orange.text", _) => {
-            (icons::TEXT, [183, 110, 174], "node-family-text")
-        }
-        ("core", "wait" | "now") | ("org.orange.time" | "org.orange.clock", _) => {
-            (icons::CLOCK, [74, 152, 165], "node-family-time")
-        }
-        ("org.orange.audio", _) => (icons::AUDIO, [151, 119, 213], "node-family-audio"),
-        ("org.orange.net", _) => (icons::NETWORK, [56, 150, 189], "node-family-network"),
-        ("org.orange.files", _) => (icons::OPEN, [190, 144, 65], "node-family-files"),
-        ("org.orange.logging", _) => (icons::LOG, [172, 129, 74], "node-family-log"),
-        ("org.orange.json" | "org.orange.collections", _) => {
-            (icons::VARIABLE, [62, 152, 130], "node-family-data")
-        }
-        (
-            "core" | preset::GUARD | preset::RISING_EDGE | preset::FALLING_EDGE | preset::DEADBAND,
-            _,
-        ) => (icons::LOGIC, [211, 131, 66], "node-family-flow"),
-        _ => (icons::PACKAGES, [132, 132, 143], "node-family-package"),
-    };
-    (
-        glyph,
-        egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
-        description,
-    )
+    }
+}
+
+/// A node kind's badge: its family's glyph, color and explaining message.
+pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
+    let family = NodeFamily::of(definition);
+    (family.glyph(), family.color(), family.help_key())
 }
 
 fn loop_name(name: &str) -> bool {
@@ -1303,6 +1374,34 @@ fn text_in(language: &str, key: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn core_kinds_and_presets_always_have_a_family_and_packages_share_one() {
+        for definition in [
+            intrinsic::EMIT,
+            intrinsic::WAIT,
+            intrinsic::BRANCH,
+            "core/some-future-kind",
+            preset::GUARD,
+            preset::SIGNAL,
+        ] {
+            assert_ne!(
+                NodeFamily::of(definition),
+                NodeFamily::Package,
+                "{definition}"
+            );
+        }
+        assert_eq!(NodeFamily::of("com.example.tools/x"), NodeFamily::Package);
+        assert_eq!(NodeFamily::of(intrinsic::ON_START), NodeFamily::Triggers);
+        assert_eq!(
+            badge(intrinsic::CONVERT),
+            (
+                crate::icons::REFRESH,
+                NodeFamily::Time.color(),
+                "catalog-conversions-help"
+            )
+        );
+    }
 
     #[test]
     fn specialized_nodes_are_listed_once_in_their_node_families() {
