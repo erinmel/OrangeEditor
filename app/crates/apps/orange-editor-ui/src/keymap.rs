@@ -503,7 +503,7 @@ impl crate::Editor {
         });
     }
 
-    pub(crate) fn shortcut_search_rank(&self, query: &str) -> Option<(orange_host::Match, bool)> {
+    pub(crate) fn shortcut_search_rank(&self, query: &str) -> Option<orange_host::SearchRank> {
         let prepared = orange_host::SearchQuery::new(query);
         if !prepared.is_valid() {
             return None;
@@ -526,11 +526,11 @@ impl crate::Editor {
         group: &'static str,
         query: &orange_host::SearchQuery,
         chord: Option<KeyboardShortcut>,
-    ) -> Option<(orange_host::Match, bool)> {
+    ) -> Option<orange_host::SearchRank> {
         if query.is_empty()
             || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
         {
-            return Some((orange_host::Match::Exact, false));
+            return Some(orange_host::SearchRank::BEST);
         }
         let key = self.canvas.keys.label(action);
         crate::i18n::message_relevance(query, &[group, group_help(group), label], &[&key])

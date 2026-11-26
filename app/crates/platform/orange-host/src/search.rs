@@ -63,7 +63,13 @@ pub struct SearchRank {
 }
 
 impl SearchRank {
-    pub fn new(kind: Match, fallback: bool) -> Self {
+    /// The rank of an exact match in the active language, and of every row when
+    /// nothing is typed.
+    pub const BEST: Self = Self::new(Match::Exact, false);
+
+    /// A match of strength `kind`; `fallback` when it needed a caption outside the
+    /// active language.
+    pub const fn new(kind: Match, fallback: bool) -> Self {
         let tier = match kind {
             Match::Exact
             | Match::AliasExact
@@ -97,28 +103,27 @@ impl SearchNode {
         if phrase.is_some_and(|rank| !rank.fallback && rank.kind() <= Match::WordStart) {
             return phrase;
         }
-        let each =
-            query
-                .terms
-                .iter()
-                .try_fold(SearchRank::new(Match::Exact, false), |worst, term| {
-                    let best = [
-                        self.active.term(term, false),
-                        self.fallback.term(term, true),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .min()?;
-                    let kind = match (best.kind(), query.terms.len() > 1) {
-                        (Match::Exact, true) => Match::WordStart,
-                        (Match::AliasExact, true) => Match::Alias,
-                        (kind, _) => kind,
-                    };
-                    Some(SearchRank::new(
-                        worst.kind().max(kind),
-                        worst.fallback || best.fallback,
-                    ))
-                });
+        let each = query
+            .terms
+            .iter()
+            .try_fold(SearchRank::BEST, |worst, term| {
+                let best = [
+                    self.active.term(term, false),
+                    self.fallback.term(term, true),
+                ]
+                .into_iter()
+                .flatten()
+                .min()?;
+                let kind = match (best.kind(), query.terms.len() > 1) {
+                    (Match::Exact, true) => Match::WordStart,
+                    (Match::AliasExact, true) => Match::Alias,
+                    (kind, _) => kind,
+                };
+                Some(SearchRank::new(
+                    worst.kind().max(kind),
+                    worst.fallback || best.fallback,
+                ))
+            });
         phrase.into_iter().chain(each).min()
     }
 }

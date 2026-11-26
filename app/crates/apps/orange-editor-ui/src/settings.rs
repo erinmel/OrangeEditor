@@ -41,9 +41,9 @@ impl Section {
         t(self.title_key())
     }
 
-    fn relevance(self, query: &orange_host::SearchQuery) -> Option<(orange_host::Match, bool)> {
+    fn relevance(self, query: &orange_host::SearchQuery) -> Option<orange_host::SearchRank> {
         if query.is_empty() {
-            return Some((orange_host::Match::Exact, false));
+            return Some(orange_host::SearchRank::BEST);
         }
         let mut labels = vec![self.title_key()];
         labels.extend_from_slice(match self {

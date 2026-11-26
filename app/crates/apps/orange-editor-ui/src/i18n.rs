@@ -122,7 +122,7 @@ pub(crate) fn message_relevance(
     query: &orange_host::SearchQuery,
     ids: &[&str],
     extra: &[&str],
-) -> Option<(orange_host::Match, bool)> {
+) -> Option<orange_host::SearchRank> {
     LANGUAGE.with_borrow(|locale| {
         let active: Vec<_> = ids
             .iter()
@@ -136,12 +136,10 @@ pub(crate) fn message_relevance(
                     .filter_map(|tag| TEXT.message(tag, id))
             })
             .collect();
-        let fields = active.iter().map(Cow::as_ref).chain(extra.iter().copied());
-        let local = query.relevance(fields.clone()).map(|rank| (rank, false));
-        let all = query
-            .relevance(fields.chain(fallback.iter().map(Cow::as_ref)))
-            .map(|rank| (rank, true));
-        local.into_iter().chain(all).min()
+        query.rank(
+            active.iter().map(Cow::as_ref).chain(extra.iter().copied()),
+            fallback.iter().map(Cow::as_ref),
+        )
     })
 }
 

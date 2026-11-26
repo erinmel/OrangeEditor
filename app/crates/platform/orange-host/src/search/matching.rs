@@ -1,4 +1,4 @@
-use super::Match;
+use super::{Match, SearchRank};
 
 /// A search typed by a person. Prepare it once for a list of results.
 #[derive(Debug)]
@@ -51,6 +51,23 @@ impl SearchQuery {
     /// Whether every search term occurs in the supplied captions or matches a typo.
     pub fn matches<'a>(&self, fields: impl IntoIterator<Item = &'a str>) -> bool {
         self.relevance(fields).is_some()
+    }
+
+    /// Ranks a row by its `active` captions, in the editor's language, and its
+    /// `fallback` captions, in the other search languages. A match through the active
+    /// captions ranks ahead of an equally strong one that needs a fallback caption.
+    pub fn rank<'a>(
+        &self,
+        active: impl IntoIterator<Item = &'a str> + Clone,
+        fallback: impl IntoIterator<Item = &'a str>,
+    ) -> Option<SearchRank> {
+        let local = self
+            .relevance(active.clone())
+            .map(|kind| SearchRank::new(kind, false));
+        let any = self
+            .relevance(active.into_iter().chain(fallback))
+            .map(|kind| SearchRank::new(kind, true));
+        local.into_iter().chain(any).min()
     }
 
     /// Direct matches rank above typo matches. An empty search matches every row.
@@ -292,6 +309,16 @@ mod tests {
         }
         assert!(!within_one(&chars("timer"), &chars("tmire")));
         assert!(!within_one(&chars("timer"), &chars("time it")));
+    }
+
+    #[test]
+    fn an_active_caption_outranks_an_equally_strong_fallback_one() {
+        let query = SearchQuery::new("grid");
+        assert_eq!(query.rank(["Grid"], ["Rejilla"]), Some(SearchRank::BEST));
+        let fallback = query.rank(["Cuadrícula"], ["Grid"]).unwrap();
+        assert_eq!(fallback.kind(), Match::Exact);
+        assert!(SearchRank::BEST < fallback);
+        assert_eq!(query.rank(["Cuadrícula"], ["Rejilla"]), None);
     }
 
     #[test]

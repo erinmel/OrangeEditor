@@ -577,32 +577,16 @@ fn ranked_conversions<'a>(
                 keywords.as_str(),
                 legacy.map_or("", |(active, _)| active.as_str()),
             ];
-            let local = wanted
-                .relevance(active)
-                .map(|rank| orange_host::SearchRank::new(rank, false));
             let other_labels =
                 orange_host::SEARCH_LANGUAGES.map(|tag| conversion_label_in(conversion, tag));
-            let fallback = wanted
-                .relevance(
-                    active
-                        .into_iter()
-                        .chain(
-                            other_labels
-                                .iter()
-                                .chain(&other_keywords)
-                                .map(String::as_str),
-                        )
-                        .chain(
-                            legacy
-                                .map(|(_, fallback)| fallback)
-                                .into_iter()
-                                .flatten()
-                                .map(String::as_str),
-                        )
-                        .chain([aliases.as_str()]),
-                )
-                .map(|rank| orange_host::SearchRank::new(rank, true));
-            let rank = local.into_iter().chain(fallback).min()?;
+            let legacy_fallback = legacy.map(|(_, fallback)| fallback).into_iter().flatten();
+            let fallback = other_labels
+                .iter()
+                .chain(&other_keywords)
+                .chain(legacy_fallback)
+                .map(String::as_str)
+                .chain([aliases.as_str()]);
+            let rank = wanted.rank(active, fallback)?;
             Some((rank, conversion, item))
         })
         .collect();
