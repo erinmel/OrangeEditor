@@ -7,7 +7,7 @@ use super::settings;
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
-    choose_http_method, http_request_variant, input_caption, watch_label, watch_number_value,
+    choose_http_method, http_request_variant, input_caption, watch_field_label, watch_number_value,
 };
 use orange_host::intrinsic;
 
@@ -225,13 +225,16 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         | FieldOf::TextArea(port, ..)
         | FieldOf::Path(port, _) => input_caption(node, port),
         FieldOf::Setting(name, schema, _) => {
-            if node.definition == intrinsic::ON_WATCH {
-                watch_label(name).to_owned()
+            if intrinsic::is_watch(&node.definition) {
+                watch_field_label(node, name).to_owned()
             } else if let Some(label) = crate::properties::audio_setting_label(node, name) {
                 label.to_owned()
             } else {
                 settings::label(name, schema)
             }
+        }
+        FieldOf::Variable(_) if intrinsic::counter_operation(&node.definition).is_some() => {
+            t("counter-variable").to_owned()
         }
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
@@ -1102,21 +1105,25 @@ impl Canvas {
                     .settings
                     .pointer(pointer)
                     .and_then(serde_json::Value::as_str);
-                let variables = self.variables.iter().filter(|(_, _, scope)| {
-                    crate::declarations::variable_scope_allowed(&node.definition, *scope)
-                });
+                let variables = self
+                    .variables
+                    .iter()
+                    .filter(|choice| choice.fits(&node.definition));
                 let (text, dim) = variables
                     .clone()
-                    .find(|(id, _, _)| named == Some(id.as_str()))
-                    .map_or_else(|| shown(node, field), |(_, name, _)| (name.clone(), false));
+                    .find(|choice| named == Some(choice.id.as_str()))
+                    .map_or_else(
+                        || shown(node, field),
+                        |choice| (choice.label.clone(), false),
+                    );
                 let mut edit = None;
                 dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
-                    for (variable, name, _) in variables.clone() {
-                        let current = named == Some(variable.as_str());
-                        if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                    for choice in variables.clone() {
+                        let current = named == Some(choice.id.as_str());
+                        if ui.selectable_label(current, &choice.label).clicked() && !current {
                             edit = Some(FieldEdit::Setting(
                                 pointer.to_owned(),
-                                variable.as_str().into(),
+                                choice.id.as_str().into(),
                             ));
                         }
                     }
@@ -1516,7 +1523,7 @@ fn setting_number(
     schema: &serde_json::Value,
     typed: &str,
 ) -> Option<serde_json::Value> {
-    if node.definition == intrinsic::ON_WATCH {
+    if intrinsic::is_watch(&node.definition) {
         if typed.trim().is_empty() && matches!(name, "release" | "hold" | "cooldown") {
             return Some(serde_json::Value::Null);
         }

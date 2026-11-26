@@ -140,24 +140,16 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
 /// What conversions are called on their cards: the type they take and the type they
 /// give, "Int to Text".
 fn titles(graph: &GraphView) -> HashMap<NodeId, String> {
+    let language = crate::i18n::language();
     graph
         .nodes
         .iter()
         .filter(|node| node.definition == intrinsic::CONVERT)
         .filter_map(|node| {
-            if let Some(label) = node.settings["converter"]
-                .as_str()
-                .and_then(crate::palette::utf8_label)
-            {
-                return Some((node.id, label.to_owned()));
-            }
-            let ty = |input: bool| {
-                node.ports
-                    .iter()
-                    .find(|port| port.input == input && !port.exec)
-                    .and_then(|port| port.ty.clone())
-            };
-            Some((node.id, crate::conversion_name(&ty(true)?, &ty(false)?)))
+            Some((
+                node.id,
+                crate::palette::converter_card_title(node, &language)?,
+            ))
         })
         .collect()
 }
@@ -417,7 +409,7 @@ pub struct Canvas {
     pub(crate) shortcuts_enabled: bool,
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
     /// The document's variables, as (ID, name), for the pickers on cards.
-    pub(crate) variables: Vec<(String, String, orange_host::VarScope)>,
+    pub(crate) variables: Vec<crate::declarations::VariableChoice>,
     /// Event channels by ID, with their names, for the Unbound badge of a Listen.
     channels: HashMap<String, String>,
     /// The channels (event ID, name) a Dispatch in the graph sends on, for a Listen's
@@ -4198,6 +4190,9 @@ fn field_text(value: &str) -> String {
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
 fn node_port_title(definition: &str, port: &PortView) -> String {
+    if let Some(label) = crate::properties::specialized_port_caption(definition, port) {
+        return label.to_owned();
+    }
     if port.exec
         && !port.input
         && port.id == "then"

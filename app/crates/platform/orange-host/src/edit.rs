@@ -231,6 +231,9 @@ fn new_config(
     if found.definition.id.as_str() == intrinsic::ON_WATCH {
         let _ = config.insert("mode".to_owned(), json!("changed"));
     }
+    if found.definition.id.as_str() == intrinsic::CHANGE_BEYOND_TOLERANCE {
+        let _ = config.insert("threshold".to_owned(), json!(1));
+    }
     // A new timer runs as placed: every second, first tick after one interval, late
     // ticks coalesced (the language's defaults, written out so the card shows them).
     match found.definition.id.as_str() {
@@ -689,9 +692,8 @@ impl Host {
     /// place on the canvas, bound to this host's provider for it, with the default
     /// activation if it is a trigger. Returns the new node's ID. What the node still
     /// needs (a variable to name, a type to choose) shows in the draft's problems.
-    /// The authoring IDs `preset:rising-edge` and `preset:falling-edge` create a
-    /// boolean When trigger with the corresponding transition. `preset:guard`
-    /// creates a Branch.
+    /// Old edge, deadband and counter authoring IDs resolve to their dedicated
+    /// definitions. `preset:guard` creates a Branch.
     pub fn add_node(
         &self,
         draft: &mut Draft,
@@ -1056,21 +1058,13 @@ impl Host {
         at: [f32; 2],
         identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
-        let counter_operation = match definition {
-            "preset:increment" => Some("add"),
-            "preset:decrement" => Some("sub"),
-            _ => None,
-        };
-        let watch_mode = match definition {
-            "preset:rising-edge" => Some("rising"),
-            "preset:falling-edge" => Some("falling"),
-            "preset:deadband" => Some("deadband"),
-            _ => None,
-        };
         let definition = match definition {
+            "preset:increment" => intrinsic::INCREMENT_COUNTER,
+            "preset:decrement" => intrinsic::DECREMENT_COUNTER,
+            "preset:rising-edge" => intrinsic::RISING_EDGE,
+            "preset:falling-edge" => intrinsic::FALLING_EDGE,
+            "preset:deadband" => intrinsic::CHANGE_BEYOND_TOLERANCE,
             "preset:guard" => intrinsic::BRANCH,
-            _ if counter_operation.is_some() => intrinsic::UPDATE_VARIABLE,
-            _ if watch_mode.is_some() => intrinsic::ON_WATCH,
             _ => definition,
         };
         let version = self
@@ -1094,48 +1088,7 @@ impl Host {
             .definition(&definition)
             .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
         let entry = found.kind == NodeKind::Entry;
-        let mut config = new_config(found, registry)?;
-        let mut type_pins = BTreeMap::new();
-        let counter = counter_operation.map(|operation| {
-            let _ = config.insert("operation".to_owned(), json!(operation));
-            let variables = draft.document().variables();
-            let (name, existing) = (1..)
-                .map(|index| if index == 1 { "Counter".to_owned() } else { format!("Counter {index}") })
-                .find_map(|name| {
-                    let existing = variables.values().find(|variable| variable.name == name);
-                    if let Some(variable) = existing
-                        && (variable.scope != VarScope::Run
-                            || !matches!(variable.ty.as_str(), "core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1")
-                            || variable.init.is_none())
-                    {
-                        return None;
-                    }
-                    Some((name, existing))
-                })
-                .ok_or_else(|| refused(&"no counter name is available"))?;
-            if let Some(variable) = existing {
-                let _ = config.insert("variable".to_owned(), json!(variable.id));
-                return Ok::<_, HostError>((None, variable.ty.clone()));
-            }
-            let id = draft.fresh_id("counter-variable");
-            let declaration: orange_model::document::VariableDecl = serde_json::from_value(json!({
-                "id": id, "name": name, "type": "core/i64@1", "scope": "run", "init": {"type": "core/i64@1", "value": "0"}
-            })).map_err(|error| refused(&error))?;
-            let _ = config.insert("variable".to_owned(), json!(declaration.id));
-            let ty = declaration.ty.clone();
-            Ok((Some(declaration), ty))
-        }).transpose()?;
-        if let Some(mode) = watch_mode {
-            let _ = config.insert("mode".to_owned(), json!(mode));
-            if mode == "deadband" {
-                let _ = config.insert("threshold".to_owned(), json!(1));
-            } else {
-                type_pins.insert(
-                    "T".parse().map_err(|error| refused(&error))?,
-                    "core/bool@1".parse().map_err(|error| refused(&error))?,
-                );
-            }
-        }
+        let config = new_config(found, registry)?;
         let mut commands = if definition.id.is_core() {
             vec![DocCommand::AddNode {
                 body: BodyRef::Root,
@@ -1145,7 +1098,7 @@ impl Host {
                     config_version: found.config_version,
                     config,
                     type_args: Default::default(),
-                    type_pins,
+                    type_pins: Default::default(),
                     provider: None::<ProviderBinding>,
                     signature: None,
                     inputs: Default::default(),
@@ -1215,15 +1168,6 @@ impl Host {
             commands.push(DocCommand::SetActivation {
                 node,
                 policy: Some(policy),
-            });
-        }
-        if let Some((declaration, ty)) = counter {
-            if let Some(declaration) = declaration {
-                commands.insert(0, DocCommand::UpsertVariable(declaration));
-            }
-            commands.push(DocCommand::SetLiteral {
-                port: port_ref((node, "value"))?,
-                literal: Some(Literal::value(ty, json!("1"))),
             });
         }
         commands.push(place_command(node, Some(at)));
@@ -1696,6 +1640,15 @@ impl Host {
         definition: &str,
     ) -> Result<NodeView, HostError> {
         let (node, commands) = self.new_node_commands(draft, definition, [0.0, 0.0])?;
+        self.preview_commands(draft, node, commands)
+    }
+
+    pub(crate) fn preview_commands(
+        &self,
+        draft: &Draft,
+        node: NodeId,
+        commands: Vec<DocCommand>,
+    ) -> Result<NodeView, HostError> {
         let mut staged = draft.document().clone();
         let _ = staged.apply(commands).map_err(|error| refused(&error))?;
         self.node_view(&staged, node)

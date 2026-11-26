@@ -1,4 +1,5 @@
 //! Checked root Watch configuration (11 §10.5).
+use super::intrinsic_id as ids;
 use crate::document::NodeInstance;
 use crate::value::{Value, shape::ValueShape};
 use serde_json::{Number, Value as Json};
@@ -86,9 +87,28 @@ pub struct WatchConfig<'a> {
 }
 
 impl<'a> WatchConfig<'a> {
-    /// Reads the settings of a version-1 or version-2 Watch.
+    /// Reads the settings of a general Watch or one of its dedicated forms.
     pub fn from_node(node: &'a NodeInstance) -> Option<Self> {
         let config = &node.config;
+        let specialized = match (node.definition.id.as_str(), node.config_version) {
+            (id @ (ids::RISING_EDGE | ids::FALLING_EDGE), 1) if config.is_empty() => {
+                Some(Test::Edge(id == ids::RISING_EDGE))
+            }
+            (ids::CHANGE_BEYOND_TOLERANCE, 1) if config.len() == 1 => {
+                let threshold = config.get("threshold")?.as_number()?;
+                threshold.as_f64().filter(|value| *value >= 0.0)?;
+                Some(Test::Deadband(threshold))
+            }
+            (ids::ON_WATCH, _) => None,
+            _ => return None,
+        };
+        if let Some(test) = specialized {
+            return Some(Self {
+                test,
+                hold_ns: 0,
+                cooldown_ns: 0,
+            });
+        }
         let mode = config.get("mode")?.as_str()?;
         let change = match (node.config_version, mode) {
             (1 | 2, "changed") => Some(Test::Changed),

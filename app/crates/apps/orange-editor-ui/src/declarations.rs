@@ -29,9 +29,31 @@ pub(crate) fn payload_name(ty: &str) -> String {
 pub(crate) fn variable_scope_allowed(definition: &str, scope: VarScope) -> bool {
     match definition {
         intrinsic::SET_SHARED | intrinsic::UPDATE_SHARED => scope == VarScope::Workspace,
-        intrinsic::SET_VARIABLE | intrinsic::UPDATE_VARIABLE => scope != VarScope::Workspace,
+        intrinsic::SET_VARIABLE
+        | intrinsic::UPDATE_VARIABLE
+        | intrinsic::INCREMENT_COUNTER
+        | intrinsic::DECREMENT_COUNTER => scope != VarScope::Workspace,
         intrinsic::ON_VARIABLE_CHANGED => scope == VarScope::Run,
         _ => true,
+    }
+}
+
+pub(crate) fn variable_type_allowed(definition: &str, ty: &str) -> bool {
+    intrinsic::counter_operation(definition).is_none() || intrinsic::is_counter_type(ty)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VariableChoice {
+    pub id: String,
+    pub label: String,
+    pub scope: VarScope,
+    pub ty: String,
+}
+
+impl VariableChoice {
+    pub fn fits(&self, definition: &str) -> bool {
+        variable_scope_allowed(definition, self.scope)
+            && variable_type_allowed(definition, &self.ty)
     }
 }
 
@@ -589,7 +611,9 @@ impl Editor {
             .iter()
             .find(|view| view.id == node)?
             .definition;
-        if !variable_scope_allowed(definition, variable.scope) {
+        if !variable_scope_allowed(definition, variable.scope)
+            || !variable_type_allowed(definition, &variable.ty)
+        {
             return None;
         }
         let id = self.declare_variable(host, variable)?;
@@ -651,6 +675,10 @@ impl Editor {
     }
 
     pub(crate) fn new_variable_for_node(&mut self, node: NodeId, pointer: &str) {
+        let counter = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+            .is_some_and(|view| intrinsic::counter_operation(&view.definition).is_some());
         let scope = self
             .graph()
             .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
@@ -660,6 +688,10 @@ impl Editor {
         self.tab = Tab::Variables;
         self.forms.reveal_variable(Some((node, pointer.to_owned())));
         self.forms.variable.scope = scope;
+        if counter {
+            self.forms.variable.ty = "core/i64@1".to_owned();
+            self.forms.variable.initial = "0".to_owned();
+        }
     }
 
     pub(crate) fn new_event_for_node(&mut self, target: NodeId) {
@@ -1237,10 +1269,20 @@ impl Editor {
                         .selected_text(type_name(&form.ty))
                         .show_select(ui, Surface::Panel, |ui| {
                             for ty in COMMON_TYPES {
+                                if target_definition.as_deref().is_some_and(|definition| {
+                                    !variable_type_allowed(definition, ty)
+                                }) {
+                                    continue;
+                                }
                                 let _ =
                                     ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
                             }
                             for (local, name) in types_tab::choices() {
+                                if target_definition.as_deref().is_some_and(|definition| {
+                                    !variable_type_allowed(definition, &local)
+                                }) {
+                                    continue;
+                                }
                                 let _ = ui.selectable_value(&mut form.ty, local, name);
                             }
                         });

@@ -8,17 +8,21 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 
 ## Finding nodes and connecting distant sections
 
-The picker groups built-in nodes by task: Flow & triggers, Data & text, Math &
-logic, Files & network, Audio, and Utilities. Sections within those groups keep
-related nodes together, such as Loops, JSON, HTTP Request, and Audio routing.
+The picker groups built-in nodes by task, including Triggers & signals, Control
+flow, Loops, Variables, JSON, Files and Network. Sections within those groups
+keep closely related nodes together, such as Wireless links and HTTP Request.
 Search matches group and section names alongside node labels and aliases. Hover
 a heading for its purpose. Nodes opens by default and the application remembers
 the last sidebar tab chosen explicitly.
 
-Guard searches find Branch. Configured shortcuts group When modes and counter
-updates outside the main node families. The Templates group shows card counts
-before inserting loop pairs or Idle Watchdog as editable cards. Loop parts
-lists standalone ends separately. Use Make Function for a named reusable call.
+Guard searches find Branch. Rising Edge and Falling Edge each have a Boolean
+input and a trigger output. When Value Changes Enough shows its tolerance on
+the card and outputs the triggering sample. Increment Counter and Decrement
+Counter live under Variables. Select the whole-number variable on the card,
+leave Step at 1 or wire another step, and read the updated value from the output.
+Loops includes paired loop placement and
+standalone ends under Loop parts. Idle Watchdog is a starter graph. Use Make
+Function for a named reusable call.
 
 Value or Fallback (Coalesce) takes an optional value and uses its If missing input
 only when the option is absent. For example, connect an optional display name and
@@ -191,15 +195,15 @@ Click either connector, then click the opposite endpoint to wire without draggin
   disconnects the old collection input. Undo restores the mode, values, and wires
   together.
   The iteration limit is in Properties under Advanced.
-  Placing Repeat with State, Map, Filter or Reduce from the palette creates
+  Placing Repeat with State, Map, Filter or Reduce from the Loops group creates
   both loop boundaries and a passthrough wire in one undoable edit.
   Replace that wire with the body you want to run for each item or step.
   Duplicating the pair creates an independent loop with the copied wiring.
 * **Triggers.** A trigger shows its contents: On manual has a Fire button in the body
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
-  Rising Edge and Falling Edge in the palette and canvas search place a When
-  trigger with the corresponding transition and a boolean input.
+  Rising Edge and Falling Edge fire on false-to-true and true-to-false
+  transitions, respectively. The initial input establishes their state.
   Guard places a Branch with a boolean condition. Wire its True output to
   continue when the condition passes.
   A new On timer fires every second, first after one interval, and a new On timeout
@@ -445,6 +449,17 @@ The palette uses the shared search field with a clear action and compact categor
 rows with disclosure chevrons. Node search settings use a segmented control with
 Names only on the left and Node cards on the right.
 
+* The Nodes tab groups related nodes by task, including Control flow, Triggers &
+  signals, Variables, Text, JSON, Collections, Files and Network. The Conversions
+  tab groups explicit converters by input type and lists each selectable policy.
+  In the browse tree, Dispatch precedes Listen and Bridge Out precedes Bridge In.
+  Canvas quick add still includes converters, with compatible choices on value
+  wires. Converter previews use the selected contract's input and output ports,
+  including a loss output where declared. The placed card uses the same conversion
+  title and policy labels. Conversion names read as source type to destination
+  type, with encoding or policy details where needed. JSON value extraction
+  includes Optional in the destination name because it can return no value.
+
 * One search for the palette, the wire-drop list and the quick-add box. It matches
   names, aliases, categories, concepts, descriptions and common configuration captions in the
   active language and in the bundled search languages. Concepts group nodes by purpose: *trigger / when /
@@ -472,7 +487,8 @@ Names only on the left and Node cards on the right.
 * **Wires from inputs.** A wire can also be dragged back from an input. Let go on an
   output of the same sort, it connects there. Let go on empty canvas, the search lists
   the kinds with an output that feeds the input (`Host::givers`, same matching), with
-  triggers for a step input, and wires the choice's output into it.
+  triggers for a step input and converters that produce the value input's type. The
+  selected node's output is wired into the input.
 * **One action, one undo.** Choosing from a dropped wire, from either end, or a
   conversion for it, places the node and wires it as one edit (`Host::grouped`), like
   Insert node…: one undo takes both back. A choice

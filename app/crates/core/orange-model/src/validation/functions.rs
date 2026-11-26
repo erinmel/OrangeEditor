@@ -547,12 +547,11 @@ fn core_variable_write(
     let variable = super::variables::variable_reference(registry, node)?;
     let operation = match access {
         VariableAccess::Write | VariableAccess::WriteShared => WriteOperation::Set,
-        VariableAccess::Update | VariableAccess::UpdateShared => node
-            .config
-            .get("operation")
-            .and_then(Value::as_str)
-            .and_then(WriteOperation::parse_update)
-            .ok_or(DiagnosticCode::UpdateOperation)?,
+        VariableAccess::Update | VariableAccess::UpdateShared => {
+            crate::variable::update_token(node)
+                .and_then(WriteOperation::parse_update)
+                .ok_or(DiagnosticCode::UpdateOperation)?
+        }
         VariableAccess::Read | VariableAccess::Changed => {
             return Err(DiagnosticCode::FunctionMetadataUnavailable);
         }
@@ -624,6 +623,9 @@ const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
     ids::ON_TIMEOUT,
     ids::ON_VARIABLE_CHANGED,
     "core/on-watch",
+    ids::RISING_EDGE,
+    ids::FALLING_EDGE,
+    ids::CHANGE_BEYOND_TOLERANCE,
 ];
 
 fn emit_at(

@@ -197,8 +197,7 @@ Schema field keys and string choices match alongside common translated configura
 captions, shared with Properties through `setting-<field>` and `setting-choice-<value>`.
 Catalogue entries and captions are prepared once per active locale and registry
 generation. A changed catalogue invalidates the prepared search data and open
-picker results. The palette also recognizes the displayed labels of templates,
-including their card counts. Search tries the whole channel name query before
+picker results. Search tries the whole channel name query before
 removing subscriber intent words.
 Settings and shortcut searches use the same tolerant matching against their captions.
 Queries are compared as literal text against local search data. Search fields cap

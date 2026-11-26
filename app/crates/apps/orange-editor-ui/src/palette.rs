@@ -32,7 +32,10 @@ pub(crate) fn result_row(
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
     let response = response.on_hover_ui(|ui| {
         ui.set_max_width(280.0);
-        ui.label(if detail.is_empty() { name } else { detail });
+        ui.strong(name);
+        if !detail.is_empty() {
+            ui.label(detail);
+        }
     });
     response.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -331,6 +334,7 @@ impl PaletteCache {
 #[derive(Debug, Default)]
 pub(crate) struct PreviewCache {
     generation: Option<u64>,
+    conversions: Option<HashMap<String, orange_host::Conversion>>,
     templates: HashMap<String, Option<NodeView>>,
     cards: HashMap<String, Option<NodeView>>,
 }
@@ -339,14 +343,14 @@ impl PreviewCache {
     pub fn invalidate(&mut self) {
         self.cards.clear();
         self.templates.clear();
+        self.conversions = None;
         self.generation = None;
     }
 
     /// Forgets every card once the registry has changed.
     fn follow(&mut self, host: &Host) {
         if self.generation != Some(host.registry().generation()) {
-            self.cards.clear();
-            self.templates.clear();
+            self.invalidate();
             self.generation = Some(host.registry().generation());
         }
     }
@@ -365,12 +369,25 @@ impl PreviewCache {
         };
         if !cards.contains_key(definition) {
             let configured = (|| {
-                if let Some(draft) = draft {
-                    host.placement_preview(draft, definition).ok()
+                let empty;
+                let draft = if let Some(draft) = draft {
+                    draft
                 } else {
                     let text = orange_host::new_document().ok()?;
-                    let draft = host.draft(&text).ok()?;
-                    host.placement_preview(&draft, definition).ok()
+                    empty = host.draft(&text).ok()?;
+                    &empty
+                };
+                if definition.starts_with(CONVERSION) {
+                    let conversions = self.conversions.get_or_insert_with(|| {
+                        host.conversions()
+                            .into_iter()
+                            .map(|conversion| (conversion_id(&conversion), conversion))
+                            .collect()
+                    });
+                    host.conversion_preview(draft, conversions.get(definition)?)
+                        .ok()
+                } else {
+                    host.placement_preview(draft, definition).ok()
                 }
             })();
             let card = match configured {
@@ -416,7 +433,7 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
             found.purpose
         };
         let item = PaletteItem {
-            label: placement_label(&found.definition, found.label, language),
+            label: found.label,
             id: found.definition,
             package: found.package,
             purpose,
@@ -426,18 +443,11 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
             None => groups.push((category, vec![item])),
         }
     }
-    let converts = conversion_items(host, search, language, None);
-    if !converts.is_empty() {
-        let category = DATA.name(language);
-        if let Some((_, items)) = groups.iter_mut().find(|(name, _)| *name == category) {
-            items.extend(converts);
-        } else {
-            groups.push((category, converts));
-        }
-    }
     if search.trim().is_empty() {
         groups.sort_by(|a, b| {
-            catalog_group_rank(&a.0, language).cmp(&catalog_group_rank(&b.0, language))
+            catalog_group_rank(&a.1[0].id)
+                .cmp(&catalog_group_rank(&b.1[0].id))
+                .then_with(|| a.0.cmp(&b.0))
         });
         for (_, items) in &mut groups {
             items.sort_by_key(|item| {
@@ -447,11 +457,52 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
                     "audio-playback" => 1,
                     "audio-effects" => 2,
                     "audio-analyze" => 3,
+                    "catalog-loop-ends" => 4,
                     _ => 0,
                 };
-                (order, section)
+                (order, section, browse_order(&item.id))
             });
         }
+    }
+    groups.extend(conversion_groups(host, search, language));
+    groups
+}
+
+fn browse_order(id: &str) -> u8 {
+    match id {
+        intrinsic::ON_EVENT => 1,
+        intrinsic::BRIDGE_OUT => 2,
+        intrinsic::BRIDGE_IN => 3,
+        _ => 0,
+    }
+}
+
+fn conversion_groups(host: &Host, search: &str, language: &str) -> Vec<(String, Vec<PaletteItem>)> {
+    let conversions = host.conversions();
+    let mut groups: Vec<(&str, Vec<PaletteItem>)> = Vec::new();
+    for (conversion, item) in ranked_conversions(conversions.iter(), search, language) {
+        let source = conversion.from.as_str();
+        match groups.iter_mut().find(|(ty, _)| *ty == source) {
+            Some((_, items)) => items.push(item),
+            None => groups.push((source, vec![item])),
+        }
+    }
+    let mut groups: Vec<_> = groups
+        .into_iter()
+        .map(|(source, items)| {
+            let name = conversion_type_name(source, language);
+            let title = crate::i18n::catalogs()
+                .format(
+                    language,
+                    "conversion-from-type",
+                    &[("type", name.as_str().into())],
+                )
+                .map_or(name, std::borrow::Cow::into_owned);
+            (title, items)
+        })
+        .collect();
+    if search.trim().is_empty() {
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
     }
     groups
 }
@@ -461,12 +512,13 @@ pub(crate) fn conversion_items(
     search: &str,
     language: &str,
     from: Option<&str>,
+    to: Option<&str>,
 ) -> Vec<PaletteItem> {
     let conversions = host.conversions();
     matching_conversions(
-        conversions
-            .iter()
-            .filter(|conversion| from.is_none_or(|ty| conversion.from == ty)),
+        conversions.iter().filter(|conversion| {
+            from.is_none_or(|ty| conversion.from == ty) && to.is_none_or(|ty| conversion.to == ty)
+        }),
         search,
         language,
     )
@@ -477,30 +529,59 @@ pub(crate) fn matching_conversions<'a>(
     search: &str,
     language: &str,
 ) -> Vec<PaletteItem> {
+    ranked_conversions(conversions, search, language)
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect()
+}
+
+fn ranked_conversions<'a>(
+    conversions: impl Iterator<Item = &'a orange_host::Conversion>,
+    search: &str,
+    language: &str,
+) -> Vec<(&'a orange_host::Conversion, PaletteItem)> {
     let wanted = orange_host::SearchQuery::new(search);
     if !wanted.is_valid() {
         return Vec::new();
     }
     if wanted.is_empty() {
         return conversions
-            .map(|conversion| conversion_item(conversion, language))
+            .map(|conversion| (conversion, conversion_item(conversion, language)))
             .collect();
     }
+    let keywords = text_in(language, "conversion-search-words", "");
+    let other_keywords =
+        orange_host::SEARCH_LANGUAGES.map(|tag| text_in(tag, "conversion-search-words", ""));
+    let legacy_utf8 = [
+        "conversion-utf8-decode-search",
+        "conversion-utf8-replace-search",
+    ]
+    .map(|key| {
+        (
+            text_in(language, key, ""),
+            orange_host::SEARCH_LANGUAGES.map(|tag| text_in(tag, key, "")),
+        )
+    });
     let mut found: Vec<_> = conversions
         .filter_map(|conversion| {
             let item = conversion_item(conversion, language);
-            let keywords = text_in(language, "conversion-search-words", "");
             let aliases = conversion_words(&item.id);
+            let legacy = match conversion.id() {
+                "core/bytes-to-string" => Some(&legacy_utf8[0]),
+                "core/bytes-to-string-lossy" => Some(&legacy_utf8[1]),
+                _ => None,
+            };
             let active = [
                 item.label.as_str(),
                 item.purpose.as_str(),
                 keywords.as_str(),
+                legacy.map_or("", |(active, _)| active.as_str()),
             ];
-            let local = wanted.relevance(active).map(|rank| (rank, false));
+            let local = wanted
+                .relevance(active)
+                .map(|rank| orange_host::SearchRank::new(rank, false));
             let other_labels =
                 orange_host::SEARCH_LANGUAGES.map(|tag| conversion_label_in(conversion, tag));
-            let other_keywords = orange_host::SEARCH_LANGUAGES
-                .map(|tag| text_in(tag, "conversion-search-words", ""));
             let fallback = wanted
                 .relevance(
                     active
@@ -511,15 +592,25 @@ pub(crate) fn matching_conversions<'a>(
                                 .chain(&other_keywords)
                                 .map(String::as_str),
                         )
+                        .chain(
+                            legacy
+                                .map(|(_, fallback)| fallback)
+                                .into_iter()
+                                .flatten()
+                                .map(String::as_str),
+                        )
                         .chain([aliases.as_str()]),
                 )
-                .map(|rank| (rank, true));
+                .map(|rank| orange_host::SearchRank::new(rank, true));
             let rank = local.into_iter().chain(fallback).min()?;
-            Some((rank, item))
+            Some((rank, conversion, item))
         })
         .collect();
-    found.sort_by_key(|(rank, _)| *rank);
-    found.into_iter().map(|(_, item)| item).collect()
+    found.sort_by_key(|(rank, _, _)| *rank);
+    found
+        .into_iter()
+        .map(|(_, conversion, item)| (conversion, item))
+        .collect()
 }
 
 pub(crate) const BRIDGE_OUT: &str = intrinsic::BRIDGE_OUT;
@@ -562,6 +653,13 @@ fn audio_section(definition: &str) -> Option<(&'static str, &'static str)> {
 
 pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
     use crate::icons;
+    if definition == intrinsic::CONVERT || definition.starts_with(CONVERSION) {
+        return (
+            icons::REFRESH,
+            egui::Color32::from_rgb(74, 152, 165),
+            "catalog-conversions-help",
+        );
+    }
     let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
     let (glyph, rgb, description) = match (namespace, name) {
         ("core", "emit" | "on-event") | ("preset:signal" | "preset:watchdog", _) => {
@@ -581,7 +679,7 @@ pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
         ("core", name) if name.contains("variable") || name.contains("shared") => {
             (icons::VARIABLE, [60, 156, 112], "node-family-state")
         }
-        ("preset:increment" | "preset:decrement", _) => {
+        ("core", "increment-counter" | "decrement-counter") => {
             (icons::VARIABLE, [60, 156, 112], "node-family-state")
         }
         ("core", "number" | "whole-number") | ("org.orange.math", _) => {
@@ -590,7 +688,7 @@ pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
         ("core", "text") | ("org.orange.text", _) => {
             (icons::TEXT, [183, 110, 174], "node-family-text")
         }
-        ("core", "wait") | ("org.orange.time" | "org.orange.clock", _) => {
+        ("core", "wait" | "now") | ("org.orange.time" | "org.orange.clock", _) => {
             (icons::CLOCK, [74, 152, 165], "node-family-time")
         }
         ("org.orange.audio", _) => (icons::AUDIO, [151, 119, 213], "node-family-audio"),
@@ -651,80 +749,30 @@ impl CatalogGroup {
     }
 }
 
-const TEMPLATES: CatalogGroup = CatalogGroup {
-    key: "catalog-templates",
-    fallback: "Templates",
-    representative: intrinsic::ON_EVENT,
-    help: "catalog-templates-help",
-};
-const SHORTCUTS: CatalogGroup = CatalogGroup {
-    key: "catalog-shortcuts",
-    fallback: "Configured shortcuts",
-    representative: intrinsic::ON_WATCH,
-    help: "catalog-shortcuts-help",
-};
-const LOOP_ENDS: CatalogGroup = CatalogGroup {
-    key: "catalog-loop-ends",
-    fallback: "Loop parts",
+const LOOPS: CatalogGroup = CatalogGroup {
+    key: "palette-loops",
+    fallback: "Loops",
     representative: intrinsic::REPEAT_END,
-    help: "catalog-loop-ends-help",
+    help: "node-family-loops",
 };
-
-fn template_card_count(definition: &str) -> Option<u32> {
-    Some(match definition {
-        "preset:watchdog" => 3,
-        intrinsic::REPEAT_BEGIN
-        | intrinsic::MAP_BEGIN
-        | intrinsic::FILTER_BEGIN
-        | intrinsic::FOLD_BEGIN => 2,
-        _ => return None,
-    })
-}
-
-pub(crate) fn placement_label(definition: &str, label: String, language: &str) -> String {
-    let Some(count) = template_card_count(definition) else {
-        return label;
-    };
-    crate::i18n::catalogs()
-        .format(
-            language,
-            "palette-template-label",
-            &[("name", label.as_str().into()), ("count", count.into())],
-        )
-        .map(std::borrow::Cow::into_owned)
-        .unwrap_or(label)
-}
-
-fn template_match(query: &orange_host::SearchQuery, id: &str, label: &str, language: &str) -> bool {
-    template_card_count(id).is_some()
-        && !query.is_empty()
-        && query.relevance([placement_label(id, label.to_owned(), language).as_str()])
-            == Some(orange_host::Match::Exact)
-}
+const VARIABLES: CatalogGroup = CatalogGroup {
+    key: "variables",
+    fallback: "Variables",
+    representative: intrinsic::GET_VARIABLE,
+    help: "node-family-state",
+};
 
 const FLOW: CatalogGroup = CatalogGroup {
-    key: "catalog-flow",
-    fallback: "Flow & triggers",
+    key: "catalog-control",
+    fallback: "Control flow",
     representative: intrinsic::BRANCH,
     help: "catalog-flow-help",
-};
-const DATA: CatalogGroup = CatalogGroup {
-    key: "catalog-data",
-    fallback: "Data & text",
-    representative: "org.orange.json/get",
-    help: "catalog-data-help",
 };
 const CALCULATE: CatalogGroup = CatalogGroup {
     key: "catalog-math",
     fallback: "Math & logic",
     representative: "org.orange.math/add",
     help: "catalog-math-help",
-};
-const SERVICES: CatalogGroup = CatalogGroup {
-    key: "catalog-services",
-    fallback: "Files & network",
-    representative: "org.orange.net/http-request",
-    help: "catalog-services-help",
 };
 const AUDIO: CatalogGroup = CatalogGroup {
     key: "palette-audio",
@@ -739,50 +787,115 @@ const TOOLS: CatalogGroup = CatalogGroup {
     help: "catalog-tools-help",
 };
 
-fn catalog_group_rank(category: &str, language: &str) -> usize {
-    for (rank, group) in [
-        FLOW, DATA, CALCULATE, SERVICES, AUDIO, TOOLS, TEMPLATES, SHORTCUTS, LOOP_ENDS,
-    ]
-    .iter()
-    .enumerate()
-    {
-        if category == group.name(language) || category == group.fallback {
-            return rank;
-        }
+fn catalog_group_rank(definition: &str) -> usize {
+    match catalog_group(definition).map(|group| group.key) {
+        Some("catalog-triggers") => 0,
+        Some("catalog-control") => 1,
+        Some("palette-loops") => 2,
+        _ => 3,
     }
-    6
+}
+
+const TRIGGERS: CatalogGroup = CatalogGroup {
+    key: "catalog-triggers",
+    fallback: "Triggers & signals",
+    representative: intrinsic::ON_EVENT,
+    help: "node-family-events",
+};
+
+fn domain_group(
+    key: &'static str,
+    fallback: &'static str,
+    representative: &'static str,
+    help: &'static str,
+) -> CatalogGroup {
+    CatalogGroup {
+        key,
+        fallback,
+        representative,
+        help,
+    }
 }
 
 fn catalog_group(definition: &str) -> Option<CatalogGroup> {
-    if definition.starts_with(CONVERSION) {
-        return Some(DATA);
-    }
     let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
     Some(match (namespace, name) {
         ("org.orange.audio", _) => AUDIO,
-        ("org.orange.input", "on-key-pressed") => FLOW,
-        ("org.orange.files" | "org.orange.net", _) => SERVICES,
+        ("org.orange.input", "on-key-pressed") => TRIGGERS,
+        ("org.orange.input", _) => domain_group(
+            "catalog-input",
+            "Input",
+            "org.orange.input/on-key-pressed",
+            "catalog-tools-help",
+        ),
+        ("org.orange.files", _) => domain_group(
+            "catalog-files",
+            "Files",
+            "org.orange.files/read-text",
+            "node-family-files",
+        ),
+        ("org.orange.net", _) => domain_group(
+            "catalog-network",
+            "Network",
+            "org.orange.net/http-request",
+            "node-family-network",
+        ),
         ("org.orange.math", _) => CALCULATE,
-        (
-            "org.orange.json" | "org.orange.collections" | "org.orange.text" | "org.orange.color",
-            _,
-        ) => DATA,
-        ("org.orange.input" | "org.orange.time" | "org.orange.clock" | "org.orange.logging", _) => {
-            TOOLS
+        ("org.orange.json", _) => domain_group(
+            "catalog-json",
+            "JSON",
+            "org.orange.json/get",
+            "node-family-data",
+        ),
+        ("org.orange.collections", _) => domain_group(
+            "catalog-collections",
+            "Collections",
+            "org.orange.collections/make-enum",
+            "node-family-data",
+        ),
+        ("org.orange.text", _) => domain_group(
+            "catalog-text",
+            "Text",
+            "org.orange.text/concat",
+            "node-family-text",
+        ),
+        ("org.orange.color", _) => domain_group(
+            "catalog-color",
+            "Color",
+            "org.orange.color/rgba",
+            "catalog-data-help",
+        ),
+        ("org.orange.time" | "org.orange.clock", _) | ("core", "wait" | "now") => {
+            domain_group("catalog-time", "Time", intrinsic::WAIT, "node-family-time")
         }
-        ("core", "number" | "whole-number" | "bool" | "text" | "value" | "true-or-false") => DATA,
-        ("core", name) if name.contains("variable") || name.contains("shared") => DATA,
-        ("core", "repeat-begin" | "map-begin" | "filter-begin" | "fold-begin")
-        | ("preset:watchdog", _) => TEMPLATES,
-        ("core", "repeat-end" | "map-end" | "filter-end" | "fold-end") => LOOP_ENDS,
-        (
-            "preset:increment"
-            | "preset:decrement"
-            | "preset:rising-edge"
-            | "preset:falling-edge"
-            | "preset:deadband",
-            _,
-        ) => SHORTCUTS,
+        ("org.orange.logging", _) => domain_group(
+            "catalog-logging",
+            "Logging",
+            "org.orange.logging/log-message",
+            "node-family-log",
+        ),
+        ("core", "number" | "whole-number" | "bool" | "text" | "value" | "true-or-false") => {
+            domain_group(
+                "catalog-values",
+                "Values",
+                intrinsic::WHOLE_NUMBER,
+                "node-family-data",
+            )
+        }
+        ("core", name) if name.contains("variable") || name.contains("shared") => VARIABLES,
+        ("core", "increment-counter" | "decrement-counter") => VARIABLES,
+        ("core", "call" | "return" | "function-entry" | "function-outputs") => domain_group(
+            "catalog-functions",
+            "Functions",
+            intrinsic::CALL,
+            "node-family-functions",
+        ),
+        ("core", name) if name.starts_with("on-") => TRIGGERS,
+        ("core", "emit" | "await-event" | "bridge-in" | "bridge-out") | ("preset:signal", _) => {
+            TRIGGERS
+        }
+        ("core", name) if loop_name(name) => LOOPS,
+        ("core", "rising-edge" | "falling-edge" | "change-beyond-tolerance") => TRIGGERS,
         ("core", "and" | "or" | "all-conditions" | "any-conditions") => CALCULATE,
         ("core", "register" | "close-handle" | "close-stream" | "next-item") => TOOLS,
         ("core", _) => FLOW,
@@ -793,14 +906,27 @@ fn catalog_group(definition: &str) -> Option<CatalogGroup> {
 
 pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'static str)> {
     if definition.starts_with(CONVERSION) {
-        return Some(("conversions", "catalog-conversions-help"));
+        return None;
     }
     if let Some(section) = audio_section(definition) {
         return Some(section);
     }
+    match definition {
+        intrinsic::EMIT | intrinsic::ON_EVENT | intrinsic::BRIDGE_OUT | intrinsic::BRIDGE_IN => {
+            return Some(("catalog-wireless", "catalog-wireless-help"));
+        }
+        intrinsic::REPEAT_END
+        | intrinsic::MAP_END
+        | intrinsic::FILTER_END
+        | intrinsic::FOLD_END => {
+            return Some(("catalog-loop-ends", "catalog-loop-ends-help"));
+        }
+        _ => {}
+    }
     if let Some((key, _, _)) = family(definition) {
         match key {
             "palette-http" => return Some((key, "node-family-network")),
+            "palette-json-convert" => return Some((key, "node-family-data")),
             "palette-compare" => return Some((key, "node-family-math")),
             "palette-loops" => return Some((key, "node-family-loops")),
             "palette-advanced" => return Some((key, "palette-advanced-help")),
@@ -825,7 +951,6 @@ pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'stati
         }
         (
             "preset:signal"
-            | "preset:watchdog"
             | "preset:wireless-value"
             | "preset:wireless-pulse"
             | "preset:rising-edge"
@@ -839,11 +964,12 @@ pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'stati
         ("core", name) if name.contains("variable") || name.contains("shared") => {
             ("variables", "node-family-state")
         }
-        ("preset:increment" | "preset:decrement", _) => ("variables", "node-family-state"),
         ("core", _) | ("preset:guard", _) => match catalog_group(definition)?.key {
-            "catalog-data" => ("catalog-values", "node-family-data"),
             "catalog-math" => ("catalog-logic", "node-family-math"),
-            _ => ("catalog-control", "node-family-flow"),
+            _ => {
+                let group = catalog_group(definition)?;
+                (group.key, group.help)
+            }
         },
         _ => return None,
     })
@@ -943,184 +1069,41 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
         return Vec::new();
     }
     let mut nodes = host.ranked_search_nodes(search, language);
-    if !query.is_empty() {
-        for mut found in host.search_nodes("", language) {
-            let template = template_match(&query, &found.definition, &found.label, language);
-            if let Some((current, rank)) = nodes
-                .iter_mut()
-                .find(|(node, _)| node.definition == found.definition)
-            {
-                if template {
-                    current.matched = Some(orange_host::Match::Exact);
-                    *rank = Some(orange_host::SearchRank::new(
-                        orange_host::Match::Exact,
-                        false,
-                    ));
-                }
-                continue;
-            }
-            if template {
-                found.matched = Some(orange_host::Match::Exact);
-                nodes.push((
-                    found,
-                    Some(orange_host::SearchRank::new(
-                        orange_host::Match::Exact,
-                        false,
-                    )),
-                ));
-                continue;
-            }
-            let alias = family(&found.definition).and_then(|(key, label, words)| {
-                let caption = text_in(language, key, label);
-                query.relevance([words, caption.as_str()])
-            });
-            let catalog = catalog_group(&found.definition).and_then(|group| {
-                let section = catalog_section(&found.definition)
-                    .map_or_else(String::new, |(key, _)| {
-                        format!("{} {}", text_in(language, key, ""), text_in("en", key, ""))
-                    });
-                let localized = group.name(language);
-                query.relevance([
-                    localized.as_str(),
-                    group.fallback,
-                    found.label.as_str(),
-                    section.as_str(),
-                ])
-            });
-            let preset = PRESETS
-                .iter()
-                .filter(|&&(parent, ..)| parent == found.definition)
-                .filter_map(|&(_, id, key, label, _)| {
-                    preset_match(&query, language, id, key, label)
-                })
-                .map(orange_host::SearchRank::kind)
-                .min();
-            if let Some(rank) = [alias, catalog, preset].into_iter().flatten().min() {
-                let kind = rank.max(orange_host::Match::Concept);
-                found.matched = Some(kind);
-                nodes.push((found, Some(orange_host::SearchRank::new(kind, false))));
-            }
+    if query.is_empty() {
+        return nodes.into_iter().map(|(node, _)| node).collect();
+    }
+    for mut found in host.search_nodes("", language) {
+        if nodes
+            .iter()
+            .any(|(node, _)| node.definition == found.definition)
+        {
+            continue;
+        }
+        let alias = family(&found.definition).and_then(|(key, label, words)| {
+            let caption = text_in(language, key, label);
+            query.relevance([words, caption.as_str()])
+        });
+        let catalog = catalog_group(&found.definition).and_then(|group| {
+            let section = catalog_section(&found.definition)
+                .map_or_else(String::new, |(key, _)| {
+                    format!("{} {}", text_in(language, key, ""), text_in("en", key, ""))
+                });
+            let localized = group.name(language);
+            query.relevance([
+                localized.as_str(),
+                group.fallback,
+                found.label.as_str(),
+                section.as_str(),
+            ])
+        });
+        if let Some(rank) = [alias, catalog].into_iter().flatten().min() {
+            let kind = rank.max(orange_host::Match::Concept);
+            found.matched = Some(kind);
+            nodes.push((found, Some(orange_host::SearchRank::new(kind, false))));
         }
     }
-    search_with_presets(nodes, search, language)
-}
-
-const PRESETS: [(&str, &str, &str, &str, &str); 6] = [
-    (
-        intrinsic::ON_WATCH,
-        "preset:rising-edge",
-        "rising-edge",
-        "Rising Edge",
-        "Fires when a boolean becomes true.",
-    ),
-    (
-        intrinsic::ON_WATCH,
-        "preset:falling-edge",
-        "falling-edge",
-        "Falling Edge",
-        "Fires when a boolean becomes false.",
-    ),
-    (
-        intrinsic::ON_WATCH,
-        "preset:deadband",
-        "when-deadband",
-        "Deadband",
-        "Fires when a numeric value moves beyond a tolerance.",
-    ),
-    (
-        intrinsic::UPDATE_VARIABLE,
-        "preset:increment",
-        "counter-increment",
-        "Increment",
-        "Add a step to a counter.",
-    ),
-    (
-        intrinsic::UPDATE_VARIABLE,
-        "preset:decrement",
-        "counter-decrement",
-        "Decrement",
-        "Subtract a step from a counter.",
-    ),
-    (
-        intrinsic::ON_EVENT,
-        "preset:watchdog",
-        "watchdog-preset",
-        "Idle Watchdog",
-        "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
-    ),
-];
-
-fn preset_match(
-    query: &orange_host::SearchQuery,
-    language: &str,
-    id: &str,
-    key: &str,
-    label: &str,
-) -> Option<orange_host::SearchRank> {
-    let aliases = match key {
-        "when-deadband" => "change tolerance",
-        "watchdog-preset" => "heartbeat timeout",
-        "counter-increment" => "bump+,bump +,count up",
-        "counter-decrement" => "bump-,bump -,count down",
-        _ => "",
-    };
-    let localized = text_in(language, key, label);
-    if template_match(query, id, &localized, language) {
-        return Some(orange_host::SearchRank::new(
-            orange_host::Match::Exact,
-            false,
-        ));
-    }
-    let captions = orange_host::SEARCH_LANGUAGES.map(|tag| text_in(tag, key, label));
-    let active = crate::i18n::catalogs()
-        .localized_message(language, key)
-        .and_then(|caption| query.relevance([caption.as_ref()]))
-        .map(|rank| orange_host::SearchRank::new(rank, false));
-    let fallback = query
-        .relevance(
-            [label, localized.as_str()]
-                .into_iter()
-                .chain(captions.iter().map(String::as_str))
-                .chain(aliases.split(',')),
-        )
-        .map(|rank| orange_host::SearchRank::new(rank, true));
-    active.into_iter().chain(fallback).min()
-}
-
-fn search_with_presets(
-    results: Vec<(orange_host::Found, Option<orange_host::SearchRank>)>,
-    search: &str,
-    language: &str,
-) -> Vec<orange_host::Found> {
-    let query = orange_host::SearchQuery::new(search);
-    let mut choices = Vec::with_capacity(results.len());
-    for (base, base_rank) in results {
-        choices.extend(
-            PRESETS
-                .iter()
-                .copied()
-                .filter(|(parent, ..)| *parent == base.definition)
-                .filter_map(|(_, id, key, fallback, purpose)| {
-                    let label = text_in(language, key, fallback);
-                    let purpose = text_in(language, &format!("{key}-help"), purpose);
-                    let rank = preset_match(&query, language, id, key, fallback)?;
-                    let found = orange_host::Found {
-                        definition: id.to_owned(),
-                        label,
-                        package: base.package.clone(),
-                        category: base.category.clone(),
-                        purpose,
-                        matched: (!query.is_empty()).then_some(rank.kind()),
-                    };
-                    Some((found, (!query.is_empty()).then_some(rank)))
-                }),
-        );
-        choices.push((base, base_rank));
-    }
-    if !query.is_empty() {
-        choices.sort_by_key(|(_, rank)| *rank);
-    }
-    choices.into_iter().map(|(item, _)| item).collect()
+    nodes.sort_by_key(|(_, rank)| *rank);
+    nodes.into_iter().map(|(found, _)| found).collect()
 }
 
 /// Other words for the two types a conversion ID names, so "whole number text" finds
@@ -1132,7 +1115,10 @@ fn conversion_words(id: &str) -> String {
         .next()
         .unwrap_or_default();
     let mut words = String::new();
-    if utf8_label(converter).is_some() {
+    if matches!(
+        converter,
+        "core/bytes-to-string" | "core/bytes-to-string-lossy"
+    ) {
         words.push_str(" utf8 utf-8 decode decodificar bytes to text ");
     }
     for (types, said) in [
@@ -1178,24 +1164,14 @@ pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
     conversion_label_in(conversion, &crate::i18n::language())
 }
 
-fn conversion_label_in(conversion: &orange_host::Conversion, language: &str) -> String {
-    match conversion.id() {
-        "core/bytes-to-string" => return text_in(language, "decode-utf8", "Decode UTF-8"),
-        "core/bytes-to-string-lossy" => {
-            return text_in(
-                language,
-                "decode-utf8-lossy",
-                "Decode UTF-8 with replacement",
-            );
-        }
-        _ => {}
-    }
-    let name = |ty: &str| match ty {
+fn conversion_type_name(ty: &str, language: &str) -> String {
+    match ty {
         "core/string@1" => text_in(language, "type-text", "Text"),
         "core/bytes@1" => text_in(language, "type-bytes", "Bytes"),
         "core/bool@1" => text_in(language, "type-bool", "Bool"),
         "core/duration@1" => text_in(language, "type-duration", "Duration"),
         "core/timestamp@1" => text_in(language, "type-timestamp", "Timestamp"),
+        "core/json@1" => "JSON".to_owned(),
         orange_host::RGBA_TYPE => text_in(language, "type-rgba", "Color"),
         _ => ty
             .trim_start_matches("core/")
@@ -1203,9 +1179,28 @@ fn conversion_label_in(conversion: &orange_host::Conversion, language: &str) -> 
             .unwrap_or(ty)
             .trim_start_matches("core/")
             .to_owned(),
-    };
-    let from = name(&conversion.from);
-    let to = name(&conversion.to);
+    }
+}
+
+fn conversion_label_in(conversion: &orange_host::Conversion, language: &str) -> String {
+    converter_title(
+        conversion.id(),
+        &conversion.from,
+        &conversion.to,
+        conversion.options.values().map(String::as_str),
+        language,
+    )
+}
+
+fn converter_title<'a>(
+    id: &str,
+    from: &str,
+    to: &str,
+    options: impl Iterator<Item = &'a str>,
+    language: &str,
+) -> String {
+    let from = conversion_type_name(from, language);
+    let to = conversion_type_name(to, language);
     let mut label = crate::i18n::catalogs()
         .format(
             language,
@@ -1213,31 +1208,62 @@ fn conversion_label_in(conversion: &orange_host::Conversion, language: &str) -> 
             &[("from", from.as_str().into()), ("to", to.as_str().into())],
         )
         .map_or_else(|| format!("{from} → {to}"), std::borrow::Cow::into_owned);
-    if !conversion.options.is_empty() {
-        let choices: Vec<String> = conversion
-            .options
-            .values()
-            .map(|value| {
-                let key = match value.as_str() {
-                    "seconds" => "conversion-unit-seconds",
-                    "milliseconds" => "conversion-unit-milliseconds",
-                    "microseconds" => "conversion-unit-microseconds",
-                    "nanoseconds" => "conversion-unit-nanoseconds",
-                    "minutes" => "conversion-unit-minutes",
-                    "hours" => "conversion-unit-hours",
-                    "truncate" => "conversion-round-truncate",
-                    "floor" => "conversion-round-floor",
-                    "ceiling" => "conversion-round-ceiling",
-                    "nearest-even" => "conversion-round-nearest",
-                    "reject" => "conversion-overflow-reject",
-                    other => other,
-                };
-                text_in(language, key, value)
-            })
-            .collect();
+    let encoding = match id {
+        "core/string-to-bytes" | "core/bytes-to-string" => Some("conversion-utf8"),
+        "core/bytes-to-string-lossy" => Some("conversion-utf8-replace"),
+        _ => None,
+    };
+    let choices: Vec<_> = encoding
+        .into_iter()
+        .map(|key| text_in(language, key, "UTF-8"))
+        .chain(
+            options
+                .filter(|value| id != "core/bytes-to-string-lossy" || *value != "replace")
+                .map(|value| {
+                    let key = match value {
+                        "seconds" => "conversion-unit-seconds",
+                        "milliseconds" => "conversion-unit-milliseconds",
+                        "microseconds" => "conversion-unit-microseconds",
+                        "nanoseconds" => "conversion-unit-nanoseconds",
+                        "minutes" => "conversion-unit-minutes",
+                        "hours" => "conversion-unit-hours",
+                        "truncate" => "conversion-round-truncate",
+                        "floor" => "conversion-round-floor",
+                        "ceiling" => "conversion-round-ceiling",
+                        "nearest-even" => "conversion-round-nearest",
+                        "reject" => "conversion-overflow-reject",
+                        other => other,
+                    };
+                    text_in(language, key, value)
+                }),
+        )
+        .collect();
+    if !choices.is_empty() {
         label.push_str(&format!(" ({})", choices.join(", ")));
     }
     label
+}
+
+/// The placed card uses the same title and saved policy labels as the picker.
+pub(crate) fn converter_card_title(node: &NodeView, language: &str) -> Option<String> {
+    let ty = |input, id| {
+        node.ports
+            .iter()
+            .find(|port| port.input == input && !port.exec && port.id == id)?
+            .ty
+            .as_deref()
+    };
+    let options = node.settings["options"]
+        .as_object()
+        .into_iter()
+        .flat_map(|options| options.values().filter_map(serde_json::Value::as_str));
+    Some(converter_title(
+        node.settings["converter"].as_str().unwrap_or_default(),
+        ty(true, "value")?,
+        ty(false, "result")?,
+        options,
+        language,
+    ))
 }
 
 pub(crate) fn conversion_detail(conversion: &orange_host::Conversion) -> &'static str {
@@ -1247,14 +1273,6 @@ pub(crate) fn conversion_detail(conversion: &orange_host::Conversion) -> &'stati
         _ if conversion.lossy => t("conversion-lossy"),
         _ if conversion.checked => t("conversion-checked"),
         _ => t("conversion-exact"),
-    }
-}
-
-pub(crate) fn utf8_label(converter: &str) -> Option<&'static str> {
-    match converter {
-        "core/bytes-to-string" => Some(t("decode-utf8")),
-        "core/bytes-to-string-lossy" => Some(t("decode-utf8-lossy")),
-        _ => None,
     }
 }
 
@@ -1295,26 +1313,242 @@ mod tests {
     use orange_host::HostOptions;
 
     #[test]
-    fn displayed_template_labels_find_their_items_in_each_locale() {
+    fn specialized_nodes_are_listed_once_in_their_node_families() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for (query, id, group) in [
+            ("rising edge", intrinsic::RISING_EDGE, TRIGGERS),
+            ("falling edge", intrinsic::FALLING_EDGE, TRIGGERS),
+            ("deadband", intrinsic::CHANGE_BEYOND_TOLERANCE, TRIGGERS),
+            ("bump+", intrinsic::INCREMENT_COUNTER, VARIABLES),
+            ("bump -", intrinsic::DECREMENT_COUNTER, VARIABLES),
+        ] {
+            for search in ["", query] {
+                let groups = palette_in(&host, search, "en");
+                let entries: Vec<_> = groups
+                    .iter()
+                    .flat_map(|(name, items)| items.iter().map(move |item| (name, item)))
+                    .filter(|(_, item)| item.id == id)
+                    .collect();
+                assert_eq!(entries.len(), 1, "{search:?}: {id}");
+                assert_eq!(*entries[0].0, group.name("en"));
+                assert!(
+                    groups
+                        .iter()
+                        .flat_map(|(_, items)| items)
+                        .all(|item| !item.id.starts_with("preset:"))
+                );
+            }
+        }
+        for (language, old_name) in [("es-MX", "Banda muerta"), ("ja-JP", "不感帯")] {
+            assert!(
+                discover(&host, old_name, language)
+                    .iter()
+                    .any(|node| node.definition == intrinsic::CHANGE_BEYOND_TOLERANCE)
+            );
+        }
+    }
+
+    #[test]
+    fn every_converter_preview_has_the_ports_and_policy_used_for_placement() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let before = draft.text().unwrap();
+        let mut previews = PreviewCache::default();
+        let conversions = host.conversions();
+        for conversion in &conversions {
+            let id = conversion_id(conversion);
+            let card = previews
+                .card(&host, Some(&draft), &id)
+                .unwrap_or_else(|| panic!("{id}"));
+            for (id, input, ty) in [
+                ("value", true, conversion.from.as_str()),
+                ("result", false, conversion.to.as_str()),
+            ] {
+                assert!(card.ports.iter().any(|port| port.id == id
+                    && port.input == input
+                    && port.ty.as_deref() == Some(ty)));
+            }
+            assert_eq!(
+                card.ports.iter().any(|port| port.id == "loss"),
+                conversion.lossy
+            );
+            assert_eq!(
+                card.settings["options"],
+                serde_json::to_value(&conversion.options).unwrap()
+            );
+            for language in ["en-US", "es-MX", "ja-JP"] {
+                assert_eq!(
+                    converter_card_title(card, language).unwrap(),
+                    conversion_label_in(conversion, language)
+                );
+            }
+        }
+        assert_eq!(draft.text().unwrap(), before);
+        assert_eq!(draft.can_undo(), (false, false));
+
+        let conversion = conversions
+            .iter()
+            .find(|item| item.lossy && !item.options.is_empty())
+            .unwrap();
+        let id = conversion_id(conversion);
+        let card = previews.card(&host, None, &id).unwrap();
+        let node = host
+            .add_conversion(&mut draft, conversion, [0.0, 0.0])
+            .unwrap();
+        let view = host.draft_view(&draft).unwrap();
+        let placed = view.nodes.iter().find(|item| item.id == node).unwrap();
+        assert_eq!(card.settings, placed.settings);
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(300.0);
+            result_row(
+                ui,
+                &conversion_label_in(conversion, "en"),
+                "",
+                None,
+                false,
+                Some(card),
+                Some(&id),
+            );
+        });
+        for port in &card.ports {
+            let label = port
+                .label
+                .clone()
+                .unwrap_or_else(|| crate::port_label(&port.id));
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+                }),
+                "missing converter port {label}"
+            );
+        }
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn conversion_groups_have_a_single_source_type() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        let conversions: HashMap<_, _> = host
+            .conversions()
+            .into_iter()
+            .map(|conversion| (conversion_id(&conversion), conversion.from))
+            .collect();
+        let groups = conversion_groups(&host, "", "es-MX");
+        assert!(groups.len() > 1);
+        assert_eq!(
+            groups.iter().map(|(_, items)| items.len()).sum::<usize>(),
+            conversions.len()
+        );
+        for (title, items) in groups {
+            assert!(title.starts_with("Desde "), "{title}");
+            let from = &conversions[&items[0].id];
+            assert!(items.iter().all(|item| &conversions[&item.id] == from));
+        }
+    }
+
+    #[test]
+    fn converter_names_identify_both_types_and_legacy_names_still_find_them() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for (language, old, name, id) in [
+            (
+                "en",
+                "JSON as text",
+                "JSON to Optional Text",
+                "org.orange.json/as-string",
+            ),
+            (
+                "es",
+                "Como entero",
+                "JSON a i64 opcional",
+                "org.orange.json/as-i64",
+            ),
+            (
+                "ja",
+                "JSON を小数に",
+                "JSON からオプションの f64 へ",
+                "org.orange.json/as-f64",
+            ),
+            (
+                "en",
+                "Decode Base64",
+                "Base64 Text to Bytes",
+                "org.orange.text/decode-base64",
+            ),
+        ] {
+            for query in [old, name] {
+                assert!(
+                    discover(&host, query, language)
+                        .iter()
+                        .any(|node| node.definition == id && node.label == name),
+                    "{language}: {query}"
+                );
+            }
+        }
+        let choices = conversion_items(&host, "decode UTF-8", "en", Some("core/bytes@1"), None);
+        let names: Vec<_> = choices
+            .iter()
+            .map(|item| orange_host::fold_search(&item.label))
+            .collect();
+        assert!(names.contains(&"bytes to text (utf 8)".to_owned()));
+        assert!(names.contains(&"bytes to text (utf 8 with replacement)".to_owned()));
+        let legacy = conversion_items(
+            &host,
+            "replace invalid bytes",
+            "en",
+            Some("core/bytes@1"),
+            None,
+        );
+        assert_eq!(legacy.len(), 1);
+        assert!(
+            legacy[0]
+                .id
+                .starts_with("convert:core/bytes-to-string-lossy")
+        );
+    }
+
+    #[test]
+    fn loops_use_their_node_names_and_wireless_senders_precede_readers() {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         for locale in ["en-US", "es-MX", "ja-JP"] {
             let shown = palette_in(&host, "", locale);
-            let templates: Vec<_> = shown
+            let loops = &shown
                 .iter()
-                .flat_map(|(_, items)| items)
-                .filter(|item| template_card_count(&item.id).is_some())
-                .collect();
-            assert_eq!(templates.len(), 5, "{locale}");
-            for item in templates {
+                .find(|(name, _)| *name == LOOPS.name(locale))
+                .unwrap()
+                .1;
+            for id in [
+                intrinsic::REPEAT_BEGIN,
+                intrinsic::MAP_BEGIN,
+                intrinsic::FILTER_BEGIN,
+                intrinsic::FOLD_BEGIN,
+            ] {
+                let item = loops.iter().find(|item| item.id == id).unwrap();
                 assert!(
-                    palette_in(&host, &item.label, locale)
+                    host.search_nodes(&item.label, locale)
                         .iter()
-                        .flat_map(|(_, items)| items)
-                        .any(|found| found.id == item.id),
+                        .any(|found| found.definition == id && found.label == item.label),
                     "{locale}: {}",
                     item.label
                 );
             }
+            let signals = &shown
+                .iter()
+                .find(|(name, _)| *name == TRIGGERS.name(locale))
+                .unwrap()
+                .1;
+            let wireless: Vec<_> = signals
+                .iter()
+                .map(|item| item.id.as_str())
+                .filter(|id| {
+                    [intrinsic::EMIT, intrinsic::ON_EVENT, BRIDGE_OUT, BRIDGE_IN].contains(id)
+                })
+                .collect();
+            assert_eq!(
+                wireless,
+                [intrinsic::EMIT, intrinsic::ON_EVENT, BRIDGE_OUT, BRIDGE_IN]
+            );
         }
     }
 
@@ -1350,16 +1584,11 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_names_templates_and_numeric_conversions_unambiguously() {
+    fn the_catalog_has_no_templates_and_names_conversions_unambiguously() {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
-        for (language, templates, cards) in [
-            ("en", "Templates", "cards"),
-            ("es", "Plantillas", "tarjetas"),
-        ] {
+        for (language, templates) in [("en", "Templates"), ("es", "Plantillas")] {
             let groups = palette_in(&host, "", language);
-            let items = &groups.iter().find(|(name, _)| name == templates).unwrap().1;
-            assert_eq!(items.len(), 5);
-            assert!(items.iter().all(|item| item.label.contains(cards)));
+            assert!(groups.iter().all(|(name, _)| name != templates));
             let mut labels = std::collections::HashSet::new();
             for item in groups
                 .iter()
@@ -1383,66 +1612,55 @@ mod tests {
     }
 
     #[test]
-    fn counter_presets_share_an_initialized_signed_counter_and_offer_a_step() {
-        let (host, _) = Host::new(HostOptions::default()).unwrap();
-        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-        for (query, preset, operation) in [
-            ("bump+", "preset:increment", "add"),
-            ("bump -", "preset:decrement", "sub"),
+    fn counter_cards_require_explicit_binding_and_reopen_with_only_useful_ports() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        for (id, legacy) in [
+            (intrinsic::INCREMENT_COUNTER, "preset:increment"),
+            (intrinsic::DECREMENT_COUNTER, "preset:decrement"),
         ] {
-            assert!(
-                discover(&host, query, "en")
-                    .iter()
-                    .any(|node| node.definition == preset)
-            );
-            let id = host.add_node(&mut draft, preset, [0.0, 0.0]).unwrap();
-            let graph = host.draft_view(&draft).unwrap();
-            let card = graph.nodes.iter().find(|node| node.id == id).unwrap();
-            assert_eq!(card.settings["operation"], operation);
-            assert!(
-                card.ports
-                    .iter()
-                    .any(|port| port.id == "value" && port.value.as_deref() == Some("1"))
-            );
-        }
-        assert_eq!(draft.document().variables().len(), 1);
-    }
-
-    #[test]
-    fn counter_presets_reuse_the_numbered_counter_after_a_name_collision() {
-        let (host, _) = Host::new(HostOptions::default()).unwrap();
-        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-        host.declare_variable(
-            &mut draft,
-            &orange_host::Variable {
+            let node = editor.add_node_at(&mut host, legacy, [0.0, 0.0]).unwrap();
+            assert!(editor.declarations().unwrap().variables.is_empty());
+            let variable = |ty: &str, initializer: &str| orange_host::Variable {
                 id: None,
-                name: "Counter".to_owned(),
-                ty: "core/string@1".to_owned(),
+                name: "Points".into(),
+                ty: ty.into(),
                 scope: orange_host::VarScope::Run,
                 persistent: false,
-                initial: None,
-            },
-        )
-        .unwrap();
-
-        let increment = host
-            .add_node(&mut draft, "preset:increment", [0.0, 0.0])
-            .unwrap();
-        let decrement = host
-            .add_node(&mut draft, "preset:decrement", [0.0, 0.0])
-            .unwrap();
-        let doc = draft.document();
-        let counter = doc
-            .variables()
-            .values()
-            .find(|var| var.name == "Counter 2")
-            .unwrap();
-        assert_eq!(doc.variables().len(), 2);
-        for node in [increment, decrement] {
-            assert_eq!(
-                doc.root().nodes[&node].config["variable"],
-                serde_json::json!(counter.id)
+                initial: Some(initializer.into()),
+            };
+            assert!(
+                editor
+                    .declare_variable_for(
+                        &mut host,
+                        node,
+                        "/variable",
+                        &variable("core/string@1", "text")
+                    )
+                    .is_none()
             );
+            let counter = editor
+                .declare_variable_for(&mut host, node, "/variable", &variable("core/i64@1", "0"))
+                .unwrap();
+            let saved = editor.text().unwrap();
+            editor.open_untitled(&mut host, saved);
+            let graph = editor.graph().unwrap();
+            let card = graph.nodes.iter().find(|card| card.id == node).unwrap();
+            assert_eq!(card.definition, id);
+            assert_eq!(card.settings, serde_json::json!({"variable":counter}));
+            let data: Vec<_> = card
+                .ports
+                .iter()
+                .filter(|port| !port.exec && port.id != "error")
+                .collect();
+            assert_eq!(
+                data.iter().map(|port| port.id.as_str()).collect::<Vec<_>>(),
+                ["value", "new"]
+            );
+            assert_eq!(data[0].default.as_deref(), Some("1"));
+            assert_eq!(crate::properties::input_caption(card, data[0]), "Step");
+            editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         }
     }
 
@@ -1588,24 +1806,28 @@ mod tests {
     fn catalog_groups_related_operations_under_common_headings() {
         for (nodes, expected) in [
             (
-                [intrinsic::ON_MANUAL, intrinsic::FOR_EACH, "preset:signal"],
-                "Flow & triggers",
+                [intrinsic::ON_MANUAL, intrinsic::ON_EVENT, "preset:signal"],
+                "Triggers & signals",
+            ),
+            (
+                [intrinsic::BRANCH, intrinsic::SEQUENCE, "preset:guard"],
+                "Control flow",
             ),
             (
                 [
                     intrinsic::GET_VARIABLE,
-                    "org.orange.json/get",
-                    "convert:example",
+                    intrinsic::SET_VARIABLE,
+                    intrinsic::ON_VARIABLE_CHANGED,
                 ],
-                "Data & text",
+                "Variables",
             ),
             (
                 [
-                    "org.orange.files/read-text",
+                    "org.orange.net/http-request-json",
                     "org.orange.net/http-request",
                     "org.orange.net/websocket",
                 ],
-                "Files & network",
+                "Network",
             ),
         ] {
             for node in nodes {
@@ -1622,10 +1844,10 @@ mod tests {
         );
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         assert!(
-            palette_in(&host, "datos texto entero", "es")
+            palette_in(&host, "entero", "es")
                 .iter()
                 .any(|(group, items)| {
-                    group == "Datos y texto"
+                    group == "Valores"
                         && items.iter().any(|item| item.id == intrinsic::WHOLE_NUMBER)
                 })
         );
@@ -1749,22 +1971,25 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_search_places_an_editable_timer_as_one_undo() {
+    fn watchdog_is_absent_from_pickers_but_can_still_be_placed_by_its_id() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         assert!(
-            discover(&host, "detector de inactividad", "es")
+            !discover(&host, "detector de inactividad", "es")
                 .iter()
                 .any(|node| node.definition == "preset:watchdog")
         );
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
-        let choice = editor
-            .quick_choices(&host, "heartbeat timeout")
-            .into_iter()
-            .find(|choice| choice.definition == "preset:watchdog")
+        assert!(
+            !editor
+                .quick_choices(&host, "heartbeat timeout")
+                .into_iter()
+                .any(|choice| choice.definition == "preset:watchdog")
+        );
+        let emitter = editor
+            .add_node_at(&mut host, "preset:watchdog", [0.0, 0.0])
             .unwrap();
-        let emitter = editor.pick_quick(&mut host, &choice).unwrap();
         let draft = &editor.document.as_ref().unwrap().draft;
         let doc = draft.document();
         let body = doc.root();
@@ -1824,53 +2049,47 @@ mod tests {
     }
 
     #[test]
-    fn edge_presets_are_searchable_and_place_a_typed_watch() {
+    fn specialized_triggers_place_with_minimal_ports_and_no_mode_setting() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        for (language, query, id, mode) in [
-            ("en", "rising edge", "preset:rising-edge", "rising"),
-            ("es", "flanco descendente", "preset:falling-edge", "falling"),
+        for (id, query) in [
+            (intrinsic::RISING_EDGE, "rising edge"),
+            (intrinsic::FALLING_EDGE, "falling edge"),
+            (intrinsic::CHANGE_BEYOND_TOLERANCE, "deadband"),
         ] {
-            assert!(
-                palette_in(&host, query, language)
-                    .iter()
-                    .flat_map(|(_, items)| items)
-                    .any(|item| item.id == id)
-            );
-            let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-            let node = host.add_node(&mut draft, id, [0.0, 0.0]).unwrap();
-            let inserted = host.draft_view(&draft).unwrap();
-            let card = inserted.nodes.iter().find(|card| card.id == node).unwrap();
-            assert_eq!(card.definition, intrinsic::ON_WATCH);
-            assert_eq!(card.settings["mode"], mode);
-            assert!(card.ports.iter().any(|port| port.input
-                && port.id == "watch"
-                && port.ty.as_deref() == Some("core/bool@1")));
-            assert_eq!(
-                host.placement_preview(&draft, id).unwrap().settings["mode"],
-                mode
-            );
+            editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
+            let choice = editor
+                .quick_choices(&host, query)
+                .into_iter()
+                .find(|choice| choice.definition == id)
+                .unwrap();
+            let node = editor.pick_quick(&mut host, &choice).unwrap();
+            let graph = editor.graph().unwrap();
+            let card = graph.nodes.iter().find(|card| card.id == node).unwrap();
+            assert_eq!(card.definition, id);
+            if id == intrinsic::CHANGE_BEYOND_TOLERANCE {
+                assert_eq!(card.settings, serde_json::json!({"threshold":1}));
+                assert_eq!(
+                    crate::properties::watch_field_label(card, "threshold"),
+                    "Tolerance"
+                );
+                assert_eq!(crate::properties::watch_field_entries(card).count(), 1);
+                assert!(
+                    card.ports
+                        .iter()
+                        .any(|port| !port.input && port.id == "value")
+                );
+            } else {
+                assert_eq!(card.settings, serde_json::json!({}));
+                assert_eq!(card.ports.len(), 2);
+                assert!(card.ports.iter().any(|port| port.input
+                    && port.id == "watch"
+                    && port.ty.as_deref() == Some("core/bool@1")));
+            }
+            editor.undo(&mut host);
+            assert!(editor.graph().unwrap().nodes.is_empty());
         }
-        editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
-        let choice = editor
-            .quick_choices(&host, "falling edge")
-            .into_iter()
-            .find(|choice| choice.definition == "preset:falling-edge")
-            .unwrap();
-        let node = editor.pick_quick(&mut host, &choice).unwrap();
-        let graph = editor.graph().unwrap();
-        assert_eq!(
-            graph
-                .nodes
-                .iter()
-                .find(|card| card.id == node)
-                .unwrap()
-                .settings["mode"],
-            "falling"
-        );
-        editor.undo(&mut host);
-        assert!(editor.graph().unwrap().nodes.is_empty());
     }
 
     #[test]

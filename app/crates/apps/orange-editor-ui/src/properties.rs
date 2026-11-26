@@ -56,6 +56,9 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &PortView> {
 }
 
 pub(crate) fn input_caption(node: &NodeView, port: &PortView) -> String {
+    if let Some(label) = specialized_port_caption(&node.definition, port) {
+        return label.to_owned();
+    }
     if node.definition == intrinsic::COALESCE {
         match port.id.as_str() {
             "value" => return t("optional-value-input").to_owned(),
@@ -67,6 +70,22 @@ pub(crate) fn input_caption(node: &NodeView, port: &PortView) -> String {
         .or_else(|| port.label.clone())
         .or_else(|| input_label(node, &port.id).map(str::to_owned))
         .unwrap_or_else(|| port_label(&port.id))
+}
+
+pub(crate) fn specialized_port_caption(definition: &str, port: &PortView) -> Option<&'static str> {
+    match (definition, port.input, port.id.as_str()) {
+        (intrinsic::RISING_EDGE | intrinsic::FALLING_EDGE, true, "watch") => {
+            Some(t("edge-condition"))
+        }
+        (intrinsic::CHANGE_BEYOND_TOLERANCE, true, "watch") => Some(t("port-value")),
+        (intrinsic::INCREMENT_COUNTER | intrinsic::DECREMENT_COUNTER, true, "value") => {
+            Some(t("counter-step"))
+        }
+        (intrinsic::INCREMENT_COUNTER | intrinsic::DECREMENT_COUNTER, false, "new") => {
+            Some(t("counter-new-value"))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn log_part_label(node: &NodeView, id: &str) -> Option<String> {
@@ -958,7 +977,7 @@ impl<'a> Field<'a> {
     }
 
     fn for_node(node: &NodeView, name: &str, schema: &'a Json) -> Self {
-        if node.definition == intrinsic::ON_WATCH && name != "mode" {
+        if intrinsic::is_watch(&node.definition) && name != "mode" {
             return Self::WatchNumber {
                 whole: matches!(name, "hold" | "cooldown"),
             };
@@ -1059,14 +1078,22 @@ pub(crate) fn watch_field_entries(node: &NodeView) -> impl Iterator<Item = (&Str
         .schema
         .as_ref()
         .and_then(|schema| schema["properties"].as_object());
-    let fields: &[&str] = if node.definition == intrinsic::ON_WATCH {
-        watch_fields(node.settings["mode"].as_str())
-    } else {
-        &[]
+    let fields: &[&str] = match node.definition.as_str() {
+        intrinsic::ON_WATCH => watch_fields(node.settings["mode"].as_str()),
+        intrinsic::CHANGE_BEYOND_TOLERANCE => &["threshold"],
+        _ => &[],
     };
     fields
         .iter()
         .filter_map(move |name| properties?.get_key_value(*name))
+}
+
+pub(crate) fn watch_field_label(node: &NodeView, name: &str) -> &'static str {
+    if node.definition == intrinsic::CHANGE_BEYOND_TOLERANCE && name == "threshold" {
+        t("change-tolerance")
+    } else {
+        watch_label(name)
+    }
 }
 
 pub(crate) fn watch_label(name: &str) -> &'static str {
@@ -1193,14 +1220,19 @@ impl Editor {
         self.edited(host, result)
     }
 
-    /// The declared variables as (ID, name).
-    pub(crate) fn variable_choices(&self) -> Vec<(String, String, orange_host::VarScope)> {
+    /// The declared variables for canvas and Properties pickers.
+    pub(crate) fn variable_choices(&self) -> Vec<declarations::VariableChoice> {
         self.declarations()
             .into_iter()
             .flat_map(|declared| &declared.variables)
             .filter_map(|variable| {
                 let label = format!("{} ({})", variable.name, type_name(&variable.ty));
-                Some((variable.id.clone()?, label, variable.scope))
+                Some(declarations::VariableChoice {
+                    id: variable.id.clone()?,
+                    label,
+                    scope: variable.scope,
+                    ty: variable.ty.clone(),
+                })
             })
             .collect()
     }
@@ -1693,10 +1725,8 @@ impl Editor {
             ReferenceKind::Variable => self
                 .variable_choices()
                 .into_iter()
-                .filter(|(_, _, scope)| {
-                    declarations::variable_scope_allowed(&node.definition, *scope)
-                })
-                .map(|(id, label, _)| (id, label))
+                .filter(|choice| choice.fits(&node.definition))
+                .map(|choice| (choice.id, choice.label))
                 .collect(),
             ReferenceKind::Event => self
                 .declarations()
@@ -1730,7 +1760,13 @@ impl Editor {
                 || tf("choose-reference", &[("kind", what.into())]),
                 |(_, name)| name.clone(),
             );
-        let label = words(pointer.trim_start_matches('/'));
+        let label = if intrinsic::counter_operation(&node.definition).is_some()
+            && kind == ReferenceKind::Variable
+        {
+            t("counter-variable").to_owned()
+        } else {
+            words(pointer.trim_start_matches('/'))
+        };
         let mut chosen = None;
         let mut quick = false;
         row(ui, &label, None, |ui| {
@@ -1794,7 +1830,7 @@ impl Editor {
             .filter_map(Json::as_str)
             .collect();
         let mut changed = None;
-        let watch = node.definition == intrinsic::ON_WATCH;
+        let watch = intrinsic::is_watch(&node.definition);
         let mut fields: Vec<_> = watch_field_entries(node)
             .chain(properties.iter().filter(|_| !watch))
             .collect();
@@ -1836,7 +1872,7 @@ impl Editor {
                 _ => None,
             };
             let label = if watch {
-                watch_label(name).to_owned()
+                watch_field_label(node, name).to_owned()
             } else if let Some((label, _)) = stream {
                 t(label).to_owned()
             } else if name == "max_iterations" {
@@ -3262,6 +3298,7 @@ impl Editor {
         section(ui, t("outputs"));
         for port in outputs {
             let caption = node_ergonomics::loop_result(node, port)
+                .or_else(|| specialized_port_caption(&node.definition, port))
                 .map(str::to_owned)
                 .or_else(|| port.label.clone())
                 .unwrap_or_else(|| port_label(&port.id));
@@ -3313,6 +3350,7 @@ impl Editor {
         }
         for (port, shown, stale) in ports {
             let caption = node_ergonomics::loop_result(node, port)
+                .or_else(|| specialized_port_caption(&node.definition, port))
                 .map(str::to_owned)
                 .or_else(|| port.label.clone())
                 .unwrap_or_else(|| port_label(&port.id));

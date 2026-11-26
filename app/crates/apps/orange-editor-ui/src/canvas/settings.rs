@@ -53,7 +53,7 @@ pub(crate) fn advanced(node: &NodeView, name: &str) -> bool {
 pub(super) fn fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Value)> {
     watch_field_entries(node).chain(
         all_fields(node)
-            .filter(|(name, _)| node.definition != intrinsic::ON_WATCH && !advanced(node, name)),
+            .filter(|(name, _)| !intrinsic::is_watch(&node.definition) && !advanced(node, name)),
     )
 }
 

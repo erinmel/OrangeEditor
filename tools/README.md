@@ -88,7 +88,7 @@ Use the public HTTPS and TLS-specific tests for transport encryption.
 | One HTTP result | **HTTP request** gives you text. Use **HTTP request (binary)** for exact bytes. |
 | Results while an HTTP response arrives | **HTTP request (streamed)** starts the request and reports status and line count on completion. **On HTTP stream line** runs once per line. Set both cards to the same profile. For NDJSON, wire its payload to **Parse JSON** and **Get JSON path**. |
 | WebSocket messages | **On WebSocket message** receives unsolicited messages on its own. Add **Send WebSocket message** if the graph should send a message too. Select the same profile to share one socket. The binary variants carry bytes. |
-| UTF-8 text in a binary message | Use **Decode UTF-8** for strict decoding or **Decode UTF-8 (replace invalid bytes)** for a readable preview. The lab bytes `00 FF 80 0A` deliberately contain invalid UTF-8. Keep the original bytes for binary processing. |
+| UTF-8 text in a binary message | Use **Bytes to Text (UTF-8)** for strict decoding or **Bytes to Text (UTF-8 with replacement)** for a readable preview. The lab bytes `00 FF 80 0A` deliberately contain invalid UTF-8. Keep the original bytes for binary processing. |
 
 HTTPS and WSS unwrap transport encryption before data reaches the graph.
 Application-encrypted payloads require the sender's cipher, key, nonce

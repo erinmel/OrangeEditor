@@ -779,7 +779,7 @@ fn project_nodes(
         };
         match projection {
             Ok(projected) => {
-                if node.definition.id.as_str() == ids::ON_WATCH
+                if ids::is_watch(node.definition.id.as_str())
                     && let Some(config) = crate::catalog::WatchConfig::from_node(node)
                     && let Some(code) =
                         watch_type_diagnostic(config, &projected, pass.registry.types())

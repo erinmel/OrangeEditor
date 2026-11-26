@@ -207,7 +207,7 @@ impl Editor {
         // Dragged back from an input: the kinds with an output that feeds it.
         if let (None, Some(into), Some(document)) = (&quick.from, &quick.into, &self.document) {
             let givers = host.givers(&document.draft, (into.0, &into.1));
-            return host
+            let mut choices: Vec<_> = host
                 .search_nodes(search, self.language())
                 .into_iter()
                 .filter_map(|found| {
@@ -224,6 +224,28 @@ impl Editor {
                     })
                 })
                 .collect();
+            let target = document.node_view(into.0).and_then(|node| {
+                node.ports
+                    .iter()
+                    .find(|port| port.input && !port.exec && port.id == into.1)?
+                    .ty
+                    .as_deref()
+            });
+            if let Some(target) = target {
+                choices.extend(
+                    palette::conversion_items(host, search, self.language(), None, Some(target))
+                        .into_iter()
+                        .map(|item| QuickChoice {
+                            output: Some("result".into()),
+                            input: None,
+                            definition: item.id,
+                            label: item.label,
+                            category: t("conversions").to_owned(),
+                            purpose: item.purpose,
+                        }),
+                );
+            }
+            return choices;
         }
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
             // Into a wire: the kinds that take its output and go on into its input, with
@@ -302,11 +324,7 @@ impl Editor {
                 .into_iter()
                 .map(|found| QuickChoice {
                     output: None,
-                    label: palette::placement_label(
-                        &found.definition,
-                        found.label,
-                        self.language(),
-                    ),
+                    label: found.label,
                     definition: found.definition,
                     input: None,
                     category: found.category,
@@ -347,7 +365,7 @@ impl Editor {
         }
         if quick.from.is_none() || from_type.is_some() {
             choices.extend(
-                palette::conversion_items(host, search, self.language(), from_type)
+                palette::conversion_items(host, search, self.language(), from_type, None)
                     .into_iter()
                     .map(|item| QuickChoice {
                         output: None,
@@ -935,6 +953,35 @@ mod staging_tests {
         editor.undo(&mut host);
         assert_eq!(nodes(&editor), 1);
         assert!(editor.graph().unwrap().wires.is_empty());
+    }
+
+    #[test]
+    fn a_converter_can_feed_a_value_input_in_one_undo_step() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let target = editor
+            .add_node_at(&mut host, intrinsic::TEXT, [0.0, 0.0])
+            .unwrap();
+        editor.open_quick_add_into((target, "value".into()), [-320.0, 0.0], egui::Pos2::ZERO);
+        let choices = editor.quick_choices(&host, "convert");
+        let mut converters = choices
+            .iter()
+            .filter(|choice| choice.definition.starts_with(palette::CONVERSION));
+        let first = converters.next().unwrap();
+        for choice in std::iter::once(first).chain(converters) {
+            let converter = palette::conversion_named(&host, &choice.definition).unwrap();
+            assert_eq!(converter.to, "core/string@1");
+            assert_eq!(choice.output.as_deref(), Some("result"));
+        }
+        let placed = editor.pick_quick(&mut host, first).unwrap();
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.wires[0].from, (placed, "result".into()));
+        assert_eq!(graph.wires[0].to, (target, "value".into()));
+        editor.undo(&mut host);
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(graph.wires.is_empty());
     }
 
     /// A conversion chosen for a dropped value wire is placed and wired as one action.

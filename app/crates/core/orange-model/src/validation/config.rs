@@ -252,7 +252,7 @@ pub(crate) fn validate_node_config(
 ) -> Option<Diagnostic> {
     // A schema describes exactly its own config version; other versions are a
     // resolution matter and are not judged against it.
-    let code = if node.definition.id.as_str() == crate::catalog::intrinsic_id::ON_WATCH {
+    let code = if crate::catalog::intrinsic_id::is_watch(node.definition.id.as_str()) {
         if crate::catalog::WatchConfig::from_node(node).is_some() {
             return None;
         }

@@ -42,6 +42,7 @@ pub mod types;
 pub mod validation;
 pub mod value;
 mod variable;
+pub use variable::update_token;
 
 pub use document::codec::{
     ImportBudget, ImportLimits, from_json, from_json_upgrading, from_json_with_budget,

@@ -225,28 +225,7 @@ mod palette;
 pub use menu::{Command, MenuEntry, MenuTarget};
 pub use palette::{PaletteItem, palette, palette_in};
 
-/// A type as a person reads it: `core/string@1` is "text". Other types keep their name
-/// without the version.
-/// A conversion's name from the type it takes to the type it gives: "Int to Text".
-/// Two types that read alike, such as i32 and i64, are named exactly.
-pub(crate) fn conversion_name(from: &str, to: &str) -> String {
-    let (mut from_name, mut to_name) = (type_name(from), type_name(to));
-    if from_name == to_name {
-        let exact = |ty: &str| {
-            ty.trim_start_matches("core/")
-                .split('@')
-                .next()
-                .unwrap_or(ty)
-                .to_owned()
-        };
-        (from_name, to_name) = (exact(from), exact(to));
-    }
-    tf(
-        "conversion-title",
-        &[("from", from_name.into()), ("to", to_name.into())],
-    )
-}
-
+/// A type as a person reads it.
 pub fn type_name(ty: &str) -> String {
     let named = types_tab::with_local_names(ty);
     match named.as_str() {
@@ -305,14 +284,16 @@ struct ConversionChoice {
 pub(crate) enum Tab {
     #[default]
     Nodes,
+    Conversions,
     Variables,
     Connections,
     Types,
 }
 
 impl Tab {
-    const ALL: [(Self, &str); 4] = [
+    const ALL: [(Self, &str); 5] = [
         (Self::Nodes, "nodes"),
+        (Self::Conversions, "conversions"),
         (Self::Variables, "variables"),
         (Self::Connections, "connections"),
         (Self::Types, "types"),
@@ -2603,10 +2584,11 @@ impl Editor {
         );
         if response.changed() || previous != self.tab {
             self.preferred_tab = self.tab;
+            self.palette_highlighted = 0;
         }
         ui.separator();
         match self.tab {
-            Tab::Nodes => {}
+            Tab::Nodes | Tab::Conversions => {}
             Tab::Variables => {
                 self.variables_tab(ui, host);
                 return;
@@ -2638,92 +2620,108 @@ impl Editor {
         if up || down {
             ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
-        let field = controls::search(ui, search_salt, &mut self.search, t("search-hint"));
+        let conversions = self.tab == Tab::Conversions;
+        let hint = if conversions {
+            "search-conversions"
+        } else {
+            "search-hint"
+        };
+        let field = controls::search(ui, search_salt, &mut self.search, t(hint));
         if field.changed() {
             self.palette_highlighted = 0;
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let searching = !self.search.trim().is_empty();
-            let language = if self.language.is_empty() {
-                i18n::DEFAULT_LOCALE
-            } else {
-                self.language.as_str()
-            };
-            let channels = self.dispatch_channels();
-            let results = self.palette.get(host, &self.search, language, &channels);
-            let found = results.groups;
-            if searching && found.is_empty() {
-                ui.weak(t("no-node-matches"));
-            }
-            let found_count = found.iter().map(|(_, items)| items.len()).sum::<usize>();
-            let last = found_count.saturating_sub(1);
-            self.palette_highlighted = self.palette_highlighted.min(last);
-            if down {
-                self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
-            }
-            if up {
-                self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
-            }
-            let mut index = 0;
-            for (category, items) in found {
-                let Some(first) = items.first() else {
-                    continue;
+        egui::ScrollArea::vertical()
+            .id_salt(self.tab.key())
+            .show(ui, |ui| {
+                let searching = !self.search.trim().is_empty();
+                let language = if self.language.is_empty() {
+                    i18n::DEFAULT_LOCALE
+                } else {
+                    self.language.as_str()
                 };
-                let (heading, help) = palette::category_heading(category, &first.id, language);
-                orange_ui_controls::tree_section(
-                    ui,
-                    Surface::Panel,
-                    egui::CollapsingHeader::new(heading)
-                        .id_salt((category.as_str(), searching))
-                        .default_open(searching),
-                    |ui| {
-                        let mut section = None;
-                        for item in items {
-                            let next = palette::catalog_section(&item.id);
-                            if !searching
-                                && section != next
-                                && let Some((title, description)) = next
-                            {
-                                ui.weak(t(title)).on_hover_text(t(description));
-                            }
-                            section = next;
-                            let active =
-                                searching && field.has_focus() && index == self.palette_highlighted;
-                            index += 1;
-                            let draft = self.document.as_ref().map(|document| &document.draft);
-                            let card = self
-                                .node_search_previews
-                                .then(|| self.previews.card(host, None, &item.id))
-                                .flatten();
-                            let row = palette::result_row(
-                                ui,
-                                &item.label,
-                                &item.purpose,
-                                None,
-                                active,
-                                card,
-                                Some(&item.id),
-                            );
-                            if row.drag_started() {
-                                let card = self.previews.card(host, draft, &item.id).cloned();
-                                row.dnd_set_drag_payload(palette::PaletteDrag {
-                                    item: item.clone(),
+                let channels = self.dispatch_channels();
+                let results = self.palette.get(host, &self.search, language, &channels);
+                let found = results.groups.iter().filter(|(_, items)| {
+                    items.first().is_some_and(|first| {
+                        first.id.starts_with(palette::CONVERSION) == conversions
+                    })
+                });
+                let found_count = found.clone().map(|(_, items)| items.len()).sum::<usize>();
+                if found_count == 0 && conversions {
+                    ui.weak(t("no-conversion-matches"));
+                } else if found_count == 0 && searching {
+                    ui.weak(t("no-node-matches"));
+                }
+                let last = found_count.saturating_sub(1);
+                self.palette_highlighted = self.palette_highlighted.min(last);
+                if down {
+                    self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
+                }
+                if up {
+                    self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
+                }
+                let mut index = 0;
+                for (category, items) in found {
+                    let Some(first) = items.first() else {
+                        continue;
+                    };
+                    let (heading, help) = palette::category_heading(category, &first.id, language);
+                    orange_ui_controls::tree_section(
+                        ui,
+                        Surface::Panel,
+                        egui::CollapsingHeader::new(heading)
+                            .id_salt((category.as_str(), searching))
+                            .default_open(searching),
+                        |ui| {
+                            let mut section = None;
+                            for item in items {
+                                let next = palette::catalog_section(&item.id);
+                                if !searching
+                                    && section != next
+                                    && let Some((title, description)) = next
+                                    && t(title) != category
+                                {
+                                    ui.weak(t(title)).on_hover_text(t(description));
+                                }
+                                section = next;
+                                let active = searching
+                                    && field.has_focus()
+                                    && index == self.palette_highlighted;
+                                index += 1;
+                                let draft = self.document.as_ref().map(|document| &document.draft);
+                                let card = self
+                                    .node_search_previews
+                                    .then(|| self.previews.card(host, None, &item.id))
+                                    .flatten();
+                                let row = palette::result_row(
+                                    ui,
+                                    &item.label,
+                                    &item.purpose,
+                                    None,
+                                    active,
                                     card,
-                                });
+                                    Some(&item.id),
+                                );
+                                if row.drag_started() {
+                                    let card = self.previews.card(host, draft, &item.id).cloned();
+                                    row.dnd_set_drag_payload(palette::PaletteDrag {
+                                        item: item.clone(),
+                                        card,
+                                    });
+                                }
+                                if active && (up || down) {
+                                    row.scroll_to_me(None);
+                                }
+                                if row.clicked() || (active && enter) {
+                                    add = Some(item.id.clone());
+                                }
                             }
-                            if active && (up || down) {
-                                row.scroll_to_me(None);
-                            }
-                            if row.clicked() || (active && enter) {
-                                add = Some(item.id.clone());
-                            }
-                        }
-                    },
-                )
-                .header_response
-                .on_hover_text(t(help));
-            }
-        });
+                        },
+                    )
+                    .header_response
+                    .on_hover_text(t(help));
+                }
+            });
         if let Some(definition) = add {
             if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
@@ -3319,19 +3317,7 @@ mod tests {
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
             item.id.starts_with(palette::CONVERSION) && item.label.contains("Text")
         }));
-        let rank = |name: &str| match name {
-            "Flow & triggers" => 0,
-            "Data & text" => 1,
-            "Math & logic" => 2,
-            "Files & network" => 3,
-            "Audio" => 4,
-            "Utilities" => 5,
-            _ => 6,
-        };
-        assert!(
-            all.windows(2)
-                .all(|pair| rank(&pair[0].0) <= rank(&pair[1].0))
-        );
+        assert_eq!(all[0].0, "Triggers & signals");
         // Every word must match, in any letter case, in the label, definition or category.
         let found = palette(&host, "MATH add");
         assert!(count(&found) >= 1 && count(&found) < count(&all));
@@ -5015,42 +5001,60 @@ mod palette_keyboard_tests {
     #[test]
     fn sidebar_search_adds_the_highlighted_result_by_keyboard() {
         let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
-        let mut editor = Editor::new();
-        editor.open(
-            &mut host,
-            "graph.json",
-            orange_host::new_document().unwrap(),
-        );
-        editor.search = "trigger".into();
-        let expected = palette(&host, &editor.search)[0].1[1].id.clone();
-        let context = egui::Context::default();
-        for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
-            let events = key
+        for (tab, search) in [(Tab::Nodes, "trigger"), (Tab::Conversions, "text")] {
+            let mut editor = Editor::new();
+            editor.restore_preferences(&serde_json::json!({"version": 1, "tab": tab.key()}));
+            editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+            editor.search = search.into();
+            assert_eq!(editor.tab, tab);
+            let expected = palette(&host, search)
                 .into_iter()
-                .map(|key| egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
+                .flat_map(|(_, items)| items)
+                .filter(|item| {
+                    item.id.starts_with(palette::CONVERSION) == (tab == Tab::Conversions)
                 })
-                .collect();
-            let input = egui::RawInput {
-                events,
-                ..Default::default()
-            };
-            context
-                .run_ui(input, |ui| {
-                    if key.is_none() {
-                        let search = ui.make_persistent_id("node-palette-search");
-                        ui.memory_mut(|memory| memory.request_focus(search));
-                    }
-                    editor.nodes_panel(ui, &mut host);
-                })
-                .drop_without_applying_deltas();
+                .nth(1)
+                .unwrap();
+            let context = egui::Context::default();
+            for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
+                let events = key
+                    .into_iter()
+                    .map(|key| egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    })
+                    .collect();
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            if key.is_none() {
+                                let search = ui.make_persistent_id("node-palette-search");
+                                ui.memory_mut(|memory| memory.request_focus(search));
+                            }
+                            editor.nodes_panel(ui, &mut host);
+                        },
+                    )
+                    .drop_without_applying_deltas();
+            }
+            let graph = editor.graph().unwrap();
+            assert_eq!(graph.nodes.len(), 1);
+            let node = &graph.nodes[0];
+            if tab == Tab::Conversions {
+                assert_eq!(node.definition, intrinsic::CONVERT);
+                assert_eq!(
+                    palette::converter_card_title(node, "en").unwrap(),
+                    expected.label
+                );
+            } else {
+                assert_eq!(node.definition, expected.id);
+            }
         }
-        let graph = editor.graph().unwrap();
-        assert_eq!(graph.nodes.len(), 1);
-        assert_eq!(graph.nodes[0].definition, expected);
     }
 }

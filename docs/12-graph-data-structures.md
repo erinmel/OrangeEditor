@@ -1020,6 +1020,13 @@ Persisted `core/convert` node (00c.6a). It binds one entry, one provider and val
 
 The initial core converter executor (N1b) lives in orange-bundled without adding registry entries. A private immutable `ResolvedConversion` retains its Arc registry snapshot, exact ConverterKey, pre-resolved operation and, for f64→f32, two prebuilt JSON loss flags. Binding accepts only an explicitly selected registered Core provider, exact supported entry/version/endpoints/class and complete valid saved options; package alternatives are never native fallbacks. The passive output `ConversionOutput` has `result: Value` and `loss: Option<Value>`; only lossy conversion has Some(JSON `{"lost": bool}`), on every successful evaluation. Failure returns no partial result/loss pair. Float bit-preservation and loss rules are in 11 §6. This scalar API does not manufacture graph freshness, source maps, executable plans or runtime provenance.
 
+The version-1 intrinsics `core/rising-edge` and `core/falling-edge` have empty
+config objects. `core/change-beyond-tolerance` stores a single numeric
+`threshold` field. `core/increment-counter` and `core/decrement-counter` store
+the chosen declaration ID in `variable` and their optional typed Step literal
+in `inputs.value`. The definition fixes the operation. An unbound counter card
+can be saved as a draft and requires the variable before execution.
+
 ## 6. Saved graph example
 
 Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`. Node `n1` is a registered `core/on-manual` entry (11 §10.2); the host starts it with `Run::trigger`. Executing the whole example also needs its package providers.

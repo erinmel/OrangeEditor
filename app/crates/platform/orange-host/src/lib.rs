@@ -1484,6 +1484,11 @@ fn short_label(id: &str) -> Option<&'static str> {
         intrinsic::TRUE_OR_FALSE => "Bool",
         intrinsic::TEXT => "Text",
         intrinsic::ON_WATCH => "When",
+        intrinsic::RISING_EDGE => "Rising Edge",
+        intrinsic::FALLING_EDGE => "Falling Edge",
+        intrinsic::CHANGE_BEYOND_TOLERANCE => "When Value Changes Enough",
+        intrinsic::INCREMENT_COUNTER => "Increment Counter",
+        intrinsic::DECREMENT_COUNTER => "Decrement Counter",
         "org.orange.json/parse" => "Parse JSON",
         _ => return None,
     })

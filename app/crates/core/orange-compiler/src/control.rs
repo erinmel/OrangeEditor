@@ -1516,6 +1516,9 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_TIMEOUT
                     | ids::ON_VARIABLE_CHANGED
                     | ids::ON_WATCH
+                    | ids::RISING_EDGE
+                    | ids::FALLING_EDGE
+                    | ids::CHANGE_BEYOND_TOLERANCE
                     | ids::CLOSE_HANDLE
                     | ids::NEXT_ITEM
                     | ids::COLLECT
@@ -1528,6 +1531,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::BRANCH
                     | ids::SET_VARIABLE
                     | ids::UPDATE_VARIABLE
+                    | ids::INCREMENT_COUNTER
+                    | ids::DECREMENT_COUNTER
                     | ids::SET_SHARED
                     | ids::UPDATE_SHARED
                     | ids::SEQUENCE
@@ -1873,6 +1878,8 @@ fn collect_variables(cx: &Cx<'_>, bytes: &mut usize) -> Result<VariableLayout, C
             ids::GET_VARIABLE
                 | ids::SET_VARIABLE
                 | ids::UPDATE_VARIABLE
+                | ids::INCREMENT_COUNTER
+                | ids::DECREMENT_COUNTER
                 | ids::ON_VARIABLE_CHANGED
                 | ids::SET_SHARED
                 | ids::UPDATE_SHARED
@@ -1923,9 +1930,12 @@ fn collect_variables(cx: &Cx<'_>, bytes: &mut usize) -> Result<VariableLayout, C
         }
         if matches!(
             node.definition.id.as_str(),
-            ids::UPDATE_VARIABLE | ids::UPDATE_SHARED
+            ids::UPDATE_VARIABLE
+                | ids::UPDATE_SHARED
+                | ids::INCREMENT_COUNTER
+                | ids::DECREMENT_COUNTER
         ) {
-            update::resolve(node.id, &node.config, variables[variable_ids[&id]].ty())?;
+            update::resolve(node, variables[variable_ids[&id]].ty())?;
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
@@ -2306,7 +2316,7 @@ impl NodeLowering<'_, '_> {
                 let write = SharedWrite {
                     variable: variable.id(),
                     operation: if definition == ids::UPDATE_SHARED {
-                        Some(update::resolve(id, &node.config, variable.ty())?)
+                        Some(update::resolve(node, variable.ty())?)
                     } else {
                         None
                     },
@@ -2404,7 +2414,7 @@ impl NodeLowering<'_, '_> {
             ids::CLOSE_HANDLE => ControlOperation::CloseHandle {
                 handle: self.input(key, orange_model::port_id!("handle")),
             },
-            ids::ON_WATCH => {
+            ids::ON_WATCH | ids::RISING_EDGE | ids::FALLING_EDGE | ids::CHANGE_BEYOND_TOLERANCE => {
                 let root = self.input(key, orange_model::port_id!("watch"));
                 self.watches.push((key, root));
                 ControlOperation::Entry
@@ -2430,9 +2440,9 @@ impl NodeLowering<'_, '_> {
                 }
             }
             ids::FUNCTION_ENTRY => ControlOperation::Entry,
-            ids::UPDATE_VARIABLE => {
+            ids::UPDATE_VARIABLE | ids::INCREMENT_COUNTER | ids::DECREMENT_COUNTER => {
                 let variable = self.variable_nodes[&id];
-                let operation = update::resolve(id, &node.config, self.variables[variable].ty())?;
+                let operation = update::resolve(node, self.variables[variable].ty())?;
                 let mut operands = Vec::new();
                 if matches!(operation, UpdateOperation::CompareAndSet) {
                     operands.push(self.input(key, orange_model::port_id!("expected")));
@@ -2765,7 +2775,7 @@ fn host_source(
             },
         ));
     }
-    if cx.node(key).definition.id.as_str() == ids::ON_WATCH && port == "value" {
+    if ids::is_watch(cx.node(key).definition.id.as_str()) && port == "value" {
         return Ok(HostSource::EventPayload(owner));
     }
     if matches!(operation, ControlOperation::Effect { .. }) && port != "error" {

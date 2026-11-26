@@ -4,7 +4,7 @@
 use crate::edit::{PortEnd, port_ref};
 #[cfg(test)]
 use crate::intrinsic;
-use crate::{Draft, EdgeId, Host, HostError, NodeId, Severity, TypeExpr};
+use crate::{Draft, EdgeId, Host, HostError, NodeId, NodeView, Severity, TypeExpr};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionRequest, ConversionClass, ConverterKey,
     ConverterProvider, ConverterRegistry, ExplicitConverterChoice, NamedPolicy, SelectionRejection,
@@ -299,6 +299,22 @@ impl Host {
         commands.push(crate::edit::place_command(node, Some(at)));
         let _ = draft.commit(&registry, commands)?;
         Ok(node)
+    }
+
+    /// Returns the card for an explicit converter choice without editing the draft.
+    pub fn conversion_preview(
+        &self,
+        draft: &Draft,
+        conversion: &Conversion,
+    ) -> Result<NodeView, HostError> {
+        let node = draft
+            .fresh_id("conversion")
+            .parse()
+            .map_err(|_| HostError::Document("the new ID is not valid".into()))?;
+        let registry = self.registry_for(draft.document());
+        let commands = converter_node_commands(&registry, conversion.choice(), node)
+            .map_err(|rejection| HostError::Document(rejection_text(&rejection)))?;
+        self.preview_commands(draft, node, commands)
     }
 
     /// Connects output `from` to input `to`, through a conversion when their types

@@ -317,17 +317,19 @@ fn collect_writes(
     let definition = node.definition.id.as_str();
     let core = node.provider.is_none() && node.definition.version == 1 && node.config_version == 1;
     match definition {
-        ids::SET_VARIABLE | ids::UPDATE_VARIABLE if core => {
+        ids::SET_VARIABLE
+        | ids::UPDATE_VARIABLE
+        | ids::INCREMENT_COUNTER
+        | ids::DECREMENT_COUNTER
+            if core =>
+        {
             let Ok(variable) = super::variables::variable_reference(registry, node) else {
                 return;
             };
             let operation = if definition == ids::SET_VARIABLE {
                 Some(WriteOperation::Set)
             } else {
-                node.config
-                    .get("operation")
-                    .and_then(Value::as_str)
-                    .and_then(WriteOperation::parse_update)
+                crate::variable::update_token(node).and_then(WriteOperation::parse_update)
             };
             let wrapping =
                 node.config.get("int_overflow").and_then(Value::as_str) == Some("wrapping");

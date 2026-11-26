@@ -1430,11 +1430,19 @@ impl RegistrySnapshot {
                 vec![PortDescriptor::data_in("value", ty)]
             }
             VariableAccess::Update | VariableAccess::UpdateShared => {
-                let token = node
-                    .config
-                    .get("operation")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or(ContractError::UpdateOperation)?;
+                if super::intrinsic_id::counter_operation(node.definition.id.as_str()).is_some() {
+                    if !super::intrinsic_id::is_counter_type(ty.as_str()) {
+                        return Err(ContractError::UpdateConstraint);
+                    }
+                    return Ok(vec![
+                        PortDescriptor::data_in("value", ty.clone()).with_default(
+                            crate::document::literal::Literal::value(ty.clone(), "1".into()),
+                        ),
+                        PortDescriptor::data_out("new", ty, OutputSource::Execution),
+                    ]);
+                }
+                let token =
+                    crate::variable::update_token(node).ok_or(ContractError::UpdateOperation)?;
                 let operation =
                     WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {
