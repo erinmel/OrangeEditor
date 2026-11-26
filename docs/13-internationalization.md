@@ -200,6 +200,7 @@ generation. A changed catalogue invalidates the prepared search data and open
 picker results. Search tries the whole channel name query before
 removing subscriber intent words.
 Settings and shortcut searches use the same tolerant matching against their captions.
+Log and problem filters fold text the same way but match it literally, without typos.
 Queries are compared as literal text against local search data. Search fields cap
 input at 1,024 characters. The matcher accepts up to 4,096 UTF-8 bytes and 64
 normalized terms. Control characters other than

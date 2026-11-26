@@ -176,6 +176,11 @@ pub(crate) const BIND_LISTEN: &str = "bind:on-event:";
 
 /// Quick-bind items for subscribers: each channel (event ID, name) that has a Dispatch
 /// in the graph, offered under Listen when the search finds Listen or names the channel.
+///
+/// The search is tried as a channel name first. Failing that, words that name the
+/// subscriber kind ("listen", in any search language and with a typo) are dropped,
+/// first from the front and then anywhere, and the rest is tried. A search made only
+/// of such words lists every channel when it names Listen itself.
 pub(crate) fn channel_items(
     channels: &[(String, String)],
     search: &str,
@@ -187,65 +192,54 @@ pub(crate) fn channel_items(
     if !direct.is_valid() || direct.is_empty() {
         return Vec::new();
     }
-    let captions: Vec<_> = std::iter::once(language)
+    let kind_words: Vec<_> = std::iter::once(language)
         .chain(orange_host::SEARCH_LANGUAGES)
         .map(|tag| text_in(tag, "listen-search-words", ""))
         .collect();
-    let terms: Vec<_> = captions
-        .iter()
-        .flat_map(|caption| caption.split_whitespace())
-        .collect();
-    let query = orange_host::fold_search(search.trim());
-    let words: Vec<&str> = query.split_whitespace().collect();
-    // The words that name the subscriber kind, in either language and with a typo,
-    // are not part of the channel name looked for.
-    let names_kind = |word: &str| {
-        terms.iter().any(|term| {
-            orange_host::fold_search(term) == word
-                || (word.chars().count() >= 4 && orange_host::word_finds(word, term))
+    let names_kind = |word: &str| names_listen(word, &kind_words);
+    let folded = orange_host::fold_search(search);
+    let words: Vec<&str> = folded.split_whitespace().collect();
+    let leading = words.iter().take_while(|word| names_kind(word)).count();
+    let without_leading = (1..=leading.min(words.len() - 1)).map(|skip| words[skip..].join(" "));
+    let without_any = (leading < words.len())
+        .then(|| {
+            words
+                .iter()
+                .copied()
+                .filter(|word| !names_kind(word))
+                .collect::<Vec<_>>()
         })
-    };
-    let explicit_kind = listen_found || orange_host::fold_search(listen) == query;
-    let matching_channels = |query: &orange_host::SearchQuery| {
+        .filter(|rest| rest.len() < words.len())
+        .map(|rest| rest.join(" "));
+    let matching_channels = |text: &str| {
+        let query = orange_host::SearchQuery::new(text);
         channels
             .iter()
             .filter_map(|channel| {
                 query
-                    .relevance([channel.1.as_str()])
+                    .rank([channel.1.as_str()], [])
                     .map(|rank| (rank, channel))
             })
             .collect::<Vec<_>>()
     };
-    let mut named = matching_channels(&direct);
-    let intent_words = words.iter().take_while(|word| names_kind(word)).count();
-    for prefix in 1..=intent_words.min(words.len().saturating_sub(1)) {
-        if !named.is_empty() {
-            break;
-        }
-        let remaining = orange_host::SearchQuery::new(&words[prefix..].join(" "));
-        named = matching_channels(&remaining);
-    }
-    if named.is_empty() && intent_words < words.len() {
-        let name_words: Vec<_> = words
+    let found = std::iter::once(search.to_owned())
+        .chain(without_leading)
+        .chain(without_any)
+        .map(|text| matching_channels(&text))
+        .find(|found| !found.is_empty());
+    let explicit_kind = listen_found || orange_host::fold_search(listen) == folded;
+    let mut named = match found {
+        Some(found) => found,
+        None if leading == words.len() && explicit_kind => channels
             .iter()
-            .copied()
-            .filter(|word| !names_kind(word))
-            .collect();
-        if name_words.len() < words.len() {
-            named = matching_channels(&orange_host::SearchQuery::new(&name_words.join(" ")));
-        }
-    }
-    if named.is_empty() && intent_words == words.len() && explicit_kind {
-        named.extend(
-            channels
-                .iter()
-                .map(|channel| (orange_host::Match::Exact, channel)),
-        );
-    }
+            .map(|channel| (orange_host::SearchRank::BEST, channel))
+            .collect(),
+        None => Vec::new(),
+    };
     named.sort_by_key(|(rank, _)| *rank);
-    let chosen = named.into_iter().map(|(_, channel)| channel);
-    chosen
-        .map(|(id, name)| PaletteItem {
+    named
+        .into_iter()
+        .map(|(_, (id, name))| PaletteItem {
             id: format!("{BIND_LISTEN}{id}"),
             label: format!("{listen} · {name}"),
             package: String::new(),
@@ -258,6 +252,19 @@ pub(crate) fn channel_items(
                 .map_or_else(String::new, std::borrow::Cow::into_owned),
         })
         .collect()
+}
+
+/// Whether a folded search word names the subscriber kind: one of the `captions`'
+/// words exactly or, from four letters on, with a typo or as its start.
+fn names_listen(word: &str, captions: &[String]) -> bool {
+    let typed = orange_host::SearchQuery::new(word);
+    captions
+        .iter()
+        .flat_map(|caption| caption.split_whitespace())
+        .any(|term| {
+            orange_host::fold_search(term) == word
+                || word.chars().count() >= 4 && typed.matches([term])
+        })
 }
 
 pub(crate) struct PaletteResults<'a> {

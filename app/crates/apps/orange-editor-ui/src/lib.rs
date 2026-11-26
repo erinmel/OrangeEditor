@@ -620,23 +620,6 @@ fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
     let _ = controls::search(ui, id, query, hint);
 }
 
-fn contains_query(query: &str, fields: &[&str]) -> bool {
-    if !orange_host::SearchQuery::accepts(query) {
-        return false;
-    }
-    if query.is_empty() {
-        return true;
-    }
-    let query = orange_host::fold_search(query);
-    let terms: Vec<_> = fields
-        .iter()
-        .map(|field| orange_host::fold_search(field))
-        .collect();
-    query
-        .split_whitespace()
-        .all(|word| terms.iter().any(|field| field.contains(word)))
-}
-
 impl Editor {
     pub fn new() -> Self {
         Self::default()

@@ -503,12 +503,12 @@ impl Editor {
             |ui| search_field(ui, "log-search", &mut self.log_search, t("search-log")),
         );
         ui.separator();
-        let query = self.log_search.trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.log_search);
         let mut text = String::new();
         let mut levels = Vec::new();
         for line in &self.log {
             if self.log_filter.is_some_and(|level| level != line.level)
-                || !contains_query(&query, &[&line.text, line.level.label(), line.level.name()])
+                || !query.contains([line.text.as_str(), line.level.label(), line.level.name()])
             {
                 continue;
             }
@@ -567,7 +567,7 @@ impl Editor {
                         .id(ui.make_persistent_id((
                             "editor-log-text",
                             self.log_filter.map(NoteLevel::label),
-                            &query,
+                            self.log_search.trim(),
                         )))
                         .layouter(&mut layout)
                         .desired_rows(1)
@@ -612,7 +612,7 @@ impl Editor {
                 )
             },
         );
-        let query = self.problems_search.trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.problems_search);
         let visible = ui
             .horizontal(|ui| {
                 let mut visible = Vec::new();
@@ -628,7 +628,7 @@ impl Editor {
                             .zip(&document.problem_locations)
                             .filter(|((_, text), location)| {
                                 location.level == level
-                                    && contains_query(&query, &[text, level.label(), location.code])
+                                    && query.contains([text.as_str(), level.label(), location.code])
                             })
                             .map(|((index, text), location)| (index, text, location)),
                     );

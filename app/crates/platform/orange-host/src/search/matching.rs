@@ -13,8 +13,8 @@ impl SearchQuery {
     pub const MAX_BYTES: usize = 4096;
     const MAX_TERMS: usize = 64;
 
-    /// Basic admission for literal filters that do not need token ranking.
-    pub fn accepts(text: &str) -> bool {
+    /// Whether text is short enough and free of control characters to be searched.
+    fn accepts(text: &str) -> bool {
         text.len() <= Self::MAX_BYTES && !text.chars().any(|c| c.is_control() && !c.is_whitespace())
     }
 
@@ -51,6 +51,19 @@ impl SearchQuery {
     /// Whether every search term occurs in the supplied captions or matches a typo.
     pub fn matches<'a>(&self, fields: impl IntoIterator<Item = &'a str>) -> bool {
         self.relevance(fields).is_some()
+    }
+
+    /// Whether every search term occurs literally in one of `fields`, folded the same
+    /// way but without typo tolerance: for filtering log and problem text. An empty
+    /// search keeps every row.
+    pub fn contains<'a>(&self, fields: impl IntoIterator<Item = &'a str>) -> bool {
+        if !self.valid {
+            return false;
+        }
+        let fields: Vec<_> = fields.into_iter().map(fold_search).collect();
+        self.terms
+            .iter()
+            .all(|term| fields.iter().any(|field| field.contains(&term.text)))
     }
 
     /// Ranks a row by its `active` captions, in the editor's language, and its
@@ -319,6 +332,16 @@ mod tests {
         assert_eq!(fallback.kind(), Match::Exact);
         assert!(SearchRank::BEST < fallback);
         assert_eq!(query.rank(["Cuadrícula"], ["Rejilla"]), None);
+    }
+
+    #[test]
+    fn log_filters_match_literal_folded_text_without_typos() {
+        let query = SearchQuery::new("ERROR número");
+        assert!(query.contains(["error: numero 3 is out of range", "Note"]));
+        assert!(query.contains(["The number is wrong", "error numero"]));
+        assert!(!SearchQuery::new("eror").contains(["error"]));
+        assert!(SearchQuery::new("  ").contains(["anything"]));
+        assert!(!SearchQuery::new("error\0").contains(["error"]));
     }
 
     #[test]
