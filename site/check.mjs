@@ -3,6 +3,7 @@ import {readFile, stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {prepareIndex, searchIndex} from './assets/search-index.mjs';
 import {references} from './references.mjs';
+import {pages as guidePages} from './pages.mjs';
 import {demoAssets} from './live-demo.mjs';
 
 const root = new URL('./dist/', import.meta.url);
@@ -21,7 +22,7 @@ for (const entry of search) {
   const [path] = entry.path.split('#');
   paths.add(path);
 }
-assert.equal(paths.size, catalogue.nodes.length + 11 + references.length);
+assert.equal(paths.size, catalogue.nodes.length + guidePages.length + references.length);
 const egui = await read('egui/index.html');
 const hasDemo = egui.includes('id="controls-demo"');
 if (process.argv.includes('--require-demo')) assert.ok(hasDemo, 'The Pages artifact must include the live demo');

@@ -4,7 +4,8 @@ import {join, relative, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
 import {compileDemo, demoAssets} from './live-demo.mjs';
-import {loadReferences} from './references.mjs';
+import {loadReferences, renderMarkdown} from './references.mjs';
+import {pages, sections} from './pages.mjs';
 import {loadNodeExamples, renderGraphExamples, renderNodeReference} from './node-reference.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -40,19 +41,6 @@ const catalogue = values.catalogue
 const {nodes} = JSON.parse(catalogue.replace(/^\uFEFF/, ''));
 if (!Array.isArray(nodes) || nodes.length === 0) throw new Error('The node catalogue is empty.');
 
-const pages = [
-  ['', 'Overview', 'A typed node graph foundation with a Rust host and egui editor.'],
-  ['getting-started', 'Getting started', 'Open the desktop editor, run your first graph, and try the terminal runner.'],
-  ['editor', 'Use the editor', 'Place and wire typed nodes, configure variables and connections, and debug a flow.'],
-  ['nodes', 'Node reference', 'Find nodes by English, Spanish or Japanese name, stable ID, provider, or port.'],
-  ['examples', 'Example graphs', 'Run real graphs and follow the nodes that make them work.'],
-  ['controls', 'Controls reference', 'Choose, style, and use the shared OrangeEditor egui controls.'],
-  ['custom-nodes', 'Make custom nodes', 'Extract graph functions, implement Wasm nodes, or register trusted Rust services.'],
-  ['packages', 'Create packages', 'Export graph functions and pack, install, and update .orangeplug archives.'],
-  ['embedding', 'Embed the runtime', 'Use orange-host to validate, execute, and observe graphs in a Rust application.'],
-  ['egui', 'Embed and customize the egui editor', 'Compose OrangeEditor panels, themes, icons, and text in your existing egui app.'],
-  ['sdk', 'SDK reference', 'Rustdoc, Wasm guest bindings, the graph language, and versioned package contracts.'],
-];
 const pathOf = slug => slug ? slug + '/' : '';
 const escape = value => String(value).replace(/[&<>"']/g, char =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
@@ -76,8 +64,9 @@ async function render(path, title, description, body, selected, authored = false
   if (paths.has(path)) throw new Error('Duplicate page: ' + path);
   paths.add(path);
   const back = '../'.repeat(path.split('/').length - 1) || './';
-  const nav = pages.map(([slug, name]) => '<a href="' + back + pathOf(slug) + '"' +
-    (slug === selected ? ' aria-current="page"' : '') + '>' + escape(name) + '</a>').join('\n');
+  const nav = sections.map(([section, heading]) => '<p class="nav-heading">' + escape(heading) + '</p>' +
+    pages.filter(page => page[3] === section).map(([slug, name]) => '<a href="' + back + pathOf(slug) + '"' +
+      (slug === selected ? ' aria-current="page"' : '') + '>' + escape(name) + '</a>').join('\n')).join('\n');
   const anchors = [...body.matchAll(/<h2 id="([^"]+)">([\s\S]+?)<\/h2>/g)];
   const toc = anchors.length > 1 ? '<aside class="toc"><nav aria-label="On this page"><strong>On this page</strong>' +
     anchors.map(([, id, label]) => '<a href="#' + id + '">' + plain(label) + '</a>').join('') + '</nav></aside>' : '';
@@ -161,7 +150,9 @@ for (const [slug, title, description] of pages) {
   } else if (slug === 'examples') {
     body = renderGraphExamples(examples, sorted, source, escape, nodePath);
   } else {
-    body = await readFile(join(site, 'pages', (slug || 'index') + '.html'), 'utf8');
+    const guide = join(site, 'guides', (slug || 'index') + '.md');
+    body = await stat(guide).then(() => renderMarkdown(root, target, guide), () =>
+      readFile(join(site, 'pages', (slug || 'index') + '.html'), 'utf8'));
     const back = slug ? '../' : './';
     for (const contract of contracts) {
       body = body.replaceAll('@source/docs/' + contract.file, back + 'reference/' + contract.slug + '/');
@@ -177,7 +168,7 @@ for (const [slug, title, description] of pages) {
   if (slug) body = '<h1>' + escape(title) + '</h1><p class="lead">' + escape(description) + '</p>' + body;
   await render(pathOf(slug), title, description, body, slug, slug !== 'nodes');
 }
-search.push({path: 'nodes/', title: 'Node reference', description: pages[3][2], terms: 'catalogue converter multilingual registry'});
+search.push({path: 'nodes/', title: 'Node reference', description: pages.find(([slug]) => slug === 'nodes')[2], terms: 'catalogue converter multilingual registry'});
 
 for (const contract of contracts) {
   await render('reference/' + contract.slug + '/', contract.title, contract.description,

@@ -1,6 +1,6 @@
 # OrangeEditor documentation site
 
-The public guides live in `site/pages/`. The builder renders them as static
+The public guides are listed in `site/pages.mjs`, grouped as tutorials, how-to guides, concepts and reference (the Diátaxis split). Write a new guide in Markdown as `site/guides/<slug>.md`, starting with a `# Title`; the builder renders it with the pinned toolchain's rustdoc. Older guides are HTML in `site/pages/`. The builder renders them as static
 HTML, generates the node reference from `orange nodes --json`, and includes
 the public API from Cargo Rustdoc. The documents listed in `site/references.mjs`
 are rendered directly from `docs/` by the pinned Rust toolchain's Markdown
