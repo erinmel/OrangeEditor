@@ -201,3 +201,25 @@ alias-core-increment-counter = bump+, bump +, count up
 purpose-core-increment-counter = Adds Step to the selected whole-number variable and outputs its new value.
 alias-core-decrement-counter = bump-, bump -, count down
 purpose-core-decrement-counter = Subtracts Step from the selected whole-number variable and outputs its new value.
+
+# Everyday words for common kinds and categories, matching the Spanish and Japanese
+# catalogues.
+category-math = math, maths
+category-text = text, string
+category-collections = collections, lists
+category-json = data, json
+category-files = files
+category-network = network, web
+category-audio = audio, sound
+alias-core-on-manual = manual, button, by hand
+alias-core-on-timer = timer, every, interval, repeat
+alias-core-on-start = on start, startup, begin
+alias-org-orange-math-add = add, plus, sum
+alias-org-orange-math-subtract = subtract, minus, difference
+alias-org-orange-math-multiply = multiply, times, product
+alias-org-orange-math-divide = divide, divided by, quotient
+alias-org-orange-math-greater = greater than, more than
+alias-org-orange-math-less = less than, fewer than
+alias-org-orange-math-equal = equals, same as
+alias-org-orange-json-from-string = Text to JSON string
+alias-org-orange-text-split = split, separate text

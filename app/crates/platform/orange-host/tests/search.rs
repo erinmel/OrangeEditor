@@ -295,3 +295,20 @@ fn node_category_and_port_names_follow_the_language_and_fall_back_to_english() {
             .contains(&("completed".to_owned(), "Done".to_owned()))
     );
 }
+
+#[test]
+fn everyday_english_words_find_common_kinds() {
+    let host = host();
+    for (typed, id) in [
+        ("plus", "org.orange.math/add"),
+        ("times", "org.orange.math/multiply"),
+        ("button", "core/on-manual"),
+        ("every", "core/on-timer"),
+        ("split text", "org.orange.text/split"),
+    ] {
+        assert!(
+            ids(&host.search_nodes(typed, "en-US")).contains(&id),
+            "{typed}"
+        );
+    }
+}
