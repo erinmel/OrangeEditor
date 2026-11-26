@@ -55,20 +55,22 @@ pub(crate) enum Problem {
 }
 
 impl Problem {
+    /// The catalogue message that words this problem, and the key it names, if any.
+    fn message(&self) -> (&'static str, Option<String>) {
+        match self {
+            Self::Unsupported => ("desktop-keys-unsupported", None),
+            Self::Taken(chord) => ("desktop-key-taken", Some(caption(chord))),
+            Self::Refused(chord) => ("desktop-key-refused", Some(caption(chord))),
+            Self::RefusedAll => ("desktop-keys-refused", None),
+        }
+    }
+
     /// The Log text, in the editor's language.
     pub(crate) fn text(&self) -> String {
         use orange_editor_ui::i18n::{t, tf};
-        match self {
-            Self::Unsupported => t("desktop-keys-unsupported").to_owned(),
-            Self::Taken(chord) => {
-                let key = caption(chord);
-                tf("desktop-key-taken", &[("key", key.as_str().into())])
-            }
-            Self::Refused(chord) => {
-                let key = caption(chord);
-                tf("desktop-key-refused", &[("key", key.as_str().into())])
-            }
-            Self::RefusedAll => t("desktop-keys-refused").to_owned(),
+        match self.message() {
+            (id, Some(key)) => tf(id, &[("key", key.as_str().into())]),
+            (id, None) => t(id).to_owned(),
         }
     }
 }
@@ -453,7 +455,7 @@ impl Drop for Hotkeys {
 /// The GlobalShortcuts portal on Wayland, on a thread of its own.
 #[cfg(target_os = "linux")]
 mod portal {
-    use super::{Chord, Signal, Sink, caption, xdg_trigger};
+    use super::{Chord, Problem, Signal, Sink, caption, xdg_trigger};
     use ashpd::desktop::CreateSessionOptions;
     use ashpd::desktop::global_shortcuts::{BindShortcutsOptions, GlobalShortcuts, NewShortcut};
     use futures_lite::StreamExt as _;
@@ -643,7 +645,9 @@ mod tests {
 
     #[test]
     fn every_problem_reads_from_the_catalogue_in_each_language() {
-        let _ = orange_editor_ui::i18n::add_application_catalogs(crate::CATALOGS);
+        // The desktop's own catalogue, read directly: the editor's global text may
+        // already be fixed by another test running in the same process.
+        let catalogs = orange_host::Catalogs::from_sources(crate::CATALOGS).unwrap();
         let f9 = chord(Key::F9, false, false);
         let problems = [
             Problem::Unsupported,
@@ -652,16 +656,16 @@ mod tests {
             Problem::RefusedAll,
         ];
         for language in ["en", "es", "ja"] {
-            orange_editor_ui::i18n::set_language(language);
             for problem in &problems {
-                let text = problem.text();
-                assert!(!text.starts_with("desktop-"), "{language}: {problem:?}");
-                if matches!(problem, Problem::Taken(_) | Problem::Refused(_)) {
-                    assert!(text.contains(&caption(&f9)), "{language}: {text}");
+                let (id, key) = problem.message();
+                assert!(catalogs.has(language, id), "{language}: {id}");
+                let args: Vec<_> = key.iter().map(|key| ("key", key.as_str().into())).collect();
+                let text = catalogs.format(language, id, &args).unwrap();
+                if let Some(key) = &key {
+                    assert!(text.contains(key.as_str()), "{language}: {text}");
                 }
             }
         }
-        orange_editor_ui::i18n::set_language("en");
     }
 
     #[test]
