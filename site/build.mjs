@@ -98,6 +98,7 @@ async function render(path, title, description, body, selected, authored = false
   <script type="module" src="${back}assets/theme.mjs"></script>
   <script type="module" src="${back}assets/search.mjs"></script>
   ${selected === 'egui' && demo ? '<script type="module" src="../assets/controls-demo.mjs"></script>' : ''}
+  ${selected === 'examples' ? '<script type="module" src="../assets/copy-graph.mjs"></script>' : ''}
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -221,7 +222,7 @@ for (const node of sorted) {
 }
 
 await mkdir(join(output, 'assets'), {recursive: true});
-for (const asset of ['docs.css', 'favicon.svg', 'search.mjs', 'search-index.mjs', 'theme.mjs']) {
+for (const asset of ['docs.css', 'favicon.svg', 'search.mjs', 'search-index.mjs', 'theme.mjs', 'copy-graph.mjs']) {
   await copyFile(join(site, 'assets', asset), join(output, 'assets', asset));
 }
 if (demo) {
@@ -244,8 +245,15 @@ await cp(rustdoc, join(output, 'api'), {recursive: true, filter: async file => {
   return info.isDirectory() || (info.isFile() && /\.(css|html|js|json|png|svg|txt|woff2?)$/.test(file));
 }});
 await mkdir(join(output, 'examples', 'graphs'), {recursive: true});
+// The editor's clipboard format, read from the host so a copied example always pastes.
+const clipFormat = (await readFile(join(root, 'app/crates/platform/orange-host/src/clip.rs'), 'utf8'))
+  .match(/const CLIP_FORMAT: &str = "([^"]+)";/)?.[1];
+if (!clipFormat) throw new Error('Could not read the editor clipboard format');
 for (const example of examples) {
   await copyFile(join(root, example.path), join(output, 'examples', 'graphs', example.slug + '.json'));
+  await write('examples/graphs/' + example.slug + '.clip.json', JSON.stringify({
+    format: clipFormat, version: 1, document: example.graph, nodes: example.graph.nodes.map(node => node.id),
+  }));
 }
 await write('.nojekyll', '');
 await write('nodes.json', JSON.stringify({revision, nodes}));

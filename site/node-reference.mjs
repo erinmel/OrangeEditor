@@ -159,7 +159,8 @@ export function renderGraphExamples(examples, nodes, source, escape, nodePath) {
       if (!used.has(identity) && byIdentity.has(identity)) used.set(identity, byIdentity.get(identity));
     }
     return '<h2 id="' + slug + '">' + escape(title) + '</h2><p>' + escape(instruction) + '</p>' +
-      '<p><a href="graphs/' + slug + '.json" download>Download graph JSON</a> · <a href="' + source + path + '">View source</a></p>' +
+      '<p><button type="button" data-clip="graphs/' + slug + '.clip.json" hidden>Copy nodes</button> ' +
+      '<a href="graphs/' + slug + '.json" download>Download graph JSON</a> · <a href="' + source + path + '">View source</a></p>' +
       '<p>Nodes in this graph</p><ul class="example-nodes">' + [...used.values()].map(node =>
         '<li><a href="../' + nodePath(node) + '">' + escape(node.name.en) + '</a></li>').join('') + '</ul>';
   }).join('');

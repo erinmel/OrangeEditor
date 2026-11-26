@@ -828,6 +828,65 @@ mod tests {
         }
     }
 
+    /// Every example graph the documentation offers is valid, and its "Copy nodes"
+    /// clipboard text, built the way the site builds it, pastes into an empty graph.
+    #[test]
+    fn every_example_graph_checks_and_pastes_from_the_documentation() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../orange-cli/graphs");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let graph: serde_json::Value = serde_json::from_str(&text).unwrap();
+            // A graph that shows installing a package uses kinds this host lacks.
+            let known: std::collections::HashSet<_> = host
+                .nodes()
+                .map(|info| info.definition.definition.id.as_str().to_owned())
+                .collect();
+            if graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| !known.contains(node["definition_id"].as_str().unwrap_or_default()))
+            {
+                continue;
+            }
+            let errors: Vec<_> = host
+                .check(&text)
+                .unwrap()
+                .into_iter()
+                .filter(|problem| problem.severity == orange_host::Severity::Error)
+                .collect();
+            assert!(errors.is_empty(), "{}: {errors:?}", path.display());
+
+            let nodes: Vec<_> = graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["id"].clone())
+                .collect();
+            let clip = serde_json::json!({
+                "format": "orange-nodes", "version": 1, "document": graph, "nodes": nodes,
+            });
+            let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+            let pasted = host
+                .paste(&mut draft, &clip.to_string(), [0.0, 0.0])
+                .unwrap();
+            assert_eq!(pasted.len(), nodes.len(), "{}", path.display());
+            checked += 1;
+        }
+        assert!(checked >= 10, "only {checked} example graphs found");
+    }
+
     #[test]
     fn service_search_uses_localized_settings_and_caption_keys() {
         let services = super::built_in_services(
