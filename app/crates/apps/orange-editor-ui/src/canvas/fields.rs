@@ -911,7 +911,7 @@ impl Canvas {
                         chosen.and_then(set)
                     }
                     kind @ (Kind::Whole | Kind::Number) => {
-                        if name == "threshold_db"
+                        if name == crate::properties::ThresholdEdit::SETTING
                             && let Some(threshold) =
                                 crate::properties::ThresholdEdit::for_node(node)
                         {

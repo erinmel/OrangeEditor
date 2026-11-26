@@ -506,23 +506,26 @@ struct ThresholdPreview {
 }
 
 impl<'a> ThresholdEdit<'a> {
+    /// The setting this editor shapes: the threshold of a noise node, in decibels.
+    pub(crate) const SETTING: &'static str = "threshold_db";
+
     pub fn for_node(node: &'a NodeView) -> Option<Self> {
         if !canvas::spectrum::is_noise(node) {
             return None;
         }
-        let schema = &node.schema.as_ref()?["properties"]["threshold_db"];
+        let schema = &node.schema.as_ref()?["properties"][Self::SETTING];
         if schema["type"] != "number" || schema["readOnly"] == true {
             return None;
         }
-        let range = NumberRange::of(node, "threshold_db", schema)?;
-        let saved = node.settings["threshold_db"]
+        let range = NumberRange::of(node, Self::SETTING, schema)?;
+        let saved = node.settings[Self::SETTING]
             .as_f64()
             .or_else(|| schema["default"].as_f64())?;
         Some(Self {
             node: node.id,
             saved,
             range,
-            control: node.controls.settings.get("threshold_db"),
+            control: node.controls.settings.get(Self::SETTING),
         })
     }
 
@@ -882,7 +885,7 @@ impl NumberRange {
 pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'static str> {
     if node.definition == "org.orange.audio/noise-level" {
         return Some(t(match setting {
-            "threshold_db" => "audio-setting-threshold-db",
+            ThresholdEdit::SETTING => "audio-setting-threshold-db",
             "reset_db" => "audio-reset-margin",
             "hold_ms" => "audio-setting-hold-ms",
             "direction" => "when-mode",
@@ -893,7 +896,7 @@ pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'st
         return None;
     }
     let key = match setting {
-        "threshold_db" => "audio-setting-threshold-db",
+        ThresholdEdit::SETTING => "audio-setting-threshold-db",
         "reset_db" => "noise-gate-reset",
         "attack_ms" => "noise-gate-attack",
         "hold_ms" => "audio-setting-hold-ms",
@@ -1976,7 +1979,7 @@ impl Editor {
                 | Field::Time
                 | Field::Json
                 | Field::Text => {
-                    if name == "threshold_db"
+                    if name == ThresholdEdit::SETTING
                         && let Some(threshold) = ThresholdEdit::for_node(node)
                     {
                         let width = (ui.available_width() - 102.0).max(28.0);
