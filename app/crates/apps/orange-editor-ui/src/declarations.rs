@@ -2701,7 +2701,9 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, blank());
-        let dispatch = editor.add_node(&mut host, "preset:wireless-pulse").unwrap();
+        let dispatch = editor
+            .add_node(&mut host, orange_host::preset::WIRELESS_PULSE)
+            .unwrap();
         let original = editor.declarations().unwrap().events[0].clone();
         assert!(editor.rename_event_for_node(dispatch));
         editor.forms.event.as_mut().unwrap().name = "Front door".into();

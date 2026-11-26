@@ -5446,7 +5446,7 @@ mod tests {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let sender = host
-            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .add_node(&mut draft, orange_host::preset::SIGNAL, [50.0, 80.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();

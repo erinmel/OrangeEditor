@@ -2,6 +2,7 @@
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
 use crate::i18n::t;
 use orange_host::intrinsic;
+use orange_host::preset;
 use orange_host::{Draft, Host, NodeView};
 use std::collections::HashMap;
 
@@ -653,7 +654,7 @@ pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
     }
     let (namespace, name) = definition.split_once('/').unwrap_or((definition, ""));
     let (glyph, rgb, description) = match (namespace, name) {
-        ("core", "emit" | "on-event") | ("preset:signal" | "preset:watchdog", _) => {
+        ("core", "emit" | "on-event") | (preset::SIGNAL | preset::WATCHDOG, _) => {
             (icons::SIGNAL, [67, 152, 193], "node-family-events")
         }
         ("core", name) if name.starts_with("on-") => {
@@ -690,11 +691,7 @@ pub(crate) fn badge(definition: &str) -> (char, egui::Color32, &'static str) {
             (icons::VARIABLE, [62, 152, 130], "node-family-data")
         }
         (
-            "core"
-            | "preset:guard"
-            | "preset:rising-edge"
-            | "preset:falling-edge"
-            | "preset:deadband",
+            "core" | preset::GUARD | preset::RISING_EDGE | preset::FALLING_EDGE | preset::DEADBAND,
             _,
         ) => (icons::LOGIC, [211, 131, 66], "node-family-flow"),
         _ => (icons::PACKAGES, [132, 132, 143], "node-family-package"),
@@ -882,7 +879,7 @@ fn catalog_group(definition: &str) -> Option<CatalogGroup> {
             "node-family-functions",
         ),
         ("core", name) if name.starts_with("on-") => TRIGGERS,
-        ("core", "emit" | "await-event" | "bridge-in" | "bridge-out") | ("preset:signal", _) => {
+        ("core", "emit" | "await-event" | "bridge-in" | "bridge-out") | (preset::SIGNAL, _) => {
             TRIGGERS
         }
         ("core", name) if loop_name(name) => LOOPS,
@@ -890,7 +887,7 @@ fn catalog_group(definition: &str) -> Option<CatalogGroup> {
         ("core", "and" | "or" | "all-conditions" | "any-conditions") => CALCULATE,
         ("core", "register" | "close-handle" | "close-stream" | "next-item") => TOOLS,
         ("core", _) => FLOW,
-        (preset, _) if preset.starts_with("preset:") => FLOW,
+        (id, _) if preset::is_preset(id) => FLOW,
         _ => return None,
     })
 }
@@ -941,12 +938,12 @@ pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'stati
             ("catalog-triggers", "node-family-events")
         }
         (
-            "preset:signal"
-            | "preset:wireless-value"
-            | "preset:wireless-pulse"
-            | "preset:rising-edge"
-            | "preset:falling-edge"
-            | "preset:deadband",
+            preset::SIGNAL
+            | preset::WIRELESS_VALUE
+            | preset::WIRELESS_PULSE
+            | preset::RISING_EDGE
+            | preset::FALLING_EDGE
+            | preset::DEADBAND,
             _,
         ) => ("catalog-triggers", "node-family-events"),
         ("core", "call" | "return" | "function-entry" | "function-outputs") => {
@@ -955,7 +952,7 @@ pub(crate) fn catalog_section(definition: &str) -> Option<(&'static str, &'stati
         ("core", name) if name.contains("variable") || name.contains("shared") => {
             ("variables", "node-family-state")
         }
-        ("core", _) | ("preset:guard", _) => match catalog_group(definition)?.key {
+        ("core", _) | (preset::GUARD, _) => match catalog_group(definition)?.key {
             "catalog-math" => ("catalog-logic", "node-family-math"),
             _ => {
                 let group = catalog_group(definition)?;
@@ -1330,7 +1327,7 @@ mod tests {
                     groups
                         .iter()
                         .flat_map(|(_, items)| items)
-                        .all(|item| !item.id.starts_with("preset:"))
+                        .all(|item| !preset::is_preset(&item.id))
                 );
             }
         }
@@ -1612,8 +1609,8 @@ mod tests {
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         for (id, legacy) in [
-            (intrinsic::INCREMENT_COUNTER, "preset:increment"),
-            (intrinsic::DECREMENT_COUNTER, "preset:decrement"),
+            (intrinsic::INCREMENT_COUNTER, preset::INCREMENT),
+            (intrinsic::DECREMENT_COUNTER, preset::DECREMENT),
         ] {
             let node = editor.add_node_at(&mut host, legacy, [0.0, 0.0]).unwrap();
             assert!(editor.declarations().unwrap().variables.is_empty());
@@ -1668,7 +1665,7 @@ mod tests {
             let found = discover(&host, query, language);
             assert!(!found.iter().any(|item| matches!(
                 item.definition.as_str(),
-                "preset:signal" | "preset:wireless-pulse"
+                preset::SIGNAL | preset::WIRELESS_PULSE
             )));
             if query.is_empty() {
                 for id in [intrinsic::EMIT, intrinsic::ON_EVENT] {
@@ -1758,7 +1755,7 @@ mod tests {
                 .any(|r| r.definition == intrinsic::EMIT)
         );
         let sender = editor
-            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .add_node_at(&mut host, preset::SIGNAL, [0.0, 0.0])
             .unwrap();
         editor.open_menu(
             crate::MenuTarget::Node(sender),
@@ -1801,11 +1798,11 @@ mod tests {
     fn catalog_groups_related_operations_under_common_headings() {
         for (nodes, expected) in [
             (
-                [intrinsic::ON_MANUAL, intrinsic::ON_EVENT, "preset:signal"],
+                [intrinsic::ON_MANUAL, intrinsic::ON_EVENT, preset::SIGNAL],
                 "Triggers & signals",
             ),
             (
-                [intrinsic::BRANCH, intrinsic::SEQUENCE, "preset:guard"],
+                [intrinsic::BRANCH, intrinsic::SEQUENCE, preset::GUARD],
                 "Control flow",
             ),
             (
@@ -1960,7 +1957,7 @@ mod tests {
             assert!(
                 !found
                     .iter()
-                    .any(|node| node.definition == "preset:wireless-value")
+                    .any(|node| node.definition == preset::WIRELESS_VALUE)
             );
         }
     }
@@ -1971,7 +1968,7 @@ mod tests {
         assert!(
             !discover(&host, "detector de inactividad", "es")
                 .iter()
-                .any(|node| node.definition == "preset:watchdog")
+                .any(|node| node.definition == preset::WATCHDOG)
         );
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
@@ -1980,10 +1977,10 @@ mod tests {
             !editor
                 .quick_choices(&host, "heartbeat timeout")
                 .into_iter()
-                .any(|choice| choice.definition == "preset:watchdog")
+                .any(|choice| choice.definition == preset::WATCHDOG)
         );
         let emitter = editor
-            .add_node_at(&mut host, "preset:watchdog", [0.0, 0.0])
+            .add_node_at(&mut host, preset::WATCHDOG, [0.0, 0.0])
             .unwrap();
         let draft = &editor.document.as_ref().unwrap().draft;
         let doc = draft.document();

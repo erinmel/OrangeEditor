@@ -5,6 +5,7 @@
 //! None of them runs anything; a flow of the document is changed only when the front
 //! end hands the draft's text to [`Host::update`].
 use super::*;
+use crate::preset;
 use draft::refused;
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::catalog::intrinsic_id as intrinsic;
@@ -786,12 +787,12 @@ impl Host {
         at: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         match definition {
-            "preset:watchdog" => self.watchdog_commands(draft, at),
-            "preset:wireless-value" => self.wireless_value_commands(draft, at),
-            "preset:wireless-pulse" => self
+            preset::WATCHDOG => self.watchdog_commands(draft, at),
+            preset::WIRELESS_VALUE => self.wireless_value_commands(draft, at),
+            preset::WIRELESS_PULSE => self
                 .signal_commands(draft, at, "Pulse", true)
                 .map(|([sender, _], commands)| (sender, commands)),
-            "preset:signal" => self
+            preset::SIGNAL => self
                 .signal_commands(draft, at, "Signal", false)
                 .map(|([sender, _], commands)| (sender, commands)),
             _ => self.node_commands(draft, definition, at, "node"),
@@ -1059,12 +1060,12 @@ impl Host {
         identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let definition = match definition {
-            "preset:increment" => intrinsic::INCREMENT_COUNTER,
-            "preset:decrement" => intrinsic::DECREMENT_COUNTER,
-            "preset:rising-edge" => intrinsic::RISING_EDGE,
-            "preset:falling-edge" => intrinsic::FALLING_EDGE,
-            "preset:deadband" => intrinsic::CHANGE_BEYOND_TOLERANCE,
-            "preset:guard" => intrinsic::BRANCH,
+            preset::INCREMENT => intrinsic::INCREMENT_COUNTER,
+            preset::DECREMENT => intrinsic::DECREMENT_COUNTER,
+            preset::RISING_EDGE => intrinsic::RISING_EDGE,
+            preset::FALLING_EDGE => intrinsic::FALLING_EDGE,
+            preset::DEADBAND => intrinsic::CHANGE_BEYOND_TOLERANCE,
+            preset::GUARD => intrinsic::BRANCH,
             _ => definition,
         };
         let version = self

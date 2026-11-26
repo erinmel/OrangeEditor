@@ -55,6 +55,7 @@ use crate::controls::{Dropdown as _, Surface};
 use canvas::Canvas;
 use i18n::{t, tf};
 use orange_host::intrinsic;
+use orange_host::preset;
 use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
     StopMode, lines,
@@ -948,7 +949,7 @@ impl Editor {
         let draft = self.editing()?;
         let multi = matches!(
             definition,
-            "preset:signal" | "preset:wireless-pulse" | "preset:wireless-value" | "preset:watchdog"
+            preset::SIGNAL | preset::WIRELESS_PULSE | preset::WIRELESS_VALUE | preset::WATCHDOG
         );
         let before = multi.then(|| {
             draft
@@ -3286,7 +3287,7 @@ mod tests {
         let presets = all
             .iter()
             .flat_map(|(_, items)| items)
-            .filter(|item| item.id.starts_with("preset:"))
+            .filter(|item| preset::is_preset(&item.id))
             .count();
         assert_eq!(count(&all), offered + host.conversions().len() + presets);
         // Conversions are found by Spanish words too.

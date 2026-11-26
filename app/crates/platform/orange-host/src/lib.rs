@@ -37,6 +37,7 @@ mod organise;
 mod packages;
 mod persist;
 mod port_authority;
+pub mod preset;
 mod preview;
 mod search;
 mod services;

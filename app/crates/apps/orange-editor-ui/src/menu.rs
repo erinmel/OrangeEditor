@@ -670,7 +670,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         let sender = editor
-            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .add_node_at(&mut host, orange_host::preset::SIGNAL, [0.0, 0.0])
             .unwrap();
         let first = editor
             .graph()
