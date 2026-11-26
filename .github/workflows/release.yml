@@ -83,7 +83,9 @@ jobs:
       # cpal's ALSA backend (orange-audio) links the system library.
       - name: Install ALSA development headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       # No dependency cache: release binaries build from clean inputs so a poisoned cache cannot reach signed output.
       - name: Build the selected executable with locked release inputs
         shell: bash

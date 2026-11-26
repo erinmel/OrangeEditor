@@ -18,7 +18,10 @@ $linked = & ldd $BinaryPath
 $linked | Write-Host
 if ($linked -match 'not found') { throw 'The program links a library the system does not have.' }
 
-# What the launch checks need: a virtual display and software rendering.
+# What the launch checks need: a virtual display and software rendering. Only
+# Ubuntu's own repositories are needed, and the runner's Microsoft repository can
+# refuse requests and fail the whole update.
+& sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
 & sudo apt-get update
 & sudo apt-get install --yes --no-install-recommends xvfb mesa-vulkan-drivers libgl1-mesa-dri libegl1 libxkbcommon-x11-0
 
