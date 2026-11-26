@@ -565,13 +565,15 @@ mod tests {
             "2001:db8::1",
             "::ffff:8.8.8.8",
         ];
-        for address in local.map(|text| text.parse::<IpAddr>().unwrap()) {
-            assert!(Reach::Local.allows(address), "{address}");
-            assert!(!Reach::Internet.allows(address), "{address}");
-        }
-        for address in public.map(|text| text.parse::<IpAddr>().unwrap()) {
-            assert!(Reach::Internet.allows(address), "{address}");
-            assert!(!Reach::Local.allows(address), "{address}");
+        let sides = [
+            (&local[..], Reach::Local, Reach::Internet),
+            (&public[..], Reach::Internet, Reach::Local),
+        ];
+        for (addresses, reach, other) in sides {
+            for address in addresses.iter().map(|text| text.parse::<IpAddr>().unwrap()) {
+                assert!(reach.allows(address), "{address}");
+                assert!(!other.allows(address), "{address}");
+            }
         }
     }
 

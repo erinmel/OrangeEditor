@@ -11,9 +11,7 @@ use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 /// Opens a finite HTTP media response for an explicitly configured source.
 /// Redirects are disabled and the response reader enforces the byte limit.
 pub fn media_reader(url: &str, max_bytes: u64) -> Result<impl std::io::Read + Send + Sync, String> {
-    let address = url
-        .parse::<ureq::http::Uri>()
-        .map_err(|_| "invalid audio URL")?;
+    let address = url.parse::<Uri>().map_err(|_| "invalid audio URL")?;
     if !matches!(address.scheme_str(), Some("http" | "https"))
         || address
             .authority()
@@ -127,8 +125,9 @@ impl Resolver for FilteredResolver {
         timeout: NextTimeout,
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
         let resolved = DefaultResolver::default().resolve(uri, config, timeout)?;
+        let Self(accepts) = *self;
         let mut allowed = self.empty();
-        for address in resolved.iter().filter(|address| (self.0)(address.ip())) {
+        for address in resolved.iter().filter(|address| accepts(address.ip())) {
             allowed.push(*address);
         }
         if allowed.is_empty() {

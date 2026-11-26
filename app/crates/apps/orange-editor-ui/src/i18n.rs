@@ -136,13 +136,10 @@ pub(crate) fn message_relevance(
                     .filter_map(|tag| TEXT.message(tag, id))
             })
             .collect();
-        let fields = active
-            .iter()
-            .map(std::borrow::Cow::as_ref)
-            .chain(extra.iter().copied());
+        let fields = active.iter().map(Cow::as_ref).chain(extra.iter().copied());
         let local = query.relevance(fields.clone()).map(|rank| (rank, false));
         let all = query
-            .relevance(fields.chain(fallback.iter().map(std::borrow::Cow::as_ref)))
+            .relevance(fields.chain(fallback.iter().map(Cow::as_ref)))
             .map(|rank| (rank, true));
         local.into_iter().chain(all).min()
     })

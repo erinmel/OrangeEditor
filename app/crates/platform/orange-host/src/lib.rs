@@ -1521,7 +1521,8 @@ impl HttpClient for PluginHttp {
             Reach::Internet => return Err("plain HTTP reaches only local addresses".into()),
         };
         let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        (self.0)(
+        let Self(transport) = *self;
+        transport(
             &request.method,
             &request.url,
             &request.headers,
