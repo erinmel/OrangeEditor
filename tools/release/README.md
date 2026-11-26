@@ -1,14 +1,22 @@
 # Desktop release contract
 
-Release CD is implemented in [release.yml](../../.github/workflows/release.yml). The workspace builds the `orange-editor` executable from `orange-desktop`. [.github/release.json](../../.github/release.json) keeps package and binary unset and qualification disabled until the native adapters and their evidence are ready. Configuration validation succeeds. An attempted release stops at preflight.
+Release CD is implemented in [release.yml](../../.github/workflows/release.yml). The workspace builds the `orange-editor` executable from `orange-desktop`. [.github/release.json](../../.github/release.json) selects that package and binary and declares `unsigned_preview`; `qualified` stays false until a rehearsal has passed on every platform, so a tagged release still stops at preflight.
 
-Before enabling CD, the executable work unit must select its package and binary, declare a reviewed license, choose release features/assets/runtime baselines, and implement the three native adapters below. `qualified` is an explicit maintainer declaration backed by the applicable WU-12/G5 or documented early-preview qualification evidence; it is not inferred from passing unit tests. Any later feature/target change requires renewed review.
+Before the first release, the package needs a reviewed license declaration (the root `Cargo.toml` `license` field and a `LICENSE` file, which the adapters ship beside the program), a passing rehearsal, and `qualified: true`.
+
+**Unsigned previews (2026-11-26).** With `"unsigned_preview": true`, only prerelease tags such as `v0.1.0-preview.1` release; a stable tag is refused. Receipts still report the signing checks (`signature`, `timestamp`, `notarization`, `staple`) but may report them `false`; every other check must pass. The release notes are [unsigned-preview.md](unsigned-preview.md), which tells people how to get past SmartScreen and Gatekeeper and how to check the checksums and provenance attestation. Signing adapters replace this once accounts exist.
+
+**Rehearsals.** A manual run of the workflow rehearses by default: it builds, packages, installs and launches every platform from the chosen commit without a tag, qualification or license, and never publishes. Use one to qualify the adapters before tagging.
+
+**Packages and baselines.** Linux builds and packages on Ubuntu 22.04 (glibc 2.35), so the packages also run on Ubuntu 24.04 and later, Debian 12 and later, Fedora and Arch: a `.tar.gz` and a `.deb` that depends on libc6 2.35 and ALSA. Windows ships a `.zip`. macOS ships a `.dmg` holding an ad-hoc-signed `OrangeEditor.app` for macOS 11 or later. Each adapter checks the real package: it unpacks or installs it fresh and launches the installed program with `--screenshot`, which draws the window and closes it. Linux launches on an Xvfb display with Mesa's software renderers.
+
+The executable work unit also chooses release features, assets and runtime baselines. The three native adapters below implement packaging. `qualified` is an explicit maintainer declaration backed by the applicable WU-12/G5 or documented early-preview qualification evidence; it is not inferred from passing unit tests. Any later feature/target change requires renewed review.
 
 Release triggers are annotated `v<package-version>` tags (including prerelease versions), or manual dispatch on such a tag. The tag must identify the checked-out commit and be an ancestor of protected `main`. Release branches need an explicit extension before separate release-line tags are accepted. Publication rechecks the live tag's commit and never overwrites an existing GitHub release. Do not move published tags.
 
 ## Native packaging adapters
 
-Provide `tools/release/linux.ps1`, `windows.ps1` and `macos.ps1` as real implementations when their application artifacts exist. They run under PowerShell on native Ubuntu x64, Windows x64/MSVC and macOS arm64 builders, with arguments:
+`tools/release/linux.ps1`, `windows.ps1` and `macos.ps1` share [common.ps1](common.ps1). They run under PowerShell on native Ubuntu 22.04 x64, Windows x64/MSVC and macOS arm64 builders, with arguments:
 
 ```text
 -BinaryPath <built executable>
@@ -21,7 +29,7 @@ Each adapter must bundle the executable, assets and required runtime libraries i
 
 Required receipt checks:
 
-| Platform | `target` | Required true checks |
+| Platform | `target` | Required true checks (signing checks may be false in an unsigned preview) |
 |---|---|---|
 | Linux | `x86_64-unknown-linux-gnu` | `dependencies`, `installation`, `launch` |
 | Windows | `x86_64-pc-windows-msvc` | `signature`, `timestamp`, `installation`, `launch` |
