@@ -115,6 +115,13 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
 - **Services** come from `ServicePackage`s: compiled in (`Host::with_services`) or loaded
   from native libraries. Opening a document opens a session for each connection its
   nodes name; graph-scoped sessions belong to the flow, shared ones to the host.
+- **Workspace** (2026-11-26). `Host::share_variables` declares what flows share: the
+  `workspace`-scope variables and events of one document. A flow whose graph uses
+  either runs against that workspace; one that uses workspace events joins the
+  host's workspace bus when it opens or is replaced. A Dispatch on a workspace event
+  reaches every other flow that listens to it, never its sender, on that flow's next
+  turn. Flows with workspace events pump while holding the bus, so their turns take
+  it one at a time; flows without them never wait on it ([03](03-data-and-execution.md)).
 - **Persistent variables** have one writer for each graph ID or workspace state
   directory. A second host or an offline edit must acquire the same file lock before
   writing. A replacement with persistent variables writes the new declarations even
