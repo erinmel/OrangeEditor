@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {inspectConfig, releasePlan, inspectReceipt} from './release.mjs';
+import {inspectConfig, releasePlan, rehearsalPlan, inspectReceipt} from './release.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,31 @@ test('unconfigured library workspace cannot produce a release', () => {
 test('library, unknown package and unlicensed executable are rejected', () => {
   assert.throws(() => inspectConfig({...config, package: 'missing'}, metadata), /workspace member/);
   assert.throws(() => inspectConfig(config, {...metadata, packages: [{...member, targets: [{name: 'orange-editor', kind: ['lib']}]}]}), /executable/);
-  assert.throws(() => inspectConfig(config, {...metadata, packages: [{...member, license: null}]}), /license/);
+  const unlicensed = {...metadata, packages: [{...member, license: null}]};
+  assert.equal(inspectConfig(config, unlicensed), unlicensed.packages[0]);
+  assert.throws(() => releasePlan(config, unlicensed, 'v1.2.3', () => true), /license/);
+});
+test('an unsigned preview publishes only prerelease tags and may skip signing checks', () => {
+  const preview = {...config, unsigned_preview: true};
+  const prerelease = {...metadata, packages: [{...member, version: '1.2.3-preview.1'}]};
+  assert.throws(() => releasePlan(preview, metadata, 'v1.2.3', () => true), /prerelease/);
+  assert.equal(releasePlan(preview, prerelease, 'v1.2.3-preview.1', () => true).unsigned, true);
+  assert.equal(releasePlan(config, metadata, 'v1.2.3', () => true).unsigned, false);
+  assert.throws(() => inspectConfig({...config, unsigned_preview: 'yes'}, metadata), /boolean/);
+  const unsigned = {...receipt, checks: {...receipt.checks, signature: false, timestamp: false}};
+  assert.deepEqual(inspectReceipt(unsigned, 'windows', '1.2.3', 'abc', true), receipt.files);
+  assert.throws(() => inspectReceipt(unsigned, 'windows', '1.2.3', 'abc'), /signature/);
+  // Waived checks must still be reported, and the install and launch checks still pass.
+  const {signature, ...missing} = unsigned.checks;
+  assert.throws(() => inspectReceipt({...unsigned, checks: missing}, 'windows', '1.2.3', 'abc', true), /signature/);
+  assert.throws(() => inspectReceipt({...unsigned, checks: {...unsigned.checks, launch: false}}, 'windows', '1.2.3', 'abc', true), /launch/);
+});
+test('a rehearsal needs the package and every adapter but no tag, qualification or license', () => {
+  const unqualified = {...config, qualified: false};
+  const unlicensed = {...metadata, packages: [{...member, license: null}]};
+  assert.equal(rehearsalPlan(unqualified, unlicensed, () => true).version, '1.2.3');
+  assert.throws(() => rehearsalPlan({qualified: false, package: null, binary: null}, metadata, () => true), /package and binary/);
+  assert.throws(() => rehearsalPlan(unqualified, metadata, file => !file.includes('linux')), /linux/);
 });
 test('qualification, exact version and every native packager are required', () => {
   assert.throws(() => releasePlan({...config, qualified: false}, metadata, 'v1.2.3', () => true), /qualified/);

@@ -9,36 +9,58 @@ export const platforms = {
   windows: {target: 'x86_64-pc-windows-msvc', checks: ['signature', 'timestamp', 'installation', 'launch']},
   macos: {target: 'aarch64-apple-darwin', checks: ['signature', 'notarization', 'staple', 'installation', 'launch']},
 };
+/// Checks an unsigned preview may report as not done. Every other check must pass.
+export const signingChecks = ['signature', 'timestamp', 'notarization', 'staple'];
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const releaseTag = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export function inspectConfig(config, metadata) {
   if (!config || typeof config.qualified !== 'boolean') throw new Error('Release configuration must declare qualified as a boolean.');
+  if (config.unsigned_preview !== undefined && typeof config.unsigned_preview !== 'boolean') throw new Error('unsigned_preview must be a boolean when present.');
   if (config.package === null && config.binary === null && !config.qualified) return null;
   if (!identifier.test(config.package ?? '') || !identifier.test(config.binary ?? '')) throw new Error('Configure an explicit release package and binary.');
   const member = metadata.packages.find(pkg => metadata.workspace_members.includes(pkg.id) && pkg.name === config.package);
   if (!member) throw new Error('Release package is not a workspace member.');
   if (!member.targets.some(target => target.kind.includes('bin') && target.name === config.binary)) throw new Error('Release target is not a workspace executable.');
-  if (!member.license && !member.license_file) throw new Error('The release package needs a reviewed license declaration.');
   return member;
 }
 
-export function releasePlan(config, metadata, tag, exists) {
-  const member = inspectConfig(config, metadata);
-  if (!member || !config.qualified) throw new Error('Desktop release is not configured/qualified: add the real executable and complete packaging/signing/runtime qualification before releasing.');
-  if (!releaseTag.test(tag) || tag.slice(1) !== member.version) throw new Error('Annotated v<version> release tag must match the executable package version.');
+function requireAdapters(exists) {
   for (const platform of Object.keys(platforms)) {
     if (!exists(`tools/release/${platform}.ps1`)) throw new Error(`Missing qualified packaging adapter: tools/release/${platform}.ps1`);
   }
-  return {package: config.package, binary: config.binary, version: member.version};
 }
 
-export function inspectReceipt(receipt, platform, version, commit) {
+/// A release from an annotated tag. An unsigned preview may only be a prerelease.
+export function releasePlan(config, metadata, tag, exists) {
+  const member = inspectConfig(config, metadata);
+  if (!member || !config.qualified) throw new Error('Desktop release is not configured/qualified: add the real executable and complete packaging/signing/runtime qualification before releasing.');
+  if (!member.license && !member.license_file) throw new Error('The release package needs a reviewed license declaration.');
+  if (!releaseTag.test(tag) || tag.slice(1) !== member.version) throw new Error('Annotated v<version> release tag must match the executable package version.');
+  const unsigned = config.unsigned_preview === true;
+  if (unsigned && !tag.includes('-')) throw new Error('An unsigned preview needs a prerelease tag such as v0.1.0-preview.1.');
+  requireAdapters(exists);
+  return {package: config.package, binary: config.binary, version: member.version, unsigned};
+}
+
+/// A rehearsal builds, packages and verifies every platform from any commit, without
+/// a tag, qualification or license, and never publishes.
+export function rehearsalPlan(config, metadata, exists) {
+  const member = inspectConfig(config, metadata);
+  if (!member) throw new Error('Configure the release package and binary before rehearsing.');
+  requireAdapters(exists);
+  return {package: config.package, binary: config.binary, version: member.version, unsigned: config.unsigned_preview === true};
+}
+
+export function inspectReceipt(receipt, platform, version, commit, unsigned = false) {
   const contract = platforms[platform];
   if (Object.keys(receipt).some(key => !['target', 'version', 'commit', 'checks', 'files'].includes(key))) throw new Error('Unexpected release receipt field.');
   if (!contract || receipt.target !== contract.target || receipt.version !== version || receipt.commit !== commit) throw new Error('Release receipt does not match platform, version and source commit.');
   if (Object.keys(receipt.checks ?? {}).some(check => !contract.checks.includes(check))) throw new Error('Unexpected release verification field.');
-  for (const check of contract.checks) if (receipt.checks?.[check] !== true) throw new Error(`Release receipt lacks passing ${platform}/${check} evidence.`);
+  for (const check of contract.checks) {
+    const waived = unsigned && signingChecks.includes(check);
+    if (waived ? typeof receipt.checks?.[check] !== 'boolean' : receipt.checks?.[check] !== true) throw new Error(`Release receipt lacks passing ${platform}/${check} evidence.`);
+  }
   if (!Array.isArray(receipt.files) || !receipt.files.length || new Set(receipt.files).size !== receipt.files.length) throw new Error('Release receipt must list unique package files.');
   for (const file of receipt.files) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.(zip|tar\.gz|msi|dmg|pkg|deb|rpm|AppImage)$/.test(file) || file !== path.basename(file)) throw new Error('Invalid release package filename.');
@@ -49,7 +71,7 @@ export function inspectReceipt(receipt, platform, version, commit) {
 function verifyDirectory(directory, platform, version, commit, requireChecksums = false) {
   if (!fs.lstatSync(path.join(directory, 'receipt.json')).isFile()) throw new Error('Release receipt must be a regular file.');
   const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'receipt.json'), 'utf8'));
-  const files = inspectReceipt(receipt, platform, version, commit);
+  const files = inspectReceipt(receipt, platform, version, commit, process.env.RELEASE_UNSIGNED === 'true');
   if (fs.readdirSync(directory).some(file => ![...files, 'receipt.json', 'SHA256SUMS'].includes(file))) throw new Error('Unexpected file in release output directory.');
   const sums = files.map(file => {
     const filename = path.join(directory, file);
@@ -86,17 +108,24 @@ function main() {
       console.log(member ? 'Release configuration has a valid executable; qualification is checked only on release.' : 'Release configuration is valid but disabled: no desktop executable is configured.');
       return;
     }
-    const tag = process.env.RELEASE_TAG ?? '';
-    const plan = releasePlan(config, graph, tag, file => fs.existsSync(file) && fs.lstatSync(file).isFile());
-    // Publishing is restricted to annotated tags from the protected default branch.
-    const ref = `refs/tags/${tag}`;
-    if (execFileSync('git', ['cat-file', '-t', ref], {encoding: 'utf8'}).trim() !== 'tag') throw new Error('Release tag must be annotated.');
-    const taggedCommit = execFileSync('git', ['rev-parse', `${ref}^{commit}`], {encoding: 'utf8'}).trim();
+    const exists = file => fs.existsSync(file) && fs.lstatSync(file).isFile();
     const head = execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
-    if (taggedCommit !== head) throw new Error('Checkout does not match release tag.');
-    execFileSync('git', ['merge-base', '--is-ancestor', head, 'origin/main']);
+    const rehearsal = process.env.RELEASE_REHEARSAL === 'true';
+    let plan;
+    if (rehearsal) {
+      plan = rehearsalPlan(config, graph, exists);
+    } else {
+      const tag = process.env.RELEASE_TAG ?? '';
+      plan = releasePlan(config, graph, tag, exists);
+      // Publishing is restricted to annotated tags from the protected default branch.
+      const ref = `refs/tags/${tag}`;
+      if (execFileSync('git', ['cat-file', '-t', ref], {encoding: 'utf8'}).trim() !== 'tag') throw new Error('Release tag must be annotated.');
+      const taggedCommit = execFileSync('git', ['rev-parse', `${ref}^{commit}`], {encoding: 'utf8'}).trim();
+      if (taggedCommit !== head) throw new Error('Checkout does not match release tag.');
+      execFileSync('git', ['merge-base', '--is-ancestor', head, 'origin/main']);
+    }
     if (!process.env.GITHUB_OUTPUT) throw new Error('Release plan requires GitHub Actions outputs.');
-    fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries({...plan, commit: head}).map(([key, value]) => `${key}=${value}`).join('\n') + '\n');
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries({...plan, commit: head, rehearsal}).map(([key, value]) => `${key}=${value}`).join('\n') + '\n');
   } else if (command === 'verify') {
     const [directory, platform] = args;
     verifyDirectory(directory, platform, process.env.RELEASE_VERSION, process.env.RELEASE_COMMIT);

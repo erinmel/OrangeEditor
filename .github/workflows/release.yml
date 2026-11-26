@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      rehearsal:
+        description: Build, package and verify every platform without publishing
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -22,6 +27,8 @@ jobs:
       binary: ${{ steps.plan.outputs.binary }}
       version: ${{ steps.plan.outputs.version }}
       commit: ${{ steps.plan.outputs.commit }}
+      unsigned: ${{ steps.plan.outputs.unsigned }}
+      rehearsal: ${{ steps.plan.outputs.rehearsal }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,6 +42,8 @@ jobs:
         name: Require a qualified executable and immutable release identity
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+          # A manual run rehearses unless told otherwise; a tag push always releases.
+          RELEASE_REHEARSAL: ${{ github.event_name == 'workflow_dispatch' && inputs.rehearsal }}
         run: node tools/release.mjs plan
 
   validate:
@@ -52,7 +61,8 @@ jobs:
       matrix:
         include:
           - platform: linux
-            os: ubuntu-24.04
+            # glibc 2.35: packages built here also run on Debian 12, Fedora and Arch.
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             suffix: ''
           - platform: windows
@@ -70,6 +80,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain
+      # cpal's ALSA backend (orange-audio) links the system library.
+      - name: Install ALSA development headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       # No dependency cache: release binaries build from clean inputs so a poisoned cache cannot reach signed output.
       - name: Build the selected executable with locked release inputs
         shell: bash
@@ -93,7 +107,7 @@ jobs:
       matrix:
         include:
           - platform: linux
-            os: ubuntu-24.04
+            os: ubuntu-22.04
           - platform: windows
             os: windows-2022
           - platform: macos
@@ -107,6 +121,7 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+      RELEASE_UNSIGNED: ${{ needs.preflight.outputs.unsigned }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,6 +161,8 @@ jobs:
   publish:
     name: 5 · attest + publish verified packages
     needs: [preflight, package]
+    # A rehearsal stops once every platform's packages are verified.
+    if: needs.preflight.outputs.rehearsal != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-publish
@@ -157,6 +174,7 @@ jobs:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
       RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+      RELEASE_UNSIGNED: ${{ needs.preflight.outputs.unsigned }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,4 +202,5 @@ jobs:
           mapfile -t packages < "$RUNNER_TEMP/release/publish-files.txt"
           flags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" "${packages[@]}" "$RUNNER_TEMP/release/SHA256SUMS" --verify-tag --title "$RELEASE_TAG" --generate-notes "${flags[@]}"
+          if [[ "$RELEASE_UNSIGNED" == true ]]; then flags+=(--notes-file tools/release/unsigned-preview.md); else flags+=(--generate-notes); fi
+          gh release create "$RELEASE_TAG" "${packages[@]}" "$RUNNER_TEMP/release/SHA256SUMS" --verify-tag --title "$RELEASE_TAG" "${flags[@]}"
