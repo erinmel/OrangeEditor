@@ -24,6 +24,8 @@ mod edit;
 mod effects;
 mod flow;
 pub use flow::Events;
+/// The IDs of the core language nodes, so front ends name them by constant, not text.
+pub use orange_model::catalog::intrinsic_id as intrinsic;
 pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
 mod bundled_hints;
 mod flows;
@@ -92,7 +94,7 @@ pub use draft::{Draft, MAX_UNDO, OpenReport};
 pub use edit::{ForEachModeImpact, NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
 pub use flows::ManualPayload;
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
-pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
+pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE, canonical_locale};
 pub use literals::{InputState, LiteralEditor, PortDetails};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,

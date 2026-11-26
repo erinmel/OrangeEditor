@@ -55,6 +55,13 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
 }
 
 pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
+    if node.definition == "core/coalesce" {
+        match port.id.as_str() {
+            "value" => return t("optional-value-input").to_owned(),
+            "fallback" => return t("if-missing-input").to_owned(),
+            _ => {}
+        }
+    }
     log_part_label(node, &port.id)
         .or_else(|| port.label.clone())
         .or_else(|| input_label(node, &port.id).map(str::to_owned))
@@ -1567,6 +1574,21 @@ impl Editor {
                             && node.definition != "org.orange.audio/multiband-spectrum"
                         {
                             section(ui, t("ports"));
+                            if node.definition == "core/switch"
+                                && node
+                                    .ports
+                                    .iter()
+                                    .find(|port| port.input && port.id == "key")
+                                    .and_then(|port| port.ty.as_deref())
+                                    .is_some_and(|ty| {
+                                        self.document.as_ref().is_some_and(|doc| {
+                                            host.enum_choices(&doc.draft, ty).is_some()
+                                        })
+                                    })
+                                && ui.button(t("switch-enum-cases")).clicked()
+                            {
+                                change = Some(Change::AddEnumCases);
+                            }
                             if let Some(asked) = Self::variadic_fields(ui, &node) {
                                 change = Some(asked);
                             }
@@ -1632,6 +1654,12 @@ impl Editor {
                 let _ = self.set_input(host, (node.id, &port), typed.as_deref());
             }
             Change::OmitRecordField(port, ty) => self.omit_record_field(host, node.id, &port, ty),
+            Change::AddEnumCases => {
+                if let Some(draft) = self.editing() {
+                    let result = host.add_enum_cases(draft, node.id);
+                    let _ = self.edited(host, result);
+                }
+            }
             Change::AddPort(port) => {
                 let _ = self.add_port(host, node.id, &port);
             }
@@ -1824,9 +1852,9 @@ impl Editor {
             } else if measurement_time {
                 t("audio-setting-window-ms").to_owned()
             } else if matches!(field, Field::Time) {
-                tf("in-milliseconds", &[("name", words(name).into())])
+                tf("in-milliseconds", &[("name", setting_name(name).into())])
             } else {
-                words(name)
+                setting_name(name)
             };
             let hover = Some(
                 if let Some(help) = audio_trigger_help(node, name) {
@@ -2535,6 +2563,7 @@ enum Change {
     Input(String, Option<String>),
     OmitRecordField(String, orange_host::TypeExpr),
     AddPort(String),
+    AddEnumCases,
     RemovePort(String),
     EventTiming(Option<EventTiming>),
     /// Declare a variable and name it at the setting.
@@ -2643,6 +2672,13 @@ pub(crate) fn words(name: &str) -> String {
     text
 }
 
+fn setting_name(name: &str) -> String {
+    let key = format!("setting-{}", name.replace('_', "-"));
+    orange_host::Catalogs::built_in()
+        .message(&i18n::language(), &key)
+        .map_or_else(|| words(name), std::borrow::Cow::into_owned)
+}
+
 /// A port's name as a card or the panel shows it: an instance of a variadic port
 /// (`branch#0`) is counted from one ("branch 1"), and words are spaced.
 /// A port the host's catalogues name in the current language shows that name.
@@ -2664,11 +2700,17 @@ pub(crate) fn setting_choice_label<'a>(
     if choice.starts_with("local/") {
         return type_name(choice).into();
     }
-    setting_choice_caption(node, choice).into()
+    if let Some(label) = setting_choice_caption(node, choice) {
+        return label.into();
+    }
+    let key = format!("setting-choice-{}", choice.replace('_', "-"));
+    orange_host::Catalogs::built_in()
+        .message(&i18n::language(), &key)
+        .unwrap_or_else(|| choice.into())
 }
 
-fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
-    match (node.definition.as_str(), choice) {
+fn setting_choice_caption(node: &NodeView, choice: &str) -> Option<&'static str> {
+    Some(match (node.definition.as_str(), choice) {
         ("core/on-watch", _) => watch_label(choice),
         ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
         ("core/for-each", "list") => t("for-each-list"),
@@ -2696,8 +2738,8 @@ fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
             "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
             "unix-nanoseconds",
         ) => t("timestamp-unix-nanoseconds"),
-        _ => choice,
-    }
+        _ => return None,
+    })
 }
 
 /// What a node of a package this host lacks says it needs: the package and, when the
@@ -3279,7 +3321,11 @@ impl Editor {
                 .map(str::to_owned)
                 .or_else(|| port.label.clone())
                 .unwrap_or_else(|| port_label(&port.id));
-            let side = if port.input { "in" } else { "out" };
+            let side = if port.input {
+                t("value-side-input")
+            } else {
+                t("value-side-output")
+            };
             let freshness = if stale { t("previous-suffix") } else { "" };
             let response = http && !port.input && port.id == "response";
             let title = if response {

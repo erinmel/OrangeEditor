@@ -16,7 +16,7 @@ use orange_model::catalog::TextRef;
 /// catalogue messages `concept-<id>`, their one-line purposes `concept-<id>-purpose`.
 pub const CONCEPTS: &[&str] = &[
     "trigger", "math", "compare", "logic", "text", "time", "audio", "network", "file", "variable",
-    "loop", "list", "data",
+    "loop", "list", "data", "color",
 ];
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
@@ -224,6 +224,20 @@ impl Host {
         names
     }
 
+    /// Translated success captions, keyed by definition ID and source caption.
+    pub fn outcome_names(&self, locale: &str) -> Vec<(String, (String, String))> {
+        self.nodes()
+            .filter_map(|info| {
+                let label = info.presentation?.then_label.as_ref()?;
+                let translated = self.catalogs.message(locale, &node_key(&label.key))?;
+                Some((
+                    info.definition.definition.id.as_str().to_owned(),
+                    (label.fallback.clone(), translated.into_owned()),
+                ))
+            })
+            .collect()
+    }
+
     fn rank(
         &self,
         info: &NodeInfo<'_>,
@@ -235,7 +249,7 @@ impl Host {
         let key = node_key(id);
         // The name in the search's language, and in English too.
         let label = fold_search(&self.label_in(info, locale));
-        let english = fold_search(&info.label());
+        let english = fold_search(&self.label_in(info, crate::SOURCE_LANGUAGE));
         let mut aliases: Vec<String> = self
             .catalogs
             .words(locale, &format!("alias-{key}"))
@@ -288,9 +302,46 @@ impl Host {
             description.push(' ');
             description.push_str(&fold_search(&text.fallback));
         }
-        if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
-            description.push(' ');
-            description.push_str(&fold_search(&text));
+        let purpose = format!("purpose-{key}");
+        for locale in [locale, crate::SOURCE_LANGUAGE] {
+            if let Some(text) = self.catalogs.message(locale, &purpose) {
+                description.push(' ');
+                description.push_str(&fold_search(&text));
+            }
+        }
+        let mut settings = Vec::new();
+        if let Some(properties) = info
+            .definition
+            .config_schema
+            .as_ref()
+            .and_then(|schema| schema["properties"].as_object())
+        {
+            for (name, schema) in properties
+                .iter()
+                .filter(|(_, schema)| schema["readOnly"] != true)
+            {
+                settings.push(fold_search(&name.replace(['_', '-'], " ")));
+                let caption = format!("setting-{}", node_key(name));
+                for locale in [locale, crate::SOURCE_LANGUAGE] {
+                    if let Some(text) = self.catalogs.message(locale, &caption) {
+                        settings.push(fold_search(&text));
+                    }
+                }
+                for value in schema["enum"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                {
+                    settings.push(fold_search(&value.replace('-', " ")));
+                    let caption = format!("setting-choice-{}", node_key(value));
+                    for locale in [locale, crate::SOURCE_LANGUAGE] {
+                        if let Some(text) = self.catalogs.message(locale, &caption) {
+                            settings.push(fold_search(&text));
+                        }
+                    }
+                }
+            }
         }
 
         // The whole search against the name and aliases, as a phrase.
@@ -324,7 +375,10 @@ impl Host {
                     .any(|concept| starts_a_word(concept, word))
                 {
                     Some(Match::Concept)
-                } else if description.contains(word) {
+                } else if description.contains(word)
+                    || (word.chars().count() >= 3 || word.contains(cjk))
+                        && settings.iter().any(|setting| starts_a_word(setting, word))
+                {
                     Some(Match::Description)
                 } else if one_typo_from_any(word, &label, &aliases, &concept_words) {
                     Some(Match::Typo)
@@ -478,7 +532,14 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
 /// Lower case without accents, so "numero" finds "número".
 /// Fold case and common Latin accents for locale-aware search.
 pub fn fold_search(text: &str) -> String {
-    text.chars()
+    let mut folded = String::with_capacity(text.len());
+    let chars = text
+        .chars()
+        .map(|c| match c {
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(u32::from(c) - 0xfee0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            c => c,
+        })
         .flat_map(char::to_lowercase)
         .map(|c| match c {
             'á' | 'à' | 'â' | 'ä' | 'ã' => 'a',
@@ -488,8 +549,19 @@ pub fn fold_search(text: &str) -> String {
             'ú' | 'ù' | 'û' | 'ü' => 'u',
             'ç' => 'c',
             c => c,
-        })
-        .collect()
+        });
+    for c in chars {
+        match c {
+            '\u{303}' if folded.ends_with('n') => {
+                folded.pop();
+                folded.push('\u{f1}');
+            }
+            '\u{300}' | '\u{301}' | '\u{302}' | '\u{303}' | '\u{308}' | '\u{327}'
+                if folded.ends_with(['a', 'e', 'i', 'o', 'u', 'c']) => {}
+            c => folded.push(c),
+        }
+    }
+    folded
 }
 
 /// Whether one search word finds `text`, a name the user gave such as a channel: folded
@@ -501,11 +573,15 @@ pub fn word_finds(word: &str, text: &str) -> bool {
     !word.is_empty() && (text.contains(&word) || one_typo_from_any(&word, &text, &[], &[]))
 }
 
-/// Whether a word of `text` (split at spaces and dashes) starts with `search`.
+/// Text without word separators, such as Japanese, also supports interior matches.
 fn starts_a_word(text: &str, search: &str) -> bool {
-    text.split([' ', '-'])
-        .any(|word| !word.is_empty() && word.starts_with(search))
-        || text.starts_with(search)
+    text.starts_with(search)
+        || text.split([' ', '-']).any(|word| word.starts_with(search))
+        || (search.contains(cjk) && text.contains(search))
+}
+
+fn cjk(c: char) -> bool {
+    matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ff66}'..='\u{ff9f}')
 }
 
 /// Whether `word` is one letter off a word of the name, an alias or a concept, or off
@@ -593,9 +669,16 @@ mod tests {
             // categories and ports that English makes from their IDs; every other
             // message translates one.
             for id in words.ids(tag) {
-                let extra_words = ["alias-", "category-", "name-", "palette-", "port-"]
-                    .iter()
-                    .any(|prefix| id.starts_with(prefix));
+                let extra_words = [
+                    "alias-",
+                    "category-",
+                    "name-",
+                    "palette-",
+                    "port-",
+                    "setting-",
+                ]
+                .iter()
+                .any(|prefix| id.starts_with(prefix));
                 assert!(
                     extra_words || english.contains(&id),
                     "{tag} has {id}, which English lacks"

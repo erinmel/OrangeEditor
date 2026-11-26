@@ -72,7 +72,7 @@ fn edit_timing() {
             (document.replace_graph(graph), failure_routes, port_details)
         });
         let touched = time!("touched", runs, {
-            touched_by_edit(&before, &document.graph)
+            touched_by_edit(&before, &document.graph, false)
         });
         document.declared = time!("declarations", runs, { host.declarations(&document.draft) });
         let graph = document.graph.clone();

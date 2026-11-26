@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn settings_and_shortcuts_search_accept_localized_and_english_terms() {
+    let mut editor = Editor::new();
+    for (saved, tag, display, shortcut) in [
+        ("es_mx", "es-MX", "cuadricula spacing", "archivos save"),
+        ("ja_jp", "ja-JP", "グリッド spacing", "ファイル save"),
+        ("en", "en-US", "grid spacing", "files save"),
+    ] {
+        editor.restore_preferences(&serde_json::json!({ "version": 1, "language": saved }));
+        assert_eq!(editor.language(), tag);
+        assert_eq!(editor.preferences()["language"], tag);
+        assert!(Section::Display.matches(display));
+        assert!(!Section::Search.matches(display));
+        assert!(editor.shortcut_matches_any(shortcut));
+    }
+}
+
+#[test]
 fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
     let ctx = egui::Context::default();
     theme::apply(&ctx);

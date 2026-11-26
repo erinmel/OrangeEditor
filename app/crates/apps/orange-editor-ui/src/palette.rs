@@ -174,50 +174,14 @@ pub(crate) fn channel_items(
     search: &str,
     listen_found: bool,
     listen: &str,
+    language: &str,
 ) -> Vec<PaletteItem> {
-    subscriber_items(
-        channels,
-        search,
-        (listen_found, listen),
-        LISTEN_TERMS,
-        BIND_LISTEN,
-        "listen-bound-help",
-    )
-}
-
-/// Words that name a Listen in either language rather than a channel, so `listen door
-/// bell` and `escuchar puerta` look for the channels `door bell` and `puerta`.
-const LISTEN_TERMS: &[&str] = &[
-    "listen",
-    "escuchar",
-    "on",
-    "al",
-    "event",
-    "evento",
-    "receive",
-    "recibir",
-    "subscribe",
-    "suscribir",
-    "subscriber",
-    "suscriptor",
-    "receiver",
-    "receptor",
-    "signal",
-    "señal",
-    "wireless",
-    "inalámbrico",
-    "channel",
-    "canal",
-];
-/// Quick-bind items for Listen on an existing event channel.
-fn subscriber_items(
-    channels: &[(String, String)],
-    search: &str,
-    (subscriber_found, subscriber): (bool, &str),
-    terms: &[&str],
-    prefix: &str,
-    help: &str,
-) -> Vec<PaletteItem> {
+    let localized = text_in(language, "listen-search-words", "");
+    let english = text_in("en", "listen-search-words", "");
+    let terms: Vec<_> = localized
+        .split_whitespace()
+        .chain(english.split_whitespace())
+        .collect();
     let query = orange_host::fold_search(search.trim());
     let words: Vec<&str> = query.split_whitespace().collect();
     // The words that name the subscriber kind, in either language and with a typo,
@@ -233,7 +197,7 @@ fn subscriber_items(
         .copied()
         .filter(|word| !names_kind(word))
         .collect();
-    let kind_named = subscriber_found || rest.len() < words.len();
+    let kind_named = listen_found || rest.len() < words.len();
     channels
         .iter()
         .filter(|(_, name)| {
@@ -245,10 +209,16 @@ fn subscriber_items(
                 }
         })
         .map(|(id, name)| PaletteItem {
-            id: format!("{prefix}{id}"),
-            label: format!("{subscriber} · {name}"),
+            id: format!("{BIND_LISTEN}{id}"),
+            label: format!("{listen} · {name}"),
             package: String::new(),
-            purpose: crate::i18n::tf(help, &[("channel", name.clone().into())]),
+            purpose: crate::i18n::catalogs()
+                .format(
+                    language,
+                    "listen-bound-help",
+                    &[("channel", name.as_str().into())],
+                )
+                .map_or_else(String::new, std::borrow::Cow::into_owned),
         })
         .collect()
 }
@@ -284,6 +254,7 @@ impl PaletteCache {
                 search,
                 listen.is_some(),
                 &listen.unwrap_or_else(|| text_in(language, "listen-node", "Listen")),
+                language,
             );
             if !bound.is_empty() {
                 let group = self
@@ -411,8 +382,8 @@ pub fn palette_in(host: &Host, search: &str, language: &str) -> Vec<(String, Vec
             found.purpose
         };
         let item = PaletteItem {
+            label: placement_label(&found.definition, found.label, language),
             id: found.definition,
-            label: found.label,
             package: found.package,
             purpose,
         };
@@ -472,18 +443,22 @@ pub(crate) fn matching_conversions<'a>(
     search: &str,
     language: &str,
 ) -> Vec<PaletteItem> {
-    let wanted = search.to_lowercase();
+    let wanted = orange_host::fold_search(search);
     conversions
-        .map(|conversion| conversion_item(conversion, language))
-        .filter(|item| {
-            let terms = format!(
-                "{} {} convert conversion convertir conversión {}",
+        .filter_map(|conversion| {
+            let item = conversion_item(conversion, language);
+            let terms = orange_host::fold_search(&format!(
+                "{} {} {} {} {}",
                 item.label,
                 item.purpose,
+                conversion_label_in(conversion, "en"),
+                text_in(language, "conversion-search-words", ""),
                 conversion_words(&item.id)
-            )
-            .to_lowercase();
-            wanted.split_whitespace().all(|word| terms.contains(word))
+            ));
+            wanted
+                .split_whitespace()
+                .all(|word| terms.contains(word))
+                .then_some(item)
         })
         .collect()
 }
@@ -617,6 +592,41 @@ impl CatalogGroup {
     }
 }
 
+const TEMPLATES: CatalogGroup = CatalogGroup {
+    key: "catalog-templates",
+    fallback: "Templates",
+    representative: "core/on-event",
+    help: "catalog-templates-help",
+};
+const SHORTCUTS: CatalogGroup = CatalogGroup {
+    key: "catalog-shortcuts",
+    fallback: "Configured shortcuts",
+    representative: "core/on-watch",
+    help: "catalog-shortcuts-help",
+};
+const LOOP_ENDS: CatalogGroup = CatalogGroup {
+    key: "catalog-loop-ends",
+    fallback: "Loop parts",
+    representative: "core/repeat-end",
+    help: "catalog-loop-ends-help",
+};
+
+pub(crate) fn placement_label(definition: &str, label: String, language: &str) -> String {
+    let count = match definition {
+        "preset:watchdog" => 3,
+        "core/repeat-begin" | "core/map-begin" | "core/filter-begin" | "core/fold-begin" => 2,
+        _ => return label,
+    };
+    crate::i18n::catalogs()
+        .format(
+            language,
+            "palette-template-label",
+            &[("name", label.as_str().into()), ("count", count.into())],
+        )
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or(label)
+}
+
 const FLOW: CatalogGroup = CatalogGroup {
     key: "catalog-flow",
     fallback: "Flow & triggers",
@@ -655,9 +665,11 @@ const TOOLS: CatalogGroup = CatalogGroup {
 };
 
 fn catalog_group_rank(category: &str, language: &str) -> usize {
-    for (rank, group) in [FLOW, DATA, CALCULATE, SERVICES, AUDIO, TOOLS]
-        .iter()
-        .enumerate()
+    for (rank, group) in [
+        FLOW, DATA, CALCULATE, SERVICES, AUDIO, TOOLS, TEMPLATES, SHORTCUTS, LOOP_ENDS,
+    ]
+    .iter()
+    .enumerate()
     {
         if category == group.name(language) || category == group.fallback {
             return rank;
@@ -685,7 +697,17 @@ fn catalog_group(definition: &str) -> Option<CatalogGroup> {
         }
         ("core", "number" | "whole-number" | "bool" | "text" | "value" | "true-or-false") => DATA,
         ("core", name) if name.contains("variable") || name.contains("shared") => DATA,
-        ("preset:increment" | "preset:decrement", _) => DATA,
+        ("core", "repeat-begin" | "map-begin" | "filter-begin" | "fold-begin")
+        | ("preset:watchdog", _) => TEMPLATES,
+        ("core", "repeat-end" | "map-end" | "filter-end" | "fold-end") => LOOP_ENDS,
+        (
+            "preset:increment"
+            | "preset:decrement"
+            | "preset:rising-edge"
+            | "preset:falling-edge"
+            | "preset:deadband",
+            _,
+        ) => SHORTCUTS,
         ("core", "and" | "or" | "all-conditions" | "any-conditions") => CALCULATE,
         ("core", "register" | "close-handle" | "close-stream" | "next-item") => TOOLS,
         ("core", _) => FLOW,
@@ -844,26 +866,20 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
     let mut nodes = host.search_nodes(search, language);
     let query = orange_host::fold_search(search.trim());
     if !query.is_empty() {
-        let counter = preset_match(
-            &query,
-            language,
-            "counter-increment",
-            "Increment",
-            "bump+ bump + count up",
-        ) || preset_match(
-            &query,
-            language,
-            "counter-decrement",
-            "Decrement",
-            "bump- bump - count down",
-        );
         for found in host.search_nodes("", language) {
-            let alias = family(&found.definition).is_some_and(|(_, _, words)| {
-                query.split_whitespace().all(|word| words.contains(word))
+            if nodes.iter().any(|node| node.definition == found.definition) {
+                continue;
+            }
+            let alias = family(&found.definition).is_some_and(|(key, label, words)| {
+                let terms =
+                    orange_host::fold_search(&format!("{words} {}", text_in(language, key, label)));
+                query.split_whitespace().all(|word| terms.contains(word))
             });
             let catalog = catalog_group(&found.definition).is_some_and(|group| {
                 let section = catalog_section(&found.definition)
-                    .map_or_else(String::new, |(key, _)| text_in(language, key, key));
+                    .map_or_else(String::new, |(key, _)| {
+                        format!("{} {}", text_in(language, key, ""), text_in("en", key, ""))
+                    });
                 let terms = orange_host::fold_search(&format!(
                     "{} {} {} {section}",
                     group.name(language),
@@ -872,29 +888,10 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                 ));
                 query.split_whitespace().all(|word| terms.contains(word))
             });
-            let deadband = found.definition == "core/on-watch"
-                && preset_match(
-                    &query,
-                    language,
-                    "when-deadband",
-                    "Deadband",
-                    "change tolerance",
-                );
-            let watchdog = found.definition == "core/on-event"
-                && preset_match(
-                    &query,
-                    language,
-                    "watchdog-preset",
-                    "Idle Watchdog",
-                    "heartbeat timeout",
-                );
-            if (alias
-                || catalog
-                || deadband
-                || watchdog
-                || counter && found.definition == "core/update-variable")
-                && !nodes.iter().any(|node| node.definition == found.definition)
-            {
+            let preset = PRESETS.iter().any(|&(parent, _, key, label, _)| {
+                parent == found.definition && preset_match(&query, language, key, label)
+            });
+            if alias || catalog || preset {
                 nodes.push(found);
             }
         }
@@ -902,7 +899,59 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
     search_with_presets(nodes, search, language)
 }
 
-fn preset_match(query: &str, language: &str, key: &str, label: &str, aliases: &str) -> bool {
+const PRESETS: [(&str, &str, &str, &str, &str); 6] = [
+    (
+        "core/on-watch",
+        "preset:rising-edge",
+        "rising-edge",
+        "Rising Edge",
+        "Fires when a boolean becomes true.",
+    ),
+    (
+        "core/on-watch",
+        "preset:falling-edge",
+        "falling-edge",
+        "Falling Edge",
+        "Fires when a boolean becomes false.",
+    ),
+    (
+        "core/on-watch",
+        "preset:deadband",
+        "when-deadband",
+        "Deadband",
+        "Fires when a numeric value moves beyond a tolerance.",
+    ),
+    (
+        "core/update-variable",
+        "preset:increment",
+        "counter-increment",
+        "Increment",
+        "Add a step to a counter.",
+    ),
+    (
+        "core/update-variable",
+        "preset:decrement",
+        "counter-decrement",
+        "Decrement",
+        "Subtract a step from a counter.",
+    ),
+    (
+        "core/on-event",
+        "preset:watchdog",
+        "watchdog-preset",
+        "Idle Watchdog",
+        "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
+    ),
+];
+
+fn preset_match(query: &str, language: &str, key: &str, label: &str) -> bool {
+    let aliases = match key {
+        "when-deadband" => "change tolerance",
+        "watchdog-preset" => "heartbeat timeout",
+        "counter-increment" => "bump+ bump + count up",
+        "counter-decrement" => "bump- bump - count down",
+        _ => "",
+    };
     let terms = orange_host::fold_search(&format!(
         "{label} {} {aliases}",
         text_in(language, key, label)
@@ -919,79 +968,22 @@ pub(crate) fn search_with_presets(
     let mut choices = Vec::with_capacity(results.len());
     for base in results {
         choices.extend(
-            [
-                (
-                    "core/on-watch",
-                    "preset:rising-edge",
-                    "rising-edge",
-                    "Rising Edge",
-                    "Fires when a boolean becomes true.",
-                ),
-                (
-                    "core/on-watch",
-                    "preset:falling-edge",
-                    "falling-edge",
-                    "Falling Edge",
-                    "Fires when a boolean becomes false.",
-                ),
-                (
-                    "core/on-watch",
-                    "preset:deadband",
-                    "when-deadband",
-                    "Deadband",
-                    "Fires when a numeric value moves beyond a tolerance.",
-                ),
-                (
-                    "core/update-variable",
-                    "preset:increment",
-                    "counter-increment",
-                    "Increment",
-                    "Add a step to a counter.",
-                ),
-                (
-                    "core/update-variable",
-                    "preset:decrement",
-                    "counter-decrement",
-                    "Decrement",
-                    "Subtract a step from a counter.",
-                ),
-                (
-                    "core/on-event",
-                    "preset:watchdog",
-                    "watchdog-preset",
-                    "Idle Watchdog",
-                    "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
-                ),
-                (
-                    "core/branch",
-                    "preset:guard",
-                    "guard-preset",
-                    "Guard",
-                    "Wire True to continue only when the condition passes.",
-                ),
-            ]
-            .into_iter()
-            .filter(|(parent, ..)| *parent == base.definition)
-            .filter_map(|(_, id, key, fallback, purpose)| {
-                let label = text_in(language, key, fallback);
-                let purpose = text_in(language, &format!("{key}-help"), purpose);
-                let aliases = match id {
-                    "preset:deadband" => "change tolerance",
-                    "preset:watchdog" => "heartbeat timeout",
-                    "preset:wireless-value" => "store read shared value",
-                    "preset:increment" => "bump+ bump + count up",
-                    "preset:decrement" => "bump- bump - count down",
-                    _ => "",
-                };
-                preset_match(&query, language, key, fallback, aliases).then(|| orange_host::Found {
-                    definition: id.to_owned(),
-                    label,
-                    package: base.package.clone(),
-                    category: base.category.clone(),
-                    purpose,
-                    matched: base.matched,
-                })
-            }),
+            PRESETS
+                .iter()
+                .copied()
+                .filter(|(parent, ..)| *parent == base.definition)
+                .filter_map(|(_, id, key, fallback, purpose)| {
+                    let label = text_in(language, key, fallback);
+                    let purpose = text_in(language, &format!("{key}-help"), purpose);
+                    preset_match(&query, language, key, fallback).then(|| orange_host::Found {
+                        definition: id.to_owned(),
+                        label,
+                        package: base.package.clone(),
+                        category: base.category.clone(),
+                        purpose,
+                        matched: base.matched,
+                    })
+                }),
         );
         choices.push(base);
     }
@@ -1050,27 +1042,64 @@ pub(crate) fn conversion_named(host: &Host, id: &str) -> Option<orange_host::Con
 
 /// A conversion as search shows it: "Float to Int (floor)".
 pub(crate) fn conversion_label(conversion: &orange_host::Conversion) -> String {
-    if let Some(label) = utf8_label(conversion.id()) {
-        return label.to_owned();
+    conversion_label_in(conversion, &crate::i18n::language())
+}
+
+fn conversion_label_in(conversion: &orange_host::Conversion, language: &str) -> String {
+    match conversion.id() {
+        "core/bytes-to-string" => return text_in(language, "decode-utf8", "Decode UTF-8"),
+        "core/bytes-to-string-lossy" => {
+            return text_in(
+                language,
+                "decode-utf8-lossy",
+                "Decode UTF-8 with replacement",
+            );
+        }
+        _ => {}
     }
-    let mut label = crate::conversion_name(&conversion.from, &conversion.to);
+    let name = |ty: &str| match ty {
+        "core/string@1" => text_in(language, "type-text", "Text"),
+        "core/bytes@1" => text_in(language, "type-bytes", "Bytes"),
+        "core/bool@1" => text_in(language, "type-bool", "Bool"),
+        "core/duration@1" => text_in(language, "type-duration", "Duration"),
+        "core/timestamp@1" => text_in(language, "type-timestamp", "Timestamp"),
+        orange_host::RGBA_TYPE => text_in(language, "type-rgba", "Color"),
+        _ => ty
+            .trim_start_matches("core/")
+            .strip_suffix("@1")
+            .unwrap_or(ty)
+            .trim_start_matches("core/")
+            .to_owned(),
+    };
+    let from = name(&conversion.from);
+    let to = name(&conversion.to);
+    let mut label = crate::i18n::catalogs()
+        .format(
+            language,
+            "conversion-title",
+            &[("from", from.as_str().into()), ("to", to.as_str().into())],
+        )
+        .map_or_else(|| format!("{from} → {to}"), std::borrow::Cow::into_owned);
     if !conversion.options.is_empty() {
-        let choices: Vec<&str> = conversion
+        let choices: Vec<String> = conversion
             .options
             .values()
-            .map(|value| match value.as_str() {
-                "seconds" => t("conversion-unit-seconds"),
-                "milliseconds" => t("conversion-unit-milliseconds"),
-                "microseconds" => t("conversion-unit-microseconds"),
-                "nanoseconds" => t("conversion-unit-nanoseconds"),
-                "minutes" => t("conversion-unit-minutes"),
-                "hours" => t("conversion-unit-hours"),
-                "truncate" => t("conversion-round-truncate"),
-                "floor" => t("conversion-round-floor"),
-                "ceiling" => t("conversion-round-ceiling"),
-                "nearest-even" => t("conversion-round-nearest"),
-                "reject" => t("conversion-overflow-reject"),
-                other => other,
+            .map(|value| {
+                let key = match value.as_str() {
+                    "seconds" => "conversion-unit-seconds",
+                    "milliseconds" => "conversion-unit-milliseconds",
+                    "microseconds" => "conversion-unit-microseconds",
+                    "nanoseconds" => "conversion-unit-nanoseconds",
+                    "minutes" => "conversion-unit-minutes",
+                    "hours" => "conversion-unit-hours",
+                    "truncate" => "conversion-round-truncate",
+                    "floor" => "conversion-round-floor",
+                    "ceiling" => "conversion-round-ceiling",
+                    "nearest-even" => "conversion-round-nearest",
+                    "reject" => "conversion-overflow-reject",
+                    other => other,
+                };
+                text_in(language, key, value)
             })
             .collect();
         label.push_str(&format!(" ({})", choices.join(", ")));
@@ -1114,7 +1143,7 @@ fn conversion_item(conversion: &orange_host::Conversion, language: &str) -> Pale
     };
     PaletteItem {
         id: conversion_id(conversion),
-        label: conversion_label(conversion),
+        label: conversion_label_in(conversion, language),
         package: String::new(),
         purpose,
     }
@@ -1131,6 +1160,39 @@ fn text_in(language: &str, key: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use orange_host::HostOptions;
+
+    #[test]
+    fn the_catalog_names_templates_and_numeric_conversions_unambiguously() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for (language, templates, cards) in [
+            ("en", "Templates", "cards"),
+            ("es", "Plantillas", "tarjetas"),
+        ] {
+            let groups = palette_in(&host, "", language);
+            let items = &groups.iter().find(|(name, _)| name == templates).unwrap().1;
+            assert_eq!(items.len(), 5);
+            assert!(items.iter().all(|item| item.label.contains(cards)));
+            let mut labels = std::collections::HashSet::new();
+            for item in groups
+                .iter()
+                .flat_map(|(_, items)| items)
+                .filter(|item| item.id.starts_with(CONVERSION))
+            {
+                assert!(
+                    labels.insert(item.label.as_str()),
+                    "{language}: {}",
+                    item.label
+                );
+            }
+        }
+        let result = palette_in(&host, "coalesce", "en");
+        assert!(
+            result
+                .iter()
+                .flat_map(|(_, items)| items)
+                .any(|item| item.id == "core/coalesce" && item.label == "Value or Fallback")
+        );
+    }
 
     #[test]
     fn counter_presets_share_an_initialized_signed_counter_and_offer_a_step() {
@@ -1221,7 +1283,7 @@ mod tests {
             ("e1".to_owned(), "Kick".to_owned()),
             ("e2".to_owned(), "Door bell".to_owned()),
         ];
-        let found = channel_items(&channels, "listen", true, "Listen");
+        let found = channel_items(&channels, "listen", true, "Listen", "en-US");
         assert_eq!(
             found
                 .iter()
@@ -1230,10 +1292,13 @@ mod tests {
             [format!("{BIND_LISTEN}e1"), format!("{BIND_LISTEN}e2")]
         );
         assert_eq!(found[0].label, "Listen · Kick");
-        let named = channel_items(&channels, "door", false, "Listen");
+        let named = channel_items(&channels, "door", false, "Listen", "en-US");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].id, format!("{BIND_LISTEN}e2"));
-        assert!(channel_items(&channels, "", true, "Listen").is_empty());
+        assert!(channel_items(&channels, "", true, "Listen", "en-US").is_empty());
+        let localized = channel_items(&channels, "受信 door", false, "イベントを受信", "ja-JP");
+        assert_eq!(localized.len(), 1);
+        assert!(localized[0].purpose.contains("チャンネル"));
     }
 
     #[test]
@@ -1532,19 +1597,19 @@ mod tests {
     }
 
     #[test]
-    fn guard_search_places_a_branch_with_a_boolean_condition() {
+    fn guard_search_finds_the_branch_with_a_boolean_condition() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         assert!(
             palette_in(&host, "guarda", "es")
                 .iter()
                 .flat_map(|(_, items)| items)
-                .any(|item| item.id == "preset:guard")
+                .any(|item| item.id == "core/branch")
         );
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
         let choice = editor.quick_choices(&host, "guard").remove(0);
-        assert_eq!(choice.definition, "preset:guard");
+        assert_eq!(choice.definition, "core/branch");
         let node = editor.pick_quick(&mut host, &choice).unwrap();
         let graph = editor.graph().unwrap();
         let card = graph.nodes.iter().find(|card| card.id == node).unwrap();

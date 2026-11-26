@@ -719,6 +719,7 @@ fn main() -> ExitCode {
                 .set_theme(eframe::egui::ThemePreference::System);
             orange_editor_ui::apply_theme(&creation.egui_ctx);
             orange_editor_ui::icons::install(&creation.egui_ctx);
+            install_japanese_font(&creation.egui_ctx);
             Ok(Box::new(desktop))
         }),
     );
@@ -731,8 +732,135 @@ fn main() -> ExitCode {
     }
 }
 
+/// Use the platform's Japanese text font for editor UI, names and input.
+fn install_japanese_font(ctx: &eframe::egui::Context) -> bool {
+    use eframe::egui::{FontData, FontFamily, FontInsert, FontPriority, InsertFontFamily};
+
+    #[cfg(target_os = "windows")]
+    let paths = {
+        let Some(windows) = std::env::var_os("WINDIR") else {
+            return false;
+        };
+        let fonts = std::path::PathBuf::from(windows).join("Fonts");
+        ["meiryo.ttc", "YuGothM.ttc", "msgothic.ttc"].map(|file| fonts.join(file))
+    };
+    #[cfg(target_os = "macos")]
+    let paths = ["/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    ];
+
+    let Some(bytes) = paths.into_iter().find_map(|path| std::fs::read(path).ok()) else {
+        return false;
+    };
+    ctx.add_font(FontInsert::new(
+        "orange-japanese",
+        FontData::from_owned(bytes),
+        [FontFamily::Proportional, FontFamily::Monospace]
+            .into_iter()
+            .map(|family| InsertFontFamily {
+                family,
+                priority: FontPriority::Lowest,
+            })
+            .collect(),
+    ));
+    true
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_offered_node_has_spanish_and_japanese_labels() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let offered: std::collections::HashSet<_> = host
+            .search_nodes("", "en-US")
+            .into_iter()
+            .map(|found| found.definition)
+            .collect();
+        for locale in ["es", "ja"] {
+            let mut missing = Vec::new();
+            for info in host.nodes() {
+                let id = info.definition.definition.id.as_str();
+                if !offered.contains(id) {
+                    continue;
+                }
+                let key = info
+                    .presentation
+                    .and_then(|shown| shown.label.as_ref())
+                    .map_or_else(|| format!("name-{id}"), |text| text.key.clone());
+                if !host
+                    .catalogs()
+                    .has(locale, &key.replace(['/', '.', '_'], "-"))
+                {
+                    missing.push(id);
+                }
+            }
+            assert!(
+                missing.is_empty(),
+                "{locale} missing node labels: {missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_search_uses_localized_settings_and_caption_keys() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        for (query, locale, id) in [
+            ("compresor umbral", "es-MX", "org.orange.audio/compressor"),
+            ("filtro paso bajo", "es-MX", "org.orange.audio/filter"),
+            ("フィルター ローパス", "ja-JP", "org.orange.audio/filter"),
+            (
+                "コンプレッサー しきい値",
+                "ja-JP",
+                "org.orange.audio/compressor",
+            ),
+            ("ＨＴＴＰ ヘッダー", "ja-JP", "org.orange.net/http-request"),
+        ] {
+            assert!(
+                host.search_nodes(query, locale)
+                    .iter()
+                    .any(|row| row.definition == id),
+                "{query} misses {id}"
+            );
+        }
+        assert!(
+            host.outcome_names("es-MX")
+                .iter()
+                .any(|(id, (source, localized))| id == "org.orange.net/ws-send"
+                    && source == "Queued"
+                    && localized == "En cola")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_japanese_fallback_renders_the_language_and_node_labels() {
+        use eframe::egui::{Context, FontId, RawInput};
+        let ctx = Context::default();
+        if !super::install_japanese_font(&ctx) {
+            return;
+        }
+        ctx.run_ui(RawInput::default(), |ui| {
+            for font in [FontId::proportional(14.0), FontId::monospace(14.0)] {
+                assert!(ui.fonts_mut(|fonts| fonts.has_glyphs(&font, "日本語・音声を再生")));
+            }
+        })
+        .drop_without_applying_deltas();
+    }
+
     #[test]
     fn raw_clipboard_keys_map_to_text_commands() {
         use eframe::egui::{Event, Key, Modifiers};

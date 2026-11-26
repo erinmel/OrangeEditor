@@ -144,22 +144,27 @@ impl Host {
     ) -> Result<bool, HostError> {
         let document = draft.document();
         let registry = self.registry_for(document);
-        let wired: std::collections::HashSet<_> = document
-            .root()
-            .edges
-            .values()
-            .map(|edge| &edge.to)
-            .collect();
+        let mut wired = std::collections::HashMap::new();
         let mut commands = Vec::new();
         for ((id, key), literal) in values {
             let port = edit::port_ref((id, key))?;
-            if wired.contains(&port) {
+            let body = document
+                .locate_node(id)
+                .ok_or_else(|| HostError::Document("the node for the input is absent".into()))?;
+            let connected = wired.entry(body).or_insert_with(|| {
+                document
+                    .body(body)
+                    .into_iter()
+                    .flat_map(|body| body.edges.values())
+                    .map(|edge| &edge.to)
+                    .collect::<std::collections::HashSet<_>>()
+            });
+            if connected.contains(&port) {
                 return Err(HostError::Document("the input is connected".into()));
             }
-            let node =
-                document.root().nodes.get(&id).ok_or_else(|| {
-                    HostError::Document("the node for the input is absent".into())
-                })?;
+            let node = document
+                .node(id)
+                .ok_or_else(|| HostError::Document("the node for the input is absent".into()))?;
             let contract = port_authority::fresh_contract(document, node, &registry)
                 .ok_or_else(|| HostError::Document("the input contract is unavailable".into()))?;
             let declared = contract.ports.iter().find(|entry| {

@@ -54,7 +54,15 @@ impl Names {
 
     /// Reads the names of a parsed graph.
     pub fn of_document(host: &Host, document: &orange_model::GraphDocument) -> Self {
-        let nodes = document.root().nodes.values().map(|node| {
+        Self::of_body(host, document, document.root())
+    }
+
+    pub(crate) fn of_body(
+        host: &Host,
+        document: &orange_model::GraphDocument,
+        body: &orange_model::document::GraphBody,
+    ) -> Self {
+        let nodes = body.nodes.values().map(|node| {
             (
                 node.id.to_string(),
                 node.definition.id.as_str().to_owned(),

@@ -29,25 +29,31 @@ pub(crate) enum Section {
 impl Section {
     const ALL: [Self; 3] = [Self::Search, Self::Display, Self::Shortcuts];
 
-    fn title(self) -> &'static str {
-        t(match self {
+    fn title_key(self) -> &'static str {
+        match self {
             Self::Search => "search-heading",
             Self::Display => "display-heading",
             Self::Shortcuts => "shortcuts-heading",
-        })
+        }
+    }
+
+    fn title(self) -> &'static str {
+        t(self.title_key())
     }
 
     fn matches(self, query: &str) -> bool {
         if query.is_empty() {
             return true;
         }
-        let labels: &[&str] = match self {
+        let mut labels = vec![self.title_key()];
+        labels.extend_from_slice(match self {
             Self::Search => &[
                 "search-section-words",
                 "settings-node-search",
                 "preview-node-cards",
                 "preview-names-only",
                 "settings-language",
+                "settings-language-help",
             ],
             Self::Display => &[
                 "display-section-words",
@@ -61,15 +67,15 @@ impl Section {
                 "wheel-pans",
                 "snap-grid",
                 "grid-type",
+                "grid-dots",
+                "grid-lines",
+                "grid-hidden",
                 "grid-spacing",
                 "wireless-opacity",
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
-        };
-        orange_host::fold_search(self.title()).contains(query)
-            || labels
-                .iter()
-                .any(|label| orange_host::fold_search(t(label)).contains(query))
+        });
+        i18n::matches_messages(query, &labels)
     }
 }
 

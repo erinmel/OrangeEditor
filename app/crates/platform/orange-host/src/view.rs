@@ -2,11 +2,11 @@
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
 use orange_model::catalog::{NominalAccess, Ports};
-use orange_model::document::PortRef;
 use orange_model::document::{
     ConfigValue, ConnectionDecl, EventDecl, FunctionDecl, NodeInstance, NodeKind, PortDirection,
     PortKind, SignatureSnapshot, VariableDecl,
 };
+use orange_model::document::{GraphBody, PortRef};
 use orange_model::id::{ConnectionId, EdgeId, EventDeclId, FunctionId, SignatureKey};
 use serde_json::{Value as Json, json};
 use std::collections::{HashMap, HashSet};
@@ -236,6 +236,38 @@ pub struct EnumChoice {
 }
 
 impl Host {
+    /// Record field IDs and display names, in schema order.
+    pub fn record_fields(&self, draft: &Draft, ty: &str) -> Option<Vec<(String, String)>> {
+        let document = draft.document();
+        let registry = self.registry_for(document);
+        let record = registry
+            .types()
+            .nominal_types()
+            .into_iter()
+            .find(|nominal| nominal.record && nominal.name == ty)?;
+        let fields = document.types().values().find_map(|local| {
+            if local.ty().as_str() == ty
+                && let TypeShape::Record { fields } = &local.shape
+            {
+                Some(fields)
+            } else {
+                None
+            }
+        });
+        Some(
+            record
+                .members
+                .into_iter()
+                .map(|id| {
+                    let name = fields
+                        .and_then(|fields| fields.iter().find(|field| field.id == id))
+                        .map_or_else(|| id.clone(), |field| field.name.clone());
+                    (id, name)
+                })
+                .collect(),
+        )
+    }
+
     /// The choices of enum type `ty` in a draft, in declared order, named as the
     /// document declares them; `None` when `ty` is not an enum it knows.
     pub fn enum_choices(&self, draft: &Draft, ty: &str) -> Option<Vec<EnumChoice>> {
@@ -546,7 +578,28 @@ impl Host {
         Ok(self.view_with(draft.document(), Some(&mut cache), Some(locale)))
     }
 
-    fn view_context<'a>(&'a self, document: &'a GraphDocument) -> ViewContext<'a> {
+    /// Projects a local function with the same ports and wire rules as the root canvas.
+    pub fn function_authoring_view(
+        &self,
+        draft: &Draft,
+        function: &str,
+        locale: &str,
+    ) -> Option<(String, AuthoringView)> {
+        let document = draft.document();
+        let function = document
+            .functions()
+            .get(&function.parse::<FunctionId>().ok()?)?;
+        Some((
+            function.name.clone(),
+            self.view_body(document, &function.body, None, Some(locale)),
+        ))
+    }
+
+    fn view_context<'a>(
+        &'a self,
+        document: &'a GraphDocument,
+        body: &GraphBody,
+    ) -> ViewContext<'a> {
         let labels: BTreeMap<String, String> = self
             .nodes()
             .map(|info| {
@@ -559,7 +612,7 @@ impl Host {
         // Index endpoints once. A port lookup must not scan every edge, including
         // when the graph is incomplete and exposes only implicit control ports.
         let mut connected: HashMap<_, HashSet<String>> = HashMap::new();
-        for edge in document.root().edges.values() {
+        for edge in body.edges.values() {
             for (end, input) in [(&edge.from, false), (&edge.to, true)] {
                 let _ = connected
                     .entry((end.node, input))
@@ -571,7 +624,7 @@ impl Host {
             document,
             locale: None,
             registry: self.registry_for(document),
-            names: Names::of_document(self, document),
+            names: Names::of_body(self, document, body),
             labels,
             places: document.editor().get("nodes"),
             connected,
@@ -603,7 +656,7 @@ impl Host {
             .find(|port| port.input == input && port.id == end.1)
     }
 
-    /// One top-level node's fresh port view; `None` when it or its exact provider is absent.
+    /// One node's fresh port view; `None` when it or its exact provider is absent.
     pub(crate) fn node_view(&self, document: &GraphDocument, node: NodeId) -> Option<NodeView> {
         self.lookup_node_view(document, node, false)
     }
@@ -623,8 +676,9 @@ impl Host {
         node: NodeId,
         complete_outcomes: bool,
     ) -> Option<NodeView> {
-        let node = document.root().nodes.get(&node)?;
-        let context = self.view_context(document);
+        let body = document.body(document.locate_node(node)?)?;
+        let node = body.nodes.get(&node)?;
+        let context = self.view_context(document, body);
         let view = self
             .node_view_in(&context, node, complete_outcomes, false)
             .0;
@@ -641,10 +695,19 @@ impl Host {
         cache: Option<&mut ViewCache>,
         locale: Option<&str>,
     ) -> AuthoringView {
-        let mut context = self.view_context(document);
+        self.view_body(document, document.root(), cache, locale)
+    }
+
+    fn view_body(
+        &self,
+        document: &GraphDocument,
+        body: &GraphBody,
+        cache: Option<&mut ViewCache>,
+        locale: Option<&str>,
+    ) -> AuthoringView {
+        let mut context = self.view_context(document, body);
         context.locale = locale;
         let complete_outcomes = locale.is_some();
-        let body = document.root();
         let project = |node| {
             let (view, failure_routes, port_details) =
                 self.node_view_in(&context, node, complete_outcomes, true);
@@ -771,6 +834,14 @@ impl Host {
             args.extend(node.type_pins.clone());
             args
         });
+        let switch_choices = (node.definition.id.as_str() == "core/switch")
+            .then(|| {
+                settled
+                    .as_ref()?
+                    .get("K")
+                    .and_then(|ty| enum_choices_in(document, registry, ty.as_str()))
+            })
+            .flatten();
         let mut variadic = Vec::new();
         let mut declared: Vec<PortView> = Vec::new();
         let mut details = Vec::new();
@@ -856,7 +927,23 @@ impl Host {
                     value: value.filter(|_| input),
                     default,
                     id,
-                    label: spectrum_band_label(node, &key).or_else(|| label.clone()),
+                    label: spectrum_band_label(node, &key)
+                        .or_else(|| {
+                            if port.port_id.as_str() != "case" {
+                                return None;
+                            }
+                            let variant = node
+                                .config
+                                .get("cases")?
+                                .get(instance?.to_string())?
+                                .as_str()?;
+                            switch_choices
+                                .as_ref()?
+                                .iter()
+                                .find(|choice| choice.id == variant)
+                                .map(|choice| choice.name.clone())
+                        })
+                        .or_else(|| label.clone()),
                 });
             }
         }
@@ -1017,13 +1104,29 @@ impl Host {
                 }
             }
         }
+        let marker_key = match definition.as_str() {
+            "core/function-entry" => Some("name-core-function-entry"),
+            "core/function-outputs" => Some("name-core-function-outputs"),
+            "core/return" => Some("name-core-return"),
+            _ => None,
+        };
+        let marker = marker_key.and_then(|key| {
+            self.catalogs
+                .message(locale.unwrap_or(SOURCE_LANGUAGE), key)
+        });
+        let mut name = names.called(&node.id);
+        if name == definition
+            && let Some(label) = &marker
+        {
+            name = label.to_string();
+        }
         let view = NodeView {
             id: node.id,
             detail,
-            name: names.called(&node.id),
-            kind: labels
-                .get(&definition)
-                .cloned()
+            name,
+            kind: marker
+                .map(Cow::into_owned)
+                .or_else(|| labels.get(&definition).cloned())
                 .or_else(|| (definition == "core/call").then(|| "Function".to_owned()))
                 .unwrap_or_else(|| definition.clone()),
             entry: kind == Some(NodeKind::Entry) && ports.iter().any(|port| port.exec),

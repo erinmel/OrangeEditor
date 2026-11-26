@@ -120,6 +120,71 @@ fn an_enum_input_offers_its_choices_by_name_and_shows_the_one_written() {
     assert_eq!(host.problems(&mut draft).unwrap(), []);
 }
 
+#[test]
+fn a_switch_adds_named_enum_cases_without_replacing_saved_wires() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&graph()).unwrap();
+    let switch = host
+        .add_node(&mut draft, "core/switch", [0.0, 0.0])
+        .unwrap();
+    host.choose_type(&mut draft, switch, "K", Some(&mood()))
+        .unwrap();
+    let choices = host.enum_choices(&draft, &mood()).unwrap();
+    host.set_input(&mut draft, (switch, "key"), Some(&choices[0].literal))
+        .unwrap();
+    assert!(host.add_enum_cases(&mut draft, switch).unwrap());
+    assert!(!host.add_enum_cases(&mut draft, switch).unwrap());
+    let view = host.draft_view(&draft).unwrap();
+    let card = view.nodes.iter().find(|node| node.id == switch).unwrap();
+    let calm = card
+        .ports
+        .iter()
+        .find(|port| port.label.as_deref() == Some("Calm"))
+        .unwrap()
+        .id
+        .clone();
+    assert!(
+        card.ports
+            .iter()
+            .any(|port| port.label.as_deref() == Some("Happy"))
+    );
+    host.connect(&mut draft, (switch, &calm), (node(2), "in"))
+        .unwrap();
+    let mood_id = MOOD.parse::<orange_host::TypeDeclId>().unwrap();
+    let mut declaration = draft.document().types()[&mood_id].clone();
+    let TypeShape::Enum { variants } = &mut declaration.shape else {
+        unreachable!()
+    };
+    variants[0].name = "Relaxed".into();
+    variants.push(VariantDecl {
+        id: "tired".into(),
+        name: "Tired".into(),
+        payload: None,
+    });
+    host.declare_type(&mut draft, declaration).unwrap();
+    assert!(host.add_enum_cases(&mut draft, switch).unwrap());
+    let view = host.draft_view(&draft).unwrap();
+    let card = view.nodes.iter().find(|node| node.id == switch).unwrap();
+    assert!(
+        card.ports.iter().any(|port| port.id == calm
+            && port.connected
+            && port.label.as_deref() == Some("Relaxed"))
+    );
+    assert!(
+        card.ports
+            .iter()
+            .any(|port| port.label.as_deref() == Some("Tired"))
+    );
+    assert!(draft.undo());
+    assert_eq!(
+        draft.document().node(switch).unwrap().config["cases"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 /// What node 2's `value` input shows on its card.
 fn shown_value(host: &Host, draft: &orange_host::Draft) -> Option<String> {
     let graph = host.draft_view(draft).unwrap();

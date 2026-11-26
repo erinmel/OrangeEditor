@@ -680,6 +680,7 @@ mod tests {
                 event,
                 Event {
                     shape: ValueShape::U64,
+                    pulse: false,
                 },
             )]),
             _registry: registry,

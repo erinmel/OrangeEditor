@@ -11,9 +11,9 @@ use orange_model::catalog::intrinsic_id as intrinsic;
 use orange_model::catalog::{NominalAccess, Ports, RegistrySnapshot};
 use orange_model::document::ConfigValue;
 use orange_model::document::{
-    ActivationPolicy, BodyRef, Edge, NodeInstance, NodeKind, PortRef, ProviderBinding,
+    ActivationPolicy, BodyRef, Edge, GraphBody, NodeInstance, NodeKind, PortRef, ProviderBinding,
 };
-use orange_model::id::{PortId, PortKey};
+use orange_model::id::{FunctionId, PortId, PortKey};
 use orange_model::{DocCommand, LayoutCommand};
 use serde_json::{Value as Json, json};
 
@@ -22,6 +22,10 @@ pub type PortEnd<'a> = (NodeId, &'a str);
 
 /// Both ends of a wire with owned port names.
 pub type WireEnds = ((NodeId, String), (NodeId, String));
+
+fn node_body(document: &GraphDocument, node: NodeId) -> Option<&GraphBody> {
+    document.body(document.locate_node(node)?)
+}
 
 /// Work a For Each mode change would discard from this draft.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +79,10 @@ fn reconfigure_for_each(
         body_wires: 0,
     };
     let mut edits = Vec::new();
-    for edge in draft.document().root().edges.values() {
+    for edge in node_body(draft.document(), node)
+        .into_iter()
+        .flat_map(|body| body.edges.values())
+    {
         let items_wire = edge.to == items;
         let old_body_wire =
             edge.from.node == node && stale.contains(&edge.from.port.port().as_str());
@@ -458,6 +465,78 @@ impl Host {
         Ok(PortKey::new(id, Some(next)).to_string())
     }
 
+    /// Adds missing enum cases to a Switch without changing its existing case IDs or wires.
+    pub fn add_enum_cases(&self, draft: &mut Draft, node: NodeId) -> Result<bool, HostError> {
+        let document = draft.document();
+        let instance = document
+            .node(node)
+            .filter(|node| node.definition.id.as_str() == intrinsic::SWITCH)
+            .ok_or_else(|| refused(&"choose a Switch node"))?;
+        let key = self
+            .input_view(document, (node, "key"))
+            .and_then(|port| port.ty)
+            .ok_or_else(|| refused(&"connect an enum to the Switch key"))?;
+        let variants = self
+            .enum_choices(draft, &key)
+            .ok_or_else(|| refused(&"the Switch key must be an enum"))?;
+        let port = orange_model::port_id!("case");
+        let state = instance.variadic.get(&port);
+        let order = state.map_or(&[][..], |state| state.order.as_slice());
+        let mut cases = instance
+            .config
+            .get("cases")
+            .and_then(Json::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut free = order
+            .iter()
+            .copied()
+            .filter(|id| !cases.contains_key(&id.to_string()))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let existing: std::collections::HashSet<_> = cases
+            .values()
+            .filter_map(Json::as_str)
+            .map(str::to_owned)
+            .collect();
+        let mut next = state.map_or(0, |state| state.next);
+        let mut count = order.len();
+        let mut commands = Vec::new();
+        for choice in variants
+            .into_iter()
+            .filter(|choice| !existing.contains(&choice.id))
+        {
+            let case = if let Some(case) = free.next() {
+                case
+            } else {
+                let case = next;
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| refused(&"no Switch case IDs remain"))?;
+                commands.push(DocCommand::InsertVariadic {
+                    node,
+                    port: port.clone(),
+                    at: count,
+                });
+                count += 1;
+                case
+            };
+            let _ = cases.insert(case.to_string(), json!(choice.id));
+        }
+        let mut config = instance.config.clone();
+        let cases = Json::Object(cases);
+        if config.get("cases") == Some(&cases) {
+            return Ok(false);
+        }
+        let _ = config.insert("cases".to_owned(), cases);
+        commands.push(DocCommand::SetConfig {
+            node,
+            config_version: instance.config_version,
+            config,
+        });
+        draft.commit(&self.registry_for(draft.document()), commands)
+    }
+
     /// Removes one instance of a variadic port (`branch#1`) with its wires and value.
     /// The fewest instances the port may have stay.
     pub fn remove_port(&self, draft: &mut Draft, at: PortEnd<'_>) -> Result<bool, HostError> {
@@ -607,6 +686,71 @@ impl Host {
         let (node, commands) = self.new_node_commands(draft, definition, at)?;
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
+    }
+
+    /// Adds one ordinary node to an existing local function.
+    pub fn add_function_node(
+        &self,
+        draft: &mut Draft,
+        function: &str,
+        definition: &str,
+        at: [f32; 2],
+    ) -> Result<NodeId, HostError> {
+        let function = function
+            .parse::<FunctionId>()
+            .ok()
+            .and_then(|id| draft.document().functions().get(&id))
+            .ok_or_else(|| refused(&"the document has no such local function"))?;
+        let body = BodyRef::Function(function.id);
+        let kind = function.kind;
+        if !self
+            .nodes()
+            .filter(|info| info.definition.definition.id.as_str() == definition)
+            .max_by_key(|info| info.definition.definition.version)
+            .is_some_and(|info| function_node_allowed(definition, info.definition.kind, kind))
+        {
+            return Err(refused(&"this node kind cannot be added to this function"));
+        }
+        let (node, mut commands) = self.node_commands(draft, definition, at, "node")?;
+        for command in &mut commands {
+            if let DocCommand::AddNode { body: target, .. } = command {
+                *target = body;
+            }
+        }
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(node)
+    }
+
+    /// Search the node kinds available inside the given local function.
+    pub fn search_function_nodes(
+        &self,
+        draft: &Draft,
+        function: &str,
+        search: &str,
+        locale: &str,
+    ) -> Vec<search::Found> {
+        let Some(function) = function
+            .parse::<FunctionId>()
+            .ok()
+            .and_then(|id| draft.document().functions().get(&id))
+        else {
+            return Vec::new();
+        };
+        let allowed: std::collections::HashSet<_> = self
+            .nodes()
+            .filter(|info| {
+                function_node_allowed(
+                    info.definition.definition.id.as_str(),
+                    info.definition.kind,
+                    function.kind,
+                )
+            })
+            .map(|info| info.definition.definition.id.as_str())
+            .collect();
+        self.search_nodes(search, locale)
+            .into_iter()
+            .filter(|node| allowed.contains(node.definition.as_str()))
+            .collect()
     }
 
     fn new_node_commands(
@@ -1153,6 +1297,12 @@ impl Host {
         from: PortEnd<'_>,
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
+        let document = draft.document();
+        let from_body = document.locate_node(from.0);
+        let body = from_body
+            .filter(|_| from_body == document.locate_node(to.0))
+            .and_then(|body| document.body(body))
+            .ok_or_else(|| refused(&"wire endpoints must belong to the same graph"))?;
         let exec = |end: PortEnd<'_>, input: bool| {
             self.wire_node_view(draft.document(), end.0)
                 .and_then(|node| {
@@ -1173,9 +1323,7 @@ impl Host {
             ));
         }
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
-        let mut commands: Vec<DocCommand> = draft
-            .document()
-            .root()
+        let mut commands: Vec<DocCommand> = body
             .edges
             .values()
             .filter(|edge| {
@@ -1187,8 +1335,9 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        if let Some(wanted) = self.for_each_wire_mode(draft, from, to) {
-            let instance = &draft.document().root().nodes[&to.0];
+        if let Some(wanted) = self.for_each_wire_mode(draft, from, to)
+            && let Some(instance) = body.nodes.get(&to.0)
+        {
             commands.extend(reconfigure_for_each(draft, instance, wanted, false)?.0);
             let mut config = instance.config.clone();
             let _ = config.insert("mode".to_owned(), json!(wanted));
@@ -1225,10 +1374,9 @@ impl Host {
         to: PortEnd<'_>,
     ) -> Option<&'static str> {
         let document = draft.document();
-        let instance =
-            document.root().nodes.get(&to.0).filter(|node| {
-                node.definition.id.as_str() == intrinsic::FOR_EACH && to.1 == "items"
-            })?;
+        let instance = document
+            .node(to.0)
+            .filter(|node| node.definition.id.as_str() == intrinsic::FOR_EACH && to.1 == "items")?;
         let source = self
             .node_view(document, from.0)?
             .ports
@@ -1261,7 +1409,7 @@ impl Host {
             "map" => "map",
             _ => return None,
         };
-        let instance = draft.document().root().nodes.get(&node)?;
+        let instance = draft.document().node(node)?;
         if instance.definition.id.as_str() != intrinsic::FOR_EACH
             || loop_mode(&instance.config) == Some(wanted)
         {
@@ -1315,11 +1463,9 @@ impl Host {
         input: bool,
     ) -> Result<bool, HostError> {
         let end = port_ref(at)?;
-        let commands: Vec<DocCommand> = draft
-            .document()
-            .root()
-            .edges
-            .values()
+        let commands: Vec<DocCommand> = node_body(draft.document(), at.0)
+            .into_iter()
+            .flat_map(|body| body.edges.values())
             .filter(|edge| {
                 if input {
                     edge.to == end
@@ -1354,7 +1500,7 @@ impl Host {
         let config: ConfigValue =
             serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
         let mut commands = Vec::new();
-        if let Some(instance) = draft.document().root().nodes.get(&node)
+        if let Some(instance) = draft.document().node(node)
             && instance.definition.id.as_str() == intrinsic::FOR_EACH
         {
             let wanted = match loop_mode(&config) {
@@ -1460,12 +1606,26 @@ impl Host {
     }
 }
 
+fn function_node_allowed(definition: &str, node: NodeKind, function: NodeKind) -> bool {
+    if matches!(
+        definition,
+        intrinsic::FUNCTION_ENTRY | intrinsic::FUNCTION_OUTPUTS | intrinsic::RETURN
+    ) {
+        return false;
+    }
+    match function {
+        NodeKind::Pure => node == NodeKind::Pure,
+        NodeKind::Volatile => matches!(node, NodeKind::Pure | NodeKind::Volatile),
+        NodeKind::Action => matches!(node, NodeKind::Pure | NodeKind::Volatile | NodeKind::Action),
+        NodeKind::Async => node != NodeKind::Entry,
+        NodeKind::Entry | NodeKind::Iterator => false,
+    }
+}
+
 fn disconnect_commands(draft: &Draft, from: &PortRef, to: &PortRef) -> Vec<DocCommand> {
-    draft
-        .document()
-        .root()
-        .edges
-        .values()
+    node_body(draft.document(), from.node)
+        .into_iter()
+        .flat_map(|body| body.edges.values())
         .filter(|edge| &edge.from == from && &edge.to == to)
         .map(|edge| DocCommand::Disconnect { edge: edge.id })
         .collect()
@@ -1571,6 +1731,14 @@ impl Host {
         from: PortEnd<'_>,
         to: PortEnd<'_>,
     ) -> Result<(Vec<DocCommand>, Vec<EdgeId>), HostError> {
+        let document = draft.document();
+        let body = document.locate_node(node);
+        if body.is_none()
+            || body != document.locate_node(from.0)
+            || body != document.locate_node(to.0)
+        {
+            return Err(refused(&"wire endpoints must belong to the same graph"));
+        }
         let ends = |id: NodeId| self.node_view(draft.document(), id);
         let source = ends(from.0)
             .and_then(|view| view.ports.into_iter().find(|p| !p.input && p.id == from.1))
@@ -1583,11 +1751,8 @@ impl Host {
         // way out (`orange_model::fit`). A node without a registered definition, such as
         // a function call, is matched on its ports' types as they are.
         let registry = self.registry_for(draft.document());
-        let definition = draft
-            .document()
-            .root()
-            .nodes
-            .get(&node)
+        let definition = document
+            .node(node)
             .and_then(|instance| registry.definition(&instance.definition));
         let mut fit =
             definition.map(|definition| orange_model::fit::PortFit::new(definition, &registry));

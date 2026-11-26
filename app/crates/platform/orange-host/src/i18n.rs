@@ -25,6 +25,19 @@ pub const SOURCE_LANGUAGE: &str = "en";
 /// 40% more length, as translations often have. Never offered as a translation.
 pub const PSEUDO_LANGUAGE: &str = "en-xa";
 
+/// Canonical language, script and region casing for a catalogue locale.
+/// Accepts underscores as separators for legacy OS and preference tags.
+pub fn canonical_locale(tag: &str) -> Option<String> {
+    tag.trim()
+        .parse::<LanguageIdentifier>()
+        .ok()
+        .map(|id| id.to_string())
+}
+
+fn lookup_tag(tag: &str) -> String {
+    tag.trim().replace('_', "-").to_ascii_lowercase()
+}
+
 type Bundle = fluent_bundle::concurrent::FluentBundle<Arc<FluentResource>>;
 
 /// Fluent catalogues by lower-case language tag.
@@ -125,7 +138,7 @@ impl Catalogs {
     /// Adds the messages of `text` to language `locale`. A message already there is
     /// replaced. Nothing is added when the text has an error.
     pub fn add(&mut self, locale: &str, text: &str) -> Result<(), CatalogError> {
-        let tag = locale.trim().to_ascii_lowercase();
+        let tag = lookup_tag(locale);
         let id: LanguageIdentifier = tag.parse().map_err(|_| CatalogError {
             line: 0,
             reason: "the language tag is not BCP 47 shaped".to_owned(),
@@ -189,7 +202,7 @@ impl Catalogs {
     /// Whether language `tag` itself, without falling back, has message `id`.
     pub fn has(&self, tag: &str, id: &str) -> bool {
         self.languages
-            .get(&tag.to_ascii_lowercase())
+            .get(&lookup_tag(tag))
             .is_some_and(|language| language.bundle.has_message(id))
     }
 
@@ -197,7 +210,7 @@ impl Catalogs {
     pub fn ids(&self, tag: &str) -> Vec<&str> {
         let mut ids: Vec<&str> = self
             .languages
-            .get(&tag.to_ascii_lowercase())
+            .get(&lookup_tag(tag))
             .into_iter()
             .flat_map(Language::ids)
             .collect();
@@ -208,7 +221,7 @@ impl Catalogs {
 
     /// The languages a lookup in `locale` tries, nearest first, each once.
     pub(crate) fn chain(&self, locale: &str) -> impl Iterator<Item = &Language> {
-        let locale = locale.trim().to_ascii_lowercase();
+        let locale = lookup_tag(locale);
         let mut tags: Vec<String> = Vec::new();
         let mut tag = locale.as_str();
         while !tag.is_empty() {

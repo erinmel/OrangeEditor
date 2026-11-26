@@ -722,6 +722,7 @@ impl Canvas {
             .map(|item| (item.definition, item.purpose))
             .collect();
         crate::i18n::set_port_names(host.port_names(language));
+        crate::i18n::set_outcome_names(host.outcome_names(language));
         self.help_revision = Some((generation, language.to_owned()));
         self.connection_labels = host
             .nodes()
@@ -2990,10 +2991,10 @@ impl Canvas {
                     {
                         continue;
                     }
-                    let label = part
-                        .as_ref()
-                        .filter(|_| input)
-                        .map_or_else(|| port_title(port), |(_, label)| label.clone());
+                    let label = part.as_ref().filter(|_| input).map_or_else(
+                        || node_port_title(&node.definition, port),
+                        |(_, label)| label.clone(),
+                    );
                     let name = painter.layout_no_wrap(label, label_font.clone(), colors.text);
                     let half = rect.width() / 2.0 - 1.5 * inset;
                     let gap = 8.0 * zoom;
@@ -3765,7 +3766,7 @@ fn draw_node<'a>(
                 let (label, _) = elide(
                     painter,
                     &crate::node_ergonomics::loop_result(node, port)
-                        .map_or_else(|| port_title(port), str::to_owned),
+                        .map_or_else(|| node_port_title(&node.definition, port), str::to_owned),
                     &font,
                     (half - reserved).max(0.0),
                 );
@@ -3888,7 +3889,7 @@ fn draw_node<'a>(
                 } else if !port.exec {
                     crate::properties::input_caption(node, port)
                 } else {
-                    port_title(port)
+                    node_port_title(&node.definition, port)
                 };
                 if port.exec {
                     // The way in is a tinted chip inside the card.
@@ -3989,7 +3990,7 @@ fn canvas_port_name(node: &NodeView, port: &PortView) -> String {
         crate::properties::input_caption(node, port)
     } else {
         crate::node_ergonomics::loop_result(node, port)
-            .map_or_else(|| port_title(port), str::to_owned)
+            .map_or_else(|| node_port_title(&node.definition, port), str::to_owned)
     }
 }
 
@@ -4195,6 +4196,18 @@ fn field_text(value: &str) -> String {
 
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
+fn node_port_title(definition: &str, port: &PortView) -> String {
+    if port.exec
+        && !port.input
+        && port.id == "then"
+        && let Some(label) = port.label.as_deref()
+        && let Some(translated) = crate::i18n::outcome_name(definition, label)
+    {
+        return translated;
+    }
+    port_title(port)
+}
+
 fn port_title(port: &PortView) -> String {
     step_label(port)
         .or_else(|| port.label.clone())

@@ -669,6 +669,253 @@ impl Host {
         }
         Ok(call)
     }
+
+    /// Replaces a supported pure function call with fresh copies of its body cards.
+    /// The declaration remains available to other calls. Expansion is one undo step.
+    pub fn expand_function(
+        &self,
+        draft: &mut Draft,
+        call: NodeId,
+        at: [f32; 2],
+    ) -> Result<Vec<NodeId>, HostError> {
+        let before = self.problems(draft)?;
+        let document = draft.document();
+        let root = document.root();
+        let caller = root
+            .nodes
+            .get(&call)
+            .filter(|node| node.definition.id.as_str() == ids::CALL)
+            .ok_or_else(|| refused(&"choose a function call"))?;
+        let function: FunctionId = caller
+            .config
+            .get("function")
+            .and_then(Json::as_str)
+            .and_then(|id| id.parse().ok())
+            .ok_or_else(|| refused(&"the call has no function"))?;
+        let function = document
+            .functions()
+            .get(&function)
+            .ok_or_else(|| refused(&"the function is unavailable"))?;
+        let [output] = function.outputs.as_slice() else {
+            return Err(refused(&"expansion requires a function with one result"));
+        };
+        if function.kind != NodeKind::Pure || !function.type_params.is_empty() {
+            return Err(refused(&"expansion requires a non-generic pure function"));
+        }
+        if let Some(problem) = before.iter().find(|problem| {
+            problem.severity == Severity::Error
+                && (problem.subject.node == Some(call)
+                    || problem.subject.function == Some(function.id))
+        }) {
+            return Err(refused(&describe(
+                problem,
+                &Names::of_document(self, document),
+            )));
+        }
+
+        let body = &function.body;
+        let is_entry = |id| {
+            body.nodes
+                .get(&id)
+                .is_some_and(|node| node.definition.id.as_str() == ids::FUNCTION_ENTRY)
+        };
+        let is_result = |id| {
+            body.nodes
+                .get(&id)
+                .is_some_and(|node| node.definition.id.as_str() == ids::FUNCTION_OUTPUTS)
+        };
+        let cards: Vec<_> = body
+            .nodes
+            .values()
+            .filter(|node| !is_entry(node.id) && !is_result(node.id))
+            .collect();
+        let result = body
+            .edges
+            .values()
+            .find(|edge| {
+                is_result(edge.to.node)
+                    && edge.to.port == PortKey::new(output.port_id.clone(), None)
+            })
+            .map(|edge| &edge.from)
+            .filter(|source| !is_entry(source.node))
+            .ok_or_else(|| refused(&"the result must come from a card inside the function"))?;
+        if cards.iter().any(|node| node.config.contains_key("zone")) {
+            return Err(refused(
+                &"a function with a loop region cannot be expanded yet",
+            ));
+        }
+
+        let incoming: BTreeMap<_, _> = root
+            .edges
+            .values()
+            .filter(|edge| edge.to.node == call)
+            .map(|edge| (&edge.to.port, edge))
+            .collect();
+        // Calls evaluate their arguments in interface order. Only inline wired
+        // arguments when a single strict card reads them in that same order.
+        if !incoming.is_empty() {
+            let [card] = cards.as_slice() else {
+                return Err(refused(
+                    &"a multi-card function with wired arguments cannot be expanded yet",
+                ));
+            };
+            let contract = self
+                .contract_of(document, card)
+                .ok_or_else(|| refused(&"a card in the function is unavailable"))?;
+            let mut order = Vec::new();
+            for port in contract
+                .ports
+                .iter()
+                .filter(|port| port.direction == PortDirection::Input)
+            {
+                if port.is_lazy() || port.variadic.is_some() {
+                    return Err(refused(
+                        &"expansion cannot preserve this call’s argument evaluation",
+                    ));
+                }
+                if let Some(edge) = body.edges.values().find(|edge| {
+                    is_entry(edge.from.node) && edge.to == port_on(card.id, &port.port_id)
+                }) && incoming.contains_key(&edge.from.port)
+                {
+                    order.push(edge.from.port.port());
+                }
+            }
+            if !order.into_iter().eq(function
+                .inputs
+                .iter()
+                .filter(|arg| incoming.contains_key(&PortKey::new(arg.port_id.clone(), None)))
+                .map(|arg| &arg.port_id))
+            {
+                return Err(refused(
+                    &"expansion cannot preserve this call’s argument order",
+                ));
+            }
+        }
+
+        let mut commands = vec![
+            DocCommand::RemoveNodes { ids: vec![call] },
+            edit::place_command(call, None),
+        ];
+        let mut copies = BTreeMap::new();
+        let mut placed = Vec::new();
+        let mut offset = [0.0, 0.0];
+        for (index, original) in cards.into_iter().enumerate() {
+            let mut node = original.clone();
+            node.id = draft
+                .fresh_id(&format!("expand-node-{}", original.id))
+                .parse()
+                .map_err(|error| refused(&error))?;
+            copies.insert(original.id, node.id);
+            placed.push(node.id);
+            commands.push(edit::place_command(
+                node.id,
+                Some([at[0] + offset[0], at[1] + offset[1]]),
+            ));
+            commands.push(DocCommand::AddNode {
+                body: BodyRef::Root,
+                node,
+            });
+            offset[0] += 360.0;
+            if index % 3 == 2 {
+                offset = [0.0, offset[1] + 240.0];
+            }
+        }
+        let copy_port = |end: &PortRef| -> Result<PortRef, HostError> {
+            let node = copies
+                .get(&end.node)
+                .ok_or_else(|| refused(&"unexpected function boundary port"))?;
+            Ok(PortRef {
+                node: *node,
+                port: end.port.clone(),
+            })
+        };
+        let connection =
+            |edge: &Edge, from: PortRef, to: PortRef| -> Result<DocCommand, HostError> {
+                let mut copy = edge.clone();
+                copy.id = draft
+                    .fresh_id(&format!("expand-edge-{}", edge.id))
+                    .parse()
+                    .map_err(|error| refused(&error))?;
+                copy.from = from;
+                copy.to = to;
+                Ok(DocCommand::Connect { edge: copy })
+            };
+        for edge in body.edges.values().filter(|edge| !is_result(edge.to.node)) {
+            let to = copy_port(&edge.to)?;
+            if !is_entry(edge.from.node) {
+                commands.push(connection(edge, copy_port(&edge.from)?, to)?);
+                continue;
+            }
+            if let Some(wire) = incoming.get(&edge.from.port) {
+                // A fresh ID per copy: one argument may feed several ports of the card.
+                commands.push(connection(wire, wire.from.clone(), to)?);
+            } else {
+                let literal = caller
+                    .inputs
+                    .get(&edge.from.port)
+                    .or_else(|| {
+                        function
+                            .inputs
+                            .iter()
+                            .find(|input| &input.port_id == edge.from.port.port())?
+                            .default
+                            .as_ref()
+                    })
+                    .ok_or_else(|| refused(&"an argument has no value to copy"))?;
+                commands.push(DocCommand::SetLiteral {
+                    port: to,
+                    literal: Some(literal.clone()),
+                });
+            }
+        }
+        let result = copy_port(result)?;
+        let output = PortKey::new(output.port_id.clone(), None);
+        for edge in root.edges.values().filter(|edge| edge.from.node == call) {
+            if edge.from.port != output {
+                return Err(refused(&"the call uses an unsupported output"));
+            }
+            let mut wire = edge.clone();
+            wire.from = result.clone();
+            commands.push(DocCommand::Connect { edge: wire });
+        }
+        for export in document
+            .exports()
+            .iter()
+            .filter(|export| export.node == call)
+        {
+            if export.port != output {
+                return Err(refused(&"the call exports an unsupported output"));
+            }
+            let mut export = export.clone();
+            export.node = result.node;
+            export.port = result.port.clone();
+            commands.push(DocCommand::UpsertExport(export));
+        }
+        for mut group in draft
+            .groups()
+            .into_iter()
+            .filter(|group| group.nodes.contains(&call))
+        {
+            group.nodes.retain(|id| *id != call);
+            group.nodes.extend(placed.iter().copied());
+            commands.push(group_command(&group.id, Some(&group)));
+        }
+
+        let before = errors(&before);
+        self.grouped(draft, |host, draft| {
+            let registry = host.registry_for(draft.document());
+            let _ = draft.commit(&registry, commands)?;
+            if let Some(problem) = host.problems(draft)?.iter().find(|problem| {
+                problem.severity == Severity::Error && !before.contains(&key(problem))
+            }) {
+                return Err(refused(&describe(
+                    problem,
+                    &Names::of_document(host, draft.document()),
+                )));
+            }
+            Ok(placed)
+        })
+    }
 }
 
 /// A problem by what it says and where, without the function or wire it is in: the

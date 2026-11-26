@@ -38,6 +38,8 @@ pub enum Command {
     Duplicate,
     MakeFunction,
     ExportFunction,
+    ExpandFunction,
+    OpenFunction,
     Delete,
     InsertNode,
     AddWaypoint,
@@ -233,6 +235,20 @@ impl Editor {
                 }
                 if self.call_function(*node).is_some() {
                     entries.push(entry(
+                        Command::OpenFunction,
+                        t("open-function"),
+                        "",
+                        icons::FUNCTION,
+                        true,
+                    ));
+                    entries.push(entry(
+                        Command::ExpandFunction,
+                        t("expand-function"),
+                        "",
+                        icons::FUNCTION,
+                        true,
+                    ));
+                    entries.push(entry(
                         Command::ExportFunction,
                         t("export-function"),
                         "",
@@ -370,6 +386,8 @@ impl Editor {
                 self.preview_function(host);
                 true
             }
+            (Command::ExpandFunction, MenuTarget::Node(node)) => self.expand_function(host, *node),
+            (Command::OpenFunction, MenuTarget::Node(node)) => self.open_function(host, *node),
             (Command::ExportFunction, MenuTarget::Node(node)) => {
                 self.begin_function_export(host, *node)
             }
@@ -567,6 +585,8 @@ impl Editor {
                             let group = match entry.command {
                                 Command::Group
                                 | Command::MakeFunction
+                                | Command::OpenFunction
+                                | Command::ExpandFunction
                                 | Command::ExportFunction
                                 | Command::Arrange => 1,
                                 Command::Fit | Command::SelectAll => 2,

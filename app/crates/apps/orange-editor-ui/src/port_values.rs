@@ -202,8 +202,10 @@ impl Editor {
         let Some(document) = self.document.as_ref() else {
             return;
         };
-        let Some(view) = document
-            .node_view(node)
+        let body = self.function_body.as_ref();
+        let Some(view) = body
+            .and_then(|body| body.node(node))
+            .or_else(|| document.node_view(node))
             .filter(|view| view.missing.is_none())
         else {
             return;
@@ -215,7 +217,8 @@ impl Editor {
         else {
             return;
         };
-        let detail = self.canvas.port_details(node, port_id, true);
+        let canvas = body.map_or(&self.canvas, |body| &body.canvas);
+        let detail = canvas.port_details(node, port_id, true);
         let Some(ty) = port
             .ty
             .as_deref()

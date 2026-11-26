@@ -487,8 +487,11 @@ impl crate::Editor {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(self.panels.log);
         }
-        if let Some(language) = value["language"].as_str() {
-            self.language = language.into();
+        if let Some(language) = value["language"]
+            .as_str()
+            .filter(|tag| !tag.trim().is_empty())
+        {
+            self.set_language(language);
         }
     }
     fn begin_shortcut_edit(&mut self, action: &'static str, binding: Option<KeyboardShortcut>) {
@@ -504,7 +507,7 @@ impl crate::Editor {
         let chord = parse_shortcut(query);
         ACTION_GROUPS.iter().any(|(group, actions)| {
             actions.iter().any(|(action, label, _, _)| {
-                self.shortcut_matches(action, t(label), group, query, chord)
+                self.shortcut_matches(action, label, group, query, chord)
             })
         })
     }
@@ -520,14 +523,12 @@ impl crate::Editor {
         if query.is_empty() {
             return true;
         }
-        let terms = orange_host::fold_search(&format!(
-            "{label} {} {} {}",
-            t(group),
-            t(group_help(group)),
-            self.canvas.keys.label(action)
-        ));
-        query.split_whitespace().all(|word| terms.contains(word))
-            || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
+        let key = self.canvas.keys.label(action);
+        let terms = orange_host::fold_search(&key);
+        query.split_whitespace().all(|word| {
+            terms.contains(word)
+                || crate::i18n::matches_messages(word, &[group, group_help(group), label])
+        }) || chord.is_some() && self.canvas.keys.0.get(action).copied().flatten() == chord
     }
 
     pub(crate) fn keybindings_ui(&mut self, ui: &mut egui::Ui, query: &str) {
@@ -580,7 +581,6 @@ impl crate::Editor {
                     let mut headed = false;
                     for &(action, label, _, _) in actions {
                         let keys = self.canvas.keys.label(action);
-                        let label = t(label);
                         if !self
                             .shortcut_edit
                             .as_ref()
@@ -601,7 +601,7 @@ impl crate::Editor {
                             .on_hover_text(t(group_help(group)));
                             headed = true;
                         }
-                        self.shortcut_binding_row(ui, table_width, action, label, keys);
+                        self.shortcut_binding_row(ui, table_width, action, t(label), keys);
                     }
                 }
                 if !any {

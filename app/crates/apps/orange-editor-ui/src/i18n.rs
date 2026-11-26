@@ -15,6 +15,23 @@ use orange_host::{Catalogs, SOURCE_LANGUAGE};
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
+pub(crate) const DEFAULT_LOCALE: &str = "en-US";
+
+// The built-in choices name the regional variety of each shared catalogue.
+pub(crate) fn preference_tag(tag: &str) -> Cow<'_, str> {
+    let tag = tag.trim();
+    let comparable = tag.replace('_', "-");
+    for (base, regional) in [("en", DEFAULT_LOCALE), ("es", "es-MX"), ("ja", "ja-JP")] {
+        if comparable.eq_ignore_ascii_case(base) || comparable.eq_ignore_ascii_case(regional) {
+            return Cow::Borrowed(regional);
+        }
+    }
+    match orange_host::canonical_locale(&comparable) {
+        Some(canonical) if canonical != tag => Cow::Owned(canonical),
+        _ => Cow::Borrowed(tag),
+    }
+}
+
 static APPLICATION: OnceLock<&'static [(&'static str, &'static str)]> = OnceLock::new();
 
 static TEXT: LazyLock<Catalogs> = LazyLock::new(|| {
@@ -38,6 +55,7 @@ thread_local! {
     static KEPT: RefCell<HashSet<&'static str>> = RefCell::new(HashSet::new());
     /// The host's names of ports in the current language, by port ID with "_" as "-".
     static PORTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static OUTCOMES: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
 }
 
 /// Registers an application's Fluent catalogues. Messages with the same ID and
@@ -68,25 +86,53 @@ pub(crate) fn port_name(id: &str) -> Option<String> {
     PORTS.with_borrow(|names| names.get(&id.replace('_', "-")).cloned())
 }
 
+pub(crate) fn set_outcome_names(names: Vec<(String, (String, String))>) {
+    OUTCOMES.set(names.into_iter().collect());
+}
+
+pub(crate) fn outcome_name(definition: &str, fallback: &str) -> Option<String> {
+    OUTCOMES.with_borrow(|names| {
+        let (source, translated) = names.get(definition)?;
+        (source == fallback).then(|| translated.clone())
+    })
+}
+
 /// The language text is shown in on this thread.
 pub fn language() -> String {
     LANGUAGE.with_borrow(Clone::clone)
 }
 
-/// The language the editor has that is nearest to `tag`, such as `es` for `es-MX`:
-/// the tag itself, a shorter one, or English.
+/// The closest available editor locale, such as `es-MX` for a Spanish system.
 pub fn nearest_language(tag: &str) -> String {
     let tag = tag.trim().replace('_', "-").to_ascii_lowercase();
     let mut candidate = tag.as_str();
     while !candidate.is_empty() {
         if TEXT.has(candidate, "language-name") {
-            return candidate.to_owned();
+            return preference_tag(candidate).into_owned();
         }
         candidate = candidate
             .rsplit_once('-')
             .map_or("", |(shorter, _)| shorter);
     }
-    SOURCE_LANGUAGE.to_owned()
+    DEFAULT_LOCALE.to_owned()
+}
+
+/// Match every query term across the translated and source captions of a setting.
+pub(crate) fn matches_messages(query: &str, ids: &[&str]) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    LANGUAGE.with_borrow(|locale| {
+        let terms: Vec<_> = ids
+            .iter()
+            .flat_map(|id| [locale.as_str(), SOURCE_LANGUAGE].map(|tag| TEXT.message(tag, id)))
+            .flatten()
+            .map(|text| orange_host::fold_search(&text))
+            .collect();
+        query
+            .split_whitespace()
+            .all(|word| terms.iter().any(|text| text.contains(word)))
+    })
 }
 
 /// Message `id` in the current language, the nearest one that has it, or the ID.
@@ -128,7 +174,7 @@ mod tests {
     use orange_host::PSEUDO_LANGUAGE;
 
     /// Every `t("…")` and `tf("…"` in the source names an English message, and every
-    /// other language translates only English messages and all of them.
+    /// other language uses English message IDs. Spanish ships with full coverage.
     #[test]
     fn every_message_the_code_names_is_in_every_language() {
         let english = catalogs().ids(SOURCE_LANGUAGE);
@@ -172,7 +218,9 @@ mod tests {
                 extra.is_empty(),
                 "{tag} has messages English lacks: {extra:?}"
             );
-            assert!(untranslated.is_empty(), "{tag} lacks {untranslated:?}");
+            if tag != "ja" {
+                assert!(untranslated.is_empty(), "{tag} lacks {untranslated:?}");
+            }
         }
     }
 
@@ -192,7 +240,34 @@ mod tests {
             tf("nodes-selected", &[("count", 1.into())]),
             "One node selected"
         );
-        assert_eq!(nearest_language("es_MX"), "es");
-        assert_eq!(nearest_language("fr-FR"), SOURCE_LANGUAGE);
+        assert_eq!(nearest_language("es_MX"), "es-MX");
+        assert_eq!(nearest_language("es-ES"), "es-MX");
+        assert_eq!(nearest_language("EN-us"), "en-US");
+        assert_eq!(preference_tag("ja_JP"), "ja-JP");
+        assert_eq!(nearest_language("fr-FR"), "en-US");
+        assert_eq!(preference_tag("zh_hant_tw"), "zh-Hant-TW");
+    }
+
+    #[test]
+    fn japanese_preview_covers_the_editor_and_search_entry_points() {
+        for id in [
+            "language-name",
+            "nodes",
+            "search-hint",
+            "quick-add-hint",
+            "quick-add-wire-hint",
+            "settings-title",
+            "settings-search-hint",
+            "shortcut-search",
+            "properties",
+            "configuration-required",
+            "settings-node-search",
+            "listen-search-words",
+            "conversion-search-words",
+            "catalog-flow",
+            "catalog-services",
+        ] {
+            assert!(catalogs().has("ja", id), "Japanese preview lacks {id}");
+        }
     }
 }

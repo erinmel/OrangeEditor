@@ -15,6 +15,24 @@ Search matches group and section names alongside node labels and aliases. Hover
 a heading for its purpose. Nodes opens by default and the application remembers
 the last sidebar tab chosen explicitly.
 
+Guard searches find Branch. Configured shortcuts group When modes and counter
+updates outside the main node families. The Templates group shows card counts
+before inserting loop pairs or Idle Watchdog as editable cards. Loop parts
+lists standalone ends separately. Use Make Function for a named reusable call.
+
+Value or Fallback (Coalesce) takes an optional value and uses its If missing input
+only when the option is absent. For example, connect an optional display name and
+give Guest as the fallback. A present empty name is still a value. Release a wire
+from an optional output over empty canvas to find Value or Fallback first.
+
+For an enum, connect it to Switch's key or choose its type, then select Add enum
+cases under Ports. Existing variant branches keep their connections. New cases
+use the enum's display names and persistent variant IDs. Releasing a wire from an
+enum output also offers a Switch preconfigured with those cases and, for variants
+that carry data, a payload reader. Releasing a wire from a record output offers a
+reader or a copy with a changed value for each named field. Placement and wiring
+are one undo step.
+
 Dispatch (`core/emit`, ES "Despachar") sends an event on a named channel, a run
 event (11 §10), to every Listen (`core/on-event`, ES "Escuchar") on it: one to many.
 Each Listen starts its own activation and shows the payload output only when the
@@ -142,9 +160,18 @@ Click either connector, then click the opposite endpoint to wire without draggin
   call uses the same function with its own wires and inputs. A selection containing
   Count, For Range, While or For each makes an async function. Triggers stay on the main
   graph and can be wired to the call.
+  **Open function** on a local call opens the shared body in its own canvas.
+  The interface cards show how arguments and results cross the boundary. Edits to
+  the body use the graph's undo history and apply to every call. The saved graph
+  holds the typed interface and body, which the compiler lowers for preview or run.
   To share a function between graphs, **Export function…** on its call shows its
   public ports and exact provider package versions before saving an archive.
   An imported card keeps its definition, label and connection picker.
+  **Expand function** replaces one local call with editable copies of its body and
+  reconnects its inputs and result in one undo step. Other calls still use the saved
+  definition. Expansion currently supports non-generic pure functions with one result
+  from a body card. Wired arguments require a single strict body card that reads them
+  in interface order. Loop regions require their own expansion support.
 
 * **Inline values.** A literal input is edited on the card: a single click on a number
   types it, a drag scrubs it; text is typed in place; a choice is a dropdown; a path
@@ -419,7 +446,7 @@ rows with disclosure chevrons. Node search settings use a segmented control with
 Names only on the left and Node cards on the right.
 
 * One search for the palette, the wire-drop list and the quick-add box. It matches
-  names, aliases, categories, concepts and the words of each node's description, in the
+  names, aliases, categories, concepts, descriptions and common configuration captions in the
   active language and in English. Concepts group nodes by purpose: *trigger / when /
   start* finds every entry kind (On manual, On timer, On start, On event, On level);
   *math*, *compare*, *text*, *time*, *audio*, *network*, *file*, *variable*, *loop*.

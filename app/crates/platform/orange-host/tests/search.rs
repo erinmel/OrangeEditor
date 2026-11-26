@@ -101,6 +101,28 @@ fn spanish_words_without_accents_find_nodes_and_english_still_works() {
 }
 
 #[test]
+fn regional_search_accepts_japanese_substrings_and_localized_configuration() {
+    let host = host();
+    for (query, locale, id) in [
+        ("足し算", "ja-JP", "org.orange.math/add"),
+        (
+            "リストの長さ",
+            "ja-JP",
+            "org.orange.collections/list-length",
+        ),
+        ("フィールドを取得", "ja-JP", "org.orange.json/get"),
+        ("ＪＳＯＮ パス", "ja-JP", "org.orange.json/get-path"),
+        ("integer", "ja-JP", "core/whole-number"),
+        ("nu\u{301}mero entero", "es-MX", "core/whole-number"),
+    ] {
+        assert!(
+            ids(&host.search_nodes(query, locale)).contains(&id),
+            "{query} misses {id}"
+        );
+    }
+}
+
+#[test]
 fn concepts_group_nodes_by_purpose() {
     let host = host();
     let has = |search: &str, id: &str| ids(&host.search_nodes(search, "en")).contains(&id);

@@ -138,9 +138,8 @@ fn shortcut_search_matches_localized_groups_and_labels_together() {
     crate::i18n::set_language("es");
     let editor = Editor::new();
     let action = "save";
-    let label = action_label(action);
-    assert!(editor.shortcut_matches(action, &label, "shortcut-files", "archivos guardar", None));
-    assert!(!editor.shortcut_matches(action, &label, "shortcut-files", "portapapeles", None));
+    assert!(editor.shortcut_matches(action, "save", "shortcut-files", "archivos guardar", None));
+    assert!(!editor.shortcut_matches(action, "save", "shortcut-files", "portapapeles", None));
     assert!(editor.shortcut_matches_any("ejecucion"));
     assert_eq!(
         parse_shortcut("ctrl+mayús+intro"),

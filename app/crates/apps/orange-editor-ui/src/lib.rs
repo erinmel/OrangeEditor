@@ -30,6 +30,7 @@ mod declarations;
 mod diagnostics;
 #[cfg(test)]
 mod edit_timing;
+mod function_body;
 pub mod i18n;
 pub mod icons;
 #[cfg(test)]
@@ -488,6 +489,7 @@ impl std::fmt::Debug for Probing {
 pub struct Editor {
     value_form: Option<port_values::ValueForm>,
     function_export: Option<organise::FunctionExport>,
+    function_body: Option<function_body::FunctionBody>,
     search: String,
     palette_highlighted: usize,
     log_events: bool,
@@ -637,12 +639,17 @@ fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
 }
 
 fn contains_query(query: &str, fields: &[&str]) -> bool {
-    query.is_empty()
-        || query.split_whitespace().all(|word| {
-            fields
-                .iter()
-                .any(|field| field.to_lowercase().contains(word))
-        })
+    if query.is_empty() {
+        return true;
+    }
+    let query = orange_host::fold_search(query);
+    let terms: Vec<_> = fields
+        .iter()
+        .map(|field| orange_host::fold_search(field))
+        .collect();
+    query
+        .split_whitespace()
+        .all(|word| terms.iter().any(|field| field.contains(word)))
 }
 
 impl Editor {
@@ -651,10 +658,10 @@ impl Editor {
     }
 
     /// The language the editor shows its text in and the node search matches in,
-    /// besides English, such as `es`.
+    /// besides English, such as `es-MX`.
     pub fn language(&self) -> &str {
         if self.language.is_empty() {
-            orange_host::SOURCE_LANGUAGE
+            i18n::DEFAULT_LOCALE
         } else {
             &self.language
         }
@@ -663,9 +670,9 @@ impl Editor {
     /// Shows the editor in `language` (a BCP 47 tag) and makes the node search match in
     /// it and English. Nothing about the graph changes with it.
     pub fn set_language(&mut self, language: &str) {
-        let language = language.trim();
+        let language = i18n::preference_tag(language);
         if self.language != language {
-            language.clone_into(&mut self.language);
+            self.language = language.into_owned();
             self.previews.invalidate();
             self.refresh_problem_text = true;
         }
@@ -721,6 +728,7 @@ impl Editor {
             .draft_authoring_view_in(&draft, self.language())
             .unwrap_or_default();
         self.value_form = None;
+        self.function_body = None;
         self.canvas.set_failure_routes(failure_routes);
         self.canvas.set_port_details(port_details);
         self.canvas.load(&graph);
@@ -797,6 +805,10 @@ impl Editor {
 
     /// After the draft changed: the canvas, the problems and a running flow follow.
     fn refresh(&mut self, host: &mut Host) {
+        self.refresh_graph(host, self.function_body.is_some());
+    }
+
+    fn refresh_graph(&mut self, host: &mut Host, shared_functions_changed: bool) {
         self.previews.invalidate();
         if let Some(quick) = &mut self.quick {
             quick.invalidate();
@@ -815,7 +827,7 @@ impl Editor {
             .unwrap_or_default();
         let before = document.replace_graph(graph);
         // Only what the edit touched, and what follows it, can preview differently.
-        let touched = touched_by_edit(&before, &document.graph);
+        let touched = touched_by_edit(&before, &document.graph, shared_functions_changed);
         document.declared = host.declarations(&document.draft);
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
@@ -1373,7 +1385,8 @@ impl Editor {
     /// After undo or redo: a step back may move nodes too, so the canvas takes the
     /// document's places again.
     fn reload(&mut self, host: &mut Host) {
-        self.refresh(host);
+        // Undo can restore a shared function body while the root graph looks identical.
+        self.refresh_graph(host, true);
         if let Some(document) = &self.document {
             self.canvas.restore(&document.graph);
         }
@@ -1935,7 +1948,9 @@ impl Editor {
             && !self.forms.open_connection
             && !self.has_node_ergonomics_modal()
             && self.value_form.is_none();
-        self.keyboard(ui, host);
+        if self.function_body.is_none() {
+            self.keyboard(ui, host);
+        }
         layout(self, ui, host);
         if self.window_toolbar {
             resize_borders(ui.ctx());
@@ -1956,6 +1971,12 @@ impl Editor {
     }
 
     fn default_layout(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        if self.function_body.is_some() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| self.canvas_panel(ui, host));
+            return;
+        }
         self.toolbar(ui, host);
         self.workspace_bar(ui);
         if self.panels.log {
@@ -1987,7 +2008,8 @@ impl Editor {
     /// Whether a host-owned focused keyboard source may use this key. The host
     /// must also suppress source input while egui edits text or lacks window focus.
     pub fn accepts_graph_key(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
-        !self.settings_open
+        self.function_body.is_none()
+            && !self.settings_open
             && !self.forms.open_connection
             && self.quick.is_none()
             && self.menu.is_none()
@@ -2536,19 +2558,23 @@ impl Editor {
         let current = self.language().to_owned();
         let name = languages
             .iter()
-            .find(|(tag, _)| *tag == current)
-            .map_or(current.as_str(), |(_, name)| name.as_ref())
-            .to_owned();
+            .find(|(tag, _)| i18n::preference_tag(tag).eq_ignore_ascii_case(&current))
+            .map_or_else(
+                || current.clone(),
+                |(_, name)| format!("{name} ({current})"),
+            );
         let mut chosen = None;
         let _ = egui::ComboBox::from_id_salt("orange-language")
             .selected_text((icons::text(icons::LANGUAGE), format!(" {name}")))
             .show_select(ui, Surface::Dialog, |ui| {
                 for (tag, name) in &languages {
+                    let tag = i18n::preference_tag(tag);
+                    let caption = format!("{name} ({tag})");
                     if ui
-                        .selectable_label(*tag == current, name.as_ref())
+                        .selectable_label(tag.eq_ignore_ascii_case(&current), caption)
                         .clicked()
                     {
-                        chosen = Some((*tag).to_owned());
+                        chosen = Some(tag.into_owned());
                     }
                 }
             })
@@ -2615,7 +2641,7 @@ impl Editor {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
             let language = if self.language.is_empty() {
-                orange_host::SOURCE_LANGUAGE
+                i18n::DEFAULT_LOCALE
             } else {
                 self.language.as_str()
             };
@@ -2890,6 +2916,10 @@ impl Editor {
 
     /// Draws the editable canvas and handles its actions in the supplied container.
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        if self.function_body.is_some() {
+            self.function_body_panel(ui, host);
+            return;
+        }
         self.prepare_devices(host);
         let Some(document) = &self.document else {
             ui.centered_and_justified(|ui| ui.label(t("open-graph-file")));
@@ -4670,6 +4700,7 @@ fn incoming(graph: &GraphView) -> HashMap<NodeId, Vec<&orange_host::WireView>> {
 fn touched_by_edit(
     before: &GraphView,
     after: &GraphView,
+    shared_functions_changed: bool,
 ) -> Option<std::collections::BTreeSet<NodeId>> {
     use std::collections::{BTreeSet, HashMap};
     if before.nodes.is_empty() {
@@ -4683,8 +4714,10 @@ fn touched_by_edit(
         .iter()
         .filter(|node| {
             // A card the view kept is the same one; only one built again is compared.
-            old.get(&node.id)
-                .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
+            (shared_functions_changed && node.definition == "core/call")
+                || old
+                    .get(&node.id)
+                    .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
                 || old_in.get(&node.id) != new_in.get(&node.id)
         })
         .map(|node| node.id)
