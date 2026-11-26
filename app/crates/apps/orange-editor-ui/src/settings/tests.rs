@@ -3,18 +3,47 @@ use super::*;
 #[test]
 fn settings_and_shortcuts_search_accept_localized_and_english_terms() {
     let mut editor = Editor::new();
+    // Each search is given as typed correctly, then with a typo or other separators.
     for (saved, tag, display, shortcut) in [
-        ("es_mx", "es-MX", "cuadricual-spacing", "archvios save"),
-        ("ja_jp", "ja-JP", "グリッド spacing", "ファイル save"),
-        ("en", "en-US", "grid_spacing", "fiels-save"),
+        (
+            "es_mx",
+            "es-MX",
+            ["cuadricula spacing", "cuadricual-spacing"],
+            ["archivos save", "archvios save"],
+        ),
+        (
+            "ja_jp",
+            "ja-JP",
+            ["グリッド spacing", "グリッド_spacing"],
+            ["ファイル save", "ファイル-save"],
+        ),
+        (
+            "en",
+            "en-US",
+            ["grid spacing", "grid_spacing"],
+            ["files save", "fiels-save"],
+        ),
     ] {
         editor.restore_preferences(&serde_json::json!({ "version": 1, "language": saved }));
         assert_eq!(editor.language(), tag);
         assert_eq!(editor.preferences()["language"], tag);
-        let display = orange_host::SearchQuery::new(display);
-        assert!(Section::Display.relevance(&display).is_some());
-        assert!(Section::Search.relevance(&display).is_none());
-        assert!(editor.shortcut_search_rank(shortcut).is_some());
+        for typed in display {
+            let query = orange_host::SearchQuery::new(typed);
+            assert!(
+                Section::Display.relevance(&query).is_some(),
+                "{tag}: {typed}"
+            );
+            assert!(
+                Section::Search.relevance(&query).is_none(),
+                "{tag}: {typed}"
+            );
+        }
+        for typed in shortcut {
+            assert!(
+                editor.shortcut_search_rank(typed).is_some(),
+                "{tag}: {typed}"
+            );
+        }
     }
 }
 

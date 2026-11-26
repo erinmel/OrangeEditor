@@ -369,6 +369,15 @@ impl Host {
             .collect()
     }
 
+    /// The node kinds the palette and search offer: core and provided kinds that are
+    /// neither hidden nor [`UNLISTED`]. Other kinds stay loadable.
+    pub fn offered_nodes(&self) -> impl Iterator<Item = NodeInfo<'_>> {
+        self.nodes()
+            .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
+            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .filter(|info| !UNLISTED.contains(&info.definition.definition.id.as_str()))
+    }
+
     fn node_search_index(&self, locale: &str) -> Arc<[SearchNode]> {
         let generation = self.registry().generation();
         let mut cache = self
@@ -377,10 +386,7 @@ impl Host {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache.generation != Some(generation) || cache.locale != locale {
             let nodes = self
-                .nodes()
-                .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
-                .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
-                .filter(|info| !UNLISTED.contains(&info.definition.definition.id.as_str()))
+                .offered_nodes()
                 .map(|info| self.prepare_search_node(&info, locale))
                 .collect::<Vec<_>>();
             *cache = SearchIndex {

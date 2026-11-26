@@ -754,11 +754,8 @@ mod tests {
         .unwrap();
         let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
         let offered: std::collections::HashSet<_> = host
-            .nodes()
-            .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
-            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .offered_nodes()
             .map(|info| info.definition.definition.id.as_str())
-            .filter(|id| !orange_host::UNLISTED.contains(id))
             .collect();
         let listed: std::collections::HashSet<_> = host
             .search_nodes("", "en-US")
@@ -815,7 +812,6 @@ mod tests {
                     .push(found.label);
             }
         }
-        println!("Auditing {} desktop definitions", queries.len());
         for locale in LOCALES {
             assert_eq!(host.search_nodes("", locale).len(), queries.len());
             for (id, captions) in &queries {
