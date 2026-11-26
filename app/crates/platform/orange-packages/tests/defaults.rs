@@ -344,3 +344,37 @@ fn saved_locks_do_not_follow_the_new_binding_default() {
     );
     assert_eq!(default_of(&restored), Some(provider("2.0.0", HEX_2)));
 }
+
+#[test]
+fn a_host_provider_is_withdrawn_and_published_again_but_a_package_provider_is_not() {
+    let (base, base_provider) = base_with_default();
+    let mut store = PackageStore::new(base, HOST, MemoryJournal::new());
+    let descriptor = store.current().provider(&base_provider).unwrap().clone();
+
+    let withdrawn = store.withdraw_host_provider(&base_provider).unwrap();
+    assert!(withdrawn.provider(&base_provider).is_none());
+    assert!(withdrawn.new_binding_default(&dref(NODE)).is_none());
+    // Its definitions stay as passive metadata.
+    assert!(withdrawn.definition(&dref(NODE)).is_some());
+
+    // A provider chosen meanwhile keeps its choice.
+    let _ = store.install(device("1.0.0", HEX_1)).unwrap();
+    let _ = store
+        .select_default(dref(NODE), provider("1.0.0", HEX_1))
+        .unwrap();
+    let again = store.publish_host_provider(descriptor).unwrap();
+    assert!(again.provider(&base_provider).is_some());
+    assert_eq!(
+        again.new_binding_default(&dref(NODE)),
+        Some(&provider("1.0.0", HEX_1))
+    );
+    assert_eq!(
+        again.new_binding_default(&dref(OTHER)),
+        Some(&base_provider)
+    );
+
+    assert!(matches!(
+        store.withdraw_host_provider(&provider("1.0.0", HEX_1)),
+        Err(TransactionError::PackageProvider(_))
+    ));
+}

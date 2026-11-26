@@ -214,6 +214,9 @@ pub enum TransactionError {
         /// The recorded provider.
         provider: Box<ProviderKey>,
     },
+    /// A host provider change named a provider that belongs to a package version.
+    #[error("provider `{}` belongs to package `{}@{}`", .0.id, .0.package, .0.version)]
+    PackageProvider(Box<ProviderKey>),
     /// Registry publication rejected the next generation.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -250,6 +253,7 @@ impl TransactionError {
             Self::RecoveryDefaultUnavailable { .. } => {
                 "packages/transaction-recovery-default-unavailable"
             }
+            Self::PackageProvider(_) => "packages/transaction-package-provider",
             Self::Registry(_) => "packages/transaction-registry",
             Self::Journal(_) => "packages/transaction-journal",
         }
@@ -634,6 +638,57 @@ impl<J: Journal> PackageStore<J> {
             .build()?;
         let packages = self.current.packages.clone();
         self.commit(snapshot, packages, None, None)
+    }
+
+    /// Publishes a generation without `provider`, one the host supplies itself rather than
+    /// a package version, such as the provider of a native service package being turned
+    /// off. Any default selecting it is cleared. Its definitions stay registered as
+    /// passive metadata, and document locks naming it resolve as provider-unavailable.
+    pub fn withdraw_host_provider(
+        &mut self,
+        provider: &ProviderKey,
+    ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
+        self.require_host_provider(provider)?;
+        let snapshot = RegistryBuilder::from_snapshot(&self.current.snapshot)
+            .remove_provider(provider.clone())
+            .build()?;
+        let packages = self.current.packages.clone();
+        self.commit(snapshot, packages, None, None)
+    }
+
+    /// Publishes host `provider` again after
+    /// [`withdraw_host_provider`](Self::withdraw_host_provider), and selects it for new
+    /// bindings of each definition it implements that has no provider chosen. Its
+    /// definitions must still be registered.
+    pub fn publish_host_provider(
+        &mut self,
+        provider: ProviderDescriptor,
+    ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
+        self.require_host_provider(&provider.key)?;
+        let current = &self.current.snapshot;
+        let mut builder = RegistryBuilder::from_snapshot(current);
+        for (definition, _) in &provider.implements {
+            if current.new_binding_default(definition).is_none() {
+                builder = builder.new_binding_default(definition.clone(), provider.key.clone());
+            }
+        }
+        let snapshot = builder.provider(provider).build()?;
+        let packages = self.current.packages.clone();
+        self.commit(snapshot, packages, None, None)
+    }
+
+    fn require_host_provider(&self, provider: &ProviderKey) -> Result<(), TransactionError> {
+        if self
+            .current
+            .packages
+            .values()
+            .any(|record| record.providers.contains(provider))
+        {
+            return Err(TransactionError::PackageProvider(Box::new(
+                provider.clone(),
+            )));
+        }
+        Ok(())
     }
 
     /// Hides an active version: its providers leave the next generation and any default
