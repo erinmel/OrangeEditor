@@ -76,9 +76,15 @@ fn trigger_words_find_every_entry_kind_in_english_and_spanish() {
         .find(|found| found.definition == "core/on-manual")
         .unwrap();
     assert_eq!(manual.category, "Disparadores");
-    assert_eq!(manual.purpose, "Empieza al pulsar Ejecutar.");
+    assert_eq!(
+        manual.purpose,
+        "Inicia una activación al pulsar Disparar en este nodo cuando el grafo está en ejecución."
+    );
     let manual = &host.search_nodes("on manual", "en")[0];
-    assert_eq!(manual.purpose, "Starts when you press Run.");
+    assert_eq!(
+        manual.purpose,
+        "Starts an activation when you press Fire on this node in a running graph."
+    );
 }
 
 #[test]
