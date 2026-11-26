@@ -245,10 +245,23 @@ start (ADR-03 amendment 2026-11-11), so an approval or revocation applies from t
 start. Graphs, exports and bundles still never hold secrets.
 
 
-Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
-its tier, can be switched off by ID and on again without removing it; the switch is
-saved beside the stored archives and applies from the next start (02, "Package
-switches"). The plugin interface revision in `orange_sdk::ABI` is 2 since
+Enabling and disabling (2026-11-12; `orange-host`): a package can be switched off by
+ID and on again without removing it, and the switch is saved beside the stored
+archives (`disabled.json`). Since 2026-11-26 `Host::set_enabled` applies to the
+running host the way uninstalling does (ADR-07): new documents cannot place or open
+the package's nodes, and running flows keep the providers they were compiled with.
+An installed package keeps its archive, files and grants; it leaves the registry as
+a removal does and is installed again from its archive when turned on. A native
+service package keeps its definitions as passive metadata, and its provider and
+connection adapters are withdrawn (`PackageStore::withdraw_host_provider`) and
+published again (`publish_host_provider`, which chooses it for new nodes only where
+no provider is chosen). A package another installed package depends on cannot be
+turned off. The base nodes (`org.orange.base`) and the host's clock nodes
+(`org.orange.clock`) are core: `set_enabled` refuses them, and a saved list naming
+them is ignored for them. Packages the application leaves out with
+`HostOptions::disabled_packages` are listed but cannot be switched, and an unknown ID
+is refused. `PackageInfo::switchable` says which packages have a switch; the editor
+shows one only for those. The plugin interface revision in `orange_sdk::ABI` is 2 since
 `ServicePackage` carries a display name and description, 3 since it carries an
 update source, 4 (2026-11-15) since `ConnectionAdapter` has `choices` and
 `Presentation` carries `connection_adapter`, and 5 (2026-11-15) since

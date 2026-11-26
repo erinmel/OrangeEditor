@@ -132,7 +132,8 @@ own; the Wasm guest interface (WIT) and its toolchain are in `sdk/`.
   directory. A second host or an offline edit must acquire the same file lock before
   writing. A replacement with persistent variables writes the new declarations even
   when their current values equal the previous checkpoint's values.
-- **Packages** install, update and uninstall while the editor is open. A running flow
+- **Packages** install, update, turn off and on, and uninstall while the editor is
+  open; the base and clock nodes are core and always on. A running flow
   keeps the provider it was compiled with until it stops ([04](04-expansion-plugins.md)).
 
 ## Trust

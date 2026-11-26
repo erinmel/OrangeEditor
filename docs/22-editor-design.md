@@ -707,7 +707,11 @@ the shared-control and editor tests before adopting the change more broadly.
   Installed versions have a Remove package command with confirmation. Built-in
   providers stay in the list. Removing a version preserves running flows and the
   saved provider bindings of graphs that use it. The host refuses removal while
-  another installed package depends on that version.
+  another installed package depends on that version. Installed and native service
+  packages also have an On switch that turns them off and on at once
+  (`Host::set_enabled`, 04): off, their nodes leave the node tree and graphs that use
+  them do not open, while running flows keep them. The base and clock nodes are
+  core and have no switch.
 * **Access per package.** An installed package that asks for grants shows them as
   boxes in its row; unticking one revokes it for graphs started afterwards
   (`Host::set_access`, 04). Nothing is ticked for the person at import.

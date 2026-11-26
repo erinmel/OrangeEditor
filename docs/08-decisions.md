@@ -163,6 +163,19 @@ release can be delayed by a duplicate descriptor inherited during process startu
 on Linux. A deterministic duplicate-descriptor unit case checks this lifetime
 rule alongside unchanged separate-owner exclusion; no sleeps or test serialization.
 
+Live package switch (2026-11-26; ADR-07/21): turning a package off applies to the
+running host, never only to the next start, because hot installation must not be
+replaced by a restart. Off mirrors removal for new work: an installed version leaves
+the registry through `PackageStore::remove` and is installed again from its kept
+archive, with its files and grants, when turned on; a native service package's
+provider is withdrawn and published again through two store operations reserved for
+providers that belong to no package record. Running flows keep what they were
+compiled with. The base and clock nodes are core and cannot be turned off by the
+user; an application may still leave them out at start. Rejected: an off flag
+checked at document open, which would leave the registry offering nodes that cannot
+be used, and unregistering a native package's definitions, which would make turning
+it on rebuild the base registry. Contract in [04](04-expansion-plugins.md).
+
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.
