@@ -779,6 +779,21 @@ impl Definition {
         );
         self
     }
+    /// What port `name` is for, in one sentence: the help editors show for it and the
+    /// node reference lists. Its catalogue message is `<node key>-port-<port key>`,
+    /// such as `org-orange-net-http-request-port-method`. Describes every port of that
+    /// name added so far, so call it after adding the port.
+    #[must_use]
+    pub fn port_description(mut self, name: &str, text: &str) -> Self {
+        let key = format!(
+            "{}-port-{name}",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        for port in self.ports.iter_mut().filter(|port| port["port_id"] == name) {
+            port["description"] = serde_json::json!({"key": key, "fallback": text});
+        }
+        self
+    }
     /// The palette category: `slug` names it within the package and `label` shows it.
     #[must_use]
     pub fn category(mut self, slug: &str, label: &str) -> Self {
@@ -1356,6 +1371,24 @@ mod tests {
         assert!(entry.get("suspends").is_none());
         assert_eq!(entry["ports"][0]["source"], "payload");
         assert!(NodeDefinition::described(&entry.to_string()).is_ok());
+    }
+
+    #[test]
+    fn a_port_description_is_a_text_reference_the_host_reads() {
+        let built = Definition::node("org.example.demo", "fetch", "Fetch")
+            .input("path", "core/string@1")
+            .port_description("path", "Where to fetch from.")
+            .port_description("missing", "Describes nothing.")
+            .build();
+        let json: Json = serde_json::from_str(&built).unwrap();
+        assert_eq!(
+            json["ports"][0]["description"],
+            serde_json::json!({"key": "org.example.demo/fetch-port-path",
+                "fallback": "Where to fetch from."})
+        );
+        assert_eq!(json["ports"].as_array().unwrap().len(), 1);
+        // The host accepts it; its port views read the text (orange-host port help tests).
+        assert!(NodeDefinition::described(&built).is_ok());
     }
 
     #[derive(Debug)]

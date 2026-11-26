@@ -74,3 +74,10 @@ org-orange-audio-filter-description = Deja pasar las frecuencias graves (paso ba
 org-orange-audio-filter-keywords = ecualizador, eq, paso bajo, paso alto, paso banda, graves, agudos, frecuencia, efecto de audio
 
 org-orange-audio-loop-description = Repite el archivo de sonido hasta que Control de sonido envía Detener a la misma salida. El paso siguiente se ejecuta al detener el bucle.
+
+# What each port is for.
+org-orange-audio-audio-source-port-stream = El flujo en vivo de la fuente de audio elegida.
+
+# What each port is for.
+org-orange-audio-live-level-port-stream = El flujo que se mide.
+org-orange-audio-live-level-port-level = El nivel del flujo en dBFS, a medida que cambia.

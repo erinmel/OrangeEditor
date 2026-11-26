@@ -849,7 +849,11 @@ impl Host {
         for port in contract.iter().flat_map(|contract| contract.ports.iter()) {
             let input = port.direction == PortDirection::Input;
             let label = locale.and_then(|locale| self.port_text(port, "label", locale));
-            let description = locale.and_then(|locale| self.port_text(port, "description", locale));
+            let description = locale.and_then(|locale| {
+                self.port_text(port, "description", locale).or_else(|| {
+                    self.port_help_in(node.definition.id.as_str(), port.port_id.as_str(), locale)
+                })
+            });
             // A variadic port is shown as its instances, `branch#0`, `branch#1`, … in
             // the node's order (11 §4.5).
             let instances: Vec<Option<u16>> = match port.variadic {

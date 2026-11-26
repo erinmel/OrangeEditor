@@ -143,3 +143,17 @@ alias-org-orange-text-encode-base64 = Base64 にエンコード
 alias-org-orange-text-decode-base64 = Base64 をデコード
 alias-org-orange-text-encode-hex = 16 進数にエンコード
 alias-org-orange-text-decode-hex = 16 進数をデコード
+
+# Purposes of control and stream nodes.
+purpose-core-close-handle = ハンドルが指すリソースを解放します。
+purpose-core-close-stream = 開いているストリームを閉じます。
+purpose-core-collect = ストリームの要素を上限までリストに読み込みます。
+purpose-core-do-once = 初回だけフローを通します。リセットで再び通します。
+purpose-core-fork = すべての分岐を開始し、すべて終わると続行します。
+purpose-core-match-result = Result を値またはエラーとともに Ok か Err に振り分けます。
+purpose-core-next-item = ストリームの次の要素を取ります。終わると何も返しません。
+purpose-core-sequence = 出力を順番に 1 つずつ実行します。
+purpose-core-tee = 1 つのストリームを、どちらもすべての要素を受け取る 2 つに分けます。
+purpose-core-try = 値または障害を Result として捕捉します。
+purpose-core-value = 選んだ型のリテラル値を返します。
+purpose-core-yield = フローが続く前に他の処理を実行させます。

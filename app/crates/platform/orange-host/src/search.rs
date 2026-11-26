@@ -411,6 +411,31 @@ impl Host {
             .unwrap_or(Cow::Borrowed(&text.fallback))
     }
 
+    /// The catalogue help for port `port` of node kind `definition`, for a port whose
+    /// definition does not describe it: message `<node key>-port-<port key>`, such as
+    /// `core-branch-port-condition`. Package ports use the same message ID through
+    /// their definitions (`orange_sdk::Definition::port_description`).
+    pub fn port_help_in(&self, definition: &str, port: &str, locale: &str) -> Option<String> {
+        let id = format!("{}-port-{}", node_key(definition), node_key(port));
+        self.catalogs.message(locale, &id).map(Cow::into_owned)
+    }
+
+    /// Every port help message node kind `definition` has in `locale`'s own catalogue,
+    /// as (port key, text): for a reference that lists ports a fresh node does not show
+    /// yet, such as the payload a Dispatch gets once its event is chosen.
+    pub fn port_help_all_in(&self, definition: &str, locale: &str) -> Vec<(String, String)> {
+        let prefix = format!("{}-port-", node_key(definition));
+        self.catalogs
+            .ids(locale)
+            .into_iter()
+            .filter_map(|id| {
+                let port = id.strip_prefix(&prefix)?;
+                let text = self.catalogs.message(locale, id)?;
+                Some((port.to_owned(), text.into_owned()))
+            })
+            .collect()
+    }
+
     /// A node kind's name in `locale`: its definition file's label in that language, or
     /// for a node without one the catalogue message `name-<node key>`, or the English
     /// name made from its ID.

@@ -282,6 +282,20 @@ fn preview_ports(host: &Host, document: &str, definition: &str) -> Option<Vec<se
     )
 }
 
+/// Help for every port of a node kind in each editor language, keyed by port key: also
+/// for ports a fresh node does not show yet.
+fn port_help(host: &Host, definition: &str) -> serde_json::Value {
+    let languages = ["en", "es", "ja"].map(|language| {
+        let help: serde_json::Map<String, serde_json::Value> = host
+            .port_help_all_in(definition, language)
+            .into_iter()
+            .map(|(port, text)| (port, text.into()))
+            .collect();
+        (language.to_owned(), serde_json::Value::Object(help))
+    });
+    serde_json::Value::Object(languages.into_iter().collect())
+}
+
 pub(crate) fn nodes(host: &Host, json_output: bool) {
     if json_output {
         let preview_document = orange_host::new_document().ok();
@@ -293,14 +307,16 @@ pub(crate) fn nodes(host: &Host, json_output: bool) {
                 "kind": def.kind,
                 "suspends": def.suspends,
                 "provider": info.provider.map(|provider| provider.package.as_str()),
-                "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es") },
-                "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es") },
-                "purpose": { "en": host.purpose_in(&info, "en"), "es": host.purpose_in(&info, "es") },
+                "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es"), "ja": host.label_in(&info, "ja") },
+                "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es"), "ja": host.category_in(&info, "ja") },
+                "purpose": { "en": host.purpose_in(&info, "en"), "es": host.purpose_in(&info, "es"), "ja": host.purpose_in(&info, "ja") },
                 "aliases": {
                     "en": host.catalogs().aliases("en", def.definition.id.as_str()),
                     "es": host.catalogs().aliases("es", def.definition.id.as_str()),
+                    "ja": host.catalogs().aliases("ja", def.definition.id.as_str()),
                 },
                 "ports": info.declared_ports(),
+                "port_help": port_help(host, def.definition.id.as_str()),
                 "preview_ports": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str())),
                 "config_schema": def.config_schema,
             })
