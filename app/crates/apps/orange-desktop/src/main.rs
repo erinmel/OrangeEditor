@@ -30,6 +30,38 @@ const VAULT_SERVICE: &str = "orange";
 /// Frames drawn before a `--screenshot` is taken, so the layout has settled.
 const SETTLE_FRAMES: u32 = 12;
 
+/// Opens the web pages the editor asked for, such as a node's documentation, in the
+/// person's browser: only `https://` addresses, each handed to the platform's opener as
+/// one argument with no shell in between.
+fn open_links(ctx: &eframe::egui::Context) {
+    let urls: Vec<String> = ctx.output_mut(|output| {
+        let mut urls = Vec::new();
+        output.commands.retain(|command| match command {
+            eframe::egui::OutputCommand::OpenUrl(open) => {
+                urls.push(open.url.clone());
+                false
+            }
+            _ => true,
+        });
+        urls
+    });
+    for url in urls.into_iter().filter(|url| url.starts_with("https://")) {
+        let opener = if cfg!(windows) {
+            "explorer"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        if let Err(error) = std::process::Command::new(opener).arg(&url).spawn() {
+            eprintln!("could not open {url}: {error}");
+        }
+    }
+}
+
+/// The published documentation, which F1 opens at the selected node's page.
+const DOCS_URL: &str = "https://erinmel.github.io/OrangeEditor/";
+
 const USAGE: &str = "\
 usage:
   orange-editor [graph.json] [--canvas-only] [--screenshot <file.png>]
@@ -161,6 +193,7 @@ impl eframe::App for Desktop {
             }
             None => self.editor.ui(ui, &mut self.host),
         }
+        open_links(ui.ctx());
         if self.bare.is_none() && self.shot.is_none() {
             self.native.dialog(ui.ctx());
         }
@@ -595,6 +628,7 @@ fn start(
     }
     editor.file_dialogs = true;
     editor.native_plugins = screenshot.is_none();
+    editor.docs_url = Some(DOCS_URL.to_owned());
     let mut bare = None;
     let title = window_title(path.as_deref()).into_owned();
     if let Some(path) = path {

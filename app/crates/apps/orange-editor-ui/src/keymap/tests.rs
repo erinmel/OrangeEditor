@@ -444,3 +444,26 @@ fn pure_values_remain_visible_when_the_graph_starts() {
     assert_eq!(editor.canvas.shown_value(node, "result"), Some("17"));
     editor.stop(&mut host);
 }
+
+#[test]
+fn f1_opens_the_selected_first_party_node_in_the_configured_reference() {
+    let (mut host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut editor = Editor::new();
+    editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+    let branch = editor
+        .add_node(&mut host, orange_host::intrinsic::BRANCH)
+        .unwrap();
+    editor.canvas().select(Some(branch));
+    // Without a reference to open, F1 does nothing.
+    assert_eq!(editor.node_docs_url(&host), None);
+    editor.docs_url = Some("https://docs.example/".to_owned());
+    assert_eq!(
+        editor.node_docs_url(&host).as_deref(),
+        Some("https://docs.example/nodes/core/branch/1/")
+    );
+    // Nothing selected, nothing to open.
+    editor.canvas().select(None);
+    assert_eq!(editor.node_docs_url(&host), None);
+    let actions: Vec<_> = actions().map(|(id, ..)| *id).collect();
+    assert!(actions.contains(&"node-help"));
+}

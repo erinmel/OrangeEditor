@@ -538,6 +538,11 @@ pub struct Editor {
     /// Draw native window commands and a drag region in the toolbar. Opt in only
     /// when the embedding window disables its own decorations.
     pub window_toolbar: bool,
+    /// The address of the node reference, ending in `/`, such as
+    /// `https://erinmel.github.io/OrangeEditor/`. With one node selected, F1 opens its
+    /// page there through egui's URL opening, for core and `org.orange.*` kinds, which
+    /// that reference documents. `None`, the default, leaves F1 unbound.
+    pub docs_url: Option<String>,
     request: Option<FileRequest>,
     /// The search to add a node at the pointer, while it is open.
     quick: Option<quick_add::QuickAdd>,
