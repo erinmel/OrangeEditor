@@ -51,7 +51,9 @@ jobs:
       - run: rustup show active-toolchain
       # cpal's ALSA backend (orange-audio) links the system library.
       - name: Install ALSA development headers
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       - name: Cache compiled dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -186,7 +188,9 @@ jobs:
       # cpal's ALSA backend (orange-audio) links the system library.
       - name: Install ALSA development headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       - name: Cache native dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -231,7 +235,9 @@ jobs:
       - run: rustc --version --verbose
       # cpal's ALSA backend (orange-audio) links the system library.
       - name: Install ALSA development headers
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       - name: Cache optimized dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -300,7 +306,9 @@ jobs:
           rustc --version --verbose
       # cpal's ALSA backend (orange-audio) links the system library.
       - name: Install ALSA development headers
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev
       - name: Cache MSRV dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
