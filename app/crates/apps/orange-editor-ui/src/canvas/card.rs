@@ -2,6 +2,7 @@
 //! hit tests, painting and the controls all read this one model, so nothing else
 //! places anything on a card.
 use super::*;
+use orange_host::intrinsic;
 
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
@@ -211,7 +212,7 @@ fn typed(port: &PortView, details: &[orange_host::PortDetails]) -> bool {
 pub(super) fn literal(node: &NodeView) -> bool {
     matches!(
         node.definition.as_str(),
-        "core/whole-number" | "core/number" | "core/true-or-false" | "core/text"
+        intrinsic::WHOLE_NUMBER | intrinsic::NUMBER | intrinsic::TRUE_OR_FALSE | intrinsic::TEXT
     )
 }
 
@@ -269,7 +270,7 @@ impl<'a> Card<'a> {
 
         // Flow: the way in and the first way out share the first row.
         let mut ins: Vec<Left<'a>> = Vec::new();
-        if node.definition == "core/on-manual" {
+        if node.definition == intrinsic::ON_MANUAL {
             ins.push(Left::Fire);
         }
         ins.extend(
@@ -279,7 +280,7 @@ impl<'a> Card<'a> {
                 // The gate accepts both spellings. Keep existing alias wires
                 // reachable without offering two identical inputs on new cards.
                 .filter(|port| {
-                    node.definition != "core/gate" || port.id != "enter" || port.connected
+                    node.definition != intrinsic::GATE || port.id != "enter" || port.connected
                 })
                 .map(Left::Port),
         );
@@ -327,7 +328,10 @@ impl<'a> Card<'a> {
                 named: true,
             });
         }
-        if matches!(node.definition.as_str(), "core/emit" | "core/on-event") {
+        if matches!(
+            node.definition.as_str(),
+            intrinsic::EMIT | intrinsic::ON_EVENT
+        ) {
             lefts.push(Left::Field {
                 editor: FieldOf::EventChannel,
                 named: true,
@@ -500,7 +504,7 @@ impl<'a> Card<'a> {
         }
         if matches!(
             node.definition.as_str(),
-            "core/emit" | crate::palette::BRIDGE_OUT
+            intrinsic::EMIT | crate::palette::BRIDGE_OUT
         ) {
             push(
                 &mut rows,
@@ -751,7 +755,7 @@ mod tests {
         host.choose_type(&mut draft, id, "T", Some("core/f64@1"))
             .unwrap();
         let source = host
-            .add_node(&mut draft, "core/number", [-600.0, 0.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [-600.0, 0.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
@@ -803,11 +807,11 @@ mod tests {
     fn every_port_has_one_place_and_rows_stack() {
         for definition in [
             orange_audio::PLAY,
-            "core/on-manual",
+            intrinsic::ON_MANUAL,
             "org.orange.math/add",
-            "core/set-variable",
-            "core/get-variable",
-            "core/whole-number",
+            intrinsic::SET_VARIABLE,
+            intrinsic::GET_VARIABLE,
+            intrinsic::WHOLE_NUMBER,
         ] {
             card_of(definition, |node, card| {
                 for port in &node.ports {
@@ -875,7 +879,7 @@ mod tests {
     /// A picker that is the card's only setting goes without its name.
     #[test]
     fn a_lone_picker_has_no_name_line() {
-        card_of("core/get-variable", |_, card| {
+        card_of(intrinsic::GET_VARIABLE, |_, card| {
             assert!(matches!(
                 card.rows[0].left,
                 Some(Left::Field {
@@ -884,7 +888,7 @@ mod tests {
                 })
             ));
         });
-        card_of("core/set-variable", |node, _| {
+        card_of(intrinsic::SET_VARIABLE, |node, _| {
             // Once the variable gives the node a value input, the picker is named.
             let mut node = node.clone();
             node.ports.push(PortView {

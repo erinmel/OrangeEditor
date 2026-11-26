@@ -2,6 +2,7 @@
 //! are in `fields`; tuning settings are only in Properties (22 §3.1).
 use super::*;
 use crate::properties::watch_field_entries;
+use orange_host::intrinsic;
 
 /// The settings of `node` that name one of the document's variables, as JSON pointers.
 pub(super) fn variable_pointers(node: &NodeView) -> impl Iterator<Item = &str> {
@@ -52,7 +53,7 @@ pub(crate) fn advanced(node: &NodeView, name: &str) -> bool {
 pub(super) fn fields(node: &NodeView) -> impl Iterator<Item = (&String, &serde_json::Value)> {
     watch_field_entries(node).chain(
         all_fields(node)
-            .filter(|(name, _)| node.definition != "core/on-watch" && !advanced(node, name)),
+            .filter(|(name, _)| node.definition != intrinsic::ON_WATCH && !advanced(node, name)),
     )
 }
 

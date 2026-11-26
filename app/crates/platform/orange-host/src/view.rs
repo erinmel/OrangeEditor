@@ -1,6 +1,7 @@
 //! A document as a canvas draws it: each node with its name, ports and place, and the
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
+use crate::intrinsic;
 use orange_model::catalog::{NominalAccess, Ports};
 use orange_model::document::{
     ConfigValue, ConnectionDecl, EventDecl, FunctionDecl, NodeInstance, NodeKind, PortDirection,
@@ -134,24 +135,24 @@ pub struct TypeChoice {
 fn core_schema(definition: &str) -> Option<Json> {
     let time = json!({"type": "string", "format": "duration-ns", "pattern": "^(0|[1-9][0-9]*)$"});
     match definition {
-        "core/while" | "core/for-range" => {
+        intrinsic::WHILE | intrinsic::FOR_RANGE => {
             Some(json!({"type": "object", "required": ["max_iterations"],
             "properties": {"max_iterations": {"type": "integer", "minimum": 1}}}))
         }
-        "core/for-each" => Some(json!({"type": "object",
+        intrinsic::FOR_EACH => Some(json!({"type": "object",
             "properties": {"mode": {"type": "string", "enum": ["list", "map"], "default": "list"}}})),
-        "core/on-timer" => Some(json!({"type": "object", "required": ["interval"],
+        intrinsic::ON_TIMER => Some(json!({"type": "object", "required": ["interval"],
             "properties": {"interval": time,
                 "first": {"type": "string", "enum": ["after-interval", "immediate"]},
                 "missed": {"type": "string", "enum": ["coalesce", "skip"]}},
             "additionalProperties": false})),
-        "core/on-timeout" => Some(json!({"type": "object", "required": ["delay"],
+        intrinsic::ON_TIMEOUT => Some(json!({"type": "object", "required": ["delay"],
             "properties": {"delay": time}, "additionalProperties": false})),
         // A bridge names its channel; a Bridge In's follows its Bridge Out and is
         // chosen from the channels, not typed.
-        "core/bridge-out" => Some(json!({"type": "object",
+        intrinsic::BRIDGE_OUT => Some(json!({"type": "object",
             "properties": {"channel": {"type": "string", "title": "Channel"}}})),
-        "core/bridge-in" => Some(json!({"type": "object",
+        intrinsic::BRIDGE_IN => Some(json!({"type": "object",
             "properties": {"channel": {"type": "string", "readOnly": true}}})),
         _ => None,
     }
@@ -834,7 +835,7 @@ impl Host {
             args.extend(node.type_pins.clone());
             args
         });
-        let switch_choices = (node.definition.id.as_str() == "core/switch")
+        let switch_choices = (node.definition.id.as_str() == intrinsic::SWITCH)
             .then(|| {
                 settled
                     .as_ref()?
@@ -1105,9 +1106,9 @@ impl Host {
             }
         }
         let marker_key = match definition.as_str() {
-            "core/function-entry" => Some("name-core-function-entry"),
-            "core/function-outputs" => Some("name-core-function-outputs"),
-            "core/return" => Some("name-core-return"),
+            intrinsic::FUNCTION_ENTRY => Some("name-core-function-entry"),
+            intrinsic::FUNCTION_OUTPUTS => Some("name-core-function-outputs"),
+            intrinsic::RETURN => Some("name-core-return"),
             _ => None,
         };
         let marker = marker_key.and_then(|key| {
@@ -1127,7 +1128,7 @@ impl Host {
             kind: marker
                 .map(Cow::into_owned)
                 .or_else(|| labels.get(&definition).cloned())
-                .or_else(|| (definition == "core/call").then(|| "Function".to_owned()))
+                .or_else(|| (definition == intrinsic::CALL).then(|| "Function".to_owned()))
                 .unwrap_or_else(|| definition.clone()),
             entry: kind == Some(NodeKind::Entry) && ports.iter().any(|port| port.exec),
             definition,
@@ -1244,9 +1245,9 @@ pub fn formula(definition: &str) -> Option<&'static str> {
 fn trigger_detail(definition: &str, config: &serde_json::Map<String, Json>) -> Option<String> {
     let text = |key: &str| config.get(key).and_then(Json::as_str);
     match definition {
-        "core/on-timer" => Some(format!("every {}", human_duration(text("interval")?)?)),
-        "core/on-timeout" => Some(format!("after {}", human_duration(text("delay")?)?)),
-        "core/on-manual" => text("payload").map(|ty| {
+        intrinsic::ON_TIMER => Some(format!("every {}", human_duration(text("interval")?)?)),
+        intrinsic::ON_TIMEOUT => Some(format!("after {}", human_duration(text("delay")?)?)),
+        intrinsic::ON_MANUAL => text("payload").map(|ty| {
             let short = ty.rsplit('/').next().unwrap_or(ty);
             format!("with {}", short.split('@').next().unwrap_or(short))
         }),
@@ -1296,19 +1297,34 @@ mod trigger_detail_tests {
     fn a_trigger_says_what_fires_it() {
         let config = |json: Json| json.as_object().cloned().unwrap();
         assert_eq!(
-            trigger_detail("core/on-timer", &config(json!({"interval": "1000000000"}))).as_deref(),
+            trigger_detail(
+                intrinsic::ON_TIMER,
+                &config(json!({"interval": "1000000000"}))
+            )
+            .as_deref(),
             Some("every 1 s")
         );
         assert_eq!(
-            trigger_detail("core/on-timeout", &config(json!({"delay": "300000000"}))).as_deref(),
+            trigger_detail(
+                intrinsic::ON_TIMEOUT,
+                &config(json!({"delay": "300000000"}))
+            )
+            .as_deref(),
             Some("after 300 ms")
         );
         assert_eq!(human_duration("1500000000").as_deref(), Some("1.5 s"));
         assert_eq!(human_duration("120000000000").as_deref(), Some("2 min"));
         assert_eq!(
-            trigger_detail("core/on-manual", &config(json!({"payload": "core/i64@1"}))).as_deref(),
+            trigger_detail(
+                intrinsic::ON_MANUAL,
+                &config(json!({"payload": "core/i64@1"}))
+            )
+            .as_deref(),
             Some("with i64")
         );
-        assert_eq!(trigger_detail("core/on-start", &config(json!({}))), None);
+        assert_eq!(
+            trigger_detail(intrinsic::ON_START, &config(json!({}))),
+            None
+        );
     }
 }

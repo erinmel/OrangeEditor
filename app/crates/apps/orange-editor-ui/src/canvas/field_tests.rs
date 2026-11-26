@@ -1,5 +1,6 @@
 //! Card fields driven through egui input, frame by frame, as a person uses them.
 use super::*;
+use orange_host::intrinsic;
 
 fn id(n: u32) -> NodeId {
     format!("20000000-0000-4000-8000-{n:012x}").parse().unwrap()
@@ -9,7 +10,7 @@ fn id(n: u32) -> NodeId {
 fn for_each_shows_its_default_list_mode_and_the_map_choice() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-    host.add_node(&mut draft, "core/for-each", [0.0, 0.0])
+    host.add_node(&mut draft, intrinsic::FOR_EACH, [0.0, 0.0])
         .unwrap();
     let graph = host.draft_view(&draft).unwrap();
     let node = &graph.nodes[0];
@@ -215,10 +216,10 @@ fn keyboard_and_click_can_wire_from_either_end_or_cancel_without_editing() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let start = host
-        .add_node(&mut draft, "core/on-manual", [40.0, 40.0])
+        .add_node(&mut draft, intrinsic::ON_MANUAL, [40.0, 40.0])
         .unwrap();
     let wait = host
-        .add_node(&mut draft, "core/wait", [440.0, 40.0])
+        .add_node(&mut draft, intrinsic::WAIT, [440.0, 40.0])
         .unwrap();
     let mut session = Session::new();
     session.graph = host.draft_view(&draft).unwrap();
@@ -314,10 +315,10 @@ fn failure_disclosure_accepts_keyboard_and_preserves_primary_anchors() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let id = host
-        .add_node(&mut draft, "core/wait", [40.0, 40.0])
+        .add_node(&mut draft, intrinsic::WAIT, [40.0, 40.0])
         .unwrap();
     let handler = host
-        .add_node(&mut draft, "core/wait", [480.0, 40.0])
+        .add_node(&mut draft, intrinsic::WAIT, [480.0, 40.0])
         .unwrap();
     let view = host.draft_authoring_view(&draft).unwrap();
     let mut session = Session::new();
@@ -540,7 +541,7 @@ fn a_fitted_card_keeps_its_title_at_overview_zoom() {
 #[test]
 fn both_number_literal_cards_use_the_math_icon() {
     let mut view = node();
-    for definition in ["core/number", "core/whole-number"] {
+    for definition in [intrinsic::NUMBER, intrinsic::WHOLE_NUMBER] {
         view.definition = definition.into();
         assert_eq!(family_icon(&view), crate::icons::MATH);
     }

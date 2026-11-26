@@ -13,6 +13,8 @@
 //! It is a shortlist, not a promise: connecting still runs the language's checks and
 //! refuses what does not fit with the reason.
 use super::*;
+#[cfg(test)]
+use crate::intrinsic;
 use orange_model::catalog::{Ports, VariableAccess, implicit_port_names};
 use orange_model::document::{NodeKind, PortDirection, PortKind};
 use orange_model::fit::PortFit;
@@ -373,10 +375,10 @@ mod tests {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&new_document().unwrap()).unwrap();
         let whole = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let number = host
-            .add_node(&mut draft, "core/number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         let list = host
             .add_node(&mut draft, "org.orange.collections/build-list", [0.0, 0.0])

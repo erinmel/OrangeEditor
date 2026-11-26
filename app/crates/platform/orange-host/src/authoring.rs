@@ -5,6 +5,7 @@
 //! writes those when a node is placed. A person writing JSON cannot: the values come
 //! from the registry. [`Host::bind`] fills them in.
 use super::*;
+use crate::intrinsic;
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::NodeKind;
 use serde_json::{Value as Json, json};
@@ -82,7 +83,7 @@ fn exact(value: &mut Json) -> bool {
             let timer = fields
                 .get("definition_id")
                 .and_then(Json::as_str)
-                .is_some_and(|id| matches!(id, "core/on-timer" | "core/on-timeout"));
+                .is_some_and(|id| matches!(id, intrinsic::ON_TIMER | intrinsic::ON_TIMEOUT));
             if timer && let Some(Json::Object(config)) = fields.get_mut("config") {
                 for setting in config.values_mut() {
                     if let Some(exact) = setting.as_str().and_then(nanoseconds) {
@@ -253,7 +254,7 @@ mod tests {
             "connections": [], "signatures": {}, "edges": [], "functions": [], "exports": [],
             "editor": {},
             "nodes": [{"id": "10000000-0000-4000-8000-000000000001",
-                "definition_id": "core/on-manual", "definition_version": 1,
+                "definition_id": intrinsic::ON_MANUAL, "definition_version": 1,
                 "config_version": 1, "config": {}}]})
         .to_string();
         assert!(!host.check(&written).unwrap().is_empty());
@@ -275,7 +276,7 @@ mod tests {
             assert_eq!(nanoseconds(other), None, "{other}");
         }
         let mut document = json!({"nodes": [
-            {"definition_id": "core/on-timer", "config": {"interval": "300ms", "missed": "skip"}},
+            {"definition_id": intrinsic::ON_TIMER, "config": {"interval": "300ms", "missed": "skip"}},
             {"definition_id": "org.example/x", "config": {"label": "5m"},
                 "inputs": {"gain": {"type": "core/f64@1", "value": 0.15},
                     "kept": {"type": "core/f64@1", "bits": "3fc3333333333333"},

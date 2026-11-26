@@ -4,6 +4,8 @@ mod global;
 
 use eframe::egui::{Event, Key, Modifiers};
 use global::{Chord, Signal};
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_sdk::{Arguments, Definition, Emitter, ServicePackage, ServiceSource, Session, Value};
 use serde_json::{Map, Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -494,7 +496,7 @@ mod tests {
             )
             .unwrap();
         let sink = host
-            .add_node(&mut draft, "core/set-variable", [300.0, 0.0])
+            .add_node(&mut draft, intrinsic::SET_VARIABLE, [300.0, 0.0])
             .unwrap();
         host.set_config(&mut draft, sink, &json!({"variable": variable}))
             .unwrap();

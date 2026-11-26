@@ -1,5 +1,6 @@
 use super::*;
 use crate::Editor;
+use orange_host::intrinsic;
 use orange_host::{Host, HostOptions};
 
 #[test]
@@ -41,8 +42,8 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let first = editor.add_node(&mut host, "core/whole-number").unwrap();
-    let second = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let first = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
+    let second = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select_many(&[first, second]);
     editor.panels.properties = false;
     editor.panels.packages = true;
@@ -382,7 +383,7 @@ fn saved_rebinding_is_used_by_the_editor_keyboard_entrypoint() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open(&mut host, "keys.json", orange_host::new_document().unwrap());
-    let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select(Some(node));
     editor.canvas.keys.0.insert(
         "duplicate".into(),
@@ -426,7 +427,7 @@ fn pure_values_remain_visible_when_the_graph_starts() {
         "value.json",
         orange_host::new_document().unwrap(),
     );
-    let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     assert!(editor.set_input(&mut host, (node, "value"), Some("17")));
     assert_eq!(editor.canvas.shown_value(node, "result"), Some("17"));
     editor.run(&mut host);

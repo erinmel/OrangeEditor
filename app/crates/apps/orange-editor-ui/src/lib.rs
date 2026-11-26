@@ -54,6 +54,7 @@ pub use quick_add::QuickChoice;
 use crate::controls::{Dropdown as _, Surface};
 use canvas::Canvas;
 use i18n::{t, tf};
+use orange_host::intrinsic;
 use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
     StopMode, lines,
@@ -612,7 +613,7 @@ fn place_node(
     }
     // A Listen bound to an existing channel in one step.
     if let Some(event) = definition.strip_prefix(palette::BIND_LISTEN) {
-        let node = host.add_node(draft, "core/on-event", at)?;
+        let node = host.add_node(draft, intrinsic::ON_EVENT, at)?;
         let _ = host.set_config(draft, node, &serde_json::json!({ "event": event }))?;
         return Ok((node, None));
     }
@@ -961,7 +962,7 @@ impl Editor {
             .iter()
             .filter(|event| {
                 graph.nodes.iter().any(|node| {
-                    node.definition == "core/emit"
+                    node.definition == intrinsic::EMIT
                         && node.settings["event"].as_str() == Some(event.id.to_string().as_str())
                 })
             })
@@ -3148,9 +3149,9 @@ mod tests {
             "variables": [{"id": id(100), "name": "count", "type": "core/i64@1",
                 "scope": "run", "persistent": false, "conflict": "reject"}],
             "nodes": [
-                {"id": id(1), "definition_id": "core/on-manual", "definition_version": 1,
+                {"id": id(1), "definition_id": intrinsic::ON_MANUAL, "definition_version": 1,
                     "config_version": 1, "config": {}, "name": "go"},
-                {"id": id(2), "definition_id": "core/set-variable", "definition_version": 1,
+                {"id": id(2), "definition_id": intrinsic::SET_VARIABLE, "definition_version": 1,
                     "config_version": 1, "config": {"variable": id(100)},
                     "inputs": {"value": {"type": "core/i64@1", "value": "7"}}}],
             "edges": [{"id": "30000000-0000-4000-8000-000000000001",
@@ -3515,7 +3516,7 @@ mod tests {
         let (mut host, events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let join = editor
             .add_node(&mut host, "org.orange.text/concat")
             .unwrap();
@@ -3563,7 +3564,7 @@ mod tests {
 
         // An edit made while the document runs reaches the flow: a second trigger
         // added while running can be fired.
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         // A variable node names nothing until one is chosen.
         let declared = editor.declarations().unwrap().variables.clone();
         assert_eq!(declared.len(), 1);
@@ -3614,13 +3615,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             (item.id.as_str(), item.package.as_str()),
-            ("core/whole-number", "")
+            (intrinsic::WHOLE_NUMBER, "")
         );
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let number = editor.add_node(&mut host, &item.id).unwrap();
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         let count = editor.declarations().unwrap().variables[0].id.clone();
         assert!(editor.set_setting(&mut host, set, "/variable", Some(json!(count.unwrap()))));
         // The card offers a whole-number field for the value.
@@ -3684,9 +3685,9 @@ mod tests {
         assert!(editor.declare_connection(&mut host, &api).is_some());
 
         // A timer's interval is a setting; a generic node's type is chosen.
-        let timer = editor.add_node(&mut host, "core/on-timer").unwrap();
+        let timer = editor.add_node(&mut host, intrinsic::ON_TIMER).unwrap();
         assert!(editor.set_setting(&mut host, timer, "/interval", Some(json!("1000000"))));
-        let collect = editor.add_node(&mut host, "core/collect").unwrap();
+        let collect = editor.add_node(&mut host, intrinsic::COLLECT).unwrap();
         assert!(editor.choose_type(&mut host, collect, "T", Some("core/i64@1")));
         let node = |editor: &Editor, id| {
             editor
@@ -3717,9 +3718,9 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let set = editor
-            .add_node_at(&mut host, "core/set-variable", [400.0, 0.0])
+            .add_node_at(&mut host, intrinsic::SET_VARIABLE, [400.0, 0.0])
             .unwrap();
         assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
         assert_eq!(editor.copy(&host), editor.copy(&host));
@@ -3746,7 +3747,7 @@ mod tests {
         assert_eq!(editor.graph().unwrap().nodes.len(), 2);
         // A node kind dropped on the canvas is added where it was let go.
         let dropped = editor
-            .add_node_at(&mut host, "core/on-manual", [50.0, 900.0])
+            .add_node_at(&mut host, intrinsic::ON_MANUAL, [50.0, 900.0])
             .unwrap();
         let placed = editor
             .graph()
@@ -3765,7 +3766,7 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("orange-save-as-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("moved.json").to_string_lossy().into_owned();
-        assert!(editor.add_node(&mut host, "core/on-manual").is_some());
+        assert!(editor.add_node(&mut host, intrinsic::ON_MANUAL).is_some());
         editor.save_as(path.clone()).unwrap();
         assert_eq!(editor.path(), Some(path.as_str()));
         assert!(!editor.is_unsaved());
@@ -3904,10 +3905,10 @@ mod tests {
                     let graph = editor.graph().unwrap();
                     let expected = if matches!(
                         kind,
-                        "core/repeat-begin"
-                            | "core/map-begin"
-                            | "core/filter-begin"
-                            | "core/fold-begin"
+                        intrinsic::REPEAT_BEGIN
+                            | intrinsic::MAP_BEGIN
+                            | intrinsic::FILTER_BEGIN
+                            | intrinsic::FOLD_BEGIN
                     ) {
                         2
                     } else {
@@ -3956,7 +3957,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
         // A node that needs a variable declares one from its properties.
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         let total = Variable {
             id: None,
             name: "total".into(),
@@ -3989,7 +3990,7 @@ mod tests {
         );
         // The Variables list adds a node already naming the variable.
         let get = editor
-            .add_variable_node(&mut host, "core/get-variable", &id)
+            .add_variable_node(&mut host, intrinsic::GET_VARIABLE, &id)
             .unwrap();
         assert_eq!(node(&editor, get).detail.as_deref(), Some("total"));
         assert!(!node(&editor, get).ports.is_empty());
@@ -4010,7 +4011,7 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        for definition in ["core/all-conditions", "core/any-conditions"] {
+        for definition in [intrinsic::ALL_CONDITIONS, intrinsic::ANY_CONDITIONS] {
             let id = editor.add_node(&mut host, definition).unwrap();
             let conditions = |editor: &Editor| {
                 let node = editor
@@ -4045,7 +4046,7 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let fork = editor.add_node(&mut host, "core/fork").unwrap();
+        let fork = editor.add_node(&mut host, intrinsic::FORK).unwrap();
         // The variadic count and the branch ports the card shows. The authoring view also
         // offers the fork's failure route (`failed`, `error`), which adding or removing a
         // branch leaves alone.
@@ -4131,7 +4132,7 @@ mod quick_add_tests {
             orange_host::new_document().unwrap(),
         );
         let number = editor
-            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         editor.open_quick_add(
             Some((number, "result".into())),
@@ -4714,7 +4715,7 @@ fn touched_by_edit(
         .iter()
         .filter(|node| {
             // A card the view kept is the same one; only one built again is compared.
-            (shared_functions_changed && node.definition == "core/call")
+            (shared_functions_changed && node.definition == intrinsic::CALL)
                 || old
                     .get(&node.id)
                     .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
@@ -4839,10 +4840,10 @@ mod preview_tests {
         let text = host.bind(&tests::graph()).unwrap();
         let mut draft = host.draft(&text).unwrap();
         let left = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         assert!(
             host.set_input(&mut draft, (left, "value"), Some("12"))
@@ -4898,8 +4899,8 @@ mod preview_tests {
         let mut editor = Editor::new();
         let activity_graph = host.bind(&tests::graph()).unwrap();
         editor.open(&mut host, "graph.json", activity_graph);
-        let a = editor.add_node(&mut host, "core/whole-number").unwrap();
-        let b = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let a = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
+        let b = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         let greater = editor
             .add_node(&mut host, "org.orange.math/greater")
             .unwrap();
@@ -4934,10 +4935,10 @@ mod preview_tests {
         let text = orange_host::new_document().unwrap();
         editor.open(&mut host, "graph.json", text);
         let a = editor
-            .add_node_at(&mut host, "core/whole-number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let b = editor
-            .add_node_at(&mut host, "core/whole-number", [0.0, 120.0])
+            .add_node_at(&mut host, intrinsic::WHOLE_NUMBER, [0.0, 120.0])
             .unwrap();
         let greater = editor
             .add_node_at(&mut host, "org.orange.math/greater", [300.0, 60.0])
@@ -4974,13 +4975,13 @@ mod preview_tests {
             orange_host::new_document().unwrap(),
         );
         let a = editor
-            .add_node_at(&mut host, "core/true-or-false", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::TRUE_OR_FALSE, [0.0, 0.0])
             .unwrap();
         let b = editor
-            .add_node_at(&mut host, "core/true-or-false", [0.0, 120.0])
+            .add_node_at(&mut host, intrinsic::TRUE_OR_FALSE, [0.0, 120.0])
             .unwrap();
         let and = editor
-            .add_node_at(&mut host, "core/and", [300.0, 60.0])
+            .add_node_at(&mut host, intrinsic::AND, [300.0, 60.0])
             .unwrap();
         assert!(editor.set_input(&mut host, (a, "value"), Some("true")));
         assert!(editor.set_input(&mut host, (b, "value"), Some("false")));

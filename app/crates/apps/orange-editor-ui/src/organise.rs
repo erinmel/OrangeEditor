@@ -5,6 +5,7 @@ use crate::canvas::GroupEdit;
 use crate::controls::{Action, Surface};
 use crate::i18n::{t, tf};
 use crate::{Editor, FileRequest, controls};
+use orange_host::intrinsic;
 use orange_host::{Extraction, FunctionPackagePreview, Group, Host, HostError, NodeId, Publish};
 
 #[derive(Debug, Clone)]
@@ -111,7 +112,7 @@ impl Editor {
     pub(crate) fn call_function(&self, node: NodeId) -> Option<&str> {
         let document = self.document.as_ref()?.draft.document();
         let instance = document.root().nodes.get(&node)?;
-        if instance.definition.id.as_str() == "core/call" {
+        if instance.definition.id.as_str() == intrinsic::CALL {
             instance.config.get("function")?.as_str()
         } else {
             None
@@ -552,7 +553,7 @@ mod tests {
         editor.open(host, "graph.json", text);
         let set = editor.graph().unwrap().nodes[1].id;
         let number = editor
-            .add_node_at(host, "core/whole-number", [900.0, 700.0])
+            .add_node_at(host, intrinsic::WHOLE_NUMBER, [900.0, 700.0])
             .unwrap();
         assert!(editor.set_input(host, (number, "value"), Some("9")));
         assert!(editor.connect(host, (number, "result"), (set, "value")));
@@ -695,10 +696,10 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let (mut editor, number, set) = opened(&mut host);
         let first = editor
-            .add_node_at(&mut host, "core/value", [1200.0, 700.0])
+            .add_node_at(&mut host, intrinsic::VALUE, [1200.0, 700.0])
             .unwrap();
         let second = editor
-            .add_node_at(&mut host, "core/value", [1500.0, 700.0])
+            .add_node_at(&mut host, intrinsic::VALUE, [1500.0, 700.0])
             .unwrap();
         assert!(editor.connect(&mut host, (number, "result"), (first, "value")));
         assert!(editor.connect(&mut host, (first, "result"), (second, "value")));
@@ -748,7 +749,7 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let (mut editor, number, set) = opened(&mut host);
         let pass = editor
-            .add_node_at(&mut host, "core/value", [1200.0, 700.0])
+            .add_node_at(&mut host, intrinsic::VALUE, [1200.0, 700.0])
             .unwrap();
         assert!(editor.connect(&mut host, (number, "result"), (pass, "value")));
         assert!(editor.connect(&mut host, (pass, "result"), (set, "value")));

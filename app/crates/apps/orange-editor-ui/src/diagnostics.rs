@@ -2,6 +2,8 @@
 use super::*;
 use crate::controls::{Action, Dropdown as _, Surface};
 use orange_host::Diagnostic;
+#[cfg(test)]
+use orange_host::intrinsic;
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -847,7 +849,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.set_language("en");
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        editor.add_node(&mut host, "core/set-variable").unwrap();
+        editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         assert!(
             editor
                 .problems()
@@ -872,7 +874,7 @@ mod tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         editor.canvas.select(Some(node));
         editor.panels.log = true;
         let document = editor.document.as_mut().unwrap();

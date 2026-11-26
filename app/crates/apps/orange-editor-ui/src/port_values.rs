@@ -1,5 +1,7 @@
 //! The shared typed-value form for card inputs, Properties, and manual entries.
 use super::*;
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_host::{InputState, Literal, LiteralEditor, LiteralPayload, ManualPayload, TypeExpr};
 
 enum Target {
@@ -345,7 +347,7 @@ mod tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let node = host
-            .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::ON_MANUAL, [0.0, 0.0])
             .unwrap();
         host.set_config(
             &mut draft,

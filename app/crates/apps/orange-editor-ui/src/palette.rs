@@ -1,6 +1,7 @@
 //! Node catalogue projection and its presentation cache. The search itself is the
 //! host's ([`Host::search_nodes`]), shared by this list and the quick-add box.
 use crate::i18n::t;
+use orange_host::intrinsic;
 use orange_host::{Draft, Host, NodeView};
 use std::collections::HashMap;
 
@@ -97,8 +98,8 @@ pub(crate) fn result_row(
 /// These cards are only used by search and drag previews.
 fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
     let ports: &[(&str, bool, &str, &str)] = match definition {
-        "core/get-variable" => &[("value", false, t("port-value"), "$T")],
-        "core/set-variable" => &[
+        intrinsic::GET_VARIABLE => &[("value", false, t("port-value"), "$T")],
+        intrinsic::SET_VARIABLE => &[
             ("in", true, t("port-enter"), ""),
             ("value", true, t("port-value"), "$T"),
             ("then", false, t("port-exit"), ""),
@@ -141,7 +142,10 @@ fn reference_card(host: &Host, definition: &str) -> Option<NodeView> {
         position: None,
         settings: serde_json::Value::Null,
         schema: None,
-        references: if matches!(definition, "core/get-variable" | "core/set-variable") {
+        references: if matches!(
+            definition,
+            intrinsic::GET_VARIABLE | intrinsic::SET_VARIABLE
+        ) {
             vec![("/variable".to_owned(), orange_host::ReferenceKind::Variable)]
         } else {
             Vec::new()
@@ -247,7 +251,7 @@ impl PaletteCache {
                 .groups
                 .iter()
                 .flat_map(|(_, items)| items)
-                .find(|item| item.id == "core/on-event")
+                .find(|item| item.id == intrinsic::ON_EVENT)
                 .map(|item| item.label.clone());
             let bound = channel_items(
                 channels,
@@ -260,13 +264,13 @@ impl PaletteCache {
                 let group = self
                     .groups
                     .iter()
-                    .position(|(_, items)| items.iter().any(|item| item.id == "core/on-event"));
+                    .position(|(_, items)| items.iter().any(|item| item.id == intrinsic::ON_EVENT));
                 match group {
                     Some(group) => {
                         let items = &mut self.groups[group].1;
                         let at = items
                             .iter()
-                            .position(|item| item.id == "core/on-event")
+                            .position(|item| item.id == intrinsic::ON_EVENT)
                             .map_or(items.len(), |at| at + 1);
                         let _ = items.splice(at..at, bound);
                     }
@@ -463,8 +467,8 @@ pub(crate) fn matching_conversions<'a>(
         .collect()
 }
 
-pub(crate) const BRIDGE_OUT: &str = "core/bridge-out";
-pub(crate) const BRIDGE_IN: &str = "core/bridge-in";
+pub(crate) const BRIDGE_OUT: &str = intrinsic::BRIDGE_OUT;
+pub(crate) const BRIDGE_IN: &str = intrinsic::BRIDGE_IN;
 
 /// The port a bridge's wireless link uses, which its card does not show: Bridge Out's
 /// result and Bridge In's value.
@@ -481,8 +485,8 @@ pub(crate) fn bridge_channel(node: &NodeView) -> Option<&str> {
 
 pub(crate) fn signal(node: &NodeView) -> Option<(bool, &str)> {
     let sender = match node.definition.as_str() {
-        "core/emit" => true,
-        "core/on-event" => false,
+        intrinsic::EMIT => true,
+        intrinsic::ON_EVENT => false,
         _ => return None,
     };
     Some((sender, node.settings.get("event")?.as_str()?))
@@ -595,26 +599,29 @@ impl CatalogGroup {
 const TEMPLATES: CatalogGroup = CatalogGroup {
     key: "catalog-templates",
     fallback: "Templates",
-    representative: "core/on-event",
+    representative: intrinsic::ON_EVENT,
     help: "catalog-templates-help",
 };
 const SHORTCUTS: CatalogGroup = CatalogGroup {
     key: "catalog-shortcuts",
     fallback: "Configured shortcuts",
-    representative: "core/on-watch",
+    representative: intrinsic::ON_WATCH,
     help: "catalog-shortcuts-help",
 };
 const LOOP_ENDS: CatalogGroup = CatalogGroup {
     key: "catalog-loop-ends",
     fallback: "Loop parts",
-    representative: "core/repeat-end",
+    representative: intrinsic::REPEAT_END,
     help: "catalog-loop-ends-help",
 };
 
 pub(crate) fn placement_label(definition: &str, label: String, language: &str) -> String {
     let count = match definition {
         "preset:watchdog" => 3,
-        "core/repeat-begin" | "core/map-begin" | "core/filter-begin" | "core/fold-begin" => 2,
+        intrinsic::REPEAT_BEGIN
+        | intrinsic::MAP_BEGIN
+        | intrinsic::FILTER_BEGIN
+        | intrinsic::FOLD_BEGIN => 2,
         _ => return label,
     };
     crate::i18n::catalogs()
@@ -630,7 +637,7 @@ pub(crate) fn placement_label(definition: &str, label: String, language: &str) -
 const FLOW: CatalogGroup = CatalogGroup {
     key: "catalog-flow",
     fallback: "Flow & triggers",
-    representative: "core/branch",
+    representative: intrinsic::BRANCH,
     help: "catalog-flow-help",
 };
 const DATA: CatalogGroup = CatalogGroup {
@@ -840,14 +847,14 @@ fn family(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
         | "org.orange.math/is-nan"
         | "org.orange.math/is-infinite"
         | "org.orange.math/total-order-less"
-        | "core/register"
-        | "core/close-handle"
-        | "core/close-stream"
-        | "core/next-item"
-        | "core/map-end"
-        | "core/filter-end"
-        | "core/fold-end"
-        | "core/repeat-end" => ("palette-advanced", "Advanced", "advanced avanzado"),
+        | intrinsic::REGISTER
+        | intrinsic::CLOSE_HANDLE
+        | intrinsic::CLOSE_STREAM
+        | intrinsic::NEXT_ITEM
+        | intrinsic::MAP_END
+        | intrinsic::FILTER_END
+        | intrinsic::FOLD_END
+        | intrinsic::REPEAT_END => ("palette-advanced", "Advanced", "advanced avanzado"),
         id if id.starts_with("org.orange.json/as-") || id.starts_with("org.orange.json/from-") => (
             "palette-json-convert",
             "Convert JSON Value",
@@ -901,42 +908,42 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
 
 const PRESETS: [(&str, &str, &str, &str, &str); 6] = [
     (
-        "core/on-watch",
+        intrinsic::ON_WATCH,
         "preset:rising-edge",
         "rising-edge",
         "Rising Edge",
         "Fires when a boolean becomes true.",
     ),
     (
-        "core/on-watch",
+        intrinsic::ON_WATCH,
         "preset:falling-edge",
         "falling-edge",
         "Falling Edge",
         "Fires when a boolean becomes false.",
     ),
     (
-        "core/on-watch",
+        intrinsic::ON_WATCH,
         "preset:deadband",
         "when-deadband",
         "Deadband",
         "Fires when a numeric value moves beyond a tolerance.",
     ),
     (
-        "core/update-variable",
+        intrinsic::UPDATE_VARIABLE,
         "preset:increment",
         "counter-increment",
         "Increment",
         "Add a step to a counter.",
     ),
     (
-        "core/update-variable",
+        intrinsic::UPDATE_VARIABLE,
         "preset:decrement",
         "counter-decrement",
         "Decrement",
         "Subtract a step from a counter.",
     ),
     (
-        "core/on-event",
+        intrinsic::ON_EVENT,
         "preset:watchdog",
         "watchdog-preset",
         "Idle Watchdog",
@@ -1190,7 +1197,7 @@ mod tests {
             result
                 .iter()
                 .flat_map(|(_, items)| items)
-                .any(|item| item.id == "core/coalesce" && item.label == "Value or Fallback")
+                .any(|item| item.id == intrinsic::COALESCE && item.label == "Value or Fallback")
         );
     }
 
@@ -1270,7 +1277,7 @@ mod tests {
                 "preset:signal" | "preset:wireless-pulse"
             )));
             if query.is_empty() {
-                for id in ["core/emit", "core/on-event"] {
+                for id in [intrinsic::EMIT, intrinsic::ON_EVENT] {
                     assert_eq!(found.iter().filter(|item| item.definition == id).count(), 1);
                 }
             }
@@ -1307,7 +1314,7 @@ mod tests {
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         let dispatch = editor
-            .add_node_at(&mut host, "core/emit", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::EMIT, [0.0, 0.0])
             .unwrap();
         editor.open_menu(
             crate::MenuTarget::Node(dispatch),
@@ -1341,7 +1348,7 @@ mod tests {
         assert!(
             discover(&host, "senal inalambrica", "es")
                 .iter()
-                .any(|r| r.definition == "core/emit")
+                .any(|r| r.definition == intrinsic::EMIT)
         );
         let sender = editor
             .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
@@ -1387,12 +1394,12 @@ mod tests {
     fn catalog_groups_related_operations_under_common_headings() {
         for (nodes, expected) in [
             (
-                ["core/on-manual", "core/for-each", "preset:signal"],
+                [intrinsic::ON_MANUAL, intrinsic::FOR_EACH, "preset:signal"],
                 "Flow & triggers",
             ),
             (
                 [
-                    "core/get-variable",
+                    intrinsic::GET_VARIABLE,
                     "org.orange.json/get",
                     "convert:example",
                 ],
@@ -1411,7 +1418,10 @@ mod tests {
                 assert_eq!(catalog_group(node).unwrap().name("en"), expected);
             }
         }
-        assert_eq!(catalog_section("core/for-each").unwrap().0, "palette-loops");
+        assert_eq!(
+            catalog_section(intrinsic::FOR_EACH).unwrap().0,
+            "palette-loops"
+        );
         assert_eq!(
             catalog_section("org.orange.net/http-request").unwrap().0,
             "palette-http"
@@ -1422,7 +1432,7 @@ mod tests {
                 .iter()
                 .any(|(group, items)| {
                     group == "Datos y texto"
-                        && items.iter().any(|item| item.id == "core/whole-number")
+                        && items.iter().any(|item| item.id == intrinsic::WHOLE_NUMBER)
                 })
         );
     }
@@ -1574,13 +1584,13 @@ mod tests {
         let edge = body.edges.values().next().unwrap();
         let entry = &body.nodes[&edge.from.node];
         let wait = &body.nodes[&edge.to.node];
-        assert_eq!(body.nodes[&emitter].definition.id.as_str(), "core/emit");
-        assert_eq!(entry.definition.id.as_str(), "core/on-event");
+        assert_eq!(body.nodes[&emitter].definition.id.as_str(), intrinsic::EMIT);
+        assert_eq!(entry.definition.id.as_str(), intrinsic::ON_EVENT);
         assert_eq!(
             serde_json::to_value(entry.activation.as_ref().unwrap()).unwrap()["mode"],
             "replace"
         );
-        assert_eq!(wait.definition.id.as_str(), "core/wait");
+        assert_eq!(wait.definition.id.as_str(), intrinsic::WAIT);
         assert_eq!(body.edges.len(), 1);
         editor.undo(&mut host);
         assert!(editor.graph().unwrap().nodes.is_empty());
@@ -1603,17 +1613,17 @@ mod tests {
             palette_in(&host, "guarda", "es")
                 .iter()
                 .flat_map(|(_, items)| items)
-                .any(|item| item.id == "core/branch")
+                .any(|item| item.id == intrinsic::BRANCH)
         );
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         editor.open_quick_add(None, [0.0, 0.0], egui::Pos2::ZERO);
         let choice = editor.quick_choices(&host, "guard").remove(0);
-        assert_eq!(choice.definition, "core/branch");
+        assert_eq!(choice.definition, intrinsic::BRANCH);
         let node = editor.pick_quick(&mut host, &choice).unwrap();
         let graph = editor.graph().unwrap();
         let card = graph.nodes.iter().find(|card| card.id == node).unwrap();
-        assert_eq!(card.definition, "core/branch");
+        assert_eq!(card.definition, intrinsic::BRANCH);
         assert!(card.ports.iter().any(|port| port.input
             && port.id == "condition"
             && port.ty.as_deref() == Some("core/bool@1")));
@@ -1638,7 +1648,7 @@ mod tests {
             let node = host.add_node(&mut draft, id, [0.0, 0.0]).unwrap();
             let inserted = host.draft_view(&draft).unwrap();
             let card = inserted.nodes.iter().find(|card| card.id == node).unwrap();
-            assert_eq!(card.definition, "core/on-watch");
+            assert_eq!(card.definition, intrinsic::ON_WATCH);
             assert_eq!(card.settings["mode"], mode);
             assert!(card.ports.iter().any(|port| port.input
                 && port.id == "watch"
@@ -1674,7 +1684,7 @@ mod tests {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut cache = PreviewCache::default();
         for definition in [
-            "core/get-variable",
+            intrinsic::GET_VARIABLE,
             "org.orange.collections/make-enum",
             "org.orange.collections/enum-payload",
         ] {

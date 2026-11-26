@@ -5,6 +5,7 @@
 //! the host's: names, aliases, categories, concepts and descriptions, in the editor's
 //! language and English.
 use super::*;
+use orange_host::intrinsic;
 
 fn wire_member(definition: &str) -> Option<(&'static str, &'static str, &str, &str)> {
     for (prefix, node, key) in [
@@ -335,11 +336,11 @@ impl Editor {
                 .iter()
                 .any(|choice| choice.definition.starts_with(ENUM_SWITCH))
             {
-                choices.retain(|choice| choice.definition != "core/switch");
+                choices.retain(|choice| choice.definition != intrinsic::SWITCH);
             }
             if let Some(index) = choices
                 .iter()
-                .position(|choice| choice.definition == "core/coalesce")
+                .position(|choice| choice.definition == intrinsic::COALESCE)
             {
                 let mut fallback = choices.remove(index);
                 fallback.input = Some("value".to_owned());
@@ -451,7 +452,7 @@ impl Editor {
             let definition = if let Some((definition, _, _, _)) = member {
                 definition
             } else if enum_type.is_some() {
-                "core/switch"
+                intrinsic::SWITCH
             } else {
                 &choice.definition
             };
@@ -718,7 +719,7 @@ mod staging_tests {
     fn editor_with(host: &mut Host) -> (Editor, NodeId) {
         let mut editor = Editor::new();
         editor.open(host, "graph.json", orange_host::new_document().unwrap());
-        let trigger = editor.add_node(host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(host, intrinsic::ON_MANUAL).unwrap();
         (editor, trigger)
     }
 
@@ -742,7 +743,7 @@ mod staging_tests {
                 json!({"variant":"calm"}),
                 "switch mood",
                 ENUM_SWITCH,
-                "core/switch",
+                intrinsic::SWITCH,
             ),
             (
                 "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6d@1",
@@ -766,7 +767,7 @@ mod staging_tests {
                 SET_FIELD,
             ),
         ] {
-            let source = editor.add_node(&mut host, "core/value").unwrap();
+            let source = editor.add_node(&mut host, intrinsic::VALUE).unwrap();
             assert!(editor.choose_type(&mut host, source, "T", Some(ty)));
             assert!(editor.set_input(
                 &mut host,
@@ -788,7 +789,7 @@ mod staging_tests {
             let graph = editor.graph().unwrap();
             let node = graph.nodes.iter().find(|item| item.id == node).unwrap();
             assert_eq!(node.definition, kind);
-            if kind == "core/switch" {
+            if kind == intrinsic::SWITCH {
                 assert!(
                     node.ports
                         .iter()
@@ -826,7 +827,7 @@ mod staging_tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let source = editor.add_node(&mut host, "core/value").unwrap();
+        let source = editor.add_node(&mut host, intrinsic::VALUE).unwrap();
         assert!(editor.choose_type(&mut host, source, "T", Some("core/option@1<core/string@1>")));
         editor.open_quick_add(
             Some((source, "result".into())),
@@ -834,7 +835,7 @@ mod staging_tests {
             egui::Pos2::ZERO,
         );
         let choices = editor.quick_choices(&host, "");
-        assert_eq!(choices[0].definition, "core/coalesce");
+        assert_eq!(choices[0].definition, intrinsic::COALESCE);
         let added = editor.pick_quick(&mut host, &choices[0]).unwrap();
         assert!(
             editor
@@ -862,7 +863,7 @@ mod staging_tests {
         let choice = editor
             .quick_choices(&host, "sequence")
             .into_iter()
-            .find(|choice| choice.definition == "core/sequence")
+            .find(|choice| choice.definition == intrinsic::SEQUENCE)
             .expect("a sequence takes a step");
         let node = editor.pick_quick(&mut host, &choice).unwrap();
         assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
@@ -887,7 +888,7 @@ mod staging_tests {
             egui::pos2(10.0, 10.0),
         );
         let refused = QuickChoice {
-            definition: "core/sequence".to_owned(),
+            definition: intrinsic::SEQUENCE.to_owned(),
             label: "Sequence".to_owned(),
             input: Some("no-such-port".to_owned()),
             output: None,
@@ -910,7 +911,7 @@ mod staging_tests {
             "graph.json",
             orange_host::new_document().unwrap(),
         );
-        let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+        let sequence = editor.add_node(&mut host, intrinsic::SEQUENCE).unwrap();
         let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
         editor.open_quick_add_into(
             (sequence, "in".to_owned()),
@@ -921,7 +922,7 @@ mod staging_tests {
         assert!(!all.is_empty() && all.iter().all(|choice| choice.output.is_some()));
         let manual = all
             .iter()
-            .find(|choice| choice.definition == "core/on-manual")
+            .find(|choice| choice.definition == intrinsic::ON_MANUAL)
             .cloned()
             .expect("a trigger starts a step");
         let node = editor.pick_quick(&mut host, &manual).unwrap();
@@ -950,7 +951,7 @@ mod staging_tests {
             orange_host::new_document().unwrap(),
         );
         let number = editor
-            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         editor.open_quick_add(
             Some((number, "result".into())),
@@ -989,7 +990,7 @@ mod staging_tests {
             "graph.json",
             orange_host::new_document().unwrap(),
         );
-        let whole = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let whole = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         let target = editor
             .add_node(&mut host, "org.orange.math/absolute")
             .unwrap();

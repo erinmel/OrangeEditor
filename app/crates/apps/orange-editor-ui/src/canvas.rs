@@ -11,6 +11,7 @@ use crate::i18n::{t, tf};
 use crate::organise::NodeRename;
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
+use orange_host::intrinsic;
 use orange_host::{GraphView, NodeId, NodeView, PortView};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -142,7 +143,7 @@ fn titles(graph: &GraphView) -> HashMap<NodeId, String> {
     graph
         .nodes
         .iter()
-        .filter(|node| node.definition == "core/convert")
+        .filter(|node| node.definition == intrinsic::CONVERT)
         .filter_map(|node| {
             if let Some(label) = node.settings["converter"]
                 .as_str()
@@ -2538,7 +2539,7 @@ impl Canvas {
                     ));
             }
             self.wireless_rest = rest;
-            let (_, color, _) = crate::palette::badge("core/emit");
+            let (_, color, _) = crate::palette::badge(intrinsic::EMIT);
             for (sender, receiver, points) in links {
                 let shown =
                     all || hovered_card.is_some_and(|card| card == sender || card == receiver);
@@ -2599,7 +2600,7 @@ impl Canvas {
             // A Listen no Dispatch sends to is Unbound: a tag above it names the
             // channel, and a click creates its emitter.
             let unbound = match node.definition.as_str() {
-                "core/on-event" => {
+                intrinsic::ON_EVENT => {
                     let event = node.settings["event"].as_str();
                     let bound = event.is_some_and(|event| {
                         graph
@@ -2699,7 +2700,7 @@ impl Canvas {
             let selected = self.selection.contains(&node.id);
             // On manual always has its button; it fires only while the graph runs.
             let live = node.missing.is_none() && triggers.contains(&node.id);
-            let fire = (node.definition == "core/on-manual" || live).then(|| {
+            let fire = (node.definition == intrinsic::ON_MANUAL || live).then(|| {
                 let typed = if live {
                     self.manual_values.contains(&node.id)
                 } else {
@@ -3228,7 +3229,7 @@ impl Canvas {
                     &colors,
                     (
                         true,
-                        (card.definition == "core/on-manual").then_some((false, false)),
+                        (card.definition == intrinsic::ON_MANUAL).then_some((false, false)),
                         false,
                         false,
                     ),
@@ -3884,7 +3885,7 @@ fn draw_node<'a>(
                 if !readable {
                     continue;
                 }
-                let label = if node.definition == "core/gate" && port.id == "enter" {
+                let label = if node.definition == intrinsic::GATE && port.id == "enter" {
                     t("port-enter-alias").to_owned()
                 } else if !port.exec {
                     crate::properties::input_caption(node, port)
@@ -4923,7 +4924,7 @@ mod tests {
             .add_node(&mut draft, orange_audio::NOISE_LEVEL, [50.0, 50.0])
             .unwrap();
         let front = host
-            .add_node(&mut draft, "core/number", [200.0, 75.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [200.0, 75.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
@@ -5212,7 +5213,7 @@ mod tests {
             crate::palette::PaletteDrag {
                 card: Some(card),
                 item: crate::PaletteItem {
-                    id: "core/and".into(),
+                    id: intrinsic::AND.into(),
                     label: "AND placement".into(),
                     package: String::new(),
                     purpose: String::new(),
@@ -5227,7 +5228,7 @@ mod tests {
         output.drop_without_applying_deltas();
         let (output, dropped, spliced) = frame(vec![button(false)]);
         output.drop_without_applying_deltas();
-        assert_eq!(dropped.unwrap().0, "core/and");
+        assert_eq!(dropped.unwrap().0, intrinsic::AND);
         assert_eq!(
             spliced,
             Some(((id(1), "then".into()), (id(2), "in".into())))
@@ -5362,7 +5363,7 @@ mod tests {
         );
         assert_ne!(
             family_color("org.orange.math/add"),
-            family_color("core/fork")
+            family_color(intrinsic::FORK)
         );
         // A node with no ports yet keeps a row for its hint.
         let empty = node(9, Vec::new());
@@ -5390,7 +5391,7 @@ mod tests {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let sender = host
-            .add_node(&mut draft, "core/emit", [50.0, 80.0])
+            .add_node(&mut draft, intrinsic::EMIT, [50.0, 80.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
@@ -5458,7 +5459,7 @@ mod tests {
         canvas.fit = false;
         canvas.origin = Pos2::ZERO;
         let ctx = egui::Context::default();
-        let (_, accent, _) = crate::palette::badge("core/emit");
+        let (_, accent, _) = crate::palette::badge(intrinsic::EMIT);
         let mut time = 0.0;
         // The strongest alpha of the dashed links after a few frames at `pointer`.
         let mut drawn = |canvas: &mut Canvas, pointer| {

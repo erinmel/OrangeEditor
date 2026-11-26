@@ -3,6 +3,7 @@
 //! forgiving one typo. The words are catalogue data ([`Catalogs`]); which nodes a
 //! concept groups follows from their kind and ID, so new trigger kinds join "trigger"
 //! without a list to keep up.
+use crate::intrinsic;
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
@@ -23,7 +24,7 @@ include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
 /// Kinds that stay loadable but are not offered: the two-input And and Or, which the
 /// growable forms (`core/all-conditions`, `core/any-conditions`) replace as And and Or.
-pub const UNLISTED: [&str; 2] = ["core/and", "core/or"];
+pub const UNLISTED: [&str; 2] = [intrinsic::AND, intrinsic::OR];
 
 static BUILT_IN: LazyLock<Catalogs> = LazyLock::new(|| {
     let mut catalogs = Catalogs::default();
@@ -485,9 +486,12 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
     add(
         "math",
         namespace == "org.orange.math" && !compares
-            || ["core/whole-number", "core/number"].contains(&id),
+            || [intrinsic::WHOLE_NUMBER, intrinsic::NUMBER].contains(&id),
     );
-    add("text", namespace == "org.orange.text" || id == "core/text");
+    add(
+        "text",
+        namespace == "org.orange.text" || id == intrinsic::TEXT,
+    );
     add(
         "time",
         namespace == "org.orange.time"
@@ -714,7 +718,7 @@ mod tests {
             .unwrap();
         for (port, value) in [("a", "1.5"), ("b", "0.5")] {
             let number = host
-                .add_node(&mut draft, "core/number", [0.0, 0.0])
+                .add_node(&mut draft, intrinsic::NUMBER, [0.0, 0.0])
                 .unwrap();
             host.set_input(&mut draft, (number, "value"), Some(value))
                 .unwrap();

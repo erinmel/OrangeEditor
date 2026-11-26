@@ -2,6 +2,8 @@
 use crate::canvas::{Canvas, CanvasResponse};
 use crate::i18n::{t, tf};
 use crate::{Editor, properties};
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_host::{AuthoringView, Found, Host, HostError, NodeId, NodeView};
 
 #[derive(Debug)]
@@ -320,10 +322,10 @@ mod tests {
         editor.open(&mut host, "graph.json", text);
         let sink = editor.graph().unwrap().nodes[1].id;
         let number = editor
-            .add_node_at(&mut host, "core/whole-number", [900.0, 700.0])
+            .add_node_at(&mut host, intrinsic::WHOLE_NUMBER, [900.0, 700.0])
             .unwrap();
         let pass = editor
-            .add_node_at(&mut host, "core/value", [1200.0, 700.0])
+            .add_node_at(&mut host, intrinsic::VALUE, [1200.0, 700.0])
             .unwrap();
         assert!(editor.set_input(&mut host, (number, "value"), Some("9")));
         assert!(editor.connect(&mut host, (number, "result"), (pass, "value")));
@@ -368,7 +370,7 @@ mod tests {
         assert_eq!(body.id, function);
         assert!(body.node(number).is_some());
         assert!(body.view.graph.nodes.iter().any(|node| {
-            node.definition == "core/function-outputs" && node.name == "Function outputs"
+            node.definition == intrinsic::FUNCTION_OUTPUTS && node.name == "Function outputs"
         }));
         assert!(body.node(sink).is_none());
         assert!(
@@ -393,7 +395,7 @@ mod tests {
             .apply_function_edit(
                 &mut host,
                 CanvasResponse::default(),
-                Some(("core/whole-number".to_owned(), [600.0, 500.0])),
+                Some((intrinsic::WHOLE_NUMBER.to_owned(), [600.0, 500.0])),
             )
             .unwrap();
         let frame = ctx.run_ui(egui::RawInput::default(), |ui| editor.ui(ui, &mut host));

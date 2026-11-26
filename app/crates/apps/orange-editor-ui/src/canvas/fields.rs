@@ -9,6 +9,7 @@ use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
     choose_http_method, http_request_variant, input_caption, watch_label, watch_number_value,
 };
+use orange_host::intrinsic;
 
 /// What a field changed.
 #[derive(Debug, Clone, PartialEq)]
@@ -224,7 +225,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         | FieldOf::TextArea(port, ..)
         | FieldOf::Path(port, _) => input_caption(node, port),
         FieldOf::Setting(name, schema, _) => {
-            if node.definition == "core/on-watch" {
+            if node.definition == intrinsic::ON_WATCH {
                 watch_label(name).to_owned()
             } else if let Some(label) = crate::properties::audio_setting_label(node, name) {
                 label.to_owned()
@@ -1055,7 +1056,7 @@ impl Canvas {
                     .as_ref()
                     .and_then(|event| self.channels.get(event))
                     .map_or_else(|| shown(node, field), |name| (name.clone(), false));
-                let dispatch = node.definition == "core/emit";
+                let dispatch = node.definition == intrinsic::EMIT;
                 let choices = if dispatch {
                     &self.event_channels
                 } else {
@@ -1508,7 +1509,7 @@ fn setting_number(
     schema: &serde_json::Value,
     typed: &str,
 ) -> Option<serde_json::Value> {
-    if node.definition == "core/on-watch" {
+    if node.definition == intrinsic::ON_WATCH {
         if typed.trim().is_empty() && matches!(name, "release" | "hold" | "cooldown") {
             return Some(serde_json::Value::Null);
         }

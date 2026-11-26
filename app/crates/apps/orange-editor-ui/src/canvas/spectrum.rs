@@ -8,6 +8,8 @@ use orange_ui_controls::{
 
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 24_000.0;
+/// The quietest level the plots show, the same floor as the audio settings use.
+const FLOOR_DB: f32 = crate::declarations::AUDIO_SILENCE_DB as f32;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ChannelLevels {
@@ -55,7 +57,7 @@ impl ChannelLevels {
             2 => Some(Self::Stereo([reading(0)?, reading(1)?])),
             n => {
                 let (peak, clipped) =
-                    (0..n).try_fold((-120.0_f32, false), |(peak, clipped), index| {
+                    (0..n).try_fold((FLOOR_DB, false), |(peak, clipped), index| {
                         let channel = reading(index)?;
                         Some((peak.max(channel.peak), clipped || channel.clipped))
                     })?;
@@ -428,7 +430,7 @@ pub(super) fn band_row(
                 &mut draft.pending,
                 "low_hz",
                 20.0,
-                20.0..=24_000.0,
+                f64::from(MIN_HZ)..=f64::from(MAX_HZ),
                 " Hz",
                 t("spectrum-low-hz"),
             );
@@ -437,7 +439,7 @@ pub(super) fn band_row(
                 &mut draft.pending,
                 "high_hz",
                 120.0,
-                20.0..=24_000.0,
+                f64::from(MIN_HZ)..=f64::from(MAX_HZ),
                 " Hz",
                 t("spectrum-high-hz"),
             );
@@ -501,13 +503,13 @@ pub(super) fn draw_combined(
     axes.frame(painter, plot.expand(0.5 * zoom));
     axes.db(
         painter,
-        [-120.0, 0.0],
+        [FLOOR_DB, 0.0],
         &[
             (0.0, "0"),
             (-30.0, "-30"),
             (-60.0, "-60"),
             (-90.0, "-90"),
-            (-120.0, "-120"),
+            (FLOOR_DB, "-120"),
         ],
         false,
         true,

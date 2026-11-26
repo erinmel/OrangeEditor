@@ -2,6 +2,7 @@
 use super::{built_in_services, keyboard::Keyboard, logbook::LogBook};
 use eframe::egui;
 use orange_editor_ui::Editor;
+use orange_host::intrinsic;
 use orange_host::{Connection, ConnectionScope, Host, HostOptions};
 use serde_json::{Value as Json, json};
 use std::path::PathBuf;
@@ -110,7 +111,7 @@ fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
     let author_connection = editor
         .declare_connection(&mut author, &connection(&author_folder))
         .unwrap();
-    let entry = editor.add_node(&mut author, "core/on-manual").unwrap();
+    let entry = editor.add_node(&mut author, intrinsic::ON_MANUAL).unwrap();
     let write = editor
         .add_node(&mut author, orange_files::WRITE_TEXT)
         .unwrap();
@@ -160,7 +161,9 @@ fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
         .declare_connection(&mut consumer, &connection(&consumer_folder))
         .unwrap();
     assert_ne!(author_connection, consumer_connection);
-    let entry = editor.add_node(&mut consumer, "core/on-manual").unwrap();
+    let entry = editor
+        .add_node(&mut consumer, intrinsic::ON_MANUAL)
+        .unwrap();
     let write = editor
         .add_node(&mut consumer, "org.example.writer/write-hello")
         .unwrap();
@@ -245,9 +248,9 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["definition_id"] == "core/count")
+        .find(|node| node["definition_id"] == intrinsic::COUNT)
         .unwrap();
-    range["definition_id"] = json!("core/for-range");
+    range["definition_id"] = json!(intrinsic::FOR_RANGE);
     range["config"] = json!({"max_iterations": 1000});
     let owner = range["id"].clone();
     let exponent = source["edges"]
@@ -312,7 +315,7 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
     editor.canvas().select(Some(save));
     assert!(editor.duplicate(&mut host));
     let second_save = editor.canvas().selection()[0];
-    let second_trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+    let second_trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
     assert!(editor.connect(&mut host, (second_trigger, "then"), (second_call, "in")));
     assert!(editor.connect(&mut host, (second_call, "then"), (second_save, "in")));
     assert!(editor.connect(&mut host, (second_call, "value"), (second_save, "value")));
@@ -464,14 +467,14 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let mut positions = std::collections::HashSet::new();
                 for port in &node_view.ports {
                     // A bridge's link port is drawn as a wireless link, never as an anchor.
-                    let bridge_link = (found.definition == "core/bridge-out"
+                    let bridge_link = (found.definition == intrinsic::BRIDGE_OUT
                         && !port.input
                         && port.id == "result")
-                        || (found.definition == "core/bridge-in"
+                        || (found.definition == intrinsic::BRIDGE_IN
                             && port.input
                             && port.id == "value");
                     if bridge_link
-                        || found.definition == "core/gate" && port.input && port.id == "enter"
+                        || found.definition == intrinsic::GATE && port.input && port.id == "enter"
                     {
                         assert!(
                             orange_editor_ui::canvas::port_offset(node_view, &port.id, true)
@@ -531,7 +534,7 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     });
                 use egui::Role::{ComboBox, RadioButton, Slider};
                 let fields: &[(&str, egui::Role)] = match found.definition.as_str() {
-                    "core/and" => &[
+                    intrinsic::AND => &[
                         ("a, No", RadioButton),
                         ("a, Yes", RadioButton),
                         ("b, No", RadioButton),
@@ -617,10 +620,10 @@ fn a_catalogue_gate_keeps_a_connected_entry_alias_visible() {
     let (host, _) = desktop_host();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let trigger = host
-        .add_node(&mut draft, "core/on-manual", [20.0, 20.0])
+        .add_node(&mut draft, intrinsic::ON_MANUAL, [20.0, 20.0])
         .unwrap();
     let gate = host
-        .add_node(&mut draft, "core/gate", [340.0, 20.0])
+        .add_node(&mut draft, intrinsic::GATE, [340.0, 20.0])
         .unwrap();
     host.connect(&mut draft, (trigger, "then"), (gate, "enter"))
         .unwrap();
@@ -746,7 +749,7 @@ fn the_saved_json_example_reads_fields_in_one_step_and_uses_its_fallback() {
         let read = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/on-manual")
+            .find(|node| node.definition == intrinsic::ON_MANUAL)
             .unwrap()
             .id;
         let extract = graph
@@ -821,7 +824,7 @@ fn a_reopened_editor_graph_executes_a_connection_and_reports_success_and_failure
     let mut routes = Vec::new();
     for (row, path) in [(0.0, "sample.json"), (230.0, "missing.json")] {
         let trigger = editor
-            .add_node_at(&mut host, "core/on-manual", [0.0, row])
+            .add_node_at(&mut host, intrinsic::ON_MANUAL, [0.0, row])
             .unwrap();
         let read = editor
             .add_node_at(&mut host, orange_files::READ_TEXT, [260.0, row])
@@ -931,7 +934,7 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
     let trigger = editor
-        .add_node_at(&mut host, "core/on-manual", [0.0, 0.0])
+        .add_node_at(&mut host, intrinsic::ON_MANUAL, [0.0, 0.0])
         .unwrap();
     let request = editor
         .add_node_at(&mut host, orange_net::HTTP_REQUEST_JSON, [260.0, 0.0])
@@ -956,7 +959,7 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
     let saved = editor.text().unwrap();
     let mut draft = host.draft(&saved).unwrap();
     let number = host
-        .add_node(&mut draft, "core/whole-number", [0.0, 140.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 140.0])
         .unwrap();
     let json_number = host
         .add_node(&mut draft, "org.orange.json/from-i64", [210.0, 140.0])
@@ -965,13 +968,13 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
         .add_node(&mut draft, "org.orange.json/set-field", [510.0, 140.0])
         .unwrap();
     let match_response = host
-        .add_node(&mut draft, "core/match-option", [530.0, 0.0])
+        .add_node(&mut draft, intrinsic::MATCH_OPTION, [530.0, 0.0])
         .unwrap();
     let lookup = host
         .add_node(&mut draft, "org.orange.json/get", [790.0, 150.0])
         .unwrap();
     let match_lookup = host
-        .add_node(&mut draft, "core/match-option", [1050.0, 0.0])
+        .add_node(&mut draft, intrinsic::MATCH_OPTION, [1050.0, 0.0])
         .unwrap();
     let log = host
         .add_node(&mut draft, "org.orange.logging/log-message", [1320.0, 0.0])
@@ -1315,7 +1318,7 @@ fn list_builder_previews_wired_and_inline_items_in_card_order() {
         .add_node(&mut draft, "org.orange.collections/build-list", [0.0, 0.0])
         .unwrap();
     let value = host
-        .add_node(&mut draft, "core/whole-number", [300.0, 0.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [300.0, 0.0])
         .unwrap();
     let first = host.add_port(&mut draft, builder, "item").unwrap();
     let removed = host.add_port(&mut draft, builder, "item").unwrap();

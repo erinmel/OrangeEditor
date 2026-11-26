@@ -1,5 +1,6 @@
 //! Regression checks exercise the editor through its editing and painting paths.
 use super::*;
+use orange_host::intrinsic;
 
 fn text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<&egui::epaint::TextShape> {
     fn collect<'a>(shape: &'a egui::Shape, out: &mut Vec<&'a egui::epaint::TextShape>) {
@@ -43,13 +44,13 @@ fn failure_routes_shortcut_is_presentation_only_and_follows_edits() {
     .unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let entry = host
-        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .add_node(&mut draft, intrinsic::ON_MANUAL, [0.0, 0.0])
         .unwrap();
     let request = host
         .add_node(&mut draft, orange_net::HTTP_REQUEST, [320.0, 0.0])
         .unwrap();
     let handler = host
-        .add_node(&mut draft, "core/wait", [640.0, 0.0])
+        .add_node(&mut draft, intrinsic::WAIT, [640.0, 0.0])
         .unwrap();
     host.connect(&mut draft, (entry, "then"), (request, "in"))
         .unwrap();
@@ -235,8 +236,8 @@ fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
     let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let first = editor.add_node(&mut host, "core/whole-number").unwrap();
-    let second = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let first = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
+    let second = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select_many(&[first, second]);
     let ctx = egui::Context::default();
     theme::apply(&ctx);
@@ -453,7 +454,7 @@ fn a_wired_audio_trigger_blocks_run_until_its_input_is_supplied() {
     let meter = editor
         .add_node(&mut host, orange_audio::NOISE_LEVEL)
         .unwrap();
-    let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+    let sequence = editor.add_node(&mut host, intrinsic::SEQUENCE).unwrap();
     assert!(editor.connect(&mut host, (meter, "then"), (sequence, "in")));
     let document = editor.document.as_ref().unwrap();
     assert!(document.run_blocked);
@@ -475,13 +476,13 @@ fn an_unwired_timer_with_incomplete_settings_is_also_a_draft() {
     let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let timer = editor.add_node(&mut host, "core/on-timer").unwrap();
+    let timer = editor.add_node(&mut host, intrinsic::ON_TIMER).unwrap();
     assert!(editor.set_setting(&mut host, timer, "/interval", Some(serde_json::json!("0"))));
     let document = editor.document.as_ref().unwrap();
     assert_eq!(document.run_omitted, [timer]);
     assert!(!document.run_blocked);
 
-    let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+    let sequence = editor.add_node(&mut host, intrinsic::SEQUENCE).unwrap();
     assert!(editor.connect(&mut host, (timer, "then"), (sequence, "in")));
     assert!(editor.document.as_ref().unwrap().run_blocked);
 }
@@ -491,7 +492,7 @@ fn editing_a_running_128_absolute_chain_repaints_the_new_values() {
     let (mut host, events) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&host.bind(&tests::graph()).unwrap()).unwrap();
     let source = host
-        .add_node(&mut draft, "core/whole-number", [-400.0, 0.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [-400.0, 0.0])
         .unwrap();
     host.set_input(&mut draft, (source, "value"), Some("-187"))
         .unwrap();
@@ -696,7 +697,7 @@ fn a_wire_between_two_number_kinds_offers_conversions_and_takes_the_chosen_one()
     let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let whole = host
-        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
         .unwrap();
     let negate = host
         .add_node(&mut draft, "org.orange.math/negate", [300.0, 0.0])
@@ -812,7 +813,7 @@ fn a_disconnected_get_allows_run_and_an_exported_get_blocks_it() {
     let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let get = editor.add_node(&mut host, "core/get-variable").unwrap();
+    let get = editor.add_node(&mut host, intrinsic::GET_VARIABLE).unwrap();
     assert!(!editor.document.as_ref().unwrap().run_blocked);
     assert!(
         editor
@@ -864,11 +865,11 @@ fn a_splitter_without_audio_warns_without_blocking_a_manual_flow() {
         .unwrap();
     assert!(!editor.document.as_ref().unwrap().run_blocked);
     assert!(!editor.canvas.marks().nodes[&splitter].error);
-    let manual = editor.add_node(&mut host, "core/on-manual").unwrap();
+    let manual = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
     editor.run(&mut host);
     assert!(editor.is_running(), "{:?}", editor.problems());
     editor.stop(&mut host);
-    let invalid = editor.add_node(&mut host, "core/set-variable").unwrap();
+    let invalid = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
     assert!(editor.connect(&mut host, (manual, "then"), (invalid, "in")));
     // An unresolved variable on the execution path blocks Run.
     assert!(editor.document.as_ref().unwrap().run_blocked);

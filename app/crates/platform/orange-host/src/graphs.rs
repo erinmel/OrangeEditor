@@ -7,6 +7,7 @@
 //! saved document is never changed, and from there on validation, compilation and
 //! execution are those of ordinary graph functions, with no separate interpreter and no
 //! sandbox to cross.
+use crate::intrinsic;
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -219,7 +220,7 @@ pub(crate) fn rename_edges(function: &mut Json, rename: impl Fn(&mut Json)) {
 /// Turns the node into a call of `function`. Its ID, literals, type arguments and
 /// therefore every edge attached to it stay as they are.
 fn retarget(node: &mut Map<String, Json>, function: &str) {
-    let _ = node.insert("definition_id".into(), json!("core/call"));
+    let _ = node.insert("definition_id".into(), json!(intrinsic::CALL));
     let _ = node.insert("definition_version".into(), json!(1));
     let _ = node.insert("config_version".into(), json!(1));
     let _ = node.insert("config".into(), json!({"function": function}));
@@ -308,7 +309,7 @@ fn retarget_all(
                 if let Linked::Fragment(_, _, event) = &linked {
                     // The node becomes the handler of the fragment's event: the same
                     // `then` outcome and `payload` output, so its edges stay.
-                    let _ = fields.insert("definition_id".into(), json!("core/on-event"));
+                    let _ = fields.insert("definition_id".into(), json!(intrinsic::ON_EVENT));
                     let _ = fields.insert("definition_version".into(), json!(1));
                     let _ = fields.insert("config_version".into(), json!(1));
                     let _ = fields.insert("config".into(), json!({"event": event["id"]}));

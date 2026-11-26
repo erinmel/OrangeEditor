@@ -1,4 +1,5 @@
 use orange_editor_ui::{Editor, MenuTarget, i18n, icons};
+use orange_host::intrinsic;
 use orange_host::{Host, HostOptions};
 use std::sync::{
     Arc,
@@ -14,7 +15,7 @@ fn a_downstream_app_can_supply_layout_theme_command_icons_and_text() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.open_menu(MenuTarget::Node(node), [0.0, 0.0], egui::pos2(90.0, 100.0));
 
     let ctx = egui::Context::default();

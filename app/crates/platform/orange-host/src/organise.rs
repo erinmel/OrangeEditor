@@ -815,9 +815,9 @@ impl Host {
                 body: BodyRef::Root,
                 node,
             });
-            offset[0] += 360.0;
+            offset[0] += edit::COLUMN_STEP;
             if index % 3 == 2 {
-                offset = [0.0, offset[1] + 240.0];
+                offset = [0.0, offset[1] + edit::ROW_STEP];
             }
         }
         let copy_port = |end: &PortRef| -> Result<PortRef, HostError> {

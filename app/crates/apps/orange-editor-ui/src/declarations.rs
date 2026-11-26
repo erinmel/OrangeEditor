@@ -5,6 +5,7 @@
 use super::*;
 use crate::controls::{Action, Dropdown as _, Surface, button};
 use crate::properties::COMMON_TYPES;
+use orange_host::intrinsic;
 use orange_host::{
     AdapterInfo, Connection, ConnectionScope, Declarations, SECRET_PREFIX, SettingChoices,
     SettingField, SettingText, SettingToggle, VarScope, Variable,
@@ -27,9 +28,9 @@ pub(crate) fn payload_name(ty: &str) -> String {
 
 pub(crate) fn variable_scope_allowed(definition: &str, scope: VarScope) -> bool {
     match definition {
-        "core/set-shared" | "core/update-shared" => scope == VarScope::Workspace,
-        "core/set-variable" | "core/update-variable" => scope != VarScope::Workspace,
-        "core/on-variable-changed" => scope == VarScope::Run,
+        intrinsic::SET_SHARED | intrinsic::UPDATE_SHARED => scope == VarScope::Workspace,
+        intrinsic::SET_VARIABLE | intrinsic::UPDATE_VARIABLE => scope != VarScope::Workspace,
+        intrinsic::ON_VARIABLE_CHANGED => scope == VarScope::Run,
         _ => true,
     }
 }
@@ -458,6 +459,9 @@ pub(crate) fn live_level(
 }
 
 /// Display floor in dBFS, matching the audio package's silence reading.
+/// Space kept between a dialog and the window edges.
+const DIALOG_MARGIN: f32 = 40.0;
+
 pub(crate) const AUDIO_SILENCE_DB: f64 = -120.0;
 
 #[expect(
@@ -706,7 +710,7 @@ impl Editor {
         };
         let shown =
             orange_ui_controls::modal(ctx, egui::Id::unique("declare-run-event")).show(ctx, |ui| {
-                ui.set_width((ctx.content_rect().width() - 40.0).clamp(200.0, 380.0));
+                ui.set_width((ctx.content_rect().width() - DIALOG_MARGIN).clamp(200.0, 380.0));
                 let renaming = form.rename.is_some();
                 ui.heading(t(if renaming {
                     "event-rename"
@@ -861,9 +865,9 @@ impl Editor {
             })
         });
         let definition = match (set, shared) {
-            (false, _) => "core/get-variable",
-            (true, false) => "core/set-variable",
-            (true, true) => "core/set-shared",
+            (false, _) => intrinsic::GET_VARIABLE,
+            (true, false) => intrinsic::SET_VARIABLE,
+            (true, true) => intrinsic::SET_SHARED,
         };
         let node = self.add_node_at(host, definition, at)?;
         let _ = self.set_setting(host, node, "/variable", Some(Json::from(id)));
@@ -1608,7 +1612,7 @@ impl Editor {
             let shown = orange_ui_controls::modal(ctx, egui::Id::unique("connection-form")).show(
                 ctx,
                 |ui| {
-                    ui.set_width((bounds.width() - 40.0).clamp(240.0, 520.0));
+                    ui.set_width((bounds.width() - DIALOG_MARGIN).clamp(240.0, 520.0));
                     ui.heading(title);
                     ui.separator();
                     egui::ScrollArea::vertical()
@@ -2330,7 +2334,10 @@ mod tests {
             .id
             .clone()
             .unwrap();
-        for (set, kind) in [(false, "core/get-variable"), (true, "core/set-variable")] {
+        for (set, kind) in [
+            (false, intrinsic::GET_VARIABLE),
+            (true, intrinsic::SET_VARIABLE),
+        ] {
             let node = editor
                 .drop_variable(&mut host, &count, set, [40.0, 80.0])
                 .unwrap();
@@ -2374,7 +2381,7 @@ mod tests {
             .unwrap();
         let graph = editor.graph().unwrap();
         let set = graph.nodes.iter().find(|found| found.id == node).unwrap();
-        assert_eq!(set.definition, "core/set-shared");
+        assert_eq!(set.definition, intrinsic::SET_SHARED);
         assert_eq!(set.settings["variable"], json!(shared));
 
         // The host learns the shared variables on the first run, so it starts.
@@ -2703,7 +2710,7 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, blank());
-        let awaiter = editor.add_node(&mut host, "core/await-event").unwrap();
+        let awaiter = editor.add_node(&mut host, intrinsic::AWAIT_EVENT).unwrap();
         editor.new_event_for_node(awaiter);
         let form = editor.forms.event.as_mut().unwrap();
         form.name = "Reading received".into();
@@ -2740,7 +2747,7 @@ mod tests {
         );
         editor.redo(&mut host);
 
-        for kind in ["core/emit", "core/on-event"] {
+        for kind in [intrinsic::EMIT, intrinsic::ON_EVENT] {
             let node = editor.add_node(&mut host, kind).unwrap();
             assert!(editor.set_setting(&mut host, node, "/event", Some(json!(event))));
         }
@@ -2761,17 +2768,17 @@ mod tests {
         let emit = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/emit")
+            .find(|node| node.definition == intrinsic::EMIT)
             .unwrap()
             .id;
         let receive = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/on-event")
+            .find(|node| node.definition == intrinsic::ON_EVENT)
             .unwrap()
             .id;
-        let manual = editor.add_node(&mut host, "core/on-manual").unwrap();
-        let store = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let manual = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
+        let store = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         let value = editor
             .declare_variable_for(
                 &mut host,
@@ -2812,7 +2819,7 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, blank());
-        for kind in ["core/set-shared", "core/update-shared"] {
+        for kind in [intrinsic::SET_SHARED, intrinsic::UPDATE_SHARED] {
             let node = editor.add_node(&mut host, kind).unwrap();
             editor.new_variable_for_node(node, "/variable");
             assert_eq!(editor.forms.variable.scope, VarScope::Workspace);
@@ -2845,18 +2852,18 @@ mod tests {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, blank());
-        let _ = editor.add_node(&mut host, "core/collect").unwrap();
-        let _ = editor.add_node(&mut host, "core/tee").unwrap();
+        let _ = editor.add_node(&mut host, intrinsic::COLLECT).unwrap();
+        let _ = editor.add_node(&mut host, intrinsic::TEE).unwrap();
         let graph = editor.graph().unwrap();
         let collect = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/collect")
+            .find(|node| node.definition == intrinsic::COLLECT)
             .unwrap();
         let tee = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/tee")
+            .find(|node| node.definition == intrinsic::TEE)
             .unwrap();
         assert_eq!(collect.settings["max_items"], 1024);
         assert_eq!(tee.settings["capacity"], 32);

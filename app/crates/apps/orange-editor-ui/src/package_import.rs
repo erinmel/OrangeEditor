@@ -2,6 +2,8 @@
 use super::*;
 use crate::controls::Action;
 use orange_host::Grants;
+#[cfg(test)]
+use orange_host::intrinsic;
 
 #[derive(Debug)]
 pub(super) struct PackageImport {
@@ -193,7 +195,7 @@ mod tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        editor.add_node(&mut host, "core/on-manual").unwrap();
+        editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         editor.run(&mut host);
         let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
         editor

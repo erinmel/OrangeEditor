@@ -164,7 +164,7 @@ fn event_entry(draft: &Draft, node: NodeId) -> Option<&ActivationPolicy> {
     let instance = draft.document().node(node)?;
     if matches!(
         instance.definition.id.as_str(),
-        "core/on-start" | "core/on-stop"
+        intrinsic::ON_START | intrinsic::ON_STOP
     ) {
         return None;
     }
@@ -206,6 +206,14 @@ pub(crate) fn default_activation() -> Json {
 /// The bound a new while loop starts with, so it is valid until a person changes it.
 pub const NEW_WHILE_BOUND: u64 = 1000;
 
+/// Graph units between the left edges of cards the host places side by side: a card's
+/// width with room for the wire between them.
+pub(crate) const COLUMN_STEP: f32 = 360.0;
+/// Graph units between the tops of rows of cards the host places.
+pub(crate) const ROW_STEP: f32 = 240.0;
+/// Graph units between the tops of stacked cards with no room for a wire between.
+pub(crate) const STACK_STEP: f32 = 120.0;
+
 /// The settings a new node of `found` starts with: a while loop's bound, and the first
 /// registered type (and member) a record or enum node can name. A record or enum
 /// node with no type to name cannot be added, and the error says so.
@@ -216,28 +224,28 @@ fn new_config(
     let mut config = ConfigValue::new();
     if matches!(
         found.definition.id.as_str(),
-        "core/while" | "core/for-range"
+        intrinsic::WHILE | intrinsic::FOR_RANGE
     ) {
         let _ = config.insert("max_iterations".to_owned(), json!(NEW_WHILE_BOUND));
     }
-    if found.definition.id.as_str() == "core/on-watch" {
+    if found.definition.id.as_str() == intrinsic::ON_WATCH {
         let _ = config.insert("mode".to_owned(), json!("changed"));
     }
     // A new timer runs as placed: every second, first tick after one interval, late
     // ticks coalesced (the language's defaults, written out so the card shows them).
     match found.definition.id.as_str() {
-        "core/on-timer" => {
+        intrinsic::ON_TIMER => {
             let _ = config.insert("interval".to_owned(), json!("1000000000"));
             let _ = config.insert("first".to_owned(), json!("after-interval"));
             let _ = config.insert("missed".to_owned(), json!("coalesce"));
         }
-        "core/on-timeout" => {
+        intrinsic::ON_TIMEOUT => {
             let _ = config.insert("delay".to_owned(), json!("1000000000"));
         }
-        "core/collect" => {
+        intrinsic::COLLECT => {
             let _ = config.insert("max_items".to_owned(), json!(1024));
         }
-        "core/tee" => {
+        intrinsic::TEE => {
             let _ = config.insert("capacity".to_owned(), json!(32));
             let _ = config.insert("max_bytes".to_owned(), json!(1_048_576));
             let _ = config.insert("overflow".to_owned(), json!("backpressure"));
@@ -798,8 +806,12 @@ impl Host {
         })
         .map_err(|error| refused(&error))?;
         let (emit, emission) = self.node_commands(draft, intrinsic::EMIT, [x, y], "signal-emit")?;
-        let (entry, reception) =
-            self.node_commands(draft, intrinsic::ON_EVENT, [x + 360.0, y], "signal-entry")?;
+        let (entry, reception) = self.node_commands(
+            draft,
+            intrinsic::ON_EVENT,
+            [x + COLUMN_STEP, y],
+            "signal-entry",
+        )?;
         let mut commands = vec![DocCommand::UpsertEvent(declaration)];
         commands.extend(emission);
         commands.extend(reception);
@@ -926,7 +938,7 @@ impl Host {
         let (get, reader) = self.node_commands(
             draft,
             intrinsic::GET_VARIABLE,
-            [x + 360.0, y],
+            [x + COLUMN_STEP, y],
             "wireless-value-reader",
         )?;
         let mut commands = vec![DocCommand::UpsertVariable(declaration)];
@@ -949,8 +961,12 @@ impl Host {
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let ([emit, entry], mut commands) =
             self.signal_commands(draft, [x, y], "Heartbeat", true)?;
-        let (wait, timeout) =
-            self.node_commands(draft, intrinsic::WAIT, [x + 720.0, y], "watchdog-wait")?;
+        let (wait, timeout) = self.node_commands(
+            draft,
+            intrinsic::WAIT,
+            [x + 2.0 * COLUMN_STEP, y],
+            "watchdog-wait",
+        )?;
         commands.extend(timeout);
         let mut policy: ActivationPolicy =
             serde_json::from_value(default_activation()).map_err(|error| refused(&error))?;
@@ -1490,7 +1506,8 @@ impl Host {
             .document()
             .node(node)
             .map(|found| {
-                if found.definition.id.as_str() == "core/on-watch" && found.config_version == 1 {
+                if found.definition.id.as_str() == intrinsic::ON_WATCH && found.config_version == 1
+                {
                     2
                 } else {
                     found.config_version

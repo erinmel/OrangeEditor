@@ -3,6 +3,7 @@ use orange_editor_ui::{
     canvas::{Canvas, auto_layout},
     palette,
 };
+use orange_host::intrinsic;
 use orange_host::{GraphView, Host, HostOptions, NodeView, PortView, WireView};
 use std::{hint::black_box, time::Instant};
 
@@ -14,7 +15,7 @@ fn graph(count: u32) -> GraphView {
                 id: id(n),
                 name: format!("Node {n}"),
                 kind: "Step".into(),
-                definition: "core/sequence".into(),
+                definition: intrinsic::SEQUENCE.into(),
                 detail: None,
                 entry: false,
                 ports: [true, false]
@@ -107,7 +108,7 @@ fn main() {
         let view = graph(count);
         let variable = "20000000-0000-4000-8000-000000000001";
         let nodes: Vec<_> = view.nodes.iter().map(|node| serde_json::json!({
-            "id": node.id.to_string(), "definition_id": "core/set-variable", "definition_version": 1,
+            "id": node.id.to_string(), "definition_id": intrinsic::SET_VARIABLE, "definition_version": 1,
             "config_version": 1, "config": {"variable": variable},
             "inputs": {"value": {"type": "core/i64@1", "value": "7"}}
         })).collect();

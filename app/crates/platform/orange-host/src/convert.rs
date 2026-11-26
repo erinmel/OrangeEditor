@@ -2,6 +2,8 @@
 //! that go through one when the two ends differ. The language never converts on its own;
 //! every conversion is a visible `core/convert` node.
 use crate::edit::{PortEnd, port_ref};
+#[cfg(test)]
+use crate::intrinsic;
 use crate::{Draft, EdgeId, Host, HostError, NodeId, Severity, TypeExpr};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionRequest, ConversionClass, ConverterKey,
@@ -409,7 +411,7 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let target = host
             .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
@@ -467,7 +469,7 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let target = host
             .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
@@ -479,7 +481,7 @@ mod tests {
         host.connect(&mut draft, from, into).unwrap();
         let old = Host::splice_edge(&draft, from, into).unwrap();
         let _ = host
-            .add_node(&mut draft, "core/number", [0.0, 200.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [0.0, 200.0])
             .unwrap();
         assert!(draft.undo());
         let before = draft.text().unwrap();
@@ -506,10 +508,10 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let whole = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let decimal = host
-            .add_node(&mut draft, "core/number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         let negate_decimal = host
             .add_node(&mut draft, "org.orange.math/negate", [300.0, 0.0])

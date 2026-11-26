@@ -3,6 +3,7 @@
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use orange_host::controls::{Control, Region, Scale, Widget};
+use orange_host::intrinsic;
 use orange_host::{Connection, EventTiming, NodeView, PortView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
@@ -55,7 +56,7 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
 }
 
 pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
-    if node.definition == "core/coalesce" {
+    if node.definition == intrinsic::COALESCE {
         match port.id.as_str() {
             "value" => return t("optional-value-input").to_owned(),
             "fallback" => return t("if-missing-input").to_owned(),
@@ -960,7 +961,7 @@ impl<'a> Field<'a> {
     }
 
     fn for_node(node: &NodeView, name: &str, schema: &'a Json) -> Self {
-        if node.definition == "core/on-watch" && name != "mode" {
+        if node.definition == intrinsic::ON_WATCH && name != "mode" {
             return Self::WatchNumber {
                 whole: matches!(name, "hold" | "cooldown"),
             };
@@ -1061,7 +1062,7 @@ pub(crate) fn watch_field_entries(node: &NodeView) -> impl Iterator<Item = (&Str
         .schema
         .as_ref()
         .and_then(|schema| schema["properties"].as_object());
-    let fields: &[&str] = if node.definition == "core/on-watch" {
+    let fields: &[&str] = if node.definition == intrinsic::ON_WATCH {
         watch_fields(node.settings["mode"].as_str())
     } else {
         &[]
@@ -1150,7 +1151,7 @@ impl Editor {
         let found = self
             .graph()
             .and_then(|graph| graph.nodes.iter().find(|found| found.id == node));
-        let watch = found.is_some_and(|found| found.definition == "core/on-watch");
+        let watch = found.is_some_and(|found| found.definition == intrinsic::ON_WATCH);
         let mut settings = found
             .map(|found| found.settings.clone())
             .filter(Json::is_object)
@@ -1574,7 +1575,7 @@ impl Editor {
                             && node.definition != "org.orange.audio/multiband-spectrum"
                         {
                             section(ui, t("ports"));
-                            if node.definition == "core/switch"
+                            if node.definition == intrinsic::SWITCH
                                 && node
                                     .ports
                                     .iter()
@@ -1796,7 +1797,7 @@ impl Editor {
             .filter_map(Json::as_str)
             .collect();
         let mut changed = None;
-        let watch = node.definition == "core/on-watch";
+        let watch = node.definition == intrinsic::ON_WATCH;
         let mut fields: Vec<_> = watch_field_entries(node)
             .chain(properties.iter().filter(|_| !watch))
             .collect();
@@ -1823,16 +1824,16 @@ impl Editor {
             let measurement_time =
                 name == "window_ms" && node.definition.starts_with("org.orange.audio/");
             let stream = match (node.definition.as_str(), name.as_str()) {
-                ("core/collect", "max_items") => {
+                (intrinsic::COLLECT, "max_items") => {
                     Some(("stream-max-items", "stream-max-items-help"))
                 }
-                ("core/tee", "capacity") => {
+                (intrinsic::TEE, "capacity") => {
                     Some(("stream-tee-capacity", "stream-tee-capacity-help"))
                 }
-                ("core/tee", "max_bytes") => {
+                (intrinsic::TEE, "max_bytes") => {
                     Some(("stream-tee-max-bytes", "stream-tee-max-bytes-help"))
                 }
-                ("core/tee", "overflow") => {
+                (intrinsic::TEE, "overflow") => {
                     Some(("stream-tee-overflow", "stream-tee-overflow-help"))
                 }
                 _ => None,
@@ -1911,7 +1912,7 @@ impl Editor {
                         .selected_text(shown)
                         .width(ui.available_width())
                         .show_select(ui, Surface::Panel, |ui| {
-                            if node.definition != "core/for-each"
+                            if node.definition != intrinsic::FOR_EACH
                                 && !needed
                                 && ui
                                     .selectable_label(current.is_null(), t("not-set"))
@@ -2711,10 +2712,10 @@ pub(crate) fn setting_choice_label<'a>(
 
 fn setting_choice_caption(node: &NodeView, choice: &str) -> Option<&'static str> {
     Some(match (node.definition.as_str(), choice) {
-        ("core/on-watch", _) => watch_label(choice),
+        (intrinsic::ON_WATCH, _) => watch_label(choice),
         ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
-        ("core/for-each", "list") => t("for-each-list"),
-        ("core/for-each", "map") => t("for-each-map"),
+        (intrinsic::FOR_EACH, "list") => t("for-each-list"),
+        (intrinsic::FOR_EACH, "map") => t("for-each-map"),
         ("org.orange.audio/filter", "low-pass") => t("audio-filter-low"),
         ("org.orange.audio/filter", "high-pass") => t("audio-filter-high"),
         ("org.orange.audio/filter", "band-pass") => t("audio-filter-band"),
@@ -2809,7 +2810,7 @@ mod tests {
         let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let watch = host
-            .add_node(&mut draft, "core/on-watch", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::ON_WATCH, [0.0, 0.0])
             .unwrap();
         let threshold = watch_number_value("18446744073709551615", false).unwrap();
         assert_eq!(threshold.as_u64(), Some(u64::MAX));
@@ -2912,7 +2913,7 @@ mod width_tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         assert!(editor.rename_node(&mut host, node, "Sample amount"));
         let context = egui::Context::default();
         context.set_theme(egui::Theme::Dark);

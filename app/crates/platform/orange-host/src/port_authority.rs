@@ -2,6 +2,8 @@
 //! in the view, but does not authorize a new wire or a literal edit.
 
 use super::*;
+#[cfg(test)]
+use crate::intrinsic;
 use orange_model::catalog::{ContractError, NodeContract, intrinsic_id};
 use orange_model::document::NodeInstance;
 
@@ -117,10 +119,10 @@ mod tests {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&new_document().unwrap()).unwrap();
         let literal = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let select = host
-            .add_node(&mut draft, "core/select", [300.0, 0.0])
+            .add_node(&mut draft, intrinsic::SELECT, [300.0, 0.0])
             .unwrap();
         host.connect_through(&mut draft, (literal, "result"), (select, "if_true"), None)
             .unwrap();

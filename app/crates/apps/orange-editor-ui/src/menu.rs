@@ -3,6 +3,7 @@
 //! shortcut. Commands go through the same editor methods as the toolbar and the keys,
 //! so [`Editor::run_command`] drives them without a window.
 use super::*;
+use orange_host::intrinsic;
 
 /// What a right-click was on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,14 @@ pub(crate) struct Menu {
 
 /// How far a duplicate lands from what it copies, in graph units.
 const DUPLICATE_OFFSET: f32 = 40.0;
+/// Room between a wireless node and the subscriber or emitter spawned beside it.
+const SPAWN_GAP: f32 = 48.0;
+/// The height kept free for a spawned card before it is moved below a card in the way.
+const SPAWN_ROOM: f32 = 220.0;
+/// Room between a spawned card and the card above it.
+const STACK_GAP: f32 = 24.0;
+/// The width of the right-click menu.
+const MENU_WIDTH: f32 = 220.0;
 
 impl Editor {
     /// Opens the right-click menu for `target`, clicked at `at` (graph units) and drawn
@@ -182,7 +191,10 @@ impl Editor {
                 if let Some(graph) = self.graph()
                     && let Some(card) = graph.nodes.iter().find(|card| card.id == *node)
                 {
-                    if matches!(card.definition.as_str(), "core/emit" | palette::BRIDGE_OUT) {
+                    if matches!(
+                        card.definition.as_str(),
+                        intrinsic::EMIT | palette::BRIDGE_OUT
+                    ) {
                         entries.insert(
                             1,
                             entry(
@@ -194,7 +206,7 @@ impl Editor {
                             ),
                         );
                     }
-                    if card.definition == "core/on-event" {
+                    if card.definition == intrinsic::ON_EVENT {
                         let has_emitter = card.settings["event"].as_str().is_some_and(|event| {
                             graph
                                 .nodes
@@ -435,7 +447,7 @@ impl Editor {
         let Some(&[x, mut y]) = places.get(&node) else {
             return false;
         };
-        let side = canvas::NODE_WIDTH + 48.0;
+        let side = canvas::NODE_WIDTH + SPAWN_GAP;
         let x = if sender { x - side } else { x + side };
         let mut occupied: Vec<_> = graph
             .nodes
@@ -449,8 +461,8 @@ impl Editor {
             .collect();
         occupied.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (top, bottom) in occupied {
-            if y + 220.0 > top && y < bottom + 24.0 {
-                y = bottom + 24.0;
+            if y + SPAWN_ROOM > top && y < bottom + STACK_GAP {
+                y = bottom + STACK_GAP;
             }
         }
         let bridge = graph
@@ -573,7 +585,7 @@ impl Editor {
             ctx,
             egui::Id::unique("orange-context-menu"),
             screen,
-            220.0,
+            MENU_WIDTH,
             |ui| {
                 ui.strong(title);
                 ui.separator();
@@ -676,10 +688,10 @@ mod tests {
         let other_sender = editor.canvas.selected().unwrap();
         assert_eq!(editor.graph().unwrap().nodes.len(), 4);
         let wait_a = editor
-            .add_node_at(&mut host, "core/wait", [740.0, 0.0])
+            .add_node_at(&mut host, intrinsic::WAIT, [740.0, 0.0])
             .unwrap();
         let wait_b = editor
-            .add_node_at(&mut host, "core/wait", [740.0, 200.0])
+            .add_node_at(&mut host, intrinsic::WAIT, [740.0, 200.0])
             .unwrap();
         assert!(editor.connect(&mut host, (first, "then"), (wait_a, "in")));
         assert!(editor.connect(&mut host, (second, "then"), (wait_b, "in")));
@@ -939,7 +951,7 @@ mod tests {
         let choice = editor
             .quick_choices(&host, "do once")
             .into_iter()
-            .find(|choice| choice.definition == "core/do-once")
+            .find(|choice| choice.definition == intrinsic::DO_ONCE)
             .unwrap();
         let inserted = editor.pick_quick(&mut host, &choice).unwrap();
         let wires = |editor: &Editor| -> Vec<canvas::WireEnds> {

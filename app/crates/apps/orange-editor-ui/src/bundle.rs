@@ -4,6 +4,8 @@
 //! a node whose package stays missing keeps its settings and wires.
 use super::*;
 use crate::controls::Action;
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_host::{Bundle, Grants};
 
 /// The file name extension of a shared graph.
@@ -260,7 +262,7 @@ mod tests {
             .unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut sender, orange_host::new_document().unwrap());
-        let start = editor.add_node(&mut sender, "core/on-manual").unwrap();
+        let start = editor.add_node(&mut sender, intrinsic::ON_MANUAL).unwrap();
         let remember = editor
             .add_node(&mut sender, "org.example.tools/remember")
             .unwrap();

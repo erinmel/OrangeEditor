@@ -1472,11 +1472,11 @@ pub fn settings_from_json(
 /// The short names the value nodes go by, as in most node editors.
 fn short_label(id: &str) -> Option<&'static str> {
     Some(match id {
-        "core/whole-number" => "Int",
-        "core/number" => "Float",
-        "core/true-or-false" => "Bool",
-        "core/text" => "Text",
-        "core/on-watch" => "When",
+        intrinsic::WHOLE_NUMBER => "Int",
+        intrinsic::NUMBER => "Float",
+        intrinsic::TRUE_OR_FALSE => "Bool",
+        intrinsic::TEXT => "Text",
+        intrinsic::ON_WATCH => "When",
         "org.orange.json/parse" => "Parse JSON",
         _ => return None,
     })

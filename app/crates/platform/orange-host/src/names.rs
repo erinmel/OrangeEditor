@@ -4,6 +4,8 @@
 //! A node is called by its own `name` field when the graph gives it one, otherwise by
 //! what its kind is called ("Write text file"). When two nodes would be called the
 //! same, each gets the end of its ID added. A variable is called by its declared name.
+#[cfg(test)]
+use crate::intrinsic;
 use crate::{ControlOutcome, Diagnostic, FlowEvent, Host, HostEvent, NodeId, Value, VariableId};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write};
@@ -580,9 +582,9 @@ mod tests {
         let graph = serde_json::json!({
             "nodes": [
                 {"id": "10000000-0000-4000-8000-000000000001", "name": "Save Greeting",
-                    "definition_id": "core/on-manual"},
-                {"id": "10000000-0000-4000-8000-000000000002", "definition_id": "core/set-variable"},
-                {"id": "10000000-0000-4000-8000-00000000000a", "definition_id": "core/set-variable"}
+                    "definition_id": intrinsic::ON_MANUAL},
+                {"id": "10000000-0000-4000-8000-000000000002", "definition_id": intrinsic::SET_VARIABLE},
+                {"id": "10000000-0000-4000-8000-00000000000a", "definition_id": intrinsic::SET_VARIABLE}
             ],
             "variables": [{"id": "10000000-0000-4000-8000-000000000064", "name": "total",
                 "type": "core/i64@1"}]
