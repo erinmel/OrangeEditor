@@ -39,13 +39,13 @@ pub(crate) fn http_request_variant(node: &NodeView) -> bool {
     )
 }
 
-pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host::PortView> {
+pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &PortView> {
     // A bridge's link port carries its binding, shown as the channel, not as an input.
     let inputs = node
         .ports
         .iter()
-        .filter(|port| port.input && !port.exec && !crate::palette::bridge_link_port(node, port));
-    let first = |port: &&orange_host::PortView| {
+        .filter(|port| port.input && !port.exec && !palette::bridge_link_port(node, port));
+    let first = |port: &&PortView| {
         node.definition == "org.orange.logging/log-message"
             && matches!(port.id.as_str(), "level" | "severity")
     };
@@ -55,7 +55,7 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
         .chain(inputs.filter(move |port| !first(port)))
 }
 
-pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
+pub(crate) fn input_caption(node: &NodeView, port: &PortView) -> String {
     if node.definition == intrinsic::COALESCE {
         match port.id.as_str() {
             "value" => return t("optional-value-input").to_owned(),
@@ -93,7 +93,7 @@ pub(crate) enum TextInput {
 }
 
 impl TextInput {
-    pub(crate) fn for_port(node: &NodeView, port: &orange_host::PortView) -> Option<Self> {
+    pub(crate) fn for_port(node: &NodeView, port: &PortView) -> Option<Self> {
         if node.paths.iter().any(|path| path.port == port.id)
             || is_folder_path(node, &port.id)
             || (http_request_variant(node) && port.id == "method")
@@ -173,10 +173,7 @@ pub(crate) fn text_area_preview(text: &str, kind: TextInput) -> String {
     serde_json::from_str::<String>(text).unwrap_or_else(|_| text.to_owned())
 }
 
-pub(crate) fn choice_caption<'a>(
-    port: &orange_host::PortView,
-    name: &'a str,
-) -> std::borrow::Cow<'a, str> {
+pub(crate) fn choice_caption<'a>(port: &PortView, name: &'a str) -> std::borrow::Cow<'a, str> {
     match port.ty.as_deref() {
         Some("org.orange.logging/severity@1") if name == "warning" => "WARN".into(),
         Some("org.orange.logging/level@1" | "org.orange.logging/severity@1") => {
@@ -264,7 +261,7 @@ pub(crate) fn input_label(node: &NodeView, port: &str) -> Option<&'static str> {
         .then(|| t("log-level"))
 }
 
-pub(crate) fn input_color(port: &orange_host::PortView) -> [u8; 4] {
+pub(crate) fn input_color(port: &PortView) -> [u8; 4] {
     port.value
         .as_deref()
         .or(port.default.as_deref())
@@ -1292,7 +1289,7 @@ impl Editor {
     }
 
     /// The value on an input as its field shows it before typing: text without quotes.
-    pub(crate) fn shown_input(port: &orange_host::PortView) -> String {
+    pub(crate) fn shown_input(port: &PortView) -> String {
         let shown = port.value.clone().unwrap_or_default();
         serde_json::from_str::<String>(&shown).unwrap_or(shown)
     }
@@ -1527,7 +1524,7 @@ impl Editor {
                         if let Some(adapter) = self
                             .named_connection(&node)
                             .map(|connection| connection.adapter.clone())
-                            .or_else(|| http.then(|| crate::declarations::network::HTTP.to_owned()))
+                            .or_else(|| http.then(|| declarations::network::HTTP.to_owned()))
                             && ui.button(t("add-connection")).clicked()
                         {
                             self.forms.new_connection_for(node.id, &adapter);
@@ -1711,7 +1708,7 @@ impl Editor {
                         format!(
                             "{} ({})",
                             event.name,
-                            crate::declarations::payload_name(
+                            declarations::payload_name(
                                 event.payload.as_ref().map_or("", |ty| ty.as_str())
                             )
                         ),
@@ -2333,11 +2330,10 @@ impl Editor {
                                         }
                                     }
                                     Err(error) => {
-                                        syntax_error =
-                                            Some(crate::port_values::json_syntax_message(
-                                                error.line(),
-                                                error.column(),
-                                            ));
+                                        syntax_error = Some(port_values::json_syntax_message(
+                                            error.line(),
+                                            error.column(),
+                                        ));
                                     }
                                 }
                             }
@@ -3258,9 +3254,7 @@ impl Editor {
         let outputs: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| {
-                !port.input && !port.exec && !crate::palette::bridge_link_port(node, port)
-            })
+            .filter(|port| !port.input && !port.exec && !palette::bridge_link_port(node, port))
             .collect();
         if outputs.is_empty() {
             return;

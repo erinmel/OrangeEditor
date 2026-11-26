@@ -1702,7 +1702,7 @@ impl Canvas {
                 Some((true, event)) => Some(event.to_owned()),
                 _ => None,
             })
-            .collect::<std::collections::BTreeSet<_>>()
+            .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|event| {
                 let name = self.channels.get(&event).cloned().unwrap_or_default();
@@ -2673,7 +2673,7 @@ impl Canvas {
                         4.0 * zoom,
                         fill,
                         Stroke::new(1.0, colors.warning.gamma_multiply(0.6)),
-                        egui::StrokeKind::Inside,
+                        StrokeKind::Inside,
                     );
                     painter.galley(tag.min + Vec2::new(6.0, 3.0) * zoom, galley, colors.warning);
                     if touched.clicked() {

@@ -280,7 +280,8 @@ fn system_errors_map_to_refusals_a_user_can_act_on() {
         (ErrorKind::Unsupported, FsError::Unsupported),
         (ErrorKind::Other, FsError::Failed),
     ] {
-        assert_eq!(io(&Error::from(kind)), expected, "{kind:?}");
+        let error = Error::from(kind);
+        assert_eq!(io(&error), expected, "{error:?}");
     }
     #[cfg(windows)]
     {

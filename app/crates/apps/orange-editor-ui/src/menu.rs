@@ -470,7 +470,7 @@ impl Editor {
             .iter()
             .find(|card| card.id == node)
             .and_then(|card| {
-                crate::palette::bridge_channel(card)
+                palette::bridge_channel(card)
                     .map(|channel| (card.definition.clone(), channel.to_owned()))
             });
         let Some(draft) = self.editing() else {
@@ -480,10 +480,10 @@ impl Editor {
             // A Bridge Out spawns a Bridge In on its channel; an unbound Bridge In gets a
             // Bridge Out on its own.
             Some((definition, channel)) => {
-                let spawn = if definition == crate::palette::BRIDGE_OUT {
-                    crate::palette::BRIDGE_IN
+                let spawn = if definition == palette::BRIDGE_OUT {
+                    palette::BRIDGE_IN
                 } else {
-                    crate::palette::BRIDGE_OUT
+                    palette::BRIDGE_OUT
                 };
                 // One undo step; a refused bind leaves no node, edge or channel behind.
                 host.grouped(draft, |host, draft| {
@@ -493,7 +493,7 @@ impl Editor {
                         spawned,
                         &serde_json::json!({ "channel": channel }),
                     )?;
-                    let (out, reading) = if spawn == crate::palette::BRIDGE_IN {
+                    let (out, reading) = if spawn == palette::BRIDGE_IN {
                         (node, spawned)
                     } else {
                         (spawned, node)

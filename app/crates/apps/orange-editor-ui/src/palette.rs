@@ -1463,7 +1463,7 @@ mod tests {
     /// Create Emitter binds a new Bridge Out on that channel.
     #[test]
     fn bridges_spawn_bound_survive_their_emitter_and_rebind() {
-        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = crate::Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         let out = editor
@@ -1531,7 +1531,7 @@ mod tests {
     /// Bridge Out and Bridge In, and the retired Wireless Value preset is not offered.
     #[test]
     fn a_wireless_value_is_a_bridge_not_a_variable() {
-        let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
         for (search, language) in [
             ("valor inalámbrico", "es"),
             ("wireless value", "en"),

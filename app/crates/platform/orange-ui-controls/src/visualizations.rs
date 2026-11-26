@@ -319,6 +319,26 @@ pub struct MeterStop {
     pub color: Color32,
 }
 
+/// A vertical band through `rect` blending the stops bottom to top, each colour scaled
+/// by `dim`.
+fn gradient_mesh(rect: Rect, stops: &[MeterStop], dim: f32) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    for (index, stop) in stops.iter().enumerate() {
+        let y = egui::lerp(rect.y_range(), 1.0 - stop.fraction);
+        let color = stop.color.gamma_multiply(dim);
+        let left = mesh.vertices.len();
+        mesh.colored_vertex(egui::pos2(rect.left(), y), color);
+        mesh.colored_vertex(egui::pos2(rect.right(), y), color);
+        if index > 0 {
+            let previous = u32::try_from(left - 2).unwrap_or_default();
+            let left = u32::try_from(left).unwrap_or_default();
+            mesh.add_triangle(previous, previous + 1, left);
+            mesh.add_triangle(left, previous + 1, left + 1);
+        }
+    }
+    mesh
+}
+
 /// Paints a vertical gradient meter directly into an existing rectangle.
 pub fn paint_vertical_meter(
     painter: &egui::Painter,
@@ -329,22 +349,7 @@ pub fn paint_vertical_meter(
     peak_color: Color32,
     dim: f32,
 ) {
-    let mut mesh = egui::Mesh::default();
-    for (index, stop) in stops.iter().enumerate() {
-        let y = egui::lerp(rect.y_range(), 1.0 - stop.fraction);
-        let color = stop.color.gamma_multiply(dim);
-        let left = mesh.vertices.len();
-        mesh.colored_vertex(egui::pos2(rect.left(), y), color);
-        mesh.colored_vertex(egui::pos2(rect.right(), y), color);
-        if index > 0 {
-            let previous = left - 2;
-            let previous = u32::try_from(previous).unwrap_or_default();
-            let left = u32::try_from(left).unwrap_or_default();
-            mesh.add_triangle(previous, previous + 1, left);
-            mesh.add_triangle(left, previous + 1, left + 1);
-        }
-    }
-    painter.add(egui::Shape::mesh(mesh));
+    painter.add(egui::Shape::mesh(gradient_mesh(rect, stops, dim)));
 
     let fill = fill.clamp(0.0, 1.0);
     if fill > 0.0 {
@@ -352,21 +357,7 @@ pub fn paint_vertical_meter(
             egui::pos2(rect.left(), egui::lerp(rect.y_range(), 1.0 - fill)),
             rect.max,
         );
-        let mut active = egui::Mesh::default();
-        for (index, stop) in stops.iter().enumerate() {
-            let y = egui::lerp(rect.y_range(), 1.0 - stop.fraction);
-            let color = stop.color;
-            let left = active.vertices.len();
-            active.colored_vertex(egui::pos2(rect.left(), y), color);
-            active.colored_vertex(egui::pos2(rect.right(), y), color);
-            if index > 0 {
-                let previous = left - 2;
-                let previous = u32::try_from(previous).unwrap_or_default();
-                let left = u32::try_from(left).unwrap_or_default();
-                active.add_triangle(previous, previous + 1, left);
-                active.add_triangle(left, previous + 1, left + 1);
-            }
-        }
+        let active = gradient_mesh(rect, stops, 1.0);
         painter
             .with_clip_rect(painter.clip_rect().intersect(clip))
             .add(egui::Shape::mesh(active));

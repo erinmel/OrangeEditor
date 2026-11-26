@@ -773,7 +773,7 @@ impl Editor {
                         }),
                     );
                 }
-                crate::controls::dialog_actions(
+                controls::dialog_actions(
                     ui,
                     Action::Primary,
                     !form.name.trim().is_empty(),
@@ -2473,9 +2473,9 @@ mod tests {
         let full = format!("{}end", "x".repeat(8192));
         editor.document.as_mut().unwrap().values.insert(
             id,
-            crate::ObservedVariable {
+            ObservedVariable {
                 shown: "short preview".into(),
-                exact_text: Some(orange_host::Value::Str(std::sync::Arc::new(full.clone()))),
+                exact_text: Some(orange_host::Value::Str(Arc::new(full.clone()))),
             },
         );
 
@@ -2601,7 +2601,7 @@ mod tests {
         frame(Vec::new());
         assert!(editor.forms.open_connection);
         assert_eq!(editor.forms.connection.changing, profile);
-        assert!(editor.tab == super::super::Tab::Nodes);
+        assert_eq!(editor.tab, Tab::Nodes);
         assert_eq!(editor.canvas.selected(), Some(node));
     }
 

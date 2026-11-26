@@ -144,7 +144,7 @@ impl Host {
                     at[1] + (y - corner[1]) as f32,
                 ],
                 // Nodes without a place go down from `at`, one under another.
-                _ => [at[0], at[1] + crate::edit::STACK_STEP * index as f32],
+                _ => [at[0], at[1] + edit::STACK_STEP * index as f32],
             };
             placed.push((*new, spot));
             fresh.push(*new);

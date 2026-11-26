@@ -795,15 +795,7 @@ pub fn continuous_slider(
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
     let response = slider_input(ui, Slider::new(value, range), 22.0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "normalized screen coordinate"
-    )]
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
+    let fraction = track_fraction(*value, start, end);
     SliderTrack::new(ui, response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
     response
 }
@@ -876,11 +868,7 @@ pub fn continuous_marked_slider(
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
     let response = slider_input(ui, Slider::new(value, range), 22.0);
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
+    let fraction = track_fraction(*value, start, end);
     let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         for (index, mark) in marks.iter().enumerate() {
@@ -895,6 +883,16 @@ pub fn continuous_marked_slider(
         }
     });
     response
+}
+
+/// Where `value` sits between `start` and `end`, from 0 to 1; 0 for an empty range.
+#[expect(clippy::cast_possible_truncation, reason = "a fraction from 0 to 1")]
+fn track_fraction(value: f32, start: f64, end: f64) -> f32 {
+    if start == end {
+        0.0
+    } else {
+        ((f64::from(value) - start) / (end - start)).clamp(0.0, 1.0) as f32
+    }
 }
 
 /// A single slider presentation for continuous or strict values.
@@ -920,11 +918,7 @@ pub fn guided_slider(
     let response = slider_input(ui, slider, 22.0);
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
+    let fraction = track_fraction(*value, start, end);
     let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         if matches!(marks, SliderMarks::Notches | SliderMarks::NotchesAndValues) {

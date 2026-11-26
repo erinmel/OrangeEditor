@@ -89,7 +89,7 @@ pub struct NodeView {
     /// so the editor can offer the system's file or folder chooser beside them.
     pub paths: Vec<PathInput>,
     /// How the node's definition asks an editor to present its fields (ADR-33).
-    pub controls: orange_model::catalog::controls::Controls,
+    pub controls: controls::Controls,
     /// The package the node needs when its exact provider is unavailable. The
     /// node, its settings and its wires stay in the document, and the view can
     /// draw its saved signature.

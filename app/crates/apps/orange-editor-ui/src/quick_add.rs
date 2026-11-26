@@ -27,7 +27,7 @@ fn typed_wire_choices(host: &Host, draft: &Draft, ty: &str, search: &str) -> Vec
     if ty.starts_with("core/") || ty.contains(['$', '<']) {
         return Vec::new();
     }
-    let named_type = crate::type_name(ty);
+    let named_type = type_name(ty);
     let mut choices = Vec::new();
     let mut offer = |definition, label: String, input, purpose: &str, aliases: &str| {
         let terms = format!("{label} {named_type} {aliases}");

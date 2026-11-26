@@ -247,12 +247,12 @@ mod operation_caption_tests {
         for caption in &captions {
             assert!(caption.contains("Counter"), "{caption}");
         }
-        assert!(
+        assert_eq!(
             captions
                 .iter()
                 .filter(|caption| caption.contains('1'))
-                .count()
-                == 2
+                .count(),
+            2
         );
         assert!(captions.iter().any(|caption| caption.contains('0')));
         let mut distinct = captions.clone();

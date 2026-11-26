@@ -648,21 +648,28 @@ impl Draft {
     }
 }
 
-/// A new run event without a payload, named `base`, `base 2`, … whichever is free.
-fn new_pulse_event(
-    draft: &Draft,
-    base: &str,
-) -> Result<orange_model::document::EventDecl, HostError> {
-    let name = std::iter::once(base.to_owned())
+/// `base`, `base 2`, `base 3`, … whichever `taken` does not hold.
+fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> Result<String, HostError> {
+    std::iter::once(base.to_owned())
         .chain((2..).map(|index| format!("{base} {index}")))
-        .find(|name| {
-            draft
-                .document()
-                .events()
-                .values()
-                .all(|event| event.name != *name)
-        })
-        .ok_or_else(|| refused(&"no channel name is available"))?;
+        .find(|name| !taken(name))
+        .ok_or_else(|| refused(&"no free name is available"))
+}
+
+/// An event name no event of the draft has yet, from `base`.
+fn free_event_name(draft: &Draft, base: &str) -> Result<String, HostError> {
+    free_name(base, |name| {
+        draft
+            .document()
+            .events()
+            .values()
+            .any(|event| event.name == name)
+    })
+}
+
+/// A new run event without a payload, named `base`, `base 2`, … whichever is free.
+fn new_pulse_event(draft: &Draft, base: &str) -> Result<EventDecl, HostError> {
+    let name = free_event_name(draft, base)?;
     serde_json::from_value(json!({
         "id": draft.fresh_id("signal-event"), "name": name, "scope": "run"
     }))
@@ -745,7 +752,7 @@ impl Host {
         function: &str,
         search: &str,
         locale: &str,
-    ) -> Vec<search::Found> {
+    ) -> Vec<Found> {
         let Some(function) = function
             .parse::<FunctionId>()
             .ok()
@@ -796,16 +803,7 @@ impl Host {
         base: &str,
         pulse: bool,
     ) -> Result<([NodeId; 2], Vec<DocCommand>), HostError> {
-        let name = std::iter::once(base.to_owned())
-            .chain((2..).map(|index| format!("{base} {index}")))
-            .find(|name| {
-                draft
-                    .document()
-                    .events()
-                    .values()
-                    .all(|event| event.name != *name)
-            })
-            .ok_or_else(|| refused(&"no signal name is available"))?;
+        let name = free_event_name(draft, base)?;
         let event = draft.fresh_id("signal-event");
         // A pulse is an event-only channel: no payload port on either end.
         let declaration = serde_json::from_value(if pulse {
@@ -923,16 +921,13 @@ impl Host {
         [x, y]: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let id = draft.fresh_id("wireless-value");
-        let name = std::iter::once("Wireless value".to_owned())
-            .chain((2..).map(|index| format!("Wireless value {index}")))
-            .find(|name| {
-                draft
-                    .document()
-                    .variables()
-                    .values()
-                    .all(|variable| &variable.name != name)
-            })
-            .ok_or_else(|| refused(&"no variable name is available"))?;
+        let name = free_name("Wireless value", |name| {
+            draft
+                .document()
+                .variables()
+                .values()
+                .any(|variable| variable.name == name)
+        })?;
         let declaration = serde_json::from_value(json!({
             "id": id, "name": name, "type": "core/bool@1", "scope": "run",
             "init": {"type": "core/bool@1", "value": false}

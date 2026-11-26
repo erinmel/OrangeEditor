@@ -480,20 +480,10 @@ impl CalendarDate {
                                 }
                             }
                         });
-                    if before != (year, month, page) {
-                        ui.data_mut(|d| {
-                            d.insert_temp(id, (year, month));
-                            d.insert_temp(jump_id, page);
-                        });
-                    }
+                    keep_page(ui, (id, jump_id), before, (year, month, page));
                     return;
                 }
-                if before != (year, month, page) {
-                    ui.data_mut(|d| {
-                        d.insert_temp(id, (year, month));
-                        d.insert_temp(jump_id, page);
-                    });
-                }
+                keep_page(ui, (id, jump_id), before, (year, month, page));
                 let offset = monday_offset(year, month);
                 egui::Grid::new(id.with("calendar"))
                     .min_col_width(side)
@@ -550,6 +540,21 @@ impl CalendarDate {
             response.mark_changed();
         }
         response
+    }
+}
+
+/// Remembers the shown month and picker page when they changed this frame.
+fn keep_page(
+    ui: &Ui,
+    (month_id, page_id): (egui::Id, egui::Id),
+    before: (i32, u8, u8),
+    (year, month, page): (i32, u8, u8),
+) {
+    if before != (year, month, page) {
+        ui.data_mut(|data| {
+            data.insert_temp(month_id, (year, month));
+            data.insert_temp(page_id, page);
+        });
     }
 }
 

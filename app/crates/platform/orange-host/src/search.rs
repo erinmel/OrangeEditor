@@ -278,6 +278,15 @@ impl Host {
         words
     }
 
+    /// Adds catalogue message `id` folded for search, in `locale` and in English.
+    fn push_captions(&self, words: &mut Vec<String>, id: &str, locale: &str) {
+        for locale in [locale, crate::SOURCE_LANGUAGE] {
+            if let Some(text) = self.catalogs.message(locale, id) {
+                words.push(fold_search(&text));
+            }
+        }
+    }
+
     fn build_setting_words(&self, info: &NodeInfo<'_>, locale: &str) -> Vec<String> {
         let mut settings = Vec::new();
         let Some(properties) = info
@@ -293,12 +302,11 @@ impl Host {
             .filter(|(_, schema)| schema["readOnly"] != true)
         {
             settings.push(fold_search(&name.replace(['_', '-'], " ")));
-            let caption = format!("setting-{}", node_key(name));
-            for locale in [locale, crate::SOURCE_LANGUAGE] {
-                if let Some(text) = self.catalogs.message(locale, &caption) {
-                    settings.push(fold_search(&text));
-                }
-            }
+            self.push_captions(
+                &mut settings,
+                &format!("setting-{}", node_key(name)),
+                locale,
+            );
             for value in schema["enum"]
                 .as_array()
                 .into_iter()
@@ -306,12 +314,11 @@ impl Host {
                 .filter_map(serde_json::Value::as_str)
             {
                 settings.push(fold_search(&value.replace('-', " ")));
-                let caption = format!("setting-choice-{}", node_key(value));
-                for locale in [locale, crate::SOURCE_LANGUAGE] {
-                    if let Some(text) = self.catalogs.message(locale, &caption) {
-                        settings.push(fold_search(&text));
-                    }
-                }
+                self.push_captions(
+                    &mut settings,
+                    &format!("setting-choice-{}", node_key(value)),
+                    locale,
+                );
             }
         }
         settings.sort_unstable();

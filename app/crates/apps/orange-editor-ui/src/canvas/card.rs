@@ -760,7 +760,7 @@ mod tests {
         let graph = host.draft_view(&draft).unwrap();
         let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
         let card = Card::new(node);
-        let mut canvas = crate::canvas::Canvas::new();
+        let mut canvas = Canvas::new();
         canvas.load(&graph);
         {
             let card = &card;

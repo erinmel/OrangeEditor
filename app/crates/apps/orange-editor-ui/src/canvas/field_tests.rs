@@ -250,17 +250,17 @@ fn keyboard_and_click_can_wire_from_either_end_or_cancel_without_editing() {
         result
     };
     let focus_port = |session: &mut Session, at: Pos2| {
-        for _ in 0..24 {
+        let reached = (0..24).any(|_| {
             let focused = session.context.memory(|memory| memory.focused());
-            if focused
+            let there = focused
                 .and_then(|id| session.context.read_response(id))
-                .is_some_and(|response| response.rect.center().distance(at) < 1.0)
-            {
-                return;
+                .is_some_and(|response| response.rect.center().distance(at) < 1.0);
+            if !there {
+                let _ = press(session, egui::Key::Tab, egui::Modifiers::NONE);
             }
-            let _ = press(session, egui::Key::Tab, egui::Modifiers::NONE);
-        }
-        panic!("could not reach connector at {at:?} with Tab");
+            there
+        });
+        assert!(reached, "could not reach connector at {at:?} with Tab");
     };
     for (first, second) in [(out, into), (into, out)] {
         focus_port(&mut session, first);

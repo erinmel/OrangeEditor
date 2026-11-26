@@ -351,19 +351,14 @@ pub(super) fn paint_still(
     if let FieldOf::HintedInput(port, control) = field
         && let Some(range) = crate::properties::NumberRange::of_input(control)
     {
-        let value = port
-            .value
-            .as_deref()
-            .or(port.default.as_deref())
-            .and_then(|text| field_text(text).parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let value = input_number(port);
         if control.widget == orange_host::controls::Widget::Dial {
             range.paint_dial(
                 ui,
                 dial_slot(rect),
                 value,
                 control,
-                &self::name(node, field, None),
+                &name(node, field, None),
             );
             return;
         }
@@ -386,13 +381,13 @@ pub(super) fn paint_still(
     {
         let value = setting_value(node, name, schema);
         let labels: Vec<&str> = choices.iter().map(|(_, label)| label.as_str()).collect();
-        orange_ui_controls::ChoiceRow {
-            labels: &labels,
-            selected: choices.iter().position(|(option, _)| *option == value),
-            defaulted: node.settings.get(name).is_none(),
-            surface: Surface::Card,
+        choice_row(
+            &labels,
+            &choices,
+            &value,
+            node.settings.get(name).is_none(),
             zoom,
-        }
+        )
         .paint_preview(ui, rect);
         return;
     }
@@ -434,6 +429,68 @@ fn dial_slot(slot: Rect) -> Rect {
     Rect::from_center_size(slot.center(), Vec2::splat(slot.height().min(slot.width())))
 }
 
+/// The number an input holds, or its default; zero when it has neither.
+fn input_number(port: &PortView) -> f64 {
+    port.value
+        .as_deref()
+        .or(port.default.as_deref())
+        .and_then(|text| field_text(text).parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// The segmented choices of a setting as a card shows them, `value` picked.
+fn choice_row<'a>(
+    labels: &'a [&'a str],
+    choices: &[(serde_json::Value, String)],
+    value: &serde_json::Value,
+    defaulted: bool,
+    zoom: f32,
+) -> orange_ui_controls::ChoiceRow<'a> {
+    orange_ui_controls::ChoiceRow {
+        labels,
+        selected: choices.iter().position(|(option, _)| option == value),
+        defaulted,
+        surface: Surface::Card,
+        zoom,
+    }
+}
+
+/// A dial filling the square in the middle of `slot`, captioned `caption`. Returns the
+/// value turned to.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one dial's place, state and face"
+)]
+fn card_dial(
+    ui: &mut egui::Ui,
+    slot: Rect,
+    id: egui::Id,
+    range: crate::properties::NumberRange,
+    value: f64,
+    control: &orange_host::controls::Control,
+    caption: &str,
+) -> Option<f64> {
+    let knob = dial_slot(slot);
+    ui.scope_builder(
+        UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(knob));
+            ui.spacing_mut().interact_size.y = knob.height();
+            range.dial(
+                ui,
+                Surface::Card,
+                id,
+                value,
+                control,
+                caption,
+                caption,
+                Some(knob.height()),
+            )
+        },
+    )
+    .inner
+}
+
 fn slider_slots(slot: Rect, zoom: f32) -> (Rect, Rect) {
     let split = slot.right() - (85.0 * zoom).min(slot.width() * 0.5);
     (
@@ -460,7 +517,7 @@ impl Canvas {
     ) -> Option<FieldEdit> {
         let zoom = slot.height() / field.control_height();
         let colors = Palette::of(ui);
-        let label = || self::name(node, field, None);
+        let label = || name(node, field, None);
         match field {
             FieldOf::TextArea(port, kind, height) => {
                 let (preview, dim) = shown(node, field);
@@ -581,12 +638,7 @@ impl Canvas {
                     port.ty.as_deref(),
                     Some("core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1")
                 );
-                let current = port
-                    .value
-                    .as_deref()
-                    .or(port.default.as_deref())
-                    .and_then(|text| field_text(text).parse::<f64>().ok())
-                    .unwrap_or(0.0);
+                let current = input_number(port);
                 let typed = |value: f64| {
                     let text = if whole {
                         format!("{}", value.round())
@@ -596,27 +648,7 @@ impl Canvas {
                     Some(FieldEdit::Input(port.id.clone(), text))
                 };
                 if control.widget == orange_host::controls::Widget::Dial {
-                    let knob = dial_slot(slot);
-                    return ui
-                        .scope_builder(
-                            UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
-                            |ui| {
-                                ui.set_clip_rect(ui.clip_rect().intersect(knob));
-                                ui.spacing_mut().interact_size.y = knob.height();
-                                let caption = label();
-                                range.dial(
-                                    ui,
-                                    Surface::Card,
-                                    id,
-                                    current,
-                                    control,
-                                    &caption,
-                                    &caption,
-                                    Some(knob.height()),
-                                )
-                            },
-                        )
-                        .inner
+                    return card_dial(ui, slot, id, range, current, control, &label())
                         .and_then(typed);
                 }
                 let (track, number) = slider_slots(slot, zoom);
@@ -848,14 +880,9 @@ impl Canvas {
                         let choices = segmented_choices(node, name, schema)?;
                         let labels: Vec<&str> =
                             choices.iter().map(|(_, label)| label.as_str()).collect();
-                        let picked = orange_ui_controls::ChoiceRow {
-                            labels: &labels,
-                            selected: choices.iter().position(|(option, _)| *option == value),
-                            defaulted: node.settings.get(name).is_none(),
-                            surface: Surface::Card,
-                            zoom,
-                        }
-                        .show_named(ui, slot, id, &label())?;
+                        let defaulted = node.settings.get(name).is_none();
+                        let picked = choice_row(&labels, &choices, &value, defaulted, zoom)
+                            .show_named(ui, slot, id, &label())?;
                         set(choices[picked].0.clone())
                     }
                     Kind::Choice => {
@@ -958,28 +985,8 @@ impl Canvas {
                             && let Some(value) = value.as_f64()
                         {
                             if let Some(dial) = dial {
-                                let knob = dial_slot(slot);
-                                let changed = ui
-                                    .scope_builder(
-                                        UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
-                                        |ui| {
-                                            ui.set_clip_rect(ui.clip_rect().intersect(knob));
-                                            ui.spacing_mut().interact_size.y = knob.height();
-                                            let caption = label();
-                                            range.dial(
-                                                ui,
-                                                Surface::Card,
-                                                id,
-                                                value,
-                                                dial,
-                                                &caption,
-                                                &caption,
-                                                Some(knob.height()),
-                                            )
-                                        },
-                                    )
-                                    .inner;
-                                return changed.and_then(|value| set(value.into()));
+                                return card_dial(ui, slot, id, range, value, dial, &label())
+                                    .and_then(|value| set(value.into()));
                             } else {
                                 let (track, number) = slider_slots(slot, zoom);
                                 let slider = ui

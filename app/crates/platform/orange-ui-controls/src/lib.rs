@@ -467,14 +467,7 @@ pub fn button(
     let (fill, border, ink) = role_colors(theme, surface, action);
     let background = ui.painter().add(egui::Shape::Noop);
     let response = with_style(ui, surface, action, |ui| {
-        for state in widget_states(&mut ui.visuals_mut().widgets) {
-            state.bg_stroke = Stroke::NONE;
-            state.bg_fill = egui::Color32::TRANSPARENT;
-            state.weak_bg_fill = egui::Color32::TRANSPARENT;
-            state.fg_stroke.color = ink;
-        }
-        ui.visuals_mut().override_text_color = Some(ink);
-        ui.add_enabled(enabled, button.frame(true))
+        bare_button(ui, ink, enabled, button)
     });
     let (hover, press) = motion(ui, &response);
     if ui.is_rect_visible(response.rect) {
@@ -553,14 +546,7 @@ pub fn button_with(
     };
     let background = ui.painter().add(egui::Shape::Noop);
     let response = with_style(ui, surface, role, |ui| {
-        for state in widget_states(&mut ui.visuals_mut().widgets) {
-            state.bg_stroke = Stroke::NONE;
-            state.bg_fill = egui::Color32::TRANSPARENT;
-            state.weak_bg_fill = egui::Color32::TRANSPARENT;
-            state.fg_stroke.color = ink;
-        }
-        ui.visuals_mut().override_text_color = Some(ink);
-        ui.add_enabled(enabled, egui_button.frame(true))
+        bare_button(ui, ink, enabled, egui_button)
     });
     let (hover, press) = motion(ui, &response);
     if ui.is_rect_visible(response.rect) {
@@ -702,6 +688,19 @@ fn motion(ui: &Ui, response: &Response) -> (f32, f32) {
         animate("hover", response.hovered()),
         animate("press", response.is_pointer_button_down_on()),
     )
+}
+
+/// Adds `button` with no fill or outline of its own and `ink` text: the caller paints its
+/// background underneath, so its colours animate with hover and press.
+fn bare_button(ui: &mut Ui, ink: egui::Color32, enabled: bool, button: Button<'_>) -> Response {
+    for state in widget_states(&mut ui.visuals_mut().widgets) {
+        state.bg_stroke = Stroke::NONE;
+        state.bg_fill = egui::Color32::TRANSPARENT;
+        state.weak_bg_fill = egui::Color32::TRANSPARENT;
+        state.fg_stroke.color = ink;
+    }
+    ui.visuals_mut().override_text_color = Some(ink);
+    ui.add_enabled(enabled, button.frame(true))
 }
 
 fn with_style<R>(
