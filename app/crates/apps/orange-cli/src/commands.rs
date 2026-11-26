@@ -233,9 +233,8 @@ pub(crate) fn packages(host: &Host) {
                 _ => "installed",
             },
             match (package.active, package.enabled) {
-                (true, true) => "on",
+                (true, _) => "on",
                 (false, false) => "disabled",
-                (true, false) => "on, disabled from the next start",
                 (false, true) => "off",
             },
             package.name().unwrap_or("-"),

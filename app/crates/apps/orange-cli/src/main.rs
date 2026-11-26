@@ -82,9 +82,10 @@ package is built in: adapters `org.orange.net/http`, `org.orange.net/websocket` 
 without `--package`.
 
 `packages` lists the base, native and stored packages and whether each is in use.
-`disable <id>` leaves a package out from the next command on and `enable <id>` brings
-it back; both need `--store`, where the choice is kept. `remove` takes one out of the
-store. `updates` reads the update feed each package names and lists newer releases;
+`disable <id>` turns a package off from the next command on and `enable <id>` brings
+it back; the base and clock nodes are core and stay on. Both need `--store`, where the
+choice is kept. `remove` takes one out of the store.
+`updates` reads the update feed each package names and lists newer releases;
 with `--apply` it downloads each, checks its digest against the feed and installs it.
 A package that names a signing key is updated only from a feed that key signed; with
 `--signed-only` a package that names no key is not updated at all. A

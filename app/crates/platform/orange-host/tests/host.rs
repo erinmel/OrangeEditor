@@ -366,6 +366,24 @@ fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
         .unwrap();
     assert_eq!(key.id.as_str(), "org.example.tools");
 
+    let text = remember_document(&host);
+    let flow = host.open(&text).unwrap();
+    host.uninstall(&key).unwrap();
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    assert!(
+        host.search_nodes("remember", "en")
+            .iter()
+            .all(|node| node.definition != REMEMBER)
+    );
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+}
+
+/// A document whose manual entry runs the `remember` node of [`graph_package`] with 5
+/// and stores the result in `total`.
+fn remember_document(host: &Host) -> String {
     // The document holds a locked package node; it knows nothing of the graph behind it.
     let mut document = empty(4);
     let mut call = NewNode::new(
@@ -393,19 +411,7 @@ fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
     );
     assert!(text.contains(REMEMBER) && !text.contains("core/call"));
     assert!(host.check(&text).unwrap().is_empty());
-
-    let flow = host.open(&text).unwrap();
-    host.uninstall(&key).unwrap();
-    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
-    assert!(
-        host.search_nodes("remember", "en")
-            .iter()
-            .all(|node| node.definition != REMEMBER)
-    );
-    host.trigger(flow, node(1), None).unwrap();
-    until("the graph node's result", || {
-        read_total(&host, flow) == Some(Value::I64(5))
-    });
+    text
 }
 
 #[test]
@@ -721,119 +727,204 @@ fn the_base_nodes_can_be_left_out() {
     });
 }
 
-#[test]
-fn a_disabled_package_is_listed_and_left_out_from_the_next_start() {
+/// A directory of saved packages for one test.
+fn package_dir(tag: &str) -> std::path::PathBuf {
     let directory = std::env::temp_dir().join(format!(
-        "orange-host-toggle-{}-{:?}",
+        "orange-host-{tag}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
+/// (active, enabled, switchable) of package `id`.
+fn state_of(host: &Host, id: &str) -> (bool, bool, bool) {
+    let package = host.packages().find(|package| package.id == id).unwrap();
+    (package.active, package.enabled, package.switchable)
+}
+
+#[test]
+fn an_installed_package_turned_off_leaves_new_documents_but_not_running_flows() {
+    let directory = package_dir("switch-installed");
     let start = || {
         let options = HostOptions {
             package_dir: Some(directory.clone()),
             ..HostOptions::default()
         };
-        let native = orange_host::ServicePackage::new("org.example.native", "2.0.0")
-            .about("Native", "A native package without nodes.");
-        Host::with_services(options, vec![native]).unwrap().0
+        Host::new(options).unwrap().0
     };
-    // (kind, active, enabled) of each package, by ID.
-    let states = |host: &Host| -> Vec<(String, PackageKind, bool, bool)> {
-        host.packages()
-            .map(|package| {
-                (
-                    package.id.to_owned(),
-                    package.kind,
-                    package.active,
-                    package.enabled,
-                )
-            })
-            .collect()
-    };
-    let base_nodes = |host: &Host| {
-        host.nodes()
-            .filter(|node| !node.definition.definition.id.is_core())
-            .count()
-    };
-    let all = |active: bool, enabled: bool| {
-        vec![
-            (BASE_PACKAGE.to_owned(), PackageKind::Base, active, enabled),
-            (
-                "org.example.native".to_owned(),
-                PackageKind::Native,
-                active,
-                enabled,
-            ),
-            (
-                "org.orange.clock".to_owned(),
-                PackageKind::Native,
-                active,
-                enabled,
-            ),
-            (
-                "org.example.tools".to_owned(),
-                PackageKind::Installed,
-                active,
-                enabled,
-            ),
-        ]
-    };
-
-    let key = {
-        let mut host = start();
-        let key = host
-            .install(&graph_package(I64, true).unwrap(), Grants::default())
-            .unwrap();
-        assert_eq!(states(&host), all(true, true));
-        let native = host.packages().nth(1).unwrap();
-        assert_eq!(native.name(), Some("Native"));
-        assert_eq!(native.version, "2.0.0");
-        // Disabling changes the choice, not what this host already uses.
-        for (id, ..) in all(true, true) {
-            host.set_enabled(&id, false).unwrap();
-        }
-        assert_eq!(states(&host), all(true, false));
-        assert!(base_nodes(&host) > 0);
-        key
-    };
-    {
-        let mut host = start();
-        assert!(host.not_restored().is_empty());
-        assert_eq!(states(&host), all(false, false));
-        assert_eq!(base_nodes(&host), 0);
-        for (id, ..) in all(false, false) {
-            host.set_enabled(&id, true).unwrap();
-        }
-        assert_eq!(states(&host), all(false, true));
-    }
-    {
-        let mut host = start();
-        assert_eq!(states(&host), all(true, true));
-        assert!(base_nodes(&host) > 0);
-        host.set_enabled("org.example.tools", false).unwrap();
-    }
-    // A package that was left out can still be removed from the directory.
+    const TOOLS: &str = "org.example.tools";
     let mut host = start();
-    assert_eq!(
-        installed(&host)
-            .map(|package| package.active)
-            .collect::<Vec<_>>(),
-        [false]
+    let access = PackageAccess {
+        data_quota: Some(4096),
+        ..PackageAccess::default()
+    };
+    let key = host
+        .install_with(&graph_package(I64, true).unwrap(), access.clone())
+        .unwrap();
+    let text = remember_document(&host);
+    let flow = host.open(&text).unwrap();
+
+    host.set_enabled(TOOLS, false).unwrap();
+    assert_eq!(state_of(&host, TOOLS), (false, false, true));
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    assert!(
+        host.search_nodes("remember", "en")
+            .iter()
+            .all(|node| node.definition != REMEMBER)
     );
+    // Its manifest and grants are kept while it is off.
+    let listed = installed(&host).next().unwrap();
+    assert_eq!(listed.manifest.unwrap().key(), &key);
+    assert_eq!(host.access(&key), Some(&access));
+    // The running flow keeps the provider it was compiled with.
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+
+    host.set_enabled(TOOLS, true).unwrap();
+    assert_eq!(state_of(&host, TOOLS), (true, true, true));
+    let again = host.open(&text).unwrap();
+    host.trigger(again, node(1), None).unwrap();
+    until("the graph node's result again", || {
+        read_total(&host, again) == Some(Value::I64(5))
+    });
+
+    // The choice is saved with the package directory.
+    host.set_enabled(TOOLS, false).unwrap();
+    drop(host);
+    let mut host = start();
+    assert!(host.not_restored().is_empty());
+    assert_eq!(state_of(&host, TOOLS), (false, false, true));
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    assert_eq!(host.access(&key), Some(&access));
+    host.set_enabled(TOOLS, true).unwrap();
+    assert!(host.open(&text).is_ok());
+    drop(host);
+    let mut host = start();
+    assert_eq!(state_of(&host, TOOLS), (true, true, true));
+
+    // A package that is off can still be removed.
+    host.set_enabled(TOOLS, false).unwrap();
     host.uninstall(&key).unwrap();
     assert_eq!(installed(&host).count(), 0);
     drop(host);
     assert_eq!(installed(&start()).count(), 0);
+    let _ = std::fs::remove_dir_all(&directory);
+}
 
-    // An application can also leave packages out without a directory.
+#[test]
+fn a_native_package_turns_off_and_on_in_the_running_host() {
+    struct Stamp;
+    impl orange_host::ServiceNode for Stamp {
+        fn run(&self, _: &orange_host::Call<'_>) -> Result<Vec<Value>, orange_host::KernelFault> {
+            Ok(vec![Value::Timestamp(1)])
+        }
+    }
+    const NATIVE: &str = "org.example.native";
+    let definition = orange_sdk::Definition::node(NATIVE, "stamp", "Stamp")
+        .output("timestamp", "core/timestamp@1")
+        .build();
+    let directory = package_dir("switch-native");
+    let start = || {
+        let options = HostOptions {
+            package_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        let native = orange_host::ServicePackage::new(NATIVE, "2.0.0")
+            .node(&definition, Stamp)
+            .unwrap();
+        Host::with_services(options, vec![native]).unwrap().0
+    };
+    let placeable = |host: &Host| {
+        host.nodes().any(|node| {
+            node.definition.definition.id.as_str() == "org.example.native/stamp"
+                && node.provider.is_some()
+        })
+    };
+    let mut host = start();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    let stamp = host
+        .add_node(&mut draft, "org.example.native/stamp", [200.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (stamp, "in"))
+        .unwrap();
+    let text = draft.text().unwrap();
+    let flow = host.open(&text).unwrap();
+
+    host.set_enabled(NATIVE, false).unwrap();
+    assert_eq!(state_of(&host, NATIVE), (false, false, true));
+    assert!(!placeable(&host));
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    host.trigger(flow, trigger, None).unwrap();
+    host.close(flow).unwrap();
+
+    host.set_enabled(NATIVE, true).unwrap();
+    assert_eq!(state_of(&host, NATIVE), (true, true, true));
+    assert!(placeable(&host));
+    assert!(host.open(&text).is_ok());
+
+    // Turned off, it stays off in the next host, and turns on there too.
+    host.set_enabled(NATIVE, false).unwrap();
+    drop(host);
+    let mut host = start();
+    assert_eq!(state_of(&host, NATIVE), (false, false, true));
+    assert!(matches!(host.open(&text), Err(HostError::Invalid(_))));
+    host.set_enabled(NATIVE, true).unwrap();
+    assert!(placeable(&host));
+    assert!(host.open(&text).is_ok());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn core_packages_and_packages_the_application_leaves_out_cannot_be_switched() {
+    let options = HostOptions {
+        disabled_packages: ["org.example.native".to_owned()].into(),
+        ..HostOptions::default()
+    };
+    let native = orange_host::ServicePackage::new("org.example.native", "1.0.0");
+    let (mut host, _events) = Host::with_services(options, vec![native]).unwrap();
+    for id in [BASE_PACKAGE, "org.orange.clock"] {
+        assert_eq!(state_of(&host, id), (true, true, false));
+        assert!(matches!(
+            host.set_enabled(id, false),
+            Err(HostError::Switch(_))
+        ));
+        assert_eq!(state_of(&host, id), (true, true, false));
+    }
+    assert_eq!(state_of(&host, "org.example.native"), (false, false, false));
+    assert!(matches!(
+        host.set_enabled("org.example.native", true),
+        Err(HostError::Switch(_))
+    ));
+    assert!(matches!(
+        host.set_enabled("org.example.missing", false),
+        Err(HostError::Switch(_))
+    ));
+    // The base nodes still run.
+    let flow = host.open(&manual_graph(1)).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the value", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+
+    // An application can still leave the base nodes out.
     let options = HostOptions {
         disabled_packages: [BASE_PACKAGE.to_owned(), "org.orange.clock".to_owned()].into(),
         ..HostOptions::default()
     };
     let (host, _events) = Host::new(options).unwrap();
-    assert_eq!(base_nodes(&host), 0);
-    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(
+        host.nodes()
+            .filter(|node| !node.definition.definition.id.is_core())
+            .count(),
+        0
+    );
 }
 
 const ON_POKE: &str = "org.example.triggers/on-poke";

@@ -230,21 +230,49 @@ impl Host {
         expected: Option<&str>,
     ) -> Result<PackageKey, HostError> {
         let key = self.install_archive(archive, &access, expected)?;
+        // The same version, if it was turned off, is now this installation.
+        self.inactive.retain(|inactive| {
+            inactive.id != key.id.as_str() || inactive.version != key.version.as_str()
+        });
         if let Some(directory) = &self.options.package_dir {
             persist::save(directory, archive, &access, &key).map_err(HostError::Storage)?;
         }
-        // Installing a package is asking for it: it is enabled again.
-        self.set_enabled(key.id.as_str(), true)?;
+        // Installing a package is asking for it: it is turned on again.
+        if self.disabled.contains(key.id.as_str()) {
+            self.set_enabled(key.id.as_str(), true)?;
+        }
         Ok(key)
     }
 
-    /// Chooses whether hosts started from now on use package `id`: the base nodes
-    /// ([`BASE_PACKAGE`]), a native service package or an installed package. Nothing
-    /// changes in this host; [`PackageInfo::enabled`] shows the choice and
-    /// [`PackageInfo::active`] what is in use. With [`HostOptions::package_dir`] the
-    /// choice is saved there; without one it lasts as long as this host and has no
-    /// effect. A document that uses nodes of a package that is left out does not open.
+    /// Turns package `id` off or on in this host: a native service package or an
+    /// installed package. Turned off, its nodes can no longer be placed and a document
+    /// that uses them does not open; flows already running keep the providers they were
+    /// compiled with. An installed package keeps its files and grants, and turning it on
+    /// installs it again from its archive. A package another installed package depends
+    /// on cannot be turned off.
+    ///
+    /// Core packages ([`BASE_PACKAGE`] and the host's clock nodes) and packages the
+    /// application leaves out ([`HostOptions::disabled_packages`]) are refused, as is an
+    /// ID that is no package of this host; [`PackageInfo::switchable`] says which can be
+    /// switched. With [`HostOptions::package_dir`] the choice is saved there, so hosts
+    /// started on it later leave the package out too.
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), HostError> {
+        let refused = |why: &str| Err(HostError::Switch(format!("`{id}` {why}")));
+        if is_core(id) {
+            return refused("is a core package");
+        }
+        if self.options.disabled_packages.contains(id) {
+            return refused("is left out by the application");
+        }
+        if let Some(at) = self.built_in.iter().position(|package| package.id == id) {
+            self.switch_native(at, enabled)?;
+        } else if !self.packages().any(|package| package.id == id) {
+            return refused("is not a package of this host");
+        } else if enabled {
+            self.turn_on_installed(id)?;
+        } else {
+            self.turn_off_installed(id)?;
+        }
         let changed = if enabled {
             self.disabled.remove(id)
         } else {
@@ -256,28 +284,138 @@ impl Host {
         Ok(())
     }
 
+    /// Withdraws or publishes again the provider of native package `built_in[at]`, and
+    /// its connection adapters with it.
+    fn switch_native(&mut self, at: usize, on: bool) -> Result<(), HostError> {
+        let package = &self.built_in[at];
+        let Some(provider) = package.provider.clone().filter(|_| package.active != on) else {
+            return Ok(());
+        };
+        let switch = |error: &dyn std::fmt::Display| HostError::Switch(error.to_string());
+        if on {
+            let _ = self
+                .store
+                .publish_host_provider(provider)
+                .map_err(|e| switch(&e))?;
+            for (kind, adapter) in &package.adapters {
+                let _ = self.adapters.insert(kind.clone(), Arc::clone(adapter));
+            }
+        } else {
+            let _ = self
+                .store
+                .withdraw_host_provider(&provider.key)
+                .map_err(|e| switch(&e))?;
+            for (kind, _) in &package.adapters {
+                let _ = self.adapters.remove(kind);
+            }
+        }
+        self.built_in[at].active = on;
+        Ok(())
+    }
+
+    /// Removes the active versions of installed package `id` from the registry, keeping
+    /// their archives to install them again.
+    fn turn_off_installed(&mut self, id: &str) -> Result<(), HostError> {
+        let records: Vec<PackageManifest> = self
+            .store
+            .packages()
+            .filter(|record| record.state() == PackageState::Active)
+            .map(|record| record.manifest().clone())
+            .collect();
+        if let Some(dependent) = records.iter().find(|manifest| {
+            manifest.key().id.as_str() != id
+                && manifest
+                    .dependencies()
+                    .iter()
+                    .any(|dependency| dependency.id.as_str() == id)
+        }) {
+            return Err(HostError::Switch(format!(
+                "`{id}` is required by `{}`",
+                dependent.key()
+            )));
+        }
+        for manifest in records
+            .into_iter()
+            .filter(|manifest| manifest.key().id.as_str() == id)
+        {
+            let key = manifest.key().clone();
+            let version = (id.to_owned(), key.version.as_str().to_owned());
+            let archive = self
+                .archives
+                .get(&version)
+                .cloned()
+                .ok_or_else(|| HostError::Switch(format!("the archive of `{key}` is gone")))?;
+            let _ = self
+                .store
+                .remove(&key)
+                .map_err(|error| HostError::Switch(error.to_string()))?;
+            self.graphs.retain(|(package, version, ..), _| {
+                package != key.id.as_str() || version != key.version.as_str()
+            });
+            let _ = self.archives.remove(&version);
+            self.inactive.push(Inactive {
+                id: version.0,
+                version: version.1,
+                manifest: Some(manifest),
+                archive: Ok(archive),
+            });
+        }
+        Ok(())
+    }
+
+    /// Installs the turned-off versions of package `id` again from their archives. A
+    /// version that cannot be installed stays off, and the first error is returned.
+    fn turn_on_installed(&mut self, id: &str) -> Result<(), HostError> {
+        let (off, others): (Vec<Inactive>, Vec<Inactive>) = std::mem::take(&mut self.inactive)
+            .into_iter()
+            .partition(|inactive| inactive.id == id);
+        self.inactive = others;
+        let mut failed = None;
+        for inactive in off {
+            let access = self
+                .access
+                .get(&(inactive.id.clone(), inactive.version.clone()))
+                .cloned()
+                .unwrap_or_default();
+            let installed = match &inactive.archive {
+                Ok(archive) => self.install_archive(archive, &access, None).map(|_| ()),
+                Err(reason) => Err(HostError::Storage(reason.clone())),
+            };
+            if let Err(error) = installed {
+                failed.get_or_insert(error);
+                self.inactive.push(inactive);
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
     /// The packages of this host: the base nodes, the native service packages it was
-    /// started with, then every installed package, including those left out because
-    /// they are disabled. This is the data of a package manager view.
+    /// started with, then every installed package, including those that are turned off.
+    /// This is the data of a package manager view.
     pub fn packages(&self) -> impl Iterator<Item = PackageInfo<'_>> {
-        let built_in = self.built_in.iter().map(|package| PackageInfo {
+        let enabled =
+            |id: &str| !self.disabled.contains(id) && !self.options.disabled_packages.contains(id);
+        let switchable = |id: &str| !is_core(id) && !self.options.disabled_packages.contains(id);
+        let built_in = self.built_in.iter().map(move |package| PackageInfo {
             id: &package.id,
             version: &package.version,
             kind: package.kind,
             active: package.active,
-            enabled: !self.disabled.contains(&package.id),
+            enabled: enabled(&package.id),
+            switchable: switchable(&package.id),
             manifest: None,
             name: package.name.as_deref(),
             description: package.description.as_deref(),
             update: package.update.as_ref(),
         });
-        let inactive = self.inactive.iter().map(|(id, version)| PackageInfo {
-            id,
-            version,
+        let inactive = self.inactive.iter().map(move |inactive| PackageInfo {
+            id: &inactive.id,
+            version: &inactive.version,
             kind: PackageKind::Installed,
             active: false,
-            enabled: !self.disabled.contains(id),
-            manifest: None,
+            enabled: enabled(&inactive.id),
+            switchable: switchable(&inactive.id),
+            manifest: inactive.manifest.as_ref(),
             name: None,
             description: None,
             update: None,
@@ -286,14 +424,16 @@ impl Host {
             .store
             .packages()
             .filter(|record| record.state() == PackageState::Active)
-            .map(|record| {
+            .map(move |record| {
                 let manifest = record.manifest();
+                let id = manifest.key().id.as_str();
                 PackageInfo {
-                    id: manifest.key().id.as_str(),
+                    id,
                     version: manifest.key().version.as_str(),
                     kind: PackageKind::Installed,
                     active: true,
-                    enabled: !self.disabled.contains(manifest.key().id.as_str()),
+                    enabled: enabled(id),
+                    switchable: switchable(id),
                     manifest: Some(manifest),
                     name: None,
                     description: None,
@@ -307,13 +447,11 @@ impl Host {
     /// that uses them no longer opens; flows already running keep the code they
     /// started with. A package another installed package depends on is refused. With
     /// [`HostOptions::package_dir`] it is also removed from the directory, so it stays
-    /// removed when the host next starts. A saved package that was left out because it
-    /// is disabled is removed from the directory.
+    /// removed when the host next starts. A package that is turned off is removed too.
     pub fn uninstall(&mut self, key: &PackageKey) -> Result<(), HostError> {
-        let left_out = self
-            .inactive
-            .iter()
-            .position(|(id, version)| id == key.id.as_str() && version == key.version.as_str());
+        let left_out = self.inactive.iter().position(|inactive| {
+            inactive.id == key.id.as_str() && inactive.version == key.version.as_str()
+        });
         if let Some(index) = left_out {
             let _ = self.inactive.remove(index);
         } else {
@@ -325,9 +463,9 @@ impl Host {
                 package != key.id.as_str() || version != key.version.as_str()
             });
         }
-        let _ = self
-            .access
-            .remove(&(key.id.as_str().to_owned(), key.version.as_str().to_owned()));
+        let version = (key.id.as_str().to_owned(), key.version.as_str().to_owned());
+        let _ = self.access.remove(&version);
+        let _ = self.archives.remove(&version);
         if let Some(directory) = &self.options.package_dir {
             persist::forget(directory, key).map_err(HostError::Storage)?;
         }
@@ -520,14 +658,17 @@ impl Host {
                     .map_err(|e| install(&e))?;
             }
         }
+        // An instance of the same build installed before, such as before the package
+        // was turned off, is replaced; running flows hold their own.
+        self.guests
+            .retain(|old| guests.iter().all(|new| new.provider() != old.provider()));
         self.guests.extend(guests);
         self.graphs.extend(graphs);
         self.presentations.extend(described);
         self.replacements = replacements;
-        let _ = self.access.insert(
-            (key.id.as_str().to_owned(), key.version.as_str().to_owned()),
-            access.clone(),
-        );
+        let version = (key.id.as_str().to_owned(), key.version.as_str().to_owned());
+        let _ = self.access.insert(version.clone(), access.clone());
+        let _ = self.archives.insert(version, Arc::from(archive));
         Ok(key)
     }
 
@@ -565,6 +706,14 @@ impl Host {
 
 /// Refuses a grant the package does not ask for, so a package never holds more than
 /// it declared and the user approved.
+/// The manifest of an archive, read and verified without installing anything.
+pub(super) fn read_manifest(archive: &[u8]) -> Result<PackageManifest, HostError> {
+    let mut files = DiscardSink;
+    let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
+        .map_err(|error| HostError::Archive(error.to_string()))?;
+    Ok(verified.manifest().clone())
+}
+
 fn check_grants(given: Grants, asked: Grants) -> Result<(), HostError> {
     for ((name, given), (_, wanted)) in given.named().into_iter().zip(asked.named()) {
         if given && !wanted {

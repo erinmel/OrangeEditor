@@ -283,9 +283,10 @@ pub struct HostOptions {
     /// operations) are registered. Without them a document can use only the core
     /// language and what the application and installed packages provide.
     pub base_nodes: bool,
-    /// IDs of packages this host leaves out when it starts, in addition to the ones
-    /// [`Host::set_enabled`] saved in [`package_dir`](Self::package_dir): the base
-    /// nodes ([`BASE_PACKAGE`]), service packages and installed packages alike.
+    /// IDs of packages the application leaves out of this host: the base nodes
+    /// ([`BASE_PACKAGE`]), service packages and installed packages alike. They are
+    /// listed by [`Host::packages`] but cannot be turned on; the user's own choices are
+    /// made with [`Host::set_enabled`].
     pub disabled_packages: BTreeSet<String>,
     /// Where packages holding the `files` grant keep their data: each gets the
     /// directory `<plugin_data_dir>/<package ID>` and can name nothing outside it.
@@ -368,6 +369,8 @@ pub enum HostError {
     Install(String),
     #[error("the package could not be removed: {0}")]
     Uninstall(String),
+    #[error("the package could not be turned off or on: {0}")]
+    Switch(String),
     #[error("the document could not be read: {0}")]
     Document(String),
     #[error("the document has {} blocking diagnostics", .0.len())]
@@ -669,9 +672,17 @@ impl NodeInfo<'_> {
     }
 }
 /// ID under which [`Host::packages`] lists the bundled base nodes (arithmetic,
-/// comparison, text, collection and JSON operations) and [`Host::set_enabled`]
-/// switches them.
+/// comparison, text, collection and JSON operations). They are core: always on unless
+/// the application leaves them out.
 pub const BASE_PACKAGE: &str = "org.orange.base";
+
+/// The host's own clock nodes, registered with the base nodes and core like them.
+const CLOCK_PACKAGE: &str = "org.orange.clock";
+
+/// Whether package `id` is core: part of every host, never turned off by the user.
+fn is_core(id: &str) -> bool {
+    id == BASE_PACKAGE || id == CLOCK_PACKAGE
+}
 
 /// Where a package of a host comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,14 +703,18 @@ pub struct PackageInfo<'a> {
     pub id: &'a str,
     pub version: &'a str,
     pub kind: PackageKind,
-    /// Whether the package is in use now: its nodes are registered.
+    /// Whether the package is in use now: new documents can use its nodes.
     pub active: bool,
-    /// Whether a host started with the same options and directory uses the package.
-    /// It differs from `active` after [`Host::set_enabled`] until the next start.
+    /// Whether the package is turned on: neither turned off with [`Host::set_enabled`]
+    /// nor left out by the application ([`HostOptions::disabled_packages`]).
     pub enabled: bool,
-    /// The manifest of an active installed package: its `about` text, its `update`
-    /// source, its nodes and its digest. `None` for other kinds, and for an installed
-    /// package that is not active, whose archive this host did not read.
+    /// Whether [`Host::set_enabled`] can turn the package off and on. Core packages
+    /// ([`BASE_PACKAGE`] and the host's clock nodes) and packages the application
+    /// leaves out cannot be switched.
+    pub switchable: bool,
+    /// The manifest of an installed package: its `about` text, its `update` source,
+    /// its nodes and its digest. `None` for other kinds, and for an installed package
+    /// whose archive could not be read.
     pub manifest: Option<&'a PackageManifest>,
     name: Option<&'a str>,
     description: Option<&'a str>,
@@ -735,6 +750,22 @@ struct BuiltIn {
     name: Option<String>,
     description: Option<String>,
     update: Option<UpdateSource>,
+    /// A native package's provider, withdrawn from the registry while it is off; `None`
+    /// for the base nodes and for a package the application leaves out.
+    provider: Option<ProviderDescriptor>,
+    /// A native package's connection adapters, by kind.
+    adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
+}
+
+/// An installed package that is turned off: its files and grants are kept, and its
+/// archive installs it again when it is turned on.
+#[derive(Debug)]
+struct Inactive {
+    id: String,
+    version: String,
+    manifest: Option<PackageManifest>,
+    /// The archive bytes, or why they could not be read.
+    archive: Result<Arc<[u8]>, String>,
 }
 
 /// `set-variable` as "Set variable".
@@ -772,10 +803,13 @@ pub struct Host {
     access: BTreeMap<(String, String), PackageAccess>,
     /// The base nodes and each service package the application was started with.
     built_in: Vec<BuiltIn>,
-    /// IDs of the packages a host started like this one leaves out.
+    /// IDs of the packages the user turned off, saved in the package directory.
     disabled: BTreeSet<String>,
-    /// Saved installed packages left out at start because they were disabled.
-    inactive: Vec<(String, String)>,
+    /// Installed packages that are turned off or left out by the application.
+    inactive: Vec<Inactive>,
+    /// The archive of each active installed package, by ID and version: what turning
+    /// it on again after it was turned off installs.
+    archives: BTreeMap<(String, String), Arc<[u8]>>,
     /// The shared variables, in declaration order.
     shared_variables: Vec<VariableId>,
     space: Arc<flow::Space>,
@@ -973,15 +1007,19 @@ impl Host {
             Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
             None => Vec::new(),
         };
-        let mut disabled = options.disabled_packages.clone();
+        // What the user turned off. Core packages are always on, whatever an older
+        // list says.
+        let mut disabled = BTreeSet::new();
         if let Some(directory) = &options.package_dir {
             disabled.extend(persist::disabled(directory).map_err(HostError::Storage)?);
         }
+        disabled.retain(|id| !is_core(id));
+        let left_out = &options.disabled_packages;
         let mut builder = RegistryBuilder::core(origin);
-        if let Some(types) = package_types(&packages, &disabled).map_err(HostError::Start)? {
+        if let Some(types) = package_types(&packages, left_out).map_err(HostError::Start)? {
             builder = builder.types(Arc::new(types));
         }
-        let base_nodes = options.base_nodes && !disabled.contains(BASE_PACKAGE);
+        let base_nodes = options.base_nodes && !left_out.contains(BASE_PACKAGE);
         if base_nodes {
             builder = math.register(builder).map_err(|e| start(&e))?;
         }
@@ -997,28 +1035,40 @@ impl Host {
                     .to_owned(),
             ),
             update: None,
+            provider: None,
+            adapters: Vec::new(),
         }];
-        built_in.extend(packages.iter().map(|package| {
-            BuiltIn {
-                id: package.id().to_owned(),
-                version: package.version().to_owned(),
-                kind: PackageKind::Native,
-                active: !disabled.contains(package.id()),
-                name: package.name().map(str::to_owned),
-                description: package.description().map(str::to_owned),
-                // A source that breaks the manifest rules is not offered.
-                update: package
-                    .update_source()
-                    .and_then(|(feed, key)| UpdateSource::new(feed, None, key).ok()),
-            }
-        }));
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
         let mut replacements = Replacements::new();
         // Each package's own text in other languages, beside the host's.
         let mut catalogs = Catalogs::built_in().clone();
         for package in &packages {
-            if disabled.contains(package.id()) {
+            let left_out = left_out.contains(package.id());
+            // A package the user turned off is registered without its provider, so
+            // turning it on publishes the provider again.
+            let on = !left_out && !disabled.contains(package.id());
+            let mut native = BuiltIn {
+                id: package.id().to_owned(),
+                version: package.version().to_owned(),
+                kind: PackageKind::Native,
+                active: on,
+                name: package.name().map(str::to_owned),
+                description: package.description().map(str::to_owned),
+                // A source that breaks the manifest rules is not offered.
+                update: package
+                    .update_source()
+                    .and_then(|(feed, key)| UpdateSource::new(feed, None, key).ok()),
+                provider: None,
+                adapters: package
+                    .adapters()
+                    .iter()
+                    .map(|(kind, adapter)| (kind.clone(), Arc::clone(adapter)))
+                    .collect(),
+            };
+            if left_out {
+                native.adapters.clear();
+                built_in.push(native);
                 continue;
             }
             presentations.extend(package.presentations().iter().cloned());
@@ -1056,15 +1106,21 @@ impl Host {
                 let _ = provider
                     .specializations
                     .insert(definition.definition.clone(), vec![Default::default()]);
-                builder = builder
-                    .definition(definition.clone())
-                    .new_binding_default(definition.definition.clone(), key.clone());
+                builder = builder.definition(definition.clone());
+                if on {
+                    builder =
+                        builder.new_binding_default(definition.definition.clone(), key.clone());
+                }
             }
-            builder = builder.provider(provider);
+            if on {
+                builder = builder.provider(provider.clone());
+                for (kind, adapter) in &native.adapters {
+                    let _ = adapters.insert(kind.clone(), Arc::clone(adapter));
+                }
+            }
+            native.provider = Some(provider);
+            built_in.push(native);
             services.add(&key, package);
-            for (kind, adapter) in package.adapters() {
-                let _ = adapters.insert(kind.clone(), Arc::clone(adapter));
-            }
         }
         let base = builder.build().map_err(|e| start(&e))?;
         // A newly placed node needs a provider to bind to. Built-in nodes that have
@@ -1122,6 +1178,7 @@ impl Host {
             built_in,
             disabled,
             inactive: Vec::new(),
+            archives: BTreeMap::new(),
             shared_variables: Vec::new(),
             space: Arc::default(),
             pool,
@@ -1139,9 +1196,22 @@ impl Host {
         let mut host = host;
         for package in saved {
             if let Some((id, version)) = &package.key
-                && host.disabled.contains(id)
+                && (host.disabled.contains(id) || host.options.disabled_packages.contains(id))
             {
-                host.inactive.push((id.clone(), version.clone()));
+                let archive = package.archive.map(Arc::<[u8]>::from);
+                let manifest = archive
+                    .as_ref()
+                    .ok()
+                    .and_then(|archive| packages::read_manifest(archive).ok());
+                let _ = host
+                    .access
+                    .insert((id.clone(), version.clone()), package.access);
+                host.inactive.push(Inactive {
+                    id: id.clone(),
+                    version: version.clone(),
+                    manifest,
+                    archive,
+                });
                 continue;
             }
             let installed = package
