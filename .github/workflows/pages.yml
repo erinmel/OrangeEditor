@@ -10,6 +10,9 @@ on:
       - '.cargo/config.toml'
       - 'rust-toolchain.toml'
       - 'app/crates/dev/orange-docs-web/**'
+      - 'app/crates/apps/orange-cli/**'
+      - 'app/crates/apps/orange-desktop/examples/embed_editor.rs'
+      - 'app/crates/platform/orange-host/**'
       - 'app/crates/platform/orange-ui-controls/**'
       - '.github/workflows/pages.yml'
   push:
@@ -58,6 +61,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --locked -p orange-host -p orange-editor-ui -p orange-ui-controls -p orange-sdk
+      - name: Check the embedding example
+        run: cargo check --locked -p orange-desktop --example embed_editor
       - name: Build and check documentation
         env:
           PAGES_URL: ${{ steps.pages.outputs.base_url }}

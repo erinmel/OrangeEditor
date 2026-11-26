@@ -67,6 +67,23 @@ code { font: .9em/1.55 ui-monospace, Consolas, monospace; overflow-wrap: anywher
 p code, li code, td code { background: var(--soft); padding: .08em .25em; border-radius: .2rem; }
 pre { overflow: auto; background: var(--soft); border: 1px solid var(--line); padding: .9rem 1rem; border-radius: .6rem; }
 table { width: 100%; border-collapse: collapse; }
+.table-scroll { overflow-x: auto; }
+.table-scroll th[scope="row"] { min-width: 6rem; vertical-align: top; }
+.table-scroll td { vertical-align: top; }
+.table-scroll small { display: block; color: var(--muted); }
+.node-preview { max-width: 26rem; margin: 1.25rem 0; }
+.node-preview figcaption { margin-top: .45rem; color: var(--muted); font-size: .875rem; }
+.node-card { border: 1px solid var(--line); border-radius: .65rem; overflow: hidden; background: var(--panel); }
+.node-card > strong { display: block; background: var(--soft); padding: .55rem .8rem; border-bottom: 1px solid var(--line); }
+.node-port-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; padding: .7rem .8rem; }
+.node-port-columns ul, .example-nodes { list-style: none; padding: 0; }
+.node-port-columns li { overflow-wrap: anywhere; }
+.node-port-columns li[class$="-port"]::before { display: inline-block; width: 1.05rem; color: var(--accent); }
+.exec-port::before { content: '▶'; }
+.value-port::before { content: '●'; }
+.dim { color: var(--muted); }
+.example-nodes { display: flex; flex-wrap: wrap; gap: .4rem .9rem; }
+.example-nodes li { margin: 0; }
 th, td { text-align: left; padding: .45rem .35rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 dt { font-weight: 700; }
 dd { margin: .1rem 0 .7rem; color: var(--muted); }

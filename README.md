@@ -8,7 +8,7 @@ Packages and native plugins add nodes, triggers and connection kinds without
 rebuilding the application.
 
 Start with the [OrangeEditor documentation](https://erinmel.github.io/OrangeEditor/)
-for the editor, node reference, package authoring, embedding and SDK.
+for the editor, node reference, example graphs, shared controls, embedding and SDK.
 
 It is pre-1.0: the core, editor and base services work; see
 [the overview](docs/00-overview.md) for what is done and what is missing.

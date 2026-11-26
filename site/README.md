@@ -4,7 +4,9 @@ The public guides live in `site/pages/`. The builder renders them as static
 HTML, generates the node reference from `orange nodes --json`, and includes
 the public API from Cargo Rustdoc. The documents listed in `site/references.mjs`
 are rendered directly from `docs/` by the pinned Rust toolchain's Markdown
-renderer. Edit a contract in `docs/` and update any guide affected by the change.
+renderer. Node diagrams use `preview_ports` from the host's fresh authoring
+view. The configuration-specific notes and links to checked-in graphs live in
+`site/node-reference.mjs`. Edit a contract in `docs/` and update any guide affected by the change.
 
 ## Build and check locally
 

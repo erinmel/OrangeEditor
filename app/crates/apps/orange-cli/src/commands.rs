@@ -243,8 +243,48 @@ pub(crate) fn packages(host: &Host) {
     }
 }
 
+/// Project a fresh card through the same authoring view the editor uses.
+fn preview_ports(host: &Host, document: &str, definition: &str) -> Option<Vec<serde_json::Value>> {
+    let mut draft = host.draft(document).ok()?;
+    let id = host.add_node(&mut draft, definition, [0.0, 0.0]).ok()?;
+    let view = host.draft_authoring_view_in(&draft, "en").ok()?;
+    let node = view
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == id && node.definition == definition)?;
+    let details = view
+        .port_details
+        .get(&id)
+        .map(|ports| ports.as_ref())
+        .unwrap_or_default();
+    let failures = view.failure_routes.get(&id).copied().unwrap_or_default();
+    Some(
+        node.ports
+            .iter()
+            .map(|port| {
+                let help = details
+                    .iter()
+                    .find(|detail| detail.id == port.id && detail.input == port.input);
+                serde_json::json!({
+                    "id": port.id,
+                    "input": port.input,
+                    "execution": port.exec,
+                    "type": port.ty,
+                    "label": port.label,
+                    "default": port.default,
+                    "description": help.and_then(|detail| detail.description.as_deref()),
+                    "optional": help.is_some_and(|detail| detail.optional),
+                    "implicit_failure": failures.contains(&port.id),
+                })
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn nodes(host: &Host, json_output: bool) {
     if json_output {
+        let preview_document = orange_host::new_document().ok();
         let nodes: Vec<_> = host.nodes().map(|info| {
             let def = info.definition;
             serde_json::json!({
@@ -261,6 +301,7 @@ pub(crate) fn nodes(host: &Host, json_output: bool) {
                     "es": host.catalogs().aliases("es", def.definition.id.as_str()),
                 },
                 "ports": info.declared_ports(),
+                "preview_ports": preview_document.as_deref().and_then(|document| preview_ports(host, document, def.definition.id.as_str())),
                 "config_schema": def.config_schema,
             })
         }).collect();

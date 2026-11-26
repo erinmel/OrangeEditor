@@ -22,11 +22,57 @@ editor.ui_with_layout(ui, &amp;mut host, |editor, ui, host| {
         .show(ui, |ui| editor.canvas_panel(ui, host));
 });</code></pre>
 <p>The editor also provides <code>log_panel</code>. After rendering, consume <code>Editor::take_request</code> and handle the corresponding file action in your app. Integrate a repaint wakeup or a periodic repaint while a flow is running so updates appear even when the user is idle.</p>
-<h2 id="customize-appearance">Customize theme, commands, and text</h2>
-<ul>
-<li><strong>Theme:</strong> supply your own egui styles or call <code>apply_theme</code> for the desktop defaults.</li>
-<li><strong>Icons:</strong> register <code>icons::set_command_painter</code> on your egui context. Draw supported commands in the provided rectangle and return <code>false</code> to use the stock drawing for other icons.</li>
-<li><strong>Text:</strong> register Fluent overrides through <code>i18n::add_application_catalogs</code> before the editor resolves its first message. Node and package IDs stay stable across languages.</li>
-<li><strong>Widgets:</strong> use <code>orange-ui-controls</code> for graph-independent widgets such as knobs and segmented controls. Your app supplies localized text and state.</li>
-</ul>
-<p>See the runnable <a href="@source/app/crates/apps/orange-editor-ui/tests/embedding.rs">embedding test</a>, the <a href="../api/orange_editor_ui/">editor UI API</a>, and <a href="../api/orange_ui_controls/">shared controls API</a>.</p>
+<h2 id="canvas-only">Keep the canvas and bring your own app chrome</h2>
+<p>Start with one <code>Host</code>, one <code>Editor</code>, and the host's event receiver. Open a graph into the editor. Draw your app navigation, then use the editor's layout hook for the canvas and any OrangeEditor panels you choose.</p>
+<pre><code>editor.poll_events(&amp;events);
+editor.ui_with_layout(ui, &amp;mut host, |editor, ui, host| {
+    egui::CentralPanel::default().show(ui, |ui| {
+        editor.canvas_panel(ui, host);
+    });
+});</code></pre>
+<p>Omit the stock toolbar, workspace bar, sidebar, and log by leaving out those panel calls. Add <code>right_panel</code> back for the inspector. If you draw your own toolbar, use <code>Editor::ask</code> for host-owned file actions and consume <code>Editor::take_request</code> after the frame. For example, an app can handle <code>FileRequest::Open</code> by reading a document from its own store and passing the JSON to <code>Editor::open</code>.</p>
+<p>The runnable example uses a branded header, optional inspector, and app-owned New, Open, and Save As actions. From the repository root:</p>
+<pre><code>cargo run --locked -p orange-desktop --example embed_editor</code></pre>
+<p>Pass a path to a <code>.ttf</code> or <code>.otf</code> file after <code>--</code> to try a custom typeface. <a href="@source/app/crates/apps/orange-desktop/examples/embed_editor.rs">Complete example source</a></p>
+<h2 id="customize-appearance">Colors, spacing, and style</h2>
+<p>Set the application’s egui style before the first frame. The editor uses the context for panel colors, widget states, selection, spacing and typography. Calling <code>orange_editor_ui::apply_theme</code> installs the default desktop styles. Apply it first if you want to start from those styles.</p>
+<pre><code>let theme = egui::Theme::Dark;
+ctx.set_theme(theme);
+let mut style = (*ctx.style_of(theme)).clone();
+style.visuals.panel_fill = egui::Color32::from_rgb(20, 31, 45);
+style.visuals.extreme_bg_color = egui::Color32::from_rgb(13, 22, 33);
+style.visuals.selection.bg_fill = egui::Color32::from_rgb(32, 102, 110);
+style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+ctx.set_style_of(theme, style);</code></pre>
+<p>Configure both <code>egui::Theme::Light</code> and <code>egui::Theme::Dark</code> when your app supports both. For shared controls that accept a token set, use <code>UiTokens::for_surface</code> to adapt to your app’s visuals. For an explicit shared palette, use <code>UiTokens::install</code> with <code>ThemeMode::Custom</code> and your density. See <a href="../controls/">Controls reference</a> and <a href="../api/orange_ui_controls/theme/struct.Theme.html">Theme fields</a>.</p>
+<h2 id="fonts-and-formatting">Fonts and value formatting</h2>
+<p>Install font data once with <code>ctx.set_fonts</code>. Insert your font at the front of a family and retain the defaults as fallbacks. Use <code>Style::text_styles</code> for roles such as body, heading and monospace. Provide glyph coverage for the languages your app offers.</p>
+<pre><code>let mut fonts = egui::FontDefinitions::default();
+fonts.font_data.insert(
+    "brand".into(),
+    std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
+);
+if let Some(family) = fonts.families.get_mut(&amp;egui::FontFamily::Proportional) {
+    family.insert(0, "brand".into());
+}
+ctx.set_fonts(fonts);</code></pre>
+<p>Format values in your own panels with ordinary Rust formatting, for example <code>format!("{level:.1} dB")</code>. Retain the numeric value in state. Node authors can specify control hints through <code>orange_sdk::Control</code> for fields that need a unit, decimal precision or a specific widget. Use the host's typed authoring methods to make graph edits. <a href="../api/orange_sdk/struct.Control.html">Control hints API</a></p>
+<pre><code>let definition = definition.input_control(
+    "threshold",
+    orange_sdk::Control::slider().range(-60.0, 0.0).unit("dB").precision(1),
+);</code></pre>
+<p>Use this hint on a numeric input named <code>threshold</code>. The node definition still specifies the actual type and valid values.</p>
+<h2 id="icons-and-labels">Icons and labels</h2>
+<p>Register <code>icons::set_command_painter</code> on the context. Draw the supplied command inside the supplied rectangle using the current foreground color. Return <code>false</code> to let OrangeEditor draw its default icon for that command.</p>
+<pre><code>icons::set_command_painter(ctx, Some(std::sync::Arc::new(
+    |painter, rect, icon, color| {
+        if icon != icons::PROPERTIES {
+            return false;
+        }
+        let radius = rect.width().min(rect.height()) * 0.25;
+        painter.circle_stroke(rect.center(), radius, (1.5, color));
+        true
+    },
+)));</code></pre>
+<p>Use <code>i18n::add_application_catalogs</code> before the first editor frame to override labels. Use <code>Editor::set_language</code> to select the locale. Keep file extensions, graph IDs, port IDs, and stored values independent of translated labels.</p>
+<p><a href="../api/orange_editor_ui/">Editor API</a> · <a href="../api/orange_ui_controls/">Shared controls API</a> · <a href="../sdk/">SDK reference</a></p>

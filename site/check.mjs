@@ -21,7 +21,7 @@ for (const entry of search) {
   const [path] = entry.path.split('#');
   paths.add(path);
 }
-assert.equal(paths.size, catalogue.nodes.length + 9 + references.length);
+assert.equal(paths.size, catalogue.nodes.length + 11 + references.length);
 const egui = await read('egui/index.html');
 const hasDemo = egui.includes('id="controls-demo"');
 if (process.argv.includes('--require-demo')) assert.ok(hasDemo, 'The Pages artifact must include the live demo');
@@ -78,6 +78,9 @@ for (const item of search) {
 for (const node of catalogue.nodes) {
   const route = 'nodes/' + node.id + '/' + node.version + '/';
   assert.ok(paths.has(route), 'Missing node page ' + node.id);
+  const html = await read(route + 'index.html');
+  assert.match(html, /class="node-card"/);
+  assert.match(html, /<h2 id="ports">Ports<\/h2>/);
   assert.ok(search.some(item => item.path === route && item.title === node.name.en && item.alias === node.name.es));
 }
 assert.ok((await read('llms.txt')).includes(new URL('sdk/', base).href));
@@ -86,6 +89,11 @@ assert.equal(searchIndex(index, 'puénte-salida')[0]?.path, 'nodes/core/bridge-o
 assert.equal(searchIndex(index, 'core/emit@1')[0]?.path, 'nodes/core/emit/1/');
 assert.equal(searchIndex(index, 'embed and customize the egui editor')[0]?.path, 'egui/');
 assert.deepEqual(searchIndex(index, '<>{}'), []);
+const branchPage = await read('nodes/core/branch/1/index.html');
+assert.match(branchPage, /Boolean that chooses the branch/);
+assert.match(branchPage, /examples\/#http-with-failure-handling/);
+const trigger = catalogue.nodes.find(node => node.id === 'core/on-manual');
+assert.ok(trigger?.preview_ports?.some(port => port.id === 'then' && port.execution));
 const branch = catalogue.nodes.find(node => node.id === 'core/branch');
 assert.ok(branch?.purpose.en && branch?.purpose.es && Array.isArray(branch.aliases.en));
 console.log('Verified ' + paths.size + ' static pages, ' + catalogue.nodes.length + ' registry identities, local links, and search anchors.');

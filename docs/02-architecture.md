@@ -27,7 +27,9 @@ used when the painter returns `false`. To override editor text, register Fluent
 messages with `i18n::add_application_catalogs` before any editor text is read.
 Packages can supply their own node text and the host owns file dialogs through
 `Editor::take_request`. The [embedding test](../app/crates/apps/orange-editor-ui/tests/embedding.rs)
-exercises the public layout, theme, icon and text hooks.
+exercises the public layout, theme, icon and text hooks. The runnable
+[embedded editor](../app/crates/apps/orange-desktop/examples/embed_editor.rs)
+uses the canvas and an optional inspector inside its own app chrome.
 
 `orange-ui-controls` provides reusable egui components and depends on no graph
 or host crate in product builds. Hosts own component state and localized labels.

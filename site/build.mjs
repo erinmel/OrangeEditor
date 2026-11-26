@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
 import {compileDemo, demoAssets} from './live-demo.mjs';
 import {loadReferences} from './references.mjs';
+import {loadNodeExamples, renderGraphExamples, renderNodeReference} from './node-reference.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const site = join(root, 'site');
@@ -27,6 +28,7 @@ const {target_directory: target} = JSON.parse(execFileSync('cargo',
   ['metadata', '--format-version=1', '--no-deps', '--locked'], {cwd: root, encoding: 'utf8'}));
 const rustdoc = resolve(values.rustdoc ?? join(target, 'doc'));
 const contracts = await loadReferences(root, target, source, tree);
+const examples = await loadNodeExamples(root);
 const demo = values['wasm-bindgen'] ? await compileDemo(root, target, values['wasm-bindgen']) : null;
 const apiCrates = ['orange_host', 'orange_editor_ui', 'orange_ui_controls', 'orange_sdk'];
 for (const crate of apiCrates) await stat(join(rustdoc, crate, 'index.html'));
@@ -43,6 +45,8 @@ const pages = [
   ['getting-started', 'Getting started', 'Open the desktop editor, run your first graph, and try the terminal runner.'],
   ['editor', 'Use the editor', 'Place and wire typed nodes, configure variables and connections, and debug a flow.'],
   ['nodes', 'Node reference', 'Find nodes by English or Spanish name, stable ID, provider, or port.'],
+  ['examples', 'Example graphs', 'Run real graphs and follow the nodes that make them work.'],
+  ['controls', 'Controls reference', 'Choose, style, and use the shared OrangeEditor egui controls.'],
   ['custom-nodes', 'Make custom nodes', 'Extract graph functions, implement Wasm nodes, or register trusted Rust services.'],
   ['packages', 'Create packages', 'Export graph functions and pack, install, and update .orangeplug archives.'],
   ['embedding', 'Embed the runtime', 'Use orange-host to validate, execute, and observe graphs in a Rust application.'],
@@ -121,17 +125,6 @@ async function render(path, title, description, body, selected, authored = false
 `);
 }
 
-function nodeTable(ports) {
-  if (!ports) return '<p>The CLI does not export a fixed declaration for this node. Inspect its configured endpoints in the editor.</p>';
-  if (!ports.length) return '<p>This definition declares no static ports.</p>';
-  const rows = ports.map(port => '<tr><td><code>' + escape(port.port_id) + '</code></td><td>' +
-    escape(port.direction) + '</td><td>' + escape(port.kind) + '</td><td>' +
-    (port.type ? '<code>' + escape(typeof port.type === 'string' ? port.type : JSON.stringify(port.type)) + '</code>' : '—') +
-    '</td><td>' + escape(port.available_on?.join(', ') || '—') + '</td></tr>').join('\n');
-  return '<table><thead><tr><th>Port ID</th><th>Direction</th><th>Kind</th><th>Type</th><th>Available on</th></tr></thead><tbody>' +
-    rows + '</tbody></table>';
-}
-
 const groups = new Map();
 for (const node of sorted) {
   if (!/^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9.-]*$/.test(node.id) ||
@@ -153,7 +146,7 @@ for (const [slug, title, description] of pages) {
   let body;
   if (slug === 'nodes') {
     body = '<p>The ' + sorted.length + ' definitions below come from the CLI’s active default registry. ' +
-      'Node pages show static contracts. Graph-dependent ports, inferred types, and visual card labels can differ. ' +
+      'Each node page explains its behavior and shows the ports from its fresh authoring view. Configuration and inferred types can change the card. ' +
       'See <a href="../nodes.json">the full JSON export</a>.</p>';
     for (const [category, members] of [...groups].sort(([a], [b]) => compare(a, b))) {
       const categoryId = category.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -161,6 +154,8 @@ for (const [slug, title, description] of pages) {
         members.map(node => '<li><a href="../' + nodePath(node) + '">' + escape(node.name.en) + '</a>' +
           '<span lang="es">' + escape(node.name.es) + '</span></li>').join('') + '</ul>';
     }
+  } else if (slug === 'examples') {
+    body = renderGraphExamples(examples, sorted, source, escape, nodePath);
   } else {
     body = await readFile(join(site, 'pages', (slug || 'index') + '.html'), 'utf8');
     const back = slug ? '../' : './';
@@ -198,13 +193,15 @@ for (const node of sorted) {
     '<dt>Category</dt><dd>' + escape(node.category.en) +
     '</dd><dt>Execution kind</dt><dd>' + escape(node.kind) +
     '</dd><dt>Provider</dt><dd>' + escape(node.provider ?? 'Core') + '</dd></dl>' +
-    '<h2 id="ports">Declared ports</h2>' + nodeTable(node.ports) +
+    renderNodeReference(node, examples, escape) +
     (node.config_schema ? '<h2 id="configuration">Configuration schema</h2><pre><code>' +
       escape(JSON.stringify(node.config_schema, null, 2)) + '</code></pre>' : '');
   await render(path, node.name.en, description, body, 'nodes');
   search.push({path, title: node.name.en, description, alias: node.name.es,
     terms: [node.category.en, node.category.es, node.provider, node.purpose.es,
-      ...node.aliases.en, ...node.aliases.es, ...(node.ports ?? []).map(port =>
+      ...node.aliases.en, ...node.aliases.es,
+      ...(node.preview_ports ?? []).flatMap(port => [port.id, port.label, port.description]),
+      ...(node.ports ?? []).map(port =>
       port.port_id + ' ' + (port.type ? JSON.stringify(port.type) : ''))].filter(Boolean).join(' ')});
 }
 
@@ -231,6 +228,10 @@ await cp(rustdoc, join(output, 'api'), {recursive: true, filter: async file => {
   const info = await lstat(file);
   return info.isDirectory() || (info.isFile() && /\.(css|html|js|json|png|svg|txt|woff2?)$/.test(file));
 }});
+await mkdir(join(output, 'examples', 'graphs'), {recursive: true});
+for (const example of examples) {
+  await copyFile(join(root, example.path), join(output, 'examples', 'graphs', example.slug + '.json'));
+}
 await write('.nojekyll', '');
 await write('nodes.json', JSON.stringify({revision, nodes}));
 await write('search.json', JSON.stringify(search));
