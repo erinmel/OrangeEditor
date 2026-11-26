@@ -30,7 +30,47 @@ pub(crate) enum Signal {
     /// The chords that now fire anywhere. Others fire only while the editor has focus.
     Active(BTreeSet<Chord>),
     /// Something the person should read in the Log.
-    Problem(String),
+    Problem(Problem),
+}
+
+/// Why keys set to Anywhere work only while the editor has focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Problem {
+    /// This system offers no way to take keys from other applications.
+    Unsupported,
+    /// The system or another application already holds this chord.
+    Taken(Chord),
+    /// The desktop's shortcuts portal did not allow this chord.
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "only the Wayland portal answers per chord")
+    )]
+    Refused(Chord),
+    /// The desktop's shortcuts portal allowed none of the chords.
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "only the Wayland portal answers per chord")
+    )]
+    RefusedAll,
+}
+
+impl Problem {
+    /// The Log text, in the editor's language.
+    pub(crate) fn text(&self) -> String {
+        use orange_editor_ui::i18n::{t, tf};
+        match self {
+            Self::Unsupported => t("desktop-keys-unsupported").to_owned(),
+            Self::Taken(chord) => {
+                let key = caption(chord);
+                tf("desktop-key-taken", &[("key", key.as_str().into())])
+            }
+            Self::Refused(chord) => {
+                let key = caption(chord);
+                tf("desktop-key-refused", &[("key", key.as_str().into())])
+            }
+            Self::RefusedAll => t("desktop-keys-refused").to_owned(),
+        }
+    }
 }
 
 pub(crate) type Sink = Arc<dyn Fn(Signal) + Send + Sync>;
@@ -302,7 +342,7 @@ impl std::fmt::Debug for Backend {
 impl Backend {
     /// Starts the backend for this session. Call it on the thread that runs the window's
     /// event loop.
-    pub(crate) fn start(sink: Sink) -> Result<Self, String> {
+    pub(crate) fn start(sink: Sink) -> Result<Self, Problem> {
         #[cfg(target_os = "linux")]
         if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()) {
             return Ok(Self::Portal(portal::spawn(sink)));
@@ -333,9 +373,9 @@ pub(crate) struct Hotkeys {
 }
 
 impl Hotkeys {
-    fn start(sink: Sink) -> Result<Self, String> {
-        let manager = global_hotkey::GlobalHotKeyManager::new()
-            .map_err(|error| format!("Keys cannot be used anywhere on this system: {error}"))?;
+    fn start(sink: Sink) -> Result<Self, Problem> {
+        let manager =
+            global_hotkey::GlobalHotKeyManager::new().map_err(|_| Problem::Unsupported)?;
         let chords = Arc::new(Mutex::new(BTreeMap::<u32, Chord>::new()));
         let (lookup, events) = (Arc::clone(&chords), Arc::clone(&sink));
         // The handler is process-wide and set once; the desktop starts one backend.
@@ -395,10 +435,7 @@ impl Hotkeys {
                         .insert(hotkey.id(), *chord);
                     let _ = self.registered.insert(*chord, hotkey);
                 }
-                Err(_) => (self.sink)(Signal::Problem(format!(
-                    "{} is taken by the system or another application, so it works only while the editor has focus.",
-                    caption(chord)
-                ))),
+                Err(_) => (self.sink)(Signal::Problem(Problem::Taken(*chord))),
             }
         }
         (self.sink)(Signal::Active(self.registered.keys().copied().collect()));
@@ -422,8 +459,6 @@ mod portal {
     use futures_lite::StreamExt as _;
     use std::collections::{BTreeMap, BTreeSet};
 
-    const UNAVAILABLE: &str = "This desktop offers no global shortcuts portal, so keys set to Anywhere work only while the editor has focus.";
-
     pub(super) fn spawn(sink: Sink) -> async_channel::Sender<Vec<Chord>> {
         let (requests, wanted) = async_channel::unbounded();
         let started = std::thread::Builder::new()
@@ -433,7 +468,7 @@ mod portal {
                 move || futures_lite::future::block_on(run(&wanted, &sink))
             });
         if started.is_err() {
-            sink(Signal::Problem(UNAVAILABLE.into()));
+            sink(Signal::Problem(Problem::Unsupported));
         }
         requests
     }
@@ -447,7 +482,7 @@ mod portal {
     async fn refuse_all(wanted: &async_channel::Receiver<Vec<Chord>>, sink: &Sink) {
         while let Ok(chords) = wanted.recv().await {
             if !chords.is_empty() {
-                sink(Signal::Problem(UNAVAILABLE.into()));
+                sink(Signal::Problem(Problem::Unsupported));
             }
             sink(Signal::Active(BTreeSet::new()));
         }
@@ -517,7 +552,7 @@ mod portal {
                         .collect();
                     let Ok(created) = portal.create_session(CreateSessionOptions::default()).await
                     else {
-                        sink(Signal::Problem(UNAVAILABLE.into()));
+                        sink(Signal::Problem(Problem::Unsupported));
                         sink(Signal::Active(BTreeSet::new()));
                         continue;
                     };
@@ -534,17 +569,12 @@ mod portal {
                                 .filter_map(|shortcut| by_id.get(shortcut.id()).copied())
                                 .collect();
                             for chord in chords.iter().filter(|chord| !active.contains(chord)) {
-                                sink(Signal::Problem(format!(
-                                    "The desktop did not allow {} anywhere, so it works only while the editor has focus.",
-                                    caption(chord)
-                                )));
+                                sink(Signal::Problem(Problem::Refused(*chord)));
                             }
                             sink(Signal::Active(active));
                         }
                         Err(_) => {
-                            sink(Signal::Problem(
-                                "The desktop did not allow the keys set to Anywhere, so they work only while the editor has focus.".into(),
-                            ));
+                            sink(Signal::Problem(Problem::RefusedAll));
                             sink(Signal::Active(BTreeSet::new()));
                         }
                     }
@@ -609,6 +639,29 @@ mod tests {
                 assert!(xdg_trigger(&chord(*key, true, false)).is_some(), "{name}");
             }
         }
+    }
+
+    #[test]
+    fn every_problem_reads_from_the_catalogue_in_each_language() {
+        let _ = orange_editor_ui::i18n::add_application_catalogs(crate::CATALOGS);
+        let f9 = chord(Key::F9, false, false);
+        let problems = [
+            Problem::Unsupported,
+            Problem::Taken(f9),
+            Problem::Refused(f9),
+            Problem::RefusedAll,
+        ];
+        for language in ["en", "es", "ja"] {
+            orange_editor_ui::i18n::set_language(language);
+            for problem in &problems {
+                let text = problem.text();
+                assert!(!text.starts_with("desktop-"), "{language}: {problem:?}");
+                if matches!(problem, Problem::Taken(_) | Problem::Refused(_)) {
+                    assert!(text.contains(&caption(&f9)), "{language}: {text}");
+                }
+            }
+        }
+        orange_editor_ui::i18n::set_language("en");
     }
 
     #[test]

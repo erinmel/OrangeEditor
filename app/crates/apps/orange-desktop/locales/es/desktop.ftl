@@ -31,3 +31,8 @@ desktop-native-allowed = Con acceso total:
 desktop-native-revoke = Revocar
 desktop-native-failed = { $file } tenía permiso pero no se cargó: { $error }
 desktop-native-restart = Los cambios se aplican la próxima vez que se inicie OrangeEditor.
+
+desktop-keys-unsupported = Este sistema no puede tomar teclas de otras aplicaciones, así que las teclas en cualquier lugar solo funcionan mientras el editor tiene el foco.
+desktop-key-taken = { $key } ya lo usa el sistema u otra aplicación, así que solo funciona mientras el editor tiene el foco.
+desktop-key-refused = El escritorio no permitió { $key } en cualquier lugar, así que solo funciona mientras el editor tiene el foco.
+desktop-keys-refused = El escritorio no permitió las teclas en cualquier lugar, así que solo funcionan mientras el editor tiene el foco.

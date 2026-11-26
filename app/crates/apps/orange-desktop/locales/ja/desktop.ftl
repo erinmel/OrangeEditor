@@ -27,3 +27,8 @@ desktop-native-allowed = フルアクセスを許可済み
 desktop-native-revoke = 許可を取り消す
 desktop-native-failed = { $file } は許可されましたが、読み込めませんでした。{ $error }
 desktop-native-restart = 変更は OrangeEditor の次回起動時に反映されます。
+
+desktop-keys-unsupported = このシステムでは他のアプリからキーを受け取れないため、グローバル入力のキーはエディターにフォーカスがあるときだけ動作します。
+desktop-key-taken = { $key } はシステムまたは他のアプリが使用中のため、エディターにフォーカスがあるときだけ動作します。
+desktop-key-refused = デスクトップが { $key } のグローバル入力を許可しなかったため、エディターにフォーカスがあるときだけ動作します。
+desktop-keys-refused = デスクトップがグローバル入力のキーを許可しなかったため、エディターにフォーカスがあるときだけ動作します。

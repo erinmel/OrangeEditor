@@ -171,7 +171,7 @@ impl eframe::App for Desktop {
         });
         for problem in &problems {
             self.editor
-                .note(orange_editor_ui::NoteLevel::Warning, problem);
+                .note(orange_editor_ui::NoteLevel::Warning, &problem.text());
         }
         // Flows report on their own threads: look again shortly while one runs.
         if self.editor.is_running() {

@@ -3,7 +3,7 @@
 mod global;
 
 use eframe::egui::{Event, Key, Modifiers};
-use global::{Chord, Signal};
+use global::{Chord, Problem, Signal};
 #[cfg(test)]
 use orange_host::intrinsic;
 use orange_sdk::{Arguments, Definition, Emitter, ServicePackage, ServiceSource, Session, Value};
@@ -64,7 +64,7 @@ struct State {
     active: BTreeSet<Chord>,
     /// Background chords held down, so a held key fires once.
     pressed: BTreeSet<Chord>,
-    problems: Vec<String>,
+    problems: Vec<Problem>,
 }
 
 impl State {
@@ -119,7 +119,7 @@ pub struct Keyboard {
     /// Started on the first frame that has a binding set to Anywhere.
     backend: Option<global::Backend>,
     /// Why the backend could not start, reported once per change of the wanted chords.
-    unavailable: Option<String>,
+    unavailable: Option<Problem>,
     /// The chords last asked of the backend.
     applied: BTreeSet<Chord>,
 }
@@ -262,7 +262,7 @@ impl Keyboard {
         events: &[Event],
         focused: bool,
         allowed: impl Fn(Key, Modifiers) -> bool,
-    ) -> Vec<String> {
+    ) -> Vec<Problem> {
         self.sync_anywhere();
         let problems = std::mem::take(
             &mut self
@@ -438,8 +438,11 @@ mod tests {
         deliver(&keyboard.state, Signal::Pressed(chord));
         assert_eq!(count.load(Ordering::Relaxed), 3);
 
-        deliver(&keyboard.state, Signal::Problem("taken".into()));
-        assert_eq!(keyboard.handle(&[], false, |_, _| true), ["taken"]);
+        deliver(&keyboard.state, Signal::Problem(Problem::Taken(chord)));
+        assert_eq!(
+            keyboard.handle(&[], false, |_, _| true),
+            [Problem::Taken(chord)]
+        );
         assert!(keyboard.handle(&[], false, |_, _| true).is_empty());
         drop(lease);
         deliver(&keyboard.state, Signal::Released(chord));
