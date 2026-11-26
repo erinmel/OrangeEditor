@@ -391,8 +391,8 @@ fn links_are_refused_by_every_operation() {
         "nothing new outside"
     );
     assert_eq!(std::fs::read(outside.join("kept.txt")).unwrap(), b"kept");
-    // Listing shows the links as names but never enters or describes them.
-    assert_eq!(folder.list("", 8).unwrap(), ["dir", "file.txt", "real.txt"]);
+    // Listings leave links out, as tree listings do: nothing can be done with them.
+    assert_eq!(folder.list("", 8).unwrap(), ["real.txt"]);
     let tree: Vec<_> = folder
         .tree("", true, 8, &never)
         .unwrap()

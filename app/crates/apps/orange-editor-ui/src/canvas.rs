@@ -1680,13 +1680,18 @@ impl Canvas {
                 )
             })
             .collect();
+        let outs: HashMap<NodeId, &String> = self
+            .bridges
+            .iter()
+            .map(|(out, channel)| (*out, channel))
+            .collect();
         self.bridge_bound = graph
             .wires
             .iter()
             .filter(|wire| wire.from.1 == "result" && wire.to.1 == "value")
             .filter_map(|wire| {
-                let (_, channel) = self.bridges.iter().find(|(out, _)| *out == wire.from.0)?;
-                Some((wire.to.0, (wire.from.0, channel.clone())))
+                let channel = outs.get(&wire.from.0)?;
+                Some((wire.to.0, (wire.from.0, (*channel).clone())))
             })
             .collect();
         // A Listen's picker lists the channels some Dispatch sends on, by name.
@@ -2602,11 +2607,9 @@ impl Canvas {
             let unbound = match node.definition.as_str() {
                 intrinsic::ON_EVENT => {
                     let event = node.settings["event"].as_str();
+                    // The channels some Dispatch sends on, gathered once this frame.
                     let bound = event.is_some_and(|event| {
-                        graph
-                            .nodes
-                            .iter()
-                            .any(|peer| crate::palette::signal(peer) == Some((true, event)))
+                        self.listen_channels.iter().any(|(sent, _)| sent == event)
                     });
                     (!bound).then(|| {
                         event
@@ -2615,10 +2618,7 @@ impl Canvas {
                     })
                 }
                 crate::palette::BRIDGE_IN => {
-                    let bound = graph
-                        .wires
-                        .iter()
-                        .any(|wire| wire.to.0 == node.id && bridge_link(wire));
+                    let bound = self.bridge_bound.contains_key(&node.id);
                     (!bound).then(|| {
                         crate::palette::bridge_channel(node)
                             .unwrap_or_default()

@@ -328,9 +328,29 @@ impl BodyEdits {
         if let Some((node, port)) = done.remove_port {
             self.changed |= host.remove_port(draft, (node, &port))?;
         }
-        let selection = body.canvas.selection();
-        if done.copy || done.cut {
+        // The function's own entry and result cards are its interface: they are never
+        // copied, cut or deleted, so a copy can be pasted into any function.
+        let editable = |node: &NodeId| {
+            body.node(*node).is_some_and(|view| {
+                !matches!(
+                    view.definition.as_str(),
+                    intrinsic::FUNCTION_ENTRY | intrinsic::FUNCTION_OUTPUTS | intrinsic::RETURN
+                )
+            })
+        };
+        let selection: Vec<NodeId> = body
+            .canvas
+            .selection()
+            .into_iter()
+            .filter(&editable)
+            .collect();
+        let mut remove = done.remove;
+        remove.retain(&editable);
+        if (done.copy || done.cut) && !selection.is_empty() {
             self.copied = Some(host.copy(draft, &selection)?);
+        }
+        if done.cut {
+            remove.extend(selection);
         }
         if let Some(clip) = done.paste {
             let pasted =
@@ -338,19 +358,6 @@ impl BodyEdits {
             self.changed |= !pasted.is_empty();
             body.select_after_refresh = pasted;
         }
-        let mut remove = done.remove;
-        if done.cut {
-            remove.extend(selection);
-        }
-        // The function's own entry and result cards stay: they are its interface.
-        remove.retain(|node| {
-            body.node(*node).is_some_and(|view| {
-                !matches!(
-                    view.definition.as_str(),
-                    intrinsic::FUNCTION_ENTRY | intrinsic::FUNCTION_OUTPUTS | intrinsic::RETURN
-                )
-            })
-        });
         remove.sort_unstable();
         remove.dedup();
         if !remove.is_empty() {

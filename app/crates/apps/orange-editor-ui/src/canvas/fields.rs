@@ -1647,7 +1647,9 @@ fn pick_channel<K: Clone + PartialEq>(
             .hint_text(t("search-channels"))
             .desired_width(f32::INFINITY),
     );
-    if !field.has_focus() && search.is_empty() {
+    // Typing goes to the search as the list opens, without pulling focus back from
+    // anything the person moved it to afterwards.
+    if ui.memory(|memory| memory.focused().is_none()) {
         field.request_focus();
     }
     let matching: Vec<&(K, String)> = channels
@@ -1672,6 +1674,10 @@ fn pick_channel<K: Clone + PartialEq>(
         {
             chosen = Some(key.clone());
         }
+    }
+    // A choice ends the search, so the list opens unfiltered next time.
+    if chosen.is_some() {
+        search.clear();
     }
     ui.data_mut(|data| data.insert_temp(id, search));
     chosen.filter(|key| current.as_ref() != Some(key))

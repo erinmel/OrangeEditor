@@ -49,6 +49,25 @@ fn below(base: &Dir, relative: &str) -> Result<Dir, FsError> {
     Ok(current)
 }
 
+/// The directory last entered below a tree, kept while consecutive entries share it:
+/// entries come sorted by path, so a tree of n files is not walked n times from its top.
+#[derive(Debug, Default)]
+struct Near(Option<(String, Dir)>);
+
+impl Near {
+    fn get(&mut self, base: &Dir, relative: &str) -> Result<&Dir, FsError> {
+        if !matches!(&self.0, Some((held, _)) if held == relative) {
+            // Let go of the old one first: on Windows a held directory cannot be removed.
+            self.0 = None;
+            self.0 = Some((relative.to_owned(), below(base, relative)?));
+        }
+        match &self.0 {
+            Some((_, directory)) => Ok(directory),
+            None => Err(FsError::Failed),
+        }
+    }
+}
+
 impl Folder {
     /// Lists regular files and directories, skipping links and nonportable names.
     /// Every item examined, including skipped entries, counts against `max_entries`.
@@ -135,12 +154,13 @@ impl Folder {
             })?;
         let target = target_parent.child(target_name)?;
         let mut made = Vec::new();
+        let (mut from_near, mut into_near) = (Near::default(), Near::default());
         let result = (|| {
             for entry in &entries {
                 check_cancelled(cancelled)?;
                 let (parent, name) = parent_and_name(&entry.path);
-                let from = below(&source, parent)?;
-                let into = below(&target, parent)?;
+                let from = from_near.get(&source, parent)?;
+                let into = into_near.get(&target, parent)?;
                 let current = from.stat(name)?;
                 if current.is_dir() != entry.info.is_dir() {
                     return Err(FsError::Changed);
@@ -157,6 +177,8 @@ impl Folder {
             }
             check_cancelled(cancelled)
         })();
+        // Rolling back removes directories these may still hold.
+        drop((from_near, into_near));
         match &result {
             Ok(()) => target_parent.sync(),
             Err(_) => {
@@ -216,10 +238,11 @@ impl Folder {
         self.writable()?;
         let (parent, name, tree) = self.tree_root(path)?;
         let entries = collect(&tree, true, true, max_entries, cancelled)?;
+        let mut near = Near::default();
         for entry in entries.into_iter().rev() {
             check_cancelled(cancelled)?;
             let (inner, entry_name) = parent_and_name(&entry.path);
-            let directory = below(&tree, inner)?;
+            let directory = near.get(&tree, inner)?;
             let current = directory.stat(entry_name)?;
             if current.is_dir() != entry.info.is_dir() {
                 return Err(FsError::Changed);
@@ -231,6 +254,7 @@ impl Folder {
             }
         }
         check_cancelled(cancelled)?;
+        drop(near);
         drop(tree);
         parent.remove_dir(name)?;
         parent.sync();
