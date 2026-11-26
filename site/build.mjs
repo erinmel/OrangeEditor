@@ -64,9 +64,13 @@ async function render(path, title, description, body, selected, authored = false
   if (paths.has(path)) throw new Error('Duplicate page: ' + path);
   paths.add(path);
   const back = '../'.repeat(path.split('/').length - 1) || './';
-  const nav = sections.map(([section, heading]) => '<p class="nav-heading">' + escape(heading) + '</p>' +
-    pages.filter(page => page[3] === section).map(([slug, name]) => '<a href="' + back + pathOf(slug) + '"' +
-      (slug === selected ? ' aria-current="page"' : '') + '>' + escape(name) + '</a>').join('\n')).join('\n');
+  // Only the current page's section starts open, so the list stays short.
+  const current = pages.find(([slug]) => slug === selected)?.[3] ?? 'start';
+  const nav = sections.map(([section, heading]) => '<details class="nav-group"' +
+    (section === current ? ' open' : '') + '><summary>' + escape(heading) + '</summary>' +
+    pages.filter(page => page[3] === section).map(([slug, name, , , label]) => '<a href="' + back + pathOf(slug) + '"' +
+      (slug === selected ? ' aria-current="page"' : '') + '>' + escape(label ?? name) + '</a>').join('\n') +
+    '</details>').join('\n');
   const anchors = [...body.matchAll(/<h2 id="([^"]+)">([\s\S]+?)<\/h2>/g)];
   const toc = anchors.length > 1 ? '<aside class="toc"><nav aria-label="On this page"><strong>On this page</strong>' +
     anchors.map(([, id, label]) => '<a href="#' + id + '">' + plain(label) + '</a>').join('') + '</nav></aside>' : '';
@@ -89,6 +93,8 @@ async function render(path, title, description, body, selected, authored = false
   <link rel="canonical" href="${escape(canonical)}">
   <link rel="stylesheet" href="${back}assets/docs.css">
   <link rel="icon" href="${back}assets/favicon.svg" type="image/svg+xml">
+  <script>try { const t = localStorage.getItem('orange-docs-theme'); if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch {}</script>
+  <script type="module" src="${back}assets/theme.mjs"></script>
   <script type="module" src="${back}assets/search.mjs"></script>
   ${selected === 'egui' && demo ? '<script type="module" src="../assets/controls-demo.mjs"></script>' : ''}
 </head>
@@ -96,6 +102,14 @@ async function render(path, title, description, body, selected, authored = false
   <a class="skip" href="#main">Skip to content</a>
   <header class="top"><a class="brand" href="${back}"><span aria-hidden="true"></span>OrangeEditor</a>
     <button type="button" id="search-open" hidden>Search docs <kbd>/</kbd></button>
+    <label class="visually-hidden" for="theme-select">Colour theme</label>
+    <select id="theme-select" hidden>
+      <option value="auto">Automatic</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+      <option value="contrast">High contrast</option>
+      <option value="comfort">Comfort</option>
+    </select>
     <a class="source" href="${repository}">GitHub ↗</a>
   </header>
   <div class="layout">
@@ -204,7 +218,7 @@ for (const node of sorted) {
 }
 
 await mkdir(join(output, 'assets'), {recursive: true});
-for (const asset of ['docs.css', 'favicon.svg', 'search.mjs', 'search-index.mjs']) {
+for (const asset of ['docs.css', 'favicon.svg', 'search.mjs', 'search-index.mjs', 'theme.mjs']) {
   await copyFile(join(site, 'assets', asset), join(output, 'assets', asset));
 }
 if (demo) {
