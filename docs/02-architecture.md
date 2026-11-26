@@ -37,6 +37,10 @@ Material, Phosphor and Lucide assets. `native-dialogs` supplies an
 picker response directly. The desktop gallery's `eframe`, WAV and output-device
 dependencies are example-only. Meters consume host measurements and the
 frequency utilities take caller-owned filter state and caller-provided buffers.
+The documentation's browser examples use `orange-docs-web`, a development crate
+that draws the shared controls with eframe/WebGL on `wasm32-unknown-unknown`.
+Their input values are local to the demo. The editor's `orange-host`
+integration still requires the native host and its OS services.
 
 ## Layers
 

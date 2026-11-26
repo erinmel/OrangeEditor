@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {readFile, stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {prepareIndex, searchIndex} from './assets/search-index.mjs';
+import {references} from './references.mjs';
+import {demoAssets} from './live-demo.mjs';
 
 const root = new URL('./dist/', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
@@ -19,7 +21,21 @@ for (const entry of search) {
   const [path] = entry.path.split('#');
   paths.add(path);
 }
-assert.equal(paths.size, catalogue.nodes.length + 9);
+assert.equal(paths.size, catalogue.nodes.length + 9 + references.length);
+const egui = await read('egui/index.html');
+const hasDemo = egui.includes('id="controls-demo"');
+if (process.argv.includes('--require-demo')) assert.ok(hasDemo, 'The Pages artifact must include the live demo');
+if (hasDemo) {
+  assert.match(egui, /id="load-controls-demo"/);
+  const [glue, wasm] = demoAssets;
+  assert.match(await read('assets/controls/' + glue), /class ControlsDemo/);
+  const bytes = await readFile(new URL('assets/controls/' + wasm, root));
+  assert.ok(WebAssembly.validate(bytes), 'Invalid browser Wasm');
+}
+for (const [file, slug] of references) {
+  const html = await read('reference/' + slug + '/index.html');
+  assert.ok(html.includes('/docs/' + file + '">View Markdown source'));
+}
 
 for (const path of paths) {
   const html = await read(path + 'index.html');
@@ -46,7 +62,7 @@ for (const path of paths) {
       assert.ok(kind === 'tree' ? source.isDirectory() : source.isFile(), href);
     }
     if (!link.href.startsWith(base.href)) continue;
-    const anchor = link.hash.slice(1);
+    const anchor = decodeURIComponent(link.hash.slice(1));
     link.hash = '';
     const target = new URL(link.href.slice(base.href.length), root);
     if (link.pathname.endsWith('/')) target.pathname += 'index.html';

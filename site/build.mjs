@@ -1,8 +1,10 @@
 import {execFileSync} from 'node:child_process';
-import {cp, mkdir, readFile, realpath, rm, stat, writeFile} from 'node:fs/promises';
+import {copyFile, cp, lstat, mkdir, readFile, realpath, rm, stat, writeFile} from 'node:fs/promises';
 import {join, relative, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
+import {compileDemo, demoAssets} from './live-demo.mjs';
+import {loadReferences} from './references.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const site = join(root, 'site');
@@ -13,15 +15,21 @@ const source = repository + '/blob/' + revision + '/';
 const tree = repository + '/tree/' + revision + '/';
 const {values} = parseArgs({options: {
   catalogue: {type: 'string'},
-  rustdoc: {type: 'string', default: join(root, 'target', 'doc')},
+  rustdoc: {type: 'string'},
+  'wasm-bindgen': {type: 'string'},
   'base-url': {type: 'string', default: 'https://erinmel.github.io/OrangeEditor/'},
 }});
 const base = new URL(values['base-url'].replace(/\/?$/, '/'));
 if (!['http:', 'https:'].includes(base.protocol) || base.search || base.hash) {
   throw new Error('The base URL must be an HTTP(S) directory URL.');
 }
+const {target_directory: target} = JSON.parse(execFileSync('cargo',
+  ['metadata', '--format-version=1', '--no-deps', '--locked'], {cwd: root, encoding: 'utf8'}));
+const rustdoc = resolve(values.rustdoc ?? join(target, 'doc'));
+const contracts = await loadReferences(root, target, source, tree);
+const demo = values['wasm-bindgen'] ? await compileDemo(root, target, values['wasm-bindgen']) : null;
 const apiCrates = ['orange_host', 'orange_editor_ui', 'orange_ui_controls', 'orange_sdk'];
-for (const crate of apiCrates) await stat(join(values.rustdoc, crate, 'index.html'));
+for (const crate of apiCrates) await stat(join(rustdoc, crate, 'index.html'));
 
 const catalogue = values.catalogue
   ? await readFile(values.catalogue, 'utf8')
@@ -64,16 +72,16 @@ async function render(path, title, description, body, selected, authored = false
   const back = '../'.repeat(path.split('/').length - 1) || './';
   const nav = pages.map(([slug, name]) => '<a href="' + back + pathOf(slug) + '"' +
     (slug === selected ? ' aria-current="page"' : '') + '>' + escape(name) + '</a>').join('\n');
-  const anchors = [...body.matchAll(/<h2 id="([a-z0-9-]+)">([^<]+)<\/h2>/g)];
+  const anchors = [...body.matchAll(/<h2 id="([^"]+)">([\s\S]+?)<\/h2>/g)];
   const toc = anchors.length > 1 ? '<aside class="toc"><nav aria-label="On this page"><strong>On this page</strong>' +
-    anchors.map(([, id, label]) => '<a href="#' + id + '">' + label + '</a>').join('') + '</nav></aside>' : '';
+    anchors.map(([, id, label]) => '<a href="#' + id + '">' + plain(label) + '</a>').join('') + '</nav></aside>' : '';
   const canonical = new URL(path, base).href;
   sitemap.push(canonical);
   if (authored) {
-    search.push({path, title, description, terms: plain(body)});
+    search.push({path, title, description, terms: authored === true ? plain(body) : ''});
     for (const [index, match] of anchors.entries()) {
-      search.push({path: path + '#' + match[1], title: match[2], description: title,
-        terms: plain(body.slice(match.index + match[0].length, anchors[index + 1]?.index))});
+      search.push({path: path + '#' + match[1], title: plain(match[2]), description: title,
+        terms: authored === true ? plain(body.slice(match.index + match[0].length, anchors[index + 1]?.index)) : ''});
     }
   }
   await write(path + 'index.html', `<!doctype html>
@@ -87,6 +95,7 @@ async function render(path, title, description, body, selected, authored = false
   <link rel="stylesheet" href="${back}assets/docs.css">
   <link rel="icon" href="${back}assets/favicon.svg" type="image/svg+xml">
   <script type="module" src="${back}assets/search.mjs"></script>
+  ${selected === 'egui' && demo ? '<script type="module" src="../assets/controls-demo.mjs"></script>' : ''}
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -153,13 +162,28 @@ for (const [slug, title, description] of pages) {
           '<span lang="es">' + escape(node.name.es) + '</span></li>').join('') + '</ul>';
     }
   } else {
-    body = (await readFile(join(site, 'pages', (slug || 'index') + '.html'), 'utf8'))
-      .replaceAll('@source/', source).replaceAll('@tree/', tree).replaceAll('@revision@', revision);
+    body = await readFile(join(site, 'pages', (slug || 'index') + '.html'), 'utf8');
+    const back = slug ? '../' : './';
+    for (const contract of contracts) {
+      body = body.replaceAll('@source/docs/' + contract.file, back + 'reference/' + contract.slug + '/');
+    }
+    body = body.replaceAll('@source/', source).replaceAll('@tree/', tree).replaceAll('@revision@', revision);
+    if (slug === 'egui') body = body.replace('<!-- controls-demo -->', demo
+      ? '<button type="button" id="load-controls-demo" hidden>Load controls demo</button>' +
+        '<p id="controls-demo-status" role="status"></p>' +
+        '<canvas id="controls-demo" tabindex="0" aria-label="OrangeEditor slider and knob demo" hidden></canvas>' +
+        '<noscript><p>Enable JavaScript to try the controls demo.</p></noscript>'
+      : '<p>This build contains the written controls guide. The Pages build includes the interactive demo.</p>');
   }
   if (slug) body = '<h1>' + escape(title) + '</h1><p class="lead">' + escape(description) + '</p>' + body;
   await render(pathOf(slug), title, description, body, slug, slug !== 'nodes');
 }
 search.push({path: 'nodes/', title: 'Node reference', description: pages[3][2], terms: 'catalogue converter bilingual registry'});
+
+for (const contract of contracts) {
+  await render('reference/' + contract.slug + '/', contract.title, contract.description,
+    '<h1>' + escape(contract.title) + '</h1>' + contract.body, 'sdk', 'reference');
+}
 
 for (const node of sorted) {
   const path = nodePath(node);
@@ -184,10 +208,28 @@ for (const node of sorted) {
       port.port_id + ' ' + (port.type ? JSON.stringify(port.type) : ''))].filter(Boolean).join(' ')});
 }
 
-await cp(join(site, 'assets'), join(output, 'assets'), {recursive: true});
-await cp(values.rustdoc, join(output, 'api'), {recursive: true, filter: file => {
-  const [first] = relative(values.rustdoc, file).split(sep);
-  return !first.startsWith('.');
+await mkdir(join(output, 'assets'), {recursive: true});
+for (const asset of ['docs.css', 'favicon.svg', 'search.mjs', 'search-index.mjs']) {
+  await copyFile(join(site, 'assets', asset), join(output, 'assets', asset));
+}
+if (demo) {
+  await copyFile(join(site, 'assets', 'controls-demo.mjs'), join(output, 'assets', 'controls-demo.mjs'));
+  await mkdir(join(output, 'assets', 'controls'), {recursive: true});
+  for (const asset of demoAssets) {
+    await copyFile(join(demo, asset), join(output, 'assets', 'controls', asset));
+  }
+}
+
+const rustdocEntries = new Set([
+  ...apiCrates, 'crates.js', 'help.html', 'settings.html', 'src-files.js', 'src',
+  'search.index', 'static.files', 'trait.impl', 'type.impl',
+]);
+await cp(rustdoc, join(output, 'api'), {recursive: true, filter: async file => {
+  if (file === rustdoc) return true;
+  const parts = relative(rustdoc, file).split(sep);
+  if (!rustdocEntries.has(parts[0]) || parts.some(part => part.startsWith('.'))) return false;
+  const info = await lstat(file);
+  return info.isDirectory() || (info.isFile() && /\.(css|html|js|json|png|svg|txt|woff2?)$/.test(file));
 }});
 await write('.nojekyll', '');
 await write('nodes.json', JSON.stringify({revision, nodes}));
@@ -204,7 +246,6 @@ await write('llms.txt', '# OrangeEditor documentation\n\n' +
   '\n\n## Reference\n\n- [Node catalogue JSON](' + new URL('nodes.json', base).href + ')\n' +
   apiCrates.map(crate => '- [' + crate + ' Rustdoc](' + new URL('api/' + crate + '/', base).href + ')').join('\n') +
   '\n- [Wasm WIT interface](' + source + 'sdk/wit/orange-expansion.wit)\n' +
-  '- [Graph language contract](' + source + 'docs/11-graph-language.md)\n' +
-  '- [Graph file format](' + source + 'docs/12-graph-data-structures.md)\n' +
-  '- [Expansion package contract](' + source + 'docs/04-expansion-plugins.md)\n');
+  contracts.map(contract => '- [' + contract.title + '](' +
+    new URL('reference/' + contract.slug + '/', base).href + ')').join('\n') + '\n');
 console.log('Built ' + paths.size + ' pages in ' + output);

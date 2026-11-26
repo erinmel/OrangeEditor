@@ -1,10 +1,10 @@
 # OrangeEditor documentation site
 
-The public guides live in `site/pages/`. A dependency-free Node builder renders the
-HTML, exports the default CLI node catalogue, and includes Rustdoc. The published
-site is static and uses client-side JavaScript for search. To edit a product
-contract, update the corresponding document under `docs/` and update any guide
-affected by the change.
+The public guides live in `site/pages/`. The builder renders them as static
+HTML, generates the node reference from `orange nodes --json`, and includes
+the public API from Cargo Rustdoc. The documents listed in `site/references.mjs`
+are rendered directly from `docs/` by the pinned Rust toolchain's Markdown
+renderer. Edit a contract in `docs/` and update any guide affected by the change.
 
 ## Build and check locally
 
@@ -18,8 +18,29 @@ node site/check.mjs
 
 The builder runs `orange nodes --json` from the current checkout. For iterative
 editing, it also accepts `--catalogue <file>` and `--rustdoc <directory>`. Both
-inputs must come from the same checkout as the guides. Serve `site/dist/` using
-a local HTTP server to try search.
+inputs must come from the same checkout as the guides. Rustdoc and generated
+intermediates use the Cargo target directory reported by `cargo metadata`,
+including `CARGO_TARGET_DIR` overrides. For cross-target Rustdoc, point
+`--rustdoc` at that target's `doc/` directory. Serve `site/dist/` over HTTP to
+try search.
+
+## Build the live controls demo
+
+The egui guide loads `orange-docs-web` when the visitor selects **Load controls
+demo**. It runs shared Rust controls through eframe and WebGL, using sample
+values. The page and its reference links work without loading the demo.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version '=0.2.129' --locked
+node site/build.mjs --wasm-bindgen wasm-bindgen
+node site/check.mjs --require-demo
+```
+
+The CLI version must match the workspace's `wasm-bindgen` dependency. The Pages
+workflow runs this build and publishes only `site/dist/`. The checkout's ignore
+rules cover that directory and Cargo's default `target/`. Keep generated
+Rustdoc, JavaScript bindings, and Wasm out of Git.
 
 ## Publish with GitHub Pages
 
