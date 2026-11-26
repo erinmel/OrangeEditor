@@ -507,7 +507,7 @@ impl Host {
                 definition: id.to_owned(),
                 label: self.label_in(info, locale),
                 category: self.category_in(info, locale),
-                purpose: self.purpose(info, locale),
+                purpose: self.purpose_in(info, locale),
                 package: info
                     .provider
                     .map(|provider| provider.package.clone())
@@ -637,7 +637,8 @@ impl Host {
         }
     }
 
-    fn purpose(&self, info: &NodeInfo<'_>, locale: &str) -> String {
+    /// A short, localized description of what this node does.
+    pub fn purpose_in(&self, info: &NodeInfo<'_>, locale: &str) -> String {
         let key = node_key(info.definition.definition.id.as_str());
         if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
             return text.into_owned();

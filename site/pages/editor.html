@@ -1,0 +1,22 @@
+<h2 id="place-and-wire-nodes">Place and wire nodes</h2>
+<ol>
+<li>Open <strong>Nodes</strong> and search by node label or task. Use <strong>Conversions</strong> for type conversions. Selecting a result lets you place it on the canvas.</li>
+<li>Connect matching ports. Execution wires schedule actions. Data wires feed typed inputs. For a mismatch, place an explicit conversion. Dropping a wire on empty canvas opens suggestions for the port.</li>
+<li>Select a card to see its <strong>Properties</strong>. Edit defaults, choose declaration references, and configure settings or dynamic ports there.</li>
+<li>Review <strong>Problems</strong>, press <strong>Run</strong>, and fire a trigger. Inspect variables, wires, or the log to see what happened.</li>
+</ol>
+<p>Use the language picker in <strong>Settings</strong> to switch between English, Spanish, and the Japanese preview. Node search can still match terms from other supported languages.</p>
+<h2 id="variables-events-and-bridges">Variables, events, and bridges</h2>
+<ul>
+<li><strong>Variables</strong> hold state. Declare a typed variable, then select it on a read or write node. Use a run variable for a counter shared by activations.</li>
+<li><strong>Dispatch and Listen</strong> share a channel. In Properties create a pulse for a trigger alone, or choose a typed payload. Each Listen on the channel starts a flow activation. Use Await Event to continue an existing activation when an event arrives or its timeout expires.</li>
+<li><strong>Bridge Out and Bridge In</strong> share a value on demand. Place a Bridge Out, connect its input, and choose <strong>+ Add Subscriber</strong> to place a matching Bridge In. The subscriber supplies a value without starting execution.</li>
+</ul>
+<h2 id="connections-and-failures">Connections and failure routes</h2>
+<p>Create a connection in <strong>Connections</strong>, then select it on the relevant node. Use the application's credential controls so the graph stores a reference to the OS secret store. Authorize the graph to use the connection when prompted.</p>
+<p>For an HTTP request, handle response status separately from a failed request. When a node exposes <strong>Failed</strong> and <strong>Error</strong>, route the execution through Failed before consuming that Error value. Handle <strong>Cancelled</strong> where the node exposes it and cancellation needs cleanup.</p>
+<h2 id="troubleshooting">Troubleshoot a graph</h2>
+<dl><dt>Run is blocked</dt><dd>Open Problems and follow the first diagnostic to the affected card, port, or package.</dd>
+<dt>Nothing runs after start</dt><dd>Fire a manual trigger or cause the event that the entry expects. Then check its execution outputs.</dd>
+<dt>A saved node has a missing provider</dt><dd>Review the graph’s required package, version, and provider in Packages. Install the exact package or use a deliberate provider rebind where the editor offers it.</dd></dl>
+<p>For interaction details see the <a href="@source/docs/22-editor-design.md">editor design</a> and the <a href="@source/docs/11-graph-language.md">graph language contract</a>.</p>

@@ -255,6 +255,11 @@ pub(crate) fn nodes(host: &Host, json_output: bool) {
                 "provider": info.provider.map(|provider| provider.package.as_str()),
                 "name": { "en": host.label_in(&info, "en"), "es": host.label_in(&info, "es") },
                 "category": { "en": host.category_in(&info, "en"), "es": host.category_in(&info, "es") },
+                "purpose": { "en": host.purpose_in(&info, "en"), "es": host.purpose_in(&info, "es") },
+                "aliases": {
+                    "en": host.catalogs().aliases("en", def.definition.id.as_str()),
+                    "es": host.catalogs().aliases("es", def.definition.id.as_str()),
+                },
                 "ports": info.declared_ports(),
                 "config_schema": def.config_schema,
             })

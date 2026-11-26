@@ -43,7 +43,7 @@ alias-core-on-watch = 閾値, しきい値, 立ち上がり, 立ち下がり
 
 purpose-core-coalesce = 値があればその値を使い、なければ代替値を使います。
 purpose-core-branch = 条件が真の場合と偽の場合で処理を分けます。
-purpose-core-on-manual = 実行ボタンを押すと開始します。
+purpose-core-on-manual = グラフの実行中にこのノードの「発火」を押すと処理を開始します。
 purpose-core-on-start = フローの開始時に一度実行します。
 purpose-core-on-stop = フローの停止時に一度実行します。
 purpose-core-on-timer = 指定間隔で繰り返し実行します。

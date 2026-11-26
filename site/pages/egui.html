@@ -1,0 +1,29 @@
+<h2 id="add-editor-ui">Add the editor to an egui project</h2>
+<p>Use a matching egui version and pin the host and UI to the same OrangeEditor revision. The editor library draws in your existing egui frame. Your application supplies the window and renderer.</p>
+<pre><code>[dependencies]
+egui = "=0.37.0"
+orange-host = { git = "https://github.com/erinmel/OrangeEditor.git", rev = "@revision@" }
+orange-editor-ui = { git = "https://github.com/erinmel/OrangeEditor.git", rev = "@revision@" }</code></pre>
+<h2 id="compose-panels">Compose panels in your layout</h2>
+<p>Keep an <code>Editor</code>, <code>Host</code>, and <code>Events</code> receiver in your application state. Initialize the editor with <code>Editor::new()</code>. Open a draft with <code>editor.open_untitled(&amp;mut host, orange_host::new_document()?)</code> in a fallible initializer.</p>
+<p>In the egui frame, ingest flow updates and draw into the UI your application provides. The following is the layout portion of the frame:</p>
+<pre><code>editor.poll_events(&amp;events);
+editor.ui_with_layout(ui, &amp;mut host, |editor, ui, host| {
+    editor.toolbar(ui, host);
+    editor.workspace_bar(ui);
+    egui::Panel::left("graph-nodes")
+        .show(ui, |ui| editor.nodes_panel(ui, host));
+    egui::Panel::right("graph-inspector")
+        .show(ui, |ui| editor.right_panel(ui, host));
+    egui::CentralPanel::default()
+        .show(ui, |ui| editor.canvas_panel(ui, host));
+});</code></pre>
+<p>The editor also provides <code>log_panel</code>. After rendering, consume <code>Editor::take_request</code> and handle the corresponding file action in your app. Integrate a repaint wakeup or a periodic repaint while a flow is running so updates appear even when the user is idle.</p>
+<h2 id="customize-appearance">Customize theme, commands, and text</h2>
+<ul>
+<li><strong>Theme:</strong> supply your own egui styles or call <code>apply_theme</code> for the desktop defaults.</li>
+<li><strong>Icons:</strong> register <code>icons::set_command_painter</code> on your egui context. Draw supported commands in the provided rectangle and return <code>false</code> to use the stock drawing for other icons.</li>
+<li><strong>Text:</strong> register Fluent overrides through <code>i18n::add_application_catalogs</code> before the editor resolves its first message. Node and package IDs stay stable across languages.</li>
+<li><strong>Widgets:</strong> use <code>orange-ui-controls</code> for graph-independent widgets such as knobs and segmented controls. Your app supplies localized text and state.</li>
+</ul>
+<p>See the runnable <a href="@source/app/crates/apps/orange-editor-ui/tests/embedding.rs">embedding test</a>, the <a href="../api/orange_editor_ui/">editor UI API</a>, and <a href="../api/orange_ui_controls/">shared controls API</a>.</p>

@@ -72,7 +72,7 @@ alias-org-orange-math-less = menor que
 alias-org-orange-math-equal = igual
 alias-org-orange-audio-play = sonido, audio, altavoz, música, reproducir
 
-purpose-core-on-manual = Empieza al pulsar Ejecutar.
+purpose-core-on-manual = Inicia una activación al pulsar Disparar en este nodo cuando el grafo está en ejecución.
 purpose-core-on-start = Empieza una vez al iniciar el flujo.
 purpose-core-on-stop = Se ejecuta una vez al detener el flujo.
 purpose-core-on-timer = Empieza una y otra vez con un temporizador.

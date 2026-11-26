@@ -7,6 +7,9 @@ values and call services such as HTTP, WebSocket, MQTT, AMQP, files and audio.
 Packages and native plugins add nodes, triggers and connection kinds without
 rebuilding the application.
 
+Start with the [OrangeEditor documentation](https://erinmel.github.io/OrangeEditor/)
+for the editor, node reference, package authoring, embedding and SDK.
+
 It is pre-1.0: the core, editor and base services work; see
 [the overview](docs/00-overview.md) for what is done and what is missing.
 
@@ -14,7 +17,7 @@ It is pre-1.0: the core, editor and base services work; see
 
 Use the **Nodes** tab to search for a node and **Properties** to choose its
 inputs, types, or declarations. To send a typed value between branches, place
-**Emit** and **On Event**, create a typed event from the Event picker, and
+**Dispatch** and **Listen**, create a typed event from the Event picker, and
 select the same event on both nodes. Use **Await Event** when an existing
 branch should wait for the value. The [editor guide](docs/22-editor-design.md)
 describes typed events, variable scopes, and stream bounds.

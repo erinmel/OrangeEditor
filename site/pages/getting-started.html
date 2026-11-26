@@ -1,0 +1,22 @@
+<h2 id="open-the-editor">Open the editor</h2>
+<p>Check the <a href="https://github.com/erinmel/OrangeEditor/releases">releases</a> for builds available for your platform. To run from source, clone the repository, install rustup, and run the command below from the repository root. The checkout selects Rust 1.99.1 through <code>rust-toolchain.toml</code>. Linux source builds require ALSA development headers.</p>
+<pre><code>cargo run -p orange-desktop --locked -- app/crates/apps/orange-cli/graphs/set-on-trigger.json</code></pre>
+<h2 id="run-a-graph">Run your first graph</h2>
+<ol>
+<li>Find the manual trigger and the Set Variable card. The execution wire runs from the trigger to the action.</li>
+<li>Press <strong>Run</strong>, then <strong>Fire</strong> on the trigger. Open <strong>Variables</strong> and look for <code>total</code>, which becomes <code>7</code>.</li>
+<li>Stop the graph. Change the action’s value from 7 to 9, run again, and fire the trigger. Confirm <code>total</code> now becomes <code>9</code>.</li>
+<li>Use <strong>Save as</strong> to keep your own copy of the experiment.</li>
+</ol>
+<h2 id="check-from-the-terminal">Check and run from the terminal</h2>
+<pre><code>cargo run -p orange-cli --locked -- check app/crates/apps/orange-cli/graphs/set-on-trigger.json
+cargo run -p orange-cli --locked -- run app/crates/apps/orange-cli/graphs/set-on-trigger.json --watch</code></pre>
+<p>At the runner prompt, enter <code>trigger 1</code> to fire the only manual trigger. Enter <code>quit</code> to stop. <code>check</code> validates a document and <code>preview</code> computes eligible pure outputs without starting a flow.</p>
+<h2 id="example-graphs">Example graphs</h2>
+<ul>
+<li><a href="@source/app/crates/apps/orange-cli/graphs/counter-with-reset.json">Counter with reset</a> — increment, decrement, and reset a run variable.</li>
+<li><a href="@source/app/crates/apps/orange-cli/graphs/json-extraction.json">JSON extraction</a> — extract and convert fields offline.</li>
+<li><a href="@source/app/crates/apps/orange-cli/graphs/http-with-failure-handling.json">HTTP with failure handling</a> — route successful responses, HTTP error statuses, and transport errors. Its default endpoint requires a local server.</li>
+<li><a href="@source/app/crates/apps/orange-cli/graphs/quiet-mic-gate.json">Quiet mic gate</a> — follow an audio signal through a gate and meter. Choose devices when ready to listen.</li>
+</ul>
+<p>Next, learn how to <a href="../editor/">build and troubleshoot graphs in the editor</a>.</p>

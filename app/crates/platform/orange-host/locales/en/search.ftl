@@ -87,7 +87,7 @@ purpose-org-orange-text-write-csv = Converts rows of text fields to CSV, adding 
 purpose-org-orange-text-decode-hex = Decodes uppercase or lowercase hexadecimal text into bytes.
 alias-org-orange-audio-play = sound, audio, speaker, music
 
-purpose-core-on-manual = Starts when you press Run.
+purpose-core-on-manual = Starts an activation when you press Fire on this node in a running graph.
 purpose-core-on-start = Starts once when the flow starts.
 purpose-core-on-stop = Runs once when the flow stops.
 purpose-core-on-timer = Starts again and again on a timer.
