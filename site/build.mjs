@@ -6,6 +6,7 @@ import {parseArgs} from 'node:util';
 import {compileDemo, demoAssets} from './live-demo.mjs';
 import {loadReferences, renderMarkdown} from './references.mjs';
 import {pages, sections} from './pages.mjs';
+import {loadCliUsage, renderCliReference} from './cli-reference.mjs';
 import {loadNodeExamples, renderGraphExamples, renderNodeReference} from './node-reference.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -161,6 +162,8 @@ for (const [slug, title, description] of pages) {
           (translated(node.name, 'ja') ? '<span lang="ja">' + escape(node.name.ja) + '</span>' : '') +
           '</li>').join('') + '</ul>';
     }
+  } else if (slug === 'cli') {
+    body = renderCliReference(loadCliUsage(root), escape);
   } else if (slug === 'examples') {
     body = renderGraphExamples(examples, sorted, source, escape, nodePath);
   } else {

@@ -26,10 +26,14 @@ export const pages = [
   ['egui', 'Embed and customize the egui editor', 'Compose OrangeEditor panels, themes, icons, and text in your existing egui app.', 'how-to', 'Embed the editor'],
 
   ['data-and-execution', 'Data wires and execution wires', 'Why a graph has two kinds of wires, and when each one runs.', 'concepts', 'Data and execution'],
+  ['security-model', 'Security model', 'What graphs and plugins may do, what stops them doing more, and what is up to you.', 'concepts'],
   ['types-and-conversions', 'Types and conversions', 'Why every value has an exact type, and why changing one is a visible node.', 'concepts'],
 
+  ['troubleshooting', 'Troubleshooting', 'Find the symptom and follow the fix.', 'how-to'],
   ['nodes', 'Node reference', 'Find nodes by English, Spanish or Japanese name, stable ID, provider, or port.', 'reference', 'Nodes'],
   ['examples', 'Example graphs', 'Run real graphs and follow the nodes that make them work.', 'reference'],
   ['controls', 'Controls reference', 'Choose, style, and use the shared OrangeEditor egui controls.', 'reference', 'UI controls'],
+  ['cli', 'Command-line reference', 'Every orange command and option, generated from the program itself.', 'reference', 'Command line'],
+  ['glossary', 'Glossary', 'The words this documentation uses.', 'reference'],
   ['sdk', 'SDK reference', 'Rustdoc, Wasm guest bindings, the graph language, and versioned package contracts.', 'reference', 'SDK and API'],
 ];
