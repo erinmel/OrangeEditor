@@ -711,12 +711,7 @@ impl Host {
             .ok_or_else(|| refused(&"the document has no such local function"))?;
         let body = BodyRef::Function(function.id);
         let kind = function.kind;
-        if !self
-            .nodes()
-            .filter(|info| info.definition.definition.id.as_str() == definition)
-            .max_by_key(|info| info.definition.definition.version)
-            .is_some_and(|info| function_node_allowed(definition, info.definition.kind, kind))
-        {
+        if !self.knows_node(definition) || !self.function_accepts(definition, kind) {
             return Err(refused(&"this node kind cannot be added to this function"));
         }
         let (node, mut commands) = self.node_commands(draft, definition, at, "node")?;
@@ -727,6 +722,20 @@ impl Host {
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
+    }
+
+    /// Whether a node of `definition` may be part of a local function of `kind`. A node
+    /// this host has no definition for is left to validation, which reports it.
+    pub(crate) fn function_accepts(&self, definition: &str, kind: NodeKind) -> bool {
+        self.nodes()
+            .filter(|info| info.definition.definition.id.as_str() == definition)
+            .max_by_key(|info| info.definition.definition.version)
+            .is_none_or(|info| function_node_allowed(definition, info.definition.kind, kind))
+    }
+
+    fn knows_node(&self, definition: &str) -> bool {
+        self.nodes()
+            .any(|info| info.definition.definition.id.as_str() == definition)
     }
 
     /// Search the node kinds available inside the given local function.

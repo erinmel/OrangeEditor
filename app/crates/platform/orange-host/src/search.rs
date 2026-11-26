@@ -5,7 +5,8 @@
 //! without a list to keep up.
 use crate::intrinsic;
 use std::borrow::Cow;
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use orange_model::document::NodeKind;
 
@@ -21,6 +22,15 @@ pub const CONCEPTS: &[&str] = &[
 ];
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
+
+/// The node search's setting words per definition, for one language and registry
+/// generation; a new generation, language or catalogue starts it again.
+#[derive(Debug, Default)]
+pub(crate) struct SettingWords {
+    generation: Option<u64>,
+    locale: String,
+    words: HashMap<String, Arc<[String]>>,
+}
 
 /// Kinds that stay loadable but are not offered: the two-input And and Or, which the
 /// growable forms (`core/all-conditions`, `core/any-conditions`) replace as And and Or.
@@ -118,6 +128,11 @@ impl Host {
     /// Adds catalogue text for `locale`, such as a new language's, without changing
     /// any ID.
     pub fn add_catalog(&mut self, locale: &str, text: &str) -> Result<(), CatalogError> {
+        // Setting captions may have changed: the search builds its words again.
+        *self
+            .setting_words
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = SettingWords::default();
         self.catalogs.add(locale, text)
     }
 
@@ -239,6 +254,71 @@ impl Host {
             .collect()
     }
 
+    /// The folded words a node's settings are found by: their names, captions and choices
+    /// in `locale` and English. Built once per node, language and registry generation.
+    fn setting_words(&self, info: &NodeInfo<'_>, locale: &str) -> Arc<[String]> {
+        let generation = self.registry().generation();
+        let id = info.definition.definition.id.as_str();
+        let mut cache = self
+            .setting_words
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.generation != Some(generation) || cache.locale != locale {
+            *cache = SettingWords {
+                generation: Some(generation),
+                locale: locale.to_owned(),
+                words: HashMap::new(),
+            };
+        }
+        if let Some(words) = cache.words.get(id) {
+            return Arc::clone(words);
+        }
+        let words: Arc<[String]> = self.build_setting_words(info, locale).into();
+        let _ = cache.words.insert(id.to_owned(), Arc::clone(&words));
+        words
+    }
+
+    fn build_setting_words(&self, info: &NodeInfo<'_>, locale: &str) -> Vec<String> {
+        let mut settings = Vec::new();
+        let Some(properties) = info
+            .definition
+            .config_schema
+            .as_ref()
+            .and_then(|schema| schema["properties"].as_object())
+        else {
+            return settings;
+        };
+        for (name, schema) in properties
+            .iter()
+            .filter(|(_, schema)| schema["readOnly"] != true)
+        {
+            settings.push(fold_search(&name.replace(['_', '-'], " ")));
+            let caption = format!("setting-{}", node_key(name));
+            for locale in [locale, crate::SOURCE_LANGUAGE] {
+                if let Some(text) = self.catalogs.message(locale, &caption) {
+                    settings.push(fold_search(&text));
+                }
+            }
+            for value in schema["enum"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+            {
+                settings.push(fold_search(&value.replace('-', " ")));
+                let caption = format!("setting-choice-{}", node_key(value));
+                for locale in [locale, crate::SOURCE_LANGUAGE] {
+                    if let Some(text) = self.catalogs.message(locale, &caption) {
+                        settings.push(fold_search(&text));
+                    }
+                }
+            }
+        }
+        settings.sort_unstable();
+        settings.dedup();
+        settings
+    }
+
     fn rank(
         &self,
         info: &NodeInfo<'_>,
@@ -310,40 +390,7 @@ impl Host {
                 description.push_str(&fold_search(&text));
             }
         }
-        let mut settings = Vec::new();
-        if let Some(properties) = info
-            .definition
-            .config_schema
-            .as_ref()
-            .and_then(|schema| schema["properties"].as_object())
-        {
-            for (name, schema) in properties
-                .iter()
-                .filter(|(_, schema)| schema["readOnly"] != true)
-            {
-                settings.push(fold_search(&name.replace(['_', '-'], " ")));
-                let caption = format!("setting-{}", node_key(name));
-                for locale in [locale, crate::SOURCE_LANGUAGE] {
-                    if let Some(text) = self.catalogs.message(locale, &caption) {
-                        settings.push(fold_search(&text));
-                    }
-                }
-                for value in schema["enum"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(serde_json::Value::as_str)
-                {
-                    settings.push(fold_search(&value.replace('-', " ")));
-                    let caption = format!("setting-choice-{}", node_key(value));
-                    for locale in [locale, crate::SOURCE_LANGUAGE] {
-                        if let Some(text) = self.catalogs.message(locale, &caption) {
-                            settings.push(fold_search(&text));
-                        }
-                    }
-                }
-            }
-        }
+        let settings = self.setting_words(info, locale);
 
         // The whole search against the name and aliases, as a phrase.
         let phrase = if label == search {

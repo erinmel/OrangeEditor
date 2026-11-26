@@ -2,7 +2,6 @@
 use crate::canvas::{Canvas, CanvasResponse};
 use crate::i18n::{t, tf};
 use crate::{Editor, properties};
-#[cfg(test)]
 use orange_host::intrinsic;
 use orange_host::{AuthoringView, Found, Host, HostError, NodeId, NodeView};
 
@@ -14,7 +13,8 @@ pub(crate) struct FunctionBody {
     revision: u64,
     view: AuthoringView,
     pub(crate) canvas: Canvas,
-    select_after_refresh: Option<NodeId>,
+    /// What to select once the view shows the edit that made it (a new or pasted node).
+    select_after_refresh: Vec<NodeId>,
     search: Option<NodeSearch>,
     insertion: Option<[f32; 2]>,
     error: Option<String>,
@@ -65,7 +65,7 @@ impl Editor {
             revision: document.draft.document().revision(),
             view,
             canvas,
-            select_after_refresh: None,
+            select_after_refresh: Vec::new(),
             search: None,
             insertion: None,
             error: None,
@@ -99,8 +99,9 @@ impl Editor {
             }
             body.revision = revision;
             body.canvas.restore(&view.graph);
-            if let Some(node) = body.select_after_refresh.take() {
-                body.canvas.select(Some(node));
+            let chosen = std::mem::take(&mut body.select_after_refresh);
+            if !chosen.is_empty() {
+                body.canvas.select_many(&chosen);
             }
             body.canvas.set_failure_routes(view.failure_routes.clone());
             body.canvas.set_port_details(view.port_details.clone());
@@ -224,7 +225,12 @@ impl Editor {
             (definition, at)
         });
         self.function_body = Some(body);
-        if let Err(error) = self.apply_function_edit(host, response, add)
+        let (copied, applied) = self.apply_function_edit(host, response, add);
+        if let Some(clip) = copied {
+            self.clip = Some(clip.clone());
+            ui.ctx().copy_text(clip);
+        }
+        if let Err(error) = applied
             && let Some(body) = &mut self.function_body
         {
             body.error = Some(tf(
@@ -235,75 +241,120 @@ impl Editor {
         }
     }
 
+    /// Applies everything the function canvas asked for this frame, in the order the
+    /// main canvas does: moves, a node to add, wiring and values, renames and ports,
+    /// then clipboard actions and removals. Each is its own undo step. The first edit
+    /// the host refuses stops the rest, and what was already applied is shown. Returns
+    /// the text copied or cut, for the system clipboard.
     fn apply_function_edit(
         &mut self,
         host: &mut Host,
+        mut done: CanvasResponse,
+        add: Option<(String, [f32; 2])>,
+    ) -> (Option<String>, Result<(), HostError>) {
+        let literal = done.edit_literal.take();
+        let (Some(body), Some(document)) = (&mut self.function_body, &mut self.document) else {
+            return (None, Ok(()));
+        };
+        let mut edits = BodyEdits::default();
+        let result = edits.apply(host, &mut document.draft, body, done, add);
+        if edits.changed {
+            document.unsaved = true;
+            if result.is_ok() {
+                body.error = None;
+            }
+            self.refresh(host);
+        }
+        if let Some((node, port)) = literal {
+            self.begin_value_input(node, &port);
+        }
+        (edits.copied, result)
+    }
+}
+
+/// What applying one frame's edits to a function body did.
+#[derive(Debug, Default)]
+struct BodyEdits {
+    changed: bool,
+    copied: Option<String>,
+}
+
+impl BodyEdits {
+    fn apply(
+        &mut self,
+        host: &Host,
+        draft: &mut orange_host::Draft,
+        body: &mut FunctionBody,
         done: CanvasResponse,
         add: Option<(String, [f32; 2])>,
     ) -> Result<(), HostError> {
-        let Some(body) = &mut self.function_body else {
-            return Ok(());
-        };
-        let Some(document) = &mut self.document else {
-            return Ok(());
-        };
-        let draft = &mut document.draft;
-        if done.moved && draft.place(&body.canvas.places())? {
-            document.unsaved = true;
+        if done.moved {
+            self.changed |= draft.place(&body.canvas.places())?;
         }
-        let changed = if let Some((definition, at)) = add {
+        if let Some((definition, at)) = add {
             let node = host.add_function_node(draft, &body.id, &definition, at)?;
-            body.select_after_refresh = Some(node);
-            true
-        } else if let Some((from, to)) = done.connect {
-            host.connect(draft, (from.0, &from.1), (to.0, &to.1))?
-        } else if let Some((node, (from, to))) = done.insert {
-            host.insert_into_wire(draft, node, (from.0, &from.1), (to.0, &to.1))?
-        } else if let Some((from, to)) = done.remove_wire {
-            host.disconnect_wire(draft, (from.0, &from.1), (to.0, &to.1))?
-        } else if let Some((node, port, input)) = done.disconnect {
-            host.disconnect(draft, (node, &port), input)?
-        } else if let Some((node, port, value)) = done.set_input {
-            host.set_input(draft, (node, &port), Some(&value))?
-        } else if let Some((node, pointer, value)) = done.set_config {
-            let Some(view) = body.node(node) else {
-                return Ok(());
-            };
+            body.select_after_refresh = vec![node];
+            self.changed = true;
+        }
+        if let Some((from, to)) = done.connect {
+            self.changed |= host.connect(draft, (from.0, &from.1), (to.0, &to.1))?;
+        }
+        if let Some((node, (from, to))) = done.insert {
+            self.changed |= host.insert_into_wire(draft, node, (from.0, &from.1), (to.0, &to.1))?;
+        }
+        if let Some((from, to)) = done.remove_wire {
+            self.changed |= host.disconnect_wire(draft, (from.0, &from.1), (to.0, &to.1))?;
+        }
+        if let Some((node, port, input)) = done.disconnect {
+            self.changed |= host.disconnect(draft, (node, &port), input)?;
+        }
+        if let Some((node, port, value)) = done.set_input {
+            self.changed |= host.set_input(draft, (node, &port), Some(&value))?;
+        }
+        if let Some((node, pointer, value)) = done.set_config
+            && let Some(view) = body.node(node)
+        {
             let mut settings = view.settings.clone();
             properties::set_at(&mut settings, &pointer, Some(value));
-            host.set_config(draft, node, &settings)?
-        } else if let Some((node, name)) = done.set_name {
-            host.rename_node(draft, node, &name)?
-        } else if let Some((node, port)) = done.add_port {
-            let _ = host.add_port(draft, node, &port)?;
-            true
-        } else if let Some((node, port)) = done.remove_port {
-            host.remove_port(draft, (node, &port))?
-        } else if !done.remove.is_empty() {
-            let nodes: Vec<_> = done
-                .remove
-                .into_iter()
-                .filter(|node| {
-                    body.node(*node).is_some_and(|view| {
-                        !matches!(
-                            view.definition.as_str(),
-                            orange_host::intrinsic::FUNCTION_ENTRY
-                                | orange_host::intrinsic::FUNCTION_OUTPUTS
-                                | orange_host::intrinsic::RETURN
-                        )
-                    })
-                })
-                .collect();
-            !nodes.is_empty() && host.remove_nodes(draft, &nodes)?
-        } else {
-            false
-        };
-        if changed {
-            body.error = None;
-            self.refresh(host);
+            self.changed |= host.set_config(draft, node, &settings)?;
         }
-        if let Some((node, port)) = done.edit_literal {
-            self.begin_value_input(node, &port);
+        if let Some((node, name)) = done.set_name {
+            self.changed |= host.rename_node(draft, node, &name)?;
+        }
+        if let Some((node, port)) = done.add_port {
+            let _ = host.add_port(draft, node, &port)?;
+            self.changed = true;
+        }
+        if let Some((node, port)) = done.remove_port {
+            self.changed |= host.remove_port(draft, (node, &port))?;
+        }
+        let selection = body.canvas.selection();
+        if done.copy || done.cut {
+            self.copied = Some(host.copy(draft, &selection)?);
+        }
+        if let Some(clip) = done.paste {
+            let pasted =
+                host.paste_into_function(draft, &body.id, &clip, body.canvas.paste_place())?;
+            self.changed |= !pasted.is_empty();
+            body.select_after_refresh = pasted;
+        }
+        let mut remove = done.remove;
+        if done.cut {
+            remove.extend(selection);
+        }
+        // The function's own entry and result cards stay: they are its interface.
+        remove.retain(|node| {
+            body.node(*node).is_some_and(|view| {
+                !matches!(
+                    view.definition.as_str(),
+                    intrinsic::FUNCTION_ENTRY | intrinsic::FUNCTION_OUTPUTS | intrinsic::RETURN
+                )
+            })
+        });
+        remove.sort_unstable();
+        remove.dedup();
+        if !remove.is_empty() {
+            self.changed |= host.remove_nodes(draft, &remove)?;
         }
         Ok(())
     }
@@ -313,6 +364,159 @@ impl Editor {
 mod tests {
     use super::*;
     use orange_host::{HostOptions, PortKey, Value};
+
+    /// An editor with a function made of a number and a pass-through, its body open.
+    fn open_body(host: &mut Host) -> (Editor, NodeId, NodeId) {
+        let mut editor = Editor::new();
+        let text = host.bind(&crate::tests::graph()).unwrap();
+        editor.open(host, "graph.json", text);
+        let sink = editor.graph().unwrap().nodes[1].id;
+        let number = editor
+            .add_node_at(host, intrinsic::WHOLE_NUMBER, [900.0, 700.0])
+            .unwrap();
+        let pass = editor
+            .add_node_at(host, intrinsic::VALUE, [1200.0, 700.0])
+            .unwrap();
+        assert!(editor.set_input(host, (number, "value"), Some("9")));
+        assert!(editor.connect(host, (number, "result"), (pass, "value")));
+        assert!(editor.connect(host, (pass, "result"), (sink, "value")));
+        editor.canvas().select_many(&[number, pass]);
+        let call = editor.extract_selection(host, "Shared number").unwrap();
+        assert!(editor.open_function(host, call));
+        (editor, number, pass)
+    }
+
+    fn body_nodes(editor: &Editor) -> Vec<NodeId> {
+        let body = editor.function_body.as_ref().unwrap();
+        let document = editor.document.as_ref().unwrap().draft.document();
+        let function = document
+            .functions()
+            .values()
+            .find(|function| function.id.to_string() == body.id)
+            .unwrap();
+        function.body.nodes.keys().copied().collect()
+    }
+
+    #[test]
+    fn every_edit_of_one_frame_is_applied_to_the_body() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let (mut editor, number, pass) = open_body(&mut host);
+        let extra = host
+            .add_function_node(
+                &mut editor.document.as_mut().unwrap().draft,
+                &editor.function_body.as_ref().unwrap().id,
+                intrinsic::WHOLE_NUMBER,
+                [0.0, 0.0],
+            )
+            .unwrap();
+        // A value and a wire in the same frame: both land.
+        let (_, applied) = editor.apply_function_edit(
+            &mut host,
+            CanvasResponse {
+                set_input: Some((extra, "value".to_owned(), "4".to_owned())),
+                connect: Some(((extra, "result".to_owned()), (pass, "value".to_owned()))),
+                ..CanvasResponse::default()
+            },
+            None,
+        );
+        applied.unwrap();
+        let draft = &editor.document.as_ref().unwrap().draft;
+        let text = draft.text().unwrap();
+        assert!(text.contains("\"4\""), "the value was set");
+        let id = &editor.function_body.as_ref().unwrap().id;
+        let body = &draft
+            .document()
+            .functions()
+            .values()
+            .find(|function| function.id.to_string() == *id)
+            .unwrap()
+            .body;
+        assert!(
+            body.edges
+                .values()
+                .any(|edge| edge.from.node == extra && edge.to.node == pass),
+            "the wire was made"
+        );
+        assert!(
+            !body.edges.values().any(|edge| edge.from.node == number),
+            "the new wire replaced the old one"
+        );
+    }
+
+    #[test]
+    fn copy_paste_and_cut_work_inside_a_function_body() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let (mut editor, number, pass) = open_body(&mut host);
+        let before = body_nodes(&editor);
+        let root = editor.graph().unwrap().nodes.len();
+        editor
+            .function_body
+            .as_mut()
+            .unwrap()
+            .canvas
+            .select_many(&[number, pass]);
+        let (copied, applied) = editor.apply_function_edit(
+            &mut host,
+            CanvasResponse {
+                copy: true,
+                ..CanvasResponse::default()
+            },
+            None,
+        );
+        applied.unwrap();
+        let clip = copied.expect("copying gives clipboard text");
+        let (_, applied) = editor.apply_function_edit(
+            &mut host,
+            CanvasResponse {
+                paste: Some(clip),
+                ..CanvasResponse::default()
+            },
+            None,
+        );
+        applied.unwrap();
+        // The copies go into the function, not the graph around it.
+        assert_eq!(body_nodes(&editor).len(), before.len() + 2);
+        assert_eq!(editor.graph().unwrap().nodes.len(), root);
+
+        // Cutting the interface cards with the rest leaves the interface in place.
+        let everything = body_nodes(&editor);
+        editor
+            .function_body
+            .as_mut()
+            .unwrap()
+            .canvas
+            .select_many(&everything);
+        let (copied, applied) = editor.apply_function_edit(
+            &mut host,
+            CanvasResponse {
+                cut: true,
+                ..CanvasResponse::default()
+            },
+            None,
+        );
+        applied.unwrap();
+        assert!(copied.is_some());
+        let left = body_nodes(&editor);
+        assert!(!left.is_empty() && left.len() < everything.len());
+        assert!(!left.contains(&number) && !left.contains(&pass));
+        // One undo brings the cut nodes back.
+        editor.undo(&mut host);
+        assert_eq!(body_nodes(&editor).len(), everything.len());
+
+        // A trigger cannot be part of a pure function, so pasting one changes nothing.
+        let manual = editor
+            .add_node_at(&mut host, intrinsic::ON_MANUAL, [0.0, 0.0])
+            .unwrap();
+        let function = editor.function_body.as_ref().unwrap().id.clone();
+        let draft = &mut editor.document.as_mut().unwrap().draft;
+        let clip = host.copy(draft, &[manual]).unwrap();
+        let unchanged = draft.text().unwrap();
+        assert!(
+            host.paste_into_function(draft, &function, &clip, [0.0, 0.0])
+                .is_err()
+        );
+        assert_eq!(draft.text().unwrap(), unchanged);
+    }
 
     #[test]
     fn shared_function_edits_survive_reopen_and_compile_for_every_call() {
@@ -397,6 +601,7 @@ mod tests {
                 CanvasResponse::default(),
                 Some((intrinsic::WHOLE_NUMBER.to_owned(), [600.0, 500.0])),
             )
+            .1
             .unwrap();
         let frame = ctx.run_ui(egui::RawInput::default(), |ui| editor.ui(ui, &mut host));
         frame.drop_without_applying_deltas();
@@ -416,6 +621,7 @@ mod tests {
                 },
                 None,
             )
+            .1
             .unwrap();
         editor
             .apply_function_edit(
@@ -426,6 +632,7 @@ mod tests {
                 },
                 None,
             )
+            .1
             .unwrap();
         assert_eq!(
             results(&mut host, &editor),

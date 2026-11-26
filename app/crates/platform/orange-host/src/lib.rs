@@ -750,6 +750,8 @@ pub struct Host {
     graphs: Graphs,
     adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
     credential_approvals: Mutex<BTreeSet<String>>,
+    /// The node search's setting words per node, built once per language and registry.
+    setting_words: Mutex<search::SettingWords>,
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
@@ -1084,6 +1086,7 @@ impl Host {
             native: Native(Arc::new(math), services),
             adapters,
             credential_approvals: Mutex::default(),
+            setting_words: Mutex::default(),
             shared: BTreeMap::new(),
             engine,
             guests: Vec::new(),
