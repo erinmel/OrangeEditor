@@ -248,7 +248,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
 /// Paints a field's frame: the canvas's field background and a thin outline, the
 /// selection color while the pointer is on it.
 pub(super) fn frame(painter: &egui::Painter, rect: Rect, zoom: f32, colors: &Palette, hot: bool) {
-    painter.rect_filled(rect, 5.0 * zoom, colors.background);
+    painter.rect_filled(rect, FIELD_RADIUS * zoom, colors.background);
     painter.rect_stroke(
         rect,
         5.0 * zoom,
@@ -1155,7 +1155,7 @@ impl Canvas {
                 });
                 let painter = ui.painter();
                 if touched.hovered() {
-                    painter.rect_filled(slot, 5.0 * zoom, colors.background);
+                    painter.rect_filled(slot, FIELD_RADIUS * zoom, colors.background);
                 }
                 painter.rect_stroke(
                     slot,
@@ -1731,7 +1731,7 @@ fn styled(ui: &mut egui::Ui, zoom: f32) {
     ] {
         state.bg_fill = colors.background;
         state.weak_bg_fill = colors.background;
-        state.corner_radius = egui::CornerRadius::same((5.0 * zoom) as u8);
+        state.corner_radius = egui::CornerRadius::same((FIELD_RADIUS * zoom) as u8);
         state.expansion = 0.0;
     }
     widgets.inactive.bg_stroke = Stroke::new(1.0, colors.outline);

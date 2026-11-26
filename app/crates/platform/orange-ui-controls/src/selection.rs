@@ -3,6 +3,9 @@ use egui::{Button, Key, Rect, Response, Slider, Stroke, StrokeKind, Ui, pos2, ve
 use std::num::NonZeroU16;
 use std::ops::RangeInclusive;
 
+/// Corner radius of a highlighted option row, before zoom.
+const OPTION_RADIUS: f32 = 4.0;
+
 /// Draws a single-choice group. Narrow panels stack the segments inside the
 /// same container. Arrows move selection within the focused group.
 pub fn segmented<T: Copy + PartialEq>(
@@ -89,10 +92,14 @@ impl BinaryChoice<'_> {
                 } else {
                     theme.primary
                 };
-                ink = crate::theme::ensure_contrast(theme.on_primary, highlight, 4.5);
-                painter.rect_filled(bounds, 4.0 * zoom, highlight);
+                ink = crate::theme::ensure_contrast(
+                    theme.on_primary,
+                    highlight,
+                    crate::theme::TEXT_CONTRAST,
+                );
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, highlight);
             } else if response.is_some_and(Response::hovered) {
-                painter.rect_filled(bounds, 4.0 * zoom, theme.bg_elevated());
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, theme.bg_elevated());
             }
             painter.text(
                 bounds.center(),
@@ -102,7 +109,12 @@ impl BinaryChoice<'_> {
                 ink,
             );
             if response.is_some_and(Response::has_focus) {
-                painter.rect_stroke(bounds, 4.0 * zoom, theme.focus_ring, StrokeKind::Inside);
+                painter.rect_stroke(
+                    bounds,
+                    OPTION_RADIUS * zoom,
+                    theme.focus_ring,
+                    StrokeKind::Inside,
+                );
             }
         }
     }
@@ -200,10 +212,14 @@ impl ChoiceRow<'_> {
                 } else {
                     theme.primary
                 };
-                ink = crate::theme::ensure_contrast(theme.on_primary, highlight, 4.5);
-                painter.rect_filled(bounds, 4.0 * zoom, highlight);
+                ink = crate::theme::ensure_contrast(
+                    theme.on_primary,
+                    highlight,
+                    crate::theme::TEXT_CONTRAST,
+                );
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, highlight);
             } else if response.is_some_and(Response::hovered) {
-                painter.rect_filled(bounds, 4.0 * zoom, theme.bg_elevated());
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, theme.bg_elevated());
             }
             let size = 12.5 * zoom;
             let galley = painter.layout_no_wrap(
@@ -224,7 +240,12 @@ impl ChoiceRow<'_> {
             };
             painter.galley(bounds.center() - galley.size() * 0.5, galley, ink);
             if response.is_some_and(Response::has_focus) {
-                painter.rect_stroke(bounds, 4.0 * zoom, theme.focus_ring, StrokeKind::Inside);
+                painter.rect_stroke(
+                    bounds,
+                    OPTION_RADIUS * zoom,
+                    theme.focus_ring,
+                    StrokeKind::Inside,
+                );
             }
         }
     }
@@ -2267,7 +2288,7 @@ mod tests {
                     crate::theme::ensure_contrast(
                         theme.panel.lerp_to_gamma(theme.text, 0.23),
                         theme.panel,
-                        3.0,
+                        crate::theme::UI_CONTRAST,
                     ),
                 ));
                 rect = stepped_slider(
@@ -2338,7 +2359,7 @@ mod tests {
                     crate::theme::ensure_contrast(
                         theme.panel.lerp_to_gamma(theme.text, 0.23),
                         theme.panel,
-                        3.0,
+                        crate::theme::UI_CONTRAST,
                     ),
                 ));
                 let tick = SliderStyle {

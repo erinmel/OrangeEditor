@@ -31,7 +31,7 @@ pub fn sidebar_row(
         } else {
             palette.panel
         };
-        let ink = crate::theme::ensure_contrast(palette.text, fill, 4.5);
+        let ink = crate::theme::ensure_contrast(palette.text, fill, crate::theme::TEXT_CONTRAST);
         let painter = ui.painter_at(rect);
         if selected || response.hovered() {
             painter.rect_filled(rect, 3, fill);

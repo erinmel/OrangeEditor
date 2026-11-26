@@ -177,7 +177,11 @@ impl Theme {
 
     fn slider_idle(self, surface: Surface) -> egui::Color32 {
         let background = self.background(surface);
-        theme::ensure_contrast(background.lerp_to_gamma(self.text, 0.23), background, 3.0)
+        theme::ensure_contrast(
+            background.lerp_to_gamma(self.text, 0.23),
+            background,
+            theme::UI_CONTRAST,
+        )
     }
 
     fn selected_fill(self, surface: Surface) -> egui::Color32 {
@@ -734,7 +738,7 @@ fn role_colors(
             (
                 fill,
                 theme.focus,
-                theme::ensure_contrast(theme.text, fill, 5.3),
+                theme::ensure_contrast(theme.text, fill, theme::SELECTED_TEXT_CONTRAST),
             )
         }
         Action::Secondary => {
@@ -746,7 +750,7 @@ fn role_colors(
             (
                 fill,
                 theme.border,
-                theme::ensure_contrast(theme.text, fill, 4.5),
+                theme::ensure_contrast(theme.text, fill, theme::TEXT_CONTRAST),
             )
         }
         Action::Outline => (background, theme.border, theme.text),
@@ -1215,7 +1219,7 @@ pub(crate) fn input_frame(ui: &Ui, surface: Surface, radius: u8) -> egui::Frame 
     } else {
         (theme.inset, theme.border)
     };
-    let border = theme::ensure_contrast(ink, theme.background(surface), 3.0);
+    let border = theme::ensure_contrast(ink, theme.background(surface), theme::UI_CONTRAST);
     egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, border))

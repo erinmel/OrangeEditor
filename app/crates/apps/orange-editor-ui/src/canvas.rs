@@ -68,6 +68,8 @@ const WIRE_GRAB: f32 = 7.0;
 /// How much one point of wheel movement zooms.
 const WHEEL_ZOOM: f32 = 0.0015;
 const PORT_RADIUS: f32 = 5.0;
+/// Corner radius of fields, chips and buttons drawn on a card, before zoom.
+const FIELD_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.60;
 /// Space between a card's edge and what is inside it.
@@ -3851,7 +3853,7 @@ fn draw_node<'a>(
                     (true, true) => colors.selected,
                     (true, false) => colors.exec,
                 };
-                painter.rect_filled(button, 5.0 * zoom, fill);
+                painter.rect_filled(button, FIELD_RADIUS * zoom, fill);
                 if readable {
                     let _ = painter.text(
                         button.center(),
@@ -3894,7 +3896,11 @@ fn draw_node<'a>(
                         Pos2::new(rect.left() + pad - 4.0 * zoom, y - height / 2.0),
                         Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
                     );
-                    painter.rect_filled(chip, 5.0 * zoom, colors.exec.gamma_multiply(0.16));
+                    painter.rect_filled(
+                        chip,
+                        FIELD_RADIUS * zoom,
+                        colors.exec.gamma_multiply(0.16),
+                    );
                     draw_arrow(
                         painter,
                         Pos2::new(chip.min.x + 7.0 * zoom, y),
