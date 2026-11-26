@@ -23,8 +23,8 @@ mod transport;
 mod ws;
 
 pub use feed::{
-    FetchResponse, download, fetch, fetch_parts, fetch_response, media_reader, new_feed_key,
-    sha256, sign_feed, verify_feed,
+    FetchResponse, FetchRules, download, fetch, fetch_parts, fetch_response, media_reader,
+    new_feed_key, sha256, sign_feed, verify_feed,
 };
 pub use ws::MAX_QUEUED_MESSAGES;
 

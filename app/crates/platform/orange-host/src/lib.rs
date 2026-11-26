@@ -100,7 +100,8 @@ pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
 pub use orange_guest::{
-    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, is_local,
+    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, Reach,
+    is_local, is_local_address,
 };
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
@@ -1489,32 +1490,44 @@ fn short_label(id: &str) -> Option<&'static str> {
 }
 
 /// Sends one package request: method, URL, headers, body, the largest response body,
-/// and whether a plain `http://` URL may be used. Returns the status, the headers in
+/// and which resolved addresses it may connect to. Returns the status, the headers in
 /// the order received and the body. `orange_net::fetch_parts` is one.
-pub type HttpTransport =
-    fn(&str, &str, &[(String, String)], &[u8], u64, bool) -> Result<HttpParts, String>;
+pub type HttpTransport = fn(
+    &str,
+    &str,
+    &[(String, String)],
+    &[u8],
+    u64,
+    fn(std::net::IpAddr) -> bool,
+) -> Result<HttpParts, String>;
 
 /// A response as an [`HttpTransport`] returns it: status, headers, body.
 pub type HttpParts = (u16, Vec<(String, String)>, Vec<u8>);
 
 /// The network client of installed packages that hold the `http` or `http-local`
 /// grant, over the transport an application supplies. The plugin engine has already
-/// checked each address, so a plain `http://` URL reaches it only for a local address
-/// under `http-local`.
+/// checked the URL; the transport connects only to addresses the request's [`Reach`]
+/// allows, so a public name cannot lead an `http` request into the local network.
 #[derive(Debug, Clone, Copy)]
 pub struct PluginHttp(pub HttpTransport);
 
 impl HttpClient for PluginHttp {
-    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+    fn send(&self, request: &HttpRequest, reach: Reach) -> Result<HttpResponse, String> {
+        let connect_to: fn(std::net::IpAddr) -> bool = match reach {
+            Reach::Local => |address| Reach::Local.allows(address),
+            Reach::Internet if request.url.starts_with("https://") => {
+                |address| Reach::Internet.allows(address)
+            }
+            Reach::Internet => return Err("plain HTTP reaches only local addresses".into()),
+        };
         let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        let (send, plain) = (self.0, request.url.starts_with("http://"));
-        send(
+        (self.0)(
             &request.method,
             &request.url,
             &request.headers,
             &request.body,
             limit,
-            plain,
+            connect_to,
         )
         .map(|(status, headers, body)| HttpResponse {
             status,

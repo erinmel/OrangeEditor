@@ -152,16 +152,23 @@ Local HTTP, response headers and heavy compute (2026-11-24; `orange-guest`, `sdk
 `orange-host`): a manifest's `permissions` may also list `"http-local"` and
 `"compute"`. `http-local` (`Grants::http_local`) links the same `http` import and
 reaches this computer and the local network over `http://` or `https://`:
-`localhost` and names under it, `.local` names, and loopback, private (10/8,
-172.16/12, 192.168/16) and link-local IPv4 and IPv6 literals, including unique-local
-`fc00::/7` (`orange_guest::is_local`). Other names are never resolved for this check,
-so a public name pointing at a local address is not local. `http` alone still reaches
-only `https://`, and the host list never limits local addresses. A request the grants
-do not reach is `not-allowed`; a scheme other than HTTP(S) or a malformed address is
-`invalid-request`. The `http.response` record carries `headers` (in the order received)
-before `body`; headers and body together must fit the transfer limit. An application's
-client must not follow redirects, or must check each new address the same way;
-`orange_net::fetch_response` follows none and sends `http://` only when asked.
+`localhost` and names under it, `.local` names, and address literals that are
+unspecified, loopback, private (10/8, 172.16/12, 192.168/16), shared (100.64/10),
+link-local or broadcast IPv4, or unspecified, loopback, unique-local `fc00::/7`,
+link-local or site-local IPv6, or IPv6 forms embedding such an IPv4 address
+(`orange_guest::is_local`, `is_local_address`). `http` alone reaches only public
+`https://` addresses: never a local name or literal, whatever the host list says, and
+the host list never limits `http-local`. The engine passes the client the request's
+`Reach` (2026-11-26), and the client connects only to resolved addresses that reach
+allows (`Reach::allows`), so a public name that resolves into the local network does
+not carry an `http` request there, and a local name does not carry an `http-local`
+request out. A request the grants do not reach is `not-allowed`; a scheme other than
+HTTP(S) or a malformed address is `invalid-request`; an address refused after
+resolving is `failed`. The `http.response` record carries `headers` (in the order
+received) before `body`; headers and body together must fit the transfer limit. An
+application's client must not follow redirects, or must check each new address the
+same way; `orange_net::fetch_parts` follows none, filters resolved addresses with the
+function it is given and connects directly, without a proxy from the environment.
 `compute` (`Grants::compute`) gives each call of that package's instances
 `HEAVY_COMPUTE_FACTOR` (16) times the engine's per-call fuel, transfer and input
 limits; memory and the engine's aggregate limits are unchanged. The `orange` command

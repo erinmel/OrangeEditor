@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use orange_guest::{
     Grants, GuestAccess, GuestEngine, GuestError, GuestLimits, GuestPlugin, HttpClient,
-    HttpRequest, HttpResponse,
+    HttpRequest, HttpResponse, Reach,
 };
 use orange_model::types::TypeRegistryBuilder;
 
@@ -102,7 +102,7 @@ const GUEST: &str = r#"(component
 #[derive(Debug, Default)]
 struct Recorded(Mutex<Vec<HttpRequest>>);
 impl HttpClient for Recorded {
-    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+    fn send(&self, request: &HttpRequest, _: Reach) -> Result<HttpResponse, String> {
         self.0.lock().unwrap().push(request.clone());
         if request.url.ends_with("/down") {
             return Err("connection refused by 10.0.0.7".into());

@@ -5,6 +5,7 @@
 //! Errors go to the guest as one of the fixed words below, never as operating-system
 //! text, so a path or address outside the plugin's reach does not leak through them.
 use orange_sandbox::{Folder, FsError};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -57,14 +58,33 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+/// Which addresses a plugin request was let through to, by the grant that allowed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Public addresses only, under the `http` grant.
+    Internet,
+    /// This computer and the local network ([`is_local_address`]), under `http-local`.
+    Local,
+}
+
+impl Reach {
+    /// Whether a connection to `address` stays within this reach. The client checks
+    /// every address a host name resolves to, so a public name that points at the local
+    /// network does not carry an `http` request there.
+    pub fn allows(self, address: IpAddr) -> bool {
+        is_local_address(address) == (self == Self::Local)
+    }
+}
+
 /// Sends the requests of plugins that hold the `http` or `http-local` grant. The
-/// application implements it with its own network client, which decides timeouts and
-/// which hosts are reachable. The address was checked before the call; a client that
-/// follows redirects must check each new address the same way, or not follow them. It is called on the thread that runs the plugin and may
-/// block it.
+/// application implements it with its own network client, which decides timeouts.
+/// The URL was checked before the call. The client must connect only to addresses
+/// `reach` [allows](Reach::allows), after resolving the host name, and must check each
+/// redirect the same way or not follow redirects. It is called on the thread that runs
+/// the plugin and may block it.
 pub trait HttpClient: Send + Sync + std::fmt::Debug {
     /// Sends the request. An error is reported to the plugin as `failed`.
-    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String>;
+    fn send(&self, request: &HttpRequest, reach: Reach) -> Result<HttpResponse, String>;
 }
 
 /// What the instances of one package reach when they hold the matching grant.
@@ -77,8 +97,8 @@ pub struct GuestAccess {
     /// Most bytes the data directory may hold; `None` is no limit.
     pub max_data_bytes: Option<u64>,
     /// The hosts `http` requests may go to, such as `api.example.org`; a name starting
-    /// with `.` allows every host under that domain. `None` allows any host. Local
-    /// addresses reached through `http-local` are not limited by it.
+    /// with `.` allows every public host under that domain. `None` allows any public
+    /// host. It never opens a local address to `http`, and does not limit `http-local`.
     pub http_hosts: Option<Vec<String>>,
 }
 
@@ -172,8 +192,8 @@ impl GuestAccess {
     }
 
     /// Sends `request` when the grants reach its address: `internet` (the `http`
-    /// grant) reaches any `https://` host [`http_hosts`](Self::http_hosts) allows, and
-    /// `local` (the `http-local` grant) reaches local addresses ([`is_local`]) over
+    /// grant) reaches public `https://` hosts [`http_hosts`](Self::http_hosts) allows,
+    /// and `local` (the `http-local` grant) reaches local addresses ([`is_local`]) over
     /// `http://` or `https://`.
     pub(crate) fn send(
         &self,
@@ -218,11 +238,15 @@ impl GuestAccess {
                 })
             })
         };
-        let reachable = (local && is_local(&name)) || (internet && secure && listed());
-        if !reachable {
+        let reach = if is_local(&name) {
+            local.then_some(Reach::Local)
+        } else {
+            (internet && secure && listed()).then_some(Reach::Internet)
+        };
+        let Some(reach) = reach else {
             return Err(NOT_ALLOWED);
-        }
-        let response = client.send(request).map_err(|_| FAILED)?;
+        };
+        let response = client.send(request, reach).map_err(|_| FAILED)?;
         let header_bytes = response
             .headers
             .iter()
@@ -252,29 +276,47 @@ fn host_name(authority: &str) -> Option<&str> {
 }
 
 /// Whether a host name is this computer or the local network, as the `http-local`
-/// grant reaches: `localhost` and names under it, `.local` names, and loopback,
-/// private and link-local IPv4 and IPv6 addresses. Other names are not resolved here,
-/// so a public name that happens to point at a local address is not local.
+/// grant reaches: `localhost` and names under it, `.local` names, and address literals
+/// [`is_local_address`] accepts. Names are not resolved here; the client checks the
+/// resolved addresses against the request's [`Reach`].
 pub fn is_local(name: &str) -> bool {
-    use std::net::IpAddr;
     let name = name.trim_end_matches('.').to_ascii_lowercase();
-    if name == "localhost" || name.ends_with(".localhost") || name.ends_with(".local") {
-        return true;
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name.ends_with(".local")
+        || name.parse().is_ok_and(is_local_address)
+}
+
+/// Whether an address is this computer or a network not routed on the internet:
+/// unspecified, loopback, private, shared (100.64/10), link-local and broadcast IPv4;
+/// unspecified, loopback, unique-local, link-local and site-local IPv6; and IPv6
+/// forms that embed a local IPv4 address.
+pub fn is_local_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => is_local_v4(address),
+        IpAddr::V6(address) => is_local_v6(address),
     }
-    match name.parse::<IpAddr>() {
-        Ok(IpAddr::V4(address)) => {
-            address.is_loopback() || address.is_private() || address.is_link_local()
-        }
-        Ok(IpAddr::V6(address)) => {
-            address.is_loopback()
-                || address.is_unique_local()
-                || address.is_unicast_link_local()
-                || address
-                    .to_ipv4_mapped()
-                    .is_some_and(|v4| v4.is_loopback() || v4.is_private() || v4.is_link_local())
-        }
-        Err(_) => false,
-    }
+}
+
+fn is_local_v4(address: Ipv4Addr) -> bool {
+    let [first, second, ..] = address.octets();
+    let shared = first == 100 && (64..128).contains(&second);
+    first == 0
+        || shared
+        || address.is_loopback()
+        || address.is_private()
+        || address.is_link_local()
+        || address.is_broadcast()
+}
+
+fn is_local_v6(address: Ipv6Addr) -> bool {
+    const SITE_LOCAL: u16 = 0xfec0;
+    address.is_unspecified()
+        || address.is_loopback()
+        || address.is_unique_local()
+        || address.is_unicast_link_local()
+        || address.segments()[0] & 0xffc0 == SITE_LOCAL
+        || address.to_ipv4().is_some_and(is_local_v4)
 }
 
 #[cfg(test)]
@@ -323,7 +365,7 @@ mod tests {
     #[derive(Debug)]
     struct Echo;
     impl HttpClient for Echo {
-        fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        fn send(&self, request: &HttpRequest, _: Reach) -> Result<HttpResponse, String> {
             Ok(HttpResponse {
                 status: 200,
                 headers: vec![("content-type".into(), "text/plain".into())],
@@ -455,6 +497,37 @@ mod tests {
             send("http://api.example.org/", true, true),
             Err(NOT_ALLOWED)
         );
+        // Without a host list `http` reaches any public host, and still no local one.
+        let open = GuestAccess {
+            http: Some(Arc::new(Echo)),
+            ..GuestAccess::default()
+        };
+        let request = |url: &str| HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            max_response_bytes: 256,
+        };
+        for url in [
+            "https://127.0.0.1:8443/",
+            "https://192.168.1.1/",
+            "https://[::1]/",
+            "https://0.0.0.0/",
+            "https://100.64.0.1/",
+            "https://[::ffff:10.0.0.1]/",
+            "https://router.local/",
+        ] {
+            assert_eq!(
+                open.send(&request(url), true, false),
+                Err(NOT_ALLOWED),
+                "{url}"
+            );
+        }
+        assert!(
+            open.send(&request("https://example.org/"), true, false)
+                .is_ok()
+        );
         for malformed in [
             "ftp://127.0.0.1/",
             "http://[::1/",
@@ -466,6 +539,39 @@ mod tests {
                 Err(INVALID_REQUEST),
                 "{malformed}"
             );
+        }
+    }
+
+    #[test]
+    fn a_reach_allows_only_its_own_side_of_the_local_network() {
+        let local = [
+            "127.0.0.1",
+            "0.0.0.0",
+            "10.1.2.3",
+            "100.127.0.1",
+            "169.254.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "fec0::1",
+            "::ffff:192.168.0.1",
+        ];
+        let public = [
+            "8.8.8.8",
+            "100.128.0.1",
+            "172.32.0.1",
+            "2001:db8::1",
+            "::ffff:8.8.8.8",
+        ];
+        for address in local.map(|text| text.parse::<IpAddr>().unwrap()) {
+            assert!(Reach::Local.allows(address), "{address}");
+            assert!(!Reach::Internet.allows(address), "{address}");
+        }
+        for address in public.map(|text| text.parse::<IpAddr>().unwrap()) {
+            assert!(Reach::Internet.allows(address), "{address}");
+            assert!(!Reach::Local.allows(address), "{address}");
         }
     }
 
