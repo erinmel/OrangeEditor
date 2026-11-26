@@ -37,6 +37,13 @@ function New-WorkDirectory([string]$Name) {
     $path
 }
 
+# Writes text with LF line endings and no byte order mark. Scripts are checked out
+# with CRLF (.gitattributes), and package metadata such as a .deb control file must
+# not carry those carriage returns.
+function Write-TextFile([string]$Path, [string]$Text) {
+    [System.IO.File]::WriteAllText($Path, ($Text -replace "`r", ''))
+}
+
 # The license and notice files at the repository root, to ship beside the program.
 function Get-LicenseFiles {
     $root = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')

@@ -42,7 +42,7 @@ Copy-Item -LiteralPath $BinaryPath -Destination (Join-Path $root 'usr/bin/orange
 foreach ($file in Get-LicenseFiles) {
     Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $root 'usr/share/doc/orange-editor')
 }
-@"
+Write-TextFile (Join-Path $root 'usr/share/applications/orange-editor.desktop') @"
 [Desktop Entry]
 Type=Application
 Name=OrangeEditor
@@ -50,9 +50,9 @@ Comment=Node editor for automation and reactive graphs
 Exec=orange-editor %f
 Terminal=false
 Categories=Development;
-"@ | Set-Content -LiteralPath (Join-Path $root 'usr/share/applications/orange-editor.desktop') -Encoding utf8NoBOM
+"@
 # Ubuntu 24.04 renamed the ALSA library package, so either name satisfies it.
-@"
+Write-TextFile (Join-Path $root 'DEBIAN/control') @"
 Package: orange-editor
 Version: $debVersion
 Architecture: amd64
@@ -63,7 +63,7 @@ Priority: optional
 Description: Node editor for automation and reactive graphs
  OrangeEditor edits and runs typed node graphs that react to timers, keys,
  files, network messages and audio.
-"@ | Set-Content -LiteralPath (Join-Path $root 'DEBIAN/control') -Encoding utf8NoBOM
+"@
 $deb = Join-Path $output "orange-editor-$Version-linux-amd64.deb"
 & dpkg-deb --root-owner-group --build $root $deb
 

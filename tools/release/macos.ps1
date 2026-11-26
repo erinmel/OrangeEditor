@@ -25,7 +25,7 @@ $null = New-Item -ItemType Directory -Path $resources
 foreach ($file in Get-LicenseFiles) { Copy-Item -LiteralPath $file.FullName -Destination $resources }
 # A graph can listen to input devices, and macOS ends an app that asks for the
 # microphone without saying why.
-@"
+Write-TextFile (Join-Path $app 'Contents/Info.plist') @"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -42,7 +42,7 @@ foreach ($file in Get-LicenseFiles) { Copy-Item -LiteralPath $file.FullName -Des
   <key>NSMicrophoneUsageDescription</key><string>OrangeEditor listens to the input devices your graphs use.</string>
 </dict>
 </plist>
-"@ | Set-Content -LiteralPath (Join-Path $app 'Contents/Info.plist') -Encoding utf8NoBOM
+"@
 & plutil -lint (Join-Path $app 'Contents/Info.plist')
 & codesign --force --sign - --timestamp=none $app
 & codesign --verify --verbose=2 $app
