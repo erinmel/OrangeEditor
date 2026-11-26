@@ -14,6 +14,32 @@ pub(super) struct PackageImport {
 }
 
 impl Editor {
+    /// Turns package `id` (shown as `name`) off or on in the running host. New
+    /// documents follow at once; running graphs keep the version they started with.
+    pub(super) fn switch_package(&mut self, host: &mut Host, id: &str, name: &str, on: bool) {
+        match host.set_enabled(id, on) {
+            Ok(()) => {
+                self.previews.invalidate();
+                self.check(host);
+                self.say(tf(
+                    if on {
+                        "package-turned-on"
+                    } else {
+                        "package-turned-off"
+                    },
+                    &[("package", name.to_owned().into())],
+                ));
+            }
+            Err(error) => self.say_at(
+                NoteLevel::Error,
+                tf(
+                    "package-switch-failed",
+                    &[("error", error.to_string().into())],
+                ),
+            ),
+        }
+    }
+
     pub(super) fn package_removal_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
         let Some(key) = &self.pending_package_removal else {
             return;
@@ -178,8 +204,7 @@ pub(super) fn grant_choices(ui: &mut egui::Ui, requested: Grants, approved: &mut
 mod tests {
     use super::*;
 
-    #[test]
-    fn approving_an_archive_hot_installs_it_while_a_flow_runs() {
+    fn remember_archive() -> Vec<u8> {
         let manifest = include_bytes!("../../orange-cli/packages/remember/manifest.json");
         let files = [
             (
@@ -191,7 +216,75 @@ mod tests {
                 include_bytes!("../../orange-cli/packages/remember/graphs/remember.json").to_vec(),
             ),
         ];
-        let archive = orange_host::pack(manifest, &files).unwrap();
+        orange_host::pack(manifest, &files).unwrap()
+    }
+
+    #[test]
+    fn the_packages_panel_turns_an_installed_package_off_and_on_while_a_flow_runs() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let _ = host
+            .install(&remember_archive(), Grants::default())
+            .unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        editor.add_node(&mut host, "core/on-manual").unwrap();
+        editor.run(&mut host);
+        let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
+        let placeable = |host: &Host| {
+            host.search_nodes("remember", "en")
+                .iter()
+                .any(|node| node.definition == "org.example.tools/remember")
+        };
+        // Only the installed package has a switch: the base and clock nodes are core.
+        let switches = |host: &Host| host.packages().filter(|p| p.switchable).count();
+        assert_eq!(switches(&host), 1);
+
+        let ctx = egui::Context::default();
+        for on in [false, true] {
+            let mut frame = |events| {
+                ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| editor.packages_panel(ui, &mut host),
+                )
+            };
+            let mut toggle = None;
+            for _ in 0..3 {
+                let output = frame(Vec::new());
+                let found: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == t("package-enabled") => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert!(found.len() <= 1, "one switch is shown");
+                toggle = found.first().copied().or(toggle);
+                output.drop_without_applying_deltas();
+            }
+            let pos = toggle.expect("package switch");
+            orange_testkit::ui::click(pos, egui::PointerButton::Primary, |events| {
+                frame(events).drop_without_applying_deltas();
+            });
+            let tools = host
+                .packages()
+                .find(|package| package.id == "org.example.tools")
+                .unwrap();
+            assert_eq!((tools.active, tools.enabled), (on, on));
+            assert_eq!(placeable(&host), on);
+            assert!(host.info(flow).is_some());
+        }
+        editor.stop(&mut host);
+    }
+
+    #[test]
+    fn approving_an_archive_hot_installs_it_while_a_flow_runs() {
+        let archive = remember_archive();
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());

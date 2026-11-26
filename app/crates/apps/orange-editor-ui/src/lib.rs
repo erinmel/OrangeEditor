@@ -2788,6 +2788,7 @@ impl Editor {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut shown = 0;
             let mut access_change = None;
+            let mut switch = None;
             for package in host.packages() {
                 let name = package.name().unwrap_or(package.id);
                 let about = package.description().unwrap_or_default();
@@ -2843,6 +2844,22 @@ impl Editor {
                                 ("active", if package.active { "yes" } else { "no" }.into()),
                             ],
                         ));
+                        // Core packages and those the application leaves out stay as
+                        // they are; the others turn off and on at once.
+                        if package.switchable {
+                            let mut on = package.enabled;
+                            if orange_ui_controls::toggle(
+                                ui,
+                                Surface::Panel,
+                                &mut on,
+                                t("package-enabled"),
+                            )
+                            .on_hover_text(t("package-enabled-hint"))
+                            .changed()
+                            {
+                                switch = Some((package.id.to_owned(), name.to_owned(), on));
+                            }
+                        }
                         // What the package may reach: unticking a box revokes it for
                         // graphs started from now on.
                         if let (Ok(id), Ok(version)) = (package.id.parse(), package.version.parse())
@@ -2883,6 +2900,9 @@ impl Editor {
                                 Some(orange_host::PackageKey { id, version });
                         }
                     });
+            }
+            if let Some((id, name, on)) = switch {
+                self.switch_package(host, &id, &name, on);
             }
             if let Some((key, access)) = access_change.take() {
                 match host.set_access(&key, access) {
