@@ -96,4 +96,8 @@ const trigger = catalogue.nodes.find(node => node.id === 'core/on-manual');
 assert.ok(trigger?.preview_ports?.some(port => port.id === 'then' && port.execution));
 const branch = catalogue.nodes.find(node => node.id === 'core/branch');
 assert.ok(branch?.purpose.en && branch?.purpose.es && Array.isArray(branch.aliases.en));
+// Every language the editor ships is exported, and a real Japanese name reaches the page.
+assert.ok(catalogue.nodes.every(node => ['en', 'es', 'ja'].every(language => language in node.name)));
+assert.ok(branch.name.ja && branch.name.ja !== branch.name.en, 'core/branch has a Japanese name');
+assert.ok(branchPage.includes('lang="ja"'));
 console.log('Verified ' + paths.size + ' static pages, ' + catalogue.nodes.length + ' registry identities, local links, and search anchors.');

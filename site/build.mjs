@@ -44,7 +44,7 @@ const pages = [
   ['', 'Overview', 'A typed node graph foundation with a Rust host and egui editor.'],
   ['getting-started', 'Getting started', 'Open the desktop editor, run your first graph, and try the terminal runner.'],
   ['editor', 'Use the editor', 'Place and wire typed nodes, configure variables and connections, and debug a flow.'],
-  ['nodes', 'Node reference', 'Find nodes by English or Spanish name, stable ID, provider, or port.'],
+  ['nodes', 'Node reference', 'Find nodes by English, Spanish or Japanese name, stable ID, provider, or port.'],
   ['examples', 'Example graphs', 'Run real graphs and follow the nodes that make them work.'],
   ['controls', 'Controls reference', 'Choose, style, and use the shared OrangeEditor egui controls.'],
   ['custom-nodes', 'Make custom nodes', 'Extract graph functions, implement Wasm nodes, or register trusted Rust services.'],
@@ -58,6 +58,8 @@ const escape = value => String(value).replace(/[&<>"']/g, char =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 const plain = html => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const nodePath = node => 'nodes/' + node.id + '/' + node.version + '/';
+// Japanese is a preview: a message it lacks falls back to English, which adds nothing.
+const translated = (texts, language) => texts?.[language] && texts[language] !== texts.en ? texts[language] : '';
 const compare = new Intl.Collator('en', {numeric: true}).compare;
 const sorted = [...nodes].sort((a, b) => compare(a.name.en, b.name.en) || compare(nodePath(a), nodePath(b)));
 const paths = new Set();
@@ -152,7 +154,9 @@ for (const [slug, title, description] of pages) {
       const categoryId = category.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
       body += '<h2 id="category-' + categoryId + '">' + escape(category) + '</h2><ul class="node-list">' +
         members.map(node => '<li><a href="../' + nodePath(node) + '">' + escape(node.name.en) + '</a>' +
-          '<span lang="es">' + escape(node.name.es) + '</span></li>').join('') + '</ul>';
+          '<span lang="es">' + escape(node.name.es) + '</span>' +
+          (translated(node.name, 'ja') ? '<span lang="ja">' + escape(node.name.ja) + '</span>' : '') +
+          '</li>').join('') + '</ul>';
     }
   } else if (slug === 'examples') {
     body = renderGraphExamples(examples, sorted, source, escape, nodePath);
@@ -173,7 +177,7 @@ for (const [slug, title, description] of pages) {
   if (slug) body = '<h1>' + escape(title) + '</h1><p class="lead">' + escape(description) + '</p>' + body;
   await render(pathOf(slug), title, description, body, slug, slug !== 'nodes');
 }
-search.push({path: 'nodes/', title: 'Node reference', description: pages[3][2], terms: 'catalogue converter bilingual registry'});
+search.push({path: 'nodes/', title: 'Node reference', description: pages[3][2], terms: 'catalogue converter multilingual registry'});
 
 for (const contract of contracts) {
   await render('reference/' + contract.slug + '/', contract.title, contract.description,
@@ -190,6 +194,8 @@ for (const node of sorted) {
     '<dl><dt>Spanish name</dt><dd lang="es">' +
     escape(node.name.es) + '</dd>' +
     (node.purpose.es ? '<dt>Spanish description</dt><dd lang="es">' + escape(node.purpose.es) + '</dd>' : '') +
+    (translated(node.name, 'ja') ? '<dt>Japanese name</dt><dd lang="ja">' + escape(node.name.ja) + '</dd>' : '') +
+    (translated(node.purpose, 'ja') ? '<dt>Japanese description</dt><dd lang="ja">' + escape(node.purpose.ja) + '</dd>' : '') +
     '<dt>Category</dt><dd>' + escape(node.category.en) +
     '</dd><dt>Execution kind</dt><dd>' + escape(node.kind) +
     '</dd><dt>Provider</dt><dd>' + escape(node.provider ?? 'Core') + '</dd></dl>' +
@@ -198,8 +204,9 @@ for (const node of sorted) {
       escape(JSON.stringify(node.config_schema, null, 2)) + '</code></pre>' : '');
   await render(path, node.name.en, description, body, 'nodes');
   search.push({path, title: node.name.en, description, alias: node.name.es,
-    terms: [node.category.en, node.category.es, node.provider, node.purpose.es,
-      ...node.aliases.en, ...node.aliases.es,
+    terms: [node.category.en, node.category.es, node.category.ja, node.provider, node.purpose.es,
+      node.name.ja, node.purpose.ja,
+      ...node.aliases.en, ...node.aliases.es, ...(node.aliases.ja ?? []),
       ...(node.preview_ports ?? []).flatMap(port => [port.id, port.label, port.description]),
       ...(node.ports ?? []).map(port =>
       port.port_id + ' ' + (port.type ? JSON.stringify(port.type) : ''))].filter(Boolean).join(' ')});

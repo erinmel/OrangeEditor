@@ -35,91 +35,56 @@ const commonPorts = {
   body: 'Runs the loop body for the current iteration.',
   completed: 'Continues after the loop finishes.',
 };
+// What the site adds to a node page: a way to try it, ports that appear only after
+// configuration, and internal ports to leave out. What a node and its ports do comes
+// from the node catalogues (`purpose-*`, `<node key>-port-*`) through `orange nodes --json`,
+// so the editor shows the same text.
 const notes = {
-  'core/close-handle': {overview: 'Releases the resource referenced by Handle.'},
-  'core/close-stream': {overview: 'Closes an open stream supplied on Stream.'},
-  'core/collect': {overview: 'Reads items from a stream into a list. Use its limit to bound the collection.'},
-  'core/do-once': {overview: 'Lets a run through on the first entry. Use Reset to let a later entry through.'},
-  'core/fork': {overview: 'Starts each configured branch and continues on Completed when the branches finish.'},
-  'core/match-result': {
-    overview: 'Routes a Result to Ok or Err. Read the matching Value or Error output on that route.',
-    ports: {ok: 'Runs for a successful Result.', err: 'Runs for an error Result.', value: 'Contained value on Ok.', error: 'Contained error on Err.'},
-  },
-  'core/next-item': {overview: 'Requests the next stream item. The output is optional when the stream ends.'},
-  'core/sequence': {overview: 'Executes the configured outputs in order.'},
-  'core/tee': {overview: 'Splits one stream into Left and Right outputs. Both receive the source items.'},
-  'core/try': {overview: 'Reads the input and captures a successful value or fault as a Result.'},
-  'core/value': {overview: 'Provides a literal value of the selected type.'},
-  'core/yield': {overview: 'Yields execution before following the continuation.'},
   'core/get-variable': {
     tryIt: 'Create a variable and select it in Properties. The Value output takes the variable’s type.',
     configured: [{id: 'value', input: false}],
-    ports: {value: 'The current value of the selected variable.'},
   },
   'org.orange.collections/enum-payload': {
     tryIt: 'Choose an enum and a variant that carries a payload. The enum and variant determine the port types.',
   },
-  'org.orange.net/http-request': {
-    ports: {
-      method: 'HTTP method, such as GET or POST.', path: 'Request path relative to the selected connection.',
-      content: 'Text sent as the request body.', content_type: 'Media type of the request body.',
-      headers: 'Request headers as text.', header_fields: 'Request headers as a map.',
-      query: 'Query parameters added to the request path.', status: 'Numeric status sent by the server.',
-      success: 'Whether the server returned a 2xx status.', response: 'The response body as text.',
-      response_headers: 'Headers returned by the server.',
-    },
-  },
   'core/branch': {
     tryIt: 'Wire a Boolean into Condition. Connect True and False to different steps, then fire the upstream trigger.',
-    ports: {condition: 'Boolean that chooses the branch.', true: 'Runs when Condition is true.', false: 'Runs when Condition is false.'},
   },
   'core/bridge-in': {
     tryIt: 'Choose a Bridge Out channel and connect Result to a value input. The consuming node pulls the shared value.',
     hidden: ['value'],
-    ports: {value: 'Internal link from the matching Bridge Out.', result: 'The shared value as read by the consumer.'},
   },
   'core/bridge-out': {
     tryIt: 'Connect a source to Value, name the channel, then choose it on one or more Bridge In cards.',
     hidden: ['result'],
-    ports: {value: 'Value to expose on the selected channel.', result: 'Internal link to matching Bridge In cards.'},
   },
   'core/coalesce': {
     tryIt: 'Feed a missing optional number and set Fallback to 10. The result is 10. Supply an optional 4 and the result becomes 4.',
-    ports: {value: 'Optional value to examine.', fallback: 'Read when Value is absent.', result: 'The contained value or the fallback.'},
-  },
-  'core/count': {
-    ports: {count: 'Number of iterations the loop should run.', index: 'Zero-based index of the current iteration.'},
   },
   'core/emit': {
     configured: [{id: 'payload', input: true}],
     tryIt: 'Select a typed event to add its Payload input. Then choose the same event on a Listen card and fire Dispatch.',
-    ports: {payload: 'Value sent to the selected event when it declares a payload type.'},
   },
   'core/on-event': {
     configured: [{id: 'payload', input: false}],
     tryIt: 'Choose the event used by Dispatch. When that event is emitted, this card starts a fresh activation.',
-    ports: {payload: 'Value delivered with the event when it declares a payload type.'},
   },
-  'core/set-variable': {ports: {value: 'New value written to the variable selected in Properties.'}},
-  'core/wait': {ports: {duration: 'Time to wait before continuing.'}},
   'org.orange.math/add': {
     tryIt: 'Set A to 2 and B to 3 using the same number type. A downstream read of Sum yields 5.',
-    ports: {a: 'First addend.', b: 'Second addend.', sum: 'A plus B in their shared numeric type.'},
   },
   'org.orange.math/multiply': {
     tryIt: 'Set A to 3 and B to 4 using the same number type. A downstream read of Product yields 12.',
-    ports: {a: 'First factor.', b: 'Second factor.', product: 'A multiplied by B.'},
   },
-  'org.orange.json/parse': {ports: {text: 'JSON text to parse.', result: 'Parsed JSON on success or a parse error.'}},
-  'org.orange.audio/audio-source': {ports: {stream: 'Live stream from the selected audio input connection.'}},
-  'org.orange.audio/live-level': {ports: {stream: 'Stream to meter.', level: 'Level measured from the incoming stream.'}},
 };
 
-function portUse(port, schema, overrides, kind) {
-  const specific = overrides?.[port.id] ?? port.description;
+// Catalogue help is keyed by port key: the port ID with underscores as hyphens.
+const portKey = id => id.split('#')[0].toLowerCase().replace(/_/g, '-');
+
+function portUse(port, schema, node) {
+  const specific = port.description ?? node.port_help?.en?.[portKey(port.id)];
   if (specific) return specific;
   if (port.implicit_failure && port.id === 'error') return 'Fault value available on the Failed route.';
-  if (kind === 'entry' && port.execution && !port.input && port.id === 'then') return 'Runs when the trigger fires.';
+  if (node.kind === 'entry' && port.execution && !port.input && port.id === 'then') return 'Runs when the trigger fires.';
   if (port.execution) return commonPorts[port.id] ??
     (port.input ? 'Execution enters the node here.' : 'Connect the next step for this outcome here.');
   if (port.input) return port.optional ? 'Accepts an optional value.' : 'Wire a value of the shown type to this input.';
@@ -172,11 +137,11 @@ export function renderNodeReference(node, examples, escape) {
     return '<tr><th scope="row" id="port-' + escape(port.id) + '">' + escape(port.label ?? port.id) +
       '<br><code>' + escape(port.id) + '</code></th><td>' + (port.input ? 'Input' : 'Output') +
       '</td><td>' + (port.execution ? 'Execution' : ty ? '<code>' + escape(typeof ty === 'string' ? ty : JSON.stringify(ty)) +
-      '</code>' : 'Inferred value') + '</td><td>' + escape(portUse(port, schema, note.ports, node.kind) + modifiers) +
+      '</code>' : 'Inferred value') + '</td><td>' + escape(portUse(port, schema, node) + modifiers) +
       availability + fallback + '</td></tr>';
   }).join('');
   const linked = exampleLinks(matches, escape);
-  return '<h2 id="behavior">How it works</h2>' + (note.overview ? '<p>' + escape(note.overview) + '</p>' : '') +
+  return '<h2 id="behavior">How it works</h2>' +
     '<p>' + escape(kinds[node.kind]) + '</p>' + figure +
     '<h2 id="ports">Ports</h2>' +
     (rows ? '<div class="table-scroll"><table><thead><tr><th>Port</th><th>Direction</th><th>Type</th><th>Use</th></tr></thead><tbody>' +
