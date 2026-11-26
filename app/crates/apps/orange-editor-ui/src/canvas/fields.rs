@@ -20,6 +20,8 @@ pub(super) enum FieldEdit {
     Setting(String, serde_json::Value),
     /// "New variable…" was chosen for the setting at a JSON pointer.
     NewVariable(String),
+    NewEvent,
+    RenameEvent,
     /// A device was chosen; `None` is the system default.
     Device(Option<String>),
     /// The node's connection is to be set up, from here on the screen.
@@ -195,12 +197,12 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         ),
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
-        FieldOf::AddSignalReceiver => (signal_peer_label(node).to_owned(), true),
+        FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
         FieldOf::BridgeChannel => match node.settings["channel"].as_str() {
             Some(channel) if !channel.is_empty() => (channel.to_owned(), false),
             _ => (t("choose-channel").to_owned(), true),
         },
-        FieldOf::ListenChannel => (t("choose-channel").to_owned(), true),
+        FieldOf::EventChannel => (t("choose-channel").to_owned(), true),
         FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
@@ -213,15 +215,6 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
         "add-port",
         &[("name", crate::port_label(&variadic.port).into())],
     )
-}
-
-/// The name line's text of a field.
-fn signal_peer_label(node: &NodeView) -> &'static str {
-    t(if node.entry {
-        "signal-add-sender"
-    } else {
-        "signal-add-receiver"
-    })
 }
 
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
@@ -242,8 +235,8 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
-        FieldOf::AddSignalReceiver => signal_peer_label(node).to_owned(),
-        FieldOf::BridgeChannel | FieldOf::ListenChannel => t("bridge-channel").to_owned(),
+        FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
+        FieldOf::BridgeChannel | FieldOf::EventChannel => t("bridge-channel").to_owned(),
         FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
@@ -1042,32 +1035,59 @@ impl Canvas {
                 }
             }
             FieldOf::BridgeChannel => {
-                let (text, dim) = match self.bridge_bound.get(&node.id) {
-                    Some(channel) => (channel.clone(), false),
+                let binding = self.bridge_bound.get(&node.id);
+                let (text, dim) = match binding {
+                    Some((_, channel)) => (channel.clone(), false),
                     None => shown(node, field),
                 };
                 let mut chosen = None;
-                let current = self
-                    .bridges
-                    .iter()
-                    .find(|(_, channel)| node.settings["channel"].as_str() == Some(channel))
-                    .map(|(out, _)| *out);
+                let current = binding.map(|(out, _)| *out);
                 dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
                     chosen = pick_channel(ui, &self.bridges, current, t("no-bridge-outs"));
                 });
-                chosen.map(FieldEdit::BindBridge)
+                chosen
+                    .filter(|out| Some(*out) != current)
+                    .map(FieldEdit::BindBridge)
             }
-            FieldOf::ListenChannel => {
+            FieldOf::EventChannel => {
                 let current = node.settings["event"].as_str().map(str::to_owned);
                 let (text, dim) = current
                     .as_ref()
                     .and_then(|event| self.channels.get(event))
                     .map_or_else(|| shown(node, field), |name| (name.clone(), false));
-                let mut chosen = None;
+                let dispatch = node.definition == "core/emit";
+                let choices = if dispatch {
+                    &self.event_channels
+                } else {
+                    &self.listen_channels
+                };
+                let mut edit = None;
                 dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
-                    chosen = pick_channel(ui, &self.listen_channels, current, t("no-dispatches"));
+                    let can_rename = current
+                        .as_ref()
+                        .is_some_and(|id| self.channels.contains_key(id));
+                    edit = pick_channel(
+                        ui,
+                        choices,
+                        current,
+                        t(if dispatch {
+                            "no-event-channels"
+                        } else {
+                            "no-dispatches"
+                        }),
+                    )
+                    .map(|event| FieldEdit::Setting("/event".to_owned(), event.into()));
+                    if dispatch || can_rename {
+                        ui.separator();
+                    }
+                    if dispatch && ui.selectable_label(false, t("event-new")).clicked() {
+                        edit = Some(FieldEdit::NewEvent);
+                    }
+                    if can_rename && ui.selectable_label(false, t("event-rename")).clicked() {
+                        edit = Some(FieldEdit::RenameEvent);
+                    }
                 });
-                chosen.map(|event| FieldEdit::Setting("/event".to_owned(), event.into()))
+                edit
             }
             FieldOf::Variable(pointer) => {
                 let named = node

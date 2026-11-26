@@ -585,26 +585,6 @@ fn place_node(
     definition: &str,
     at: [f32; 2],
 ) -> Result<(NodeId, Option<NodeId>), HostError> {
-    // A Bridge In bound to an existing Bridge Out in one step.
-    if let Some(out) = definition.strip_prefix(palette::BIND_BRIDGE_IN) {
-        let out: NodeId = out
-            .parse()
-            .map_err(|_| HostError::Document(format!("no Bridge Out `{out}`")))?;
-        let channel = draft
-            .document()
-            .node(out)
-            .and_then(|node| {
-                node.config
-                    .get("channel")
-                    .and_then(|c| c.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default();
-        let node = host.add_node(draft, palette::BRIDGE_IN, at)?;
-        let _ = host.set_config(draft, node, &serde_json::json!({ "channel": channel }))?;
-        let _ = host.connect(draft, (out, "result"), (node, "value"))?;
-        return Ok((node, None));
-    }
     // A new Bridge Out gets a channel name no other one has.
     if definition == palette::BRIDGE_OUT {
         let taken: Vec<String> = draft
@@ -746,7 +726,7 @@ impl Editor {
         self.canvas.load(&graph);
         let declared = host.declarations(&draft);
         self.canvas.enums = canvas::enums_of(host, &draft, &graph, &declared);
-        self.canvas.channels = canvas::channels_of(&declared);
+        self.canvas.set_channels(&declared);
         self.canvas.set_groups(draft.groups());
         self.canvas.waypoints = draft.wire_waypoints().collect();
         self.document = Some(Document {
@@ -844,7 +824,7 @@ impl Editor {
         self.canvas.update(&document.graph);
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
-        self.canvas.channels = canvas::channels_of(&document.declared);
+        self.canvas.set_channels(&document.declared);
         self.canvas.set_groups(document.draft.groups());
         self.canvas.waypoints = document.draft.wire_waypoints().collect();
         // The fields of the properties panel are read again from the new document.
@@ -957,25 +937,6 @@ impl Editor {
             host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))
         });
         self.edited(host, result)
-    }
-
-    /// The graph's Bridge Outs (node, channel name).
-    pub(crate) fn bridge_outs(&self) -> Vec<(NodeId, String)> {
-        self.graph()
-            .map(|graph| {
-                graph
-                    .nodes
-                    .iter()
-                    .filter(|node| node.definition == palette::BRIDGE_OUT)
-                    .map(|node| {
-                        (
-                            node.id,
-                            palette::bridge_channel(node).unwrap_or_default().to_owned(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// The channels (event ID, name) that a Dispatch in the open graph sends on.
@@ -2659,14 +2620,7 @@ impl Editor {
                 self.language.as_str()
             };
             let channels = self.dispatch_channels();
-            let bridges: Vec<(String, String)> = self
-                .bridge_outs()
-                .into_iter()
-                .map(|(node, channel)| (node.to_string(), channel))
-                .collect();
-            let results = self
-                .palette
-                .get(host, &self.search, language, &channels, &bridges);
+            let results = self.palette.get(host, &self.search, language, &channels);
             let found = results.groups;
             if searching && found.is_empty() {
                 ui.weak(t("no-node-matches"));
@@ -3019,6 +2973,12 @@ impl Editor {
             self.wire_with_mode_preview(host, ends);
         }
         self.conversion_menu(ui.ctx(), host);
+        if let Some(node) = done.new_event {
+            self.new_event_for_node(node);
+        }
+        if let Some(node) = done.rename_event {
+            self.rename_event_for_node(node);
+        }
         if let Some((node, sender)) = done.add_signal_peer {
             self.add_signal_endpoint(host, node, sender);
         }

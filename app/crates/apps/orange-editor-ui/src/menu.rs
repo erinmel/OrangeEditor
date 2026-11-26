@@ -43,6 +43,7 @@ pub enum Command {
     AddWaypoint,
     AddSignalReceiver,
     AddSignalSender,
+    RenameEvent,
     RemoveWaypoint,
     DeleteWire,
     Disconnect,
@@ -176,32 +177,59 @@ impl Editor {
                         true,
                     ),
                 ];
-                if self.graph().is_some_and(|graph| {
-                    graph
-                        .nodes
-                        .iter()
-                        .any(|card| card.id == *node && palette::signal(card).is_some())
-                }) {
-                    entries.insert(
-                        1,
-                        entry(
-                            Command::AddSignalReceiver,
-                            t("signal-add-receiver"),
-                            "",
-                            icons::SIGNAL,
-                            true,
-                        ),
-                    );
-                    entries.insert(
-                        2,
-                        entry(
-                            Command::AddSignalSender,
-                            t("signal-add-sender"),
-                            "",
-                            icons::SIGNAL,
-                            true,
-                        ),
-                    );
+                if let Some(graph) = self.graph()
+                    && let Some(card) = graph.nodes.iter().find(|card| card.id == *node)
+                {
+                    if matches!(card.definition.as_str(), "core/emit" | palette::BRIDGE_OUT) {
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::AddSignalReceiver,
+                                t("signal-add-receiver"),
+                                "",
+                                icons::SIGNAL,
+                                true,
+                            ),
+                        );
+                    }
+                    if card.definition == "core/on-event" {
+                        let has_emitter = card.settings["event"].as_str().is_some_and(|event| {
+                            graph
+                                .nodes
+                                .iter()
+                                .any(|node| palette::signal(node) == Some((true, event)))
+                        });
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::AddSignalSender,
+                                t(if has_emitter {
+                                    "signal-add-another-sender"
+                                } else {
+                                    "signal-add-sender"
+                                }),
+                                "",
+                                icons::SIGNAL,
+                                true,
+                            ),
+                        );
+                    }
+                    if let Some((_, id)) = palette::signal(card)
+                        && self.declarations().is_some_and(|d| {
+                            d.events.iter().any(|event| event.id.to_string() == id)
+                        })
+                    {
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::RenameEvent,
+                                t("event-rename"),
+                                "",
+                                icons::EDIT,
+                                true,
+                            ),
+                        );
+                    }
                 }
                 if self.call_function(*node).is_some() {
                     entries.push(entry(
@@ -312,6 +340,7 @@ impl Editor {
                 true
             }
             (Command::Rename, MenuTarget::Node(node)) => self.begin_node_rename(*node),
+            (Command::RenameEvent, MenuTarget::Node(node)) => self.rename_event_for_node(*node),
             (Command::Paste, _) => match self.clip.clone() {
                 Some(clip) => !self.paste(host, &clip, menu.at).is_empty(),
                 None => {

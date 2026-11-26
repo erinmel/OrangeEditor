@@ -161,7 +161,6 @@ pub(crate) struct PaletteCache {
     search: String,
     language: String,
     channels: Vec<(String, String)>,
-    bridges: Vec<(String, String)>,
     groups: Vec<(String, Vec<PaletteItem>)>,
 }
 
@@ -210,26 +209,7 @@ const LISTEN_TERMS: &[&str] = &[
     "channel",
     "canal",
 ];
-/// The same for a Bridge In.
-const BRIDGE_IN_TERMS: &[&str] = &[
-    "bridge",
-    "puente",
-    "in",
-    "entrada",
-    "read",
-    "leer",
-    "value",
-    "valor",
-    "get",
-    "obtener",
-    "wireless",
-    "inalámbrico",
-    "channel",
-    "canal",
-];
-
-/// Quick-bind items for subscribers of either kind: Listen on a channel or Bridge In
-/// on a Bridge Out, placed as `prefix` + the emitter's key.
+/// Quick-bind items for Listen on an existing event channel.
 fn subscriber_items(
     channels: &[(String, String)],
     search: &str,
@@ -284,14 +264,12 @@ impl PaletteCache {
         search: &str,
         language: &str,
         channels: &[(String, String)],
-        bridges: &[(String, String)],
     ) -> PaletteResults<'_> {
         let generation = host.registry().generation();
         if self.generation != Some(generation)
             || self.search != search
             || self.language != language
             || self.channels != channels
-            || self.bridges != bridges
         {
             self.groups = palette_in(host, search, language);
             // Existing channels follow Listen, so finding a subscriber also pairs it.
@@ -331,38 +309,6 @@ impl PaletteCache {
                 }
             }
             self.channels = channels.to_vec();
-            // The same for Bridge In, under it, with each Bridge Out's channel.
-            let bridge_in = self
-                .groups
-                .iter()
-                .flat_map(|(_, items)| items)
-                .find(|item| item.id == BRIDGE_IN)
-                .map(|item| item.label.clone());
-            let bound = subscriber_items(
-                bridges,
-                search,
-                (
-                    bridge_in.is_some(),
-                    &bridge_in.unwrap_or_else(|| text_in(language, "bridge-in-node", "Bridge In")),
-                ),
-                BRIDGE_IN_TERMS,
-                BIND_BRIDGE_IN,
-                "bridge-bound-help",
-            );
-            if !bound.is_empty()
-                && let Some(group) = self
-                    .groups
-                    .iter()
-                    .position(|(_, items)| items.iter().any(|item| item.id == BRIDGE_IN))
-            {
-                let items = &mut self.groups[group].1;
-                let at = items
-                    .iter()
-                    .position(|item| item.id == BRIDGE_IN)
-                    .map_or(items.len(), |at| at + 1);
-                let _ = items.splice(at..at, bound);
-            }
-            self.bridges = bridges.to_vec();
             self.search.clear();
             self.search.push_str(search);
             self.language.clear();
@@ -544,8 +490,6 @@ pub(crate) fn matching_conversions<'a>(
 
 pub(crate) const BRIDGE_OUT: &str = "core/bridge-out";
 pub(crate) const BRIDGE_IN: &str = "core/bridge-in";
-/// What a palette item places when it binds a Bridge In to an existing Bridge Out.
-pub(crate) const BIND_BRIDGE_IN: &str = "bind:bridge-in:";
 
 /// The port a bridge's wireless link uses, which its card does not show: Bridge Out's
 /// result and Bridge In's value.
@@ -944,26 +888,8 @@ pub(crate) fn discover(host: &Host, search: &str, language: &str) -> Vec<orange_
                     "Idle Watchdog",
                     "heartbeat timeout",
                 );
-            let signal = found.definition == "core/on-event"
-                && preset_match(
-                    &query,
-                    language,
-                    "signal-preset",
-                    "Dispatch and Listen",
-                    "link relay trigger enlace señal senal evento wireless inalambrica inalámbrica dispatch listen despachar escuchar fan out",
-                );
-            let wireless_pulse = found.definition == "core/on-event"
-                && preset_match(
-                    &query,
-                    language,
-                    "wireless-pulse-preset",
-                    "Dispatch without payload",
-                    "event no payload pulse wireless dispatch pulso inalambrico",
-                );
             if (alias
-                || wireless_pulse
                 || catalog
-                || signal
                 || deadband
                 || watchdog
                 || counter && found.definition == "core/update-variable")
@@ -1037,20 +963,6 @@ pub(crate) fn search_with_presets(
                     "Wire heartbeats into Emit. Wait finishes after the last heartbeat.",
                 ),
                 (
-                    "core/on-event",
-                    "preset:signal",
-                    "signal-preset",
-                    "Dispatch and Listen",
-                    "Dispatch an event on a named channel to any number of Listen nodes.",
-                ),
-                (
-                    "core/on-event",
-                    "preset:wireless-pulse",
-                    "wireless-pulse-preset",
-                    "Dispatch without payload",
-                    "Start receivers with no payload value.",
-                ),
-                (
                     "core/branch",
                     "preset:guard",
                     "guard-preset",
@@ -1067,8 +979,6 @@ pub(crate) fn search_with_presets(
                     "preset:deadband" => "change tolerance",
                     "preset:watchdog" => "heartbeat timeout",
                     "preset:wireless-value" => "store read shared value",
-                    "preset:wireless-pulse" => "event no payload pulse wireless dispatch pulso inalambrico",
-                    "preset:signal" => "link relay trigger enlace señal senal evento wireless inalambrica inalámbrica dispatch listen despachar escuchar fan out",
                     "preset:increment" => "bump+ bump + count up",
                     "preset:decrement" => "bump- bump - count down",
                     _ => "",
@@ -1289,6 +1199,23 @@ mod tests {
     /// Searching for a subscriber offers each channel a Dispatch sends on, bound in
     /// one step; naming the channel finds it too, and an empty search lists nothing.
     #[test]
+    fn event_palette_offers_roles_without_duplicate_pair_presets() {
+        let (host, _) = Host::new(HostOptions::default()).unwrap();
+        for (language, query) in [("en", ""), ("en", "dispatch"), ("es", "escuchar")] {
+            let found = discover(&host, query, language);
+            assert!(!found.iter().any(|item| matches!(
+                item.definition.as_str(),
+                "preset:signal" | "preset:wireless-pulse"
+            )));
+            if query.is_empty() {
+                for id in ["core/emit", "core/on-event"] {
+                    assert_eq!(found.iter().filter(|item| item.definition == id).count(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn listen_searches_offer_existing_channels_to_bind() {
         let channels = [
             ("e1".to_owned(), "Kick".to_owned()),
@@ -1310,6 +1237,38 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_dispatch_can_add_a_bound_subscriber_and_rename_its_channel() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = crate::Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let dispatch = editor
+            .add_node_at(&mut host, "core/emit", [0.0, 0.0])
+            .unwrap();
+        editor.open_menu(
+            crate::MenuTarget::Node(dispatch),
+            [0.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(editor.run_command(&mut host, crate::Command::AddSignalReceiver));
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        let emitter = graph.nodes.iter().find(|node| node.id == dispatch).unwrap();
+        let (_, id) = signal(emitter).unwrap();
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| signal(node) == Some((false, id)))
+        );
+        editor.open_menu(
+            crate::MenuTarget::Node(dispatch),
+            [0.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        assert!(editor.run_command(&mut host, crate::Command::RenameEvent));
+    }
+
+    #[test]
     fn wireless_signal_shares_one_event_with_multiple_receivers() {
         let (mut host, _) = Host::new(HostOptions::default()).unwrap();
         let mut editor = crate::Editor::new();
@@ -1317,7 +1276,7 @@ mod tests {
         assert!(
             discover(&host, "senal inalambrica", "es")
                 .iter()
-                .any(|r| r.definition == "preset:signal")
+                .any(|r| r.definition == "core/emit")
         );
         let sender = editor
             .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
@@ -1813,31 +1772,20 @@ mod tests {
     fn cached_palette_tracks_search_language_and_registry_and_keeps_the_current_allocation() {
         let (host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut cache = PaletteCache::default();
-        assert_eq!(
-            cache.get(&host, "", "en", &[], &[]).groups,
-            palette(&host, "")
-        );
-        let allocation = cache.get(&host, "", "en", &[], &[]).groups.as_ptr();
-        assert_eq!(
-            cache.get(&host, "", "en", &[], &[]).groups.as_ptr(),
-            allocation
-        );
+        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
+        let allocation = cache.get(&host, "", "en", &[]).groups.as_ptr();
+        assert_eq!(cache.get(&host, "", "en", &[]).groups.as_ptr(), allocation);
         for search in ["MATH add", "unmatched-xyz", ""] {
             assert_eq!(
-                cache.get(&host, search, "en", &[], &[]).groups,
+                cache.get(&host, search, "en", &[]).groups,
                 palette(&host, search)
             );
         }
         assert_eq!(
-            cache.get(&host, "disparador", "es", &[], &[]).groups,
+            cache.get(&host, "disparador", "es", &[]).groups,
             palette_in(&host, "disparador", "es")
         );
-        assert!(
-            cache
-                .get(&host, "disparador", "en", &[], &[])
-                .groups
-                .is_empty()
-        );
+        assert!(cache.get(&host, "disparador", "en", &[]).groups.is_empty());
         // Registry generations are process-unique, including when one editor is
         // reused with another host. Old provider labels must not survive that switch.
         let (core, _events) = Host::new(HostOptions {
@@ -1847,13 +1795,7 @@ mod tests {
         .unwrap();
         assert_ne!(core.registry().generation(), host.registry().generation());
         assert_ne!(palette(&core, ""), palette(&host, ""));
-        assert_eq!(
-            cache.get(&core, "", "en", &[], &[]).groups,
-            palette(&core, "")
-        );
-        assert_eq!(
-            cache.get(&host, "", "en", &[], &[]).groups,
-            palette(&host, "")
-        );
+        assert_eq!(cache.get(&core, "", "en", &[]).groups, palette(&core, ""));
+        assert_eq!(cache.get(&host, "", "en", &[]).groups, palette(&host, ""));
     }
 }

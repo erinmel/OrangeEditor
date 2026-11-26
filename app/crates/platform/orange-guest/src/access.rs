@@ -86,28 +86,30 @@ pub struct GuestAccess {
 /// [`MAX_ENTRIES`] files and directories: a total that stopped counting would let a
 /// package pass its quota by spreading data over many files, so too many to count is
 /// treated as over it. Links are not followed, so a link cannot make the walk loop or
-/// count what lies outside. A directory that cannot be read counts as empty.
+/// count what lies outside. An unreadable entry leaves usage unknown.
 fn used(root: &std::path::Path) -> Option<u64> {
     let mut total = 0u64;
     let mut seen = 0usize;
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if directory == root && error.kind() == std::io::ErrorKind::NotFound => {
+                return Some(0);
+            }
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let entry = entry.ok()?;
             seen += 1;
             if seen > MAX_ENTRIES {
                 return None;
             }
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
+            let kind = entry.file_type().ok()?;
             if kind.is_dir() {
                 pending.push(entry.path());
             } else if kind.is_file() {
-                let size = entry.metadata().map_or(0, |metadata| metadata.len());
+                let size = entry.metadata().ok()?.len();
                 total = total.saturating_add(size);
             }
         }
@@ -145,7 +147,11 @@ impl GuestAccess {
             .transpose()?;
         if let Some(limit) = self.max_data_bytes {
             // The file being replaced gives its bytes back.
-            let replaced = folder.size(path).unwrap_or(0);
+            let replaced = match folder.size(path) {
+                Ok(bytes) => bytes,
+                Err(FsError::NotFound) => 0,
+                Err(error) => return Err(word(error)),
+            };
             let after = used(folder.root())
                 .ok_or(QUOTA)?
                 .saturating_sub(replaced)
@@ -324,6 +330,16 @@ mod tests {
                 body: request.url.as_bytes().to_vec(),
             })
         }
+    }
+
+    #[test]
+    fn only_a_missing_data_root_counts_as_empty() {
+        let root = std::env::temp_dir().join(format!("orange-guest-usage-{}", std::process::id()));
+        assert_eq!(used(&root), Some(0));
+        std::fs::write(&root, b"not a directory").unwrap();
+        let usage = used(&root);
+        std::fs::remove_file(&root).unwrap();
+        assert_eq!(usage, None);
     }
 
     #[test]

@@ -18,9 +18,12 @@ the last sidebar tab chosen explicitly.
 Dispatch (`core/emit`, ES "Despachar") sends an event on a named channel, a run
 event (11 §10), to every Listen (`core/on-event`, ES "Escuchar") on it: one to many.
 Each Listen starts its own activation and shows the payload output only when the
-channel has a payload type. Place Dispatch and Listen to create a channel with one of
-each. On a Dispatch, + Add Subscriber creates a Listen on the same channel that
-follows the pointer until a click places it; Escape leaves it where it is. A Listen
+channel has a payload type. A Dispatch and a Listen share the channel's name.
+The node palette offers one Dispatch and one Listen. On a Dispatch, + Add Subscriber creates a Listen on the same channel that
+follows the pointer until a click places it; Escape leaves it where it is. On a fresh
+Dispatch this action also creates a pulse channel. Use the card's channel picker to
+select an existing channel, create a new one on Dispatch, or rename the selected
+channel. Rename changes the shared name without rebinding any nodes. A Listen
 placed on its own picks its channel from a searchable picker on the card, or comes bound from the node
 search: searching for Listen, or for a channel's name, lists each channel a Dispatch
 sends on as "Listen · channel", placed bound in one step.
@@ -38,8 +41,8 @@ when pulled: one to many, with no execution flow, and unlike a variable nothing 
 stored or written. A new Bridge Out gets an unused channel name ("Bridge 1",
 "Bridge 2", …) that can be renamed in Properties. On a Bridge Out, + Add Subscriber
 creates a Bridge In bound to it that follows the pointer. A Bridge In placed on its
-own chooses its Bridge Out from a searchable channel picker on its card, or comes
-bound from the node search as "Bridge In · channel". The binding is the data edge
+own chooses its Bridge Out from a searchable channel picker on its card. Renaming a
+Bridge Out updates each bound Bridge In's saved channel name in the same undo step. The binding is the data edge
 from Bridge Out `result` to Bridge In `value`, drawn as a wireless link rather than
 a wire, so those two ports are not shown. Deleting a Bridge Out keeps its Bridge Ins
 with the channel name they had and an "Unbound · channel" tag; clicking the tag

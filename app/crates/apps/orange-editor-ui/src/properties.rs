@@ -1625,12 +1625,6 @@ impl Editor {
             Change::Setting(pointer, value) => {
                 let _ = self.setting_with_mode_preview(host, node.id, &pointer, value);
             }
-            Change::RenameEvent(event, name) => {
-                if let Some(draft) = self.editing() {
-                    let result = host.rename_event(draft, event, &name);
-                    let _ = self.edited(host, result);
-                }
-            }
             Change::Type(param, ty) => {
                 let _ = self.choose_type(host, node.id, &param, ty.as_deref());
             }
@@ -1741,33 +1735,12 @@ impl Editor {
                 });
         });
         if kind == ReferenceKind::Event
-            && let Some(event) = named.as_deref().and_then(|id| id.parse().ok())
-            && let Some(name) = self.declarations().and_then(|declared| {
-                declared
-                    .events
-                    .iter()
-                    .find(|item| item.id == event)
-                    .map(|item| &item.name)
-            })
+            && named
+                .as_deref()
+                .is_some_and(|id| declared.iter().any(|(key, _)| key == id))
+            && ui.button(t("event-rename")).clicked()
         {
-            let label = t("event-channel-name");
-            row(ui, label, None, |ui| {
-                let id = ui.make_persistent_id(("event-channel-name", node.id, event));
-                let mut edited = ui
-                    .data_mut(|data| data.remove_temp::<String>(id))
-                    .unwrap_or_else(|| name.clone());
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut edited)
-                        .id(id)
-                        .hint_text(label)
-                        .desired_width(ui.available_width()),
-                );
-                if field.lost_focus() && edited.trim() != name && chosen.is_none() && !quick {
-                    chosen = Some(Change::RenameEvent(event, edited));
-                } else if field.has_focus() {
-                    ui.data_mut(|data| data.insert_temp(id, edited));
-                }
-            });
+            self.rename_event_for_node(node.id);
         }
         if quick {
             match kind {
@@ -2564,7 +2537,6 @@ enum Change {
     AddPort(String),
     RemovePort(String),
     EventTiming(Option<EventTiming>),
-    RenameEvent(orange_host::EventDeclId, String),
     /// Declare a variable and name it at the setting.
     Delete,
 }

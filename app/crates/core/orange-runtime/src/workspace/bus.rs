@@ -196,6 +196,7 @@ impl WorkspaceEnvelope {
 }
 struct Event {
     shape: ValueShape,
+    pulse: bool,
 }
 struct Schema {
     id: WorkspaceBusId,
@@ -337,7 +338,13 @@ impl WorkspaceBus {
                 .and_then(|n| n.checked_add(size_of::<(EventDeclId, Event)>()))
                 .filter(|n| *n <= limits.max_schema_bytes)
                 .ok_or(WorkspaceBusError::Limit)?;
-            events.insert(declaration.id, Event { shape });
+            events.insert(
+                declaration.id,
+                Event {
+                    shape,
+                    pulse: declaration.payload.is_none(),
+                },
+            );
         }
         let meter = WorkspaceBusMeter {
             bytes: Budget::new(limits.max_retained_bytes),
@@ -426,7 +433,7 @@ impl WorkspaceBus {
                 .schema
                 .events
                 .get(&event.id())
-                .is_some_and(|e| &e.shape == event.payload_type())
+                .is_some_and(|e| e.pulse == event.is_pulse() && &e.shape == event.payload_type())
             {
                 return Err(WorkspaceBusError::SchemaMismatch);
             }
@@ -520,13 +527,16 @@ impl WorkspaceBus {
         if e.source_seq == 0 {
             return Err(WorkspaceBusError::Contract);
         }
-        let shape = &self
+        let event = self
             .schema
             .events
             .get(&e.event)
-            .ok_or(WorkspaceBusError::SchemaMismatch)?
-            .shape;
-        let charge = shape
+            .ok_or(WorkspaceBusError::SchemaMismatch)?;
+        if event.pulse && !matches!(payload, Value::None) {
+            return Err(WorkspaceBusError::Contract);
+        }
+        let charge = event
+            .shape
             .checked_charge(payload, self.limits.max_payload_bytes)
             .map_err(|error| match error {
                 ValueCheckError::ResourceLimit => WorkspaceBusError::Limit,

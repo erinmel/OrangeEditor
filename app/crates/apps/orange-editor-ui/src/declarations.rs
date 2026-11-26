@@ -206,6 +206,7 @@ pub(crate) struct Forms {
 #[derive(Debug, Clone, PartialEq)]
 struct EventForm {
     target: NodeId,
+    rename: Option<orange_host::EventDeclId>,
     name: String,
     payload: String,
     failed: bool,
@@ -660,10 +661,36 @@ impl Editor {
     pub(crate) fn new_event_for_node(&mut self, target: NodeId) {
         self.forms.event = Some(EventForm {
             target,
+            rename: None,
             name: String::new(),
-            payload: "core/bool@1".to_owned(),
+            payload: String::new(),
             failed: false,
         });
+    }
+
+    pub(crate) fn rename_event_for_node(&mut self, target: NodeId) -> bool {
+        let declaration = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|node| node.id == target))
+            .and_then(|node| node.settings["event"].as_str())
+            .and_then(|id| id.parse().ok())
+            .and_then(|id| {
+                self.declarations()?
+                    .events
+                    .iter()
+                    .find(|event| event.id == id)
+            });
+        let Some(event) = declaration else {
+            return false;
+        };
+        self.forms.event = Some(EventForm {
+            target,
+            rename: Some(event.id),
+            name: event.name.clone(),
+            payload: String::new(),
+            failed: false,
+        });
+        true
     }
 
     pub(crate) fn event_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
@@ -680,9 +707,16 @@ impl Editor {
         let shown =
             orange_ui_controls::modal(ctx, egui::Id::unique("declare-run-event")).show(ctx, |ui| {
                 ui.set_width((ctx.content_rect().width() - 40.0).clamp(200.0, 380.0));
-                ui.heading(t("event-new"));
-                ui.label(t("event-run-hint"));
-                let label = ui.label(t("name"));
+                let renaming = form.rename.is_some();
+                ui.heading(t(if renaming {
+                    "event-rename"
+                } else {
+                    "event-new"
+                }));
+                if !renaming {
+                    ui.label(t("event-run-hint"));
+                }
+                let label = ui.label(t("event-channel-name"));
                 let id = ui.make_persistent_id("event-name");
                 let _ = orange_ui_controls::text_field(
                     ui,
@@ -692,49 +726,63 @@ impl Editor {
                     t("event-name-hint"),
                 )
                 .labelled_by(label.id);
-                let label = ui.label(t("event-payload-type"));
-                let _ = egui::ComboBox::from_id_salt("event-payload-type")
-                    .selected_text(payload_name(&form.payload))
-                    .width(ui.available_width())
-                    .show_select(ui, Surface::Dialog, |ui| {
-                        // An event-only channel: its nodes have no payload port.
-                        let _ = ui.selectable_value(
-                            &mut form.payload,
-                            String::new(),
-                            t("event-no-payload"),
-                        );
-                        for ty in COMMON_TYPES.into_iter().chain([
-                            "core/json@1",
-                            "core/timestamp@1",
-                            "core/i32@1",
-                            "core/u32@1",
-                            "core/u64@1",
-                            "core/f32@1",
-                        ]) {
+                if !renaming {
+                    let label = ui.label(t("event-payload-type"));
+                    let _ = egui::ComboBox::from_id_salt("event-payload-type")
+                        .selected_text(payload_name(&form.payload))
+                        .width(ui.available_width())
+                        .show_select(ui, Surface::Dialog, |ui| {
+                            // An event-only channel: its nodes have no payload port.
                             let _ = ui.selectable_value(
                                 &mut form.payload,
-                                ty.to_owned(),
-                                type_name(ty),
+                                String::new(),
+                                t("event-no-payload"),
                             );
-                        }
-                        for (ty, name) in types_tab::choices() {
-                            let _ = ui.selectable_value(&mut form.payload, ty, name);
-                        }
-                    })
-                    .response
-                    .labelled_by(label.id);
+                            for ty in COMMON_TYPES.into_iter().chain([
+                                "core/json@1",
+                                "core/timestamp@1",
+                                "core/i32@1",
+                                "core/u32@1",
+                                "core/u64@1",
+                                "core/f32@1",
+                            ]) {
+                                let _ = ui.selectable_value(
+                                    &mut form.payload,
+                                    ty.to_owned(),
+                                    type_name(ty),
+                                );
+                            }
+                            for (ty, name) in types_tab::choices() {
+                                let _ = ui.selectable_value(&mut form.payload, ty, name);
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                }
                 if form.failed {
-                    ui.colored_label(ui.visuals().warn_fg_color, t("event-create-failed"));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        t(if renaming {
+                            "event-rename-failed"
+                        } else {
+                            "event-create-failed"
+                        }),
+                    );
                 }
                 crate::controls::dialog_actions(
                     ui,
                     Action::Primary,
                     !form.name.trim().is_empty(),
-                    egui::Button::new(t("event-create-bind")),
+                    egui::Button::new(t(if renaming {
+                        "save"
+                    } else {
+                        "event-create-bind"
+                    })),
                 )
             });
         if shown.inner.1.clicked() {
             let target = form.target;
+            let rename = form.rename;
             let name = form.name.clone();
             let payload = if form.payload.is_empty() {
                 Ok(None)
@@ -744,7 +792,10 @@ impl Editor {
             if let Ok(payload) = payload
                 && let Some(draft) = self.editing()
             {
-                let result = host.declare_run_event_for(draft, target, &name, payload);
+                let result = match rename {
+                    Some(event) => host.rename_event(draft, event, &name).map(|_| event),
+                    None => host.declare_run_event_for(draft, target, &name, payload),
+                };
                 if self.edited_value(host, result).is_some() {
                     self.forms.event = None;
                     return;
@@ -2599,6 +2650,51 @@ mod tests {
             "connection-credential-unavailable"
         );
         assert!(editor.forms.connection.secrets.values.is_empty());
+    }
+
+    #[test]
+    fn renaming_a_channel_in_the_dialog_keeps_both_endpoints_and_undoes() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let dispatch = editor.add_node(&mut host, "preset:wireless-pulse").unwrap();
+        let original = editor.declarations().unwrap().events[0].clone();
+        assert!(editor.rename_event_for_node(dispatch));
+        editor.forms.event.as_mut().unwrap().name = "Front door".into();
+
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| editor.event_dialog(ui.ctx(), &mut host),
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(Vec::new());
+        let action = text_center(&frame(Vec::new()), t("save")).unwrap();
+        click(action, egui::PointerButton::Primary, |events| {
+            frame(events);
+        });
+
+        let event = &editor.declarations().unwrap().events[0];
+        assert_eq!(event.name, "Front door");
+        assert_eq!(event.id, original.id);
+        assert_eq!(event.payload, original.payload);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.settings["event"] == original.id.to_string())
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.declarations().unwrap().events[0].name, original.name);
     }
 
     #[test]

@@ -1366,6 +1366,42 @@ impl Host {
                 commands = reconfigure_for_each(draft, instance, wanted, true)?.0;
             }
         }
+        if let Some(source) = draft.document().node(node)
+            && source.definition.id.as_str() == intrinsic::BRIDGE_OUT
+            && source.config.get("channel") != config.get("channel")
+            && let Some(body) = draft
+                .document()
+                .locate_node(node)
+                .and_then(|body| draft.document().body(body))
+        {
+            let channel = config.get("channel").cloned();
+            for edge in body.edges.values().filter(|edge| {
+                edge.from.node == node
+                    && edge.from.port.instance().is_none()
+                    && edge.from.port.port().as_str() == "result"
+                    && edge.to.port.instance().is_none()
+                    && edge.to.port.port().as_str() == "value"
+            }) {
+                let Some(reader) = body
+                    .nodes
+                    .get(&edge.to.node)
+                    .filter(|reader| reader.definition.id.as_str() == intrinsic::BRIDGE_IN)
+                else {
+                    continue;
+                };
+                let mut reader_config = reader.config.clone();
+                if let Some(channel) = &channel {
+                    let _ = reader_config.insert("channel".to_owned(), channel.clone());
+                } else {
+                    let _ = reader_config.remove("channel");
+                }
+                commands.push(DocCommand::SetConfig {
+                    node: reader.id,
+                    config_version: reader.config_version,
+                    config: reader_config,
+                });
+            }
+        }
         commands.push(DocCommand::SetConfig {
             node,
             config_version,

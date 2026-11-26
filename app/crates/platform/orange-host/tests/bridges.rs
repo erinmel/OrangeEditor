@@ -21,6 +21,107 @@ fn variable(host: &Host, draft: &mut orange_host::Draft, name: &str) -> String {
 }
 
 #[test]
+fn an_unused_bound_bridge_does_not_block_run_but_a_consumer_requires_a_value() {
+    let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let out = host
+        .add_node(&mut draft, "core/bridge-out", [0.0, 0.0])
+        .unwrap();
+    let input = host
+        .add_node(&mut draft, "core/bridge-in", [400.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (out, "result"), (input, "value"))
+        .unwrap();
+    let trigger = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 400.0])
+        .unwrap();
+    let problems = host.problems(&mut draft).unwrap();
+    assert!(
+        problems.is_empty(),
+        "{problems:?}\n{}",
+        draft.text().unwrap()
+    );
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    host.trigger(flow, trigger, None).unwrap();
+    host.stop(flow, StopMode::Graceful).unwrap();
+    host.close(flow).unwrap();
+
+    let output = (input, "result".parse().unwrap());
+    assert!(host.preview(&draft.text().unwrap(), &[output]).is_err());
+
+    let target = variable(&host, &mut draft, "Reading");
+    let set = host
+        .add_node(&mut draft, "core/set-variable", [400.0, 400.0])
+        .unwrap();
+    host.set_config(&mut draft, set, &json!({"variable": target}))
+        .unwrap();
+    host.connect(&mut draft, (trigger, "then"), (set, "in"))
+        .unwrap();
+    host.connect(&mut draft, (input, "result"), (set, "value"))
+        .unwrap();
+    assert!(
+        host.problems(&mut draft)
+            .unwrap()
+            .iter()
+            .any(|problem| problem.code.as_str() == "E-INPUT-REQUIRED")
+    );
+    let number = host
+        .add_node(&mut draft, "core/number", [-400.0, 0.0])
+        .unwrap();
+    host.connect(&mut draft, (number, "result"), (out, "value"))
+        .unwrap();
+    assert!(host.problems(&mut draft).unwrap().is_empty());
+}
+
+#[test]
+fn a_bridge_channel_rename_reaches_all_bound_readers_and_undoes_in_one_step() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let out = host
+        .add_node(&mut draft, "core/bridge-out", [0.0, 0.0])
+        .unwrap();
+    host.set_config(&mut draft, out, &json!({"channel": "Old"}))
+        .unwrap();
+    let mut endpoints = vec![out];
+    for y in [0.0, 200.0] {
+        let node = host
+            .add_node(&mut draft, "core/bridge-in", [400.0, y])
+            .unwrap();
+        host.set_config(&mut draft, node, &json!({"channel": "Old"}))
+            .unwrap();
+        host.connect(&mut draft, (out, "result"), (node, "value"))
+            .unwrap();
+        endpoints.push(node);
+    }
+    let unrelated = host
+        .add_node(&mut draft, "core/bridge-in", [800.0, 0.0])
+        .unwrap();
+    host.set_config(&mut draft, unrelated, &json!({"channel": "Old"}))
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, out, &json!({"channel": "New"}))
+            .unwrap()
+    );
+    let names = |draft: &orange_host::Draft, name: &str| {
+        assert!(
+            endpoints
+                .iter()
+                .all(|id| draft.document().node(*id).unwrap().config["channel"] == name)
+        );
+        assert_eq!(
+            draft.document().node(unrelated).unwrap().config["channel"],
+            "Old"
+        );
+        assert_eq!(draft.document().root().edges.len(), 2);
+    };
+    names(&draft, "New");
+    assert!(draft.undo());
+    names(&draft, "Old");
+    assert!(draft.redo());
+    names(&draft, "New");
+}
+
+#[test]
 fn one_bridge_out_feeds_every_bridge_in_when_they_are_pulled() {
     let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();

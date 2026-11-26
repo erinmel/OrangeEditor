@@ -350,6 +350,7 @@ pub struct ControlEvent {
     id: EventDeclId,
     scope: EventScope,
     payload_type: ValueShape,
+    pulse: bool,
     handlers: Box<[EventHandler]>,
 }
 impl ControlEvent {
@@ -361,6 +362,10 @@ impl ControlEvent {
     }
     pub fn payload_type(&self) -> &ValueShape {
         &self.payload_type
+    }
+    /// Whether this event has no declared payload.
+    pub fn is_pulse(&self) -> bool {
+        self.pulse
     }
     pub fn handlers(&self) -> &[EventHandler] {
         &self.handlers
@@ -1626,6 +1631,7 @@ fn prepare_events(
             id,
             scope: cx.document.events()[&id].scope,
             payload_type,
+            pulse: cx.document.events()[&id].payload.is_none(),
             handlers: handlers
                 .into_iter()
                 .map(|(_, _, handler)| handler)

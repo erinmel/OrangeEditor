@@ -53,7 +53,7 @@ pub(super) enum FieldOf<'a> {
     /// The Bridge Out channel a Bridge In reads from.
     BridgeChannel,
     /// The Dispatch channel a Listen starts on.
-    ListenChannel,
+    EventChannel,
 }
 
 impl<'a> FieldOf<'a> {
@@ -327,9 +327,9 @@ impl<'a> Card<'a> {
                 named: true,
             });
         }
-        if node.definition == "core/on-event" {
+        if matches!(node.definition.as_str(), "core/emit" | "core/on-event") {
             lefts.push(Left::Field {
-                editor: FieldOf::ListenChannel,
+                editor: FieldOf::EventChannel,
                 named: true,
             });
         }
@@ -498,7 +498,10 @@ impl<'a> Card<'a> {
         for add in growing {
             push(&mut rows, Some(add), None);
         }
-        if crate::palette::signal(node).is_some() || node.definition == crate::palette::BRIDGE_OUT {
+        if matches!(
+            node.definition.as_str(),
+            "core/emit" | crate::palette::BRIDGE_OUT
+        ) {
             push(
                 &mut rows,
                 Some(Left::Field {

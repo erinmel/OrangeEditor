@@ -211,6 +211,8 @@ struct ExpandedText {
 pub struct CanvasResponse {
     pub(crate) edit_literal: Option<(NodeId, String)>,
     pub(crate) edit_map_pairs: Option<NodeId>,
+    pub(crate) new_event: Option<NodeId>,
+    pub(crate) rename_event: Option<NodeId>,
     pub(crate) add_signal_peer: Option<(NodeId, bool)>,
     /// A Bridge In is to read from a Bridge Out: (Bridge In, Bridge Out).
     pub(crate) bind_bridge: Option<(NodeId, NodeId)>,
@@ -416,14 +418,15 @@ pub struct Canvas {
     /// The document's variables, as (ID, name), for the pickers on cards.
     pub(crate) variables: Vec<(String, String, orange_host::VarScope)>,
     /// Event channels by ID, with their names, for the Unbound badge of a Listen.
-    pub(crate) channels: HashMap<String, String>,
+    channels: HashMap<String, String>,
     /// The channels (event ID, name) a Dispatch in the graph sends on, for a Listen's
     /// picker.
     pub(crate) listen_channels: Vec<(String, String)>,
+    event_channels: Vec<(String, String)>,
     /// The graph's Bridge Outs with their channel names, for a Bridge In's picker.
     pub(crate) bridges: Vec<(NodeId, String)>,
     /// Each bound Bridge In's channel, as its Bridge Out names it now.
-    bridge_bound: HashMap<NodeId, String>,
+    bridge_bound: HashMap<NodeId, (NodeId, String)>,
     /// The choices of the enum types the document's inputs take.
     pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
@@ -526,6 +529,7 @@ impl Default for Canvas {
             channels: HashMap::new(),
             bridges: Vec::new(),
             listen_channels: Vec::new(),
+            event_channels: Vec::new(),
             bridge_bound: HashMap::new(),
             enums: Enums::new(),
             origin: Pos2::new(-40.0, -40.0),
@@ -1680,7 +1684,7 @@ impl Canvas {
             .filter(|wire| wire.from.1 == "result" && wire.to.1 == "value")
             .filter_map(|wire| {
                 let (_, channel) = self.bridges.iter().find(|(out, _)| *out == wire.from.0)?;
-                Some((wire.to.0, channel.clone()))
+                Some((wire.to.0, (wire.from.0, channel.clone())))
             })
             .collect();
         // A Listen's picker lists the channels some Dispatch sends on, by name.
@@ -1700,6 +1704,7 @@ impl Canvas {
             .collect();
         listen_channels.sort_by(|a, b| a.1.cmp(&b.1));
         self.listen_channels = listen_channels;
+
         let alive = !self.stale;
         let animation_time = ui.input(|input| animation_phase(input.time));
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -2481,19 +2486,26 @@ impl Canvas {
                     links.push((wire.from.0, wire.to.0, wire_points(from, to, zoom)));
                 }
             }
-            for sender in &graph.nodes {
-                let Some((true, event)) = crate::palette::signal(sender) else {
-                    continue;
-                };
-                for receiver in &graph.nodes {
-                    if crate::palette::signal(receiver) == Some((false, event))
-                        && !self.hidden.contains(&sender.id)
-                        && !self.hidden.contains(&receiver.id)
-                        && let (Some(from), Some(to)) =
-                            (edge_of(sender.id, true), edge_of(receiver.id, false))
-                    {
-                        links.push((sender.id, receiver.id, wire_points(from, to, zoom)));
-                    }
+            let mut listeners = HashMap::<&str, Vec<(NodeId, Pos2)>>::new();
+            for node in &graph.nodes {
+                if let Some((false, event)) = crate::palette::signal(node)
+                    && !self.hidden.contains(&node.id)
+                    && let Some(to) = edge_of(node.id, false)
+                {
+                    listeners.entry(event).or_default().push((node.id, to));
+                }
+            }
+            for node in &graph.nodes {
+                if let Some((true, event)) = crate::palette::signal(node)
+                    && !self.hidden.contains(&node.id)
+                    && let Some(from) = edge_of(node.id, true)
+                    && let Some(receivers) = listeners.get(event)
+                {
+                    links.extend(
+                        receivers
+                            .iter()
+                            .map(|&(id, to)| (node.id, id, wire_points(from, to, zoom))),
+                    );
                 }
             }
             // Resting on one faint link for a second reveals every link. The time
@@ -3073,7 +3085,7 @@ impl Canvas {
                     card::FieldOf::AddSignalReceiver => id.with("add-signal"),
                     card::FieldOf::MapPairs => id.with("map-pairs"),
                     card::FieldOf::BridgeChannel => id.with("bridge-channel"),
-                    card::FieldOf::ListenChannel => id.with("listen-channel"),
+                    card::FieldOf::EventChannel => id.with("event-channel"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -3091,6 +3103,8 @@ impl Canvas {
                     fields::FieldEdit::Setting(pointer, value) => {
                         done.set_config = Some((node.id, pointer, value));
                     }
+                    fields::FieldEdit::NewEvent => done.new_event = Some(node.id),
+                    fields::FieldEdit::RenameEvent => done.rename_event = Some(node.id),
                     fields::FieldEdit::NewVariable(pointer) => {
                         done.new_variable = Some((node.id, pointer));
                     }
@@ -3101,7 +3115,7 @@ impl Canvas {
                     }
                     fields::FieldEdit::AddPort(port) => done.add_port = Some((node.id, port)),
                     fields::FieldEdit::AddSignalReceiver => {
-                        done.add_signal_peer = Some((node.id, node.entry))
+                        done.add_signal_peer = Some((node.id, false))
                     }
                     fields::FieldEdit::BindBridge(out) => done.bind_bridge = Some((node.id, out)),
                     fields::FieldEdit::RefreshDevices(adapter) => {
@@ -3542,7 +3556,20 @@ fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
 }
 
 /// Event channel names by ID, for the Unbound badge of a Listen.
-pub(crate) fn channels_of(declared: &orange_host::Declarations) -> HashMap<String, String> {
+impl Canvas {
+    pub(crate) fn set_channels(&mut self, declared: &orange_host::Declarations) {
+        self.channels = channels_of(declared);
+        self.event_channels = self
+            .channels
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone()))
+            .collect();
+        self.event_channels
+            .sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    }
+}
+
+fn channels_of(declared: &orange_host::Declarations) -> HashMap<String, String> {
     declared
         .events
         .iter()
@@ -5346,11 +5373,11 @@ mod tests {
     }
 
     #[test]
-    fn clicking_add_receiver_on_the_sender_uses_the_canvas_action() {
+    fn clicking_add_subscriber_on_a_fresh_dispatch_uses_the_canvas_action() {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let sender = host
-            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .add_node(&mut draft, "core/emit", [50.0, 80.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
