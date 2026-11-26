@@ -2,6 +2,8 @@
 use super::*;
 use crate::controls::{Action, Dropdown as _, Surface};
 use orange_host::Diagnostic;
+#[cfg(test)]
+use orange_host::intrinsic;
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,12 +503,12 @@ impl Editor {
             |ui| search_field(ui, "log-search", &mut self.log_search, t("search-log")),
         );
         ui.separator();
-        let query = self.log_search.trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.log_search);
         let mut text = String::new();
         let mut levels = Vec::new();
         for line in &self.log {
             if self.log_filter.is_some_and(|level| level != line.level)
-                || !contains_query(&query, &[&line.text, line.level.label(), line.level.name()])
+                || !query.contains([line.text.as_str(), line.level.label(), line.level.name()])
             {
                 continue;
             }
@@ -565,7 +567,7 @@ impl Editor {
                         .id(ui.make_persistent_id((
                             "editor-log-text",
                             self.log_filter.map(NoteLevel::label),
-                            &query,
+                            self.log_search.trim(),
                         )))
                         .layouter(&mut layout)
                         .desired_rows(1)
@@ -610,7 +612,7 @@ impl Editor {
                 )
             },
         );
-        let query = self.problems_search.trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.problems_search);
         let visible = ui
             .horizontal(|ui| {
                 let mut visible = Vec::new();
@@ -626,7 +628,7 @@ impl Editor {
                             .zip(&document.problem_locations)
                             .filter(|((_, text), location)| {
                                 location.level == level
-                                    && contains_query(&query, &[text, level.label(), location.code])
+                                    && query.contains([text.as_str(), level.label(), location.code])
                             })
                             .map(|((index, text), location)| (index, text, location)),
                     );
@@ -847,7 +849,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.set_language("en");
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        editor.add_node(&mut host, "core/set-variable").unwrap();
+        editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         assert!(
             editor
                 .problems()
@@ -872,7 +874,7 @@ mod tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         editor.canvas.select(Some(node));
         editor.panels.log = true;
         let document = editor.document.as_mut().unwrap();

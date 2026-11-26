@@ -58,12 +58,13 @@ pub const ERROR: char = '\u{f8b6}'; // error
 pub const WARNING: char = '\u{f083}'; // warning
 pub const MATH: char = '\u{ea5f}'; // calculate
 pub const AUDIO: char = '\u{e050}'; // volume_up
-pub const NETWORK: char = '\u{e894}'; // language
+pub const NETWORK: char = '\u{ea07}'; // language
 
-pub(crate) const SIGNAL: char = ''; // rss_feed
-pub(crate) const TEXT: char = ''; // format_align_left
-pub(crate) const CLOCK: char = ''; // schedule
-pub(crate) const LOGIC: char = ''; // call_split
+pub(crate) const SIGNAL: char = '\u{e0e5}'; // rss_feed
+pub(crate) const TEXT: char = '\u{e236}'; // format_align_left
+pub(crate) const CLOCK: char = '\u{efd6}'; // schedule
+pub(crate) const LOGIC: char = '\u{e0b6}'; // call_split
+pub(crate) const BOOLEAN: char = '\u{eaf4}'; // join_inner
 
 /// Every icon the editor draws, for the test that each is in the font.
 pub const ALL: &[char] = &[
@@ -129,6 +130,7 @@ pub const ALL: &[char] = &[
     TEXT,
     CLOCK,
     LOGIC,
+    BOOLEAN,
 ];
 
 /// Paints a command icon identified by a constant from this module. Return `false`
@@ -301,4 +303,36 @@ pub(crate) fn run_button(ui: &mut egui::Ui, enabled: bool, running: bool) -> egu
     });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response
+}
+
+/// Node family badges name their Material Symbol; a codepoint copied from the older
+/// Material Icons font draws an unrelated glyph, such as a phone for a feed.
+#[cfg(test)]
+#[test]
+fn family_badges_draw_the_glyph_their_name_says() {
+    use orange_ui_controls::icons::material as m;
+    for (ours, named) in [
+        (SIGNAL, m::ICON_RSS_FEED),
+        (FLOW, m::ICON_ARROW_FORWARD),
+        (FUNCTION, m::ICON_FUNCTIONS),
+        (REFRESH, m::ICON_REFRESH),
+        (VARIABLE, m::ICON_DATA_OBJECT),
+        (MATH, m::ICON_CALCULATE),
+        (TEXT, m::ICON_FORMAT_ALIGN_LEFT),
+        (CLOCK, m::ICON_SCHEDULE),
+        (AUDIO, m::ICON_VOLUME_UP),
+        (NETWORK, m::ICON_LANGUAGE),
+        (OPEN, m::ICON_FOLDER_OPEN),
+        (LOG, m::ICON_TERMINAL),
+        (LOGIC, m::ICON_CALL_SPLIT),
+        (BOOLEAN, m::ICON_JOIN_INNER),
+        (PACKAGES, m::ICON_PACKAGE_2),
+    ] {
+        assert_eq!(
+            Some(ours),
+            named.codepoint.chars().next(),
+            "{}",
+            named.codepoint
+        );
+    }
 }

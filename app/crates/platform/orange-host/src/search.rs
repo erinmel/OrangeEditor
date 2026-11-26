@@ -1,25 +1,209 @@
 //! Finding node kinds by what a person types, like a shop search: by name, alias,
-//! category, purpose ("concept") and description, in the active language and English,
+//! category, purpose ("concept") and description, in the active and bundled languages,
 //! forgiving one typo. The words are catalogue data ([`Catalogs`]); which nodes a
 //! concept groups follows from their kind and ID, so new trigger kinds join "trigger"
 //! without a list to keep up.
+use crate::intrinsic;
 use std::borrow::Cow;
-use std::sync::LazyLock;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock};
 
 use orange_model::document::NodeKind;
 
-use crate::i18n::{CatalogError, Catalogs};
+use crate::i18n::{CatalogError, Catalogs, primary_language};
 use crate::{Host, NodeInfo};
 use orange_model::catalog::TextRef;
+
+mod matching;
+pub use matching::{SearchQuery, fold_search, word_finds};
+use matching::{cjk, starts_a_word};
 
 /// The concepts the search groups nodes by, as stable IDs. Their words are the
 /// catalogue messages `concept-<id>`, their one-line purposes `concept-<id>-purpose`.
 pub const CONCEPTS: &[&str] = &[
     "trigger", "math", "compare", "logic", "text", "time", "audio", "network", "file", "variable",
-    "loop", "list", "data",
+    "loop", "list", "data", "color",
 ];
 
+/// Bundled search languages available from every editor locale.
+pub const SEARCH_LANGUAGES: [&str; 3] = ["en", "es", "ja"];
+
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
+
+/// Prepared search text for one language and registry generation.
+#[derive(Debug, Default)]
+pub(crate) struct SearchIndex {
+    generation: Option<u64>,
+    locale: String,
+    nodes: Arc<[SearchNode]>,
+}
+
+#[derive(Debug)]
+struct SearchNode {
+    found: Found,
+    active: SearchText,
+    fallback: SearchText,
+}
+
+#[derive(Debug, Default)]
+struct SearchText {
+    names: Vec<String>,
+    aliases: Vec<String>,
+    concepts: Vec<String>,
+    description: String,
+    settings: Vec<String>,
+}
+
+/// Ordering of search results, including their language preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SearchRank {
+    tier: u8,
+    fallback: bool,
+    kind: Match,
+}
+
+impl SearchRank {
+    /// The rank of an exact match in the active language, and of every row when
+    /// nothing is typed.
+    pub const BEST: Self = Self::new(Match::Exact, false);
+
+    /// A match of strength `kind`; `fallback` when it needed a caption outside the
+    /// active language.
+    pub const fn new(kind: Match, fallback: bool) -> Self {
+        let tier = match kind {
+            Match::Exact
+            | Match::AliasExact
+            | Match::NameStart
+            | Match::WordStart
+            | Match::Alias => 0,
+            Match::Concept | Match::Description => 1,
+            Match::Typo => 2,
+        };
+        Self {
+            tier,
+            fallback,
+            kind,
+        }
+    }
+
+    pub fn kind(self) -> Match {
+        self.kind
+    }
+
+    /// This rank, but no stronger than `kind`, keeping its language preference.
+    pub fn no_stronger_than(self, kind: Match) -> Self {
+        Self::new(self.kind.max(kind), self.fallback)
+    }
+}
+
+impl SearchNode {
+    fn rank(&self, query: &SearchQuery) -> Option<SearchRank> {
+        let phrase = [
+            self.active.phrase(&query.phrase, false),
+            self.fallback.phrase(&query.phrase, true),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        if phrase.is_some_and(|rank| !rank.fallback && rank.kind() <= Match::WordStart) {
+            return phrase;
+        }
+        let each = query
+            .terms
+            .iter()
+            .try_fold(SearchRank::BEST, |worst, term| {
+                let best = [
+                    self.active.term(term, false),
+                    self.fallback.term(term, true),
+                ]
+                .into_iter()
+                .flatten()
+                .min()?;
+                let kind = match (best.kind(), query.terms.len() > 1) {
+                    (Match::Exact, true) => Match::WordStart,
+                    (Match::AliasExact, true) => Match::Alias,
+                    (kind, _) => kind,
+                };
+                Some(SearchRank::new(
+                    worst.kind().max(kind),
+                    worst.fallback || best.fallback,
+                ))
+            });
+        phrase.into_iter().chain(each).min()
+    }
+}
+
+impl SearchText {
+    fn phrase(&self, query: &str, fallback: bool) -> Option<SearchRank> {
+        let kind = if self.names.iter().any(|name| name == query) {
+            if fallback {
+                Match::AliasExact
+            } else {
+                Match::Exact
+            }
+        } else if self.aliases.iter().any(|alias| alias == query) {
+            Match::AliasExact
+        } else if !fallback && self.names.iter().any(|name| name.starts_with(query)) {
+            Match::NameStart
+        } else if !fallback && self.names.iter().any(|name| starts_a_word(name, query)) {
+            Match::WordStart
+        } else if self
+            .aliases
+            .iter()
+            .chain(self.names.iter().filter(|_| fallback))
+            .any(|alias| alias.starts_with(query))
+        {
+            Match::Alias
+        } else {
+            return None;
+        };
+        Some(SearchRank::new(kind, fallback))
+    }
+
+    fn term(&self, term: &matching::Term, fallback: bool) -> Option<SearchRank> {
+        let word = &term.text;
+        let kind = if let Some(rank) = self.phrase(word, fallback) {
+            rank.kind()
+        } else if self
+            .aliases
+            .iter()
+            .chain(self.names.iter().filter(|_| fallback))
+            .any(|alias| starts_a_word(alias, word))
+        {
+            Match::Alias
+        } else if self
+            .concepts
+            .iter()
+            .any(|concept| starts_a_word(concept, word))
+        {
+            Match::Concept
+        } else if self.description.contains(word)
+            || (word.chars().count() >= 3 || word.contains(cjk))
+                && self
+                    .settings
+                    .iter()
+                    .any(|setting| starts_a_word(setting, word))
+        {
+            Match::Description
+        } else if self
+            .names
+            .iter()
+            .chain(&self.aliases)
+            .chain(&self.concepts)
+            .chain(&self.settings)
+            .any(|candidate| term.typo_in(candidate))
+        {
+            Match::Typo
+        } else {
+            return None;
+        };
+        Some(SearchRank::new(kind, fallback))
+    }
+}
+
+/// Kinds that stay loadable but are not offered: the two-input And and Or, which the
+/// growable forms (`core/all-conditions`, `core/any-conditions`) replace as And and Or.
+pub const UNLISTED: [&str; 2] = [intrinsic::AND, intrinsic::OR];
 
 static BUILT_IN: LazyLock<Catalogs> = LazyLock::new(|| {
     let mut catalogs = Catalogs::default();
@@ -82,9 +266,9 @@ pub enum Match {
     Alias,
     /// A concept it belongs to, or its category.
     Concept,
-    /// Its description or ID.
+    /// Its description, ID or configuration.
     Description,
-    /// Its name, an alias or a concept, with one letter wrong, missing or swapped.
+    /// Its name, an alias, a concept or a setting with one spelling edit.
     Typo,
 }
 
@@ -104,6 +288,10 @@ pub struct Found {
 }
 
 impl Host {
+    /// Changes when registry or catalogue updates affect search results.
+    pub fn search_revision(&self) -> (u64, u64) {
+        (self.registry().generation(), self.catalogs.revision())
+    }
     /// The host's and the packages' catalogues: search words, node names and host
     /// messages in every language there is.
     pub fn catalogs(&self) -> &Catalogs {
@@ -113,47 +301,101 @@ impl Host {
     /// Adds catalogue text for `locale`, such as a new language's, without changing
     /// any ID.
     pub fn add_catalog(&mut self, locale: &str, text: &str) -> Result<(), CatalogError> {
-        self.catalogs.add(locale, text)
+        self.catalogs.add(locale, text)?;
+        *self
+            .search_index
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = SearchIndex::default();
+        Ok(())
     }
 
-    /// Every node kind that matches `search` in language `locale` or English, best
-    /// match first, then by name. Each word typed must match something of the node;
-    /// a node ranks by its weakest word unless the whole search matches its name or an
-    /// alias. With nothing typed, every kind by name.
+    /// Every node kind that matches `search` in `locale` or a bundled search language.
+    /// The best match comes first, with the active language breaking ties.
+    /// Each typed word must match the node. With nothing typed, returns every offered
+    /// kind ordered by display name.
     pub fn search_nodes(&self, search: &str, locale: &str) -> Vec<Found> {
-        let search = fold_search(search);
-        let words: Vec<&str> = search.split_whitespace().collect();
-        let mut found: Vec<Found> = self
-            .nodes()
-            .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
-            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
-            .filter_map(|info| {
-                let matched = if words.is_empty() {
+        self.search_nodes_with(search, locale, |found, _| found)
+    }
+
+    /// Search results with ranks for clients that merge in their own results.
+    pub fn ranked_search_nodes(
+        &self,
+        search: &str,
+        locale: &str,
+    ) -> Vec<(Found, Option<SearchRank>)> {
+        self.search_nodes_with(search, locale, |found, rank| (found, rank))
+    }
+
+    fn search_nodes_with<T>(
+        &self,
+        search: &str,
+        locale: &str,
+        project: impl Fn(Found, Option<SearchRank>) -> T,
+    ) -> Vec<T> {
+        let query = SearchQuery::new(search);
+        if !query.is_valid() {
+            return Vec::new();
+        }
+        let index = self.node_search_index(locale);
+        let mut ranked: Vec<_> = index
+            .iter()
+            .filter_map(|entry| {
+                let matched = if query.is_empty() {
                     None
                 } else {
-                    Some(self.rank(&info, &search, &words, locale)?)
+                    Some(entry.rank(&query)?)
                 };
-                Some(Found {
-                    definition: info.definition.definition.id.as_str().to_owned(),
-                    label: self.label_in(&info, locale),
-                    category: self.category_in(&info, locale),
-                    purpose: self.purpose(&info, locale),
-                    package: info
-                        .provider
-                        .map(|provider| provider.package.clone())
-                        .unwrap_or_default(),
-                    matched,
-                })
+                Some((matched, &entry.found))
             })
             .collect();
-        found.sort_by(|a, b| {
-            a.matched
-                .cmp(&b.matched)
+        ranked.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank
+                .cmp(b_rank)
                 .then_with(|| a.label.cmp(&b.label))
                 .then_with(|| a.definition.cmp(&b.definition))
         });
-        found.dedup_by(|a, b| a.definition == b.definition);
-        found
+        let mut seen = HashSet::with_capacity(ranked.len());
+        // Preserve the first (highest-ranked) version of a definition.
+        ranked
+            .into_iter()
+            .filter(|(_, entry)| seen.insert(entry.definition.as_str()))
+            .map(|(rank, entry)| {
+                let found = Found {
+                    matched: rank.map(SearchRank::kind),
+                    ..entry.clone()
+                };
+                project(found, rank)
+            })
+            .collect()
+    }
+
+    /// The node kinds the palette and search offer: core and provided kinds that are
+    /// neither hidden nor [`UNLISTED`]. Other kinds stay loadable.
+    pub fn offered_nodes(&self) -> impl Iterator<Item = NodeInfo<'_>> {
+        self.nodes()
+            .filter(|info| info.definition.definition.id.is_core() || info.provider.is_some())
+            .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .filter(|info| !UNLISTED.contains(&info.definition.definition.id.as_str()))
+    }
+
+    fn node_search_index(&self, locale: &str) -> Arc<[SearchNode]> {
+        let generation = self.registry().generation();
+        let mut cache = self
+            .search_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.generation != Some(generation) || cache.locale != locale {
+            let nodes = self
+                .offered_nodes()
+                .map(|info| self.prepare_search_node(&info, locale))
+                .collect::<Vec<_>>();
+            *cache = SearchIndex {
+                generation: Some(generation),
+                locale: locale.to_owned(),
+                nodes: nodes.into(),
+            };
+        }
+        Arc::clone(&cache.nodes)
     }
 
     /// The concepts node kind `info` belongs to.
@@ -219,118 +461,179 @@ impl Host {
         names
     }
 
-    fn rank(
-        &self,
-        info: &NodeInfo<'_>,
-        search: &str,
-        words: &[&str],
-        locale: &str,
-    ) -> Option<Match> {
+    /// Translated success captions, keyed by definition ID and source caption.
+    pub fn outcome_names(&self, locale: &str) -> Vec<(String, (String, String))> {
+        self.nodes()
+            .filter_map(|info| {
+                let label = info.presentation?.then_label.as_ref()?;
+                let translated = self.catalogs.message(locale, &node_key(&label.key))?;
+                Some((
+                    info.definition.definition.id.as_str().to_owned(),
+                    (label.fallback.clone(), translated.into_owned()),
+                ))
+            })
+            .collect()
+    }
+
+    fn prepare_search_node(&self, info: &NodeInfo<'_>, locale: &str) -> SearchNode {
         let id = info.definition.definition.id.as_str();
         let key = node_key(id);
-        // The name in the search's language, and in English too.
-        let label = fold_search(&self.label_in(info, locale));
-        let english = fold_search(&info.label());
-        let mut aliases: Vec<String> = self
-            .catalogs
-            .words(locale, &format!("alias-{key}"))
-            .map(|word| fold_search(&word))
-            .collect();
-        if english != label {
-            aliases.push(english);
-        }
-        // The package's own keywords, translated by its catalogue and in English.
-        if let Some(keywords) = info.presentation.and_then(|shown| shown.keywords.as_ref()) {
-            aliases.extend(
-                self.catalogs
-                    .words(locale, &node_key(&keywords.key))
-                    .map(|word| fold_search(&word)),
-            );
-            aliases.extend(
-                keywords
-                    .fallback
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|w| !w.is_empty())
-                    .map(fold_search),
-            );
-        }
-        let category = self.category_in(info, locale);
-        let category_slug = category_key(info);
-        let mut concept_words: Vec<String> = fold_search(&category)
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        concept_words.extend(
-            self.catalogs
-                .words(locale, &format!("category-{category_slug}"))
-                .map(|word| fold_search(&word)),
+        let mut active = SearchText::default();
+        let mut fallback = SearchText {
+            description: fold_search(id),
+            ..SearchText::default()
+        };
+        let primary = primary_language(locale);
+        self.add_search_text(
+            &mut active,
+            info,
+            &key,
+            locale,
+            primary == crate::SOURCE_LANGUAGE,
         );
-        for concept in concepts(info) {
-            concept_words.extend(
-                self.catalogs
-                    .words(locale, &format!("concept-{concept}"))
-                    .map(|word| fold_search(&word)),
-            );
+        for tag in SEARCH_LANGUAGES {
+            if primary != tag {
+                self.add_search_text(
+                    &mut fallback,
+                    info,
+                    &key,
+                    tag,
+                    tag == crate::SOURCE_LANGUAGE,
+                );
+            }
         }
-        let mut description = fold_search(id);
-        if let Some(text) = info
-            .presentation
-            .and_then(|shown| shown.description.as_ref())
-        {
-            description.push(' ');
-            description.push_str(&fold_search(&self.text_in(text, locale)));
-            description.push(' ');
-            description.push_str(&fold_search(&text.fallback));
+        SearchNode {
+            found: Found {
+                definition: id.to_owned(),
+                label: self.label_in(info, locale),
+                category: self.category_in(info, locale),
+                purpose: self.purpose(info, locale),
+                package: info
+                    .provider
+                    .map(|provider| provider.package.clone())
+                    .unwrap_or_default(),
+                matched: None,
+            },
+            active,
+            fallback,
         }
-        if let Some(text) = self.catalogs.message(locale, &format!("purpose-{key}")) {
-            description.push(' ');
-            description.push_str(&fold_search(&text));
+    }
+
+    fn add_search_text(
+        &self,
+        text: &mut SearchText,
+        info: &NodeInfo<'_>,
+        key: &str,
+        locale: &str,
+        source: bool,
+    ) {
+        let languages: Vec<_> = self
+            .catalogs
+            .chain(locale)
+            .filter(|language| source || !language.is_source())
+            .collect();
+        let message = |id: &str| {
+            languages
+                .iter()
+                .find_map(|language| language.format(id, &[]))
+        };
+        let words = |id: &str, terms: &mut Vec<String>| {
+            for caption in languages
+                .iter()
+                .filter_map(|language| language.format(id, &[]))
+            {
+                terms.extend(
+                    caption
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|word| !word.is_empty())
+                        .map(fold_search),
+                );
+            }
+        };
+        let shown = info.presentation;
+        let label = shown.and_then(|shown| shown.label.as_ref());
+        let name = label.map_or_else(|| format!("name-{key}"), |label| node_key(&label.key));
+        if let Some(label) = message(&name) {
+            text.names.push(fold_search(&label));
+        } else if source {
+            text.names.push(fold_search(&info.label()));
+        }
+        words(&format!("alias-{key}"), &mut text.aliases);
+        if let Some(keywords) = shown.and_then(|shown| shown.keywords.as_ref()) {
+            words(&node_key(&keywords.key), &mut text.aliases);
+            if source {
+                text.aliases.extend(
+                    keywords
+                        .fallback
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|word| !word.is_empty())
+                        .map(fold_search),
+                );
+            }
         }
 
-        // The whole search against the name and aliases, as a phrase.
-        let phrase = if label == search {
-            Some(Match::Exact)
-        } else if aliases.iter().any(|alias| alias == search) {
-            Some(Match::AliasExact)
-        } else if label.starts_with(search) {
-            Some(Match::NameStart)
-        } else if starts_a_word(&label, search) {
-            Some(Match::WordStart)
-        } else if aliases.iter().any(|alias| alias.starts_with(search)) {
-            Some(Match::Alias)
-        } else {
-            None
+        let category = shown.and_then(|shown| shown.category.as_ref());
+        let slug = category_key(info);
+        let category =
+            category.map_or_else(|| format!("palette-{slug}"), |label| node_key(&label.key));
+        if let Some(caption) = message(&category) {
+            text.concepts.push(fold_search(&caption));
+        } else if source {
+            text.concepts.push(fold_search(&info.category()));
+        }
+        words(&format!("category-{slug}"), &mut text.concepts);
+        for concept in concepts(info) {
+            words(&format!("concept-{concept}"), &mut text.concepts);
+        }
+
+        if let Some(description) = shown.and_then(|shown| shown.description.as_ref()) {
+            if let Some(caption) = message(&node_key(&description.key)) {
+                text.description.push(' ');
+                text.description.push_str(&fold_search(&caption));
+            } else if source {
+                text.description.push(' ');
+                text.description
+                    .push_str(&fold_search(&description.fallback));
+            }
+        }
+        if let Some(caption) = message(&format!("purpose-{key}")) {
+            text.description.push(' ');
+            text.description.push_str(&fold_search(&caption));
+        }
+
+        let Some(properties) = info
+            .definition
+            .config_schema
+            .as_ref()
+            .and_then(|schema| schema["properties"].as_object())
+        else {
+            return;
         };
-        // Otherwise every word must match something; the weakest decides.
-        let each = words
+        for (name, schema) in properties
             .iter()
-            .map(|word| {
-                if label == *word {
-                    Some(Match::Exact)
-                } else if label.starts_with(word) {
-                    Some(Match::NameStart)
-                } else if starts_a_word(&label, word) {
-                    Some(Match::WordStart)
-                } else if aliases.iter().any(|alias| starts_a_word(alias, word)) {
-                    Some(Match::Alias)
-                } else if concept_words
-                    .iter()
-                    .any(|concept| starts_a_word(concept, word))
-                {
-                    Some(Match::Concept)
-                } else if description.contains(word) {
-                    Some(Match::Description)
-                } else if one_typo_from_any(word, &label, &aliases, &concept_words) {
-                    Some(Match::Typo)
-                } else {
-                    None
+            .filter(|(_, schema)| schema["readOnly"] != true)
+        {
+            if source {
+                text.settings.push(fold_search(name));
+            }
+            if let Some(caption) = message(&format!("setting-{}", node_key(name))) {
+                text.settings.push(fold_search(&caption));
+            }
+            for value in schema["enum"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+            {
+                if source {
+                    text.settings.push(fold_search(value));
                 }
-            })
-            .try_fold(Match::Exact, |worst, matched| Some(worst.max(matched?)));
-        match (phrase, each) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+                if let Some(caption) = message(&format!("setting-choice-{}", node_key(value))) {
+                    text.settings.push(fold_search(&caption));
+                }
+            }
         }
     }
 
@@ -426,9 +729,12 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
     add(
         "math",
         namespace == "org.orange.math" && !compares
-            || ["core/whole-number", "core/number"].contains(&id),
+            || [intrinsic::WHOLE_NUMBER, intrinsic::NUMBER].contains(&id),
     );
-    add("text", namespace == "org.orange.text" || id == "core/text");
+    add(
+        "text",
+        namespace == "org.orange.text" || id == intrinsic::TEXT,
+    );
     add(
         "time",
         namespace == "org.orange.time"
@@ -470,90 +776,19 @@ fn concepts(info: &NodeInfo<'_>) -> Vec<&'static str> {
     found
 }
 
-/// Lower case without accents, so "numero" finds "número".
-/// Fold case and common Latin accents for locale-aware search.
-pub fn fold_search(text: &str) -> String {
-    text.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'á' | 'à' | 'â' | 'ä' | 'ã' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            c => c,
-        })
-        .collect()
-}
-
-/// Whether a word of `text` (split at spaces and dashes) starts with `search`.
-fn starts_a_word(text: &str, search: &str) -> bool {
-    text.split([' ', '-'])
-        .any(|word| !word.is_empty() && word.starts_with(search))
-        || text.starts_with(search)
-}
-
-/// Whether `word` is one letter off a word of the name, an alias or a concept, or off
-/// the start of one (a typo while still typing). Short words are never fuzzy.
-fn one_typo_from_any(word: &str, label: &str, aliases: &[String], concepts: &[String]) -> bool {
-    if word.chars().count() < 4 {
-        return false;
-    }
-    let mut candidates = label
-        .split([' ', '-'])
-        .chain(aliases.iter().flat_map(|alias| alias.split(' ')))
-        .chain(concepts.iter().map(String::as_str));
-    candidates.any(|candidate| {
-        let candidate: Vec<char> = candidate.chars().collect();
-        let word: Vec<char> = word.chars().collect();
-        within_one(&word, &candidate)
-            || (word.len()..=word.len() + 1)
-                .filter(|&end| end < candidate.len())
-                .any(|end| within_one(&word, &candidate[..end]))
-    })
-}
-
-/// Edit distance at most one, counting a swap of two neighbours as one.
-fn within_one(a: &[char], b: &[char]) -> bool {
-    if a == b {
-        return true;
-    }
-    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    match long.len() - short.len() {
-        0 => {
-            let differ: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
-            differ.len() == 1
-                || differ.len() == 2
-                    && differ[1] == differ[0] + 1
-                    && a[differ[0]] == b[differ[1]]
-                    && a[differ[1]] == b[differ[0]]
-        }
-        1 => {
-            let at = short
-                .iter()
-                .zip(long)
-                .position(|(x, y)| x != y)
-                .unwrap_or(short.len());
-            short[at..] == long[at + 1..]
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn typos_are_one_edit() {
-        let chars = |text: &str| text.chars().collect::<Vec<_>>();
-        assert!(within_one(&chars("timer"), &chars("tiemr")));
-        assert!(within_one(&chars("timer"), &chars("timr")));
-        assert!(within_one(&chars("timer"), &chars("timers")));
-        assert!(within_one(&chars("timer"), &chars("tamer")));
-        assert!(!within_one(&chars("timer"), &chars("tmire")));
-        assert!(!within_one(&chars("timer"), &chars("time it")));
+    fn a_channel_name_is_found_with_one_typo_and_without_accents() {
+        assert!(word_finds("door", "Door bell"));
+        assert!(word_finds("bel", "Door bell"));
+        assert!(word_finds("doro", "Door bell"));
+        assert!(word_finds("puerta", "Timbre de la puérta"));
+        assert!(word_finds("puetra", "Timbre de la puerta"));
+        assert!(!word_finds("window", "Door bell"));
+        assert!(!word_finds("", "Door bell"));
     }
 
     #[test]
@@ -568,9 +803,16 @@ mod tests {
             // categories and ports that English makes from their IDs; every other
             // message translates one.
             for id in words.ids(tag) {
-                let extra_words = ["alias-", "category-", "name-", "palette-", "port-"]
-                    .iter()
-                    .any(|prefix| id.starts_with(prefix));
+                let extra_words = [
+                    "alias-",
+                    "category-",
+                    "name-",
+                    "palette-",
+                    "port-",
+                    "setting-",
+                ]
+                .iter()
+                .any(|prefix| id.starts_with(prefix));
                 assert!(
                     extra_words || english.contains(&id),
                     "{tag} has {id}, which English lacks"
@@ -606,7 +848,7 @@ mod tests {
             .unwrap();
         for (port, value) in [("a", "1.5"), ("b", "0.5")] {
             let number = host
-                .add_node(&mut draft, "core/number", [0.0, 0.0])
+                .add_node(&mut draft, intrinsic::NUMBER, [0.0, 0.0])
                 .unwrap();
             host.set_input(&mut draft, (number, "value"), Some(value))
                 .unwrap();

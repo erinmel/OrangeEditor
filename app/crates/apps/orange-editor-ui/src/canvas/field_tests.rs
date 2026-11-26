@@ -1,5 +1,6 @@
 //! Card fields driven through egui input, frame by frame, as a person uses them.
 use super::*;
+use orange_host::intrinsic;
 
 fn id(n: u32) -> NodeId {
     format!("20000000-0000-4000-8000-{n:012x}").parse().unwrap()
@@ -9,7 +10,7 @@ fn id(n: u32) -> NodeId {
 fn for_each_shows_its_default_list_mode_and_the_map_choice() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
-    host.add_node(&mut draft, "core/for-each", [0.0, 0.0])
+    host.add_node(&mut draft, intrinsic::FOR_EACH, [0.0, 0.0])
         .unwrap();
     let graph = host.draft_view(&draft).unwrap();
     let node = &graph.nodes[0];
@@ -125,6 +126,7 @@ fn node() -> NodeView {
         types: Vec::new(),
         variadic: Vec::new(),
         paths: Vec::new(),
+        controls: Default::default(),
         missing: None,
     }
 }
@@ -210,14 +212,113 @@ impl Session {
 }
 
 #[test]
+fn keyboard_and_click_can_wire_from_either_end_or_cancel_without_editing() {
+    let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let start = host
+        .add_node(&mut draft, intrinsic::ON_MANUAL, [40.0, 40.0])
+        .unwrap();
+    let wait = host
+        .add_node(&mut draft, intrinsic::WAIT, [440.0, 40.0])
+        .unwrap();
+    let mut session = Session::new();
+    session.graph = host.draft_view(&draft).unwrap();
+    session.canvas.load(&session.graph);
+    session.canvas.origin = Pos2::ZERO;
+    session.canvas.fit = false;
+    let _ = session.frame(vec![]);
+
+    let port_at = |node, key, input| {
+        let geometry = Geometry::with_cards(&session.graph, |node| session.canvas.card(node));
+        session.corner
+            + (session.canvas.places[&node] + geometry.port(node, key, input).unwrap().offset
+                - session.canvas.origin)
+                * session.canvas.zoom
+    };
+    let out = port_at(start, "then", false);
+    let into = port_at(wait, "in", true);
+    let press = |session: &mut Session, key, modifiers| {
+        let event = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let result = session.frame(vec![event(true)]);
+        let _ = session.frame(vec![event(false)]);
+        result
+    };
+    let focus_port = |session: &mut Session, at: Pos2| {
+        let reached = (0..24).any(|_| {
+            let focused = session.context.memory(|memory| memory.focused());
+            let there = focused
+                .and_then(|id| session.context.read_response(id))
+                .is_some_and(|response| response.rect.center().distance(at) < 1.0);
+            if !there {
+                let _ = press(session, egui::Key::Tab, egui::Modifiers::NONE);
+            }
+            there
+        });
+        assert!(reached, "could not reach connector at {at:?} with Tab");
+    };
+    for (first, second) in [(out, into), (into, out)] {
+        focus_port(&mut session, first);
+        assert!(
+            press(&mut session, egui::Key::Enter, egui::Modifiers::NONE)
+                .connect
+                .is_none()
+        );
+        assert!(session.canvas.keyboard_wiring.is_some());
+        focus_port(&mut session, second);
+        assert_eq!(
+            press(&mut session, egui::Key::Space, egui::Modifiers::NONE).connect,
+            Some(((start, "then".to_owned()), (wait, "in".to_owned())))
+        );
+        assert!(session.canvas.keyboard_wiring.is_none());
+    }
+    let click_at = |session: &mut Session, pos, modifiers| {
+        let event = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        let _ = session.frame(vec![egui::Event::PointerMoved(pos), event(true)]);
+        session.frame(vec![event(false)])
+    };
+    for (first, second) in [(out, into), (into, out)] {
+        let _ = click_at(&mut session, first, egui::Modifiers::NONE);
+        assert!(session.canvas.keyboard_wiring.is_some());
+        assert_eq!(
+            click_at(&mut session, second, egui::Modifiers::NONE).connect,
+            Some(((start, "then".to_owned()), (wait, "in".to_owned())))
+        );
+    }
+    focus_port(&mut session, into);
+    let _ = press(&mut session, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(
+        press(&mut session, egui::Key::Escape, egui::Modifiers::NONE)
+            .connect
+            .is_none()
+    );
+    assert!(session.canvas.keyboard_wiring.is_none());
+    focus_port(&mut session, into);
+    assert!(matches!(
+        press(&mut session, egui::Key::F10, egui::Modifiers::SHIFT).context,
+        Some((crate::MenuTarget::Port { node, input: true, .. }, _, _)) if node == wait
+    ));
+}
+
+#[test]
 fn failure_disclosure_accepts_keyboard_and_preserves_primary_anchors() {
     let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let id = host
-        .add_node(&mut draft, "core/wait", [40.0, 40.0])
+        .add_node(&mut draft, intrinsic::WAIT, [40.0, 40.0])
         .unwrap();
     let handler = host
-        .add_node(&mut draft, "core/wait", [480.0, 40.0])
+        .add_node(&mut draft, intrinsic::WAIT, [480.0, 40.0])
         .unwrap();
     let view = host.draft_authoring_view(&draft).unwrap();
     let mut session = Session::new();
@@ -440,7 +541,7 @@ fn a_fitted_card_keeps_its_title_at_overview_zoom() {
 #[test]
 fn both_number_literal_cards_use_the_math_icon() {
     let mut view = node();
-    for definition in ["core/number", "core/whole-number"] {
+    for definition in [intrinsic::NUMBER, intrinsic::WHOLE_NUMBER] {
         view.definition = definition.into();
         assert_eq!(family_icon(&view), crate::icons::MATH);
     }
@@ -860,9 +961,7 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
     });
     assert!(is_hold_dial(&preview.shapes));
     preview.drop_without_applying_deltas();
-    let rect = session.control(hold);
-    let at = Pos2::new(rect.left() + rect.height() * 0.5, rect.center().y);
-    let _ = session.click(at);
+    let _ = session.click(session.control(hold).center());
     let done = session.frame(vec![egui::Event::Key {
         key: egui::Key::ArrowRight,
         physical_key: None,
@@ -877,9 +976,11 @@ fn audio_trigger_hold_dial_renders_in_preview_and_edits_the_canvas_setting() {
 
     session.canvas.zoom = *ZOOM_RANGE.end();
     let (_, canvas) = session.frame_output(vec![]);
+    // The dial is centered in its slot; its well sits inside the ring of ticks.
     let slot = session.control(hold);
-    let center = Pos2::new(slot.left() + slot.height() * 0.5, slot.center().y);
-    let radius = slot.height() * 0.35 * 0.76;
+    let center = slot.center();
+    let diameter = slot.height().min(slot.width());
+    let radius = diameter * 0.5 - 1.0 - (diameter * 0.085).max(3.0) - 2.0;
     assert!(canvas.shapes.iter().any(|item| {
         matches!(&item.shape, egui::Shape::Circle(circle)
             if circle.center.distance(center) < 0.5 && (circle.radius - radius).abs() < 0.1)
@@ -999,7 +1100,7 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
     let _ = session.frame(vec![]);
     let zoom = session.canvas.zoom;
     let top = session.corner + (session.canvas.places[&trigger] - session.canvas.origin) * zoom;
-    let from = top + Vec2::new(40.0, BODY_TOP + 10.0 + 185.0 * 35.0 / 120.0) * zoom;
+    let from = top + Vec2::new(10.0, BODY_TOP + 18.0 + 163.0 * 35.0 / 120.0) * zoom;
     let to = from + Vec2::new(0.0, 32.0) * zoom;
     let button = |pos, pressed| egui::Event::PointerButton {
         pos,
@@ -1026,7 +1127,7 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
     assert!(
         labels
             .iter()
-            .any(|label| label.contains(&format!("{shown:.0}"))),
+            .any(|label| label.contains(&format!("{shown:.1}"))),
         "{labels:?}"
     );
     let (config, pointer, value) = session.frame(vec![button(to, false)]).set_config.unwrap();
@@ -1035,6 +1136,15 @@ fn threshold_meter_drag_previews_every_control_and_commits_once() {
         (trigger, "/threshold_db", Some(shown))
     );
     assert!(session.frame(vec![]).set_config.is_none());
+    session
+        .context
+        .run_ui(egui::RawInput::default(), |ui| {
+            let mut response = ui.label("threshold");
+            response.mark_changed();
+            assert_eq!(threshold.update(&response, f64::NAN), None);
+            assert_eq!(threshold.update(&response, f64::INFINITY), None);
+        })
+        .drop_without_applying_deltas();
 
     let mut changed = (*node).clone();
     changed

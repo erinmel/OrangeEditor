@@ -1,5 +1,6 @@
 use super::*;
 use crate::Editor;
+use orange_host::intrinsic;
 use orange_host::{Host, HostOptions};
 
 #[test]
@@ -41,8 +42,8 @@ fn panel_and_group_shortcuts_work_from_the_editor() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-    let first = editor.add_node(&mut host, "core/whole-number").unwrap();
-    let second = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let first = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
+    let second = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select_many(&[first, second]);
     editor.panels.properties = false;
     editor.panels.packages = true;
@@ -138,10 +139,18 @@ fn shortcut_search_matches_localized_groups_and_labels_together() {
     crate::i18n::set_language("es");
     let editor = Editor::new();
     let action = "save";
-    let label = action_label(action);
-    assert!(editor.shortcut_matches(action, &label, "shortcut-files", "archivos guardar", None));
-    assert!(!editor.shortcut_matches(action, &label, "shortcut-files", "portapapeles", None));
-    assert!(editor.shortcut_matches_any("ejecucion"));
+    let matches = |query| {
+        editor.shortcut_rank(
+            action,
+            "save",
+            "shortcut-files",
+            &orange_host::SearchQuery::new(query),
+            None,
+        )
+    };
+    assert!(matches("archivos guardar").is_some());
+    assert!(matches("portapapeles").is_none());
+    assert!(editor.shortcut_search_rank("ejecucion").is_some());
     assert_eq!(
         parse_shortcut("ctrl+mayús+intro"),
         Some(normalized(
@@ -383,7 +392,7 @@ fn saved_rebinding_is_used_by_the_editor_keyboard_entrypoint() {
     let (mut host, _) = Host::new(HostOptions::default()).unwrap();
     let mut editor = Editor::new();
     editor.open(&mut host, "keys.json", orange_host::new_document().unwrap());
-    let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     editor.canvas.select(Some(node));
     editor.canvas.keys.0.insert(
         "duplicate".into(),
@@ -427,7 +436,7 @@ fn pure_values_remain_visible_when_the_graph_starts() {
         "value.json",
         orange_host::new_document().unwrap(),
     );
-    let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+    let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
     assert!(editor.set_input(&mut host, (node, "value"), Some("17")));
     assert_eq!(editor.canvas.shown_value(node, "result"), Some("17"));
     editor.run(&mut host);

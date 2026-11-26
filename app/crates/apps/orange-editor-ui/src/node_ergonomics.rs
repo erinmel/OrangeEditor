@@ -2,6 +2,7 @@
 mod build_map;
 
 use super::*;
+use orange_host::intrinsic;
 use orange_host::{ForEachModeImpact, Literal, NodeView, WireEnds};
 
 pub(super) use build_map::BuildMapRows;
@@ -9,10 +10,14 @@ pub(crate) use build_map::paired_map_available;
 
 pub(crate) fn loop_role(node: &NodeView) -> Option<&'static str> {
     Some(t(match node.definition.as_str() {
-        "core/repeat-begin" | "core/map-begin" | "core/fold-begin" | "core/filter-begin" => {
-            "loop-role-begin"
-        }
-        "core/repeat-end" | "core/map-end" | "core/fold-end" | "core/filter-end" => "loop-role-end",
+        intrinsic::REPEAT_BEGIN
+        | intrinsic::MAP_BEGIN
+        | intrinsic::FOLD_BEGIN
+        | intrinsic::FILTER_BEGIN => "loop-role-begin",
+        intrinsic::REPEAT_END
+        | intrinsic::MAP_END
+        | intrinsic::FOLD_END
+        | intrinsic::FILTER_END => "loop-role-end",
         _ => return None,
     }))
 }
@@ -22,8 +27,8 @@ pub(crate) fn loop_role(node: &NodeView) -> Option<&'static str> {
 /// a write whose variable is not chosen yet.
 pub(crate) fn operation_caption(node: &NodeView) -> Option<String> {
     let update = match node.definition.as_str() {
-        "core/set-variable" | "core/set-shared" => false,
-        "core/update-variable" | "core/update-shared" => true,
+        intrinsic::SET_VARIABLE | intrinsic::SET_SHARED => false,
+        intrinsic::UPDATE_VARIABLE | intrinsic::UPDATE_SHARED => true,
         _ => return None,
     };
     let name = node.detail.as_deref()?;
@@ -218,6 +223,7 @@ impl Editor {
 mod operation_caption_tests {
     use super::operation_caption;
     use crate::Editor;
+    use orange_host::intrinsic;
     use orange_host::{Host, HostOptions};
 
     /// Renamed writes ("Add one", "Subtract one", "Reset to zero") each say what they do
@@ -241,12 +247,12 @@ mod operation_caption_tests {
         for caption in &captions {
             assert!(caption.contains("Counter"), "{caption}");
         }
-        assert!(
+        assert_eq!(
             captions
                 .iter()
                 .filter(|caption| caption.contains('1'))
-                .count()
-                == 2
+                .count(),
+            2
         );
         assert!(captions.iter().any(|caption| caption.contains('0')));
         let mut distinct = captions.clone();
@@ -258,7 +264,7 @@ mod operation_caption_tests {
             graph
                 .nodes
                 .iter()
-                .filter(|node| node.definition == "core/on-manual")
+                .filter(|node| node.definition == intrinsic::ON_MANUAL)
                 .all(|node| operation_caption(node).is_none())
         );
     }

@@ -24,7 +24,10 @@ mod edit;
 mod effects;
 mod flow;
 pub use flow::Events;
+/// The IDs of the core language nodes, so front ends name them by constant, not text.
+pub use orange_model::catalog::intrinsic_id as intrinsic;
 pub use orange_model::value::{RGBA_TYPE, parse_rgba_hex, rgba_hex};
+mod bundled_hints;
 mod flows;
 mod graphs;
 pub mod i18n;
@@ -34,6 +37,7 @@ mod organise;
 mod packages;
 mod persist;
 mod port_authority;
+pub mod preset;
 mod preview;
 mod search;
 mod services;
@@ -55,7 +59,9 @@ use orange_kernel::{
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::ConnectionDecl;
-pub use orange_model::document::{ConnectionScope, EventTiming, PortDirection, VarScope};
+pub use orange_model::document::{
+    ConnectionScope, EventDecl, EventTiming, PortDirection, VarScope,
+};
 use orange_model::replace::{Replaced, Replacements, replace_definitions};
 use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
@@ -89,17 +95,19 @@ pub use draft::{Draft, MAX_UNDO, OpenReport};
 pub use edit::{ForEachModeImpact, NEW_WHILE_BOUND, PortEnd, WireEnds, new_document};
 pub use flows::ManualPayload;
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
-pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE};
+pub use i18n::{Arg, CatalogError, Catalogs, PSEUDO_LANGUAGE, SOURCE_LANGUAGE, canonical_locale};
 pub use literals::{InputState, LiteralEditor, PortDetails};
 pub use names::{
     MAX_INSPECT_BYTES, MAX_INSPECT_CHARS, Names, describe, inspect, lines, literal, plain, said,
 };
 pub use orange_guest::{
-    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, is_local,
+    Grants, GuestLimits, HEAVY_COMPUTE_FACTOR, HttpClient, HttpRequest, HttpResponse, Reach,
+    is_local, is_local_address,
 };
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::ReferenceKind;
+pub use orange_model::catalog::controls;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::{Literal, LiteralPayload};
@@ -122,7 +130,10 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use organise::{Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
-pub use search::{CONCEPTS, Found, Match, fold_search};
+pub use search::{
+    CONCEPTS, Found, Match, SEARCH_LANGUAGES, SearchQuery, SearchRank, UNLISTED, fold_search,
+    word_finds,
+};
 pub use state::StoredVariable;
 pub use suggest::{Giver, SpliceSuggestion, Suggestion};
 pub use view::{
@@ -744,6 +755,8 @@ pub struct Host {
     graphs: Graphs,
     adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
     credential_approvals: Mutex<BTreeSet<String>>,
+    /// The node search's setting words per node, built once per language and registry.
+    search_index: Mutex<search::SearchIndex>,
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
@@ -1070,10 +1083,15 @@ impl Host {
         if cfg!(debug_assertions) {
             catalogs.add_pseudo();
         }
+        // The bundled definitions' own control hints; a package's presentation wins.
+        for (definition, shown) in bundled_hints::presentations(&base) {
+            let _ = presentations.entry(definition).or_insert(shown);
+        }
         let host = Self {
             native: Native(Arc::new(math), services),
             adapters,
             credential_approvals: Mutex::default(),
+            search_index: Mutex::default(),
             shared: BTreeMap::new(),
             engine,
             guests: Vec::new(),
@@ -1462,12 +1480,66 @@ pub fn settings_from_json(
 /// The short names the value nodes go by, as in most node editors.
 fn short_label(id: &str) -> Option<&'static str> {
     Some(match id {
-        "core/whole-number" => "Int",
-        "core/number" => "Float",
-        "core/true-or-false" => "Bool",
-        "core/text" => "Text",
-        "core/on-watch" => "When",
+        intrinsic::WHOLE_NUMBER => "Int",
+        intrinsic::NUMBER => "Float",
+        intrinsic::TRUE_OR_FALSE => "Bool",
+        intrinsic::TEXT => "Text",
+        intrinsic::ON_WATCH => "When",
+        intrinsic::RISING_EDGE => "Rising Edge",
+        intrinsic::FALLING_EDGE => "Falling Edge",
+        intrinsic::CHANGE_BEYOND_TOLERANCE => "When Value Changes Enough",
+        intrinsic::INCREMENT_COUNTER => "Increment Counter",
+        intrinsic::DECREMENT_COUNTER => "Decrement Counter",
         "org.orange.json/parse" => "Parse JSON",
         _ => return None,
     })
+}
+
+/// Sends one package request: method, URL, headers, body, the largest response body,
+/// and which resolved addresses it may connect to. Returns the status, the headers in
+/// the order received and the body. `orange_net::fetch_parts` is one.
+pub type HttpTransport = fn(
+    &str,
+    &str,
+    &[(String, String)],
+    &[u8],
+    u64,
+    fn(std::net::IpAddr) -> bool,
+) -> Result<HttpParts, String>;
+
+/// A response as an [`HttpTransport`] returns it: status, headers, body.
+pub type HttpParts = (u16, Vec<(String, String)>, Vec<u8>);
+
+/// The network client of installed packages that hold the `http` or `http-local`
+/// grant, over the transport an application supplies. The plugin engine has already
+/// checked the URL; the transport connects only to addresses the request's [`Reach`]
+/// allows, so a public name cannot lead an `http` request into the local network.
+#[derive(Debug, Clone, Copy)]
+pub struct PluginHttp(pub HttpTransport);
+
+impl HttpClient for PluginHttp {
+    fn send(&self, request: &HttpRequest, reach: Reach) -> Result<HttpResponse, String> {
+        let connect_to: fn(std::net::IpAddr) -> bool = match reach {
+            Reach::Local => |address| Reach::Local.allows(address),
+            Reach::Internet if request.url.starts_with("https://") => {
+                |address| Reach::Internet.allows(address)
+            }
+            Reach::Internet => return Err("plain HTTP reaches only local addresses".into()),
+        };
+        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
+        let Self(transport) = *self;
+        transport(
+            &request.method,
+            &request.url,
+            &request.headers,
+            &request.body,
+            limit,
+            connect_to,
+        )
+        .map(|(status, headers, body)| HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
 }

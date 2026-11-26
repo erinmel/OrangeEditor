@@ -358,7 +358,8 @@ impl Host {
         let run = if flow::uses_space(&prepared.plan) {
             let snapshot = self.space.snapshot().ok_or_else(|| {
                 HostError::Workspace(
-                    "the document uses shared variables and none are declared".into(),
+                    "the document uses shared variables or workspace events and none are declared"
+                        .into(),
                 )
             })?;
             Run::start_in_workspace_with_variables(
@@ -381,6 +382,8 @@ impl Host {
             )?
         };
 
+        let mut run = run;
+        flow::attach_bus(&self.space, &mut run, &prepared.plan).map_err(HostError::Workspace)?;
         let now = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let (mut driver, inbox) = RunDriver::new(run, self.options.inbox_capacity.max(1), now);
         let sources = flow::event_sources(&mut driver, &prepared.plan);

@@ -177,10 +177,8 @@ impl NativePlugins {
             .collect();
         let text = json!({"format": FORMAT, "format_version": 1, "approved": approved});
         let target = self.directory.join(APPROVALS);
-        let temporary = self.directory.join(format!("{APPROVALS}.tmp"));
         std::fs::create_dir_all(&self.directory)
-            .and_then(|()| std::fs::write(&temporary, text.to_string()))
-            .and_then(|()| std::fs::rename(&temporary, &target))
+            .and_then(|()| orange_sandbox::replace_file(&target, text.to_string().as_bytes()))
             .map_err(|error| format!("{:?}", error.kind()))
     }
 

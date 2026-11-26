@@ -36,6 +36,48 @@ impl Host {
         clip: &str,
         at: [f32; 2],
     ) -> Result<Vec<NodeId>, HostError> {
+        self.paste_in(draft, clip, at, BodyRef::Root)
+    }
+
+    /// Pastes text from [`Host::copy`] into the body of the local function `function`,
+    /// as [`Host::paste`] does at the top level. Nodes that cannot be part of that
+    /// function, such as an entry in a pure function, are refused and nothing changes.
+    pub fn paste_into_function(
+        &self,
+        draft: &mut Draft,
+        function: &str,
+        clip: &str,
+        at: [f32; 2],
+    ) -> Result<Vec<NodeId>, HostError> {
+        let function = function
+            .parse::<orange_model::id::FunctionId>()
+            .ok()
+            .and_then(|id| draft.document().functions().get(&id))
+            .ok_or_else(|| refused(&"the document has no such local function"))?;
+        let (id, kind) = (function.id, function.kind);
+        self.paste_checked(draft, clip, at, BodyRef::Function(id), |definition| {
+            self.function_accepts(definition, kind)
+        })
+    }
+
+    fn paste_in(
+        &self,
+        draft: &mut Draft,
+        clip: &str,
+        at: [f32; 2],
+        body: BodyRef,
+    ) -> Result<Vec<NodeId>, HostError> {
+        self.paste_checked(draft, clip, at, body, |_| true)
+    }
+
+    fn paste_checked(
+        &self,
+        draft: &mut Draft,
+        clip: &str,
+        at: [f32; 2],
+        body: BodyRef,
+        allowed: impl Fn(&str) -> bool,
+    ) -> Result<Vec<NodeId>, HostError> {
         let not_nodes = || refused(&"the clipboard holds no copied nodes");
         let clip: Json = serde_json::from_str(clip).map_err(|_| not_nodes())?;
         if clip["format"] != CLIP_FORMAT || clip["version"] != 1 {
@@ -52,6 +94,16 @@ impl Host {
                     .ok_or_else(not_nodes)
             })
             .collect::<Result<_, _>>()?;
+        if let Some(refused_node) = copied
+            .iter()
+            .filter_map(|id| source.node(*id))
+            .find(|node| !allowed(node.definition.id.as_str()))
+        {
+            return Err(refused(&format!(
+                "`{}` cannot be part of this function",
+                refused_node.definition.id
+            )));
+        }
         let registry = self.registry_for(&source);
         let fragment =
             Fragment::copy(&source, &registry, &copied).map_err(|error| refused(&error))?;
@@ -59,7 +111,7 @@ impl Host {
         let mut paste = {
             let target: &Draft = draft;
             fragment
-                .paste(target.document(), BodyRef::Root, || {
+                .paste(target.document(), body, || {
                     count += 1;
                     let id = target.fresh_id(&format!("paste {count}"));
                     id.parse::<uuid::Uuid>().unwrap_or_default()
@@ -92,7 +144,7 @@ impl Host {
                     at[1] + (y - corner[1]) as f32,
                 ],
                 // Nodes without a place go down from `at`, one under another.
-                _ => [at[0], at[1] + 120.0 * index as f32],
+                _ => [at[0], at[1] + edit::STACK_STEP * index as f32],
             };
             placed.push((*new, spot));
             fresh.push(*new);

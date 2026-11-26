@@ -13,6 +13,7 @@ use egui::Ui;
 use orange_ui_controls::{
     Divider, UiTokens, components, navigation,
     patterns::{self, CheckState},
+    waveform::{Waveform, WaveformPeak, waveform_envelope},
 };
 
 fn playback_gain(db: f32) -> f32 {
@@ -35,7 +36,7 @@ struct Clip {
     name: String,
     metadata: String,
     seconds: f32,
-    waveform: Vec<f32>,
+    waveform: Vec<WaveformPeak>,
     playback: Option<(Arc<[f32]>, u32)>,
 }
 
@@ -46,13 +47,16 @@ impl Clip {
             metadata: "24-bit · 48 kHz · 01:42 · Example".into(),
             seconds: 102.0,
             playback: None,
-            waveform: (0..480u16)
-                .map(|i| {
-                    let t = f32::from(i);
-                    let envelope = (t * 0.025).sin().abs() * (0.8 + 0.2 * (t * 0.43).sin());
-                    envelope * (t * 1.49).sin()
-                })
-                .collect(),
+            waveform: waveform_envelope(
+                &(0..480u16)
+                    .map(|i| {
+                        let t = f32::from(i);
+                        let envelope = (t * 0.025).sin().abs() * (0.8 + 0.2 * (t * 0.43).sin());
+                        envelope * (t * 1.49).sin()
+                    })
+                    .collect::<Vec<_>>(),
+                480,
+            ),
         }
     }
 
@@ -67,9 +71,15 @@ impl Clip {
         if channels == 0 || length as usize / channels > 16_000_000 {
             return Err("The WAV exceeds the preview limit of 16 million frames.".into());
         }
-        const BUCKETS: usize = 384;
-        let mut peaks = [0.0_f32; BUCKETS];
-        let mut audio = Vec::with_capacity(length as usize / channels);
+        let frames = length as usize / channels;
+        let mut audio = Vec::with_capacity(frames);
+        let columns = frames.min(2048);
+        let empty = WaveformPeak {
+            min: f32::INFINITY,
+            max: f32::NEG_INFINITY,
+        };
+        let mut peaks = vec![empty; columns];
+        let mut peak = empty;
         let mut sum = 0.0;
         let mut push = |index: usize, sample: f32| {
             let sample = if sample.is_finite() {
@@ -78,13 +88,16 @@ impl Clip {
                 0.0
             };
             sum += sample;
+            peak.min = peak.min.min(sample);
+            peak.max = peak.max.max(sample);
             if index % channels == channels - 1 {
+                let frame = audio.len();
+                let slot = ((frame as u64 * columns as u64) / frames as u64) as usize;
+                peaks[slot].min = peaks[slot].min.min(peak.min);
+                peaks[slot].max = peaks[slot].max.max(peak.max);
                 audio.push(sum / f32::from(spec.channels));
+                peak = empty;
                 sum = 0.0;
-            }
-            let slot = index.saturating_mul(BUCKETS) / length as usize;
-            if let Some(peak) = peaks.get_mut(slot) {
-                *peak = peak.max(sample.abs().clamp(0.0, 1.0));
             }
         };
         match spec.sample_format {
@@ -119,7 +132,7 @@ impl Clip {
                 whole % 60
             ),
             seconds,
-            waveform: peaks.into_iter().flat_map(|peak| [peak, -peak]).collect(),
+            waveform: peaks,
             playback: (!audio.is_empty()).then(|| (audio.into(), spec.sample_rate)),
         })
     }
@@ -283,7 +296,12 @@ impl Files {
                 }
             }
             let prior = self.position;
-            super::audio::waveform(ui, tokens, &clip.waveform, Some(&mut self.position));
+            super::audio::waveform(
+                ui,
+                tokens,
+                Waveform::Envelope(&clip.waveform),
+                Some(&mut self.position),
+            );
             if self.position != prior
                 && let Some(playback) = &self.playback
             {
@@ -593,17 +611,21 @@ mod tests {
         let mut writer = hound::WavWriter::create(&path, spec).unwrap();
         for _ in 0..480 {
             writer.write_sample(16_384_i16).unwrap();
-            writer.write_sample(0_i16).unwrap();
+            writer.write_sample(-8192_i16).unwrap();
         }
         writer.finalize().unwrap();
         let loaded = Clip::read(&path);
         std::fs::remove_file(&path).unwrap();
         let clip = loaded.unwrap();
         assert!((clip.seconds - 0.01).abs() < f32::EPSILON);
-        assert!(clip.waveform.contains(&0.5));
+        assert!(
+            clip.waveform
+                .iter()
+                .all(|peak| peak.min == -0.25 && peak.max == 0.5)
+        );
         let (playback, rate) = clip.playback.unwrap();
         assert_eq!(rate, 48_000);
         assert_eq!(playback.len(), 480);
-        assert!(playback.iter().all(|&sample| sample == 0.25));
+        assert!(playback.iter().all(|&sample| sample == 0.125));
     }
 }

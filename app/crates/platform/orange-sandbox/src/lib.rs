@@ -6,9 +6,14 @@
 //! and the plugin engine both hand file access to code they do not control through
 //! this one type, so the rules are written once.
 //!
-//! Whole files are read and written. A write goes to a temporary file in the same
+//! Every operation walks from the root to the directory it changes through held
+//! directory handles and acts on one name inside the last of them (see `os.rs`), so a
+//! directory renamed or replaced by a link after it was checked cannot redirect it.
+//!
+//! Whole files are read and written. A write goes to a new temporary file in the same
 //! directory, is flushed and renamed over the target, so a reader or a crash sees the
-//! old file or the new one.
+//! old file or the new one. [`replace_file`] does the same for a file the host owns
+//! outside any folder, such as a saved document.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -16,8 +21,13 @@
 use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
+mod os;
+mod save;
 mod tree;
+use os::{Access, Dir, io};
+pub use save::replace_file;
 pub use tree::TreeEntry;
 
 /// Longest path that can be named, in bytes.
@@ -40,34 +50,104 @@ pub enum FsError {
     Cancelled,
     /// A directory changed while its contents were being enumerated.
     Changed,
+    /// The original folder is missing from its configured path.
+    FolderMissing,
+    /// The system denied access: permissions, an access list, or a read-only file.
+    PermissionDenied,
+    /// Another program has the file open without sharing it, or holds a lock on it.
+    Busy,
+    /// The volume is mounted read-only or its media is write-protected.
+    ReadOnlyLocation,
+    /// The disk or the user's quota is full.
+    NoSpace,
+    /// The destination is on another volume, where a move cannot be one rename.
+    CrossDevice,
+    /// The filesystem does not support the operation.
+    Unsupported,
     /// Any other refusal by the operating system.
     Failed,
 }
 
-fn io(error: &std::io::Error) -> FsError {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        FsError::NotFound
-    } else {
-        FsError::Failed
+/// What a regular file or directory is, read without following a link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Info {
+    directory: bool,
+    bytes: u64,
+    modified: Option<SystemTime>,
+    read_only: bool,
+    identity: Option<(u64, u64, u64)>,
+}
+
+impl Info {
+    /// Whether it is a directory; otherwise it is a regular file.
+    pub fn is_dir(&self) -> bool {
+        self.directory
+    }
+    /// Whether it is a regular file.
+    pub fn is_file(&self) -> bool {
+        !self.directory
+    }
+    /// A file's size in bytes; zero for a directory.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+    /// When its content last changed, where the system records it.
+    pub fn modified(&self) -> Option<SystemTime> {
+        self.modified
+    }
+    /// Whether its permissions refuse writing.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+    /// What identifies the file across a rename: device and inode on Unix; creation
+    /// time, last write time and size on Windows, where stable std has no file index.
+    pub fn identity(&self) -> Option<(u64, u64, u64)> {
+        self.identity
     }
 }
 
-/// Names Windows gives to devices in every directory.
+/// Names Windows gives to devices in every directory. Windows 10 and earlier also
+/// resolve the stem before any extension with trailing spaces removed (`nul .txt`), and
+/// accept superscript digits after `COM` and `LPT`, so those forms are refused too.
 fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.ends_with(|c: char| c.is_ascii_digit()))
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
+                && chars.next().is_none()
+        })
+    };
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
 }
 
 /// The path inside `root` that `path` names. `""` is the root when `root_allowed`.
 /// This checks the text only; [`Folder`] also follows links.
 pub fn inside(root: &Path, path: &str, root_allowed: bool) -> Result<PathBuf, FsError> {
+    let mut full = root.to_path_buf();
+    for name in names(path, root_allowed)? {
+        full.push(name);
+    }
+    Ok(full)
+}
+
+/// The plain names of a path, checked the way [`inside`] describes.
+fn names(path: &str, root_allowed: bool) -> Result<Vec<&str>, FsError> {
     if path.len() > MAX_PATH_BYTES || (path.is_empty() && !root_allowed) {
         return Err(FsError::InvalidPath);
     }
-    let mut full = root.to_path_buf();
+    let mut names = Vec::new();
     for name in path.split('/').filter(|_| !path.is_empty()) {
         let plain = !name.is_empty()
             && name != "."
@@ -80,9 +160,16 @@ pub fn inside(root: &Path, path: &str, root_allowed: bool) -> Result<PathBuf, Fs
         if !plain {
             return Err(FsError::InvalidPath);
         }
-        full.push(name);
+        names.push(name);
     }
-    Ok(full)
+    Ok(names)
+}
+
+/// The directories of a path and its last name.
+fn split(path: &str) -> Result<(Vec<&str>, &str), FsError> {
+    let mut names = names(path, false)?;
+    let last = names.pop().ok_or(FsError::InvalidPath)?;
+    Ok((names, last))
 }
 
 /// One directory and the rules for reaching into it.
@@ -90,6 +177,7 @@ pub fn inside(root: &Path, path: &str, root_allowed: bool) -> Result<PathBuf, Fs
 pub struct Folder {
     root: PathBuf,
     read_only: bool,
+    original_root: Option<os::RootIdentity>,
     temporary: AtomicU64,
 }
 
@@ -100,8 +188,18 @@ impl Folder {
         Self {
             root: root.into(),
             read_only,
+            original_root: None,
             temporary: AtomicU64::new(0),
         }
+    }
+
+    /// A folder the user chose, which must exist. When it goes missing every method
+    /// fails with [`FsError::FolderMissing`] and nothing creates it again, so a drive
+    /// that was disconnected is not replaced by an empty directory on another one.
+    pub fn existing(root: impl Into<PathBuf>, read_only: bool) -> Result<Self, FsError> {
+        let mut folder = Self::new(root, read_only);
+        folder.original_root = Some(Dir::identify_root(&folder.root).map_err(missing_root)?);
+        Ok(folder)
     }
 
     /// The directory itself.
@@ -114,17 +212,6 @@ impl Folder {
         name.starts_with(".orange-") && name.ends_with(".tmp")
     }
 
-    /// Refuses an existing path that a link inside the folder leads out of it.
-    fn contained(&self, existing: &Path) -> Result<(), FsError> {
-        let root = self.root.canonicalize().map_err(|e| io(&e))?;
-        let real = existing.canonicalize().map_err(|e| io(&e))?;
-        if real.starts_with(root) {
-            Ok(())
-        } else {
-            Err(FsError::InvalidPath)
-        }
-    }
-
     fn writable(&self) -> Result<(), FsError> {
         if self.read_only {
             Err(FsError::ReadOnly)
@@ -133,59 +220,83 @@ impl Folder {
         }
     }
 
-    /// An existing file, checked for reading.
-    fn source(&self, path: &str) -> Result<PathBuf, FsError> {
-        let (full, metadata) = self.checked(path, false)?;
-        if !metadata.is_file() {
+    /// The root, held. A missing root is created first when `create` and the folder
+    /// allows it.
+    fn open_root(&self, create: bool) -> Result<Dir, FsError> {
+        if create && self.original_root.is_none() {
+            std::fs::create_dir_all(&self.root).map_err(|error| io(&error))?;
+        }
+        let opened = Dir::root(&self.root);
+        let Some(original) = &self.original_root else {
+            return opened;
+        };
+        let opened = opened.map_err(missing_root)?;
+        if opened.matches_root(original)? {
+            Ok(opened)
+        } else {
+            Err(FsError::FolderMissing)
+        }
+    }
+
+    /// The existing directory the names lead to, entered one held name at a time.
+    fn walk(&self, names: &[&str]) -> Result<Dir, FsError> {
+        let root = self.open_root(false)?;
+        descend(root, names)
+    }
+
+    /// The directory the names lead to, creating each missing one on the way.
+    fn walk_making(&self, names: &[&str]) -> Result<Dir, FsError> {
+        let mut current = self.open_root(true)?;
+        for name in names {
+            match current.stat(name) {
+                Ok(info) if info.is_dir() => {}
+                // A file is in the way.
+                Ok(_) => return Err(FsError::InvalidPath),
+                Err(FsError::NotFound) => match current.create_dir(name) {
+                    // `Failed` covers a directory made by someone else meanwhile;
+                    // entering it below decides.
+                    Ok(()) | Err(FsError::Failed) => {}
+                    Err(error) => return Err(error),
+                },
+                Err(error) => return Err(error),
+            }
+            current = match current.child(name) {
+                Err(FsError::NotFound) => return Err(FsError::InvalidPath),
+                other => other?,
+            };
+        }
+        Ok(current)
+    }
+
+    /// The directory holding an existing regular file, and the file's name.
+    fn source<'a>(&self, path: &'a str) -> Result<(Dir, &'a str), FsError> {
+        let (directories, name) = split(path)?;
+        let directory = self.walk(&directories)?;
+        if !directory.stat(name)?.is_file() {
             return Err(FsError::NotFound);
         }
-        Ok(full)
+        Ok((directory, name))
     }
 
-    /// The target of a write: its directory is created and checked, and a link at
-    /// the file's own name is refused because the write would follow it.
-    fn target(&self, path: &str) -> Result<PathBuf, FsError> {
+    /// The directory a file will be written in, created as needed, and the file's
+    /// name. Something other than a regular file at the name is refused.
+    fn target<'a>(&self, path: &'a str) -> Result<(Dir, &'a str), FsError> {
         self.writable()?;
-        let full = inside(&self.root, path, false)?;
-        let parent = full.parent().ok_or(FsError::InvalidPath)?;
-        self.create_inside(parent)?;
-        match tree::metadata(&full) {
+        let (directories, name) = split(path)?;
+        let directory = self.walk_making(&directories)?;
+        match directory.stat(name) {
             Ok(info) if info.is_file() => {}
             Err(FsError::NotFound) => {}
-            Ok(_) | Err(FsError::InvalidPath) => return Err(FsError::InvalidPath),
+            Ok(_) => return Err(FsError::InvalidPath),
             Err(error) => return Err(error),
         }
-        Ok(full)
-    }
-
-    /// Create one component at a time and verify every existing parent before any
-    /// mutation. The root itself is the capability explicitly supplied by the host.
-    fn create_inside(&self, directory: &Path) -> Result<(), FsError> {
-        let relative = directory
-            .strip_prefix(&self.root)
-            .map_err(|_| FsError::InvalidPath)?;
-        std::fs::create_dir_all(&self.root).map_err(|error| io(&error))?;
-        let mut current = self.root.clone();
-        let _ = tree::metadata(&current)?;
-        for component in relative.components() {
-            self.contained(&current)?;
-            current.push(component);
-            match std::fs::create_dir(&current) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(io(&error)),
-            }
-            if !tree::metadata(&current)?.is_dir() {
-                return Err(FsError::InvalidPath);
-            }
-        }
-        self.contained(&current)
+        Ok((directory, name))
     }
 
     /// Reads a whole file of at most `max_bytes`.
     pub fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, FsError> {
-        let full = self.source(path)?;
-        let file = std::fs::File::open(&full).map_err(|error| io(&error))?;
+        let (directory, name) = self.source(path)?;
+        let file = directory.open(name, Access::Read)?;
         let size = file.metadata().map_err(|error| io(&error))?.len();
         if size > max_bytes {
             return Err(FsError::TooLarge);
@@ -202,8 +313,9 @@ impl Folder {
 
     /// The size of a file in bytes.
     pub fn size(&self, path: &str) -> Result<u64, FsError> {
-        let full = self.source(path)?;
-        Ok(std::fs::metadata(&full).map_err(|e| io(&e))?.len())
+        let (directory, name) = self.source(path)?;
+        let file = directory.open(name, Access::Read)?;
+        Ok(file.metadata().map_err(|e| io(&e))?.len())
     }
 
     /// Reads up to `length` bytes of a file starting at `offset`: fewer at the end of
@@ -215,12 +327,12 @@ impl Folder {
         length: u64,
         max_bytes: u64,
     ) -> Result<Vec<u8>, FsError> {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::io::{Seek, SeekFrom};
         if length > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let full = self.source(path)?;
-        let mut file = std::fs::File::open(&full).map_err(|e| io(&e))?;
+        let (directory, name) = self.source(path)?;
+        let mut file = directory.open(name, Access::Read)?;
         let _ = file.seek(SeekFrom::Start(offset)).map_err(|e| io(&e))?;
         let mut data = Vec::new();
         let _ = file
@@ -232,35 +344,42 @@ impl Folder {
 
     /// Creates or replaces a file atomically, creating the directories on its path.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
-        let full = self.target(path)?;
-        self.replace_with(&full, |file| {
+        let (directory, name) = self.target(path)?;
+        self.replace_in(&directory, name, |file| {
             file.write_all(data).map_err(|error| io(&error))
         })
     }
 
-    fn replace_with(
+    /// Writes a new temporary file in `directory`, flushes it and renames it over
+    /// `name`. On any failure the temporary file is removed and whatever was at `name`
+    /// is untouched.
+    fn replace_in(
         &self,
-        full: &Path,
+        directory: &Dir,
+        name: &str,
         write: impl FnOnce(&mut std::fs::File) -> Result<(), FsError>,
     ) -> Result<(), FsError> {
-        let (temporary, mut file) = self.temporary_beside(full)?;
+        let (temporary, mut file) = self.temporary_in(directory)?;
         let written = write(&mut file)
             .and_then(|()| file.sync_all().map_err(|error| io(&error)))
             .and_then(|()| {
                 drop(file);
-                std::fs::rename(&temporary, full).map_err(|error| io(&error))
+                directory.rename(&temporary, directory, name)
             });
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temporary);
+        match written {
+            Ok(()) => directory.sync(),
+            Err(_) => {
+                let _ = directory.remove_file(&temporary);
+            }
         }
         written
     }
 
-    /// A new temporary file in the directory of `full`. It is created exclusively, so
-    /// a file or link already at the name, which code with access to the folder may have
-    /// put there, is never opened or written through; another name is tried instead.
-    /// The name has a part nobody can predict, so such a name is rarely met at all.
-    fn temporary_beside(&self, full: &Path) -> Result<(PathBuf, std::fs::File), FsError> {
+    /// A new temporary file in `directory`. It is created exclusively, so a file or
+    /// link already at the name, which code with access to the folder may have put
+    /// there, is never opened or written through; another name is tried instead. The
+    /// name has a part nobody can predict, so such a name is rarely met at all.
+    fn temporary_in(&self, directory: &Dir) -> Result<(String, std::fs::File), FsError> {
         use std::hash::{BuildHasher, RandomState};
         const ATTEMPTS: usize = 16;
         let unpredictable = RandomState::new();
@@ -271,15 +390,11 @@ impl Folder {
                 std::process::id(),
                 unpredictable.hash_one(count)
             );
-            let temporary = full.with_file_name(name);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => return Ok((temporary, file)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(_) => return Err(FsError::Failed),
+            match directory.create_new(&name) {
+                Ok(file) => return Ok((name, file)),
+                // Something already has the name: try another.
+                Err(FsError::Failed | FsError::InvalidPath) => {}
+                Err(error) => return Err(error),
             }
         }
         Err(FsError::Failed)
@@ -291,14 +406,13 @@ impl Folder {
         if data.len() as u64 > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let full = self.target(path)?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&full)
-            .map_err(|error| io(&error))?;
-        file.lock().map_err(|error| io(&error))?;
+        let (directory, name) = self.target(path)?;
+        let mut file = directory.open(name, Access::Append)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Err(FsError::Busy),
+            Err(std::fs::TryLockError::Error(error)) => return Err(io(&error)),
+        }
         let size = file.metadata().map_err(|error| io(&error))?.len();
         if size.saturating_add(data.len() as u64) > max_bytes {
             return Err(FsError::TooLarge);
@@ -308,36 +422,41 @@ impl Folder {
 
     /// The names in a directory, sorted; `""` is the folder itself and a directory's
     /// name ends with `/`. A folder nothing was written to yet is empty, not missing.
+    /// A name that is not valid UTF-8 cannot be addressed and is left out.
     pub fn list(&self, path: &str, max_entries: usize) -> Result<Vec<String>, FsError> {
-        let full = inside(&self.root, path, true)?;
-        if path.is_empty() && !full.exists() {
+        let path_names = names(path, true)?;
+        if path.is_empty() && self.original_root.is_none() && !os::exists(&self.root) {
             return Ok(Vec::new());
         }
-        let _ = self.checked(path, true)?;
+        let directory = self.walk(&path_names)?;
         let mut names = Vec::new();
-        for entry in std::fs::read_dir(&full).map_err(|e| io(&e))? {
-            let entry = entry.map_err(|_| FsError::Failed)?;
-            let Ok(mut name) = entry.file_name().into_string() else {
-                continue;
+        let mut remaining = max_entries;
+        directory.visit_names(|name| {
+            remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
+            let Ok(mut name) = name.into_string() else {
+                return Ok(());
             };
-            if Self::is_temporary(&name) {
-                continue;
+            if Self::is_temporary(&name)
+                || !self::names(&name, false).is_ok_and(|parts| parts.len() == 1)
+            {
+                return Ok(());
             }
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                name.push('/');
-            }
-            if names.len() >= max_entries {
-                return Err(FsError::TooLarge);
+            match directory.stat(&name) {
+                Ok(info) if info.is_dir() => name.push('/'),
+                Ok(_) => {}
+                Err(FsError::NotFound | FsError::InvalidPath) => return Ok(()),
+                Err(error) => return Err(error),
             }
             names.push(name);
-        }
+            Ok(())
+        })?;
         names.sort();
         Ok(names)
     }
 
     /// Whether a file or directory exists.
     pub fn exists(&self, path: &str) -> Result<bool, FsError> {
-        match self.checked(path, true) {
+        match self.metadata(path) {
             Ok(_) => Ok(true),
             Err(FsError::NotFound) => Ok(false),
             Err(error) => Err(error),
@@ -347,26 +466,34 @@ impl Folder {
     /// Deletes a file.
     pub fn remove(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let full = self.source(path)?;
-        std::fs::remove_file(&full).map_err(|e| io(&e))
+        let (directory, name) = self.source(path)?;
+        directory.remove_file(name)?;
+        directory.sync();
+        Ok(())
     }
 
-    /// Moves or renames a file, replacing a file already at `to`.
+    /// Moves or renames a file, replacing a file already at `to`. Both stay inside the
+    /// folder and on one volume: a move to another volume fails with
+    /// [`FsError::CrossDevice`] and changes nothing.
     pub fn rename(&self, path: &str, to: &str) -> Result<(), FsError> {
         self.writable()?;
-        let from = self.source(path)?;
-        std::fs::rename(&from, self.target(to)?).map_err(|e| io(&e))
+        let (from, from_name) = self.source(path)?;
+        let (target, target_name) = self.target(to)?;
+        from.rename(from_name, &target, target_name)?;
+        target.sync();
+        from.sync();
+        Ok(())
     }
 
     /// Copies a file of at most `max_bytes`, replacing a file already at `to`.
     pub fn copy(&self, path: &str, to: &str, max_bytes: u64) -> Result<(), FsError> {
-        let from = self.source(path)?;
-        let input = std::fs::File::open(from).map_err(|error| io(&error))?;
+        let (from, from_name) = self.source(path)?;
+        let input = from.open(from_name, Access::Read)?;
         if input.metadata().map_err(|error| io(&error))?.len() > max_bytes {
             return Err(FsError::TooLarge);
         }
-        let target = self.target(to)?;
-        self.replace_with(&target, |output| {
+        let (target, target_name) = self.target(to)?;
+        self.replace_in(&target, target_name, |output| {
             let count = std::io::copy(&mut input.take(max_bytes.saturating_add(1)), output)
                 .map_err(|error| io(&error))?;
             if count > max_bytes {
@@ -379,153 +506,47 @@ impl Folder {
     /// Creates a directory and the directories on its path.
     pub fn make_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let full = inside(&self.root, path, false)?;
-        self.create_inside(&full)
+        self.walk_making(&names(path, false)?).map(drop)
     }
 
     /// Removes an empty directory.
     pub fn remove_directory(&self, path: &str) -> Result<(), FsError> {
         self.writable()?;
-        let (full, info) = self.checked(path, false)?;
-        if !info.is_dir() {
+        let (directories, name) = split(path)?;
+        let parent = self.walk(&directories)?;
+        if !parent.stat(name)?.is_dir() {
             return Err(FsError::NotFound);
         }
-        std::fs::remove_dir(&full).map_err(|_| FsError::Failed)
+        parent.remove_dir(name)?;
+        parent.sync();
+        Ok(())
     }
+
+    /// What a file or directory is; `""` is the folder itself.
+    pub fn metadata(&self, path: &str) -> Result<Info, FsError> {
+        if path.is_empty() {
+            let _ = names(path, true)?;
+            return self.open_root(false)?.info();
+        }
+        let (directories, name) = split(path)?;
+        self.walk(&directories)?.stat(name)
+    }
+}
+
+/// Enters each name below `directory` in turn.
+fn missing_root(error: FsError) -> FsError {
+    match error {
+        FsError::NotFound | FsError::InvalidPath => FsError::FolderMissing,
+        other => other,
+    }
+}
+
+fn descend(mut directory: Dir, names: &[&str]) -> Result<Dir, FsError> {
+    for name in names {
+        directory = directory.child(name)?;
+    }
+    Ok(directory)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_plain_relative_paths_stay_inside_the_directory() {
-        let root = Path::new("data");
-        assert_eq!(
-            inside(root, "a/b.txt", false),
-            Ok(root.join("a").join("b.txt"))
-        );
-        assert_eq!(inside(root, "", true), Ok(root.to_path_buf()));
-        for bad in [
-            "",
-            "..",
-            "a/../b",
-            "./a",
-            "/etc/passwd",
-            "a//b",
-            "a/",
-            "C:/Windows",
-            "a\\b",
-            "nul",
-            "dir/COM1.txt",
-            "trailing.",
-            "space ",
-            "a\0b",
-        ] {
-            assert_eq!(
-                inside(root, bad, false),
-                Err(FsError::InvalidPath),
-                "{bad:?}"
-            );
-        }
-        assert_eq!(
-            inside(root, &"a".repeat(MAX_PATH_BYTES + 1), false),
-            Err(FsError::InvalidPath)
-        );
-    }
-
-    #[test]
-    fn a_folder_that_does_not_exist_yet_is_empty_and_made_by_the_first_write() {
-        // Nested, so the directory above the folder is this test's own too.
-        let above = std::env::temp_dir().join(format!("orange-sandbox-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&above);
-        let folder = Folder::new(above.join("folder"), false);
-        assert_eq!(folder.list("", 10), Ok(vec![]));
-        assert_eq!(folder.read("a.txt", 16), Err(FsError::NotFound));
-        assert_eq!(folder.exists("a.txt"), Ok(false));
-
-        folder.write("b/c.bin", &[1, 2, 3]).unwrap();
-        folder.write("a.txt", b"hello").unwrap();
-        folder.write("a.txt", b"again").unwrap();
-        // Replacing leaves no temporary file behind.
-        assert_eq!(
-            folder.list("", 10),
-            Ok(vec!["a.txt".to_owned(), "b/".to_owned()])
-        );
-        assert_eq!(folder.list("", 1), Err(FsError::TooLarge));
-        assert_eq!(folder.read("b/c.bin", 3), Ok(vec![1, 2, 3]));
-        assert_eq!(folder.read("b/c.bin", 2), Err(FsError::TooLarge));
-        assert_eq!(folder.remove("a.txt"), Ok(()));
-        assert_eq!(folder.remove("a.txt"), Err(FsError::NotFound));
-        for escape in ["../x", "/x", "b/../../x"] {
-            assert_eq!(folder.write(escape, b"x"), Err(FsError::InvalidPath));
-            assert_eq!(folder.read(escape, 16), Err(FsError::InvalidPath));
-            assert_eq!(folder.remove(escape), Err(FsError::InvalidPath));
-        }
-        assert!(!above.join("x").exists());
-
-        let locked = Folder::new(above.join("folder"), true);
-        assert_eq!(locked.read("b/c.bin", 3), Ok(vec![1, 2, 3]));
-        assert_eq!(locked.write("b/c.bin", b"x"), Err(FsError::ReadOnly));
-        assert_eq!(locked.rename("b/c.bin", "d"), Err(FsError::ReadOnly));
-        assert_eq!(locked.make_directory("e"), Err(FsError::ReadOnly));
-        let _ = std::fs::remove_dir_all(&above);
-    }
-
-    #[test]
-    fn concurrent_appends_enforce_the_same_limit_across_folder_instances() {
-        let root =
-            std::env::temp_dir().join(format!("orange-sandbox-append-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let folder = Folder::new(&root, false);
-        folder.write("shared", b"").unwrap();
-        let barrier = std::sync::Barrier::new(2);
-        let outcomes = std::thread::scope(|scope| {
-            let append = || {
-                let folder = Folder::new(&root, false);
-                barrier.wait();
-                folder.append("shared", b"1234", 4)
-            };
-            let first = scope.spawn(append);
-            let second = append();
-            [first.join().unwrap(), second]
-        });
-        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-        assert!(outcomes.contains(&Err(FsError::TooLarge)));
-        assert_eq!(folder.read("shared", 4).unwrap(), b"1234");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_link_planted_at_a_temporary_name_is_never_written_through() {
-        let above =
-            std::env::temp_dir().join(format!("orange-sandbox-link-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&above);
-        let inner = above.join("folder");
-        std::fs::create_dir_all(&inner).unwrap();
-        let outside = above.join("outside.txt");
-        std::fs::write(&outside, b"kept").unwrap();
-        // Links at the names a counter alone would give the first writes.
-        for count in 0..8 {
-            let name = format!(".orange-{}-{count}.tmp", std::process::id());
-            std::fs::hard_link(&outside, inner.join(name)).unwrap();
-        }
-        let folder = Folder::new(&inner, false);
-        for _ in 0..8 {
-            folder.write("a.txt", b"written").unwrap();
-        }
-        assert_eq!(std::fs::read(&outside).unwrap(), b"kept");
-        assert_eq!(folder.read("a.txt", 16), Ok(b"written".to_vec()));
-        // Exclusive creation refuses whatever is already at a name.
-        let taken = inner.join("taken.tmp");
-        std::fs::hard_link(&outside, &taken).unwrap();
-        assert!(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&taken)
-                .is_err()
-        );
-        let _ = std::fs::remove_dir_all(&above);
-    }
-}
+mod tests;

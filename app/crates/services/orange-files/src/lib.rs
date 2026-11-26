@@ -149,6 +149,41 @@ const TREE_CHANGED: KernelFault = KernelFault::from_static(
     "org.orange.files/tree-changed",
     "The folder changed while it was being read.",
 );
+const FOLDER_MISSING: KernelFault = KernelFault::from_static(
+    "org.orange.files/FolderMissing",
+    "org.orange.files/folder-missing",
+    "The connected folder is missing. Reconnect the drive or choose the folder again in the connection.",
+);
+const PERMISSION_DENIED: KernelFault = KernelFault::from_static(
+    "org.orange.files/PermissionDenied",
+    "org.orange.files/permission-denied",
+    "The system denied access. Check the permissions of the file and folder, or whether the file is marked read-only.",
+);
+const BUSY: KernelFault = KernelFault::from_static(
+    "org.orange.files/Busy",
+    "org.orange.files/in-use",
+    "Another program is using the file. Close it there and run the node again.",
+);
+const READ_ONLY_LOCATION: KernelFault = KernelFault::from_static(
+    "org.orange.files/ReadOnlyLocation",
+    "org.orange.files/read-only-location",
+    "The drive is read-only or write-protected. Choose a folder on a writable drive.",
+);
+const NO_SPACE: KernelFault = KernelFault::from_static(
+    "org.orange.files/NoSpace",
+    "org.orange.files/no-space",
+    "The drive is full. Free some space and run the node again.",
+);
+const CROSS_DEVICE: KernelFault = KernelFault::from_static(
+    "org.orange.files/CrossDevice",
+    "org.orange.files/cross-device",
+    "The destination is on another drive, where a move cannot be done in one step. Copy the file and then delete the original.",
+);
+const UNSUPPORTED: KernelFault = KernelFault::from_static(
+    "org.orange.files/Unsupported",
+    "org.orange.files/unsupported",
+    "The folder's file system does not support this operation.",
+);
 
 fn refused(error: FsError) -> KernelFault {
     match error {
@@ -158,6 +193,13 @@ fn refused(error: FsError) -> KernelFault {
         FsError::ReadOnly => READ_ONLY,
         FsError::Cancelled => CANCELLED,
         FsError::Changed => TREE_CHANGED,
+        FsError::FolderMissing => FOLDER_MISSING,
+        FsError::PermissionDenied => PERMISSION_DENIED,
+        FsError::Busy => BUSY,
+        FsError::ReadOnlyLocation => READ_ONLY_LOCATION,
+        FsError::NoSpace => NO_SPACE,
+        FsError::CrossDevice => CROSS_DEVICE,
+        FsError::Unsupported => UNSUPPORTED,
         _ => FAILED,
     }
 }
@@ -234,7 +276,7 @@ impl Folder {
             .filter(|entry| pattern.matches(&entry.path))
             .map(|entry| {
                 let mut path = entry.path;
-                if entry.metadata.is_dir() {
+                if entry.info.is_dir() {
                     path.push('/');
                 }
                 Arc::new(path)
@@ -281,7 +323,14 @@ impl ConnectionAdapter for FolderAdapter {
                 .ok_or("`poll_ms` must be an integer from 50 to 60000")?,
         };
         Ok(Arc::new(Folder {
-            files: orange_sandbox::Folder::new(root, read_only),
+            files: orange_sandbox::Folder::existing(root, read_only).map_err(
+                |error| match error {
+                    FsError::FolderMissing => "the selected folder is missing or was replaced",
+                    FsError::PermissionDenied => "permission denied opening the selected folder",
+                    FsError::Busy => "the selected folder is in use",
+                    _ => "cannot open the selected folder",
+                },
+            )?,
             poll: Duration::from_millis(poll),
         }))
     }
@@ -417,18 +466,17 @@ impl ServiceNode for Operation {
                 )))])
             }
             (Self::FileInfo, [Value::Str(path)]) => {
-                let metadata = folder.files.metadata(path).map_err(refused)?;
-                let directory = metadata.is_dir();
-                let modified = metadata
+                let info = folder.files.metadata(path).map_err(refused)?;
+                let directory = info.is_dir();
+                let modified = info
                     .modified()
-                    .ok()
                     .and_then(unix_millis)
                     .map_or(Value::None, Value::I64);
                 Ok(vec![
                     Value::Bool(directory),
-                    Value::U64(if directory { 0 } else { metadata.len() }),
+                    Value::U64(info.bytes()),
                     modified,
-                    Value::Bool(metadata.permissions().readonly()),
+                    Value::Bool(info.read_only()),
                 ])
             }
             _ => Err(BAD_INPUT),
@@ -805,6 +853,45 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_removed_after_connecting_is_reported_missing_and_not_recreated() {
+        let root = scratch("gone");
+        let session = open(&root, json!({})).unwrap();
+        let folder = folder(Some(session.as_ref())).unwrap();
+        folder.write("a.txt", b"a").unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(folder.read("a.txt"), Err(FOLDER_MISSING));
+        assert_eq!(folder.write("a.txt", b"b"), Err(FOLDER_MISSING));
+        assert!(!root.exists());
+        // Each refusal has its own code and an actionable message.
+        for error in [
+            FsError::FolderMissing,
+            FsError::PermissionDenied,
+            FsError::Busy,
+            FsError::ReadOnlyLocation,
+            FsError::NoSpace,
+            FsError::CrossDevice,
+            FsError::Unsupported,
+        ] {
+            assert_ne!(refused(error), FAILED, "{error:?}");
+        }
+        let es = include_str!("../locales/es/files.ftl");
+        for fault in [
+            FOLDER_MISSING,
+            PERMISSION_DENIED,
+            BUSY,
+            READ_ONLY_LOCATION,
+            NO_SPACE,
+            CROSS_DEVICE,
+            UNSUPPORTED,
+            FAILED,
+        ] {
+            let key = fault.message_key.to_string().replace(['/', '.'], "-");
+            assert!(es.contains(&format!("{key} = ")), "{key}");
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
     fn recursive_actions_are_bounded_and_filter_the_requested_tree() {
         let root = scratch("tree");
         let session = open(&root, json!({})).unwrap();
@@ -848,7 +935,7 @@ mod tests {
             .copy_tree("from", "copy", 4, 6, &|| false)
             .unwrap();
         assert_eq!(folder.read("copy/sub/b.txt").unwrap(), b"cd");
-        assert_eq!(folder.files.metadata("copy/sub/b.txt").unwrap().len(), 2);
+        assert_eq!(folder.files.metadata("copy/sub/b.txt").unwrap().bytes(), 2);
         assert!(folder.files.metadata("copy/sub").unwrap().is_dir());
         assert_eq!(
             folder.files.move_tree("copy", "from", 4, &|| false),
@@ -870,7 +957,7 @@ mod tests {
             folder.files.remove_tree("", 10, &|| false),
             Err(FsError::InvalidPath)
         );
-        let locked = orange_sandbox::Folder::new(root.canonicalize().unwrap(), true);
+        let locked = orange_sandbox::Folder::existing(root.canonicalize().unwrap(), true).unwrap();
         assert_eq!(
             locked.copy_tree("from", "copy", 4, 6, &|| false),
             Err(FsError::ReadOnly)
@@ -886,7 +973,7 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
-    #[cfg(any(unix, all(windows, feature = "windows-junction-tests")))]
+    #[cfg(any(unix, windows))]
     #[test]
     fn recursive_actions_and_enumeration_do_not_follow_a_real_escape_link() {
         use std::fs;

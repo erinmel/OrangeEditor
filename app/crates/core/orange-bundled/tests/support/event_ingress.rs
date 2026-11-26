@@ -191,6 +191,25 @@ fn pump_until_delivered(run: &mut Run) {
 }
 
 #[test]
+fn pulse_ingress_refuses_payload_without_consuming_the_sequence() {
+    let (doc, plan) = compile_with_event(
+        vec![on_event(1, 0, 2, "fault")],
+        vec![],
+        vec![],
+        json!({"id": EVENT, "name": "pulse", "scope": "run"}),
+    )
+    .unwrap();
+    let mut run = run(&doc, plan);
+    let source = run.register_event_source(event_id()).unwrap();
+    assert_eq!(
+        run.ingest_event(&source, 1, &Value::Some(Arc::new(Value::Bool(true))), None),
+        Err(IngressError::InvalidPayload),
+    );
+    assert!(run.last_event().is_none());
+    run.ingest_event(&source, 1, &Value::None, None).unwrap();
+}
+
+#[test]
 fn typed_ingress_wakes_handler_and_await_on_later_budgeted_actor_turns() {
     let (doc, plan) = ingress_graph();
     let mut run = run(&doc, plan);

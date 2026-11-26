@@ -120,33 +120,6 @@ pub(crate) fn devices() -> Done {
     Ok(())
 }
 
-/// The network client of installed packages that hold the `http` or `http-local` grant.
-/// The plugin engine has already checked each address; an `http://` URL reaches it only
-/// for a local address under `http-local`.
-#[derive(Debug)]
-struct PluginHttp;
-impl orange_host::HttpClient for PluginHttp {
-    fn send(
-        &self,
-        request: &orange_host::HttpRequest,
-    ) -> Result<orange_host::HttpResponse, String> {
-        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch_response(
-            &request.method,
-            &request.url,
-            &request.headers,
-            &request.body,
-            limit,
-            request.url.starts_with("http://"),
-        )
-        .map(|response| orange_host::HttpResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-        })
-    }
-}
-
 /// Starts a host as the options describe and installs the packages given with
 /// `--package`.
 pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
@@ -194,7 +167,9 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         base_nodes: arguments.base_nodes,
         plugin_data_dir: beside(&arguments.plugin_data, "data"),
         state_dir: beside(&arguments.state, "state"),
-        plugin_http: Some(std::sync::Arc::new(PluginHttp)),
+        plugin_http: Some(std::sync::Arc::new(orange_host::PluginHttp(
+            orange_net::fetch_parts,
+        ))),
         plugin_data_quota: arguments.plugin_quota,
         plugin_http_hosts: (!arguments.plugin_hosts.is_empty())
             .then(|| arguments.plugin_hosts.clone()),
@@ -496,6 +471,24 @@ pub(crate) fn graphs(started: &mut Started, arguments: &Arguments) -> Done {
             .map_err(|message| format!("--share {id}: {message}"))?;
     }
     let check = arguments.command == "check";
+    if check {
+        // Control hints a definition gives but that do not fit are dropped, never
+        // failing a check; a package author still wants to know (ADR-33).
+        for info in host.nodes() {
+            for problem in info
+                .presentation
+                .iter()
+                .flat_map(|shown| &shown.hint_problems)
+            {
+                eprintln!(
+                    "warning: {}: control hint for `{}` dropped: {}",
+                    info.definition.definition.id.as_str(),
+                    problem.field,
+                    problem.reason.describe()
+                );
+            }
+        }
+    }
     let mut failed = false;
     let mut flows = Vec::new();
     for path in &arguments.graphs {

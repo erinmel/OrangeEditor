@@ -110,7 +110,7 @@ impl Editor {
             &mut self.declaration_search[2],
             t("search-types"),
         );
-        let query = self.declaration_search[2].trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.declaration_search[2]);
         let mut change = None;
         egui::ScrollArea::vertical()
             .id_salt("types-list")
@@ -146,7 +146,7 @@ impl Editor {
                             TypeShape::Enum { .. } => t("enum"),
                             TypeShape::Record { .. } => t("record"),
                         };
-                        contains_query(&query, &[&decl.name, kind])
+                        query.matches([decl.name.as_str(), kind])
                     })
                     .collect();
                 visible.sort_by_cached_key(|decl| decl.name.to_lowercase());

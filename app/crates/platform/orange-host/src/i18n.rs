@@ -25,12 +25,32 @@ pub const SOURCE_LANGUAGE: &str = "en";
 /// 40% more length, as translations often have. Never offered as a translation.
 pub const PSEUDO_LANGUAGE: &str = "en-xa";
 
+/// Canonical language, script and region casing for a catalogue locale.
+/// Accepts underscores as separators for legacy OS and preference tags.
+pub fn canonical_locale(tag: &str) -> Option<String> {
+    tag.trim()
+        .parse::<LanguageIdentifier>()
+        .ok()
+        .map(|id| id.to_string())
+}
+
+fn lookup_tag(tag: &str) -> String {
+    tag.trim().replace('_', "-").to_ascii_lowercase()
+}
+
+/// The language subtag of `tag`, lower case: `es` for `es-MX` or `ES_mx`.
+pub(crate) fn primary_language(tag: &str) -> String {
+    let tag = lookup_tag(tag);
+    tag.split('-').next().unwrap_or_default().to_owned()
+}
+
 type Bundle = fluent_bundle::concurrent::FluentBundle<Arc<FluentResource>>;
 
 /// Fluent catalogues by lower-case language tag.
 #[derive(Clone, Default)]
 pub struct Catalogs {
     languages: BTreeMap<String, Language>,
+    revision: u64,
 }
 
 #[derive(Clone)]
@@ -110,6 +130,10 @@ impl fmt::Debug for Catalogs {
 }
 
 impl Catalogs {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Catalogues read from `(language tag, Fluent text)` pairs, such as the list
     /// `app/build/locales.rs` makes. A pair that cannot be read is reported with its tag.
     pub fn from_sources(sources: &[(&str, &str)]) -> Result<Self, (String, CatalogError)> {
@@ -125,7 +149,7 @@ impl Catalogs {
     /// Adds the messages of `text` to language `locale`. A message already there is
     /// replaced. Nothing is added when the text has an error.
     pub fn add(&mut self, locale: &str, text: &str) -> Result<(), CatalogError> {
-        let tag = locale.trim().to_ascii_lowercase();
+        let tag = lookup_tag(locale);
         let id: LanguageIdentifier = tag.parse().map_err(|_| CatalogError {
             line: 0,
             reason: "the language tag is not BCP 47 shaped".to_owned(),
@@ -148,6 +172,7 @@ impl Catalogs {
             .or_insert_with(|| Language::new(id, Vec::new(), false));
         language.resources.push(Arc::new(resource));
         language.rebuild();
+        self.revision += 1;
         Ok(())
     }
 
@@ -159,6 +184,7 @@ impl Catalogs {
                 .unwrap_or_else(|_| english.id.clone());
             let pseudo = Language::new(id, english.resources.clone(), true);
             self.languages.insert(PSEUDO_LANGUAGE.to_owned(), pseudo);
+            self.revision += 1;
         }
     }
 
@@ -189,7 +215,7 @@ impl Catalogs {
     /// Whether language `tag` itself, without falling back, has message `id`.
     pub fn has(&self, tag: &str, id: &str) -> bool {
         self.languages
-            .get(&tag.to_ascii_lowercase())
+            .get(&lookup_tag(tag))
             .is_some_and(|language| language.bundle.has_message(id))
     }
 
@@ -197,7 +223,7 @@ impl Catalogs {
     pub fn ids(&self, tag: &str) -> Vec<&str> {
         let mut ids: Vec<&str> = self
             .languages
-            .get(&tag.to_ascii_lowercase())
+            .get(&lookup_tag(tag))
             .into_iter()
             .flat_map(Language::ids)
             .collect();
@@ -206,9 +232,17 @@ impl Catalogs {
         ids
     }
 
+    /// A search caption from the requested language or its regional parents.
+    pub fn localized_message(&self, locale: &str, id: &str) -> Option<Cow<'_, str>> {
+        let source = primary_language(locale) == SOURCE_LANGUAGE;
+        self.chain(locale)
+            .filter(|language| source || !language.is_source())
+            .find_map(|language| language.format(id, &[]))
+    }
+
     /// The languages a lookup in `locale` tries, nearest first, each once.
     pub(crate) fn chain(&self, locale: &str) -> impl Iterator<Item = &Language> {
-        let locale = locale.trim().to_ascii_lowercase();
+        let locale = lookup_tag(locale);
         let mut tags: Vec<String> = Vec::new();
         let mut tag = locale.as_str();
         while !tag.is_empty() {
@@ -223,6 +257,10 @@ impl Catalogs {
 }
 
 impl Language {
+    pub(crate) fn is_source(&self) -> bool {
+        self.id.language.as_str() == SOURCE_LANGUAGE && !self.pseudo
+    }
+
     /// The IDs of the messages of this language itself, in file order.
     pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
         self.resources

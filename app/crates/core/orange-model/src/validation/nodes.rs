@@ -493,6 +493,9 @@ fn infer_fresh_args(
             }
             continue;
         }
+        if resolve_idle_bridges(&component, pass, report, diagnostics, visits) {
+            continue;
+        }
         report_component_issues(&component, pass.eligible, pass.origin, report, diagnostics);
         if component
             .issues
@@ -511,6 +514,124 @@ fn infer_fresh_args(
         collect_component_args(&component, pass, report, &mut fresh_args);
     }
     fresh_args
+}
+
+/// A closed, untyped bridge group can be left on the canvas while a graph runs.
+/// Give its checked signatures an internal stand-in to validate the binding edge.
+/// Never retain these type arguments for authoring or use them for an exported or
+/// externally connected group; the next analysis must infer those types normally.
+fn resolve_idle_bridges(
+    component: &crate::inference::ComponentInference,
+    pass: &NodePass<'_>,
+    report: &mut NodeValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
+) -> bool {
+    if component.nodes.len() < 2
+        || component.issues.is_empty()
+        || !component
+            .issues
+            .iter()
+            .all(|issue| matches!(issue, InferenceIssue::Ambiguous { .. }))
+    {
+        return false;
+    }
+    let root = pass.document.root();
+    let closed = component.nodes.iter().all(|id| {
+        visits.nodes += 1;
+        let Some(node) = root.nodes.get(id) else {
+            return false;
+        };
+        if !matches!(
+            node.definition.id.as_str(),
+            ids::BRIDGE_OUT | ids::BRIDGE_IN
+        ) || !node.type_pins.is_empty()
+            || !node.inputs.is_empty()
+            || !node.variadic.is_empty()
+        {
+            return false;
+        }
+        if let Some(stored) = &node.signature {
+            let Some(contract) = pass.contract(node) else {
+                return false;
+            };
+            let template = signature::project_with_suspension(
+                contract.kind,
+                contract.suspends,
+                contract.ports.iter().cloned(),
+                &BTreeMap::new(),
+            );
+            if pass.document.signatures().get(stored).is_none_or(|sig| {
+                signature::semantic_key(sig) != signature::semantic_key(&template)
+            }) {
+                return false;
+            }
+        }
+        let mut incidents = pass.index.incident(*id).peekable();
+        incidents.peek().is_some()
+            && incidents.all(|edge| {
+                visits.edges += 1;
+                root.edges.get(&edge).is_some_and(|edge| {
+                    component.nodes.contains(&edge.from.node)
+                        && component.nodes.contains(&edge.to.node)
+                        && edge.from.port.instance().is_none()
+                        && edge.from.port.port().as_str() == "result"
+                        && edge.to.port.instance().is_none()
+                        && edge.to.port.port().as_str() == "value"
+                        && root
+                            .nodes
+                            .get(&edge.from.node)
+                            .is_some_and(|node| node.definition.id.as_str() == ids::BRIDGE_OUT)
+                        && root
+                            .nodes
+                            .get(&edge.to.node)
+                            .is_some_and(|node| node.definition.id.as_str() == ids::BRIDGE_IN)
+                })
+            })
+    });
+    if !closed
+        || pass
+            .document
+            .exports()
+            .iter()
+            .any(|export| component.nodes.contains(&export.node))
+    {
+        return false;
+    }
+
+    let placeholder = crate::id::fixed_id("core/option@1<core/bool@1>");
+    let args = BTreeMap::from([("T".into(), placeholder)]);
+    for id in &component.nodes {
+        let node = &root.nodes[id];
+        let Some(contract) = pass.contract(node) else {
+            report.incomplete_nodes.insert(*id);
+            continue;
+        };
+        match project_contract(pass, &contract, &args, Some(BodyRef::Root), visits) {
+            Ok(mut sig) => {
+                if node.definition.id.as_str() == ids::BRIDGE_OUT
+                    && let Some(input) = sig
+                        .ports
+                        .iter_mut()
+                        .find(|port| port.port_id.as_str() == "value")
+                    && let Some(ty) = &input.ty
+                {
+                    input.default = Some(crate::document::literal::Literal::value(
+                        ty.clone(),
+                        serde_json::json!({"none": true}),
+                    ));
+                }
+                report.resolved.insert(*id, sig);
+            }
+            Err(failures) => {
+                for (port, code) in failures {
+                    diagnostics.push(port_type_diagnostic(*id, port, code, pass.origin));
+                }
+                report.incomplete_nodes.insert(*id);
+            }
+        }
+    }
+    true
 }
 
 fn report_component_issues(
@@ -600,7 +721,10 @@ fn project_nodes(
     let mut stored_keys = BTreeMap::new();
     for id in pass.ids {
         visits.nodes += 1;
-        if !pass.eligible.contains(id) || report.incomplete_nodes.contains(id) {
+        if !pass.eligible.contains(id)
+            || report.incomplete_nodes.contains(id)
+            || report.resolved.contains_key(id)
+        {
             continue;
         }
         let Some(node) = pass.document.node(*id) else {
@@ -655,7 +779,7 @@ fn project_nodes(
         };
         match projection {
             Ok(projected) => {
-                if node.definition.id.as_str() == ids::ON_WATCH
+                if ids::is_watch(node.definition.id.as_str())
                     && let Some(config) = crate::catalog::WatchConfig::from_node(node)
                     && let Some(code) =
                         watch_type_diagnostic(config, &projected, pass.registry.types())

@@ -7,8 +7,9 @@ use super::settings;
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
 use crate::properties::{
-    choose_http_method, http_request_variant, input_caption, watch_label, watch_number_value,
+    choose_http_method, http_request_variant, input_caption, watch_field_label, watch_number_value,
 };
+use orange_host::intrinsic;
 
 /// What a field changed.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +21,8 @@ pub(super) enum FieldEdit {
     Setting(String, serde_json::Value),
     /// "New variable…" was chosen for the setting at a JSON pointer.
     NewVariable(String),
+    NewEvent,
+    RenameEvent,
     /// A device was chosen; `None` is the system default.
     Device(Option<String>),
     /// The node's connection is to be set up, from here on the screen.
@@ -30,6 +33,8 @@ pub(super) enum FieldEdit {
     AddPort(String),
     AddSignalReceiver,
     MapPairs,
+    /// The Bridge In is to read from this Bridge Out.
+    BindBridge(NodeId),
     /// The devices of this adapter are to be listed again.
     RefreshDevices(String),
 }
@@ -123,6 +128,16 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
                 port.value.is_none(),
             )
         }
+        FieldOf::HintedInput(port, control) => {
+            let value = port.value.as_deref().or(port.default.as_deref());
+            match value.and_then(|text| field_text(text).parse::<f64>().ok()) {
+                Some(number) => (
+                    crate::properties::hinted_number(Some(control), number),
+                    port.value.is_none(),
+                ),
+                None => ("-".to_owned(), true),
+            }
+        }
         FieldOf::Input(port) => match (&port.value, &port.default) {
             (Some(value), _) => (
                 crate::properties::choice_caption(port, &field_text(value)).into_owned(),
@@ -184,6 +199,11 @@ pub(super) fn shown(node: &NodeView, field: FieldOf<'_>) -> (String, bool) {
         FieldOf::Connection => (t("choose-connection").to_owned(), true),
         FieldOf::AddPort(variadic) => (add_port_text(node, variadic), true),
         FieldOf::AddSignalReceiver => (t("signal-add-receiver").to_owned(), true),
+        FieldOf::BridgeChannel => match node.settings["channel"].as_str() {
+            Some(channel) if !channel.is_empty() => (channel.to_owned(), false),
+            _ => (t("choose-channel").to_owned(), true),
+        },
+        FieldOf::EventChannel => (t("choose-channel").to_owned(), true),
         FieldOf::MapPairs => (t("build-map-pairs-title").to_owned(), false),
     }
 }
@@ -198,25 +218,29 @@ fn add_port_text(node: &NodeView, variadic: &orange_host::VariadicView) -> Strin
     )
 }
 
-/// The name line's text of a field.
 pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>) -> String {
     match field {
-        FieldOf::Input(port) | FieldOf::TextArea(port, ..) | FieldOf::Path(port, _) => {
-            input_caption(node, port)
-        }
+        FieldOf::Input(port)
+        | FieldOf::HintedInput(port, _)
+        | FieldOf::TextArea(port, ..)
+        | FieldOf::Path(port, _) => input_caption(node, port),
         FieldOf::Setting(name, schema, _) => {
-            if node.definition == "core/on-watch" {
-                watch_label(name).to_owned()
+            if intrinsic::is_watch(&node.definition) {
+                watch_field_label(node, name).to_owned()
             } else if let Some(label) = crate::properties::audio_setting_label(node, name) {
                 label.to_owned()
             } else {
                 settings::label(name, schema)
             }
         }
+        FieldOf::Variable(_) if intrinsic::counter_operation(&node.definition).is_some() => {
+            t("counter-variable").to_owned()
+        }
         FieldOf::Variable(_) => t("variable").to_owned(),
         FieldOf::Connection => connection.unwrap_or(t("connection")).to_owned(),
         FieldOf::AddPort(variadic) => add_port_text(node, variadic),
         FieldOf::AddSignalReceiver => t("signal-add-receiver").to_owned(),
+        FieldOf::BridgeChannel | FieldOf::EventChannel => t("bridge-channel").to_owned(),
         FieldOf::MapPairs => t("build-map-pairs-title").to_owned(),
     }
 }
@@ -224,7 +248,7 @@ pub(super) fn name(node: &NodeView, field: FieldOf<'_>, connection: Option<&str>
 /// Paints a field's frame: the canvas's field background and a thin outline, the
 /// selection color while the pointer is on it.
 pub(super) fn frame(painter: &egui::Painter, rect: Rect, zoom: f32, colors: &Palette, hot: bool) {
-    painter.rect_filled(rect, 5.0 * zoom, colors.background);
+    painter.rect_filled(rect, FIELD_RADIUS * zoom, colors.background);
     painter.rect_stroke(
         rect,
         5.0 * zoom,
@@ -298,15 +322,21 @@ pub(super) fn paint_still(
     profile: Option<&str>,
 ) {
     if let FieldOf::Setting(name, schema, dial) = field
-        && let Some(range) = crate::properties::AudioRange::of(node, name, schema)
+        && let Some(range) = crate::properties::NumberRange::of(node, name, schema)
         && let Some(value) = setting_value(node, name, schema).as_f64()
     {
         let number = if let Some(dial) = dial {
-            range.paint_dial(ui, dial_slot(rect), value, dial);
+            range.paint_dial(
+                ui,
+                dial_slot(rect),
+                value,
+                dial,
+                &self::name(node, field, None),
+            );
             return;
         } else {
             let (track, number) = slider_slots(rect, zoom);
-            range.paint_slider(ui, track, value);
+            range.paint_slider(ui, track, value, node.controls.settings.get(name));
             number
         };
         frame(painter, number, zoom, colors, false);
@@ -319,6 +349,49 @@ pub(super) fn paint_still(
             if dim { colors.weak } else { colors.text },
             None,
         );
+        return;
+    }
+    if let FieldOf::HintedInput(port, control) = field
+        && let Some(range) = crate::properties::NumberRange::of_input(control)
+    {
+        let value = input_number(port);
+        if control.widget == orange_host::controls::Widget::Dial {
+            range.paint_dial(
+                ui,
+                dial_slot(rect),
+                value,
+                control,
+                &name(node, field, None),
+            );
+            return;
+        }
+        let (track, number) = slider_slots(rect, zoom);
+        range.paint_slider(ui, track, value, Some(control));
+        frame(painter, number, zoom, colors, false);
+        let (text, dim) = shown(node, field);
+        let _ = field_text_in(
+            painter,
+            number,
+            zoom,
+            &text,
+            if dim { colors.weak } else { colors.text },
+            None,
+        );
+        return;
+    }
+    if let FieldOf::Setting(name, schema, _) = field
+        && let Some(choices) = segmented_choices(node, name, schema)
+    {
+        let value = setting_value(node, name, schema);
+        let labels: Vec<&str> = choices.iter().map(|(_, label)| label.as_str()).collect();
+        choice_row(
+            &labels,
+            &choices,
+            &value,
+            node.settings.get(name).is_none(),
+            zoom,
+        )
+        .paint_preview(ui, rect);
         return;
     }
     let switch_value = match field {
@@ -354,8 +427,71 @@ pub(super) fn paint_still(
     );
 }
 
+/// A dial's square, centered in its half of the card.
 fn dial_slot(slot: Rect) -> Rect {
-    Rect::from_min_size(slot.min, Vec2::splat(slot.height()))
+    Rect::from_center_size(slot.center(), Vec2::splat(slot.height().min(slot.width())))
+}
+
+/// The number an input holds, or its default; zero when it has neither.
+fn input_number(port: &PortView) -> f64 {
+    port.value
+        .as_deref()
+        .or(port.default.as_deref())
+        .and_then(|text| field_text(text).parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// The segmented choices of a setting as a card shows them, `value` picked.
+fn choice_row<'a>(
+    labels: &'a [&'a str],
+    choices: &[(serde_json::Value, String)],
+    value: &serde_json::Value,
+    defaulted: bool,
+    zoom: f32,
+) -> orange_ui_controls::ChoiceRow<'a> {
+    orange_ui_controls::ChoiceRow {
+        labels,
+        selected: choices.iter().position(|(option, _)| option == value),
+        defaulted,
+        surface: Surface::Card,
+        zoom,
+    }
+}
+
+/// A dial filling the square in the middle of `slot`, captioned `caption`. Returns the
+/// value turned to.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one dial's place, state and face"
+)]
+fn card_dial(
+    ui: &mut egui::Ui,
+    slot: Rect,
+    id: egui::Id,
+    range: crate::properties::NumberRange,
+    value: f64,
+    control: &orange_host::controls::Control,
+    caption: &str,
+) -> Option<f64> {
+    let knob = dial_slot(slot);
+    ui.scope_builder(
+        UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(knob));
+            ui.spacing_mut().interact_size.y = knob.height();
+            range.dial(
+                ui,
+                Surface::Card,
+                id,
+                value,
+                control,
+                caption,
+                caption,
+                Some(knob.height()),
+            )
+        },
+    )
+    .inner
 }
 
 fn slider_slots(slot: Rect, zoom: f32) -> (Rect, Rect) {
@@ -384,6 +520,7 @@ impl Canvas {
     ) -> Option<FieldEdit> {
         let zoom = slot.height() / field.control_height();
         let colors = Palette::of(ui);
+        let label = || name(node, field, None);
         match field {
             FieldOf::TextArea(port, kind, height) => {
                 let (preview, dim) = shown(node, field);
@@ -394,8 +531,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            &preview,
-                            dim,
+                            (&preview, dim, &label()),
                             zoom,
                             port.value.as_deref().map(field_text),
                         )
@@ -435,7 +571,8 @@ impl Canvas {
                         kind.hint(),
                         zoom,
                         &colors,
-                    );
+                    )
+                    .accessible_name(label());
                     if !edit.focused {
                         edited.request_focus();
                         edit.focused = true;
@@ -461,7 +598,16 @@ impl Canvas {
                                 t("edit-text-hint")
                             },
                         );
-                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label())
+                    });
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        response.hovered() || response.has_focus(),
+                    );
                     let content = slot.shrink2(Vec2::new(6.0, 4.0) * zoom);
                     let tint = if dim { colors.weak } else { colors.text };
                     let galley = ui.painter().layout(
@@ -489,6 +635,52 @@ impl Canvas {
                 }
                 None
             }
+            FieldOf::HintedInput(port, control) => {
+                let range = crate::properties::NumberRange::of_input(control)?;
+                let whole = matches!(
+                    port.ty.as_deref(),
+                    Some("core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1")
+                );
+                let current = input_number(port);
+                let typed = |value: f64| {
+                    let text = if whole {
+                        format!("{}", value.round())
+                    } else {
+                        value.to_string()
+                    };
+                    Some(FieldEdit::Input(port.id.clone(), text))
+                };
+                if control.widget == orange_host::controls::Widget::Dial {
+                    return card_dial(ui, slot, id, range, current, control, &label())
+                        .and_then(typed);
+                }
+                let (track, number) = slider_slots(slot, zoom);
+                let slid = ui
+                    .scope_builder(
+                        UiBuilder::new().max_rect(track).id_salt(id.with("slider")),
+                        |ui| {
+                            ui.set_clip_rect(ui.clip_rect().intersect(track));
+                            ui.spacing_mut().interact_size.y = track.height();
+                            range.slider(ui, Surface::Card, id, current, &label(), Some(control))
+                        },
+                    )
+                    .inner;
+                if let Some(value) = slid {
+                    return typed(value);
+                }
+                let ty = port.ty.clone().unwrap_or_default();
+                let shown_value = crate::properties::hinted_number(Some(control), current);
+                let unit = control.unit.as_deref().unwrap_or_default();
+                self.number_control(
+                    ui,
+                    (node.id, &port.id),
+                    number,
+                    id,
+                    (Some(&shown_value), port.default.as_deref(), &label()),
+                    (whole, &ty, unit),
+                )
+                .map(|text| FieldEdit::Input(port.id.clone(), text))
+            }
             FieldOf::Input(port) => {
                 let details = self.port_details(node.id, &port.id, true);
                 let editor = port.literal_editor(details);
@@ -512,10 +704,16 @@ impl Canvas {
                     let touch = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_text(t("edit-literal"));
-                    frame(ui.painter(), slot, zoom, &colors, touch.hovered());
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        touch.hovered() || touch.has_focus(),
+                    );
                     let _ = field_text_in(ui.painter(), slot, zoom, current, colors.text, None);
                     touch.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Button, true, t("edit-literal"))
+                        egui::WidgetInfo::labeled(egui::Role::Button, touch.enabled(), label())
                     });
                     return touch.clicked().then(|| FieldEdit::Literal(port.id.clone()));
                 }
@@ -530,7 +728,16 @@ impl Canvas {
                     let response = ui
                         .interact(slot, id, Sense::click())
                         .on_hover_text(t("color-picker"));
-                    frame(ui.painter(), slot, zoom, &colors, response.hovered());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label())
+                    });
+                    frame(
+                        ui.painter(),
+                        slot,
+                        zoom,
+                        &colors,
+                        response.hovered() || response.has_focus(),
+                    );
                     let chip = slot.shrink(4.0 * zoom);
                     let side = chip.height().min(18.0 * zoom);
                     let chip = Rect::from_center_size(
@@ -555,7 +762,7 @@ impl Canvas {
                 if http_request_variant(node) && port.id == "method" {
                     let (text, _) = shown(node, field);
                     let mut chosen = None;
-                    dropdown(ui, slot, id, &text, false, |ui| {
+                    dropdown(ui, slot, id, (&text, false, &label()), |ui| {
                         chosen = choose_http_method(ui, &text);
                     });
                     return chosen.and_then(|method| input(method.to_owned()));
@@ -564,14 +771,14 @@ impl Canvas {
                     Kind::Switch => {
                         let value = port.value.as_deref().or(port.default.as_deref());
                         let on = value.map(|value| value == "true");
-                        self.switch_control(ui, slot, id, (on, port.value.is_none()))
+                        self.switch_control(ui, slot, id, (on, port.value.is_none()), &label())
                             .and_then(|on| input(on.to_string()))
                     }
                     Kind::Choice => {
                         let choices = self.enums.get(port.ty.as_deref()?)?.clone();
                         let (text, dim) = shown(node, field);
                         let mut chosen = None;
-                        dropdown(ui, slot, id, &text, dim, |ui| {
+                        dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
                             for choice in choices.iter().filter(|choice| !choice.payload) {
                                 let current = port.value.as_deref().or(port.default.as_deref())
                                     == Some(choice.name.as_str());
@@ -597,7 +804,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            (port.value.as_deref(), port.default.as_deref()),
+                            (port.value.as_deref(), port.default.as_deref(), &label()),
                             (whole, &ty, ""),
                         )
                         .and_then(input)
@@ -610,8 +817,7 @@ impl Canvas {
                             (node.id, &port.id),
                             slot,
                             id,
-                            &text,
-                            dim,
+                            (&text, dim, &label()),
                             zoom,
                             current,
                         )
@@ -624,6 +830,9 @@ impl Canvas {
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_text(port.value.as_deref().map_or(t("choose-path"), |v| v));
+                touched.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label())
+                });
                 let painter = ui.painter();
                 frame(painter, slot, zoom, &colors, touched.hovered());
                 let _ = field_text_in(
@@ -645,8 +854,16 @@ impl Canvas {
             FieldOf::Path(port, _) => {
                 let current = port.value.as_deref().map(field_text);
                 let (text, dim) = shown(node, field);
-                self.text_control(ui, (node.id, &port.id), slot, id, &text, dim, zoom, current)
-                    .map(|text| FieldEdit::Input(port.id.clone(), text))
+                self.text_control(
+                    ui,
+                    (node.id, &port.id),
+                    slot,
+                    id,
+                    (&text, dim, &label()),
+                    zoom,
+                    current,
+                )
+                .map(|text| FieldEdit::Input(port.id.clone(), text))
             }
             FieldOf::Setting(name, schema, dial) => {
                 let value = setting_value(node, name, schema);
@@ -659,13 +876,23 @@ impl Canvas {
                             slot,
                             id,
                             (value.as_bool(), node.settings.get(name).is_none()),
+                            &label(),
                         )
                         .and_then(|on| set(on.into())),
+                    Kind::Choice if segmented_choices(node, name, schema).is_some() => {
+                        let choices = segmented_choices(node, name, schema)?;
+                        let labels: Vec<&str> =
+                            choices.iter().map(|(_, label)| label.as_str()).collect();
+                        let defaulted = node.settings.get(name).is_none();
+                        let picked = choice_row(&labels, &choices, &value, defaulted, zoom)
+                            .show_named(ui, slot, id, &label())?;
+                        set(choices[picked].0.clone())
+                    }
                     Kind::Choice => {
                         let options = schema["enum"].as_array().cloned().unwrap_or_default();
                         let (text, dim) = shown(node, field);
                         let mut chosen = None;
-                        dropdown(ui, slot, id, &text, dim, |ui| {
+                        dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
                             for option in &options {
                                 let label = option.as_str().map_or_else(
                                     || option.to_string(),
@@ -684,7 +911,7 @@ impl Canvas {
                         chosen.and_then(set)
                     }
                     kind @ (Kind::Whole | Kind::Number) => {
-                        if name == "threshold_db"
+                        if name == crate::properties::ThresholdEdit::SETTING
                             && let Some(threshold) =
                                 crate::properties::ThresholdEdit::for_node(node)
                         {
@@ -710,26 +937,59 @@ impl Canvas {
                                 .and_then(|number| set(number.into()));
                         }
                         let whole = kind == Kind::Whole;
-                        let current = (!value.is_null()).then(|| value.to_string());
+                        let hint = node.controls.settings.get(name);
+                        let current = (!value.is_null()).then(|| match value.as_f64() {
+                            Some(number) if hint.is_some_and(|h| h.precision.is_some()) => {
+                                crate::properties::hinted_number(hint, number)
+                            }
+                            _ => value.to_string(),
+                        });
                         let key = pointer_of(name);
+                        let unit = hint
+                            .and_then(|hint| hint.unit.as_deref())
+                            .unwrap_or_else(|| unit(name));
+                        // A stepper: minus and plus around the typed number.
+                        if let Some(stepper) = crate::properties::setting_hint(
+                            node,
+                            name,
+                            orange_host::controls::Widget::Stepper,
+                        ) {
+                            let side = slot.height();
+                            let middle = slot.shrink2(egui::vec2(side + 4.0 * zoom, 0.0));
+                            if let Some(sign) = orange_ui_controls::step_buttons(
+                                ui,
+                                slot,
+                                id.with("steps"),
+                                Surface::Card,
+                                zoom,
+                            ) {
+                                let next = crate::properties::stepper_value(
+                                    stepper,
+                                    schema,
+                                    value.as_f64().unwrap_or(0.0),
+                                    sign,
+                                )?;
+                                return setting_number(node, name, schema, &next.to_string())
+                                    .and_then(set);
+                            }
+                            let typed = self.number_control(
+                                ui,
+                                (node.id, &key),
+                                middle,
+                                id,
+                                (current.as_deref(), None, &label()),
+                                (true, "core/i64@1", unit),
+                            )?;
+                            return setting_number(node, name, schema, &typed).and_then(set);
+                        }
                         let ty = if whole { "core/i64@1" } else { "core/f64@1" };
                         let (slider, number_slot) = if let Some(range) =
-                            crate::properties::AudioRange::of(node, name, schema)
+                            crate::properties::NumberRange::of(node, name, schema)
                             && let Some(value) = value.as_f64()
                         {
                             if let Some(dial) = dial {
-                                let knob = dial_slot(slot);
-                                let changed = ui
-                                    .scope_builder(
-                                        UiBuilder::new().max_rect(knob).id_salt(id.with("dial")),
-                                        |ui| {
-                                            ui.set_clip_rect(ui.clip_rect().intersect(knob));
-                                            ui.spacing_mut().interact_size.y = card::CONTROL * zoom;
-                                            range.dial(ui, Surface::Card, id, value, dial)
-                                        },
-                                    )
-                                    .inner;
-                                return changed.and_then(|value| set(value.into()));
+                                return card_dial(ui, slot, id, range, value, dial, &label())
+                                    .and_then(|value| set(value.into()));
                             } else {
                                 let (track, number) = slider_slots(slot, zoom);
                                 let slider = ui
@@ -738,7 +998,14 @@ impl Canvas {
                                         |ui| {
                                             ui.set_clip_rect(ui.clip_rect().intersect(track));
                                             ui.spacing_mut().interact_size.y = track.height();
-                                            range.slider(ui, Surface::Card, id, value)
+                                            range.slider(
+                                                ui,
+                                                Surface::Card,
+                                                id,
+                                                value,
+                                                &label(),
+                                                node.controls.settings.get(name),
+                                            )
                                         },
                                     )
                                     .inner;
@@ -756,8 +1023,8 @@ impl Canvas {
                             (node.id, &key),
                             number_slot,
                             id,
-                            (current.as_deref(), None),
-                            (whole, ty, unit(name)),
+                            (current.as_deref(), None, &label()),
+                            (whole, ty, unit),
                         )?;
                         setting_number(node, name, schema, &typed).and_then(set)
                     }
@@ -765,33 +1032,102 @@ impl Canvas {
                         let current = value.as_str().map(str::to_owned);
                         let (text, dim) = shown(node, field);
                         let key = pointer_of(name);
-                        self.text_control(ui, (node.id, &key), slot, id, &text, dim, zoom, current)
-                            .and_then(|text| set(text.into()))
+                        self.text_control(
+                            ui,
+                            (node.id, &key),
+                            slot,
+                            id,
+                            (&text, dim, &label()),
+                            zoom,
+                            current,
+                        )
+                        .and_then(|text| set(text.into()))
                     }
                 }
+            }
+            FieldOf::BridgeChannel => {
+                let binding = self.bridge_bound.get(&node.id);
+                let (text, dim) = match binding {
+                    Some((_, channel)) => (channel.clone(), false),
+                    None => shown(node, field),
+                };
+                let mut chosen = None;
+                let current = binding.map(|(out, _)| *out);
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    chosen = pick_channel(ui, &self.bridges, current, t("no-bridge-outs"));
+                });
+                chosen
+                    .filter(|out| Some(*out) != current)
+                    .map(FieldEdit::BindBridge)
+            }
+            FieldOf::EventChannel => {
+                let current = node.settings["event"].as_str().map(str::to_owned);
+                let (text, dim) = current
+                    .as_ref()
+                    .and_then(|event| self.channels.get(event))
+                    .map_or_else(|| shown(node, field), |name| (name.clone(), false));
+                let dispatch = node.definition == intrinsic::EMIT;
+                let choices = if dispatch {
+                    &self.event_channels
+                } else {
+                    &self.listen_channels
+                };
+                let mut edit = None;
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    let can_rename = current
+                        .as_ref()
+                        .is_some_and(|id| self.channels.contains_key(id));
+                    edit = pick_channel(
+                        ui,
+                        choices,
+                        current,
+                        t(if dispatch {
+                            "no-event-channels"
+                        } else {
+                            "no-dispatches"
+                        }),
+                    )
+                    .map(|event| FieldEdit::Setting("/event".to_owned(), event.into()));
+                    if dispatch || can_rename {
+                        ui.separator();
+                    }
+                    if dispatch && ui.selectable_label(false, t("event-new")).clicked() {
+                        edit = Some(FieldEdit::NewEvent);
+                    }
+                    if can_rename && ui.selectable_label(false, t("event-rename")).clicked() {
+                        edit = Some(FieldEdit::RenameEvent);
+                    }
+                });
+                edit
             }
             FieldOf::Variable(pointer) => {
                 let named = node
                     .settings
                     .pointer(pointer)
                     .and_then(serde_json::Value::as_str);
-                let variables = &self.variables;
-                let (text, dim) = variables
+                let variables = self
+                    .variables
                     .iter()
-                    .find(|(id, _)| named == Some(id.as_str()))
-                    .map_or_else(|| shown(node, field), |(_, name)| (name.clone(), false));
+                    .filter(|choice| choice.fits(&node.definition));
+                let (text, dim) = variables
+                    .clone()
+                    .find(|choice| named == Some(choice.id.as_str()))
+                    .map_or_else(
+                        || shown(node, field),
+                        |choice| (choice.label.clone(), false),
+                    );
                 let mut edit = None;
-                dropdown(ui, slot, id, &text, dim, |ui| {
-                    for (variable, name) in variables {
-                        let current = named == Some(variable.as_str());
-                        if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                dropdown(ui, slot, id, (&text, dim, &label()), |ui| {
+                    for choice in variables.clone() {
+                        let current = named == Some(choice.id.as_str());
+                        if ui.selectable_label(current, &choice.label).clicked() && !current {
                             edit = Some(FieldEdit::Setting(
                                 pointer.to_owned(),
-                                variable.as_str().into(),
+                                choice.id.as_str().into(),
                             ));
                         }
                     }
-                    if !variables.is_empty() {
+                    if variables.clone().next().is_some() {
                         ui.separator();
                     }
                     if ui
@@ -808,7 +1144,9 @@ impl Canvas {
             }
             FieldOf::Connection => self.connection_control(ui, node, slot, id),
             action @ (FieldOf::AddPort(_) | FieldOf::AddSignalReceiver | FieldOf::MapPairs) => {
+                // The button draws its own plus, so a label's leading "+ " is dropped.
                 let label = name(node, action, None);
+                let label = label.strip_prefix("+ ").unwrap_or(&label).to_owned();
                 let touched = ui
                     .interact(slot, id, Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -817,7 +1155,7 @@ impl Canvas {
                 });
                 let painter = ui.painter();
                 if touched.hovered() {
-                    painter.rect_filled(slot, 5.0 * zoom, colors.background);
+                    painter.rect_filled(slot, FIELD_RADIUS * zoom, colors.background);
                 }
                 painter.rect_stroke(
                     slot,
@@ -874,8 +1212,11 @@ impl Canvas {
                 ui,
                 slot,
                 id,
-                label.unwrap_or_else(|| t("choose-connection")),
-                label.is_none(),
+                (
+                    label.unwrap_or_else(|| t("choose-connection")),
+                    label.is_none(),
+                    t("connection"),
+                ),
                 |ui| {
                     if profiles.is_empty() {
                         ui.weak(t("no-compatible-connections"));
@@ -893,53 +1234,59 @@ impl Canvas {
         let mut chosen = picker.selected.clone();
         let mut picked = false;
         let mut refresh = false;
-        dropdown(ui, slot, id, picker.label(), false, |ui| {
-            refresh = ui.small_button(t("refresh-devices")).clicked();
-            if let Some(problem) = &picker.problem {
-                ui.weak(problem);
-            }
-            picked |= ui
-                .selectable_value(&mut chosen, None, &picker.default_label)
-                .clicked();
-            ui.separator();
-            // Devices, what an output plays, then applications.
-            let group = |id: &str| {
-                if id.starts_with("loopback:") {
-                    1
-                } else if id.starts_with("app:") {
-                    2
-                } else {
-                    0
+        dropdown(
+            ui,
+            slot,
+            id,
+            (picker.label(), false, t("connection")),
+            |ui| {
+                refresh = ui.small_button(t("refresh-devices")).clicked();
+                if let Some(problem) = &picker.problem {
+                    ui.weak(problem);
                 }
-            };
-            for kind in 0..3 {
-                let options: Vec<_> = picker
-                    .options
-                    .iter()
-                    .filter(|(id, _)| group(id) == kind)
-                    .collect();
-                if options.is_empty() {
-                    if kind == 2
-                        && picker.group_label == t("recording-devices")
-                        && picker.problem.is_none()
-                    {
-                        ui.weak(t("no-audio-applications"));
-                    }
-                    continue;
-                }
-                ui.small(match kind {
-                    1 => t("playback-capture"),
-                    2 => t("applications"),
-                    _ => &picker.group_label,
-                });
-                for (value, label) in options {
-                    picked |= ui
-                        .selectable_value(&mut chosen, Some(value.clone()), label)
-                        .clicked();
-                }
+                picked |= ui
+                    .selectable_value(&mut chosen, None, &picker.default_label)
+                    .clicked();
                 ui.separator();
-            }
-        });
+                // Devices, what an output plays, then applications.
+                let group = |id: &str| {
+                    if id.starts_with("loopback:") {
+                        1
+                    } else if id.starts_with("app:") {
+                        2
+                    } else {
+                        0
+                    }
+                };
+                for kind in 0..3 {
+                    let options: Vec<_> = picker
+                        .options
+                        .iter()
+                        .filter(|(id, _)| group(id) == kind)
+                        .collect();
+                    if options.is_empty() {
+                        if kind == 2
+                            && picker.group_label == t("recording-devices")
+                            && picker.problem.is_none()
+                        {
+                            ui.weak(t("no-audio-applications"));
+                        }
+                        continue;
+                    }
+                    ui.small(match kind {
+                        1 => t("playback-capture"),
+                        2 => t("applications"),
+                        _ => &picker.group_label,
+                    });
+                    for (value, label) in options {
+                        picked |= ui
+                            .selectable_value(&mut chosen, Some(value.clone()), label)
+                            .clicked();
+                    }
+                    ui.separator();
+                }
+            },
+        );
         if refresh {
             return Some(FieldEdit::RefreshDevices(picker.adapter.clone()));
         }
@@ -954,9 +1301,16 @@ impl Canvas {
         slot: Rect,
         id: egui::Id,
         (on, dim): (Option<bool>, bool),
+        label: &str,
     ) -> Option<bool> {
         let zoom = slot.height() / card::CONTROL;
-        binary_choice(on, dim, zoom).show(ui, slot, id)
+        let names = [t("no"), t("yes")].map(|choice| {
+            tf(
+                "canvas-choice-name",
+                &[("field", label.into()), ("choice", choice.into())],
+            )
+        });
+        binary_choice(on, dim, zoom).show_named(ui, slot, id, names.each_ref().map(String::as_str))
     }
 
     /// A text field: the value painted in its frame; a click types a new one, kept on
@@ -968,8 +1322,7 @@ impl Canvas {
         (node, key): (NodeId, &str),
         slot: Rect,
         id: egui::Id,
-        text: &str,
-        dim: bool,
+        (text, dim, label): (&str, bool, &str),
         zoom: f32,
         current: Option<String>,
     ) -> Option<String> {
@@ -980,7 +1333,16 @@ impl Canvas {
         let Some((_, _, typed, focused)) = typing else {
             let colors = Palette::of(ui);
             let touched = ui.interact(slot, id, Sense::click());
-            frame(ui.painter(), slot, zoom, &colors, touched.hovered());
+            touched.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label)
+            });
+            frame(
+                ui.painter(),
+                slot,
+                zoom,
+                &colors,
+                touched.hovered() || touched.has_focus(),
+            );
             let cut = field_text_in(
                 ui.painter(),
                 slot,
@@ -1002,7 +1364,7 @@ impl Canvas {
             }
             return None;
         };
-        let edited = typing_field(ui, slot, id, typed, false, zoom);
+        let edited = typing_field(ui, slot, id, typed, false, zoom).accessible_name(label);
         if !*focused {
             edited.request_focus();
             *focused = true;
@@ -1024,7 +1386,7 @@ impl Canvas {
         (node, key): (NodeId, &str),
         slot: Rect,
         id: egui::Id,
-        (value, default): (Option<&str>, Option<&str>),
+        (value, default, label): (Option<&str>, Option<&str>, &str),
         (whole, ty, unit): (bool, &str, &str),
     ) -> Option<String> {
         let typing = self
@@ -1032,7 +1394,8 @@ impl Canvas {
             .as_mut()
             .filter(|(at, name, _, _)| *at == node && name == key);
         if let Some((_, _, typed, focused)) = typing {
-            let edited = typing_field(ui, slot, id, typed, true, slot.height() / card::CONTROL);
+            let edited = typing_field(ui, slot, id, typed, true, slot.height() / card::CONTROL)
+                .accessible_name(label);
             if !*focused {
                 edited.request_focus();
                 *focused = true;
@@ -1058,6 +1421,9 @@ impl Canvas {
             None => value.map(str::to_owned),
         };
         let touched = number_field(ui, slot, id, shown.as_deref(), default, unit);
+        touched.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, touched.enabled(), label)
+        });
         if touched.clicked() {
             self.number_drag = None;
             let typed = if ty == "core/duration@1" {
@@ -1102,7 +1468,7 @@ impl Canvas {
             key,
             slot,
             id,
-            (value.as_deref(), default.as_deref()),
+            (value.as_deref(), default.as_deref(), &port_title(port)),
             (false, "core/duration@1", "ms"),
         )
         .and_then(|ms| duration_nanos(&ms))
@@ -1157,7 +1523,7 @@ fn setting_number(
     schema: &serde_json::Value,
     typed: &str,
 ) -> Option<serde_json::Value> {
-    if node.definition == "core/on-watch" {
+    if intrinsic::is_watch(&node.definition) {
         if typed.trim().is_empty() && matches!(name, "release" | "hold" | "cooldown") {
             return Some(serde_json::Value::Null);
         }
@@ -1246,8 +1612,7 @@ fn dropdown(
     ui: &mut egui::Ui,
     slot: Rect,
     id: egui::Id,
-    text: &str,
-    dim: bool,
+    (text, dim, label): (&str, bool, &str),
     list: impl FnOnce(&mut egui::Ui),
 ) {
     let zoom = slot.height() / card::CONTROL;
@@ -1272,8 +1637,67 @@ fn dropdown(
                 list(ui);
             })
             .response;
-        response.on_hover_text(text);
+        response.on_hover_text(text).accessible_name(label);
     });
+}
+
+/// A searchable list of channels inside a card's dropdown: typing narrows it (in any case,
+/// without accents and with one typo per word), Enter takes the first match, and a
+/// click takes any. `empty` says what to do when there is no channel at all.
+fn pick_channel<K: Clone + PartialEq>(
+    ui: &mut egui::Ui,
+    channels: &[(K, String)],
+    current: Option<K>,
+    empty: &str,
+) -> Option<K> {
+    if channels.is_empty() {
+        ui.weak(empty);
+        return None;
+    }
+    let id = ui.scope_id().with("channel-search");
+    let mut search: String = ui.data_mut(|data| data.get_temp(id).unwrap_or_default());
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut search)
+            .char_limit(orange_ui_controls::MAX_SEARCH_CHARS)
+            .hint_text(t("search-channels"))
+            .desired_width(f32::INFINITY),
+    );
+    // Typing goes to the search as the list opens, without pulling focus back from
+    // anything the person moved it to afterwards.
+    if ui.memory(|memory| memory.focused().is_none()) {
+        field.request_focus();
+    }
+    let query = orange_host::SearchQuery::new(&search);
+    let mut matching: Vec<_> = channels
+        .iter()
+        .filter_map(|channel| {
+            query
+                .relevance([channel.1.as_str()])
+                .map(|rank| (rank, channel))
+        })
+        .collect();
+    matching.sort_by_key(|(rank, _)| *rank);
+    let mut chosen = None;
+    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        chosen = matching.first().map(|(_, (key, _))| key.clone());
+    }
+    if matching.is_empty() {
+        ui.weak(t("no-matching-channels"));
+    }
+    for (_, (key, name)) in matching {
+        if ui
+            .selectable_label(current.as_ref() == Some(key), name)
+            .clicked()
+        {
+            chosen = Some(key.clone());
+        }
+    }
+    // A choice ends the search, so the list opens unfiltered next time.
+    if chosen.is_some() {
+        search.clear();
+    }
+    ui.data_mut(|data| data.insert_temp(id, search));
+    chosen.filter(|key| current.as_ref() != Some(key))
 }
 
 /// The spacing and type size of egui widgets drawn in a card's chart body at `zoom`.
@@ -1307,11 +1731,73 @@ fn styled(ui: &mut egui::Ui, zoom: f32) {
     ] {
         state.bg_fill = colors.background;
         state.weak_bg_fill = colors.background;
-        state.corner_radius = egui::CornerRadius::same((5.0 * zoom) as u8);
+        state.corner_radius = egui::CornerRadius::same((FIELD_RADIUS * zoom) as u8);
         state.expansion = 0.0;
     }
     widgets.inactive.bg_stroke = Stroke::new(1.0, colors.outline);
     widgets.hovered.bg_stroke = Stroke::new(1.0, colors.selected);
     widgets.active.bg_stroke = Stroke::new(1.0, colors.selected);
     widgets.open.bg_stroke = Stroke::new(1.0, colors.selected);
+}
+
+/// The options of an enumeration setting hinted `segmented`, with their labels.
+fn segmented_choices(
+    node: &NodeView,
+    name: &str,
+    schema: &serde_json::Value,
+) -> Option<Vec<(serde_json::Value, String)>> {
+    crate::properties::setting_hint(node, name, orange_host::controls::Widget::Segmented)?;
+    let options = schema["enum"].as_array()?;
+    Some(
+        options
+            .iter()
+            .map(|option| {
+                let label = option.as_str().map_or_else(
+                    || option.to_string(),
+                    |text| crate::properties::setting_choice_label(node, text).into_owned(),
+                );
+                (option.clone(), label)
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+    use orange_host::controls::{Control, Widget};
+
+    /// A choice setting hinted `segmented` lists its options for a row of choices;
+    /// without the hint it keeps its dropdown.
+    #[test]
+    fn a_segmented_hint_lists_the_options_and_none_keeps_the_dropdown() {
+        let (host, _events) = orange_host::Host::with_services(
+            orange_host::HostOptions::default(),
+            vec![orange_audio::package()],
+        )
+        .unwrap();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let id = host
+            .add_node(&mut draft, orange_audio::NOISE_LEVEL, [0.0, 0.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let mut node = NodeView::clone(graph.nodes.iter().find(|node| node.id == id).unwrap());
+        let schema = node.schema.clone().unwrap()["properties"]["direction"].clone();
+        assert!(segmented_choices(&node, "direction", &schema).is_none());
+        let _ = node.controls.settings.insert(
+            "direction".into(),
+            Control {
+                widget: Widget::Segmented,
+                ..Control::default()
+            },
+        );
+        let choices = segmented_choices(&node, "direction", &schema).unwrap();
+        assert_eq!(
+            choices
+                .iter()
+                .map(|(value, _)| value.clone())
+                .collect::<Vec<_>>(),
+            [serde_json::json!("above"), serde_json::json!("below")]
+        );
+    }
 }

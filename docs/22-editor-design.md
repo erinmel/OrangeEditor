@@ -8,24 +8,92 @@ It changes no graph semantics; where a change needs one (11), it is called out.
 
 ## Finding nodes and connecting distant sections
 
-The picker groups built-in nodes by task: Flow & triggers, Data & text, Math &
-logic, Files & network, Audio, and Utilities. Sections within those groups keep
-related nodes together, such as Loops, JSON, HTTP Request, and Audio routing.
+The picker groups built-in nodes by task, including Triggers & signals, Control
+flow, Loops, Variables, JSON, Files and Network. Sections within those groups
+keep closely related nodes together, such as Wireless links and HTTP Request.
 Search matches group and section names alongside node labels and aliases. Hover
 a heading for its purpose. Nodes opens by default and the application remembers
 the last sidebar tab chosen explicitly.
 
-Place Wireless Signal to create a named run event with an Emit and an On Event.
-Wire the source trigger into Emit and wire each On Event into its own flow.
-Use Add signal receiver in the sender card or in either endpoint's context menu.
-Use Add signal sender in the context menu to attach another Emit to the same event.
-Deleting an endpoint removes that card and its attached wires. The named event and
-the other cards stay available, even after the last sender or receiver is deleted.
-An Emit with no listeners still continues on its normal exit. Hover an endpoint
-to reveal dashed links. Each receiver starts a separate activation through the run event queue
-(11 §10). Pass shared information as the event payload or through a declared
-variable. The links describe event routing on the canvas and are saved through
-the event references on the nodes.
+Guard searches find Branch. Rising Edge and Falling Edge each have a Boolean
+input and a trigger output. When Value Changes Enough shows its tolerance on
+the card and outputs the triggering sample. Increment Counter and Decrement
+Counter live under Variables. Select the whole-number variable on the card,
+leave Step at 1 or wire another step, and read the updated value from the output.
+Loops includes paired loop placement and
+standalone ends under Loop parts. Idle Watchdog is a starter graph. Use Make
+Function for a named reusable call.
+
+Value or Fallback (Coalesce) takes an optional value and uses its If missing input
+only when the option is absent. For example, connect an optional display name and
+give Guest as the fallback. A present empty name is still a value. Release a wire
+from an optional output over empty canvas to find Value or Fallback first.
+
+For an enum, connect it to Switch's key or choose its type, then select Add enum
+cases under Ports. Existing variant branches keep their connections. New cases
+use the enum's display names and persistent variant IDs. Releasing a wire from an
+enum output also offers a Switch preconfigured with those cases and, for variants
+that carry data, a payload reader. Releasing a wire from a record output offers a
+reader or a copy with a changed value for each named field. Placement and wiring
+are one undo step.
+
+Dispatch (`core/emit`, ES "Despachar") sends an event on a named channel, a run
+event (11 §10), to every Listen (`core/on-event`, ES "Escuchar") on it: one to many.
+Each Listen starts its own activation and shows the payload output only when the
+channel has a payload type. A Dispatch and a Listen share the channel's name.
+The node palette offers one Dispatch and one Listen. On a Dispatch, + Add Subscriber creates a Listen on the same channel that
+follows the pointer until a click places it; Escape leaves it where it is. On a fresh
+Dispatch this action also creates a pulse channel. Use the card's channel picker to
+select an existing channel, create a new one on Dispatch, or rename the selected
+channel. Rename changes the shared name without rebinding any nodes. A Listen
+placed on its own picks its channel from a searchable picker on the card, or comes bound from the node
+search: searching for Listen, or for a channel's name, lists each channel a Dispatch
+sends on as "Listen · channel", placed bound in one step.
+
+Deleting a Dispatch never deletes its subscribers. A Listen no Dispatch sends to shows
+an "Unbound · channel" tag above its card; clicking it creates a Dispatch on that
+channel (following the pointer), and choosing another channel rebinds it. Creating
+an emitter from a Listen with no channel creates a pulse channel in the same edit.
+Edit the shared channel name in Properties. A Dispatch with no listeners still continues on its normal exit. Pass shared
+information as the event payload or through a declared variable.
+
+Bridge Out (`core/bridge-out`, ES "Puente salida") shares a value without a wire,
+and each Bridge In (`core/bridge-in`, ES "Puente entrada") on its channel reads it
+when pulled: one to many, with no execution flow, and unlike a variable nothing is
+stored or written. A new Bridge Out gets an unused channel name ("Bridge 1",
+"Bridge 2", …) that can be renamed in Properties. On a Bridge Out, + Add Subscriber
+creates a Bridge In bound to it that follows the pointer. A Bridge In placed on its
+own chooses its Bridge Out from a searchable channel picker on its card. Renaming a
+Bridge Out updates each bound Bridge In's saved channel name in the same undo step. The binding is the data edge
+from Bridge Out `result` to Bridge In `value`, drawn as a wireless link rather than
+a wire, so those two ports are not shown. Deleting a Bridge Out keeps its Bridge Ins
+with the channel name they had and an "Unbound · channel" tag; clicking the tag
+creates a Bridge Out on that channel, and the picker rebinds it.
+
+Wireless links run from each Dispatch to each Listen on its channel, and from each
+Bridge Out to its Bridge Ins, with the same
+spline as ordinary wires, dashed. Settings > Canvas > Wireless link opacity (0–100 %,
+default 10 %) sets how visible they are at rest on a perceptual curve: 0 % hides
+them, 1 % is faint but visible, 100 % is opaque. Above 0 %, hovering a wireless
+node shows its links fully, and resting the pointer on a faint link for one second
+shows every link; leaving earlier cancels it. Links fade in and out. At 0 % they stay
+hidden on hover. Event links are saved only through the event references on the
+nodes, and bridge links as their data edges.
+
+For a typed payload, place Dispatch, Listen or Await Event, then open its Event
+picker in Properties. Choose New event, select a payload type, and create it.
+Creation assigns the event to that node in one undoable edit. Select the same
+named event on the other nodes. Listen starts a new activation, while Await
+Event continues an existing one when the event arrives or its timeout expires.
+
+Choose No payload (pulse) to create an event-only channel. Dispatch and Listen
+then have no payload ports. Idle Watchdog places Dispatch, Listen, and Wait from
+left to right on an event-only heartbeat channel. Newly placed presets are selected together so they can move as a set.
+
+Collect starts with a limit of 1,024 items. Tee starts with buffers of 32 items
+and 1 MiB per output, with backpressure when either bound is reached. Configure
+the limits in Properties for the input stream. With backpressure, drain both
+branches concurrently or close the branch that will not be used.
 
 For a larger automation, group the trigger, data preparation, and effects where
 each can be inspected independently. For example, a timer can start an HTTP JSON
@@ -76,7 +144,7 @@ combination in the selected language.
 | Empty | A graph with no nodes shows, at the centre of the canvas, how to begin: Tab or right-click to add a node, or drag one from the Nodes panel. |
 | Groups | Frames are drawn under cards and move by their title bars, including when collapsed. Snapping moves every member by the same offset and anchors the frame at its upper-left corner. Clicking a collapsed frame selects it for Ungroup. |
 
-## 3. Cards
+Click either connector, then click the opposite endpoint to wire without dragging.\nPress Escape, click the starting port again, or click the background to cancel.\n\n## 3. Cards
 
 * **Titles.** The header uses a category symbol such as a calculator for math or a
   speaker for audio. The node name appears white in dark mode. Double-click the
@@ -96,9 +164,18 @@ combination in the selected language.
   call uses the same function with its own wires and inputs. A selection containing
   Count, For Range, While or For each makes an async function. Triggers stay on the main
   graph and can be wired to the call.
+  **Open function** on a local call opens the shared body in its own canvas.
+  The interface cards show how arguments and results cross the boundary. Edits to
+  the body use the graph's undo history and apply to every call. The saved graph
+  holds the typed interface and body, which the compiler lowers for preview or run.
   To share a function between graphs, **Export function…** on its call shows its
   public ports and exact provider package versions before saving an archive.
   An imported card keeps its definition, label and connection picker.
+  **Expand function** replaces one local call with editable copies of its body and
+  reconnects its inputs and result in one undo step. Other calls still use the saved
+  definition. Expansion currently supports non-generic pure functions with one result
+  from a body card. Wired arguments require a single strict body card that reads them
+  in interface order. Loop regions require their own expansion support.
 
 * **Inline values.** A literal input is edited on the card: a single click on a number
   types it, a drag scrubs it; text is typed in place; a choice is a dropdown; a path
@@ -118,15 +195,15 @@ combination in the selected language.
   disconnects the old collection input. Undo restores the mode, values, and wires
   together.
   The iteration limit is in Properties under Advanced.
-  Placing Repeat with State, Map, Filter or Reduce from the palette creates
+  Placing Repeat with State, Map, Filter or Reduce from the Loops group creates
   both loop boundaries and a passthrough wire in one undoable edit.
   Replace that wire with the body you want to run for each item or step.
   Duplicating the pair creates an independent loop with the copied wiring.
 * **Triggers.** A trigger shows its contents: On manual has a Fire button in the body
   (disabled, with the reason on hover, while the graph is not running) and its payload
   field; On timer shows its interval; an event trigger shows the event it waits for.
-  Rising Edge and Falling Edge in the palette and canvas search place a When
-  trigger with the corresponding transition and a boolean input.
+  Rising Edge and Falling Edge fire on false-to-true and true-to-false
+  transitions, respectively. The initial input establishes their state.
   Guard places a Branch with a boolean condition. Wire its True output to
   continue when the condition passes.
   A new On timer fires every second, first after one interval, and a new On timeout
@@ -243,17 +320,24 @@ combination in the selected language.
   post-EQ waveform. Its stereo dBFS meters use separate peak, RMS and held
   values, 6 dB ticks, and per-channel clipping latches. The demonstration runs
   on the UI side and uses a pausable signal. Visible signal displays target 60 Hz and the spectrum targets 30 Hz. Pausing or scrolling all live displays out of view suspends signal processing. EQ response samples are cached by band settings, sample rate and plot resolution.
-  Continuous and stepped sliders share a thin rail and circular thumb. The
-  stepped control blends its stops into the active or inactive rail, places
-  optional labels just below it and changes by one step with the arrow keys.
-  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound.
-  Drag up or right to increase the value, hold Shift for a fine adjustment,
-  focus the knob to nudge it with the wheel or arrow keys, or double-click the centered readout
-  to enter a number.
+  Continuous and stepped sliders share a thin rail and a thumb. `SliderStyle` sets
+  how they look, for the whole application (`install`) or a group of sliders (`scope`):
+  notches are pills on the rail (the house style), ticks under it, or dots, and the
+  thumb is a capsule (the house style), a circle or an upright bar. Notches light once
+  the value has passed them. Pill stops closer than a pill's width become ticks, so a
+  dense range reads as a ruler; ticks are taller where a label sits. A logarithmic
+  slider marks 1, 2 and 5 of each decade, the powers of ten as major stops. Labels sit
+  below the rail and its notches. A stepped slider changes by one step with the arrow
+  keys.
+  Rotary knobs offer arc, center-detent bipolar and marked stepped styles, plus a repeating encoder whose upper bound wraps to its lower bound. A dial (`orange_ui_controls::dial`) is the self-contained form: a ring of fine ticks lit up to the value, the value and unit inside, and its name in the ring's open bottom quarter, so it needs no label row.
+  Drag up or right to increase the value; a full sweep takes 200 points, Shift is ten
+  times finer and Ctrl (Command on macOS) a hundred times. Focus the knob to nudge it one
+  step with the wheel or arrow keys, ten with Page Up and Page Down, or double-click the
+  centered readout to enter a number.
   Continuous marked sliders show guide notches without snapping. Canvas zoom
   uses guides at 50%, 75%, 100%, 125%, 150% and 175%, but accepts every value within 20–175%.
-  A guided slider may hide guides, show only pills, show only labels, or show
-  pills and labels. A strict guided slider snaps to its configured step; a free
+  A guided slider may hide guides, show only notches, show only labels, or show
+  notches and labels. A strict guided slider snaps to its configured step; a free
   guided slider never snaps. Circular controls share the same guide and step
   concepts for values that suit a dial.
 
@@ -365,14 +449,30 @@ The palette uses the shared search field with a clear action and compact categor
 rows with disclosure chevrons. Node search settings use a segmented control with
 Names only on the left and Node cards on the right.
 
+* The Nodes tab groups related nodes by task, including Control flow, Triggers &
+  signals, Variables, Text, JSON, Collections, Files and Network. The Conversions
+  tab groups explicit converters by input type and lists each selectable policy.
+  In the browse tree, Dispatch precedes Listen and Bridge Out precedes Bridge In.
+  Canvas quick add still includes converters, with compatible choices on value
+  wires. Converter previews use the selected contract's input and output ports,
+  including a loss output where declared. The placed card uses the same conversion
+  title and policy labels. Conversion names read as source type to destination
+  type, with encoding or policy details where needed. JSON value extraction
+  includes Optional in the destination name because it can return no value.
+
 * One search for the palette, the wire-drop list and the quick-add box. It matches
-  names, aliases, categories, concepts and the words of each node's description, in the
-  active language and in English. Concepts group nodes by purpose: *trigger / when /
+  names, aliases, categories, concepts, descriptions and common configuration captions in the
+  active language and in the bundled search languages. Concepts group nodes by purpose: *trigger / when /
   start* finds every entry kind (On manual, On timer, On start, On event, On level);
   *math*, *compare*, *text*, *time*, *audio*, *network*, *file*, *variable*, *loop*.
-* Results rank: exact name, name start, word start, alias, concept, description, fuzzy
-  (one typo). Each result has a category and a purpose available on hover; arrow keys move,
-  Enter adds.
+* Direct names and aliases in the active language rank above direct matches in
+  fallback languages. Within each language tier, exact phrases precede prefixes
+  and word matches. Concepts, descriptions and approximate matches follow.
+  Spaces, hyphens and underscores between
+  words are interchangeable. Search accepts one insertion, deletion, substitution
+  or adjacent swap per word of four or more letters. Settings, shortcuts, channels,
+  declarations and package pickers use the same matching rules. Each node result
+  has a category and purpose on hover. Arrow keys move through results and Enter adds.
 * Concepts and aliases are translatable catalogue entries (13): a package may add its
   own, and a locale adds words without changing IDs.
 * **What a wire offers** (2026-11-24). A wire let go on empty canvas lists the kinds
@@ -387,7 +487,8 @@ Names only on the left and Node cards on the right.
 * **Wires from inputs.** A wire can also be dragged back from an input. Let go on an
   output of the same sort, it connects there. Let go on empty canvas, the search lists
   the kinds with an output that feeds the input (`Host::givers`, same matching), with
-  triggers for a step input, and wires the choice's output into it.
+  triggers for a step input and converters that produce the value input's type. The
+  selected node's output is wired into the input.
 * **One action, one undo.** Choosing from a dropped wire, from either end, or a
   conversion for it, places the node and wires it as one edit (`Host::grouped`), like
   Insert node…: one undo takes both back. A choice
@@ -574,18 +675,22 @@ the shared-control and editor tests before adopting the change more broadly.
   declares them in the host. The node tree also lists
   draggable Get variable and Set variable nodes. Each picks the variable by name and
   type. Declaring from a node opens the same Variables form and selects the new
-  variable on the originating node.
+  variable on the originating node. Shared writes offer only workspace variables.
+  Ordinary writes offer local and run variables. On Variable Changed uses an
+  initialized run variable with equality support.
 * **Types** filters records and enums by name or kind. Larger lists start collapsed
   so their declarations can be scanned before opening individual types.
-* **Connections** filter by name or protocol and group by adapter. They use the adapters the host has (network, WebSocket,
-  audio, files, any package), listed by name and purpose, not by package ID. Each
-  adapter's settings are drawn from its schema; a secret field (password, token, key)
-  is entered in a masked field and stored in the operating system's credential store,
-  and the document keeps only the `credential://` reference (12, ADR-21). A connection
-  shows whether it is in use, by which nodes (clicking the count selects and shows
-  them), and can be tested (open, ping, list
-  devices). Saving edits to an existing connection keeps its form open and
-  reloads the persisted values and credential references. Done closes the form.
+* **Connections** filter by name or protocol and group by adapter. The connection
+  dialog describes each adapter by name and purpose and shows its schema-defined
+  settings. Network tuning is under Advanced. The fields scroll independently of
+  the save, cancel and settings check actions. Passwords, tokens and keys start
+  masked and can be revealed while entering a new value. On save the operating
+  system's credential store keeps the secret and the graph keeps its
+  `credential://` reference (12, ADR-21). A separate local check reports whether a
+  referenced credential is available without opening a connection or approving it.
+  Check settings does not read saved credentials. Clicking a connection's usage
+  count selects its nodes. Saving edits keeps the form open and reloads the
+  persisted settings and credential references. Done closes the form.
 * Text, binary and streamed HTTP requests use the same Method dropdown on the
   canvas and in Properties. A wired method is read from its source. HTTP
   Properties places the observed status and response under Results, before
@@ -652,17 +757,24 @@ Transient remains searchable for graphs that react to sudden hits, such as kicks
 Connect Audio Source or a filtered band to Audio Level Trigger for an RMS meter in dBFS.
 The trigger and gallery use the same segmented RMS widget, including the level
 zones, held-peak animation, clipping lights and target marker. A live stereo
-input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane. For
+input has independent L/R lanes from -120 to 0 dBFS. Mono uses one lane with
+the same scale, clip light and threshold handle. For
 more than two channels, the display uses aggregate RMS and the highest channel
 peak. Each red light latches when a measured sample reaches full scale and
 clears when the stream is lost or the analyzer restarts. With a stopped or
 unavailable input, the meter shows empty L/R lanes with unlit clip indicators
 and keeps the threshold marker in place.
 The vertical meter rises immediately, decays smoothly and briefly holds its marker. The Level output shows the current reading beside
-the meter. Drag the threshold line or type a threshold in the settings column.
-The direction, hold duration and reset margin sit in the same column.
-Hold and Reset margin use the same rotary controls as Properties, with a smaller
-face on the canvas and a side-by-side layout. The knob face shows the value and can be double-clicked to type.
+the meter. Drag the threshold handle on the left or within the meter, or type a
+threshold under the meter. The waveform gallery uses signed min/max columns when
+samples outnumber the display pixels. File previews reuse a bounded envelope with
+the lowest and highest source-channel sample in each bucket.
+The card is built from the definition's control hints (ADR-33): the level-meter visual,
+the `aside` row and the `body` fields. Beside the meter sit the outputs and, under
+them, Hold and Reset margin as dials side
+by side; each dial carries its own name. Under the meter, the stream input, Condition
+and Threshold run the full width of the card. In Properties the row label names each
+dial. Double-click a dial's value to type.
 The meter marker, slider and numeric threshold control mirror the active drag.
 Release commits one undoable edit. A typed threshold commits when editing ends.
 Threshold, Hold, and Reset margin configure the trigger's subscription.
@@ -675,6 +787,17 @@ The Channel levels output carries RMS and sample peaks in dBFS and clip flags
 in stream channel order, including all channels of a multichannel stream.
 Version 1 trigger cards upgrade when a graph opens and keep their settings and
 existing wires.
+
+Properties follows the header, aside and body order within the Settings and Inputs
+groups. The Advanced group contains fields explicitly placed there. Numeric input
+sliders and dials appear next to the typed editor when the input is unwired. Custom
+slider marks show guides at the requested values. Dials use their hinted style,
+precision and localized caption when provided.
+
+Numeric controls keep non-finite readings out of their painted geometry. A dial
+whose range cannot be represented by the rotary control uses a typed field.
+A saved node position outside the signed 32-bit coordinate range uses automatic
+placement.
 
 Editable duration inputs on the canvas and in Properties show milliseconds and
 accept fractional milliseconds up to nanosecond precision. Dragging steps by
@@ -703,6 +826,12 @@ Themes beyond light and dark, touch input, collaborative editing.
 
 ## 8. Interaction references and review checklist
 
+Properties can open the selected node's existing connection in the same editor
+used by Connections or create and bind a profile there. Variables opens a read-only
+inspector with full copy for observed text and JSON. Structured value dialogs\nprovide a scrollable JSON field,
+a Format JSON action, and localized syntax feedback with a line and column.
+The host still checks the value against its declared type on Apply.
+
 | Reference | Rule for OrangeEditor | Review scenario |
 |---|---|---|
 | [Warudo Blueprint editor](https://docs.warudo.app/docs/blueprints/overview) | Keep graph selection, node discovery, and property editing in distinct places. Preserve the canvas as the main working area. | Find a timer by purpose, drag it to the canvas, then edit its most common input on the card. |
@@ -718,10 +847,20 @@ Headless egui tests cover drawn shapes and synthetic events; visual and hardware
 need their own evidence.
 ### Visual hierarchy and feedback
 
+Canvas cards announce their full names when focused. Connector names include the
+card, port, direction, and type. Enter or Space on one connector starts a wire.
+Activate the opposite end to make the same edit as a pointer drag. Escape or
+activating the first connector again cancels the pending wire. Shift+F10 opens
+the focused card's or connector's context menu. Audio settings and Boolean
+choices expose field names to assistive tools.
+
 - Give the canvas the largest area. Group related controls into stable docks and keep
   the active graph, run state and problems visible. Use a neutral canvas and reserve
   strong colors for selection, execution and faults. Use the same node family cue in
-  the palette and card headers when adding family icons.
+  the palette and card headers when adding family icons. And, Or, Not and Xor share the
+  Logic family whatever package provides them. The palette offers And and Or as the
+  growable `core/all-conditions` and `core/any-conditions`; the two-input `core/and`
+  and `core/or` stay loadable but are not listed (`orange_host::UNLISTED`).
 - Keep titles, port labels and values scannable in that order. Prefer one compact
   primary action per card. Use consistent row heights and padding, keep long values
   within the card, and show full precision in the inspector. At distant zoom, keep
@@ -792,6 +931,8 @@ width and the lower-right corner for both axes. Long text scrolls within the
 chosen height. A toast may carry supporting text and stay until dismissed.
 The shared lifetime policy accepts 2–120 seconds for timed notices. Persistent
 gallery errors have a dismissal action and schedule no timer repaints.
+Gallery and desktop palette tiles render panels, a slider, and buttons from\nthe shared control colors.
+The System tile splits one layout diagonally between light and dark.
 Midnight Contrast shares the high-contrast palette checks for text, semantic
 inks, boundaries, focus and selected text. Volume uses the themed slider rail
 with travel linear in decibels and silence at its lower stop.

@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       extended:
-        description: Also test Linux ARM64 and macOS Intel
+        description: Also test macOS Intel
         type: boolean
         default: true
   workflow_call:
@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # rustup reads the shared pin on Linux x64, Windows x64 and macOS arm64.
+      # rustup reads the shared pin on every runner in the matrix.
       - name: Verify native Rust host matches the declared architecture
         shell: bash
         env:

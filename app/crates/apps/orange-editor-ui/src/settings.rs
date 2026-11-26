@@ -29,25 +29,31 @@ pub(crate) enum Section {
 impl Section {
     const ALL: [Self; 3] = [Self::Search, Self::Display, Self::Shortcuts];
 
-    fn title(self) -> &'static str {
-        t(match self {
+    fn title_key(self) -> &'static str {
+        match self {
             Self::Search => "search-heading",
             Self::Display => "display-heading",
             Self::Shortcuts => "shortcuts-heading",
-        })
+        }
     }
 
-    fn matches(self, query: &str) -> bool {
+    fn title(self) -> &'static str {
+        t(self.title_key())
+    }
+
+    fn relevance(self, query: &orange_host::SearchQuery) -> Option<orange_host::SearchRank> {
         if query.is_empty() {
-            return true;
+            return Some(orange_host::SearchRank::BEST);
         }
-        let labels: &[&str] = match self {
+        let mut labels = vec![self.title_key()];
+        labels.extend_from_slice(match self {
             Self::Search => &[
                 "search-section-words",
                 "settings-node-search",
                 "preview-node-cards",
                 "preview-names-only",
                 "settings-language",
+                "settings-language-help",
             ],
             Self::Display => &[
                 "display-section-words",
@@ -61,14 +67,15 @@ impl Section {
                 "wheel-pans",
                 "snap-grid",
                 "grid-type",
+                "grid-dots",
+                "grid-lines",
+                "grid-hidden",
                 "grid-spacing",
+                "wireless-opacity",
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
-        };
-        orange_host::fold_search(self.title()).contains(query)
-            || labels
-                .iter()
-                .any(|label| orange_host::fold_search(t(label)).contains(query))
+        });
+        i18n::message_relevance(query, &labels, &[])
     }
 }
 
@@ -148,22 +155,36 @@ impl Editor {
                 ),
             ),
         );
-        self.settings_search_ui(&mut header);
+        let changed = self.settings_search_ui(&mut header);
 
         let previous = self.settings_tab;
-        let query = orange_host::fold_search(self.settings_search.trim());
-        let matches = Section::ALL.map(|section| {
-            section.matches(&query)
-                || section == Section::Shortcuts && self.shortcut_matches_any(&query)
+        let query = self.settings_search.trim().to_owned();
+        let prepared = orange_host::SearchQuery::new(&query);
+        let ranks = Section::ALL.map(|section| {
+            let rank = section.relevance(&prepared);
+            if section == Section::Shortcuts {
+                rank.into_iter()
+                    .chain(self.shortcut_search_rank(&query))
+                    .min()
+            } else {
+                rank
+            }
         });
-        if !Section::ALL
+        let current = Section::ALL
             .iter()
-            .zip(matches)
-            .any(|(&section, found)| section == self.settings_tab && found)
-            && let Some(first) = matches.iter().position(|&found| found)
+            .zip(ranks)
+            .find_map(|(&section, rank)| (section == self.settings_tab).then_some(rank).flatten());
+        if let Some((best, rank)) = Section::ALL
+            .iter()
+            .copied()
+            .zip(ranks)
+            .filter_map(|(section, rank)| rank.map(|rank| (section, rank)))
+            .min_by_key(|&(_, rank)| rank)
+            && current.is_none_or(|current| changed && rank < current)
         {
-            self.settings_tab = Section::ALL[first];
+            self.settings_tab = best;
         }
+        let matches = ranks.map(|rank| rank.is_some());
 
         let navigation = if compact {
             ui.painter()
@@ -219,7 +240,7 @@ impl Editor {
             match self.settings_tab {
                 Section::Shortcuts => self.keybindings_ui(
                     &mut page,
-                    if self.settings_tab.matches(&query) {
+                    if self.settings_tab.relevance(&prepared).is_some() {
                         ""
                     } else {
                         &query
@@ -280,20 +301,21 @@ impl Editor {
         .clicked()
     }
 
-    fn settings_search_ui(&mut self, header: &mut egui::Ui) {
+    fn settings_search_ui(&mut self, header: &mut egui::Ui) -> bool {
         let search_id = header.make_persistent_id("field");
         if self.shortcut_edit.is_none()
             && header.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::F))
         {
             header.memory_mut(|memory| memory.request_focus(search_id));
         }
-        let _ = controls::search(
+        controls::search(
             header,
             "field",
             &mut self.settings_search,
             t("settings-search-hint"),
         )
-        .on_hover_text(t("settings-search-all"));
+        .on_hover_text(t("settings-search-all"))
+        .changed()
     }
 
     fn settings_navigation(&mut self, nav: &mut egui::Ui, matches: [bool; 3], compact: bool) {
@@ -364,6 +386,47 @@ impl Editor {
             setting_row(ui, t("grid-spacing"), |ui, label| {
                 let _ = self.grid_spacing_input(ui, label);
             });
+            setting_row(ui, t("wireless-opacity"), |ui, label| {
+                ui.set_max_width(CHOICE_WIDTH);
+                let mut percent = f32::from(self.canvas.wireless_opacity);
+                let response = orange_ui_controls::guided_slider(
+                    ui,
+                    Surface::Dialog,
+                    &mut percent,
+                    0.0..=100.0,
+                    orange_ui_controls::SliderBehavior::Step(1.0),
+                    orange_ui_controls::SliderMarks::NotchesAndValues,
+                    &[
+                        orange_ui_controls::SliderGuide {
+                            fraction: 0.0,
+                            label: "0%",
+                        },
+                        orange_ui_controls::SliderGuide {
+                            fraction: 0.1,
+                            label: "10%",
+                        },
+                        orange_ui_controls::SliderGuide {
+                            fraction: 0.5,
+                            label: "50%",
+                        },
+                        orange_ui_controls::SliderGuide {
+                            fraction: 1.0,
+                            label: "100%",
+                        },
+                    ],
+                )
+                .labelled_by(label.id)
+                .on_hover_text(t("wireless-opacity-help"));
+                if response.changed() {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a percentage"
+                    )]
+                    let percent = percent.round().clamp(0.0, 100.0) as u8;
+                    self.canvas.wireless_opacity = percent;
+                }
+            });
             ui.add_space(SPACE_SMALL);
             orange_ui_controls::toggle(ui, Surface::Dialog, &mut self.canvas.snap, t("snap-grid"));
             orange_ui_controls::toggle(
@@ -405,13 +468,14 @@ impl Editor {
                         response.rect.max - egui::vec2(5.0, 30.0),
                     );
                     let painter = ui.painter_at(response.rect);
-                    match choice {
-                        Light => paint_theme_sample(&painter, sample, &light.visuals),
-                        Dark => paint_theme_sample(&painter, sample, &dark.visuals),
-                        System => {
-                            paint_system_sample(&painter, sample, &light.visuals, &dark.visuals)
-                        }
-                    }
+                    let light = orange_ui_controls::Theme::from_visuals(&light.visuals);
+                    let dark = orange_ui_controls::Theme::from_visuals(&dark.visuals);
+                    let (first, split) = match choice {
+                        Light => (light, None),
+                        Dark => (dark, None),
+                        System => (light, Some(dark)),
+                    };
+                    orange_ui_controls::paint_theme_preview(&painter, sample, first, split);
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::Role::RadioButton,
@@ -522,86 +586,6 @@ fn settings_pane(ui: &mut egui::Ui, id: &str, rect: egui::Rect) -> egui::Ui {
     let mut pane = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
     pane.set_clip_rect(pane.clip_rect().intersect(rect));
     pane
-}
-
-fn paint_theme_sample(painter: &egui::Painter, rect: egui::Rect, visuals: &egui::Visuals) {
-    use egui::{Rect, Stroke, StrokeKind, pos2, vec2};
-    let border = visuals.window_stroke;
-    painter.rect(rect, 5, visuals.window_fill, border, StrokeKind::Inside);
-    let inner = rect.shrink(5.0);
-    let left = inner.left() + inner.width() * 0.29;
-    let sidebar = Rect::from_min_max(inner.min, pos2(left, inner.bottom()));
-    painter.rect_filled(sidebar, 3, visuals.panel_fill);
-    let nav = sidebar.shrink2(vec2(3.0, 7.0));
-    let nav = Rect::from_min_size(nav.min, vec2(nav.width().max(0.0), 7.0));
-    painter.rect_filled(nav, 2, visuals.selection.bg_fill);
-    let content = Rect::from_min_max(pos2(left + 4.0, inner.top()), inner.max);
-    let label = content.min + vec2(3.0, 4.0);
-    painter.hline(
-        label.x..=label.x + content.width() * 0.39,
-        label.y,
-        Stroke::new(2.0, visuals.text_color()),
-    );
-    let input = Rect::from_min_size(
-        label + vec2(0.0, 6.0),
-        vec2((content.width() - 6.0).max(0.0), 10.0),
-    );
-    painter.rect(
-        input,
-        2,
-        visuals.extreme_bg_color,
-        border,
-        StrokeKind::Inside,
-    );
-    let button = Rect::from_min_size(label + vec2(0.0, 20.0), vec2(content.width() * 0.54, 10.0));
-    painter.rect(
-        button,
-        2,
-        visuals.selection.bg_fill,
-        visuals.selection.stroke,
-        StrokeKind::Inside,
-    );
-}
-
-fn paint_system_sample(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    light: &egui::Visuals,
-    dark: &egui::Visuals,
-) {
-    use egui::{Shape, Stroke, StrokeKind, pos2};
-    painter.rect_filled(rect, 0, dark.window_fill);
-    painter.add(Shape::convex_polygon(
-        vec![rect.left_top(), rect.right_top(), rect.left_bottom()],
-        light.window_fill,
-        Stroke::NONE,
-    ));
-    for (visuals, at) in [
-        (
-            light,
-            pos2(
-                rect.left() + rect.width() * 0.24,
-                rect.top() + rect.height() * 0.31,
-            ),
-        ),
-        (
-            dark,
-            pos2(
-                rect.left() + rect.width() * 0.76,
-                rect.top() + rect.height() * 0.69,
-            ),
-        ),
-    ] {
-        let chip = egui::Rect::from_center_size(at, egui::vec2(rect.width() * 0.27, 8.0));
-        painter.rect(
-            chip,
-            2,
-            visuals.selection.bg_fill,
-            visuals.selection.stroke,
-            StrokeKind::Inside,
-        );
-    }
-    painter.rect_stroke(rect, 0, dark.window_stroke, StrokeKind::Inside);
 }
 
 fn settings_group(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {

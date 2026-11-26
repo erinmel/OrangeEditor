@@ -106,61 +106,6 @@ impl Biquad {
     }
 }
 
-/// A windowed, allocation-free transform after initialization. Bin i is
-/// sample_rate * i / FFT_SIZE. The output is single-sided peak amplitude dBFS.
-#[derive(Debug)]
-pub struct Spectrum {
-    window: Vec<f64>,
-    twiddles: Vec<(f64, f64)>,
-    data: Vec<(f64, f64)>,
-}
-
-impl Default for Spectrum {
-    fn default() -> Self {
-        Self {
-            window: (0..FFT_SIZE)
-                .map(|i| 0.5 - 0.5 * (TAU * i as f64 / FFT_SIZE as f64).cos())
-                .collect(),
-            twiddles: (0..FFT_SIZE / 2)
-                .map(|i| {
-                    let (sin, cos) = (-TAU * i as f64 / FFT_SIZE as f64).sin_cos();
-                    (cos, sin)
-                })
-                .collect(),
-            data: vec![(0.0, 0.0); FFT_SIZE],
-        }
-    }
-}
-
-impl Spectrum {
-    pub fn measure(&mut self, samples: &[f32; FFT_SIZE], output: &mut [f32; FFT_SIZE / 2]) {
-        for (i, (&sample, &window)) in samples.iter().zip(&self.window).enumerate() {
-            self.data[i.reverse_bits() >> (usize::BITS - FFT_SIZE.ilog2())] =
-                (f64::from(sample) * window, 0.0);
-        }
-        let mut size = 2;
-        while size <= FFT_SIZE {
-            let stride = FFT_SIZE / size;
-            for chunk in self.data.chunks_exact_mut(size) {
-                let (left, right) = chunk.split_at_mut(size / 2);
-                for (i, (a, b)) in left.iter_mut().zip(right).enumerate() {
-                    let (cos, sin) = self.twiddles[i * stride];
-                    let (real, imag) = (b.0 * cos - b.1 * sin, b.0 * sin + b.1 * cos);
-                    *b = (a.0 - real, a.1 - imag);
-                    *a = (a.0 + real, a.1 + imag);
-                }
-            }
-            size *= 2;
-        }
-        for (i, (out, &(real, imag))) in output.iter_mut().zip(&self.data).enumerate() {
-            let scale = if i == 0 { 2.0 } else { 4.0 };
-            *out = super::audio_meter::amplitude_dbfs(
-                ((real * real + imag * imag).sqrt() * scale / FFT_SIZE as f64) as f32,
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,11 +166,5 @@ mod tests {
                 FilterKind::HighPass => assert!(low < -50.0 && high.abs() < 0.1),
             }
         }
-        let input =
-            std::array::from_fn(|i| (TAU * 32.0 * i as f64 / FFT_SIZE as f64).sin() as f32 * 0.5);
-        let mut output = [0.0; FFT_SIZE / 2];
-        Spectrum::default().measure(&input, &mut output);
-        assert!((output[32] + 6.0206).abs() < 0.01);
-        assert!(output[40] < -100.0);
     }
 }

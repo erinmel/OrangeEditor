@@ -45,6 +45,36 @@ impl SecretStore for Store {
     }
 }
 
+#[test]
+fn local_credential_checks_distinguish_present_missing_and_unavailable() {
+    let store = Arc::new(Store::default());
+    store.replace("example-token", "fixture-secret").unwrap();
+    let (host, _) = Host::new(HostOptions {
+        secrets: Some(store.clone()),
+        ..HostOptions::default()
+    })
+    .unwrap();
+    assert_eq!(
+        host.credential_available("credential://example-token"),
+        Ok(true)
+    );
+    assert_eq!(host.credential_available("credential://missing"), Ok(false));
+    assert_eq!(
+        host.credential_available("credential://approval/private"),
+        Err(SecretError::InvalidName)
+    );
+    assert_eq!(
+        host.credential_available("example-token"),
+        Err(SecretError::InvalidName)
+    );
+    assert_eq!(store.1.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    assert!(matches!(
+        host.credential_available("credential://example-token"),
+        Err(SecretError::Unavailable(_))
+    ));
+}
+
 #[derive(Debug)]
 struct Thing;
 impl orange_host::Session for Thing {

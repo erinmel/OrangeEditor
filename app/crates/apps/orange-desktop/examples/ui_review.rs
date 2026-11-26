@@ -1,3 +1,4 @@
+use orange_host::intrinsic;
 use orange_host::{Host, HostOptions};
 use std::{collections::BTreeMap, fs};
 
@@ -61,12 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut draft = host.draft(&orange_host::new_document()?)?;
     let add = |draft: &mut orange_host::Draft, kind: &str, at| host.add_node(draft, kind, at);
-    let a = add(&mut draft, "core/whole-number", [0.0, 0.0])?;
+    let a = add(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])?;
     let absolute = add(&mut draft, "org.orange.math/absolute", [310.0, 0.0])?;
-    let b = add(&mut draft, "core/whole-number", [0.0, 160.0])?;
+    let b = add(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 160.0])?;
     let sum = add(&mut draft, "org.orange.math/add", [310.0, 160.0])?;
     let greater = add(&mut draft, "org.orange.math/greater", [0.0, 350.0])?;
-    let manual = add(&mut draft, "core/on-manual", [310.0, 380.0])?;
+    let manual = add(&mut draft, intrinsic::ON_MANUAL, [310.0, 380.0])?;
     let _ = manual;
     host.set_input(&mut draft, (a, "value"), Some("-17"))?;
     host.set_input(&mut draft, (b, "value"), Some("31"))?;

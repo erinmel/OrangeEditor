@@ -14,11 +14,25 @@ The manual node exposes an accessible on-node test button; it enqueues one activ
 
 Global registration, permission/session restrictions, conflict handling, release detection and teardown require per-OS evidence (P-07), not an inference from editor keyboard shortcuts. A plugin-defined trigger registers its payload schema and source lifetime through the normal event-source service; it cannot invoke a graph handler directly or inject arbitrary OS hooks into the core.
 
-The desktop's On key pressed definition version 2 accepts a logical key name
-through its `key` input. An empty input uses the node's configured key (F8 by
-default), modifiers and repeat rules remain settings, and focused editing and
-reserved editor shortcuts retain priority. Version 1 remains loadable. Global
-registration requires a separate platform adapter.
+The desktop's On key pressed definition version 3 takes the key from a list of
+logical key names (F8 by default) and Ctrl, Shift, Alt, Command and Repeat as
+separate Yes/No inputs; the chosen modifiers must be held exactly. Focused editing and
+reserved editor shortcuts retain priority. By default it fires only while the editor
+window has keyboard focus.
+
+With its Anywhere input set to Yes, the binding also fires while the editor is
+minimized or other applications are in front, once per press (Repeat applies only
+with focus). A key that types text needs Ctrl, Alt or Command; function keys F1–F24,
+media keys and Pause may stand alone. Command is macOS only. A binding outside these
+rules is refused when its flow starts, with the reason. Windows, macOS and X11 register a system hotkey
+through `global-hotkey` 0.10, applied from the desktop's event-loop thread on the next
+frame. Presses arrive through the platform's event loop, also while the window is
+minimized. On macOS letters follow their US position. Wayland asks the desktop's
+GlobalShortcuts portal (`ashpd`), which lets the person approve or change each
+shortcut; a desktop without the portal keeps such bindings focus-only. A chord that is
+taken, refused or unavailable keeps working with focus, and the reason appears in the
+Log. While an Anywhere chord is registered it is taken from other applications, until
+its flow stops. The desktop has no tray icon.
 
 ## Files and paths
 
@@ -185,34 +199,119 @@ four-step exchange is completed in both directions: an unfinished message keeps 
 packet ID across a reconnect, and a received one is handed to the entries once however
 often the broker repeats it. After a reconnect the session subscribes first and then
 repeats what was unfinished. When the broker reports no kept session, exchanges it had
-already confirmed are dropped. A closing session waits up to 500 ms for its disconnect
+already confirmed are dropped. A received message whose topic is empty, contains a
+wildcard or is not UTF-8 is a protocol error and closes the connection. A closing session waits up to 500 ms for its disconnect
 to be sent, so a normal stop does not publish the will. Not provided: MQTT 5,
 client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
 to the connection), and messages over 8 MiB.
 
-Files (2026-11-12; `orange-files`, package `org.orange.files`). A
-`org.orange.files/folder` connection has settings `path` (an existing directory),
-`read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
-`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`,
-`move`, `copy`, `make-directory`, `remove-directory` (empty directories only),
-`size` (output `bytes`), `read-range` (`offset`, `length`; fewer bytes at the end of
-the file, none past it), `append-bytes`
-and the entry `on-change` (payload: the change kind, relative path, previous path
-for a rename and directory flag). A watcher takes a baseline of the selected tree
-before emitting changes. With `wait_for_folder` enabled, a missing subfolder at
-startup is polled until it appears. Its first snapshot becomes the baseline.
-Paths are relative to
-the folder with `/` between plain names; `..`, absolute and drive forms, device names
-and links leading out of the folder are refused. A write goes to a temporary file in
-the same directory, is flushed and renamed over the target. A read or write of a
-whole file, and one piece read or appended, is at most 64 MiB; a larger file is walked
-with `size`, `read-range` and `append-bytes`, and `copy` and `move` have no size limit
-because they never hold the content. Listings, recursive operations and watcher snapshots
-are bounded to 10,000 descendants. `copy-directory` also caps copied bytes at 1 GiB.
-`copy-directory` and `move-directory` require a new destination under an existing
-parent, and a move stays on the same filesystem. `delete-directory` cannot remove
-the connected root. Tree mutations refuse links and reparse points and tree listings
-skip them. Concurrent external mutation can interrupt an operation.
+Files (2026-11-12, revised 2026-11-25; `orange-files` on `orange-sandbox`, package
+`org.orange.files`). A `org.orange.files/folder` connection has settings `path` (an
+existing directory), `read_only` and `poll_ms` (50 to 60,000, default 500). Nodes:
+`read-text`, `write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`,
+`exists`, `delete`, `move`, `copy`, `make-directory`, `copy-directory`,
+`move-directory`, `delete-directory`, `file-info`, `read-range` (`offset`, `length`;
+fewer bytes at the end of the file, none past it), `append-bytes` and the entry
+`on-change`. A watcher takes a baseline of the selected tree before emitting changes.
+With `wait_for_folder` enabled, a missing subfolder at startup is polled until it
+appears. Its first snapshot becomes the baseline.
+
+Paths are relative to the folder with `/` between plain names; `..`, absolute and
+drive forms, device names and links leading out of the folder are refused. Windows 10
+device forms (`nul .txt`, `COM¹`, `CONIN$`) count as device names on every system, so a
+graph stays portable. Every operation walks from the folder to the directory it works
+in one name at a time through held directory handles, then acts on one name in the
+last of them:
+
+- Linux and macOS: each directory is opened with `openat(O_NOFOLLOW | O_DIRECTORY)`
+  relative to the previous one, and the final call is the `*at` form relative to the
+  last (`openat`, `mkdirat`, `renameat`, `unlinkat`, `fstatat` without following).
+  Renaming a checked directory or replacing it with a link afterwards cannot redirect
+  the operation outside the folder; a later walk refuses the link. The calls go through
+  `rustix`, so `orange-sandbox` keeps the workspace's `forbid(unsafe_code)`.
+- Windows: every directory from the folder down is held open without delete sharing
+  and with `FILE_FLAG_OPEN_REPARSE_POINT`, so none can be renamed, removed or replaced
+  by a junction until the operation ends; the final call is made on the path they pin.
+
+On both, a file is opened without following a link at its own name and the opened
+handle is checked to be a regular file. Copy and move check source and destination
+this way. Hard-linked files are ordinary files; creating a link to another user's file
+needs write access to it on Windows and is refused by default on Linux.
+
+An active connection retains the selected directory's identity and compares it with
+the root opened for each operation. A missing or replaced directory produces
+`org.orange.files/folder-missing`. Reopening the connection resolves the configured
+path again. Windows identity checks rely on the volume and file index reported by
+the filesystem. The folder is never recreated by a node. A package data
+directory (`orange-guest`) is still created by its first write.
+
+Writes, `copy` and replacement: the content goes to a new temporary file
+`.orange-<pid>-<n>-<random>.tmp` in the target's directory, created exclusively (a file
+or link already at the name is never written through), flushed, and renamed over the
+target. A failure before rename leaves the previous file in place and attempts to
+remove the temporary file. Listings skip these names. Success reports that the rename
+committed. On Linux and macOS the service attempts to flush the directory after the
+rename using `fsync`. A failed or unavailable directory flush leaves crash durability
+unconfirmed. Windows does not flush the directory through std. `append` takes a nonblocking file lock and reports `in-use` when the lock is held. `move` and `move-directory` are one rename on one volume: a
+destination on another volume (a mount point or another drive inside the folder) fails
+with `org.orange.files/cross-device` and changes nothing; a graph that means to cross
+volumes copies and then deletes. `copy-directory` removes what it copied if it fails.
+
+Names: Unicode names round-trip; macOS HFS+ stores names decomposed (NFD), so a listing
+there can return another normalization than was written, while APFS and NTFS keep the
+form written. A case-only rename (`a.txt` to `A.txt`, or a folder) works on
+case-insensitive filesystems: a destination that resolves to the source itself is
+accepted. A name that is not valid UTF-8 (possible on Linux) cannot be addressed by a
+graph: listings, the watcher and `exists` skip it, and `copy-directory`,
+`move-directory` and `delete-directory` refuse a tree containing one rather than change
+part of it.
+
+Failures are typed so the editor can say what to do: `not-found`, `path-invalid`,
+`too-large`, `read-only` (the connection), `folder-missing`, `permission-denied`
+(permissions, access lists or a read-only file), `in-use` (Windows sharing or lock
+violation, `EBUSY`, `ETXTBSY`), `read-only-location` (read-only mount, write-protected
+media), `no-space` (disk or quota full), `cross-device`, `unsupported`, `tree-changed`,
+`operation-cancelled` and `io-failed` for anything else, each with English and Spanish
+text. No fault carries a path or system text. On Windows, replacing or deleting a file
+another program holds without delete sharing is refused as `in-use` or
+`permission-denied`, as the system reports it; the previous file is kept. Package
+guests (`orange-guest`) keep their fixed error words, with the new refusals as `failed`.
+
+Limits: a read or write of a whole file, and one piece read or appended, is at most
+64 MiB; a larger file is walked with `file-info`, `read-range` and `append-bytes`, and
+`copy` and `move` have no size limit because they never hold the content. Listings,
+recursive operations and watcher snapshots are bounded to 10,000 descendants.
+`copy-directory` also caps copied bytes at 1 GiB. `copy-directory` and `move-directory`
+require a new destination under an existing parent, outside the source.
+`delete-directory` cannot remove the connected root. Tree mutations refuse links and
+reparse points and tree listings skip them.
+
+Network and removable volumes: SMB and NFS resolve links on the server, so the handle
+checks apply to what the client sees; SMB honours Windows share modes, while NFS
+`O_EXCL` and rename atomicity depend on the server version. FAT and exFAT have no
+journal and no links: renames replace in place, but after a crash a temporary file can
+remain beside the target. None of these volumes has been qualified.
+
+Host-owned files outside any folder (saved documents and their `.bak` and `.autosave`,
+`installed.json`, `disabled.json`, stored variables, editor preferences, native
+library approvals) are replaced the same way through `orange_sandbox::replace_file`:
+exclusive temporary beside the target, flushed, renamed, directory flushed on Unix,
+temporary removed on failure. The package journal keeps its own writer-locked log.
+
+| Family | Linux | macOS | Windows | Verified |
+| --- | --- | --- | --- | --- |
+| Walk and containment | `openat` chain, `O_NOFOLLOW` + `O_DIRECTORY` | same | held handles without delete sharing, reparse points refused | Linux: tests on ext4 (WSL Debian, rustc 1.99.1); Windows: tests on NTFS; macOS: compiled and Clippy-checked locally, suite in CI on `macos-15` |
+| Read, read range, file info | `openat(O_NOFOLLOW)`, `fstat` type check | same | `OPEN_REPARSE_POINT` open, handle check | automated, Linux and Windows |
+| Write, copy (replace) | exclusive temporary, `fsync`, `renameat`, directory `fsync` | same | exclusive temporary, `FlushFileBuffers`, `MoveFileEx`, no directory flush | automated: a failed replace keeps the previous file (directory in the way, over the limit, Linux denied directory, Windows locked file) |
+| Append | `O_APPEND`, `File::lock` | same | `File::lock` | automated concurrency test, Linux and Windows |
+| Delete, make and remove directory | `unlinkat`, `mkdirat` | same | path under held parents | automated |
+| Move and rename | `renameat` with both directories held; `EXDEV` is `cross-device` | same | `MoveFileEx`; `ERROR_NOT_SAME_DEVICE` is `cross-device` | error mapping automated; a real cross-volume move reviewed only |
+| Tree copy, move, delete | strict enumeration through held handles; copy rolls back | same | same | automated; junctions refused on Windows, symlinks on Linux |
+| Listing and watch | `rustix::fs::Dir`; non-UTF-8 names skipped | same; NFD on HFS+ | `FindFirstFile`; identity is creation time, write time and size | automated: rename, overflow and rebaseline |
+| Errors | `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `EXDEV`, `EBUSY`, `ELOOP` typed | same | sharing and lock violation, write protect, disk full typed | mapping automated; real denial on Linux, real locked file on Windows |
+
+Not yet verified on a real system: macOS beyond CI, read-only and write-protected
+media, a full disk, network shares, and a crash during a write.
 
 `list` accepts a relative `path`, an optional `pattern` and a `recursive` switch.
 Patterns are case-sensitive. `*` and `?` match within a path component, and a

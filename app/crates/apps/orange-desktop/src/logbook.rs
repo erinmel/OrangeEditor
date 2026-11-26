@@ -2,6 +2,8 @@
 //! the message on a bounded queue and goes on; the window takes the queue into the Log
 //! between frames, so a graph that logs often never waits for the Log.
 use orange_editor_ui::NoteLevel;
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_sdk::{Call, Definition, FaultText, KernelFault, ServiceNode, ServicePackage, Value};
 use serde_json::json;
 use std::collections::VecDeque;
@@ -284,13 +286,13 @@ mod tests {
         .unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let start = host
-            .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::ON_MANUAL, [0.0, 0.0])
             .unwrap();
         let log = host
             .add_node(&mut draft, "org.orange.logging/log-message", [300.0, 0.0])
             .unwrap();
         let text = host
-            .add_node(&mut draft, "core/text", [0.0, 180.0])
+            .add_node(&mut draft, intrinsic::TEXT, [0.0, 180.0])
             .unwrap();
         host.set_input(&mut draft, (text, "value"), Some("threshold"))
             .unwrap();
@@ -441,13 +443,13 @@ mod tests {
         .unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let start = host
-            .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::ON_MANUAL, [0.0, 0.0])
             .unwrap();
         let log = host
             .add_node(&mut draft, "org.orange.logging/log-message", [300.0, 0.0])
             .unwrap();
         let text = host
-            .add_node(&mut draft, "core/text", [0.0, 180.0])
+            .add_node(&mut draft, intrinsic::TEXT, [0.0, 180.0])
             .unwrap();
         host.set_input(&mut draft, (text, "value"), Some("threshold"))
             .unwrap();

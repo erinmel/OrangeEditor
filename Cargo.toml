@@ -28,6 +28,9 @@ windows = { version = "=0.62.2", features = [
 ] }
 windows-core = "=0.62.2"
 hound = "=3.5.1"
+# Directory-relative file calls (openat, renameat, unlinkat) for confined file access on
+# Unix (orange-sandbox only). Already in the tree through async-io.
+rustix = { version = "=1.1.6", default-features = false, features = ["fs", "std"] }
 # Dynamic library loading for native plugins (orange-native only).
 libloading = "=0.9.0"
 # Operating-system credential stores (orange-vault only).
@@ -40,6 +43,14 @@ egui_extras = { version = "=0.37.0", default-features = false, features = ["svg"
 egui_material_icons = { version = "=0.9.0", default-features = false, features = ["outline"] }
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "wgpu", "wayland", "x11"] }
 rfd = "=0.18.0"
+# Key presses while the editor is in the background, for On key pressed set to Anywhere
+# (orange-desktop only): Windows, macOS and X11. Wayland goes through the portal below.
+global-hotkey = "=0.10.0"
+# The desktop GlobalShortcuts portal on Wayland (orange-desktop, Linux only). It shares the
+# zbus and async-io stack AccessKit already brings.
+ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+async-channel = "=2.5.0"
+futures-lite = "=2.6.1"
 keyring = { version = "=3.6.3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 # Translated text (docs/13): Fluent catalogues with arguments and CLDR plurals.
 fluent-bundle = "=0.16.0"

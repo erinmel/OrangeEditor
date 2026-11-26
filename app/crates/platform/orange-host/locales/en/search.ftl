@@ -6,7 +6,8 @@
 # alias-<node key>      more words for one node; the key is its ID with "/" and "." as "-"
 # purpose-<node key>    one line on what one node does
 #
-# IDs never change with the language; a locale only adds words.
+# IDs never change with the language; a locale only adds words. Wireless nodes also carry
+# their names in the other language, so either works in any interface language.
 
 language-name = English
 
@@ -54,10 +55,12 @@ alias-core-wait = delay, sleep, pause
 alias-core-set-variable = assign, store, write
 alias-core-get-variable = read, load
 alias-core-branch = if, else, condition, guard
-alias-core-all-conditions = all, every condition, boolean and, short circuit
-alias-core-any-conditions = any, either condition, boolean or, short circuit
-purpose-core-all-conditions = Checks conditions in order and stops at the first false.
-purpose-core-any-conditions = Checks conditions in order and stops at the first true.
+alias-core-coalesce = coalesce, fallback, optional, use default if missing, option, alternativa, valor opcional
+purpose-core-coalesce = Keep an optional value when present. If it is missing, use the fallback instead.
+alias-core-all-conditions = all conditions, every condition, boolean and, short circuit
+alias-core-any-conditions = any conditions, either condition, boolean or, short circuit
+purpose-core-all-conditions = True when every input is true. Checks them in order and stops at the first false; add inputs as you need them.
+purpose-core-any-conditions = True when any input is true. Checks them in order and stops at the first true; add inputs as you need them.
 alias-core-count = for loop, counted loop, repeat n times, repeat times
 purpose-core-count = Runs Body once per count, with an index starting at zero. Completed runs when the loop ends.
 alias-core-for-range = range loop, descending, stepped loop, exclusive range
@@ -89,7 +92,7 @@ purpose-core-on-start = Starts once when the flow starts.
 purpose-core-on-stop = Runs once when the flow stops.
 purpose-core-on-timer = Starts again and again on a timer.
 purpose-core-on-timeout = Starts once after a delay.
-purpose-core-on-event = Starts when an event is emitted.
+purpose-core-on-event = Listens on a channel and starts a flow each time it is dispatched, with its payload when it has one.
 purpose-core-on-variable-changed = Starts when a variable changes.
 purpose-core-on-watch = Starts when a watched value changes, becomes true or false, or crosses a threshold or range.
 alias-core-on-watch = on watch, threshold, condition, rising edge, falling edge, range
@@ -165,3 +168,58 @@ purpose-core-set-variable = Replaces a variable's value with the one you give, t
 purpose-core-update-variable = Changes a variable from its current value, such as adding one, then continues with the old and new values.
 purpose-core-set-shared = Replaces the value of a variable shared by all graphs, then continues.
 purpose-core-update-shared = Changes a variable shared by all graphs from its current value, then continues with the old and new values.
+purpose-core-emit = Dispatches an event on a channel to every Listen, with an optional payload, and continues.
+alias-core-emit = emit, send, broadcast, fan out, event, payload, wireless, signal, emitter, publish, pulse, despachar, emitir, enviar, emisor, inalámbrico, señal
+alias-core-on-event = on event, receive, subscribe, subscriber, event, trigger, payload, wireless, signal, receiver, pulse, escuchar, recibir, suscriptor, inalámbrico, señal
+purpose-core-bridge-out = Exposes a value on a named channel for every Bridge In, without a wire and without starting a flow.
+purpose-core-bridge-in = Reads its Bridge Out's value when something pulls it. It never starts a flow and is not a variable.
+alias-core-bridge-out = bridge, value, pull, wireless, send value, share, expose, emitter, out, puente, salida, inalámbrico
+alias-core-bridge-in = bridge, value, pull, wireless, read value, receive, get, subscriber, in, puente, entrada, inalámbrico
+
+alias-org-orange-text-encode-base64 = Encode Base64
+alias-org-orange-text-decode-base64 = Decode Base64
+alias-org-orange-text-encode-hex = Encode Hex
+alias-org-orange-text-decode-hex = Decode Hex
+alias-org-orange-json-as-string = JSON as text
+alias-org-orange-json-from-bool = Boolean to JSON
+alias-org-orange-json-from-i64 = Integer to JSON
+alias-org-orange-json-from-u64 = Unsigned Integer to JSON
+alias-org-orange-json-from-f64 = Number to JSON
+alias-org-orange-json-as-bool = As bool
+alias-org-orange-json-as-i64 = As i64
+alias-org-orange-json-as-u64 = As u64
+alias-org-orange-json-as-f64 = As f64
+alias-core-now = Now, elapsed time, run clock
+purpose-core-now = Gives the elapsed time on the run clock as a duration.
+alias-core-rising-edge = boolean becomes true
+purpose-core-rising-edge = Fires when the input changes from false to true.
+alias-core-falling-edge = boolean becomes false
+purpose-core-falling-edge = Fires when the input changes from true to false.
+alias-core-change-beyond-tolerance = Deadband, change tolerance
+purpose-core-change-beyond-tolerance = Fires when the value moves farther than the tolerance from the last qualifying sample. Outputs the sample that fired it.
+alias-core-increment-counter = bump+, bump +, count up
+purpose-core-increment-counter = Adds Step to the selected whole-number variable and outputs its new value.
+alias-core-decrement-counter = bump-, bump -, count down
+purpose-core-decrement-counter = Subtracts Step from the selected whole-number variable and outputs its new value.
+
+# Everyday words for common kinds and categories, matching the Spanish and Japanese
+# catalogues.
+category-math = math, maths
+category-text = text, string
+category-collections = collections, lists
+category-json = data, json
+category-files = files
+category-network = network, web
+category-audio = audio, sound
+alias-core-on-manual = manual, button, by hand
+alias-core-on-timer = timer, every, interval, repeat
+alias-core-on-start = on start, startup, begin
+alias-org-orange-math-add = add, plus, sum
+alias-org-orange-math-subtract = subtract, minus, difference
+alias-org-orange-math-multiply = multiply, times, product
+alias-org-orange-math-divide = divide, divided by, quotient
+alias-org-orange-math-greater = greater than, more than
+alias-org-orange-math-less = less than, fewer than
+alias-org-orange-math-equal = equals, same as
+alias-org-orange-json-from-string = Text to JSON string
+alias-org-orange-text-split = split, separate text

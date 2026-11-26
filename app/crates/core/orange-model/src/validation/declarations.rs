@@ -19,12 +19,12 @@ pub(crate) fn validate_declaration_types(
         .variables()
         .values()
         .map(|variable| (&variable.ty, Subject::default().with_variable(variable.id)))
-        .chain(
-            document
-                .events()
-                .values()
-                .map(|event| (&event.payload, Subject::default().with_event(event.id))),
-        );
+        .chain(document.events().values().filter_map(|event| {
+            event
+                .payload
+                .as_ref()
+                .map(|payload| (payload, Subject::default().with_event(event.id)))
+        }));
     let mut diagnostics = Vec::new();
     for (ty, subject) in declarations {
         diagnostics.extend(validate_declaration_type(ty, subject, registry));

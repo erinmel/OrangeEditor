@@ -1,36 +1,15 @@
-//! Bounded operations on directory trees. Directory traversal excludes reparse points.
+//! Bounded operations on directory trees. Traversal never enters a link or reparse
+//! point: each directory is entered through its held parent (see `os.rs`).
 
-use super::{Folder, FsError, inside, io};
-use std::fs::{self, Metadata};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use super::os::{Access, Dir};
+use super::{Folder, FsError, Info, MAX_PATH_BYTES, io, names, split};
+use std::io::{Read, Write};
 
 /// One addressable regular file or directory, relative to the directory that was listed.
 #[derive(Debug)]
 pub struct TreeEntry {
     pub path: String,
-    pub metadata: Metadata,
-}
-
-fn is_link(metadata: &Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const REPARSE_POINT: u32 = 0x400;
-        metadata.file_attributes() & REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        metadata.file_type().is_symlink()
-    }
-}
-
-pub(super) fn metadata(path: &Path) -> Result<Metadata, FsError> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| io(&e))?;
-    if is_link(&metadata) || !(metadata.is_file() || metadata.is_dir()) {
-        return Err(FsError::InvalidPath);
-    }
-    Ok(metadata)
+    pub info: Info,
 }
 
 fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), FsError> {
@@ -38,235 +17,6 @@ fn check_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), FsError> {
         Err(FsError::Cancelled)
     } else {
         Ok(())
-    }
-}
-
-impl Folder {
-    /// Resolves a path without accepting symlinks, junctions or other reparse points
-    /// at any component. A non-UTF-8 name is not addressable by the graph.
-    pub(super) fn checked(
-        &self,
-        path: &str,
-        root_allowed: bool,
-    ) -> Result<(PathBuf, Metadata), FsError> {
-        let full = inside(&self.root, path, root_allowed)?;
-        let mut prefix = self.root.clone();
-        let mut info = metadata(&prefix)?;
-        for name in path.split('/').filter(|_| !path.is_empty()) {
-            if !info.is_dir() {
-                return Err(FsError::NotFound);
-            }
-            prefix.push(name);
-            info = metadata(&prefix)?;
-        }
-        self.contained(&full)?;
-        Ok((full, info))
-    }
-
-    /// Metadata for one addressable regular file or directory.
-    pub fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
-        self.checked(path, true).map(|(_, info)| info)
-    }
-
-    /// Lists regular files and directories, skipping links and nonportable names.
-    /// Every item examined, including skipped entries, counts against `max_entries`.
-    pub fn tree(
-        &self,
-        path: &str,
-        recursive: bool,
-        max_entries: usize,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Vec<TreeEntry>, FsError> {
-        self.collect_tree(path, recursive, false, max_entries, cancelled)
-    }
-
-    fn collect_tree(
-        &self,
-        path: &str,
-        recursive: bool,
-        strict: bool,
-        max_entries: usize,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<Vec<TreeEntry>, FsError> {
-        check_cancelled(cancelled)?;
-        let (_, info) = self.checked(path, !strict)?;
-        if !info.is_dir() {
-            return Err(FsError::NotFound);
-        }
-        let mut directories = vec![String::new()];
-        let mut entries = Vec::new();
-        let mut remaining = max_entries;
-        while let Some(prefix) = directories.pop() {
-            let directory = join(path, &prefix);
-            let (full, directory_info) = self.checked(&directory, !strict).map_err(changed)?;
-            for entry in fs::read_dir(&full).map_err(|e| changed(io(&e)))? {
-                check_cancelled(cancelled)?;
-                remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
-                let entry = entry.map_err(|e| changed(io(&e)))?;
-                let relative = entry
-                    .file_name()
-                    .into_string()
-                    .ok()
-                    .map(|name| join(&prefix, &name));
-                let item = relative.ok_or(FsError::InvalidPath).and_then(|relative| {
-                    let name = join(path, &relative);
-                    let (_, metadata) = self.checked(&name, false).map_err(changed)?;
-                    Ok(TreeEntry {
-                        path: relative,
-                        metadata,
-                    })
-                });
-                match item {
-                    Ok(item) => {
-                        if !strict && entry.file_name().to_str().is_some_and(Self::is_temporary) {
-                            continue;
-                        }
-                        if recursive && item.metadata.is_dir() {
-                            directories.push(item.path.clone());
-                        }
-                        entries.push(item);
-                    }
-                    Err(FsError::InvalidPath) if !strict => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            let after = metadata(&full).map_err(changed)?;
-            if directory_info.modified().ok() != after.modified().ok() {
-                return Err(FsError::Changed);
-            }
-        }
-        entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-        Ok(entries)
-    }
-
-    fn tree_target(&self, from: &Path, to: &str) -> Result<PathBuf, FsError> {
-        let full = inside(&self.root, to, false)?;
-        let (parent, _) = to.rsplit_once('/').unwrap_or(("", to));
-        let (parent, info) = self.checked(parent, true)?;
-        let real_parent = parent.canonicalize().map_err(|e| io(&e))?;
-        if !info.is_dir() || real_parent.starts_with(from) {
-            return Err(FsError::InvalidPath);
-        }
-        match fs::symlink_metadata(&full) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(full),
-            _ => Err(FsError::InvalidPath),
-        }
-    }
-
-    /// Copies a tree into a new directory whose parent already exists. Refuses a
-    /// source containing links or special files. Limits both entries and copied bytes.
-    pub fn copy_tree(
-        &self,
-        path: &str,
-        to: &str,
-        max_entries: usize,
-        max_bytes: u64,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), FsError> {
-        self.writable()?;
-        let (source, _) = self.checked(path, false)?;
-        let target = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
-        let entries = self.collect_tree(path, true, true, max_entries, cancelled)?;
-        let mut bytes = max_bytes;
-        for entry in &entries {
-            let _ = inside(&self.root, &join(to, &entry.path), false)?;
-            if entry.metadata.is_file() {
-                bytes = bytes
-                    .checked_sub(entry.metadata.len())
-                    .ok_or(FsError::TooLarge)?;
-            }
-        }
-        check_cancelled(cancelled)?;
-        let _ = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
-        fs::create_dir(target).map_err(|e| io(&e))?;
-        let mut made = Vec::new();
-        let result = (|| {
-            for entry in &entries {
-                check_cancelled(cancelled)?;
-                let source_name = join(path, &entry.path);
-                let (source, current) = self.checked(&source_name, false)?;
-                let name = join(to, &entry.path);
-                let parent = name.rsplit_once('/').ok_or(FsError::InvalidPath)?.0;
-                let _ = self.checked(parent, true)?;
-                let target = inside(&self.root, &name, false)?;
-                let directory = entry.metadata.is_dir();
-                if current.is_dir() != directory {
-                    return Err(FsError::Failed);
-                }
-                if directory {
-                    fs::create_dir(&target).map_err(|e| io(&e))?;
-                    made.push((name, true));
-                } else {
-                    let output = fs::File::create_new(&target).map_err(|e| io(&e))?;
-                    made.push((name, false));
-                    copy_exact(&source, output, entry.metadata.len(), cancelled)?;
-                }
-            }
-            check_cancelled(cancelled)
-        })();
-        if result.is_err() {
-            for (name, directory) in made.into_iter().rev() {
-                if let Ok((target, _)) = self.checked(&name, false) {
-                    let _ = if directory {
-                        fs::remove_dir(target)
-                    } else {
-                        fs::remove_file(target)
-                    };
-                }
-            }
-            if let Ok((target, _)) = self.checked(to, false) {
-                let _ = fs::remove_dir(target);
-            }
-        }
-        result
-    }
-
-    /// Moves a bounded tree by renaming its root. The destination must be new and
-    /// on the same filesystem. Refuses a source containing links or special files.
-    pub fn move_tree(
-        &self,
-        path: &str,
-        to: &str,
-        max_entries: usize,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), FsError> {
-        self.writable()?;
-        let entries = self.collect_tree(path, true, true, max_entries, cancelled)?;
-        for entry in entries {
-            let _ = inside(&self.root, &join(to, &entry.path), false)?;
-        }
-        check_cancelled(cancelled)?;
-        let (source, _) = self.checked(path, false)?;
-        let target = self.tree_target(&source.canonicalize().map_err(|e| io(&e))?, to)?;
-        check_cancelled(cancelled)?;
-        fs::rename(source, target).map_err(|e| io(&e))
-    }
-
-    /// Deletes a bounded tree bottom-up. Refuses a source containing links or special
-    /// files before changing it. Concurrently added entries prevent directory removal.
-    pub fn remove_tree(
-        &self,
-        path: &str,
-        max_entries: usize,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), FsError> {
-        self.writable()?;
-        let entries = self.collect_tree(path, true, true, max_entries, cancelled)?;
-        for entry in entries.into_iter().rev() {
-            check_cancelled(cancelled)?;
-            let (target, current) = self.checked(&join(path, &entry.path), false)?;
-            if current.is_dir() != entry.metadata.is_dir() {
-                return Err(FsError::Failed);
-            }
-            if current.is_dir() {
-                fs::remove_dir(target).map_err(|e| io(&e))?;
-            } else {
-                fs::remove_file(target).map_err(|e| io(&e))?;
-            }
-        }
-        check_cancelled(cancelled)?;
-        let (target, _) = self.checked(path, false)?;
-        fs::remove_dir(target).map_err(|e| io(&e))
     }
 }
 
@@ -285,14 +35,305 @@ fn join(parent: &str, child: &str) -> String {
     }
 }
 
+/// The parent part and the last name of a path relative to a tree.
+fn parent_and_name(path: &str) -> (&str, &str) {
+    path.rsplit_once('/').unwrap_or(("", path))
+}
+
+/// The directory `relative` names below `base`, entered through held handles.
+fn below(base: &Dir, relative: &str) -> Result<Dir, FsError> {
+    let mut current = base.duplicate()?;
+    for name in relative.split('/').filter(|name| !name.is_empty()) {
+        current = current.child(name)?;
+    }
+    Ok(current)
+}
+
+/// The directory last entered below a tree, kept while consecutive entries share it:
+/// entries come sorted by path, so a tree of n files is not walked n times from its top.
+#[derive(Debug, Default)]
+struct Near(Option<(String, Dir)>);
+
+impl Near {
+    fn get(&mut self, base: &Dir, relative: &str) -> Result<&Dir, FsError> {
+        if !matches!(&self.0, Some((held, _)) if held == relative) {
+            // Let go of the old one first: on Windows a held directory cannot be removed.
+            self.0 = None;
+            self.0 = Some((relative.to_owned(), below(base, relative)?));
+        }
+        match &self.0 {
+            Some((_, directory)) => Ok(directory),
+            None => Err(FsError::Failed),
+        }
+    }
+}
+
+impl Folder {
+    /// Lists regular files and directories, skipping links and nonportable names.
+    /// Every item examined, including skipped entries, counts against `max_entries`.
+    pub fn tree(
+        &self,
+        path: &str,
+        recursive: bool,
+        max_entries: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<TreeEntry>, FsError> {
+        let start = self.walk(&names(path, true)?)?;
+        collect(&start, recursive, false, max_entries, cancelled)
+    }
+
+    /// The tree at `path`, which must be a directory other than the folder itself, and
+    /// its parent.
+    fn tree_root<'a>(&self, path: &'a str) -> Result<(Dir, &'a str, Dir), FsError> {
+        let (directories, name) = split(path)?;
+        let parent = self.walk(&directories)?;
+        if !parent.stat(name)?.is_dir() {
+            return Err(FsError::NotFound);
+        }
+        let tree = parent.child(name)?;
+        Ok((parent, name, tree))
+    }
+
+    /// Where a tree goes: an existing parent that is not inside `source`, and a name
+    /// that is free in it. With `same_allowed`, the name may be `source` itself under
+    /// another spelling, as in a case-only rename on a case-insensitive filesystem.
+    fn tree_target<'a>(
+        &self,
+        source: &Dir,
+        to: &'a str,
+        same_allowed: bool,
+    ) -> Result<(Dir, &'a str), FsError> {
+        let (directories, name) = split(to)?;
+        let mut parent = self.open_root(false)?;
+        for directory in &directories {
+            parent = parent.child(directory)?;
+            if parent.same(source)? {
+                return Err(FsError::InvalidPath);
+            }
+        }
+        match parent.stat(name) {
+            Err(FsError::NotFound) => Ok((parent, name)),
+            Ok(info) if same_allowed && info.is_dir() && parent.child(name)?.same(source)? => {
+                Ok((parent, name))
+            }
+            Ok(_) => Err(FsError::InvalidPath),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Copies a tree into a new directory whose parent already exists. Refuses a
+    /// source containing links or special files. Limits both entries and copied bytes.
+    /// A failure removes what was copied.
+    pub fn copy_tree(
+        &self,
+        path: &str,
+        to: &str,
+        max_entries: usize,
+        max_bytes: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), FsError> {
+        self.writable()?;
+        let (_source_parent, _, source) = self.tree_root(path)?;
+        let entries = collect(&source, true, true, max_entries, cancelled)?;
+        let mut bytes = max_bytes;
+        for entry in &entries {
+            let _ = names(&join(to, &entry.path), false)?;
+            if entry.info.is_file() {
+                bytes = bytes
+                    .checked_sub(entry.info.bytes())
+                    .ok_or(FsError::TooLarge)?;
+            }
+        }
+        check_cancelled(cancelled)?;
+        let (target_parent, target_name) = self.tree_target(&source, to, false)?;
+        target_parent
+            .create_dir(target_name)
+            .map_err(|error| match error {
+                FsError::Failed => FsError::InvalidPath,
+                other => other,
+            })?;
+        let target = target_parent.child(target_name)?;
+        let mut made = Vec::new();
+        let (mut from_near, mut into_near) = (Near::default(), Near::default());
+        let result = (|| {
+            for entry in &entries {
+                check_cancelled(cancelled)?;
+                let (parent, name) = parent_and_name(&entry.path);
+                let from = from_near.get(&source, parent)?;
+                let into = into_near.get(&target, parent)?;
+                let current = from.stat(name)?;
+                if current.is_dir() != entry.info.is_dir() {
+                    return Err(FsError::Changed);
+                }
+                if current.is_dir() {
+                    into.create_dir(name)?;
+                    made.push((entry.path.as_str(), true));
+                } else {
+                    let input = from.open(name, Access::Read)?;
+                    let output = into.create_new(name)?;
+                    made.push((entry.path.as_str(), false));
+                    copy_exact(input, output, entry.info.bytes(), cancelled)?;
+                }
+            }
+            check_cancelled(cancelled)
+        })();
+        // Rolling back removes directories these may still hold.
+        drop((from_near, into_near));
+        match &result {
+            Ok(()) => target_parent.sync(),
+            Err(_) => {
+                for (path, directory) in made.into_iter().rev() {
+                    let (parent, name) = parent_and_name(path);
+                    if let Ok(parent) = below(&target, parent) {
+                        let _ = if directory {
+                            parent.remove_dir(name)
+                        } else {
+                            parent.remove_file(name)
+                        };
+                    }
+                }
+                drop(target);
+                let _ = target_parent.remove_dir(target_name);
+            }
+        }
+        result
+    }
+
+    /// Moves a bounded tree by renaming its root. The destination must be new, or the
+    /// same directory spelled with another case, and on the same volume: a move to
+    /// another volume fails with [`FsError::CrossDevice`] and changes nothing. Refuses a
+    /// source containing links or special files.
+    pub fn move_tree(
+        &self,
+        path: &str,
+        to: &str,
+        max_entries: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), FsError> {
+        self.writable()?;
+        let (source_parent, source_name, source) = self.tree_root(path)?;
+        let entries = collect(&source, true, true, max_entries, cancelled)?;
+        for entry in entries {
+            let _ = names(&join(to, &entry.path), false)?;
+        }
+        check_cancelled(cancelled)?;
+        let (target_parent, target_name) = self.tree_target(&source, to, true)?;
+        // The tree itself is renamed, so it cannot stay held; its parents do.
+        drop(source);
+        check_cancelled(cancelled)?;
+        source_parent.rename(source_name, &target_parent, target_name)?;
+        target_parent.sync();
+        source_parent.sync();
+        Ok(())
+    }
+
+    /// Deletes a bounded tree bottom-up. Refuses a source containing links or special
+    /// files before changing it. Concurrently added entries prevent directory removal.
+    pub fn remove_tree(
+        &self,
+        path: &str,
+        max_entries: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), FsError> {
+        self.writable()?;
+        let (parent, name, tree) = self.tree_root(path)?;
+        let entries = collect(&tree, true, true, max_entries, cancelled)?;
+        let mut near = Near::default();
+        for entry in entries.into_iter().rev() {
+            check_cancelled(cancelled)?;
+            let (inner, entry_name) = parent_and_name(&entry.path);
+            let directory = near.get(&tree, inner)?;
+            let current = directory.stat(entry_name)?;
+            if current.is_dir() != entry.info.is_dir() {
+                return Err(FsError::Changed);
+            }
+            if current.is_dir() {
+                directory.remove_dir(entry_name)?;
+            } else {
+                directory.remove_file(entry_name)?;
+            }
+        }
+        check_cancelled(cancelled)?;
+        drop(near);
+        drop(tree);
+        parent.remove_dir(name)?;
+        parent.sync();
+        Ok(())
+    }
+}
+
+/// The entries below `start`. `strict` refuses links, special files and names that are
+/// not UTF-8 instead of skipping them, and keeps temporary files.
+fn collect(
+    start: &Dir,
+    recursive: bool,
+    strict: bool,
+    max_entries: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<TreeEntry>, FsError> {
+    check_cancelled(cancelled)?;
+    let mut pending = vec![String::new()];
+    let mut entries = Vec::new();
+    let mut remaining = max_entries;
+    while let Some(prefix) = pending.pop() {
+        let directory = below(start, &prefix).map_err(changed)?;
+        let before = directory.info().map_err(changed)?;
+        directory
+            .visit_names(|name| {
+                check_cancelled(cancelled)?;
+                remaining = remaining.checked_sub(1).ok_or(FsError::TooLarge)?;
+                let Ok(name) = name.into_string() else {
+                    if strict {
+                        return Err(FsError::InvalidPath);
+                    }
+                    return Ok(());
+                };
+                if !strict && Folder::is_temporary(&name) {
+                    return Ok(());
+                }
+                // A name the path rules refuse cannot be addressed afterwards.
+                let plain = names(&name, false).is_ok_and(|parts| parts.len() == 1);
+                let info = if plain {
+                    directory.stat(&name)
+                } else {
+                    Err(FsError::InvalidPath)
+                };
+                match info {
+                    Ok(info) => {
+                        let path = join(&prefix, &name);
+                        if path.len() > MAX_PATH_BYTES {
+                            return if strict {
+                                Err(FsError::InvalidPath)
+                            } else {
+                                Ok(())
+                            };
+                        }
+                        if recursive && info.is_dir() {
+                            pending.push(path.clone());
+                        }
+                        entries.push(TreeEntry { path, info });
+                    }
+                    Err(FsError::InvalidPath) if !strict => {}
+                    Err(error) => return Err(error),
+                }
+                Ok(())
+            })
+            .map_err(changed)?;
+        let after = directory.info().map_err(changed)?;
+        if before.modified() != after.modified() {
+            return Err(FsError::Changed);
+        }
+    }
+    entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(entries)
+}
+
 fn copy_exact(
-    source: &Path,
-    mut output: fs::File,
+    mut source: std::fs::File,
+    mut output: std::fs::File,
     mut remaining: u64,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(), FsError> {
-    use std::io::Read;
-    let mut source = fs::File::open(source).map_err(|e| io(&e))?;
     let mut buffer = [0; 8192];
     while remaining > 0 {
         check_cancelled(cancelled)?;
@@ -301,13 +342,13 @@ fn copy_exact(
             .min(buffer.len());
         let read = source.read(&mut buffer[..length]).map_err(|e| io(&e))?;
         if read == 0 {
-            return Err(FsError::Failed);
+            return Err(FsError::Changed);
         }
         output.write_all(&buffer[..read]).map_err(|e| io(&e))?;
         remaining -= read as u64;
     }
     if source.read(&mut buffer[..1]).map_err(|e| io(&e))? != 0 {
-        return Err(FsError::Failed);
+        return Err(FsError::Changed);
     }
     output.sync_all().map_err(|e| io(&e))
 }

@@ -2,7 +2,9 @@
 //! that go through one when the two ends differ. The language never converts on its own;
 //! every conversion is a visible `core/convert` node.
 use crate::edit::{PortEnd, port_ref};
-use crate::{Draft, EdgeId, Host, HostError, NodeId, Severity, TypeExpr};
+#[cfg(test)]
+use crate::intrinsic;
+use crate::{Draft, EdgeId, Host, HostError, NodeId, NodeView, Severity, TypeExpr};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionRequest, ConversionClass, ConverterKey,
     ConverterProvider, ConverterRegistry, ExplicitConverterChoice, NamedPolicy, SelectionRejection,
@@ -299,6 +301,22 @@ impl Host {
         Ok(node)
     }
 
+    /// Returns the card for an explicit converter choice without editing the draft.
+    pub fn conversion_preview(
+        &self,
+        draft: &Draft,
+        conversion: &Conversion,
+    ) -> Result<NodeView, HostError> {
+        let node = draft
+            .fresh_id("conversion")
+            .parse()
+            .map_err(|_| HostError::Document("the new ID is not valid".into()))?;
+        let registry = self.registry_for(draft.document());
+        let commands = converter_node_commands(&registry, conversion.choice(), node)
+            .map_err(|rejection| HostError::Document(rejection_text(&rejection)))?;
+        self.preview_commands(draft, node, commands)
+    }
+
     /// Connects output `from` to input `to`, through a conversion when their types
     /// differ (11 §6 rule 3): the one that loses nothing is put in by itself; otherwise
     /// the choices come back and `through` names the one chosen. Steps connect as
@@ -409,7 +427,7 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let target = host
             .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
@@ -467,7 +485,7 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let target = host
             .add_node(&mut draft, "org.orange.math/absolute", [300.0, 0.0])
@@ -479,7 +497,7 @@ mod tests {
         host.connect(&mut draft, from, into).unwrap();
         let old = Host::splice_edge(&draft, from, into).unwrap();
         let _ = host
-            .add_node(&mut draft, "core/number", [0.0, 200.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [0.0, 200.0])
             .unwrap();
         assert!(draft.undo());
         let before = draft.text().unwrap();
@@ -506,10 +524,10 @@ mod tests {
         let host = host();
         let mut draft = host.draft(&crate::new_document().unwrap()).unwrap();
         let whole = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let decimal = host
-            .add_node(&mut draft, "core/number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         let negate_decimal = host
             .add_node(&mut draft, "org.orange.math/negate", [300.0, 0.0])

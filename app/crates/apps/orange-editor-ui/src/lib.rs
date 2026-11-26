@@ -30,6 +30,7 @@ mod declarations;
 mod diagnostics;
 #[cfg(test)]
 mod edit_timing;
+mod function_body;
 pub mod i18n;
 pub mod icons;
 #[cfg(test)]
@@ -53,11 +54,13 @@ pub use quick_add::QuickChoice;
 use crate::controls::{Dropdown as _, Surface};
 use canvas::Canvas;
 use i18n::{t, tf};
+use orange_host::intrinsic;
+use orange_host::preset;
 use orange_host::{
     Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, Names, NodeId, PackageKind,
     StopMode, lines,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Lets a window without the system's frame be resized from its edges and corners,
 /// as a framed one is: the cursor shows the direction and a press hands the resize to
@@ -223,28 +226,7 @@ mod palette;
 pub use menu::{Command, MenuEntry, MenuTarget};
 pub use palette::{PaletteItem, palette, palette_in};
 
-/// A type as a person reads it: `core/string@1` is "text". Other types keep their name
-/// without the version.
-/// A conversion's name from the type it takes to the type it gives: "Int to Text".
-/// Two types that read alike, such as i32 and i64, are named exactly.
-pub(crate) fn conversion_name(from: &str, to: &str) -> String {
-    let (mut from_name, mut to_name) = (type_name(from), type_name(to));
-    if from_name == to_name {
-        let exact = |ty: &str| {
-            ty.trim_start_matches("core/")
-                .split('@')
-                .next()
-                .unwrap_or(ty)
-                .to_owned()
-        };
-        (from_name, to_name) = (exact(from), exact(to));
-    }
-    tf(
-        "conversion-title",
-        &[("from", from_name.into()), ("to", to_name.into())],
-    )
-}
-
+/// A type as a person reads it.
 pub fn type_name(ty: &str) -> String {
     let named = types_tab::with_local_names(ty);
     match named.as_str() {
@@ -303,14 +285,16 @@ struct ConversionChoice {
 pub(crate) enum Tab {
     #[default]
     Nodes,
+    Conversions,
     Variables,
     Connections,
     Types,
 }
 
 impl Tab {
-    const ALL: [(Self, &str); 4] = [
+    const ALL: [(Self, &str); 5] = [
         (Self::Nodes, "nodes"),
+        (Self::Conversions, "conversions"),
         (Self::Variables, "variables"),
         (Self::Connections, "connections"),
         (Self::Types, "types"),
@@ -329,6 +313,17 @@ impl Tab {
             .iter()
             .find(|(_, known)| *known == key)
             .map(|(tab, _)| *tab)
+    }
+}
+
+struct ObservedVariable {
+    shown: String,
+    exact_text: Option<orange_host::Value>,
+}
+
+impl std::fmt::Debug for ObservedVariable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObservedVariable").finish_non_exhaustive()
     }
 }
 
@@ -357,7 +352,7 @@ struct Document {
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
     /// The latest value of each variable a run wrote, by variable ID, as text.
-    values: std::collections::BTreeMap<String, String>,
+    values: std::collections::BTreeMap<String, ObservedVariable>,
 }
 
 impl Document {
@@ -477,6 +472,7 @@ impl std::fmt::Debug for Probing {
 pub struct Editor {
     value_form: Option<port_values::ValueForm>,
     function_export: Option<organise::FunctionExport>,
+    function_body: Option<function_body::FunctionBody>,
     search: String,
     palette_highlighted: usize,
     log_events: bool,
@@ -516,6 +512,7 @@ pub struct Editor {
     shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
     inspected_port: Option<(NodeId, String, bool)>,
+    inspected_variable: Option<String>,
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<LogLine>,
@@ -573,6 +570,35 @@ fn place_node(
     definition: &str,
     at: [f32; 2],
 ) -> Result<(NodeId, Option<NodeId>), HostError> {
+    // A new Bridge Out gets a channel name no other one has.
+    if definition == palette::BRIDGE_OUT {
+        let taken: Vec<String> = draft
+            .document()
+            .root()
+            .nodes
+            .values()
+            .filter(|node| node.definition.id.as_str() == palette::BRIDGE_OUT)
+            .filter_map(|node| {
+                node.config
+                    .get("channel")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        let channel = (1..)
+            .map(|n| format!("Bridge {n}"))
+            .find(|name| !taken.contains(name))
+            .unwrap_or_default();
+        let node = host.add_node(draft, definition, at)?;
+        let _ = host.set_config(draft, node, &serde_json::json!({ "channel": channel }))?;
+        return Ok((node, None));
+    }
+    // A Listen bound to an existing channel in one step.
+    if let Some(event) = definition.strip_prefix(palette::BIND_LISTEN) {
+        let node = host.add_node(draft, intrinsic::ON_EVENT, at)?;
+        let _ = host.set_config(draft, node, &serde_json::json!({ "event": event }))?;
+        return Ok((node, None));
+    }
     if definition.starts_with(palette::CONVERSION) {
         return match palette::conversion_named(host, definition) {
             Some(conversion) => host
@@ -595,25 +621,16 @@ fn search_field(ui: &mut egui::Ui, id: &str, query: &mut String, hint: &str) {
     let _ = controls::search(ui, id, query, hint);
 }
 
-fn contains_query(query: &str, fields: &[&str]) -> bool {
-    query.is_empty()
-        || query.split_whitespace().all(|word| {
-            fields
-                .iter()
-                .any(|field| field.to_lowercase().contains(word))
-        })
-}
-
 impl Editor {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// The language the editor shows its text in and the node search matches in,
-    /// besides English, such as `es`.
+    /// besides English, such as `es-MX`.
     pub fn language(&self) -> &str {
         if self.language.is_empty() {
-            orange_host::SOURCE_LANGUAGE
+            i18n::DEFAULT_LOCALE
         } else {
             &self.language
         }
@@ -622,9 +639,9 @@ impl Editor {
     /// Shows the editor in `language` (a BCP 47 tag) and makes the node search match in
     /// it and English. Nothing about the graph changes with it.
     pub fn set_language(&mut self, language: &str) {
-        let language = language.trim();
+        let language = i18n::preference_tag(language);
         if self.language != language {
-            language.clone_into(&mut self.language);
+            self.language = language.into_owned();
             self.previews.invalidate();
             self.refresh_problem_text = true;
         }
@@ -651,6 +668,9 @@ impl Editor {
         self.node_config_menu = None;
         self.renaming_node = None;
         self.inspected_port = None;
+        self.inspected_variable = None;
+        self.forms = declarations::Forms::default();
+        self.probing = None;
         self.tab = self.preferred_tab;
         self.previews.invalidate();
         self.stop(host);
@@ -677,10 +697,13 @@ impl Editor {
             .draft_authoring_view_in(&draft, self.language())
             .unwrap_or_default();
         self.value_form = None;
+        self.function_body = None;
         self.canvas.set_failure_routes(failure_routes);
         self.canvas.set_port_details(port_details);
         self.canvas.load(&graph);
-        self.canvas.enums = canvas::enums_of(host, &draft, &graph, &host.declarations(&draft));
+        let declared = host.declarations(&draft);
+        self.canvas.enums = canvas::enums_of(host, &draft, &graph, &declared);
+        self.canvas.set_channels(&declared);
         self.canvas.set_groups(draft.groups());
         self.canvas.waypoints = draft.wire_waypoints().collect();
         self.document = Some(Document {
@@ -751,6 +774,10 @@ impl Editor {
 
     /// After the draft changed: the canvas, the problems and a running flow follow.
     fn refresh(&mut self, host: &mut Host) {
+        self.refresh_graph(host, self.function_body.is_some());
+    }
+
+    fn refresh_graph(&mut self, host: &mut Host, shared_functions_changed: bool) {
         self.previews.invalidate();
         if let Some(quick) = &mut self.quick {
             quick.invalidate();
@@ -769,7 +796,7 @@ impl Editor {
             .unwrap_or_default();
         let before = document.replace_graph(graph);
         // Only what the edit touched, and what follows it, can preview differently.
-        let touched = touched_by_edit(&before, &document.graph);
+        let touched = touched_by_edit(&before, &document.graph, shared_functions_changed);
         document.declared = host.declarations(&document.draft);
         types_tab::remember(&document.declared.types);
         document.unsaved = true;
@@ -778,6 +805,7 @@ impl Editor {
         self.canvas.update(&document.graph);
         self.canvas.enums =
             canvas::enums_of(host, &document.draft, &document.graph, &document.declared);
+        self.canvas.set_channels(&document.declared);
         self.canvas.set_groups(document.draft.groups());
         self.canvas.waypoints = document.draft.wire_waypoints().collect();
         // The fields of the properties panel are read again from the new document.
@@ -869,6 +897,47 @@ impl Editor {
         self.add_node_at(host, definition, at)
     }
 
+    /// Binds a Bridge In to a Bridge Out: the edge that carries the value, and the
+    /// channel name the Bridge In keeps should its Bridge Out go.
+    pub(crate) fn bind_bridge(&mut self, host: &mut Host, reading: NodeId, out: NodeId) -> bool {
+        let Some(channel) = self.graph().and_then(|graph| {
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == out)
+                .and_then(|node| palette::bridge_channel(node).map(str::to_owned))
+        }) else {
+            return false;
+        };
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        // Rebinding replaces the old edge; edge and channel name are one undo step.
+        let result = host.grouped(draft, |host, draft| {
+            let _ = host.connect(draft, (out, "result"), (reading, "value"))?;
+            host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))
+        });
+        self.edited(host, result)
+    }
+
+    /// The channels (event ID, name) that a Dispatch in the open graph sends on.
+    pub(crate) fn dispatch_channels(&self) -> Vec<(String, String)> {
+        let (Some(declared), Some(graph)) = (self.declarations(), self.graph()) else {
+            return Vec::new();
+        };
+        declared
+            .events
+            .iter()
+            .filter(|event| {
+                graph.nodes.iter().any(|node| {
+                    node.definition == intrinsic::EMIT
+                        && node.settings["event"].as_str() == Some(event.id.to_string().as_str())
+                })
+            })
+            .map(|event| (event.id.to_string(), event.name.clone()))
+            .collect()
+    }
+
     /// Adds a node of kind `definition` with its top left corner at `at` (graph units)
     /// and selects it.
     pub fn add_node_at(
@@ -878,8 +947,37 @@ impl Editor {
         at: [f32; 2],
     ) -> Option<NodeId> {
         let draft = self.editing()?;
-        let result = place_node(host, draft, definition, at);
-        self.placed(host, result)
+        let multi = matches!(
+            definition,
+            preset::SIGNAL | preset::WIRELESS_PULSE | preset::WIRELESS_VALUE | preset::WATCHDOG
+        );
+        let before = multi.then(|| {
+            draft
+                .document()
+                .root()
+                .nodes
+                .keys()
+                .copied()
+                .collect::<HashSet<_>>()
+        });
+        // A placement that binds (a Bridge In to its Bridge Out, a new channel name) is
+        // one undo step, and a refused one leaves nothing behind.
+        let result = host.grouped(draft, |host, draft| place_node(host, draft, definition, at));
+        let created = before.map(|before| {
+            draft
+                .document()
+                .root()
+                .nodes
+                .keys()
+                .filter(|id| !before.contains(id))
+                .copied()
+                .collect::<Vec<_>>()
+        });
+        let placed = self.placed(host, result)?;
+        if let Some(created) = created {
+            self.canvas.select_many(&created);
+        }
+        Some(placed)
     }
 
     /// Selects what a placement made, or reports why it was refused, leaving the
@@ -915,10 +1013,46 @@ impl Editor {
 
     /// Removes nodes with their wires, as one edit.
     pub fn remove_nodes(&mut self, host: &mut Host, nodes: &[NodeId]) -> bool {
+        // A deleted Bridge Out leaves its Bridge Ins Unbound, naming its channel as it
+        // is now, so they can be rebound or the emitter recreated.
+        let keep: Vec<(NodeId, String)> = self
+            .graph()
+            .map(|graph| {
+                graph
+                    .wires
+                    .iter()
+                    .filter(|wire| {
+                        nodes.contains(&wire.from.0)
+                            && wire.from.1 == "result"
+                            && wire.to.1 == "value"
+                    })
+                    .filter_map(|wire| {
+                        let out = graph.nodes.iter().find(|node| node.id == wire.from.0)?;
+                        let reading = graph.nodes.iter().find(|node| node.id == wire.to.0)?;
+                        (out.definition == palette::BRIDGE_OUT
+                            && reading.definition == palette::BRIDGE_IN
+                            && !nodes.contains(&reading.id))
+                        .then(|| {
+                            (
+                                reading.id,
+                                palette::bridge_channel(out).unwrap_or_default().to_owned(),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.remove_nodes(draft, nodes);
+        // Keeping the channel names and removing the nodes is one undo step.
+        let result = host.grouped(draft, |host, draft| {
+            for (reading, channel) in keep {
+                let _ =
+                    host.set_config(draft, reading, &serde_json::json!({ "channel": channel }))?;
+            }
+            host.remove_nodes(draft, nodes)
+        });
         self.edited(host, result)
     }
 
@@ -1220,7 +1354,8 @@ impl Editor {
     /// After undo or redo: a step back may move nodes too, so the canvas takes the
     /// document's places again.
     fn reload(&mut self, host: &mut Host) {
-        self.refresh(host);
+        // Undo can restore a shared function body while the root graph looks identical.
+        self.refresh_graph(host, true);
         if let Some(document) = &self.document {
             self.canvas.restore(&document.graph);
         }
@@ -1691,7 +1826,15 @@ impl Editor {
                             || "unset".to_owned(),
                             |value| canvas::value_text(&self.canvas.enums, ty, value),
                         );
-                        let _ = document.values.insert(variable.to_string(), shown);
+                        let exact_text = match value {
+                            Some(
+                                text @ (orange_host::Value::Str(_) | orange_host::Value::Json(_)),
+                            ) => Some(text.clone()),
+                            _ => None,
+                        };
+                        let _ = document
+                            .values
+                            .insert(id, ObservedVariable { shown, exact_text });
                     }
                 }
                 // A trigger or live value whose provider would not start, or failed
@@ -1770,9 +1913,13 @@ impl Editor {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
-        self.canvas.shortcuts_enabled =
-            !self.settings_open && !self.has_node_ergonomics_modal() && self.value_form.is_none();
-        self.keyboard(ui, host);
+        self.canvas.shortcuts_enabled = !self.settings_open
+            && !self.forms.open_connection
+            && !self.has_node_ergonomics_modal()
+            && self.value_form.is_none();
+        if self.function_body.is_none() {
+            self.keyboard(ui, host);
+        }
         layout(self, ui, host);
         if self.window_toolbar {
             resize_borders(ui.ctx());
@@ -1782,6 +1929,8 @@ impl Editor {
         self.bundle_import_dialog(ui.ctx(), host);
         self.package_removal_dialog(ui.ctx(), host);
         self.function_export_dialog(ui.ctx(), host);
+        self.show_connection_dialog(ui.ctx(), host);
+        self.variable_inspector_window(ui.ctx());
         self.value_dialog(ui.ctx(), host);
         self.for_each_mode_dialog(ui.ctx(), host);
         self.build_map_rows_dialog(ui.ctx(), host);
@@ -1791,6 +1940,12 @@ impl Editor {
     }
 
     fn default_layout(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        if self.function_body.is_some() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| self.canvas_panel(ui, host));
+            return;
+        }
         self.toolbar(ui, host);
         self.workspace_bar(ui);
         if self.panels.log {
@@ -1822,7 +1977,9 @@ impl Editor {
     /// Whether a host-owned focused keyboard source may use this key. The host
     /// must also suppress source input while egui edits text or lacks window focus.
     pub fn accepts_graph_key(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
-        !self.settings_open
+        self.function_body.is_none()
+            && !self.settings_open
+            && !self.forms.open_connection
             && self.quick.is_none()
             && self.menu.is_none()
             && self.node_config_menu.is_none()
@@ -2370,19 +2527,23 @@ impl Editor {
         let current = self.language().to_owned();
         let name = languages
             .iter()
-            .find(|(tag, _)| *tag == current)
-            .map_or(current.as_str(), |(_, name)| name.as_ref())
-            .to_owned();
+            .find(|(tag, _)| i18n::preference_tag(tag).eq_ignore_ascii_case(&current))
+            .map_or_else(
+                || current.clone(),
+                |(_, name)| format!("{name} ({current})"),
+            );
         let mut chosen = None;
         let _ = egui::ComboBox::from_id_salt("orange-language")
             .selected_text((icons::text(icons::LANGUAGE), format!(" {name}")))
             .show_select(ui, Surface::Dialog, |ui| {
                 for (tag, name) in &languages {
+                    let tag = i18n::preference_tag(tag);
+                    let caption = format!("{name} ({tag})");
                     if ui
-                        .selectable_label(*tag == current, name.as_ref())
+                        .selectable_label(tag.eq_ignore_ascii_case(&current), caption)
                         .clicked()
                     {
-                        chosen = Some((*tag).to_owned());
+                        chosen = Some(tag.into_owned());
                     }
                 }
             })
@@ -2407,10 +2568,11 @@ impl Editor {
         );
         if response.changed() || previous != self.tab {
             self.preferred_tab = self.tab;
+            self.palette_highlighted = 0;
         }
         ui.separator();
         match self.tab {
-            Tab::Nodes => {}
+            Tab::Nodes | Tab::Conversions => {}
             Tab::Variables => {
                 self.variables_tab(ui, host);
                 return;
@@ -2442,91 +2604,108 @@ impl Editor {
         if up || down {
             ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         }
-        let field = controls::search(ui, search_salt, &mut self.search, t("search-hint"));
+        let conversions = self.tab == Tab::Conversions;
+        let hint = if conversions {
+            "search-conversions"
+        } else {
+            "search-hint"
+        };
+        let field = controls::search(ui, search_salt, &mut self.search, t(hint));
         if field.changed() {
             self.palette_highlighted = 0;
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            let searching = !self.search.trim().is_empty();
-            let language = if self.language.is_empty() {
-                orange_host::SOURCE_LANGUAGE
-            } else {
-                self.language.as_str()
-            };
-            let results = self.palette.get(host, &self.search, language);
-            let found = results.groups;
-            if searching && found.is_empty() {
-                ui.weak(t("no-node-matches"));
-            }
-            let found_count = found.iter().map(|(_, items)| items.len()).sum::<usize>();
-            let last = found_count.saturating_sub(1);
-            self.palette_highlighted = self.palette_highlighted.min(last);
-            if down {
-                self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
-            }
-            if up {
-                self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
-            }
-            let mut index = 0;
-            for (category, items) in found {
-                let Some(first) = items.first() else {
-                    continue;
+        egui::ScrollArea::vertical()
+            .id_salt(self.tab.key())
+            .show(ui, |ui| {
+                let searching = !self.search.trim().is_empty();
+                let language = if self.language.is_empty() {
+                    i18n::DEFAULT_LOCALE
+                } else {
+                    self.language.as_str()
                 };
-                let (heading, help) = palette::category_heading(category, &first.id, language);
-                orange_ui_controls::tree_section(
-                    ui,
-                    Surface::Panel,
-                    egui::CollapsingHeader::new(heading)
-                        .id_salt((category.as_str(), searching))
-                        .default_open(searching),
-                    |ui| {
-                        let mut section = None;
-                        for item in items {
-                            let next = palette::catalog_section(&item.id);
-                            if !searching
-                                && section != next
-                                && let Some((title, description)) = next
-                            {
-                                ui.weak(t(title)).on_hover_text(t(description));
-                            }
-                            section = next;
-                            let active =
-                                searching && field.has_focus() && index == self.palette_highlighted;
-                            index += 1;
-                            let draft = self.document.as_ref().map(|document| &document.draft);
-                            let card = self
-                                .node_search_previews
-                                .then(|| self.previews.card(host, None, &item.id))
-                                .flatten();
-                            let row = palette::result_row(
-                                ui,
-                                &item.label,
-                                &item.purpose,
-                                None,
-                                active,
-                                card,
-                                Some(&item.id),
-                            );
-                            if row.drag_started() {
-                                let card = self.previews.card(host, draft, &item.id).cloned();
-                                row.dnd_set_drag_payload(palette::PaletteDrag {
-                                    item: item.clone(),
+                let channels = self.dispatch_channels();
+                let results = self.palette.get(host, &self.search, language, &channels);
+                let found = results.groups.iter().filter(|(_, items)| {
+                    items.first().is_some_and(|first| {
+                        first.id.starts_with(palette::CONVERSION) == conversions
+                    })
+                });
+                let found_count = found.clone().map(|(_, items)| items.len()).sum::<usize>();
+                if found_count == 0 && conversions {
+                    ui.weak(t("no-conversion-matches"));
+                } else if found_count == 0 && searching {
+                    ui.weak(t("no-node-matches"));
+                }
+                let last = found_count.saturating_sub(1);
+                self.palette_highlighted = self.palette_highlighted.min(last);
+                if down {
+                    self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
+                }
+                if up {
+                    self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
+                }
+                let mut index = 0;
+                for (category, items) in found {
+                    let Some(first) = items.first() else {
+                        continue;
+                    };
+                    let (heading, help) = palette::category_heading(category, &first.id, language);
+                    orange_ui_controls::tree_section(
+                        ui,
+                        Surface::Panel,
+                        egui::CollapsingHeader::new(heading)
+                            .id_salt((category.as_str(), searching))
+                            .default_open(searching),
+                        |ui| {
+                            let mut section = None;
+                            for item in items {
+                                let next = palette::catalog_section(&item.id);
+                                if !searching
+                                    && section != next
+                                    && let Some((title, description)) = next
+                                    && t(title) != category
+                                {
+                                    ui.weak(t(title)).on_hover_text(t(description));
+                                }
+                                section = next;
+                                let active = searching
+                                    && field.has_focus()
+                                    && index == self.palette_highlighted;
+                                index += 1;
+                                let draft = self.document.as_ref().map(|document| &document.draft);
+                                let card = self
+                                    .node_search_previews
+                                    .then(|| self.previews.card(host, None, &item.id))
+                                    .flatten();
+                                let row = palette::result_row(
+                                    ui,
+                                    &item.label,
+                                    &item.purpose,
+                                    None,
+                                    active,
                                     card,
-                                });
+                                    Some(&item.id),
+                                );
+                                if row.drag_started() {
+                                    let card = self.previews.card(host, draft, &item.id).cloned();
+                                    row.dnd_set_drag_payload(palette::PaletteDrag {
+                                        item: item.clone(),
+                                        card,
+                                    });
+                                }
+                                if active && (up || down) {
+                                    row.scroll_to_me(None);
+                                }
+                                if row.clicked() || (active && enter) {
+                                    add = Some(item.id.clone());
+                                }
                             }
-                            if active && (up || down) {
-                                row.scroll_to_me(None);
-                            }
-                            if row.clicked() || (active && enter) {
-                                add = Some(item.id.clone());
-                            }
-                        }
-                    },
-                )
-                .header_response
-                .on_hover_text(t(help));
-            }
-        });
+                        },
+                    )
+                    .header_response
+                    .on_hover_text(t(help));
+                }
+            });
         if let Some(definition) = add {
             if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
@@ -2599,18 +2778,14 @@ impl Editor {
             t("search-packages-hint"),
         );
         ui.add_space(4.0);
-        let wanted = self.package_search.trim().to_lowercase();
+        let wanted = orange_host::SearchQuery::new(&self.package_search);
         egui::ScrollArea::vertical().show(ui, |ui| {
             let mut shown = 0;
             let mut access_change = None;
             for package in host.packages() {
                 let name = package.name().unwrap_or(package.id);
                 let about = package.description().unwrap_or_default();
-                if !wanted.is_empty()
-                    && ![name, package.id, about]
-                        .iter()
-                        .any(|text| text.to_lowercase().contains(&wanted))
-                {
+                if !wanted.matches([name, package.id, about]) {
                     continue;
                 }
                 shown += 1;
@@ -2723,6 +2898,10 @@ impl Editor {
 
     /// Draws the editable canvas and handles its actions in the supplied container.
     pub fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        if self.function_body.is_some() {
+            self.function_body_panel(ui, host);
+            return;
+        }
         self.prepare_devices(host);
         let Some(document) = &self.document else {
             ui.centered_and_justified(|ui| ui.label(t("open-graph-file")));
@@ -2769,6 +2948,7 @@ impl Editor {
             self.node_config_menu = Some((node, at));
         }
         if let Some(port) = done.inspect_value {
+            self.inspected_variable = None;
             self.inspected_port = Some(port);
         }
         if let Some(selected) = done.selected
@@ -2805,8 +2985,17 @@ impl Editor {
             self.wire_with_mode_preview(host, ends);
         }
         self.conversion_menu(ui.ctx(), host);
-        if let Some(node) = done.add_signal_receiver {
-            self.add_signal_endpoint(host, node, false);
+        if let Some(node) = done.new_event {
+            self.new_event_for_node(node);
+        }
+        if let Some(node) = done.rename_event {
+            self.rename_event_for_node(node);
+        }
+        if let Some((node, sender)) = done.add_signal_peer {
+            self.add_signal_endpoint(host, node, sender);
+        }
+        if let Some((reading, out)) = done.bind_bridge {
+            let _ = self.bind_bridge(host, reading, out);
         }
         if let Some((node, port)) = done.add_port {
             let _ = self.add_port(host, node, &port);
@@ -2915,6 +3104,7 @@ impl Editor {
             ui.ctx().request_repaint();
         }
         self.node_config_window(ui.ctx(), host);
+        self.event_dialog(ui.ctx(), host);
         self.port_inspector_window(ui.ctx());
         self.function_window(ui.ctx(), host);
     }
@@ -2940,9 +3130,9 @@ mod tests {
             "variables": [{"id": id(100), "name": "count", "type": "core/i64@1",
                 "scope": "run", "persistent": false, "conflict": "reject"}],
             "nodes": [
-                {"id": id(1), "definition_id": "core/on-manual", "definition_version": 1,
+                {"id": id(1), "definition_id": intrinsic::ON_MANUAL, "definition_version": 1,
                     "config_version": 1, "config": {}, "name": "go"},
-                {"id": id(2), "definition_id": "core/set-variable", "definition_version": 1,
+                {"id": id(2), "definition_id": intrinsic::SET_VARIABLE, "definition_version": 1,
                     "config_version": 1, "config": {"variable": id(100)},
                     "inputs": {"value": {"type": "core/i64@1", "value": "7"}}}],
             "edges": [{"id": "30000000-0000-4000-8000-000000000001",
@@ -3092,11 +3282,12 @@ mod tests {
         let offered = host
             .nodes()
             .filter(|info| !info.presentation.is_some_and(|shown| shown.hidden))
+            .filter(|info| !orange_host::UNLISTED.contains(&info.definition.definition.id.as_str()))
             .count();
         let presets = all
             .iter()
             .flat_map(|(_, items)| items)
-            .filter(|item| item.id.starts_with("preset:"))
+            .filter(|item| preset::is_preset(&item.id))
             .count();
         assert_eq!(count(&all), offered + host.conversions().len() + presets);
         // Conversions are found by Spanish words too.
@@ -3110,19 +3301,7 @@ mod tests {
         assert!(to_text.iter().flat_map(|(_, items)| items).any(|item| {
             item.id.starts_with(palette::CONVERSION) && item.label.contains("Text")
         }));
-        let rank = |name: &str| match name {
-            "Flow & triggers" => 0,
-            "Data & text" => 1,
-            "Math & logic" => 2,
-            "Files & network" => 3,
-            "Audio" => 4,
-            "Utilities" => 5,
-            _ => 6,
-        };
-        assert!(
-            all.windows(2)
-                .all(|pair| rank(&pair[0].0) <= rank(&pair[1].0))
-        );
+        assert_eq!(all[0].0, "Triggers & signals");
         // Every word must match, in any letter case, in the label, definition or category.
         let found = palette(&host, "MATH add");
         assert!(count(&found) >= 1 && count(&found) < count(&all));
@@ -3153,7 +3332,7 @@ mod tests {
                 .document
                 .as_ref()
                 .and_then(|document| document.values.get(&id(100)))
-                .is_some_and(|value| value == "7");
+                .is_some_and(|value| value.shown == "7");
             if set {
                 break;
             }
@@ -3306,7 +3485,7 @@ mod tests {
         let (mut host, events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let join = editor
             .add_node(&mut host, "org.orange.text/concat")
             .unwrap();
@@ -3354,7 +3533,7 @@ mod tests {
 
         // An edit made while the document runs reaches the flow: a second trigger
         // added while running can be fired.
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         // A variable node names nothing until one is chosen.
         let declared = editor.declarations().unwrap().variables.clone();
         assert_eq!(declared.len(), 1);
@@ -3405,13 +3584,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             (item.id.as_str(), item.package.as_str()),
-            ("core/whole-number", "")
+            (intrinsic::WHOLE_NUMBER, "")
         );
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let number = editor.add_node(&mut host, &item.id).unwrap();
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         let count = editor.declarations().unwrap().variables[0].id.clone();
         assert!(editor.set_setting(&mut host, set, "/variable", Some(json!(count.unwrap()))));
         // The card offers a whole-number field for the value.
@@ -3475,9 +3654,9 @@ mod tests {
         assert!(editor.declare_connection(&mut host, &api).is_some());
 
         // A timer's interval is a setting; a generic node's type is chosen.
-        let timer = editor.add_node(&mut host, "core/on-timer").unwrap();
+        let timer = editor.add_node(&mut host, intrinsic::ON_TIMER).unwrap();
         assert!(editor.set_setting(&mut host, timer, "/interval", Some(json!("1000000"))));
-        let collect = editor.add_node(&mut host, "core/collect").unwrap();
+        let collect = editor.add_node(&mut host, intrinsic::COLLECT).unwrap();
         assert!(editor.choose_type(&mut host, collect, "T", Some("core/i64@1")));
         let node = |editor: &Editor, id| {
             editor
@@ -3508,9 +3687,9 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
         let set = editor
-            .add_node_at(&mut host, "core/set-variable", [400.0, 0.0])
+            .add_node_at(&mut host, intrinsic::SET_VARIABLE, [400.0, 0.0])
             .unwrap();
         assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
         assert_eq!(editor.copy(&host), editor.copy(&host));
@@ -3537,7 +3716,7 @@ mod tests {
         assert_eq!(editor.graph().unwrap().nodes.len(), 2);
         // A node kind dropped on the canvas is added where it was let go.
         let dropped = editor
-            .add_node_at(&mut host, "core/on-manual", [50.0, 900.0])
+            .add_node_at(&mut host, intrinsic::ON_MANUAL, [50.0, 900.0])
             .unwrap();
         let placed = editor
             .graph()
@@ -3556,7 +3735,7 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("orange-save-as-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("moved.json").to_string_lossy().into_owned();
-        assert!(editor.add_node(&mut host, "core/on-manual").is_some());
+        assert!(editor.add_node(&mut host, intrinsic::ON_MANUAL).is_some());
         editor.save_as(path.clone()).unwrap();
         assert_eq!(editor.path(), Some(path.as_str()));
         assert!(!editor.is_unsaved());
@@ -3695,10 +3874,10 @@ mod tests {
                     let graph = editor.graph().unwrap();
                     let expected = if matches!(
                         kind,
-                        "core/repeat-begin"
-                            | "core/map-begin"
-                            | "core/filter-begin"
-                            | "core/fold-begin"
+                        intrinsic::REPEAT_BEGIN
+                            | intrinsic::MAP_BEGIN
+                            | intrinsic::FILTER_BEGIN
+                            | intrinsic::FOLD_BEGIN
                     ) {
                         2
                     } else {
@@ -3747,7 +3926,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
         // A node that needs a variable declares one from its properties.
-        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let set = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
         let total = Variable {
             id: None,
             name: "total".into(),
@@ -3780,7 +3959,7 @@ mod tests {
         );
         // The Variables list adds a node already naming the variable.
         let get = editor
-            .add_variable_node(&mut host, "core/get-variable", &id)
+            .add_variable_node(&mut host, intrinsic::GET_VARIABLE, &id)
             .unwrap();
         assert_eq!(node(&editor, get).detail.as_deref(), Some("total"));
         assert!(!node(&editor, get).ports.is_empty());
@@ -3801,7 +3980,7 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        for definition in ["core/all-conditions", "core/any-conditions"] {
+        for definition in [intrinsic::ALL_CONDITIONS, intrinsic::ANY_CONDITIONS] {
             let id = editor.add_node(&mut host, definition).unwrap();
             let conditions = |editor: &Editor| {
                 let node = editor
@@ -3836,7 +4015,7 @@ mod tests {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open(&mut host, "new.json", blank());
-        let fork = editor.add_node(&mut host, "core/fork").unwrap();
+        let fork = editor.add_node(&mut host, intrinsic::FORK).unwrap();
         // The variadic count and the branch ports the card shows. The authoring view also
         // offers the fork's failure route (`failed`, `error`), which adding or removing a
         // branch leaves alone.
@@ -3922,7 +4101,7 @@ mod quick_add_tests {
             orange_host::new_document().unwrap(),
         );
         let number = editor
-            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         editor.open_quick_add(
             Some((number, "result".into())),
@@ -4491,6 +4670,7 @@ fn incoming(graph: &GraphView) -> HashMap<NodeId, Vec<&orange_host::WireView>> {
 fn touched_by_edit(
     before: &GraphView,
     after: &GraphView,
+    shared_functions_changed: bool,
 ) -> Option<std::collections::BTreeSet<NodeId>> {
     use std::collections::{BTreeSet, HashMap};
     if before.nodes.is_empty() {
@@ -4504,8 +4684,10 @@ fn touched_by_edit(
         .iter()
         .filter(|node| {
             // A card the view kept is the same one; only one built again is compared.
-            old.get(&node.id)
-                .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
+            (shared_functions_changed && node.definition == intrinsic::CALL)
+                || old
+                    .get(&node.id)
+                    .is_none_or(|old| !std::sync::Arc::ptr_eq(old, node) && **old != **node)
                 || old_in.get(&node.id) != new_in.get(&node.id)
         })
         .map(|node| node.id)
@@ -4627,10 +4809,10 @@ mod preview_tests {
         let text = host.bind(&tests::graph()).unwrap();
         let mut draft = host.draft(&text).unwrap();
         let left = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let source = host
-            .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         assert!(
             host.set_input(&mut draft, (left, "value"), Some("12"))
@@ -4686,8 +4868,8 @@ mod preview_tests {
         let mut editor = Editor::new();
         let activity_graph = host.bind(&tests::graph()).unwrap();
         editor.open(&mut host, "graph.json", activity_graph);
-        let a = editor.add_node(&mut host, "core/whole-number").unwrap();
-        let b = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let a = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
+        let b = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         let greater = editor
             .add_node(&mut host, "org.orange.math/greater")
             .unwrap();
@@ -4722,10 +4904,10 @@ mod preview_tests {
         let text = orange_host::new_document().unwrap();
         editor.open(&mut host, "graph.json", text);
         let a = editor
-            .add_node_at(&mut host, "core/whole-number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::WHOLE_NUMBER, [0.0, 0.0])
             .unwrap();
         let b = editor
-            .add_node_at(&mut host, "core/whole-number", [0.0, 120.0])
+            .add_node_at(&mut host, intrinsic::WHOLE_NUMBER, [0.0, 120.0])
             .unwrap();
         let greater = editor
             .add_node_at(&mut host, "org.orange.math/greater", [300.0, 60.0])
@@ -4762,13 +4944,13 @@ mod preview_tests {
             orange_host::new_document().unwrap(),
         );
         let a = editor
-            .add_node_at(&mut host, "core/true-or-false", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::TRUE_OR_FALSE, [0.0, 0.0])
             .unwrap();
         let b = editor
-            .add_node_at(&mut host, "core/true-or-false", [0.0, 120.0])
+            .add_node_at(&mut host, intrinsic::TRUE_OR_FALSE, [0.0, 120.0])
             .unwrap();
         let and = editor
-            .add_node_at(&mut host, "core/and", [300.0, 60.0])
+            .add_node_at(&mut host, intrinsic::AND, [300.0, 60.0])
             .unwrap();
         assert!(editor.set_input(&mut host, (a, "value"), Some("true")));
         assert!(editor.set_input(&mut host, (b, "value"), Some("false")));
@@ -4803,42 +4985,60 @@ mod palette_keyboard_tests {
     #[test]
     fn sidebar_search_adds_the_highlighted_result_by_keyboard() {
         let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
-        let mut editor = Editor::new();
-        editor.open(
-            &mut host,
-            "graph.json",
-            orange_host::new_document().unwrap(),
-        );
-        editor.search = "trigger".into();
-        let expected = palette(&host, &editor.search)[0].1[1].id.clone();
-        let context = egui::Context::default();
-        for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
-            let events = key
+        for (tab, search) in [(Tab::Nodes, "trigger"), (Tab::Conversions, "text")] {
+            let mut editor = Editor::new();
+            editor.restore_preferences(&serde_json::json!({"version": 1, "tab": tab.key()}));
+            editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+            editor.search = search.into();
+            assert_eq!(editor.tab, tab);
+            let expected = palette(&host, search)
                 .into_iter()
-                .map(|key| egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
+                .flat_map(|(_, items)| items)
+                .filter(|item| {
+                    item.id.starts_with(palette::CONVERSION) == (tab == Tab::Conversions)
                 })
-                .collect();
-            let input = egui::RawInput {
-                events,
-                ..Default::default()
-            };
-            context
-                .run_ui(input, |ui| {
-                    if key.is_none() {
-                        let search = ui.make_persistent_id("node-palette-search");
-                        ui.memory_mut(|memory| memory.request_focus(search));
-                    }
-                    editor.nodes_panel(ui, &mut host);
-                })
-                .drop_without_applying_deltas();
+                .nth(1)
+                .unwrap();
+            let context = egui::Context::default();
+            for key in [None, Some(egui::Key::ArrowDown), Some(egui::Key::Enter)] {
+                let events = key
+                    .into_iter()
+                    .map(|key| egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    })
+                    .collect();
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            if key.is_none() {
+                                let search = ui.make_persistent_id("node-palette-search");
+                                ui.memory_mut(|memory| memory.request_focus(search));
+                            }
+                            editor.nodes_panel(ui, &mut host);
+                        },
+                    )
+                    .drop_without_applying_deltas();
+            }
+            let graph = editor.graph().unwrap();
+            assert_eq!(graph.nodes.len(), 1);
+            let node = &graph.nodes[0];
+            if tab == Tab::Conversions {
+                assert_eq!(node.definition, intrinsic::CONVERT);
+                assert_eq!(
+                    palette::converter_card_title(node, "en").unwrap(),
+                    expected.label
+                );
+            } else {
+                assert_eq!(node.definition, expected.id);
+            }
         }
-        let graph = editor.graph().unwrap();
-        assert_eq!(graph.nodes.len(), 1);
-        assert_eq!(graph.nodes[0].definition, expected);
     }
 }

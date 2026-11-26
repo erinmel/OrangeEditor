@@ -104,7 +104,9 @@ impl AnalysisOptions<'_> {
         }
         budget.items(document.events().len())?;
         for event in document.events().values() {
-            budget.text(event.payload.as_str())?;
+            if let Some(payload) = &event.payload {
+                budget.text(payload.as_str())?;
+            }
         }
         budget.items(document.functions().len())?;
         for function in document.functions().values() {

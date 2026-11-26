@@ -2,11 +2,12 @@
 //! hit tests, painting and the controls all read this one model, so nothing else
 //! places anything on a card.
 use super::*;
+use orange_host::intrinsic;
 
 /// Every card's width, in graph units; a literal's is narrower, and a card whose body
 /// is a spectrum chart is wider.
 pub(super) const WIDTH: f32 = 272.0;
-const METER_WIDTH: f32 = 354.0;
+const METER_WIDTH: f32 = 320.0;
 pub(super) const METER_FIELDS_X: f32 = 116.0;
 const LITERAL_WIDTH: f32 = 180.0;
 const CHART_WIDTH: f32 = 400.0;
@@ -16,7 +17,8 @@ pub(super) const LINE: f32 = 28.0;
 const NAME: f32 = 18.0;
 /// A field's control.
 pub(super) const CONTROL: f32 = 30.0;
-const DIAL_CONTROL: f32 = 50.0;
+/// A dial, with its name, value and unit inside it.
+const DIAL_CONTROL: f32 = 66.0;
 /// The space under a field block's control.
 const GAP: f32 = 8.0;
 /// The space under a card's last row.
@@ -27,6 +29,9 @@ pub(super) const END: f32 = 8.0;
 pub(super) enum FieldOf<'a> {
     /// A value typed on an input that no wire feeds.
     Input(&'a PortView),
+    /// An input whose definition asks for a slider or a dial over a given range
+    /// (ADR-33).
+    HintedInput(&'a PortView, &'a orange_host::controls::Control),
     /// An inline text area with a fixed height for this frame.
     TextArea(&'a PortView, crate::properties::TextInput, f32),
     /// A file or folder on an input, chosen with the system's chooser.
@@ -35,7 +40,7 @@ pub(super) enum FieldOf<'a> {
     Setting(
         &'a str,
         &'a serde_json::Value,
-        Option<crate::properties::AudioDial>,
+        Option<&'a orange_host::controls::Control>,
     ),
     /// The variable named by the setting at this JSON pointer.
     Variable(&'a str),
@@ -46,13 +51,20 @@ pub(super) enum FieldOf<'a> {
     AddPort(&'a orange_host::VariadicView),
     AddSignalReceiver,
     MapPairs,
+    /// The Bridge Out channel a Bridge In reads from.
+    BridgeChannel,
+    /// The Dispatch channel a Listen starts on.
+    EventChannel,
 }
 
 impl<'a> FieldOf<'a> {
     /// The input this field edits.
     pub(super) const fn port(&self) -> Option<&'a PortView> {
         match self {
-            Self::Input(port) | Self::TextArea(port, ..) | Self::Path(port, _) => Some(port),
+            Self::Input(port)
+            | Self::HintedInput(port, _)
+            | Self::TextArea(port, ..)
+            | Self::Path(port, _) => Some(port),
             _ => None,
         }
     }
@@ -61,6 +73,11 @@ impl<'a> FieldOf<'a> {
         match self {
             Self::TextArea(_, _, height) => height,
             Self::Setting(_, _, Some(_)) => DIAL_CONTROL,
+            Self::HintedInput(_, control)
+                if control.widget == orange_host::controls::Widget::Dial =>
+            {
+                DIAL_CONTROL
+            }
             _ => CONTROL,
         }
     }
@@ -96,6 +113,7 @@ pub(super) struct Row<'a> {
     pub right: Option<&'a PortView>,
     pub field_inset: f32,
     pub field_end: Option<f32>,
+    paired_input_anchor: Option<f32>,
 }
 
 impl<'a> Row<'a> {
@@ -123,6 +141,9 @@ impl<'a> Row<'a> {
 
     /// Center an editable input between its label and the bottom of its control.
     pub(super) fn input_anchor(&self) -> f32 {
+        if let Some(anchor) = self.paired_input_anchor {
+            return anchor;
+        }
         match self.left {
             Some(Left::Field { editor, named }) => {
                 self.top + (editor.control_height() + if named { NAME } else { 0.0 }) / 2.0
@@ -191,7 +212,7 @@ fn typed(port: &PortView, details: &[orange_host::PortDetails]) -> bool {
 pub(super) fn literal(node: &NodeView) -> bool {
     matches!(
         node.definition.as_str(),
-        "core/whole-number" | "core/number" | "core/true-or-false" | "core/text"
+        intrinsic::WHOLE_NUMBER | intrinsic::NUMBER | intrinsic::TRUE_OR_FALSE | intrinsic::TEXT
     )
 }
 
@@ -223,8 +244,8 @@ impl<'a> Card<'a> {
         };
         let mut rows = Vec::new();
         // An audio analysis card's chart comes first, under the header; its rows follow.
-        let mut y = BODY_TOP + spectrum::chart_height(node, chart_open);
-        let mut push =
+        let y = std::cell::Cell::new(BODY_TOP + spectrum::chart_height(node, chart_open));
+        let push =
             |rows: &mut Vec<Row<'a>>, left: Option<Left<'a>>, right: Option<&'a PortView>| {
                 let height = match left {
                     Some(Left::Field { editor, named }) => {
@@ -233,14 +254,15 @@ impl<'a> Card<'a> {
                     _ => LINE,
                 };
                 rows.push(Row {
-                    top: y,
+                    top: y.get(),
                     height,
                     left,
                     right,
                     field_inset: CARD_PADDING,
                     field_end: None,
+                    paired_input_anchor: None,
                 });
-                y += height;
+                y.set(y.get() + height);
             };
         if let Some(role) = crate::node_ergonomics::loop_role(node) {
             push(&mut rows, Some(Left::LoopRole(role)), None);
@@ -248,7 +270,7 @@ impl<'a> Card<'a> {
 
         // Flow: the way in and the first way out share the first row.
         let mut ins: Vec<Left<'a>> = Vec::new();
-        if node.definition == "core/on-manual" {
+        if node.definition == intrinsic::ON_MANUAL {
             ins.push(Left::Fire);
         }
         ins.extend(
@@ -258,7 +280,7 @@ impl<'a> Card<'a> {
                 // The gate accepts both spellings. Keep existing alias wires
                 // reachable without offering two identical inputs on new cards.
                 .filter(|port| {
-                    node.definition != "core/gate" || port.id != "enter" || port.connected
+                    node.definition != intrinsic::GATE || port.id != "enter" || port.connected
                 })
                 .map(Left::Port),
         );
@@ -298,12 +320,33 @@ impl<'a> Card<'a> {
             });
         }
         let paired_map = crate::node_ergonomics::paired_map_available(node);
+        // A Bridge In chooses its channel instead of showing the port its link uses, and
+        // a Listen picks its Dispatch channel the same way.
+        if node.definition == crate::palette::BRIDGE_IN {
+            lefts.push(Left::Field {
+                editor: FieldOf::BridgeChannel,
+                named: true,
+            });
+        }
+        if matches!(
+            node.definition.as_str(),
+            intrinsic::EMIT | intrinsic::ON_EVENT
+        ) {
+            lefts.push(Left::Field {
+                editor: FieldOf::EventChannel,
+                named: true,
+            });
+        }
         for port in crate::properties::input_ports(node) {
+            if crate::palette::bridge_link_port(node, port) {
+                continue;
+            }
             if paired_map && matches!(port.id.as_str(), "keys" | "values") {
                 lefts.push(Left::Port(port));
                 continue;
             }
             if node.missing.is_none()
+                && !crate::properties::advanced_input(node, port)
                 && !port.connected
                 && let Some(kind) = crate::properties::TextInput::for_port(node, port)
             {
@@ -331,23 +374,42 @@ impl<'a> Card<'a> {
             }
             let path = node.paths.iter().find(|path| path.port == port.id);
             lefts.push(match path {
+                _ if crate::properties::advanced_input(node, port) => Left::Port(port),
                 _ if port.connected || node.missing.is_some() => Left::Port(port),
                 Some(path) => Left::Field {
                     editor: FieldOf::Path(port, path),
                     named: true,
                 },
                 // A stream is only ever wired: nothing can be typed for it.
-                None if !stream_type(port.ty.as_deref()) && typed(port, details) => Left::Field {
-                    editor: FieldOf::Input(port),
-                    named: !literal,
-                },
+                None if !stream_type(port.ty.as_deref()) && typed(port, details) => {
+                    match crate::properties::input_hint(node, port) {
+                        Some(control) => Left::Field {
+                            editor: FieldOf::HintedInput(port, control),
+                            // A dial names itself.
+                            named: control.widget != orange_host::controls::Widget::Dial,
+                        },
+                        None => Left::Field {
+                            editor: FieldOf::Input(port),
+                            named: !literal,
+                        },
+                    }
+                }
                 None => Left::Port(port),
             });
         }
-        lefts.extend(settings::fields(node).map(|(name, schema)| Left::Field {
-            editor: FieldOf::Setting(name, schema, None),
-            named: true,
+        lefts.extend(settings::fields(node).map(|(name, schema)| {
+            let dial = crate::properties::dial_of(node, name);
+            Left::Field {
+                editor: FieldOf::Setting(name, schema, dial),
+                named: dial.is_none(),
+            }
         }));
+        // Fields hinted `header` come first, so they share the outputs' rows (ADR-33).
+        if !node.controls.regions.is_empty() {
+            lefts.sort_by_key(|left| {
+                crate::properties::field_order(node, field_name(left).unwrap_or(""))
+            });
+        }
         if paired_map {
             lefts.push(Left::Field {
                 editor: FieldOf::MapPairs,
@@ -379,6 +441,7 @@ impl<'a> Card<'a> {
             .iter()
             .filter(|port| !port.exec && !port.input)
             .filter(primary)
+            .filter(|port| !crate::palette::bridge_link_port(node, port))
             .collect();
         // A splitter's band outputs read from low to high frequency, whatever order the
         // bands were drawn in.
@@ -391,10 +454,47 @@ impl<'a> Card<'a> {
             });
         }
         let mut outputs = outputs.into_iter().peekable();
-        for left in lefts {
+        let mut lefts = lefts.into_iter().peekable();
+        while let Some(left) = lefts.next() {
             let hosts = !matches!(left, Left::Field { named: false, .. }) || literal;
             let right = if hosts { outputs.next() } else { None };
             push(&mut rows, Some(left), right);
+            // Two fields of a region arranged in a row share one, each taking half.
+            let paired = field_placement(node, &left);
+            if let Some(place) = paired
+                && let Some(next) = lefts.peek()
+                && field_placement(node, next) == Some(place)
+                && let Some(next) = lefts.next()
+                && let Some(first) = rows.last_mut()
+            {
+                let middle = f32::midpoint(CARD_PADDING, width - CARD_PADDING);
+                first.field_end = Some(middle - 6.0);
+                let height = match next {
+                    Left::Field { editor, named } => {
+                        (if named { NAME } else { 0.0 }) + editor.control_height() + GAP
+                    }
+                    _ => LINE,
+                };
+                let (top, first_height) = (first.top, first.height);
+                // Both inputs need their own points on the leading edge.
+                let both_inputs = first.input().is_some()
+                    && matches!(next, Left::Field { editor, .. } if editor.port().is_some());
+                if both_inputs {
+                    first.paired_input_anchor = Some(top + 9.0);
+                }
+                rows.push(Row {
+                    top,
+                    height: first_height.max(height),
+                    left: Some(next),
+                    right: None,
+                    field_inset: middle,
+                    field_end: None,
+                    paired_input_anchor: both_inputs.then_some(top + 27.0),
+                });
+                if height > first_height {
+                    y.set(y.get() + height - first_height);
+                }
+            }
         }
         for output in outputs {
             push(&mut rows, None, Some(output));
@@ -402,7 +502,10 @@ impl<'a> Card<'a> {
         for add in growing {
             push(&mut rows, Some(add), None);
         }
-        if crate::palette::signal(node).is_some_and(|(sender, _)| sender) {
+        if matches!(
+            node.definition.as_str(),
+            intrinsic::EMIT | crate::palette::BRIDGE_OUT
+        ) {
             push(
                 &mut rows,
                 Some(Left::Field {
@@ -449,7 +552,7 @@ impl<'a> Card<'a> {
             }
         }
         Self {
-            size: Vec2::new(width, y + END),
+            size: Vec2::new(width, y.get() + END),
             rows,
             sole_primary_exit,
             empty,
@@ -467,58 +570,80 @@ impl<'a> Card<'a> {
                 right: Some(port),
                 field_inset: METER_FIELDS_X,
                 field_end: None,
+                paired_input_anchor: None,
             });
             y += LINE;
         }
-        let mut dial_count = 0;
-        let mut dial_y = y;
+        // Beside the meter: the outputs, then the dials side by side. Under it, the
+        // stream input and every other setting, across the whole card.
         let middle = f32::midpoint(METER_FIELDS_X, METER_WIDTH - CARD_PADDING);
-        for (name, schema) in settings::fields(node) {
-            let dial = crate::properties::AudioDial::for_setting(node, name);
-            let editor = FieldOf::Setting(name, schema, dial);
-            let height = NAME + editor.control_height() + GAP;
-            let (top, inset, end) = if dial.is_some() {
-                if dial_count == 0 {
-                    dial_y = y;
-                    y += height;
-                }
-                dial_count += 1;
-                if dial_count == 1 {
-                    (dial_y, METER_FIELDS_X, Some(middle - 6.0))
-                } else {
-                    (dial_y, middle, None)
-                }
-            } else {
-                let top = y;
-                y += height;
-                (top, METER_FIELDS_X, None)
-            };
-            rows.push(Row {
-                top,
-                height,
-                left: Some(Left::Field {
-                    editor,
-                    named: true,
-                }),
-                right: None,
-                field_inset: inset,
-                field_end: end,
-            });
-        }
+        let mut dial_top = y;
+        let mut beside = y;
         let mut stream_y = BODY_TOP + spectrum::NOISE_CHART;
+        let mut inputs = Vec::new();
         for port in node.ports.iter().filter(|port| port.input) {
-            rows.push(Row {
+            inputs.push(Row {
                 top: stream_y,
                 height: LINE,
                 left: Some(Left::Port(port)),
                 right: None,
                 field_inset: CARD_PADDING,
                 field_end: None,
+                paired_input_anchor: None,
             });
             stream_y += LINE;
         }
+        let mut under = stream_y;
+        // Fields hinted `aside` (or `header`) sit beside the meter, in pairs when the
+        // region is a row; every other field runs the card's width under it (ADR-33).
+        let mut beside_column = 0;
+        for (name, schema) in settings::fields(node) {
+            use orange_host::controls::{Arrange, Region};
+            let dial = crate::properties::dial_of(node, name);
+            let editor = FieldOf::Setting(name, schema, dial);
+            // A dial names itself, so it needs no name line.
+            let name_line = if dial.is_some() { 0.0 } else { NAME };
+            let height = name_line + editor.control_height() + GAP;
+            let (top, inset, end) = match node.controls.region_of(name) {
+                Some((Region::Aside | Region::Header, arrange)) => {
+                    let paired = arrange != Arrange::Column;
+                    if !paired || beside_column == 0 {
+                        dial_top = beside;
+                    }
+                    beside = beside.max(dial_top + height);
+                    let placed = if !paired {
+                        (dial_top, METER_FIELDS_X, None)
+                    } else if beside_column == 0 {
+                        (dial_top, METER_FIELDS_X, Some(middle - 6.0))
+                    } else {
+                        (dial_top, middle, None)
+                    };
+                    beside_column = if paired { 1 - beside_column } else { 0 };
+                    placed
+                }
+                _ => {
+                    let top = under;
+                    under += height;
+                    (top, CARD_PADDING, None)
+                }
+            };
+            rows.push(Row {
+                top,
+                height,
+                left: Some(Left::Field {
+                    editor,
+                    named: dial.is_none(),
+                }),
+                right: None,
+                field_inset: inset,
+                field_end: end,
+                paired_input_anchor: None,
+            });
+        }
+        rows.extend(inputs);
+        let y = beside.max(under);
         Self {
-            size: Vec2::new(METER_WIDTH, y.max(stream_y) + END),
+            size: Vec2::new(METER_WIDTH, y + END),
             rows,
             sole_primary_exit: None,
             empty: false,
@@ -556,6 +681,32 @@ impl<'a> Card<'a> {
     }
 }
 
+fn field_name<'a>(left: &Left<'a>) -> Option<&'a str> {
+    match left {
+        Left::Field {
+            editor: FieldOf::Setting(name, ..),
+            ..
+        } => Some(name),
+        Left::Field { editor, .. } => Some(editor.port()?.id.as_str()),
+        Left::Port(port) => Some(&port.id),
+        _ => None,
+    }
+}
+
+fn field_placement(node: &NodeView, left: &Left<'_>) -> Option<usize> {
+    if !matches!(left, Left::Field { .. }) {
+        return None;
+    }
+    let name = field_name(left)?;
+    let (index, placement) = node
+        .controls
+        .regions
+        .iter()
+        .enumerate()
+        .find(|(_, placement)| placement.fields.iter().any(|field| field == name))?;
+    (placement.arrange != orange_host::controls::Arrange::Column).then_some(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,17 +729,89 @@ mod tests {
         test(node, &Card::new(node));
     }
 
+    fn row_of<'c>(card: &'c Card<'_>, id: &str) -> &'c Row<'c> {
+        card.rows
+            .iter()
+            .find(|row| match row.left {
+                Some(Left::Field { editor, .. }) => match editor {
+                    FieldOf::Setting(name, ..) => name == id,
+                    other => other.port().is_some_and(|port| port.id == id),
+                },
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("no row for {id}"))
+    }
+
+    /// Map Range's hints (ADR-33) put each range's two ends side by side, and its
+    /// value on the result's row.
+    #[test]
+    fn map_range_pairs_each_range_on_one_row() {
+        let host = host();
+        let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+        let id = host
+            .add_node(&mut draft, "org.orange.math/map-range", [0.0, 0.0])
+            .unwrap();
+        // Typed, its inputs become fields that can be laid out.
+        host.choose_type(&mut draft, id, "T", Some("core/f64@1"))
+            .unwrap();
+        let source = host
+            .add_node(&mut draft, intrinsic::NUMBER, [-600.0, 0.0])
+            .unwrap();
+        let graph = host.draft_view(&draft).unwrap();
+        let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+        let card = Card::new(node);
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        {
+            let card = &card;
+            for (low, high) in [("from_min", "from_max"), ("to_min", "to_max")] {
+                let (low, high) = (row_of(card, low), row_of(card, high));
+                assert_eq!(low.top, high.top, "a pair shares its row");
+                assert!(low.field_end.is_some_and(|end| end < high.field_inset));
+                assert!(high.input_anchor() - low.input_anchor() >= 16.0);
+                for row in [low, high] {
+                    let port = row.input().unwrap();
+                    assert_eq!(
+                        canvas.input_at(&graph, Pos2::new(0.0, row.input_anchor()), false, source),
+                        Some((id, port.id.clone())),
+                    );
+                }
+            }
+            assert_ne!(row_of(card, "from_min").top, row_of(card, "to_min").top);
+            assert!(
+                row_of(card, "value")
+                    .right
+                    .is_some_and(|port| port.id == "result")
+            );
+        }
+    }
+
+    /// A setting hinted as a dial is a dial on any card, and names itself.
+    #[test]
+    fn a_dial_hint_makes_a_dial_on_an_ordinary_card() {
+        card_of(orange_audio::GAIN, |_, card| {
+            let row = row_of(card, "gain_db");
+            assert!(matches!(
+                row.left,
+                Some(Left::Field {
+                    editor: FieldOf::Setting(_, _, Some(_)),
+                    named: false
+                })
+            ));
+        });
+    }
+
     /// Every port has one dot, inputs on the left edge and outputs on the right, and
     /// rows follow each other without gaps or overlaps.
     #[test]
     fn every_port_has_one_place_and_rows_stack() {
         for definition in [
             orange_audio::PLAY,
-            "core/on-manual",
+            intrinsic::ON_MANUAL,
             "org.orange.math/add",
-            "core/set-variable",
-            "core/get-variable",
-            "core/whole-number",
+            intrinsic::SET_VARIABLE,
+            intrinsic::GET_VARIABLE,
+            intrinsic::WHOLE_NUMBER,
         ] {
             card_of(definition, |node, card| {
                 for port in &node.ports {
@@ -656,7 +879,7 @@ mod tests {
     /// A picker that is the card's only setting goes without its name.
     #[test]
     fn a_lone_picker_has_no_name_line() {
-        card_of("core/get-variable", |_, card| {
+        card_of(intrinsic::GET_VARIABLE, |_, card| {
             assert!(matches!(
                 card.rows[0].left,
                 Some(Left::Field {
@@ -665,7 +888,7 @@ mod tests {
                 })
             ));
         });
-        card_of("core/set-variable", |node, _| {
+        card_of(intrinsic::SET_VARIABLE, |node, _| {
             // Once the variable gives the node a value input, the picker is named.
             let mut node = node.clone();
             node.ports.push(PortView {

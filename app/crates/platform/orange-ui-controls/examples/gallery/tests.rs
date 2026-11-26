@@ -56,6 +56,42 @@ fn theme_tile_and_density_apply_to_the_gallery() {
 }
 
 #[test]
+fn theme_preview_shows_control_colors_without_switching_palettes() {
+    let context = context();
+    UiTokens::install(
+        &context,
+        ThemeMode::Custom(Theme::MONOKAI),
+        Density::Compact,
+    );
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        let tokens = UiTokens::resolve(&context);
+        let _ = theme_tile(ui, tokens, "System", None, false);
+        let _ = theme_tile(ui, tokens, "Bubblegum", Some(Theme::BUBBLEGUM), false);
+    });
+    let fills: std::collections::HashSet<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => Some(rect.fill),
+            egui::Shape::Path(path) => Some(path.fill),
+            _ => None,
+        })
+        .collect();
+    for theme in [Theme::LIGHT, Theme::DARK, Theme::BUBBLEGUM] {
+        for color in [
+            theme.bg_canvas(),
+            theme.bg_surface(),
+            theme.primary,
+            theme.text,
+        ] {
+            assert!(fills.contains(&color), "missing {color:?} from {theme:?}");
+        }
+    }
+    output.drop_without_applying_deltas();
+    assert_eq!(UiTokens::resolve(&context).theme, Theme::MONOKAI);
+}
+
+#[test]
 fn canvas_shows_every_component_and_palette_without_input() {
     for width in [240.0, 920.0] {
         let mut gallery = Gallery::default();
@@ -109,7 +145,7 @@ fn comfy_card_covers_rotary_knobs_and_reserves_height_for_the_next_row() {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(780.0, 1000.0),
+                egui::vec2(780.0, 1600.0),
             )),
             ..Default::default()
         },

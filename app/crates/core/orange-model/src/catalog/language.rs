@@ -202,7 +202,7 @@ const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
 const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
-const INTRINSICS: [Intrinsic; 64] = [
+const INTRINSICS: [Intrinsic; 71] = [
     rule(ids::ON_START, ENTRY, None),
     rule(ids::ON_STOP, ENTRY, None),
     rule(ids::ON_MANUAL, ENTRY, None),
@@ -210,6 +210,9 @@ const INTRINSICS: [Intrinsic; 64] = [
     rule(ids::ON_TIMEOUT, ENTRY, None),
     variable_rule(ids::ON_VARIABLE_CHANGED, ENTRY, VariableAccess::Changed),
     rule(ids::ON_WATCH, ENTRY, None),
+    rule(ids::RISING_EDGE, ENTRY, None),
+    rule(ids::FALLING_EDGE, ENTRY, None),
+    rule(ids::CHANGE_BEYOND_TOLERANCE, ENTRY, None),
     rule(ids::CLOSE_HANDLE, ACTION, None),
     rule(ids::CLOSE_STREAM, ACTION, None),
     rule(ids::TEE, ACTION, None),
@@ -228,6 +231,8 @@ const INTRINSICS: [Intrinsic; 64] = [
     rule(ids::NOW, VOLATILE, None),
     variable_rule(ids::SET_VARIABLE, ACTION, VariableAccess::Write),
     variable_rule(ids::UPDATE_VARIABLE, ACTION, VariableAccess::Update),
+    variable_rule(ids::INCREMENT_COUNTER, ACTION, VariableAccess::Update),
+    variable_rule(ids::DECREMENT_COUNTER, ACTION, VariableAccess::Update),
     variable_rule(
         ids::SET_SHARED,
         Some((NodeKind::Async, Suspends::Maybe)),
@@ -279,6 +284,8 @@ const INTRINSICS: [Intrinsic; 64] = [
     rule(ids::TEXT, PURE, None),
     rule(ids::TRUE_OR_FALSE, PURE, None),
     rule(ids::VALUE, PURE, None),
+    rule(ids::BRIDGE_OUT, PURE, None),
+    rule(ids::BRIDGE_IN, PURE, None),
 ];
 
 /// The intrinsic with this exact ID. Intrinsic status comes from this table, never from the

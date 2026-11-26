@@ -52,15 +52,12 @@ fn scalar(ty: &ValueShape) -> Option<Scalar> {
     })
 }
 pub(super) fn resolve(
-    node: NodeId,
-    config: &serde_json::Map<String, serde_json::Value>,
+    node: &orange_model::document::NodeInstance,
     ty: &ValueShape,
 ) -> Result<UpdateOperation, CompileError> {
-    let unsupported = || CompileError::UnsupportedNode { node };
-    let token = config
-        .get("operation")
-        .and_then(|v| v.as_str())
-        .ok_or_else(unsupported)?;
+    let unsupported = || CompileError::UnsupportedNode { node: node.id };
+    let config = &node.config;
+    let token = orange_model::update_token(node).ok_or_else(unsupported)?;
     Ok(match token {
         "add" | "sub" => {
             let scalar = scalar(ty).ok_or_else(unsupported)?;

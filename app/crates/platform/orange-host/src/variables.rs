@@ -1,6 +1,8 @@
 //! The variable side of a host: persistent variables, editing a flow's variables from
 //! outside its graph, and the variables flows share.
 use super::*;
+use orange_model::document::EventScope;
+use orange_runtime::{WorkspaceBus, WorkspaceBusLimits};
 
 impl Host {
     /// The persistent run variables of `document` and where this host stores them.
@@ -150,12 +152,15 @@ impl Host {
         state::save(directory, &name, &stored).map_err(HostError::State)
     }
 
-    /// Declares the variables flows can share: the `workspace`-scope variables of the
-    /// given document, with their initial values. It can be done once, before any
-    /// document that uses them is opened. A document then declares the ones it uses
-    /// with the same IDs and types, reads them with `core/get-variable` and writes them
-    /// with `core/set-shared` or `core/update-shared`. Every flow sees a write at its
-    /// next turn; writes from different flows are applied one at a time.
+    /// Declares what flows can share: the `workspace`-scope variables of the given
+    /// document, with their initial values, and its `workspace`-scope events. It can be
+    /// done once, before any document that uses them is opened. A document then
+    /// declares the ones it uses with the same IDs and types, reads variables with
+    /// `core/get-variable`, writes them with `core/set-shared` or
+    /// `core/update-shared`, and dispatches and listens to events with `core/emit`
+    /// and `core/on-event`. Every flow sees a write at its next turn; writes from
+    /// different flows are applied one at a time. A dispatched event reaches every
+    /// other flow that listens to it, never the one that sent it.
     pub fn share_variables(&mut self, json: &str) -> Result<(), HostError> {
         let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
         let mut keep = self
@@ -198,6 +203,24 @@ impl Host {
                 lock: Some(Arc::new(lock)),
                 registry,
             });
+        }
+        if document
+            .events()
+            .values()
+            .any(|event| event.scope == EventScope::Workspace)
+        {
+            let bus = WorkspaceBus::new(
+                &document,
+                Arc::clone(self.store.current()),
+                &created.snapshot(),
+                WorkspaceBusLimits::default(),
+            )
+            .map_err(|error| HostError::Workspace(error.to_string()))?;
+            *self
+                .space
+                .bus
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(bus);
         }
         *workspace = Some(created);
         self.shared_variables = document

@@ -31,7 +31,7 @@ pub fn sidebar_row(
         } else {
             palette.panel
         };
-        let ink = crate::theme::ensure_contrast(palette.text, fill, 4.5);
+        let ink = crate::theme::ensure_contrast(palette.text, fill, crate::theme::TEXT_CONTRAST);
         let painter = ui.painter_at(rect);
         if selected || response.hovered() {
             painter.rect_filled(rect, 3, fill);
@@ -480,20 +480,10 @@ impl CalendarDate {
                                 }
                             }
                         });
-                    if before != (year, month, page) {
-                        ui.data_mut(|d| {
-                            d.insert_temp(id, (year, month));
-                            d.insert_temp(jump_id, page);
-                        });
-                    }
+                    keep_page(ui, (id, jump_id), before, (year, month, page));
                     return;
                 }
-                if before != (year, month, page) {
-                    ui.data_mut(|d| {
-                        d.insert_temp(id, (year, month));
-                        d.insert_temp(jump_id, page);
-                    });
-                }
+                keep_page(ui, (id, jump_id), before, (year, month, page));
                 let offset = monday_offset(year, month);
                 egui::Grid::new(id.with("calendar"))
                     .min_col_width(side)
@@ -550,6 +540,21 @@ impl CalendarDate {
             response.mark_changed();
         }
         response
+    }
+}
+
+/// Remembers the shown month and picker page when they changed this frame.
+fn keep_page(
+    ui: &Ui,
+    (month_id, page_id): (egui::Id, egui::Id),
+    before: (i32, u8, u8),
+    (year, month, page): (i32, u8, u8),
+) {
+    if before != (year, month, page) {
+        ui.data_mut(|data| {
+            data.insert_temp(month_id, (year, month));
+            data.insert_temp(page_id, page);
+        });
     }
 }
 
@@ -757,23 +762,7 @@ pub fn clock_wheels(
                                 egui::CursorIcon::Grab
                             });
                         }
-                        let scroll = if hover {
-                            ui.input_mut(|input| {
-                                let scroll = input
-                                    .raw
-                                    .events
-                                    .iter()
-                                    .filter_map(|event| match event {
-                                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                                        _ => None,
-                                    })
-                                    .sum::<f32>();
-                                input.smooth_scroll_delta.y = 0.0;
-                                scroll
-                            })
-                        } else {
-                            0.0
-                        };
+                        let scroll = if hover { crate::take_wheel(ui) } else { 0.0 };
                         let [up, down] = if wheel.has_focus() {
                             crate::consume_plain_keys(
                                 ui,

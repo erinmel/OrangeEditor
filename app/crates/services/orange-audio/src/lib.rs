@@ -30,6 +30,7 @@
 mod analysis;
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 mod device;
+pub mod fft;
 mod file_source;
 mod level;
 mod live_nodes;
@@ -1165,6 +1166,16 @@ fn record(
 }
 
 /// Gain 1, the sound as it is, for a `gain` input left empty.
+/// Playback gain as a slider from silence to twice as loud (ADR-33); a larger value
+/// can still be typed.
+fn gain_control() -> orange_sdk::Control {
+    orange_sdk::Control::slider()
+        .range(0.0, 2.0)
+        .precision(2)
+        .unit("×")
+        .marks(&[0.0, 1.0, 2.0])
+}
+
 fn unit_gain() -> Json {
     serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 1.0f64.to_bits())})
 }
@@ -1178,6 +1189,7 @@ fn play_definition() -> String {
         .input("path", "core/string@1")
         .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .build()
 }
 
@@ -1197,6 +1209,7 @@ fn play_from_definition() -> String {
         .path_input("folder", true, &[])
         .input_default("pick", "core/u64@1", serde_json::json!({"type": "core/u64@1", "value": "0"}))
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .output("file", "core/string@1")
         .build()
 }
@@ -1209,6 +1222,7 @@ fn loop_definition() -> String {
         .input("path", "core/string@1")
         .path_input("path", false, SOUND_FILES)
         .input_default("gain", "core/f64@1", unit_gain())
+        .input_control("gain", gain_control())
         .build()
 }
 
@@ -1217,19 +1231,29 @@ fn number_setting(minimum: f64, maximum: f64, default: f64) -> Json {
     serde_json::json!({"type": "number", "minimum": minimum, "maximum": maximum, "default": default})
 }
 
+/// A bounded number setting an editor shows as a slider with a typed box (ADR-33).
+fn slider_setting(
+    definition: Definition,
+    name: &str,
+    (minimum, maximum, default): (f64, f64, f64),
+) -> Definition {
+    definition
+        .setting(name, number_setting(minimum, maximum, default))
+        .setting_control(name, orange_sdk::Control::slider().number())
+}
+
 /// The band and window settings every analyzer entry has.
 fn band_settings(definition: Definition, low: f64, high: f64, window: f64) -> Definition {
-    definition
-        .setting("low_hz", number_setting(0.0, 24_000.0, low))
-        .setting("high_hz", number_setting(0.0, 24_000.0, high))
-        .setting("window_ms", number_setting(5.0, 1_000.0, window))
+    let definition = slider_setting(definition, "low_hz", (0.0, 24_000.0, low));
+    let definition = slider_setting(definition, "high_hz", (0.0, 24_000.0, high));
+    slider_setting(definition, "window_ms", (5.0, 1_000.0, window))
 }
 
 fn transient_settings(definition: Definition) -> Definition {
-    band_settings(definition, 45.0, 120.0, 10.0)
-        .setting("sensitivity", number_setting(0.0, 1.0, 0.5))
-        .setting("floor_db", number_setting(SILENCE_DB, 0.0, -50.0))
-        .setting("min_gap_ms", number_setting(0.0, 10_000.0, 120.0))
+    let definition = band_settings(definition, 45.0, 120.0, 10.0);
+    let definition = slider_setting(definition, "sensitivity", (0.0, 1.0, 0.5));
+    let definition = slider_setting(definition, "floor_db", (SILENCE_DB, 0.0, -50.0));
+    slider_setting(definition, "min_gap_ms", (0.0, 10_000.0, 120.0))
 }
 
 fn stream_input(definition: Definition) -> Definition {

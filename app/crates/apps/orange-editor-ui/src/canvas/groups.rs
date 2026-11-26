@@ -6,6 +6,8 @@ use super::{CanvasResponse, NODE_WIDTH, Palette, TITLE_ZOOM, snapped};
 use crate::canvas::Canvas;
 use crate::i18n::{t, tf};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+#[cfg(test)]
+use orange_host::intrinsic;
 use orange_host::{GROUP_COLORS, GraphView, Group, NodeId, NodeView, WireView};
 use std::collections::{HashMap, HashSet};
 
@@ -525,7 +527,7 @@ mod tests {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let node = host
-            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [72.0, 108.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut group = Group {
@@ -697,7 +699,7 @@ mod tests {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let node = host
-            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [72.0, 108.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let group = Group {
@@ -745,10 +747,10 @@ mod tests {
         let (host, _) = Host::new(HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let first = host
-            .add_node(&mut draft, "core/whole-number", [72.0, 108.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [72.0, 108.0])
             .unwrap();
         let second = host
-            .add_node(&mut draft, "core/whole-number", [432.0, 144.0])
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [432.0, 144.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         for (collapsed, alt, expected) in [

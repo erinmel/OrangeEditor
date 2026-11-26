@@ -11,6 +11,7 @@ use crate::i18n::{t, tf};
 use crate::organise::NodeRename;
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
+use orange_host::intrinsic;
 use orange_host::{GraphView, NodeId, NodeView, PortView};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -67,6 +68,8 @@ const WIRE_GRAB: f32 = 7.0;
 /// How much one point of wheel movement zooms.
 const WHEEL_ZOOM: f32 = 0.0015;
 const PORT_RADIUS: f32 = 5.0;
+/// Corner radius of fields, chips and buttons drawn on a card, before zoom.
+const FIELD_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.60;
 /// Space between a card's edge and what is inside it.
@@ -139,24 +142,16 @@ pub(crate) fn value_text(enums: &Enums, ty: Option<&str>, value: &orange_host::V
 /// What conversions are called on their cards: the type they take and the type they
 /// give, "Int to Text".
 fn titles(graph: &GraphView) -> HashMap<NodeId, String> {
+    let language = crate::i18n::language();
     graph
         .nodes
         .iter()
-        .filter(|node| node.definition == "core/convert")
+        .filter(|node| node.definition == intrinsic::CONVERT)
         .filter_map(|node| {
-            if let Some(label) = node.settings["converter"]
-                .as_str()
-                .and_then(crate::palette::utf8_label)
-            {
-                return Some((node.id, label.to_owned()));
-            }
-            let ty = |input: bool| {
-                node.ports
-                    .iter()
-                    .find(|port| port.input == input && !port.exec)
-                    .and_then(|port| port.ty.clone())
-            };
-            Some((node.id, crate::conversion_name(&ty(true)?, &ty(false)?)))
+            Some((
+                node.id,
+                crate::palette::converter_card_title(node, &language)?,
+            ))
         })
         .collect()
 }
@@ -211,7 +206,11 @@ struct ExpandedText {
 pub struct CanvasResponse {
     pub(crate) edit_literal: Option<(NodeId, String)>,
     pub(crate) edit_map_pairs: Option<NodeId>,
-    pub(crate) add_signal_receiver: Option<NodeId>,
+    pub(crate) new_event: Option<NodeId>,
+    pub(crate) rename_event: Option<NodeId>,
+    pub(crate) add_signal_peer: Option<(NodeId, bool)>,
+    /// A Bridge In is to read from a Bridge Out: (Bridge In, Bridge Out).
+    pub(crate) bind_bridge: Option<(NodeId, NodeId)>,
     pub(crate) waypoint: Option<(WireEnds, [f32; 2])>,
     /// The trigger whose button was pressed.
     pub trigger: Option<NodeId>,
@@ -412,7 +411,17 @@ pub struct Canvas {
     pub(crate) shortcuts_enabled: bool,
     pub(crate) device_pickers: BTreeMap<NodeId, crate::card_sources::DevicePicker>,
     /// The document's variables, as (ID, name), for the pickers on cards.
-    pub(crate) variables: Vec<(String, String)>,
+    pub(crate) variables: Vec<crate::declarations::VariableChoice>,
+    /// Event channels by ID, with their names, for the Unbound badge of a Listen.
+    channels: HashMap<String, String>,
+    /// The channels (event ID, name) a Dispatch in the graph sends on, for a Listen's
+    /// picker.
+    pub(crate) listen_channels: Vec<(String, String)>,
+    event_channels: Vec<(String, String)>,
+    /// The graph's Bridge Outs with their channel names, for a Bridge In's picker.
+    pub(crate) bridges: Vec<(NodeId, String)>,
+    /// Each bound Bridge In's channel, as its Bridge Out names it now.
+    bridge_bound: HashMap<NodeId, (NodeId, String)>,
     /// The choices of the enum types the document's inputs take.
     pub(crate) enums: Enums,
     /// The wheel scrolls instead of zooming (Ctrl+wheel then zooms), for trackpads.
@@ -449,6 +458,7 @@ pub struct Canvas {
     /// the center, so an untouched graph stays whole.
     fitted: Option<(f32, Pos2)>,
     wiring: Option<Wiring>,
+    keyboard_wiring: Option<Wiring>,
     inbound_givers: Option<HashMap<NodeId, Vec<String>>>,
     /// The wire under the pointer at the last frame, and the selected wire.
     hover_wire: Option<WireEnds>,
@@ -456,7 +466,7 @@ pub struct Canvas {
     /// Problems drawn on nodes and wires.
     marks: Marks,
     draft_marks: BTreeSet<NodeId>,
-    help_revision: Option<(u64, String)>,
+    help_revision: Option<((u64, u64), String)>,
     descriptions: HashMap<String, String>,
     labels: HashMap<String, String>,
     /// Titles of nodes named by what they hold rather than their kind: a conversion is
@@ -483,6 +493,14 @@ pub struct Canvas {
     groups: Vec<orange_host::Group>,
     selected_group_frame: Option<String>,
     hidden: HashSet<NodeId>,
+    /// A node just spawned from an emitter that follows the pointer until a click
+    /// places it (+ Add Subscriber).
+    follow: Option<NodeId>,
+    /// Wireless Link Opacity, 0–100 %: how visible links are at rest (0 hides them).
+    pub wireless_opacity: u8,
+    /// The wireless link (sender, receiver) the pointer rests on and since when, to reveal
+    /// all after a second on that same link.
+    wireless_rest: Option<((NodeId, NodeId), f64)>,
     renaming: Option<(String, String, bool)>,
     node_rename: Option<NodeRename>,
 }
@@ -503,6 +521,11 @@ impl Default for Canvas {
             shortcuts_enabled: true,
             device_pickers: BTreeMap::new(),
             variables: Vec::new(),
+            channels: HashMap::new(),
+            bridges: Vec::new(),
+            listen_channels: Vec::new(),
+            event_channels: Vec::new(),
+            bridge_bound: HashMap::new(),
             enums: Enums::new(),
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
@@ -520,6 +543,7 @@ impl Default for Canvas {
             fit: true,
             fitted: None,
             wiring: None,
+            keyboard_wiring: None,
             inbound_givers: None,
             hover_wire: None,
             selected_wire: None,
@@ -547,6 +571,9 @@ impl Default for Canvas {
             groups: Vec::new(),
             selected_group_frame: None,
             hidden: HashSet::new(),
+            follow: None,
+            wireless_opacity: DEFAULT_WIRELESS_OPACITY,
+            wireless_rest: None,
             renaming: None,
             waypoints: HashMap::new(),
             node_rename: None,
@@ -671,7 +698,7 @@ impl Canvas {
     }
 
     pub(crate) fn update_help(&mut self, host: &orange_host::Host, language: &str) {
-        let generation = host.registry().generation();
+        let generation = host.search_revision();
         if self
             .help_revision
             .as_ref()
@@ -690,6 +717,7 @@ impl Canvas {
             .map(|item| (item.definition, item.purpose))
             .collect();
         crate::i18n::set_port_names(host.port_names(language));
+        crate::i18n::set_outcome_names(host.outcome_names(language));
         self.help_revision = Some((generation, language.to_owned()));
         self.connection_labels = host
             .nodes()
@@ -751,6 +779,7 @@ impl Canvas {
     /// Takes the places of a graph's nodes: saved ones, and automatic ones for the
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
+        self.keyboard_wiring = None;
         self.inbound_givers = None;
         self.expanded_failure_routes.clear();
         self.focused_failure_port = None;
@@ -903,6 +932,12 @@ impl Canvas {
     }
 
     /// Selects a node alone, as clicking it does; `None` selects nothing.
+    /// Makes `node` follow the pointer until the next click places it; Escape leaves it
+    /// where it is.
+    pub(crate) fn follow(&mut self, node: NodeId) {
+        self.follow = Some(node);
+    }
+
     pub fn select(&mut self, node: Option<NodeId>) {
         self.select_many(node.as_slice());
     }
@@ -1009,6 +1044,8 @@ impl Canvas {
                 continue;
             }
             let layout = self.card(node);
+            let mut nearest = None;
+            let mut distance = f32::INFINITY;
             for port in node
                 .ports
                 .iter()
@@ -1033,8 +1070,21 @@ impl Canvas {
                     place + Vec2::new(right, found.top + found.height),
                 );
                 if row.contains(at) {
-                    return Some((node.id, port.id.clone()));
+                    // Paired fields share a row. Resolve a drop using their distinct anchors.
+                    let anchor = if input {
+                        found.input_anchor()
+                    } else {
+                        found.anchor()
+                    };
+                    let delta = (at.y - (place.y + anchor)).abs();
+                    if delta < distance {
+                        distance = delta;
+                        nearest = Some(port);
+                    }
                 }
+            }
+            if let Some(port) = nearest {
+                return Some((node.id, port.id.clone()));
             }
         }
         None
@@ -1609,9 +1659,57 @@ impl Canvas {
     ) -> CanvasResponse {
         crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
+        // A Bridge In's picker lists the Bridge Outs; a bound one shows its Bridge Out's
+        // current channel name.
+        self.bridges = graph
+            .nodes
+            .iter()
+            .filter(|node| node.definition == crate::palette::BRIDGE_OUT)
+            .map(|node| {
+                (
+                    node.id,
+                    crate::palette::bridge_channel(node)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let outs: HashMap<NodeId, &String> = self
+            .bridges
+            .iter()
+            .map(|(out, channel)| (*out, channel))
+            .collect();
+        self.bridge_bound = graph
+            .wires
+            .iter()
+            .filter(|wire| wire.from.1 == "result" && wire.to.1 == "value")
+            .filter_map(|wire| {
+                let channel = outs.get(&wire.from.0)?;
+                Some((wire.to.0, (wire.from.0, (*channel).clone())))
+            })
+            .collect();
+        // A Listen's picker lists the channels some Dispatch sends on, by name.
+        let mut listen_channels: Vec<(String, String)> = graph
+            .nodes
+            .iter()
+            .filter_map(|node| match crate::palette::signal(node) {
+                Some((true, event)) => Some(event.to_owned()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|event| {
+                let name = self.channels.get(&event).cloned().unwrap_or_default();
+                (event, name)
+            })
+            .collect();
+        listen_channels.sort_by(|a, b| a.1.cmp(&b.1));
+        self.listen_channels = listen_channels;
+
         let alive = !self.stale;
         let animation_time = ui.input(|input| animation_phase(input.time));
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+        let response = response.accessible_name(t("canvas"));
         let area = response.rect;
         let previous_size = std::mem::replace(&mut self.size, area.size());
         let colors = Palette::of(ui);
@@ -1655,11 +1753,8 @@ impl Canvas {
         if response.clicked() {
             self.select(None);
         }
-        // A right-click on the background; a wire under it is found as wires are drawn.
-        let background_menu = response
-            .secondary_clicked()
-            .then(|| response.interact_pointer_pos())
-            .flatten();
+        // A background context menu may also target a wire.
+        let background_menu = context_position(&response);
         let menu_at = |screen: Pos2, origin: Pos2, zoom: f32| {
             let at = graph_point(screen, origin, zoom);
             ([at.x, at.y], screen)
@@ -1710,6 +1805,29 @@ impl Canvas {
             }
         }
 
+        // A spawned subscriber rides under the pointer, centered on it, until a click.
+        if let Some(id) = self.follow {
+            let card = graph.nodes.iter().find(|node| node.id == id);
+            if let (Some(card), Some(pointer)) = (card, ui.input(|input| input.pointer.hover_pos()))
+                && area.contains(pointer)
+            {
+                let size = node_size(card);
+                let at =
+                    self.origin + (pointer - area.min) / self.zoom - Vec2::new(size.x * 0.5, 16.0);
+                let _ = self.places.insert(id, at);
+                ui.ctx().request_repaint();
+            }
+            let (placed, kept) = ui.input(|input| {
+                (
+                    input.pointer.primary_pressed(),
+                    input.key_pressed(egui::Key::Escape),
+                )
+            });
+            if placed || kept || card.is_none() {
+                self.follow = None;
+                done.moved = true;
+            }
+        }
         let zoom = self.zoom;
         let origin = self.origin;
         let to_screen = |point: Pos2| area.min + (point - origin) * zoom;
@@ -1717,31 +1835,6 @@ impl Canvas {
 
         painter.rect_filled(area, 0.0, colors.background);
         self.draw_grid(&painter, area, &colors);
-        // An empty graph says how to begin, where the work happens.
-        if graph.nodes.is_empty() {
-            painter.rect_filled(
-                Rect::from_center_size(
-                    area.center() + Vec2::new(0.0, 1.0),
-                    Vec2::new(460.0_f32.min(area.width()), 64.0),
-                ),
-                8.0,
-                colors.background,
-            );
-            let _ = painter.text(
-                area.center() - Vec2::new(0.0, 12.0),
-                Align2::CENTER_CENTER,
-                t("canvas-empty-title"),
-                FontId::proportional(16.0),
-                colors.text,
-            );
-            let _ = painter.text(
-                area.center() + Vec2::new(0.0, 14.0),
-                Align2::CENTER_CENTER,
-                t("canvas-empty-hint"),
-                FontId::proportional(12.5),
-                colors.weak,
-            );
-        }
 
         // Groups: their title bars are handled under the cards, and their frames drawn
         // behind them.
@@ -1775,6 +1868,14 @@ impl Canvas {
                 continue;
             }
             let touched = ui.interact(rect, response.id.with(node.id), Sense::click_and_drag());
+            touched.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::Role::Button,
+                    touched.enabled(),
+                    self.selection.contains(&node.id),
+                    self.display_name(node),
+                )
+            });
             if touched.drag_started() && !self.selection.contains(&node.id) {
                 self.select(Some(node.id));
             }
@@ -1836,9 +1937,7 @@ impl Canvas {
                 self.node_rename = Some(NodeRename::new(node.id, node.name.clone()));
                 done.rename_node = Some(node.id);
             }
-            if touched.secondary_clicked()
-                && let Some(screen) = touched.interact_pointer_pos()
-            {
+            if let Some(screen) = context_position(&touched) {
                 let (at, screen) = menu_at(screen, self.origin, self.zoom);
                 self.front = Some(node.id);
                 done.context = Some((crate::MenuTarget::Node(node.id), at, screen));
@@ -1858,6 +1957,19 @@ impl Canvas {
         // Keep a 20-point target even when the connector is drawn small. Below
         // that spacing, constrain targets to their own row so neighbours stay usable.
         let grab = ((PORT_RADIUS + 5.0) * zoom).max(10.0);
+        if self.keyboard_wiring.as_ref().is_some_and(|pending| {
+            self.hidden.contains(&pending.from.0)
+                || geometry
+                    .port(pending.from.0, &pending.from.1, pending.backward)
+                    .is_none()
+                || graph
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == pending.from.0 && node.missing.is_some())
+                || ui.input(|input| input.key_pressed(egui::Key::Escape))
+        }) {
+            self.keyboard_wiring = None;
+        }
         let front = self.front;
         let card_pointer = ui.input(|input| {
             input
@@ -1921,7 +2033,28 @@ impl Canvas {
                     response.id.with((node.id, port.id.as_str(), port.input)),
                     Sense::click_and_drag(),
                 );
+                let source = self.keyboard_wiring.as_ref().is_some_and(|pending| {
+                    pending.from.0 == node.id
+                        && pending.from.1 == port.id
+                        && pending.backward == port.input
+                });
+                touched.widget_info(|| {
+                    let label = tf(
+                        if port.input {
+                            "canvas-input-port"
+                        } else {
+                            "canvas-output-port"
+                        },
+                        &[
+                            ("node", self.display_name(node).into()),
+                            ("port", canvas_port_name(node, port).into()),
+                            ("type", canvas_port_type(node, port).into()),
+                        ],
+                    );
+                    egui::WidgetInfo::selected(egui::Role::Button, touched.enabled(), source, label)
+                });
                 if touched.drag_started() && node.missing.is_none() {
+                    self.keyboard_wiring = None;
                     self.inbound_givers = None;
                     self.wiring = Some(Wiring {
                         from: (node.id, port.id.clone()),
@@ -1929,37 +2062,43 @@ impl Canvas {
                         backward: port.input,
                     });
                 }
-                if touched.secondary_clicked() {
+                if touched.clicked() && node.missing.is_none() {
+                    match self.keyboard_wiring.take() {
+                        None => {
+                            self.keyboard_wiring = Some(Wiring {
+                                from: (node.id, port.id.clone()),
+                                exec: port.exec,
+                                backward: port.input,
+                            });
+                        }
+                        Some(_) if source => {}
+                        Some(pending)
+                            if pending.from.0 != node.id
+                                && pending.exec == port.exec
+                                && pending.backward != port.input =>
+                        {
+                            let here = (node.id, port.id.clone());
+                            done.connect = Some(if port.input {
+                                (pending.from, here)
+                            } else {
+                                (here, pending.from)
+                            });
+                        }
+                        Some(pending) => self.keyboard_wiring = Some(pending),
+                    }
+                }
+                if let Some(screen) = context_position(&touched) {
                     let target = crate::MenuTarget::Port {
                         node: node.id,
                         port: port.id.clone(),
                         input: port.input,
                     };
-                    let (at, screen) = menu_at(at, origin, zoom);
+                    let (at, screen) = menu_at(screen, origin, zoom);
                     done.context = Some((target, at, screen));
                 }
                 if touched.hovered() && self.wiring.is_none() {
-                    let label = if port.input && !port.exec {
-                        crate::properties::input_caption(node, port)
-                    } else {
-                        crate::node_ergonomics::loop_result(node, port)
-                            .map_or_else(|| port_title(port), str::to_owned)
-                    };
-                    let detail = if port.exec {
-                        Some(t("port-execution").to_owned())
-                    } else {
-                        port.ty.as_deref().map(|ty| {
-                            if ty.starts_with('$') {
-                                port_type_label(&node.definition, ty)
-                            } else {
-                                crate::type_name(ty)
-                            }
-                        })
-                    };
-                    let hint = match detail {
-                        Some(ty) => format!("{label} · {ty}"),
-                        None => label,
-                    };
+                    let label = canvas_port_name(node, port);
+                    let hint = format!("{label} · {}", canvas_port_type(node, port));
                     let hint = if port.id == "error"
                         && self
                             .failure_routes
@@ -1986,7 +2125,7 @@ impl Canvas {
                     } else {
                         hint
                     };
-                    let _ = touched.on_hover_text(hint);
+                    let _ = touched.on_hover_text(format!("{hint}\n{}", t("wire-click-hint")));
                 }
             }
         }
@@ -2092,8 +2231,21 @@ impl Canvas {
         };
         let mut nearest: Option<(f32, WireEnds)> = None;
         let mut pulsing = false;
+        // A bridge's binding edge is drawn as a wireless link, not as a wire.
+        let bridge_ends: HashSet<NodeId> = graph
+            .nodes
+            .iter()
+            .filter(|node| crate::palette::bridge_channel(node).is_some())
+            .map(|node| node.id)
+            .collect();
+        let bridge_link = |wire: &orange_host::WireView| {
+            bridge_ends.contains(&wire.from.0)
+                && bridge_ends.contains(&wire.to.0)
+                && wire.from.1 == "result"
+                && wire.to.1 == "value"
+        };
         for wire in &graph.wires {
-            if self.wire_hidden(wire) {
+            if self.wire_hidden(wire) || bridge_link(wire) {
                 continue;
             }
             let (Some((from, orphan_from)), Some((to, orphan_to))) = (
@@ -2269,8 +2421,10 @@ impl Canvas {
         }
 
         // The wire being drawn follows the pointer until it is let go.
-        if let (Some(wiring), Some(to)) = (&self.wiring, pointer)
-            && let Some((from, false)) = anchor(wiring.from.0, &wiring.from.1, wiring.backward)
+        if let (Some(wiring), Some(to)) = (
+            self.wiring.as_ref().or(self.keyboard_wiring.as_ref()),
+            pointer,
+        ) && let Some((from, false)) = anchor(wiring.from.0, &wiring.from.1, wiring.backward)
         {
             // A wire runs from an output to an input, whichever end is held.
             let points = if wiring.backward {
@@ -2299,6 +2453,7 @@ impl Canvas {
         // A click on the background selects the wire under it, or none.
         if response.clicked() {
             self.selected_wire = self.hover_wire.clone();
+            self.keyboard_wiring = None;
         }
         if self.selected_wire.as_ref().is_some_and(|ends| {
             !graph
@@ -2309,37 +2464,114 @@ impl Canvas {
             self.selected_wire = None;
         }
 
-        if self.wiring.is_none()
-            && ui.input(|input| !input.pointer.any_down())
-            && let Some(id) = card_at_pointer
-            && let Some((sending, event)) = graph
-                .nodes
-                .iter()
-                .find(|node| node.id == id)
-                .and_then(|node| crate::palette::signal(node))
-        {
+        // Wireless links: every Dispatch to each Listen on its channel, drawn with the
+        // wire spline and a dash at the person's opacity (none at 0%). Hovering an
+        // endpoint shows its links fully; resting on a faint link for a second shows
+        // them all. Each link fades to its target.
+        let base = wireless_alpha(self.wireless_opacity);
+        if base > 0.0 {
             let edge_of = |node, output| {
                 let position = to_screen(*self.places.get(&node)?);
                 let size = geometry.size(node) * zoom;
                 Some(position + Vec2::new(if output { size.x } else { 0.0 }, size.y * 0.5))
             };
-            if let Some(here) = edge_of(id, sending) {
-                let (_, color, _) = crate::palette::badge("core/emit");
-                for peer in &graph.nodes {
-                    if !self.hidden.contains(&peer.id)
-                        && crate::palette::signal(peer) == Some((!sending, event))
-                        && let Some(there) = edge_of(peer.id, !sending)
-                        && let Some(points) = clip_signal_line(here, there, area)
-                    {
-                        painter.extend(egui::Shape::dashed_line(
-                            &points,
-                            Stroke::new(1.8, color),
-                            7.0,
-                            5.0,
-                        ));
-                    }
+            let hovered_card =
+                card_at_pointer.filter(|_| ui.input(|input| !input.pointer.any_down()));
+            let mut links = Vec::new();
+            for wire in graph.wires.iter().filter(|wire| bridge_link(wire)) {
+                if let (Some(from), Some(to)) =
+                    (edge_of(wire.from.0, true), edge_of(wire.to.0, false))
+                    && !self.hidden.contains(&wire.from.0)
+                    && !self.hidden.contains(&wire.to.0)
+                {
+                    links.push((wire.from.0, wire.to.0, wire_points(from, to, zoom)));
                 }
             }
+            let mut listeners = HashMap::<&str, Vec<(NodeId, Pos2)>>::new();
+            for node in &graph.nodes {
+                if let Some((false, event)) = crate::palette::signal(node)
+                    && !self.hidden.contains(&node.id)
+                    && let Some(to) = edge_of(node.id, false)
+                {
+                    listeners.entry(event).or_default().push((node.id, to));
+                }
+            }
+            for node in &graph.nodes {
+                if let Some((true, event)) = crate::palette::signal(node)
+                    && !self.hidden.contains(&node.id)
+                    && let Some(from) = edge_of(node.id, true)
+                    && let Some(receivers) = listeners.get(event)
+                {
+                    links.extend(
+                        receivers
+                            .iter()
+                            .map(|&(id, to)| (node.id, id, wire_points(from, to, zoom))),
+                    );
+                }
+            }
+            // Resting on one faint link for a second reveals every link. The time
+            // belongs to that link: leaving it, or moving straight onto another, restarts it.
+            let now = ui.input(|input| input.time);
+            let grab = WIRE_GRAB * zoom.max(0.6);
+            let under = pointer
+                .filter(|_| self.wiring.is_none() && hovered_card.is_none())
+                .and_then(|at| {
+                    links
+                        .iter()
+                        .filter(|(_, _, points)| {
+                            Rect::from_points(points).expand(grab).contains(at)
+                        })
+                        .map(|(sender, receiver, points)| {
+                            (bezier_distance(points, at), (*sender, *receiver))
+                        })
+                        .filter(|(away, _)| *away <= grab)
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .map(|(_, link)| link)
+                });
+            let (rest, all) = link_dwell(self.wireless_rest.take(), under, now);
+            if let Some((_, since)) = rest
+                && !all
+            {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(
+                        WIRELESS_REST_SECONDS - (now - since),
+                    ));
+            }
+            self.wireless_rest = rest;
+            let (_, color, _) = crate::palette::badge(intrinsic::EMIT);
+            for (sender, receiver, points) in links {
+                let shown =
+                    all || hovered_card.is_some_and(|card| card == sender || card == receiver);
+                let alpha = ui.ctx().animate_value_with_time(
+                    ui.scope_id().with(("wireless-link", sender, receiver)),
+                    if shown { 1.0 } else { base },
+                    WIRELESS_FADE_SECONDS,
+                );
+                if alpha <= 0.0 || !wire_visible(&points, area, 2.0) {
+                    continue;
+                }
+                let curve = CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    Color32::TRANSPARENT,
+                    Stroke::NONE,
+                );
+                let stroke = Stroke::new(1.8, color.gamma_multiply(alpha));
+                let mut visible = Vec::new();
+                for pair in curve.flatten(Some(0.6)).windows(2) {
+                    if let Some([start, end]) = clip_signal_line(pair[0], pair[1], area) {
+                        if visible.last() != Some(&start) {
+                            painter.extend(egui::Shape::dashed_line(&visible, stroke, 7.0, 5.0));
+                            visible.clear();
+                            visible.push(start);
+                        }
+                        visible.push(end);
+                    }
+                }
+                painter.extend(egui::Shape::dashed_line(&visible, stroke, 7.0, 5.0));
+            }
+        } else {
+            self.wireless_rest = None;
         }
 
         // Each card owns its marks. A card in front covers the card and its marks.
@@ -2364,6 +2596,86 @@ impl Canvas {
             if !area.intersects(rect) {
                 continue;
             }
+            // A Listen no Dispatch sends to is Unbound: a tag above it names the
+            // channel, and a click creates its emitter.
+            let unbound = match node.definition.as_str() {
+                intrinsic::ON_EVENT => {
+                    let event = node.settings["event"].as_str();
+                    // The channels some Dispatch sends on, gathered once this frame.
+                    let bound = event.is_some_and(|event| {
+                        self.listen_channels.iter().any(|(sent, _)| sent == event)
+                    });
+                    (!bound).then(|| {
+                        event
+                            .and_then(|event| self.channels.get(event).cloned())
+                            .unwrap_or_default()
+                    })
+                }
+                crate::palette::BRIDGE_IN => {
+                    let bound = self.bridge_bound.contains_key(&node.id);
+                    (!bound).then(|| {
+                        crate::palette::bridge_channel(node)
+                            .unwrap_or_default()
+                            .to_owned()
+                    })
+                }
+                _ => None,
+            };
+            if zoom >= 0.45
+                && let Some(channel) = unbound
+            {
+                {
+                    // What the tag says depends on the node: a Listen is missing a
+                    // Dispatch, a Bridge In its Bridge Out, and a new one any channel.
+                    let bridge = node.definition == crate::palette::BRIDGE_IN;
+                    let help = match (bridge, channel.is_empty()) {
+                        (true, true) => t("unbound-bridge-new-help"),
+                        (true, false) => t("unbound-bridge-help"),
+                        (false, true) => t("unbound-listen-new-help"),
+                        (false, false) => t("unbound-listen-help"),
+                    };
+                    let channel = if channel.is_empty() {
+                        t("unbound-no-channel").to_owned()
+                    } else {
+                        channel
+                    };
+                    let text = tf("unbound-badge", &[("channel", channel.into())]);
+                    let font = FontId::proportional(11.0 * zoom);
+                    let galley = painter.layout_no_wrap(text, font, colors.warning);
+                    let tag = Rect::from_min_size(
+                        Pos2::new(
+                            rect.right() - galley.size().x - 14.0 * zoom,
+                            rect.top() - galley.size().y - 8.0 * zoom,
+                        ),
+                        galley.size() + Vec2::new(12.0, 6.0) * zoom,
+                    );
+                    let touched = ui
+                        .interact(
+                            tag,
+                            ui.scope_id().with(("unbound", node.id)),
+                            Sense::click(),
+                        )
+                        .on_hover_text(help);
+                    touched.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, galley.text())
+                    });
+                    let fill = colors
+                        .card
+                        .lerp_to_gamma(colors.warning, if touched.hovered() { 0.28 } else { 0.16 });
+                    painter.rect(
+                        tag,
+                        4.0 * zoom,
+                        fill,
+                        Stroke::new(1.0, colors.warning.gamma_multiply(0.6)),
+                        StrokeKind::Inside,
+                    );
+                    painter.galley(tag.min + Vec2::new(6.0, 3.0) * zoom, galley, colors.warning);
+                    if touched.clicked() {
+                        // Create Emitter: a Dispatch or Bridge Out on this channel.
+                        done.add_signal_peer = Some((node.id, true));
+                    }
+                }
+            }
             // Paint every visible card in order. Suppress input through the card
             // above this one without hiding controls elsewhere on the card.
             let mut card_ui = ui.new_child(
@@ -2382,7 +2694,7 @@ impl Canvas {
             let selected = self.selection.contains(&node.id);
             // On manual always has its button; it fires only while the graph runs.
             let live = node.missing.is_none() && triggers.contains(&node.id);
-            let fire = (node.definition == "core/on-manual" || live).then(|| {
+            let fire = (node.definition == intrinsic::ON_MANUAL || live).then(|| {
                 let typed = if live {
                     self.manual_values.contains(&node.id)
                 } else {
@@ -2442,6 +2754,42 @@ impl Canvas {
                 self.descriptions.get(&node.definition).map(String::as_str),
                 (connection, self.connection_selection(node)),
             );
+            let focused = ui.memory(|memory| memory.focused());
+            if focused == Some(response.id.with(node.id)) {
+                painter.rect_stroke(
+                    rect,
+                    6.0 * zoom,
+                    Stroke::new(2.0, colors.selected),
+                    StrokeKind::Inside,
+                );
+            }
+            for port in layout
+                .rows
+                .iter()
+                .flat_map(|row| [row.input(), row.right].into_iter().flatten())
+            {
+                let port_focus =
+                    focused == Some(response.id.with((node.id, port.id.as_str(), port.input)));
+                let pending = self.keyboard_wiring.as_ref().is_some_and(|wire| {
+                    wire.from.0 == node.id && wire.from.1 == port.id && wire.backward == port.input
+                });
+                if (port_focus || pending)
+                    && let Some(placed) = geometry.port(node.id, &port.id, port.input)
+                {
+                    painter.circle_stroke(
+                        to_screen(place + placed.offset),
+                        PORT_RADIUS * zoom + 4.0,
+                        Stroke::new(
+                            2.0,
+                            if pending {
+                                colors.exec
+                            } else {
+                                colors.selected
+                            },
+                        ),
+                    );
+                }
+            }
             if let Some(rename) = self
                 .node_rename
                 .as_mut()
@@ -2638,10 +2986,10 @@ impl Canvas {
                     {
                         continue;
                     }
-                    let label = part
-                        .as_ref()
-                        .filter(|_| input)
-                        .map_or_else(|| port_title(port), |(_, label)| label.clone());
+                    let label = part.as_ref().filter(|_| input).map_or_else(
+                        || node_port_title(&node.definition, port),
+                        |(_, label)| label.clone(),
+                    );
                     let name = painter.layout_no_wrap(label, label_font.clone(), colors.text);
                     let half = rect.width() / 2.0 - 1.5 * inset;
                     let gap = 8.0 * zoom;
@@ -2724,6 +3072,7 @@ impl Canvas {
                 let id = match field {
                     card::FieldOf::TextArea(port, ..)
                     | card::FieldOf::Input(port)
+                    | card::FieldOf::HintedInput(port, _)
                     | card::FieldOf::Path(port, _) => id.with(("port", &port.id)),
                     card::FieldOf::Setting(name, ..) => id.with(("setting", name)),
                     card::FieldOf::Variable(pointer) => id.with(("variable", pointer)),
@@ -2731,6 +3080,8 @@ impl Canvas {
                     card::FieldOf::AddPort(variadic) => id.with(("add", &variadic.port)),
                     card::FieldOf::AddSignalReceiver => id.with("add-signal"),
                     card::FieldOf::MapPairs => id.with("map-pairs"),
+                    card::FieldOf::BridgeChannel => id.with("bridge-channel"),
+                    card::FieldOf::EventChannel => id.with("event-channel"),
                 };
                 let Some(edit) = self.field(ui, node, field, slot, id, file_dialogs, stored_text)
                 else {
@@ -2748,6 +3099,8 @@ impl Canvas {
                     fields::FieldEdit::Setting(pointer, value) => {
                         done.set_config = Some((node.id, pointer, value));
                     }
+                    fields::FieldEdit::NewEvent => done.new_event = Some(node.id),
+                    fields::FieldEdit::RenameEvent => done.rename_event = Some(node.id),
                     fields::FieldEdit::NewVariable(pointer) => {
                         done.new_variable = Some((node.id, pointer));
                     }
@@ -2758,8 +3111,9 @@ impl Canvas {
                     }
                     fields::FieldEdit::AddPort(port) => done.add_port = Some((node.id, port)),
                     fields::FieldEdit::AddSignalReceiver => {
-                        done.add_signal_receiver = Some(node.id)
+                        done.add_signal_peer = Some((node.id, false))
                     }
+                    fields::FieldEdit::BindBridge(out) => done.bind_bridge = Some((node.id, out)),
                     fields::FieldEdit::RefreshDevices(adapter) => {
                         done.refresh_devices = Some(adapter);
                     }
@@ -2869,7 +3223,7 @@ impl Canvas {
                     &colors,
                     (
                         true,
-                        (card.definition == "core/on-manual").then_some((false, false)),
+                        (card.definition == intrinsic::ON_MANUAL).then_some((false, false)),
                         false,
                         false,
                     ),
@@ -3043,7 +3397,7 @@ fn number_field(
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     let painter = ui.painter();
-    fields::frame(painter, slot, zoom, &colors, active);
+    fields::frame(painter, slot, zoom, &colors, active || touched.has_focus());
     let suffix = (!unit.is_empty()).then(|| (unit, colors.weak, FontId::proportional(11.5 * zoom)));
     let _ = fields::field_text_in(painter, slot, zoom, text, ink, suffix);
     touched
@@ -3195,6 +3549,28 @@ fn mark_position(rect: Rect, zoom: f32) -> Pos2 {
             -(CARD_PADDING + MARK_SIZE / 2.0) * zoom,
             HEADER_HEIGHT * zoom / 2.0,
         )
+}
+
+/// Event channel names by ID, for the Unbound badge of a Listen.
+impl Canvas {
+    pub(crate) fn set_channels(&mut self, declared: &orange_host::Declarations) {
+        self.channels = channels_of(declared);
+        self.event_channels = self
+            .channels
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone()))
+            .collect();
+        self.event_channels
+            .sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    }
+}
+
+fn channels_of(declared: &orange_host::Declarations) -> HashMap<String, String> {
+    declared
+        .events
+        .iter()
+        .map(|event| (event.id.to_string(), event.name.clone()))
+        .collect()
 }
 
 fn node_order(
@@ -3385,7 +3761,7 @@ fn draw_node<'a>(
                 let (label, _) = elide(
                     painter,
                     &crate::node_ergonomics::loop_result(node, port)
-                        .map_or_else(|| port_title(port), str::to_owned),
+                        .map_or_else(|| node_port_title(&node.definition, port), str::to_owned),
                     &font,
                     (half - reserved).max(0.0),
                 );
@@ -3477,7 +3853,7 @@ fn draw_node<'a>(
                     (true, true) => colors.selected,
                     (true, false) => colors.exec,
                 };
-                painter.rect_filled(button, 5.0 * zoom, fill);
+                painter.rect_filled(button, FIELD_RADIUS * zoom, fill);
                 if readable {
                     let _ = painter.text(
                         button.center(),
@@ -3503,12 +3879,12 @@ fn draw_node<'a>(
                 if !readable {
                     continue;
                 }
-                let label = if node.definition == "core/gate" && port.id == "enter" {
+                let label = if node.definition == intrinsic::GATE && port.id == "enter" {
                     t("port-enter-alias").to_owned()
                 } else if !port.exec {
                     crate::properties::input_caption(node, port)
                 } else {
-                    port_title(port)
+                    node_port_title(&node.definition, port)
                 };
                 if port.exec {
                     // The way in is a tinted chip inside the card.
@@ -3520,7 +3896,11 @@ fn draw_node<'a>(
                         Pos2::new(rect.left() + pad - 4.0 * zoom, y - height / 2.0),
                         Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
                     );
-                    painter.rect_filled(chip, 5.0 * zoom, colors.exec.gamma_multiply(0.16));
+                    painter.rect_filled(
+                        chip,
+                        FIELD_RADIUS * zoom,
+                        colors.exec.gamma_multiply(0.16),
+                    );
                     draw_arrow(
                         painter,
                         Pos2::new(chip.min.x + 7.0 * zoom, y),
@@ -3591,6 +3971,40 @@ fn draw_node<'a>(
         }
     }
     (pressed, toggle_failure_routes, slots)
+}
+
+fn context_position(response: &egui::Response) -> Option<Pos2> {
+    if response.secondary_clicked() {
+        return response.interact_pointer_pos();
+    }
+    (response.has_focus()
+        && response
+            .ctx
+            .input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)))
+    .then(|| response.rect.center())
+}
+
+fn canvas_port_name(node: &NodeView, port: &PortView) -> String {
+    if port.input && !port.exec {
+        crate::properties::input_caption(node, port)
+    } else {
+        crate::node_ergonomics::loop_result(node, port)
+            .map_or_else(|| node_port_title(&node.definition, port), str::to_owned)
+    }
+}
+
+fn canvas_port_type(node: &NodeView, port: &PortView) -> String {
+    if port.exec {
+        t("port-execution").to_owned()
+    } else if let Some(ty) = port.ty.as_deref() {
+        if ty.starts_with('$') {
+            port_type_label(&node.definition, ty)
+        } else {
+            crate::type_name(ty)
+        }
+    } else {
+        t("canvas-unresolved-port-type").to_owned()
+    }
 }
 
 fn failure_routes_button(
@@ -3701,6 +4115,43 @@ fn draw_port_shape(
     }
 }
 
+/// Wireless Link Opacity when nothing is set: faint, so links are found but stay out of
+/// the way.
+pub(crate) const DEFAULT_WIRELESS_OPACITY: u8 = 10;
+/// How long the pointer rests on a faint link before every link shows.
+const WIRELESS_REST_SECONDS: f64 = 1.0;
+const WIRELESS_FADE_SECONDS: f32 = 0.18;
+
+/// The alpha of a wireless link at rest for an opacity setting of 0–100 %: nothing at 0,
+/// then a perceptual curve that starts at a clearly visible but faint 0.1 at 1 % and
+/// grows smoothly to fully opaque at 100 %.
+/// The dwell on one wireless link: it starts when the pointer comes onto a link,
+/// restarts when the pointer moves straight onto another, and ends when it leaves.
+/// Returns the new dwell and whether a second has passed on that same link.
+fn link_dwell<K: PartialEq + Copy>(
+    rest: Option<(K, f64)>,
+    under: Option<K>,
+    now: f64,
+) -> (Option<(K, f64)>, bool) {
+    let rest = match (rest, under) {
+        (Some((link, since)), Some(under)) if link == under => Some((link, since)),
+        (_, Some(under)) => Some((under, now)),
+        (_, None) => None,
+    };
+    let all = rest.is_some_and(|(_, since)| now - since >= WIRELESS_REST_SECONDS);
+    (rest, all)
+}
+
+pub(crate) fn wireless_alpha(opacity: u8) -> f32 {
+    match opacity {
+        0 => 0.0,
+        percent => {
+            let t = (f32::from(percent.min(100)) - 1.0) / 99.0;
+            0.1 + 0.9 * t.powf(1.6)
+        }
+    }
+}
+
 fn clip_signal_line(from: Pos2, to: Pos2, area: Rect) -> Option<[Pos2; 2]> {
     let delta = to - from;
     let (mut first, mut last) = (0.0_f32, 1.0_f32);
@@ -3728,11 +4179,11 @@ fn luminance(color: Color32) -> f32 {
 }
 
 fn family_icon(node: &NodeView) -> char {
-    let (icon, _, family) = crate::palette::badge(&node.definition);
-    if node.entry && family == "node-family-package" {
+    let family = crate::palette::NodeFamily::of(&node.definition);
+    if node.entry && family == crate::palette::NodeFamily::Package {
         crate::icons::FLOW
     } else {
-        icon
+        family.glyph()
     }
 }
 
@@ -3744,6 +4195,21 @@ fn field_text(value: &str) -> String {
 
 /// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
 /// Only the words shown change; the ports keep their IDs `in` and `then`.
+fn node_port_title(definition: &str, port: &PortView) -> String {
+    if let Some(label) = crate::properties::specialized_port_caption(definition, port) {
+        return label.to_owned();
+    }
+    if port.exec
+        && !port.input
+        && port.id == "then"
+        && let Some(label) = port.label.as_deref()
+        && let Some(translated) = crate::i18n::outcome_name(definition, label)
+    {
+        return translated;
+    }
+    port_title(port)
+}
+
 fn port_title(port: &PortView) -> String {
     step_label(port)
         .or_else(|| port.label.clone())
@@ -3818,14 +4284,12 @@ pub(crate) fn short_type(ty: &str) -> String {
 /// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
 /// so every node of one package shares it.
 fn family_color(definition: &str) -> Color32 {
-    let (_, color, category) = crate::palette::badge(definition);
-    if category != "node-family-package" {
-        return color;
+    let family = crate::palette::NodeFamily::of(definition);
+    if family != crate::palette::NodeFamily::Package {
+        return family.color();
     }
+    // Every core kind has a family of its own, so this is a package's namespace.
     let family = definition.split('/').next().unwrap_or(definition);
-    if family == "core" {
-        return Color32::from_rgb(232, 140, 48);
-    }
     // FNV-1a: stable across runs and platforms, unlike the standard hasher.
     let hash = family.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
@@ -3958,6 +4422,7 @@ mod tests {
             types: Vec::new(),
             variadic: Vec::new(),
             paths: Vec::new(),
+            controls: Default::default(),
             missing: None,
         }
     }
@@ -4458,7 +4923,7 @@ mod tests {
             .add_node(&mut draft, orange_audio::NOISE_LEVEL, [50.0, 50.0])
             .unwrap();
         let front = host
-            .add_node(&mut draft, "core/number", [200.0, 75.0])
+            .add_node(&mut draft, intrinsic::NUMBER, [200.0, 75.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
@@ -4747,7 +5212,7 @@ mod tests {
             crate::palette::PaletteDrag {
                 card: Some(card),
                 item: crate::PaletteItem {
-                    id: "core/and".into(),
+                    id: intrinsic::AND.into(),
                     label: "AND placement".into(),
                     package: String::new(),
                     purpose: String::new(),
@@ -4762,7 +5227,7 @@ mod tests {
         output.drop_without_applying_deltas();
         let (output, dropped, spliced) = frame(vec![button(false)]);
         output.drop_without_applying_deltas();
-        assert_eq!(dropped.unwrap().0, "core/and");
+        assert_eq!(dropped.unwrap().0, intrinsic::AND);
         assert_eq!(
             spliced,
             Some(((id(1), "then".into()), (id(2), "in".into())))
@@ -4897,7 +5362,7 @@ mod tests {
         );
         assert_ne!(
             family_color("org.orange.math/add"),
-            family_color("core/fork")
+            family_color(intrinsic::FORK)
         );
         // A node with no ports yet keeps a row for its hint.
         let empty = node(9, Vec::new());
@@ -4921,11 +5386,11 @@ mod tests {
     }
 
     #[test]
-    fn clicking_add_receiver_on_the_sender_uses_the_canvas_action() {
+    fn clicking_add_subscriber_on_a_fresh_dispatch_uses_the_canvas_action() {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let sender = host
-            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .add_node(&mut draft, intrinsic::EMIT, [50.0, 80.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
         let mut canvas = Canvas::new();
@@ -4940,10 +5405,17 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| action = canvas.show(ui, &graph, &[]).add_signal_receiver,
+                |ui| {
+                    action = canvas
+                        .show(ui, &graph, &[])
+                        .add_signal_peer
+                        .map(|(node, _)| node)
+                },
             );
             let button = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == t("signal-add-receiver") => {
+                egui::Shape::Text(text)
+                    if t("signal-add-receiver").ends_with(text.galley.text()) =>
+                {
                     Some(text.pos + text.galley.size() / 2.0)
                 }
                 _ => None,
@@ -4971,56 +5443,112 @@ mod tests {
         assert_eq!(action, Some(sender));
     }
 
+    /// Wireless links follow the Wireless Link Opacity: none at 0 % (even on hover),
+    /// faint at rest otherwise, and fully drawn while an endpoint is hovered.
     #[test]
-    fn wireless_links_are_drawn_only_while_an_endpoint_is_hovered() {
+    fn wireless_links_rest_at_their_opacity_and_show_fully_on_an_endpoint() {
         let (host, _) = orange_host::Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let sender = host
-            .add_node(&mut draft, "preset:signal", [50.0, 80.0])
+            .add_node(&mut draft, orange_host::preset::SIGNAL, [50.0, 80.0])
             .unwrap();
         let graph = host.draft_view(&draft).unwrap();
-        let receiver = graph
-            .nodes
-            .iter()
-            .find(|node| node.id != sender)
-            .unwrap()
-            .id;
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         canvas.fit = false;
         canvas.origin = Pos2::ZERO;
         let ctx = egui::Context::default();
-        let (_, accent, _) = crate::palette::badge("core/emit");
-        let mut frame = |pointer| {
-            let output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
-                    events: vec![egui::Event::PointerMoved(pointer)],
-                    ..Default::default()
-                },
-                |ui| {
-                    canvas.show(ui, &graph, &[]);
-                },
-            );
-            let drawn = output.shapes.iter().any(|shape| {
-                matches!(
-                    &shape.shape,
-                    egui::Shape::LineSegment { stroke, .. } if stroke.color == accent
-                        && (stroke.width - 1.8).abs() < f32::EPSILON
-                )
-            });
-            output.drop_without_applying_deltas();
-            drawn
+        let (_, accent, _) = crate::palette::badge(intrinsic::EMIT);
+        let mut time = 0.0;
+        // The strongest alpha of the dashed links after a few frames at `pointer`.
+        let mut drawn = |canvas: &mut Canvas, pointer| {
+            let mut strongest = None;
+            for _ in 0..30 {
+                time += 0.05;
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                        events: vec![egui::Event::PointerMoved(pointer)],
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        canvas.show(ui, &graph, &[]);
+                    },
+                );
+                strongest = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::LineSegment { stroke, .. }
+                            if (stroke.width - 1.8).abs() < f32::EPSILON
+                                && stroke.color.r() <= accent.r()
+                                && stroke.color.a() > 0 =>
+                        {
+                            Some(stroke.color.a())
+                        }
+                        _ => None,
+                    })
+                    .max();
+                output.drop_without_applying_deltas();
+            }
+            strongest
         };
         let position = |id| {
             let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
             let [x, y] = node.position.unwrap();
             Pos2::new(x + 30.0, y + 25.0)
         };
-        assert!(!frame(Pos2::new(30.0, 450.0)));
-        assert!(frame(position(sender)));
-        assert!(frame(position(receiver)));
-        assert!(!frame(Pos2::new(30.0, 450.0)));
+        let away = Pos2::new(30.0, 450.0);
+        canvas.wireless_opacity = 0;
+        assert_eq!(drawn(&mut canvas, away), None);
+        assert_eq!(
+            drawn(&mut canvas, position(sender)),
+            None,
+            "0 % hides even on hover"
+        );
+        canvas.wireless_opacity = 10;
+        let resting = drawn(&mut canvas, away).expect("10 % shows faint links");
+        let hovered = drawn(&mut canvas, position(sender)).expect("hover shows the links");
+        assert!(
+            resting < hovered && hovered == accent.a(),
+            "{resting} {hovered}"
+        );
+    }
+
+    #[test]
+    fn the_reveal_dwell_belongs_to_one_link_and_restarts_on_another() {
+        let (a, b) = (1, 2);
+        // Coming onto a link starts its own second.
+        let (rest, all) = link_dwell(None, Some(a), 10.0);
+        assert_eq!((rest, all), (Some((a, 10.0)), false));
+        // Staying on it for a second reveals every link.
+        let (rest, all) = link_dwell(rest, Some(a), 11.0);
+        assert_eq!((rest, all), (Some((a, 10.0)), true));
+        // Moving straight onto another link starts again from zero.
+        let (rest, all) = link_dwell(Some((a, 10.0)), Some(b), 10.9);
+        assert_eq!((rest, all), (Some((b, 10.9)), false));
+        let (_, all) = link_dwell(rest, Some(b), 11.5);
+        assert!(!all, "half a second on the second link is not enough");
+        // Leaving early forgets the dwell.
+        let (rest, all) = link_dwell(Some((a, 10.0)), None, 10.5);
+        assert_eq!((rest, all), (None, false));
+        let (_, all) = link_dwell(rest, Some(a), 10.8);
+        assert!(!all);
+    }
+
+    #[test]
+    fn wireless_alpha_hides_at_zero_and_is_clearly_visible_but_faint_at_one_percent() {
+        assert_eq!(wireless_alpha(0), 0.0);
+        assert!((0.09..0.12).contains(&wireless_alpha(1)));
+        assert!(wireless_alpha(10) < 0.2);
+        assert!((wireless_alpha(100) - 1.0).abs() < 1e-6);
+        let mut previous = 0.0;
+        for percent in 0..=100 {
+            let alpha = wireless_alpha(percent);
+            assert!(alpha >= previous);
+            previous = alpha;
+        }
     }
 
     #[test]

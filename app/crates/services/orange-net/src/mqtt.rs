@@ -191,6 +191,11 @@ fn parse_publish(first: u8, body: &[u8]) -> Option<Publish<'_>> {
     let qos = (first >> 1) & 3;
     let length = usize::from(u16::from_be_bytes([*body.first()?, *body.get(1)?]));
     let topic = std::str::from_utf8(body.get(2..2 + length)?).ok()?;
+    // A topic name the broker sends has no wildcards and is not empty [MQTT-3.3.2-2];
+    // anything else is a protocol error, which closes the connection.
+    if !is_topic(topic, false) {
+        return None;
+    }
     let rest = body.get(2 + length..)?;
     match qos {
         0 => Some((topic, rest, None)),
@@ -1142,6 +1147,51 @@ mod tests {
         assert_eq!(parse_publish(0x36, body), None);
         assert_eq!(parse(&[0x30, 0xff, 0xff, 0xff, 0xff, 0x01]), Err(()));
         assert_eq!(parse(&[0x30, 0x80, 0x80, 0x80, 0x08]), Err(()));
+    }
+
+    #[test]
+    fn a_received_topic_with_wildcards_or_no_name_is_a_protocol_error() {
+        for topic in ["", "a/+", "#", "a/#", "nul\0l"] {
+            let mut body = Vec::new();
+            text(&mut body, topic.as_bytes());
+            body.extend_from_slice(b"payload");
+            assert_eq!(parse_publish(0x30, &body), None, "{topic:?}");
+        }
+        let mut body = Vec::new();
+        text(&mut body, b"$SYS/a b");
+        assert!(parse_publish(0x30, &body).is_some());
+    }
+
+    /// Broker bytes are untrusted: random and corrupted input splits into packets with
+    /// consistent lengths or is refused, never a panic.
+    #[test]
+    fn corrupted_broker_bytes_are_parsed_or_refused() {
+        let message = Outgoing {
+            topic: "a/b".into(),
+            payload: vec![7; 200],
+            retain: false,
+        };
+        let valid = publish_packet(&message, 2, 9, false);
+        let mut next = crate::xorshift(0x2545_F491_4F6C_DD1D);
+        for _ in 0..20_000 {
+            let mut bytes = valid.clone();
+            for _ in 0..=next() % 4 {
+                let at = next() % bytes.len().max(1);
+                let byte = u8::try_from(next() % 256).unwrap();
+                match next() % 3 {
+                    0 if !bytes.is_empty() => bytes[at] = byte,
+                    1 => bytes.insert(at.min(bytes.len()), byte),
+                    _ => bytes.truncate(at),
+                }
+            }
+            if let Ok(Some((first, body, length))) = parse(&bytes) {
+                assert!(length <= bytes.len() && body.len() < length);
+                if let Some((topic, payload, _)) = parse_publish(first, body) {
+                    assert!(is_topic(topic, false));
+                    assert!(payload.len() < body.len());
+                }
+            }
+        }
     }
 
     #[test]

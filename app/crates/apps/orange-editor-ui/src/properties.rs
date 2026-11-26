@@ -2,7 +2,9 @@
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
 use crate::controls::{Dropdown as _, Surface};
-use orange_host::{Connection, EventTiming, NodeView, ReferenceKind};
+use orange_host::controls::{Control, Region, Scale, Widget};
+use orange_host::intrinsic;
+use orange_host::{Connection, EventTiming, NodeView, PortView, ReferenceKind};
 use serde_json::{Value as Json, json};
 
 const HTTP_METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -37,9 +39,13 @@ pub(crate) fn http_request_variant(node: &NodeView) -> bool {
     )
 }
 
-pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host::PortView> {
-    let inputs = node.ports.iter().filter(|port| port.input && !port.exec);
-    let first = |port: &&orange_host::PortView| {
+pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &PortView> {
+    // A bridge's link port carries its binding, shown as the channel, not as an input.
+    let inputs = node
+        .ports
+        .iter()
+        .filter(|port| port.input && !port.exec && !palette::bridge_link_port(node, port));
+    let first = |port: &&PortView| {
         node.definition == "org.orange.logging/log-message"
             && matches!(port.id.as_str(), "level" | "severity")
     };
@@ -49,11 +55,37 @@ pub(crate) fn input_ports(node: &NodeView) -> impl Iterator<Item = &orange_host:
         .chain(inputs.filter(move |port| !first(port)))
 }
 
-pub(crate) fn input_caption(node: &NodeView, port: &orange_host::PortView) -> String {
+pub(crate) fn input_caption(node: &NodeView, port: &PortView) -> String {
+    if let Some(label) = specialized_port_caption(&node.definition, port) {
+        return label.to_owned();
+    }
+    if node.definition == intrinsic::COALESCE {
+        match port.id.as_str() {
+            "value" => return t("optional-value-input").to_owned(),
+            "fallback" => return t("if-missing-input").to_owned(),
+            _ => {}
+        }
+    }
     log_part_label(node, &port.id)
         .or_else(|| port.label.clone())
         .or_else(|| input_label(node, &port.id).map(str::to_owned))
         .unwrap_or_else(|| port_label(&port.id))
+}
+
+pub(crate) fn specialized_port_caption(definition: &str, port: &PortView) -> Option<&'static str> {
+    match (definition, port.input, port.id.as_str()) {
+        (intrinsic::RISING_EDGE | intrinsic::FALLING_EDGE, true, "watch") => {
+            Some(t("edge-condition"))
+        }
+        (intrinsic::CHANGE_BEYOND_TOLERANCE, true, "watch") => Some(t("port-value")),
+        (intrinsic::INCREMENT_COUNTER | intrinsic::DECREMENT_COUNTER, true, "value") => {
+            Some(t("counter-step"))
+        }
+        (intrinsic::INCREMENT_COUNTER | intrinsic::DECREMENT_COUNTER, false, "new") => {
+            Some(t("counter-new-value"))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn log_part_label(node: &NodeView, id: &str) -> Option<String> {
@@ -80,7 +112,7 @@ pub(crate) enum TextInput {
 }
 
 impl TextInput {
-    pub(crate) fn for_port(node: &NodeView, port: &orange_host::PortView) -> Option<Self> {
+    pub(crate) fn for_port(node: &NodeView, port: &PortView) -> Option<Self> {
         if node.paths.iter().any(|path| path.port == port.id)
             || is_folder_path(node, &port.id)
             || (http_request_variant(node) && port.id == "method")
@@ -160,10 +192,7 @@ pub(crate) fn text_area_preview(text: &str, kind: TextInput) -> String {
     serde_json::from_str::<String>(text).unwrap_or_else(|_| text.to_owned())
 }
 
-pub(crate) fn choice_caption<'a>(
-    port: &orange_host::PortView,
-    name: &'a str,
-) -> std::borrow::Cow<'a, str> {
+pub(crate) fn choice_caption<'a>(port: &PortView, name: &'a str) -> std::borrow::Cow<'a, str> {
     match port.ty.as_deref() {
         Some("org.orange.logging/severity@1") if name == "warning" => "WARN".into(),
         Some("org.orange.logging/level@1" | "org.orange.logging/severity@1") => {
@@ -191,7 +220,7 @@ pub(crate) fn text_area_height(text: &str, width: f32, kind: TextInput) -> f32 {
 
 pub(crate) fn text_resize_grip(ui: &egui::Ui, rect: egui::Rect, id: egui::Id) -> f32 {
     let grip = ui
-        .interact(rect, id, egui::Sense::drag())
+        .interact(rect, id, egui::Sense::DRAG)
         .on_hover_cursor(egui::CursorIcon::ResizeVertical)
         .on_hover_text(t("resize-text-area"));
     let color = if grip.hovered() || grip.dragged() {
@@ -251,7 +280,7 @@ pub(crate) fn input_label(node: &NodeView, port: &str) -> Option<&'static str> {
         .then(|| t("log-level"))
 }
 
-pub(crate) fn input_color(port: &orange_host::PortView) -> [u8; 4] {
+pub(crate) fn input_color(port: &PortView) -> [u8; 4] {
     port.value
         .as_deref()
         .or(port.default.as_deref())
@@ -313,48 +342,159 @@ pub const COMMON_TYPES: [&str; 6] = [
 /// Nanoseconds in a millisecond: lengths of time are typed in milliseconds.
 const NANOS_PER_MILLI: f64 = 1_000_000.0;
 
-/// Display scaling for bounded audio settings. The provider schema owns the valid range.
+/// The range a slider or dial setting offers and how it spreads it, from the node's
+/// control hint (ADR-33). The provider schema still owns the valid range.
 #[derive(Clone, Copy)]
-pub(crate) struct AudioRange {
+pub(crate) struct NumberRange {
     min: f64,
     max: f64,
     logarithmic: bool,
+    /// The slider's notch style, when the hint names one.
+    notch: Option<orange_ui_controls::NotchStyle>,
 }
 
-/// Audio Level Trigger gives Hold and Reset margin the same dial on both surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioDial {
-    Hold,
-    Reset,
+/// The hint of setting `name`, when it asks for `widget`.
+pub(crate) fn setting_hint<'a>(
+    node: &'a NodeView,
+    name: &str,
+    widget: Widget,
+) -> Option<&'a Control> {
+    node.controls
+        .settings
+        .get(name)
+        .filter(|control| control.widget == widget)
 }
 
-impl AudioDial {
-    pub(crate) fn for_setting(node: &NodeView, name: &str) -> Option<Self> {
-        if node.definition != "org.orange.audio/noise-level" {
-            return None;
-        }
-        match name {
-            "hold_ms" => Some(Self::Hold),
-            "reset_db" => Some(Self::Reset),
-            _ => None,
-        }
+/// The slider or dial hint of a numeric input, when it gives the range to offer:
+/// an input has no schema bounds of its own (ADR-33).
+pub(crate) fn input_hint<'a>(node: &'a NodeView, port: &PortView) -> Option<&'a Control> {
+    let numeric = matches!(
+        port.ty.as_deref(),
+        Some(
+            "core/f64@1" | "core/f32@1" | "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1"
+        )
+    );
+    node.controls.inputs.get(&port.id).filter(|control| {
+        numeric
+            && matches!(control.widget, Widget::Slider | Widget::Dial)
+            && NumberRange::of_input(control).is_some()
+    })
+}
+
+fn input_number_text(port: &PortView, value: f64) -> String {
+    if matches!(
+        port.ty.as_deref(),
+        Some("core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1")
+    ) {
+        value.round().to_string()
+    } else {
+        value.to_string()
     }
+}
 
-    fn controls(self) -> (Option<f32>, orange_ui_controls::KnobStyle) {
-        match self {
-            Self::Hold => (Some(1.0), orange_ui_controls::KnobStyle::Notched),
-            Self::Reset => (None, orange_ui_controls::KnobStyle::Arc),
-        }
+pub(crate) fn advanced_input(node: &NodeView, port: &PortView) -> bool {
+    node.controls
+        .region_of(&port.id)
+        .is_some_and(|(region, _)| region == Region::Advanced)
+}
+
+pub(crate) fn field_order(node: &NodeView, name: &str) -> (u8, usize, usize) {
+    node.controls
+        .regions
+        .iter()
+        .enumerate()
+        .find_map(|(index, placement)| {
+            let field = placement.fields.iter().position(|field| field == name)?;
+            let region = match placement.region {
+                Region::Header => 0,
+                Region::Aside => 1,
+                Region::Body => 2,
+                Region::Advanced => 3,
+            };
+            Some((region, index, field))
+        })
+        .unwrap_or((2, usize::MAX, 0))
+}
+
+fn knob_style(control: &Control) -> orange_ui_controls::KnobStyle {
+    use orange_host::controls::Knob;
+    use orange_ui_controls::KnobStyle;
+    match control.knob {
+        None | Some(Knob::Arc) => KnobStyle::Arc,
+        Some(Knob::Bipolar) => KnobStyle::Bipolar,
+        Some(Knob::Notched) => KnobStyle::Notched,
+        Some(Knob::Loop) => KnobStyle::Loop,
     }
 }
 
-const AUDIO_DIAL_MARKS: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0];
+fn notch_style(control: &Control) -> Option<orange_ui_controls::NotchStyle> {
+    use orange_host::controls::Notch;
+    control.notch.map(|notch| match notch {
+        Notch::Pill => orange_ui_controls::NotchStyle::Pill,
+        Notch::Tick => orange_ui_controls::NotchStyle::Tick,
+        Notch::Dot => orange_ui_controls::NotchStyle::Dot,
+    })
+}
+
+/// A number as the hint shows it: with its decimals, when the hint gives them.
+pub(crate) fn hinted_number(control: Option<&Control>, value: f64) -> String {
+    match control.and_then(|control| control.precision) {
+        Some(digits) => format!("{value:.*}", usize::from(digits)),
+        None => value.to_string(),
+    }
+}
+
+/// The next whole value a stepper can offer within its declared limits.
+pub(crate) fn stepper_value(control: &Control, schema: &Json, value: f64, sign: i8) -> Option<f64> {
+    let [low, high] = control.range.unwrap_or_else(|| {
+        [
+            schema["minimum"].as_f64().unwrap_or(f64::MIN),
+            schema["maximum"].as_f64().unwrap_or(f64::MAX),
+        ]
+    });
+    let (low, high) = (low.ceil(), high.floor());
+    let step = control.step.unwrap_or(1.0);
+    if !low.is_finite()
+        || !high.is_finite()
+        || low > high
+        || !step.is_finite()
+        || step <= 0.0
+        || !value.is_finite()
+    {
+        return None;
+    }
+    Some((value + f64::from(sign) * step).round().clamp(low, high))
+}
+
+/// The dial hint of setting `name`, when the node's definition asks for a dial.
+pub(crate) fn dial_of<'a>(node: &'a NodeView, name: &str) -> Option<&'a Control> {
+    node.controls
+        .settings
+        .get(name)
+        .filter(|control| control.widget == Widget::Dial)
+        .filter(|_| {
+            node.schema
+                .as_ref()
+                .and_then(|schema| NumberRange::of(node, name, &schema["properties"][name]))
+                .is_some()
+        })
+}
+
+/// The step a dial moves by and the unit it shows.
+#[expect(clippy::cast_possible_truncation, reason = "a display step")]
+fn dial_face(dial: &Control) -> (Option<f32>, &str) {
+    (
+        dial.step.map(|step| step as f32),
+        dial.unit.as_deref().unwrap_or_default(),
+    )
+}
 
 #[derive(Clone, Copy)]
-pub(crate) struct ThresholdEdit {
+pub(crate) struct ThresholdEdit<'a> {
+    control: Option<&'a Control>,
     node: NodeId,
     saved: f64,
-    range: AudioRange,
+    range: NumberRange,
 }
 
 #[derive(Clone, Copy)]
@@ -365,23 +505,27 @@ struct ThresholdPreview {
     frame: u64,
 }
 
-impl ThresholdEdit {
-    pub fn for_node(node: &NodeView) -> Option<Self> {
+impl<'a> ThresholdEdit<'a> {
+    /// The setting this editor shapes: the threshold of a noise node, in decibels.
+    pub(crate) const SETTING: &'static str = "threshold_db";
+
+    pub fn for_node(node: &'a NodeView) -> Option<Self> {
         if !canvas::spectrum::is_noise(node) {
             return None;
         }
-        let schema = &node.schema.as_ref()?["properties"]["threshold_db"];
+        let schema = &node.schema.as_ref()?["properties"][Self::SETTING];
         if schema["type"] != "number" || schema["readOnly"] == true {
             return None;
         }
-        let range = AudioRange::of(node, "threshold_db", schema)?;
-        let saved = node.settings["threshold_db"]
+        let range = NumberRange::of(node, Self::SETTING, schema)?;
+        let saved = node.settings[Self::SETTING]
             .as_f64()
             .or_else(|| schema["default"].as_f64())?;
         Some(Self {
             node: node.id,
             saved,
             range,
+            control: node.controls.settings.get(Self::SETTING),
         })
     }
 
@@ -400,6 +544,9 @@ impl ThresholdEdit {
     }
 
     pub fn update(self, response: &egui::Response, value: f64) -> Option<f64> {
+        if !value.is_finite() {
+            return None;
+        }
         let ctx = &response.ctx;
         let owner = response.id;
         let value = value.clamp(self.range.min, self.range.max);
@@ -431,9 +578,13 @@ impl ThresholdEdit {
 
     pub fn slider(self, ui: &mut egui::Ui, surface: Surface) -> Option<f64> {
         let mut fraction = self.range.fraction(self.shown(ui.ctx()));
-        let response =
-            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.range.marks());
+        let defaults = self.range.marks();
+        let marks = self.range.slider_marks(self.control, &defaults);
+        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks);
         let value = (self.range.value(fraction) * 10.0).round() / 10.0;
+        response.widget_info(|| {
+            egui::WidgetInfo::slider(response.enabled(), value, t("audio-setting-threshold-db"))
+        });
         self.update(&response, value)
     }
 
@@ -453,19 +604,59 @@ impl ThresholdEdit {
     }
 }
 
-impl AudioRange {
+impl NumberRange {
+    /// The range of a setting whose definition asks for a slider or a dial: the hint's
+    /// own range, else the schema's bounds.
     pub(crate) fn of(node: &NodeView, name: &str, schema: &Json) -> Option<Self> {
-        if !node.definition.starts_with("org.orange.audio/")
+        let control = node.controls.settings.get(name)?;
+        if !matches!(control.widget, Widget::Slider | Widget::Dial)
             || !matches!(schema["type"].as_str(), Some("number" | "integer"))
         {
             return None;
         }
-        let (min, max) = (schema["minimum"].as_f64()?, schema["maximum"].as_f64()?);
-        (min < max && min.is_finite() && max.is_finite()).then_some(Self {
+        let [min, max] = control
+            .range
+            .or_else(|| Some([schema["minimum"].as_f64()?, schema["maximum"].as_f64()?]))?;
+        Self::from_bounds(control, min, max)
+    }
+
+    /// The range a hinted input offers ([`input_hint`]).
+    pub(crate) fn of_input(control: &Control) -> Option<Self> {
+        let [min, max] = control.range?;
+        Self::from_bounds(control, min, max)
+    }
+
+    fn from_bounds(control: &Control, min: f64, max: f64) -> Option<Self> {
+        if !(min.is_finite() && max.is_finite() && min < max)
+            || (control.scale == Scale::Log && min <= 0.0)
+        {
+            return None;
+        }
+        if control.widget == Widget::Dial && !Self::dial_bounds_fit(min, max) {
+            return None;
+        }
+        Some(Self {
             min,
             max,
-            logarithmic: min > 0.0 && name.ends_with("_hz"),
+            logarithmic: control.scale == Scale::Log && min.ln() < max.ln(),
+            notch: notch_style(control),
         })
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the rotary control uses f32 bounds"
+    )]
+    fn dial_bounds_fit(min: f64, max: f64) -> bool {
+        let (min, max) = (min as f32, max as f32);
+        max > min && (max - min).is_finite()
+    }
+
+    fn style(self) -> orange_ui_controls::SliderStyle {
+        orange_ui_controls::SliderStyle {
+            notch: self.notch.unwrap_or_default(),
+            ..Default::default()
+        }
     }
 
     #[expect(
@@ -473,23 +664,40 @@ impl AudioRange {
         reason = "normalized screen coordinate"
     )]
     fn fraction(self, value: f64) -> f32 {
-        let value = value.clamp(self.min, self.max);
-        if self.logarithmic {
-            ((value / self.min).ln() / (self.max / self.min).ln()) as f32
-        } else {
-            ((value - self.min) / (self.max - self.min)) as f32
+        if value.is_nan() || value <= self.min {
+            return 0.0;
         }
+        if value >= self.max {
+            return 1.0;
+        }
+        let span = self.max - self.min;
+        let fraction = if self.logarithmic {
+            (value.ln() - self.min.ln()) / (self.max.ln() - self.min.ln())
+        } else if span.is_finite() {
+            (value - self.min) / span
+        } else {
+            (value * 0.5 - self.min * 0.5) / (self.max * 0.5 - self.min * 0.5)
+        };
+        fraction.clamp(0.0, 1.0) as f32
     }
 
     fn value(self, fraction: f32) -> f64 {
-        if fraction <= 0.0 {
+        if fraction.is_nan() || fraction <= 0.0 {
             self.min
         } else if fraction >= 1.0 {
             self.max
-        } else if self.logarithmic {
-            self.min * (self.max / self.min).powf(f64::from(fraction))
         } else {
-            self.min + f64::from(fraction) * (self.max - self.min)
+            let fraction = f64::from(fraction);
+            let span = self.max - self.min;
+            let value = if self.logarithmic {
+                let min = self.min.ln();
+                (min + fraction * (self.max.ln() - min)).exp()
+            } else if span.is_finite() {
+                self.min + fraction * span
+            } else {
+                (1.0 - fraction) * self.min + fraction * self.max
+            };
+            value.clamp(self.min, self.max)
         }
     }
 
@@ -499,75 +707,168 @@ impl AudioRange {
         surface: Surface,
         id: egui::Id,
         value: f64,
+        label: &str,
+        control: Option<&Control>,
     ) -> Option<f64> {
         let id = id.with("audio-drag");
-        self.marked_slider(ui, surface, id, value)
+        let mut fraction = ui
+            .data(|data| data.get_temp::<f32>(id))
+            .unwrap_or_else(|| self.fraction(value));
+        let defaults = self.marks();
+        let marks = self.slider_marks(control, &defaults);
+        let response = orange_ui_controls::SliderStyle::scope(ui, self.style(), |ui| {
+            orange_ui_controls::marked_slider(ui, surface, &mut fraction, &marks)
+        });
+        let value = self.value(fraction);
+        let value = control
+            .and_then(|control| control.step)
+            .map_or(value, |step| {
+                if fraction == 0.0 || fraction == 1.0 {
+                    value
+                } else {
+                    let snapped = self.min + ((value - self.min) / step).round() * step;
+                    if snapped.is_finite() {
+                        snapped.clamp(self.min, self.max)
+                    } else {
+                        value
+                    }
+                }
+            });
+        response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), value, label));
+        if response.dragged() {
+            ui.data_mut(|data| data.insert_temp(id, fraction));
+            return None;
+        }
+        ui.data_mut(|data| data.remove::<f32>(id));
+        (response.changed() || response.drag_stopped()).then_some(value)
     }
 
     #[expect(
         clippy::cast_possible_truncation,
         reason = "bounded audio controls use f32 for painting and retain the typed editor"
     )]
+    /// A dial for the setting. `caption` is shown inside it; leave it empty where a
+    /// label already sits beside the dial.
+    #[allow(clippy::too_many_arguments, reason = "one dial's state and face")]
     pub(crate) fn dial(
         self,
         ui: &mut egui::Ui,
         surface: Surface,
         id: egui::Id,
         value: f64,
-        dial: AudioDial,
+        dial: &Control,
+        label: &str,
+        caption: &str,
+        diameter: Option<f32>,
     ) -> Option<f64> {
-        let (step, style) = dial.controls();
+        let (step, unit) = dial_face(dial);
         let key = id.with("rotary-draft");
-        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(value as f32);
+        let shown_value = if value.is_nan() {
+            self.min
+        } else {
+            value.clamp(self.min, self.max)
+        } as f32;
+        let mut shown = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(shown_value);
         let response = ui
             .push_id(id, |ui| {
-                orange_ui_controls::rotary(
+                orange_ui_controls::styled_dial(
                     ui,
                     surface,
                     &mut shown,
                     self.min as f32..=self.max as f32,
                     step,
-                    AUDIO_DIAL_MARKS,
-                    style,
+                    orange_ui_controls::DialFace {
+                        caption: dial.caption.as_ref().map_or(caption, |text| &text.fallback),
+                        unit,
+                        diameter,
+                    },
+                    orange_ui_controls::DialStyle {
+                        knob: knob_style(dial),
+                        precision: dial.precision,
+                    },
                 )
             })
             .inner;
+        response
+            .widget_info(|| egui::WidgetInfo::slider(response.enabled(), f64::from(shown), label));
         if response.dragged() {
             ui.data_mut(|d| d.insert_temp(key, shown));
             return None;
         }
-        if response.drag_stopped() {
-            ui.data_mut(|d| d.remove::<f32>(key));
-        }
-        (shown != value as f32 && (response.changed() || response.drag_stopped()))
-            .then_some(f64::from(shown))
+        ui.data_mut(|d| d.remove::<f32>(key));
+        (shown.is_finite()
+            && shown != shown_value
+            && (response.changed() || response.drag_stopped()))
+        .then(|| f64::from(shown).clamp(self.min, self.max))
     }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "bounded audio display values"
     )]
-    pub(crate) fn paint_dial(self, ui: &egui::Ui, rect: egui::Rect, value: f64, dial: AudioDial) {
-        let (step, style) = dial.controls();
-        orange_ui_controls::rotary_preview(
+    pub(crate) fn paint_dial(
+        self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        value: f64,
+        dial: &Control,
+        caption: &str,
+    ) {
+        let (step, unit) = dial_face(dial);
+        orange_ui_controls::styled_dial_preview(
             ui,
             rect,
             Surface::Card,
             value as f32,
             self.min as f32..=self.max as f32,
             step,
-            AUDIO_DIAL_MARKS,
-            style,
+            orange_ui_controls::DialFace {
+                caption: dial.caption.as_ref().map_or(caption, |text| &text.fallback),
+                unit,
+                diameter: None,
+            },
+            orange_ui_controls::DialStyle {
+                knob: knob_style(dial),
+                precision: dial.precision,
+            },
         );
     }
 
-    pub(crate) fn paint_slider(self, ui: &egui::Ui, rect: egui::Rect, value: f64) {
-        orange_ui_controls::marked_slider_preview(
-            ui,
-            rect,
-            Surface::Card,
-            self.fraction(value),
-            &self.marks(),
-        );
+    pub(crate) fn paint_slider(
+        self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        value: f64,
+        control: Option<&Control>,
+    ) {
+        let defaults = self.marks();
+        let marks = self.slider_marks(control, &defaults);
+        orange_ui_controls::SliderStyle::apply(ui.ctx(), self.style(), || {
+            orange_ui_controls::marked_slider_preview(
+                ui,
+                rect,
+                Surface::Card,
+                self.fraction(value),
+                &marks,
+            );
+        });
+    }
+
+    fn slider_marks<'a>(
+        self,
+        control: Option<&Control>,
+        fallback: &'a [f32],
+    ) -> std::borrow::Cow<'a, [f32]> {
+        let Some(control) = control.filter(|control| !control.marks.is_empty()) else {
+            return fallback.into();
+        };
+        control
+            .marks
+            .iter()
+            .copied()
+            .filter(|at| (self.min..=self.max).contains(at))
+            .map(|at| self.fraction(at))
+            .collect::<Vec<_>>()
+            .into()
     }
 
     fn marks(self) -> [f32; 5] {
@@ -579,31 +880,12 @@ impl AudioRange {
             [0.0, 0.25, 0.5, 0.75, 1.0]
         }
     }
-
-    fn marked_slider(
-        self,
-        ui: &mut egui::Ui,
-        surface: Surface,
-        id: egui::Id,
-        value: f64,
-    ) -> Option<f64> {
-        let mut fraction = ui
-            .data(|data| data.get_temp::<f32>(id))
-            .unwrap_or_else(|| self.fraction(value));
-        let response = orange_ui_controls::marked_slider(ui, surface, &mut fraction, &self.marks());
-        if response.dragged() {
-            ui.data_mut(|data| data.insert_temp(id, fraction));
-            return None;
-        }
-        ui.data_mut(|data| data.remove::<f32>(id));
-        (response.changed() || response.drag_stopped()).then(|| self.value(fraction))
-    }
 }
 
 pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'static str> {
     if node.definition == "org.orange.audio/noise-level" {
         return Some(t(match setting {
-            "threshold_db" => "audio-setting-threshold-db",
+            ThresholdEdit::SETTING => "audio-setting-threshold-db",
             "reset_db" => "audio-reset-margin",
             "hold_ms" => "audio-setting-hold-ms",
             "direction" => "when-mode",
@@ -614,7 +896,7 @@ pub(crate) fn audio_setting_label(node: &NodeView, setting: &str) -> Option<&'st
         return None;
     }
     let key = match setting {
-        "threshold_db" => "audio-setting-threshold-db",
+        ThresholdEdit::SETTING => "audio-setting-threshold-db",
         "reset_db" => "noise-gate-reset",
         "attack_ms" => "noise-gate-attack",
         "hold_ms" => "audio-setting-hold-ms",
@@ -698,7 +980,7 @@ impl<'a> Field<'a> {
     }
 
     fn for_node(node: &NodeView, name: &str, schema: &'a Json) -> Self {
-        if node.definition == "core/on-watch" && name != "mode" {
+        if intrinsic::is_watch(&node.definition) && name != "mode" {
             return Self::WatchNumber {
                 whole: matches!(name, "hold" | "cooldown"),
             };
@@ -728,20 +1010,25 @@ impl<'a> Field<'a> {
                 .map_err(|_| tf("not-whole-number", &[("typed", typed.into())])),
             Self::Number => typed
                 .parse::<f64>()
-                .map(Json::from)
-                .map_err(|_| tf("not-a-number", &[("typed", typed.into())])),
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Json::Number)
+                .ok_or_else(|| tf("not-a-number", &[("typed", typed.into())])),
             Self::WatchNumber { whole } => watch_number_value(typed, *whole),
             Self::Time => typed
                 .parse::<f64>()
                 .ok()
-                .filter(|millis| millis.is_finite() && *millis >= 0.0)
-                .map(|millis| {
+                .filter(|millis| *millis >= 0.0)
+                .map(|millis| (millis * NANOS_PER_MILLI).round())
+                // 2^64 is exactly representable as f64; u64::MAX is not.
+                .filter(|nanos| (0.0..18_446_744_073_709_551_616.0).contains(nanos))
+                .map(|nanos| {
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         reason = "a non-negative length of time well inside u64"
                     )]
-                    let nanos = (millis * NANOS_PER_MILLI).round() as u64;
+                    let nanos = nanos as u64;
                     json!(nanos.to_string())
                 })
                 .ok_or_else(|| tf("not-milliseconds", &[("typed", typed.into())])),
@@ -794,14 +1081,22 @@ pub(crate) fn watch_field_entries(node: &NodeView) -> impl Iterator<Item = (&Str
         .schema
         .as_ref()
         .and_then(|schema| schema["properties"].as_object());
-    let fields: &[&str] = if node.definition == "core/on-watch" {
-        watch_fields(node.settings["mode"].as_str())
-    } else {
-        &[]
+    let fields: &[&str] = match node.definition.as_str() {
+        intrinsic::ON_WATCH => watch_fields(node.settings["mode"].as_str()),
+        intrinsic::CHANGE_BEYOND_TOLERANCE => &["threshold"],
+        _ => &[],
     };
     fields
         .iter()
         .filter_map(move |name| properties?.get_key_value(*name))
+}
+
+pub(crate) fn watch_field_label(node: &NodeView, name: &str) -> &'static str {
+    if node.definition == intrinsic::CHANGE_BEYOND_TOLERANCE && name == "threshold" {
+        t("change-tolerance")
+    } else {
+        watch_label(name)
+    }
 }
 
 pub(crate) fn watch_label(name: &str) -> &'static str {
@@ -883,7 +1178,7 @@ impl Editor {
         let found = self
             .graph()
             .and_then(|graph| graph.nodes.iter().find(|found| found.id == node));
-        let watch = found.is_some_and(|found| found.definition == "core/on-watch");
+        let watch = found.is_some_and(|found| found.definition == intrinsic::ON_WATCH);
         let mut settings = found
             .map(|found| found.settings.clone())
             .filter(Json::is_object)
@@ -928,14 +1223,19 @@ impl Editor {
         self.edited(host, result)
     }
 
-    /// The declared variables as (ID, name).
-    pub(crate) fn variable_choices(&self) -> Vec<(String, String)> {
+    /// The declared variables for canvas and Properties pickers.
+    pub(crate) fn variable_choices(&self) -> Vec<declarations::VariableChoice> {
         self.declarations()
             .into_iter()
             .flat_map(|declared| &declared.variables)
             .filter_map(|variable| {
                 let label = format!("{} ({})", variable.name, type_name(&variable.ty));
-                Some((variable.id.clone()?, label))
+                Some(declarations::VariableChoice {
+                    id: variable.id.clone()?,
+                    label,
+                    scope: variable.scope,
+                    ty: variable.ty.clone(),
+                })
             })
             .collect()
     }
@@ -1024,7 +1324,7 @@ impl Editor {
     }
 
     /// The value on an input as its field shows it before typing: text without quotes.
-    pub(crate) fn shown_input(port: &orange_host::PortView) -> String {
+    pub(crate) fn shown_input(port: &PortView) -> String {
         let shown = port.value.clone().unwrap_or_default();
         serde_json::from_str::<String>(&shown).unwrap_or(shown)
     }
@@ -1208,104 +1508,171 @@ impl Editor {
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let http = http_request_variant(&node);
-                if http {
-                    self.values_section(ui, &node);
-                }
-                if self.canvas.has_failure_routes(node.id) {
-                    let label = if self.canvas.failure_routes_expanded(node.id) {
-                        t("hide-failure-routes")
-                    } else {
-                        t("show-failure-routes")
-                    };
-                    if ui
-                        .button(label)
-                        .on_hover_text(t("failure-routes-hint"))
-                        .clicked()
-                    {
-                        self.canvas.toggle_failure_routes(node.id);
-                    }
-                }
-                let has_settings = node
-                    .schema
-                    .as_ref()
-                    .and_then(|schema| schema["properties"].as_object())
-                    .is_some_and(|fields| !fields.is_empty());
-                let references = node
-                    .references
-                    .iter()
-                    .filter(|(_, kind)| *kind != ReferenceKind::Connection);
-                let setup =
-                    references.clone().next().is_some() || has_settings || !node.types.is_empty();
-                if setup {
-                    section(ui, t("set-up"));
-                    for (pointer, kind) in references {
-                        if let Some(asked) = self.reference_field(ui, &node, pointer, *kind) {
-                            change = Some(asked);
+        // Delete stays in the panel's bottom right corner while the fields scroll.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+            ui.add_space(4.0);
+            if controls::button(
+                ui,
+                Surface::Panel,
+                controls::Action::Destructive,
+                true,
+                egui::Button::new(t("delete-node")),
+            )
+            .clicked()
+            {
+                change = Some(Change::Delete);
+            }
+            ui.separator();
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let http = http_request_variant(&node);
+                        if http {
+                            self.values_section(ui, &node);
                         }
-                    }
-                    if let Some(asked) = self.settings_fields(ui, &node, false) {
-                        change = Some(asked);
-                    }
-                }
-                if !node.variadic.is_empty()
-                    && node.definition != "org.orange.audio/multiband-spectrum"
-                {
-                    section(ui, t("ports"));
-                    if let Some(asked) = Self::variadic_fields(ui, &node) {
-                        change = Some(asked);
-                    }
-                }
-                if node.ports.iter().any(|port| port.input && !port.exec) {
-                    section(ui, t("inputs"));
-                    if !self.build_map_pair_control(ui, &node)
-                        && let Some(asked) = self.input_fields(ui, &node, host)
-                    {
-                        change = Some(asked);
-                    }
-                }
-                // Tuning settings and type pins: rarely changed, never on the card.
-                let tuning = Self::has_tuning(&node);
-                if tuning || !node.types.is_empty() {
-                    egui::CollapsingHeader::new(egui::RichText::new(t("advanced")).strong())
-                        .id_salt(("orange-advanced", node.id))
-                        .show(ui, |ui| {
-                            if tuning && let Some(asked) = self.settings_fields(ui, &node, true) {
+                        if http
+                            && self.named_connection(&node).is_none_or(|connection| {
+                                connection.scope == orange_host::ConnectionScope::Graph
+                                    && connection.settings["base_url"]
+                                        .as_str()
+                                        .is_none_or(|url| url.trim().is_empty())
+                            })
+                        {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(t("http-profile-needs-setup")).weak(),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        if let Some(connection) = self.named_connection(&node)
+                            && ui
+                                .button(t("edit-connection"))
+                                .on_hover_text(&connection.name)
+                                .clicked()
+                        {
+                            let connection = connection.clone();
+                            self.forms.edit_connection(&connection);
+                            self.probing = None;
+                        }
+                        if let Some(adapter) = self
+                            .named_connection(&node)
+                            .map(|connection| connection.adapter.clone())
+                            .or_else(|| http.then(|| declarations::network::HTTP.to_owned()))
+                            && ui.button(t("add-connection")).clicked()
+                        {
+                            self.forms.new_connection_for(node.id, &adapter);
+                            self.probing = None;
+                        }
+                        if self.canvas.has_failure_routes(node.id) {
+                            let label = if self.canvas.failure_routes_expanded(node.id) {
+                                t("hide-failure-routes")
+                            } else {
+                                t("show-failure-routes")
+                            };
+                            if ui
+                                .button(label)
+                                .on_hover_text(t("failure-routes-hint"))
+                                .clicked()
+                            {
+                                self.canvas.toggle_failure_routes(node.id);
+                            }
+                        }
+                        let has_settings = node
+                            .schema
+                            .as_ref()
+                            .and_then(|schema| schema["properties"].as_object())
+                            .is_some_and(|fields| !fields.is_empty());
+                        let references = node
+                            .references
+                            .iter()
+                            .filter(|(_, kind)| *kind != ReferenceKind::Connection);
+                        let setup = references.clone().next().is_some()
+                            || has_settings
+                            || !node.types.is_empty();
+                        if setup {
+                            section(ui, t("set-up"));
+                            for (pointer, kind) in references {
+                                if let Some(asked) = self.reference_field(ui, &node, pointer, *kind)
+                                {
+                                    change = Some(asked);
+                                }
+                            }
+                            if let Some(asked) = self.settings_fields(ui, &node, false) {
                                 change = Some(asked);
                             }
-                            if let Some(asked) = Self::type_fields(ui, &node) {
+                        }
+                        if !node.variadic.is_empty()
+                            && node.definition != "org.orange.audio/multiband-spectrum"
+                        {
+                            section(ui, t("ports"));
+                            if node.definition == intrinsic::SWITCH
+                                && node
+                                    .ports
+                                    .iter()
+                                    .find(|port| port.input && port.id == "key")
+                                    .and_then(|port| port.ty.as_deref())
+                                    .is_some_and(|ty| {
+                                        self.document.as_ref().is_some_and(|doc| {
+                                            host.enum_choices(&doc.draft, ty).is_some()
+                                        })
+                                    })
+                                && ui.button(t("switch-enum-cases")).clicked()
+                            {
+                                change = Some(Change::AddEnumCases);
+                            }
+                            if let Some(asked) = Self::variadic_fields(ui, &node) {
                                 change = Some(asked);
                             }
-                        });
-                }
-                if !http {
-                    self.values_section(ui, &node);
-                }
-                Self::outputs_section(ui, &node);
-                if let Some(current) = self
-                    .document
-                    .as_ref()
-                    .and_then(|doc| host.entry_timing(&doc.draft, node.id))
-                    && let Some(timing) = event_timing_fields(ui, node.id, current)
-                {
-                    change = Some(Change::EventTiming(timing));
-                }
-                ui.add_space(10.0);
-                if controls::button(
-                    ui,
-                    Surface::Panel,
-                    controls::Action::Destructive,
-                    true,
-                    egui::Button::new(t("delete-node")),
-                )
-                .clicked()
-                {
-                    change = Some(Change::Delete);
-                }
+                        }
+                        if input_ports(&node).any(|port| !advanced_input(&node, port)) {
+                            section(ui, t("inputs"));
+                            if !self.build_map_pair_control(ui, &node)
+                                && let Some(asked) = self.input_fields(ui, &node, host, false)
+                            {
+                                change = Some(asked);
+                            }
+                        }
+                        // Tuning settings and type pins: rarely changed, never on the card.
+                        let tuning = Self::has_tuning(&node);
+                        let advanced_inputs =
+                            input_ports(&node).any(|port| advanced_input(&node, port));
+                        if tuning || advanced_inputs || !node.types.is_empty() {
+                            egui::CollapsingHeader::new(
+                                egui::RichText::new(t("advanced")).strong(),
+                            )
+                            .id_salt(("orange-advanced", node.id))
+                            .show(ui, |ui| {
+                                if tuning && let Some(asked) = self.settings_fields(ui, &node, true)
+                                {
+                                    change = Some(asked);
+                                }
+                                if advanced_inputs
+                                    && let Some(asked) = self.input_fields(ui, &node, host, true)
+                                {
+                                    change = Some(asked);
+                                }
+                                if let Some(asked) = Self::type_fields(ui, &node) {
+                                    change = Some(asked);
+                                }
+                            });
+                        }
+                        if !http {
+                            self.values_section(ui, &node);
+                        }
+                        Self::outputs_section(ui, &node);
+                        if let Some(current) = self
+                            .document
+                            .as_ref()
+                            .and_then(|doc| host.entry_timing(&doc.draft, node.id))
+                            && let Some(timing) = event_timing_fields(ui, node.id, current)
+                        {
+                            change = Some(Change::EventTiming(timing));
+                        }
+                    });
             });
+        });
         let Some(change) = change else {
             return;
         };
@@ -1320,6 +1687,12 @@ impl Editor {
                 let _ = self.set_input(host, (node.id, &port), typed.as_deref());
             }
             Change::OmitRecordField(port, ty) => self.omit_record_field(host, node.id, &port, ty),
+            Change::AddEnumCases => {
+                if let Some(draft) = self.editing() {
+                    let result = host.add_enum_cases(draft, node.id);
+                    let _ = self.edited(host, result);
+                }
+            }
             Change::AddPort(port) => {
                 let _ = self.add_port(host, node.id, &port);
             }
@@ -1351,10 +1724,31 @@ impl Editor {
             .pointer(pointer)
             .and_then(Json::as_str)
             .map(str::to_owned);
-        let declared = if kind == ReferenceKind::Variable {
-            self.variable_choices()
-        } else {
-            Vec::new()
+        let declared: Vec<_> = match kind {
+            ReferenceKind::Variable => self
+                .variable_choices()
+                .into_iter()
+                .filter(|choice| choice.fits(&node.definition))
+                .map(|choice| (choice.id, choice.label))
+                .collect(),
+            ReferenceKind::Event => self
+                .declarations()
+                .into_iter()
+                .flat_map(|declared| &declared.events)
+                .map(|event| {
+                    (
+                        event.id.to_string(),
+                        format!(
+                            "{} ({})",
+                            event.name,
+                            declarations::payload_name(
+                                event.payload.as_ref().map_or("", |ty| ty.as_str())
+                            )
+                        ),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
         };
         let what = match kind {
             ReferenceKind::Variable => "variable",
@@ -1369,7 +1763,13 @@ impl Editor {
                 || tf("choose-reference", &[("kind", what.into())]),
                 |(_, name)| name.clone(),
             );
-        let label = words(pointer.trim_start_matches('/'));
+        let label = if intrinsic::counter_operation(&node.definition).is_some()
+            && kind == ReferenceKind::Variable
+        {
+            t("counter-variable").to_owned()
+        } else {
+            words(pointer.trim_start_matches('/'))
+        };
         let mut chosen = None;
         let mut quick = false;
         row(ui, &label, None, |ui| {
@@ -1384,20 +1784,35 @@ impl Editor {
                             chosen = Some(Change::Setting(pointer.to_owned(), Some(json!(id))));
                         }
                     }
-                    if kind == ReferenceKind::Variable {
+                    if matches!(kind, ReferenceKind::Variable | ReferenceKind::Event) {
                         if !declared.is_empty() {
                             ui.separator();
                         }
-                        quick = ui
-                            .selectable_label(false, tf("new-reference", &[("kind", what.into())]))
-                            .clicked();
+                        let new = if kind == ReferenceKind::Event {
+                            t("event-new").to_owned()
+                        } else {
+                            tf("new-reference", &[("kind", what.into())])
+                        };
+                        quick = ui.selectable_label(false, new).clicked();
                     } else if declared.is_empty() {
                         ui.weak(tf("no-references", &[("kind", what.into())]));
                     }
                 });
         });
+        if kind == ReferenceKind::Event
+            && named
+                .as_deref()
+                .is_some_and(|id| declared.iter().any(|(key, _)| key == id))
+            && ui.button(t("event-rename")).clicked()
+        {
+            self.rename_event_for_node(node.id);
+        }
         if quick {
-            self.new_variable_for_node(node.id, pointer);
+            match kind {
+                ReferenceKind::Event => self.new_event_for_node(node.id),
+                ReferenceKind::Variable => self.new_variable_for_node(node.id, pointer),
+                _ => {}
+            }
         }
         chosen
     }
@@ -1418,8 +1833,13 @@ impl Editor {
             .filter_map(Json::as_str)
             .collect();
         let mut changed = None;
-        let watch = node.definition == "core/on-watch";
-        let fields = watch_field_entries(node).chain(properties.iter().filter(|_| !watch));
+        let watch = intrinsic::is_watch(&node.definition);
+        let mut fields: Vec<_> = watch_field_entries(node)
+            .chain(properties.iter().filter(|_| !watch))
+            .collect();
+        if !node.controls.regions.is_empty() {
+            fields.sort_by_key(|(name, _)| field_order(node, name));
+        }
         for (name, schema) in fields {
             if schema["readOnly"] == true {
                 continue;
@@ -1429,7 +1849,7 @@ impl Editor {
             }
             let pointer = format!("/{name}");
             if node.references.iter().any(|(at, _)| *at == pointer)
-                || canvas::advanced_setting(name) != tuning
+                || canvas::advanced_setting(node, name) != tuning
             {
                 continue;
             }
@@ -1439,8 +1859,25 @@ impl Editor {
                 || (watch && matches!(name.as_str(), "threshold" | "low" | "high"));
             let measurement_time =
                 name == "window_ms" && node.definition.starts_with("org.orange.audio/");
+            let stream = match (node.definition.as_str(), name.as_str()) {
+                (intrinsic::COLLECT, "max_items") => {
+                    Some(("stream-max-items", "stream-max-items-help"))
+                }
+                (intrinsic::TEE, "capacity") => {
+                    Some(("stream-tee-capacity", "stream-tee-capacity-help"))
+                }
+                (intrinsic::TEE, "max_bytes") => {
+                    Some(("stream-tee-max-bytes", "stream-tee-max-bytes-help"))
+                }
+                (intrinsic::TEE, "overflow") => {
+                    Some(("stream-tee-overflow", "stream-tee-overflow-help"))
+                }
+                _ => None,
+            };
             let label = if watch {
-                watch_label(name).to_owned()
+                watch_field_label(node, name).to_owned()
+            } else if let Some((label, _)) = stream {
+                t(label).to_owned()
             } else if name == "max_iterations" {
                 t("max-iterations").to_owned()
             } else if let Some(label) = audio_setting_label(node, name) {
@@ -1452,13 +1889,15 @@ impl Editor {
             } else if measurement_time {
                 t("audio-setting-window-ms").to_owned()
             } else if matches!(field, Field::Time) {
-                tf("in-milliseconds", &[("name", words(name).into())])
+                tf("in-milliseconds", &[("name", setting_name(name).into())])
             } else {
-                words(name)
+                setting_name(name)
             };
             let hover = Some(
                 if let Some(help) = audio_trigger_help(node, name) {
                     help
+                } else if let Some((_, help)) = stream {
+                    t(help)
                 } else if measurement_time {
                     t("audio-setting-window-help")
                 } else if name == "max_iterations" {
@@ -1472,6 +1911,33 @@ impl Editor {
             );
             let mut said = None;
             row(ui, &label, hover, |ui| match &field {
+                Field::Choice(options) if setting_hint(node, name, Widget::Segmented).is_some() => {
+                    // The same row of choices as on the card (ADR-33).
+                    let selected = current.as_str().or_else(|| schema["default"].as_str());
+                    let labels: Vec<String> = options
+                        .iter()
+                        .map(|option| setting_choice_label(node, option).into_owned())
+                        .collect();
+                    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                        egui::Sense::hover(),
+                    );
+                    let row = orange_ui_controls::ChoiceRow {
+                        labels: &labels,
+                        selected: options.iter().position(|option| selected == Some(*option)),
+                        defaulted: current.is_null(),
+                        surface: Surface::Panel,
+                        zoom: 1.0,
+                    };
+                    let id = ui.make_persistent_id(("orange-setting-choices", name.as_str()));
+                    if let Some(picked) = row.show_named(ui, rect, id, &label) {
+                        changed = Some(Change::Setting(
+                            pointer.clone(),
+                            Some(json!(options[picked])),
+                        ));
+                    }
+                }
                 Field::Choice(options) => {
                     let selected = current.as_str().or_else(|| schema["default"].as_str());
                     let shown = selected.map_or_else(
@@ -1482,7 +1948,7 @@ impl Editor {
                         .selected_text(shown)
                         .width(ui.available_width())
                         .show_select(ui, Surface::Panel, |ui| {
-                            if node.definition != "core/for-each"
+                            if node.definition != intrinsic::FOR_EACH
                                 && !needed
                                 && ui
                                     .selectable_label(current.is_null(), t("not-set"))
@@ -1513,7 +1979,7 @@ impl Editor {
                 | Field::Time
                 | Field::Json
                 | Field::Text => {
-                    if name == "threshold_db"
+                    if name == ThresholdEdit::SETTING
                         && let Some(threshold) = ThresholdEdit::for_node(node)
                     {
                         let width = (ui.available_width() - 102.0).max(28.0);
@@ -1528,12 +1994,14 @@ impl Editor {
                         }
                         return;
                     }
-                    if let Some(range) = AudioRange::of(node, name, schema)
+                    if let Some(range) = NumberRange::of(node, name, schema)
                         && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
                     {
                         let id = ui.make_persistent_id((&node.id, &pointer));
-                        let adjusted = if let Some(dial) = AudioDial::for_setting(node, name) {
-                            if let Some(value) = range.dial(ui, Surface::Panel, id, value, dial) {
+                        let adjusted = if let Some(dial) = dial_of(node, name) {
+                            if let Some(value) =
+                                range.dial(ui, Surface::Panel, id, value, dial, &label, "", None)
+                            {
                                 changed =
                                     Some(Change::Setting(pointer.clone(), Some(json!(value))));
                             }
@@ -1542,7 +2010,14 @@ impl Editor {
                             let width = (ui.available_width() - 96.0).max(32.0);
                             ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
                                 ui.set_width(width);
-                                range.slider(ui, Surface::Panel, id, value)
+                                range.slider(
+                                    ui,
+                                    Surface::Panel,
+                                    id,
+                                    value,
+                                    &label,
+                                    node.controls.settings.get(name),
+                                )
                             })
                             .inner
                         };
@@ -1558,6 +2033,31 @@ impl Editor {
                             };
                             changed = Some(Change::Setting(pointer.clone(), Some(literal)));
                         }
+                    }
+                    if let Some(stepper) = setting_hint(node, name, Widget::Stepper)
+                        && let Some(value) = current.as_f64().or_else(|| schema["default"].as_f64())
+                    {
+                        // Minus and plus around the number, as on the card (ADR-33).
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                            egui::Sense::hover(),
+                        );
+                        let id = ui.make_persistent_id(("orange-setting-steps", name.as_str()));
+                        if let Some(sign) =
+                            orange_ui_controls::step_buttons(ui, rect, id, Surface::Panel, 1.0)
+                            && let Some(next) = stepper_value(stepper, schema, value, sign)
+                            && let Ok(next) = Field::Whole.value(&next.to_string())
+                        {
+                            changed = Some(Change::Setting(pointer.clone(), Some(next)));
+                        }
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            hinted_number(Some(stepper), value),
+                            egui::TextStyle::Monospace.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        );
+                        return;
                     }
                     let before = field.typed(current);
                     let typed = self.typed.entry(setting_key(&pointer)).or_default();
@@ -1594,7 +2094,11 @@ impl Editor {
         node.schema
             .as_ref()
             .and_then(|schema| schema["properties"].as_object())
-            .is_some_and(|fields| fields.keys().any(|name| canvas::advanced_setting(name)))
+            .is_some_and(|fields| {
+                fields
+                    .keys()
+                    .any(|name| canvas::advanced_setting(node, name))
+            })
     }
 
     /// Choosers of the types of a generic node's parameters.
@@ -1683,7 +2187,13 @@ impl Editor {
     }
 
     /// Fields for the values on the node's inputs.
-    fn input_fields(&mut self, ui: &mut egui::Ui, node: &NodeView, host: &Host) -> Option<Change> {
+    fn input_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &NodeView,
+        host: &Host,
+        advanced: bool,
+    ) -> Option<Change> {
         let record_omissions = self
             .document
             .as_ref()
@@ -1693,7 +2203,13 @@ impl Editor {
             });
         let mut omit = None;
         let mut write = None;
-        for port in input_ports(node) {
+        let mut ports: Vec<_> = input_ports(node)
+            .filter(|port| advanced_input(node, port) == advanced)
+            .collect();
+        if !node.controls.regions.is_empty() {
+            ports.sort_by_key(|port| field_order(node, &port.id));
+        }
+        for port in ports {
             let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
             let details = self.canvas.port_details(node.id, &port.id, true);
             let editor = port.literal_editor(details);
@@ -1804,7 +2320,8 @@ impl Editor {
                 }
                 if let Some(multiline) = multiline {
                     let typed = self.typed.entry(port.id.clone()).or_default();
-                    let response = ui
+                    let mut syntax_error = None;
+                    let (response, formatted) = ui
                         .vertical(|ui| {
                             let id = ui.make_persistent_id(("property-text", node.id, &port.id));
                             let automatic =
@@ -1839,10 +2356,30 @@ impl Editor {
                                 });
                                 ui.ctx().request_repaint();
                             }
-                            response
+                            let mut formatted = false;
+                            if multiline == TextInput::Body
+                                && !typed.trim().is_empty()
+                                && ui.small_button(t("literal-format-json")).clicked()
+                            {
+                                match serde_json::from_str::<Json>(typed) {
+                                    Ok(value) => {
+                                        if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+                                            *typed = pretty;
+                                            formatted = true;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        syntax_error = Some(port_values::json_syntax_message(
+                                            error.line(),
+                                            error.column(),
+                                        ));
+                                    }
+                                }
+                            }
+                            (response, formatted)
                         })
                         .inner;
-                    if response.lost_focus() {
+                    if response.lost_focus() || formatted {
                         let typed = typed.clone();
                         let original = self
                             .document
@@ -1855,6 +2392,9 @@ impl Editor {
                             let literal = (!typed.is_empty()).then(|| multiline.literal(&typed));
                             write = Some(Change::Input(port.id.clone(), literal));
                         }
+                    }
+                    if let Some(error) = syntax_error {
+                        self.say(error);
                     }
                     return;
                 }
@@ -1925,6 +2465,38 @@ impl Editor {
                     return;
                 }
                 let before = Self::shown_input(port);
+                if let Some(control) = input_hint(node, port)
+                    && let Some(range) = NumberRange::of_input(control)
+                {
+                    let value = port
+                        .value
+                        .as_deref()
+                        .or(port.default.as_deref())
+                        .and_then(|text| {
+                            text.parse::<f64>()
+                                .ok()
+                                .or_else(|| serde_json::from_str::<String>(text).ok()?.parse().ok())
+                        })
+                        .filter(|value| value.is_finite())
+                        .unwrap_or_else(|| 0.0_f64.clamp(range.min, range.max));
+                    let id = ui.make_persistent_id((node.id, &port.id, "hinted-input"));
+                    let adjusted = if control.widget == Widget::Dial {
+                        range.dial(ui, Surface::Panel, id, value, control, &label, "", None)
+                    } else {
+                        let width = (ui.available_width() * 0.6).max(1.0);
+                        ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                            ui.set_width(width);
+                            range.slider(ui, Surface::Panel, id, value, &label, Some(control))
+                        })
+                        .inner
+                    };
+                    if let Some(value) = adjusted {
+                        write = Some(Change::Input(
+                            port.id.clone(),
+                            Some(input_number_text(port, value)),
+                        ));
+                    }
+                }
                 // A path is chosen with the system's chooser, where the application
                 // has one.
                 let path = node
@@ -2027,6 +2599,7 @@ enum Change {
     Input(String, Option<String>),
     OmitRecordField(String, orange_host::TypeExpr),
     AddPort(String),
+    AddEnumCases,
     RemovePort(String),
     EventTiming(Option<EventTiming>),
     /// Declare a variable and name it at the setting.
@@ -2135,6 +2708,13 @@ pub(crate) fn words(name: &str) -> String {
     text
 }
 
+fn setting_name(name: &str) -> String {
+    let key = format!("setting-{}", name.replace('_', "-"));
+    orange_host::Catalogs::built_in()
+        .message(&i18n::language(), &key)
+        .map_or_else(|| words(name), std::borrow::Cow::into_owned)
+}
+
 /// A port's name as a card or the panel shows it: an instance of a variadic port
 /// (`branch#0`) is counted from one ("branch 1"), and words are spaced.
 /// A port the host's catalogues name in the current language shows that name.
@@ -2156,15 +2736,21 @@ pub(crate) fn setting_choice_label<'a>(
     if choice.starts_with("local/") {
         return type_name(choice).into();
     }
-    setting_choice_caption(node, choice).into()
+    if let Some(label) = setting_choice_caption(node, choice) {
+        return label.into();
+    }
+    let key = format!("setting-choice-{}", choice.replace('_', "-"));
+    orange_host::Catalogs::built_in()
+        .message(&i18n::language(), &key)
+        .unwrap_or_else(|| choice.into())
 }
 
-fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
-    match (node.definition.as_str(), choice) {
-        ("core/on-watch", _) => watch_label(choice),
+fn setting_choice_caption(node: &NodeView, choice: &str) -> Option<&'static str> {
+    Some(match (node.definition.as_str(), choice) {
+        (intrinsic::ON_WATCH, _) => watch_label(choice),
         ("org.orange.audio/noise-level", _) => canvas::spectrum::direction(choice),
-        ("core/for-each", "list") => t("for-each-list"),
-        ("core/for-each", "map") => t("for-each-map"),
+        (intrinsic::FOR_EACH, "list") => t("for-each-list"),
+        (intrinsic::FOR_EACH, "map") => t("for-each-map"),
         ("org.orange.audio/filter", "low-pass") => t("audio-filter-low"),
         ("org.orange.audio/filter", "high-pass") => t("audio-filter-high"),
         ("org.orange.audio/filter", "band-pass") => t("audio-filter-band"),
@@ -2188,8 +2774,8 @@ fn setting_choice_caption<'a>(node: &NodeView, choice: &'a str) -> &'a str {
             "org.orange.time/parse-timestamp" | "org.orange.time/format-timestamp",
             "unix-nanoseconds",
         ) => t("timestamp-unix-nanoseconds"),
-        _ => choice,
-    }
+        _ => return None,
+    })
 }
 
 /// What a node of a package this host lacks says it needs: the package and, when the
@@ -2259,7 +2845,7 @@ mod tests {
         let (host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
         let watch = host
-            .add_node(&mut draft, "core/on-watch", [0.0, 0.0])
+            .add_node(&mut draft, intrinsic::ON_WATCH, [0.0, 0.0])
             .unwrap();
         let threshold = watch_number_value("18446744073709551615", false).unwrap();
         assert_eq!(threshold.as_u64(), Some(u64::MAX));
@@ -2283,6 +2869,77 @@ mod tests {
 }
 
 #[cfg(test)]
+mod numeric_hint_tests {
+    use super::*;
+
+    #[test]
+    fn extreme_slider_ranges_produce_finite_positions_and_values() {
+        for (scale, low, high, midpoint) in [
+            (Scale::Linear, -f64::MAX, f64::MAX, 0.0),
+            (Scale::Log, 1.0e-300, 1.0e300, 1.0),
+        ] {
+            let control = Control {
+                widget: Widget::Slider,
+                scale,
+                range: Some([low, high]),
+                ..Control::default()
+            };
+            let range = NumberRange::of_input(&control).unwrap();
+            assert_eq!(range.fraction(f64::NAN), 0.0);
+            assert_eq!(range.fraction(midpoint), 0.5);
+            assert_eq!(range.value(0.5), midpoint);
+            assert_eq!(range.value(0.0), low);
+            assert_eq!(range.value(1.0), high);
+            assert!(range.value(0.99).is_finite());
+        }
+    }
+
+    #[test]
+    fn typed_settings_reject_non_finite_numbers_and_overflowing_times() {
+        for input in ["NaN", "inf", "-inf", "1e309"] {
+            assert!(Field::Number.value(input).is_err());
+        }
+        for input in ["-1", "-0.000000001", "18446744073709.552", "1e300"] {
+            assert!(Field::Time.value(input).is_err());
+        }
+        assert_eq!(Field::Time.value("0.000001").unwrap(), json!("1"));
+    }
+
+    #[test]
+    fn steppers_reject_reversed_or_empty_integer_bounds() {
+        let hint = Control {
+            widget: Widget::Stepper,
+            ..Control::default()
+        };
+        for schema in [
+            json!({"minimum": 5, "maximum": 2}),
+            json!({"minimum": 1.2, "maximum": 1.8}),
+        ] {
+            assert_eq!(stepper_value(&hint, &schema, 2.0, 1), None);
+        }
+        let limits = json!({"minimum": 1.2, "maximum": 3.8});
+        assert_eq!(stepper_value(&hint, &limits, 3.0, 1), Some(3.0));
+        assert_eq!(stepper_value(&hint, &limits, 2.0, -1), Some(2.0));
+    }
+
+    #[test]
+    fn unrepresentable_dial_bounds_fall_back_to_typed_fields() {
+        for [low, high] in [
+            [-f64::MAX, f64::MAX],
+            [-3.0e38, 3.0e38],
+            [1.0, 1.0 + f64::EPSILON],
+        ] {
+            let control = Control {
+                widget: Widget::Dial,
+                range: Some([low, high]),
+                ..Control::default()
+            };
+            assert!(NumberRange::of_input(&control).is_none());
+        }
+    }
+}
+
+#[cfg(test)]
 mod width_tests {
     use super::*;
 
@@ -2291,7 +2948,7 @@ mod width_tests {
         let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
-        let node = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let node = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         assert!(editor.rename_node(&mut host, node, "Sample amount"));
         let context = egui::Context::default();
         context.set_theme(egui::Theme::Dark);
@@ -2534,6 +3191,51 @@ mod width_tests {
 }
 
 impl Editor {
+    pub(crate) fn variable_inspector_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = &self.inspected_variable else {
+            return;
+        };
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(variable) = document
+            .declared
+            .variables
+            .iter()
+            .find(|var| var.id.as_ref() == Some(id))
+        else {
+            self.inspected_variable = None;
+            return;
+        };
+        let mut open = true;
+        orange_ui_controls::dialog_window(ctx, &variable.name)
+            .id(egui::Id::unique("orange-variable-inspector"))
+            .default_width(480.0)
+            .collapsible(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.weak(type_name(&variable.ty));
+                if let Some(value) = document.values.get(id) {
+                    ui.weak(t(if document.flow.is_some() {
+                        "value-now-hint"
+                    } else {
+                        "value-last-run-hint"
+                    }));
+                    let full = match &value.exact_text {
+                        Some(orange_host::Value::Str(text)) => text.as_str(),
+                        Some(orange_host::Value::Json(text)) => text.as_str(),
+                        _ => &value.shown,
+                    };
+                    display_port_text(ui, &value.shown, full, 300.0);
+                } else {
+                    ui.weak(t("no-port-value"));
+                }
+            });
+        if !open {
+            self.inspected_variable = None;
+        }
+    }
+
     pub(crate) fn port_inspector_window(&mut self, ctx: &egui::Context) {
         let Some((node, port, input)) = &self.inspected_port else {
             return;
@@ -2545,7 +3247,21 @@ impl Editor {
         };
         let sample = self.canvas.port_sample(graph, *node, port, *input);
         let copyable = self.canvas.copyable_port_text(graph, *node, port, *input);
-        let title = format!("{} · {}", self.canvas.display_name(view), port_label(port));
+        let selected_port = view
+            .ports
+            .iter()
+            .find(|candidate| candidate.id == *port && candidate.input == *input);
+        let label = selected_port.map_or_else(
+            || port_label(port),
+            |candidate| {
+                if *input {
+                    input_caption(view, candidate)
+                } else {
+                    candidate.label.clone().unwrap_or_else(|| port_label(port))
+                }
+            },
+        );
+        let title = format!("{} · {label}", self.canvas.display_name(view));
         let mut open = true;
         orange_ui_controls::dialog_window(ctx, title)
             .id(egui::Id::unique("orange-port-inspector"))
@@ -2553,6 +3269,9 @@ impl Editor {
             .collapsible(false)
             .open(&mut open)
             .show(ctx, |ui| {
+                if let Some(ty) = selected_port.and_then(|port| port.ty.as_deref()) {
+                    ui.weak(type_name(ty));
+                }
                 if let (Some((shown, stale)), Some(copyable)) = (sample, copyable) {
                     if stale {
                         ui.weak(t("previous-port-value"));
@@ -2574,7 +3293,7 @@ impl Editor {
         let outputs: Vec<_> = node
             .ports
             .iter()
-            .filter(|port| !port.input && !port.exec)
+            .filter(|port| !port.input && !port.exec && !palette::bridge_link_port(node, port))
             .collect();
         if outputs.is_empty() {
             return;
@@ -2582,6 +3301,7 @@ impl Editor {
         section(ui, t("outputs"));
         for port in outputs {
             let caption = node_ergonomics::loop_result(node, port)
+                .or_else(|| specialized_port_caption(&node.definition, port))
                 .map(str::to_owned)
                 .or_else(|| port.label.clone())
                 .unwrap_or_else(|| port_label(&port.id));
@@ -2633,10 +3353,15 @@ impl Editor {
         }
         for (port, shown, stale) in ports {
             let caption = node_ergonomics::loop_result(node, port)
+                .or_else(|| specialized_port_caption(&node.definition, port))
                 .map(str::to_owned)
                 .or_else(|| port.label.clone())
                 .unwrap_or_else(|| port_label(&port.id));
-            let side = if port.input { "in" } else { "out" };
+            let side = if port.input {
+                t("value-side-input")
+            } else {
+                t("value-side-output")
+            };
             let freshness = if stale { t("previous-suffix") } else { "" };
             let response = http && !port.input && port.id == "response";
             let title = if response {

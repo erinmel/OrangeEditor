@@ -290,6 +290,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashpd"
+version = "0.13.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb8421aaa9644a5faf26735f258b669b15f063313ef8f8e2bdb28912a1a6f111"
+dependencies = [
+ "enumflags2",
+ "futures-util",
+ "getrandom 0.4.3",
+ "serde",
+ "zbus 5.19.0",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1119,6 +1132,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -2048,6 +2070,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "global-hotkey"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96daa86bdc1413406daee362a835e52c430c2193e5a5c328d1e522be140d1764"
+dependencies = [
+ "crossbeam-channel",
+ "keyboard-types",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "once_cell",
+ "thiserror 2.0.21",
+ "windows-sys 0.59.0",
+ "x11rb",
+ "xkeysym",
+]
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2462,6 +2501,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
 ]
 
 [[package]]
@@ -3404,13 +3453,18 @@ dependencies = [
 name = "orange-desktop"
 version = "0.0.0"
 dependencies = [
+ "ashpd",
+ "async-channel",
  "eframe",
+ "futures-lite",
+ "global-hotkey",
  "orange-audio",
  "orange-editor-ui",
  "orange-files",
  "orange-host",
  "orange-native",
  "orange-net",
+ "orange-sandbox",
  "orange-sdk",
  "orange-testkit",
  "orange-vault",
@@ -3474,6 +3528,7 @@ dependencies = [
  "orange-model",
  "orange-packages",
  "orange-runtime",
+ "orange-sandbox",
  "orange-sdk",
  "orange-testkit",
  "serde_json",
@@ -3552,6 +3607,7 @@ name = "orange-packages"
 version = "0.0.0"
 dependencies = [
  "orange-model",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3580,6 +3636,10 @@ dependencies = [
 [[package]]
 name = "orange-sandbox"
 version = "0.0.0"
+dependencies = [
+ "rustix 1.1.6",
+ "same-file",
+]
 
 [[package]]
 name = "orange-sdk"
@@ -3612,6 +3672,7 @@ dependencies = [
  "egui_extras",
  "egui_material_icons",
  "hound",
+ "orange-audio",
  "orange-testkit",
  "rfd",
 ]

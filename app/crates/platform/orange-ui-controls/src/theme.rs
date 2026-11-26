@@ -115,7 +115,10 @@ impl Theme {
         } else {
             self.bg_input()
         };
-        Stroke::new(1.0, ensure_contrast(self.border_strong.color, fill, 3.0))
+        Stroke::new(
+            1.0,
+            ensure_contrast(self.border_strong.color, fill, UI_CONTRAST),
+        )
     }
     pub const fn border_subtle(self) -> Stroke {
         self.border
@@ -454,6 +457,13 @@ pub(crate) fn contrast(a: Color32, b: Color32) -> f32 {
     let (a, b) = (luma(a), luma(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
+
+/// WCAG 2 AA minimum contrast for text against its background.
+pub(crate) const TEXT_CONTRAST: f32 = 4.5;
+/// WCAG 2 AA minimum contrast for borders, icons and other parts of a control.
+pub(crate) const UI_CONTRAST: f32 = 3.0;
+/// Text on a selected toggle, held above [`TEXT_CONTRAST`].
+pub(crate) const SELECTED_TEXT_CONTRAST: f32 = 5.3;
 
 pub(crate) fn ensure_contrast(ink: Color32, background: Color32, minimum: f32) -> Color32 {
     if contrast(ink, background) >= minimum {

@@ -978,3 +978,77 @@ for graphs that start playback using an execution wire.
 
 **Contracts.** 04 native sources, 05 capture and level analysis, 11 package
 entries and §10.5, 12 §4, 22 §6.
+
+## ADR-33 - Definitions describe how their fields are shown
+
+**Decision.** A definition's `editor` object may carry control hints: `controls`, one
+hint per setting or data input naming a widget (`slider`, `dial`, `toggle`,
+`segmented`, `dropdown`, `stepper` or the default `field`) with its unit, range,
+step, scale, decimals, marks, notch or knob style and caption, and `layout`, which
+places fields in card regions (`header`, `aside`, `body`, `advanced`, arranged in a
+column, a row or a grid) and may name a built-in visual (`level-meter`, `spectrum`,
+`waveform`). The editor turns hints into the shared controls of
+`orange-ui-controls`, on cards and in Properties alike, so a package node gets a dial
+or a slider without editor code. A settings enumeration can use a segmented row
+of two to five short choices. A whole-number setting can use a stepper. Slider
+marks guide placement, and dial captions use package text references.
+
+Hints are presentation only. Validation, inference, compilation and execution never
+read them; they never change a value, an ID or a lock, and a hint's range may narrow
+what a control offers but not what the value may be. A hint that does not fit its
+field, or uses a word this version does not know, is dropped and reported in
+`Presentation::hint_problems`; it never stops a definition from loading. An editor
+that does not know a hint shows its usual field. Packages cannot draw their own UI:
+they can only choose among these words and name built-in visuals.
+
+Audio Level Trigger was the first node moved onto hints: its meter, dials and
+regions come from its definition, and the editor no longer recognizes it by ID.
+Every bounded number setting of the audio package asks for a slider with a typed box.
+
+**Contracts.** 04 (SDK builders, `orange-plugin 11`), 12 §4, 22.
+
+## ADR-34 - Bridges share a value through a hidden data edge
+
+**Decision.** A value shared without a visible wire uses two core intrinsics,
+`core/bridge-out` and `core/bridge-in`, shaped like `core/value`. A Bridge In is
+bound by an ordinary data edge from its Bridge Out; the editor hides those two ports
+and draws the edge as a dashed wireless link. The channel name is `config.channel`
+on both nodes and is presentation only. The Wireless Value preset (a Set and Get
+of a run variable) is retired: a bridge is pulled on demand, holds no state and needs
+no exec flow, so a variable was the wrong tool.
+
+**Why.** Reusing a data edge keeps pull semantics, typing, inference, cycle and zone
+checks, diagnostics and the compiler unchanged; bridges lower as the value-node
+projection. A name-based binding would need a new resolution step, new diagnostics
+and its own cycle rules. Keeping the channel name in config lets a Bridge In whose
+Bridge Out was deleted stay Unbound with the name it had, to be rebound or recreated.
+
+**Alternatives.** Run variables (state and writes the user did not ask for); a
+binding by channel name resolved in the compiler (new rules for little gain).
+
+**Contracts.** 11 §8.4 (bridge nodes), 22.
+
+## ADR-35 - The host carries workspace events between flows on one held bus
+
+**Decision.** The host keeps one `WorkspaceBus` behind a lock in its shared
+workspace state. A flow whose graph dispatches or listens to workspace events holds
+that lock for its whole turn: it admits what others dispatched to it, pumps with the
+bus, and wakes the other flows when it enqueued something. Flows without workspace
+events never take the lock. Runs attach on open and on replacement; the endpoint of
+a stopped, faulted or replaced run closes with it.
+
+**Why.** The runtime contract (C12c) borrows the bus exclusively for a pump, so
+Dispatch admission is synchronous and needs no acknowledgement or callback. Each
+flow already runs on its own thread; a lock keeps that and needs no new actor or
+channel. Turns are bounded by the turn budget, so the hold is bounded too.
+
+**Alternatives.** A bus actor thread with channels (a new hop and a second owner of
+event order); one bus per pair of flows (fan-out and ordering spread across
+objects); running every flow that uses events on one thread (one slow graph would
+delay the others).
+
+**Consequences.** Flows that use workspace events take turns with each other, so a
+heavy one slows the others' event turns but never flows without events. Deliveries
+queued for a run that is replaced are dropped, as messages to a stopped run are.
+
+**Contracts.** 02 (the host), 03 (C12c host transport).

@@ -25,10 +25,10 @@ fn beside(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Replaces `target` whole: a failure or a crash leaves the previous file or the new one
+/// (see [`orange_sandbox::replace_file`] for what each system guarantees).
 fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), HostError> {
-    let temporary = beside(target, ".tmp");
-    std::fs::write(&temporary, bytes).map_err(|e| io("write the document", &e))?;
-    std::fs::rename(&temporary, target).map_err(|e| io("replace the document", &e))
+    orange_sandbox::replace_file(target, bytes).map_err(|e| io("replace the document", &e))
 }
 
 fn read(path: &Path) -> Result<Option<String>, HostError> {
@@ -67,8 +67,10 @@ pub fn save_document(path: &Path, json: &str) -> Result<(), HostError> {
         return Err(HostError::Document("the text is not a document".into()));
     }
     if path.exists() {
-        // The backup is a copy, so the file itself is never missing.
-        let _ = std::fs::copy(path, beside(path, ".bak"))
+        // The backup is a copy, so the file itself is never missing, and it is replaced
+        // whole, so a crash while making it cannot leave a torn backup either.
+        let previous = std::fs::read(path).map_err(|e| io("keep the previous version", &e))?;
+        orange_sandbox::replace_file(&beside(path, ".bak"), &previous)
             .map_err(|e| io("keep the previous version", &e))?;
     }
     write_atomic(path, json.as_bytes())?;

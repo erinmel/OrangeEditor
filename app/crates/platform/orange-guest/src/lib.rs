@@ -14,7 +14,9 @@ mod limits;
 mod nodes;
 mod plugin;
 
-pub use access::{GuestAccess, HttpClient, HttpRequest, HttpResponse, is_local};
+pub use access::{
+    GuestAccess, HttpClient, HttpRequest, HttpResponse, Reach, is_local, is_local_address,
+};
 pub use cancellation::GuestCancellation;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

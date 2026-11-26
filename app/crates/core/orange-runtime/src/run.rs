@@ -649,8 +649,8 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         }
         | ControlOperation::Count { count: root, .. }
         | ControlOperation::Wait { duration: root }
-        | ControlOperation::Set { value: root, .. }
-        | ControlOperation::Emit { payload: root, .. } => Some(*root),
+        | ControlOperation::Set { value: root, .. } => Some(*root),
+        ControlOperation::Emit { payload, .. } => *payload,
         ControlOperation::CloseHandle { handle } => Some(*handle),
         ControlOperation::NextItem { stream, .. }
         | ControlOperation::Tee { stream, .. }
@@ -2191,8 +2191,13 @@ impl Run {
                     None => return Ok(()),
                 }
             }
-            ControlOperation::Emit { event, .. } => {
-                let payload = value.ok_or(RunError::InvalidState)?;
+            ControlOperation::Emit { event, payload } => {
+                let payload = match (payload, value) {
+                    (Some(_), Some(value)) => value,
+                    // Event-only, or an optional payload left unset.
+                    (None, _) => Value::None,
+                    (Some(_), None) => return Err(RunError::InvalidState),
+                };
                 let result = if plan.events()[*event].scope()
                     == orange_model::document::EventScope::Workspace
                 {

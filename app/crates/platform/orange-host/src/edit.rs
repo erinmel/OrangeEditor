@@ -5,15 +5,16 @@
 //! None of them runs anything; a flow of the document is changed only when the front
 //! end hands the draft's text to [`Host::update`].
 use super::*;
+use crate::preset;
 use draft::refused;
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::catalog::intrinsic_id as intrinsic;
 use orange_model::catalog::{NominalAccess, Ports, RegistrySnapshot};
 use orange_model::document::ConfigValue;
 use orange_model::document::{
-    ActivationPolicy, BodyRef, Edge, NodeInstance, NodeKind, PortRef, ProviderBinding,
+    ActivationPolicy, BodyRef, Edge, GraphBody, NodeInstance, NodeKind, PortRef, ProviderBinding,
 };
-use orange_model::id::{PortId, PortKey};
+use orange_model::id::{FunctionId, PortId, PortKey};
 use orange_model::{DocCommand, LayoutCommand};
 use serde_json::{Value as Json, json};
 
@@ -22,6 +23,10 @@ pub type PortEnd<'a> = (NodeId, &'a str);
 
 /// Both ends of a wire with owned port names.
 pub type WireEnds = ((NodeId, String), (NodeId, String));
+
+fn node_body(document: &GraphDocument, node: NodeId) -> Option<&GraphBody> {
+    document.body(document.locate_node(node)?)
+}
 
 /// Work a For Each mode change would discard from this draft.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +80,10 @@ fn reconfigure_for_each(
         body_wires: 0,
     };
     let mut edits = Vec::new();
-    for edge in draft.document().root().edges.values() {
+    for edge in node_body(draft.document(), node)
+        .into_iter()
+        .flat_map(|body| body.edges.values())
+    {
         let items_wire = edge.to == items;
         let old_body_wire =
             edge.from.node == node && stale.contains(&edge.from.port.port().as_str());
@@ -157,7 +165,7 @@ fn event_entry(draft: &Draft, node: NodeId) -> Option<&ActivationPolicy> {
     let instance = draft.document().node(node)?;
     if matches!(
         instance.definition.id.as_str(),
-        "core/on-start" | "core/on-stop"
+        intrinsic::ON_START | intrinsic::ON_STOP
     ) {
         return None;
     }
@@ -199,6 +207,24 @@ pub(crate) fn default_activation() -> Json {
 /// The bound a new while loop starts with, so it is valid until a person changes it.
 pub const NEW_WHILE_BOUND: u64 = 1000;
 
+/// One second in nanoseconds, as text: the interval of a new On Timer and the delay of
+/// a new On Timeout.
+const NEW_TIMER_PERIOD_NANOS: &str = "1000000000";
+/// Most items a new Collect gathers.
+const NEW_COLLECT_MAX_ITEMS: u32 = 1024;
+/// Values a new Tee buffers for each consumer.
+const NEW_TEE_CAPACITY: u32 = 32;
+/// Bytes a new Tee buffers for each consumer: 1 MiB.
+const NEW_TEE_MAX_BYTES: u32 = 1 << 20;
+
+/// Graph units between the left edges of cards the host places side by side: a card's
+/// width with room for the wire between them.
+pub(crate) const COLUMN_STEP: f32 = 360.0;
+/// Graph units between the tops of rows of cards the host places.
+pub(crate) const ROW_STEP: f32 = 240.0;
+/// Graph units between the tops of stacked cards with no room for a wire between.
+pub(crate) const STACK_STEP: f32 = 120.0;
+
 /// The settings a new node of `found` starts with: a while loop's bound, and the first
 /// registered type (and member) a record or enum node can name. A record or enum
 /// node with no type to name cannot be added, and the error says so.
@@ -209,23 +235,34 @@ fn new_config(
     let mut config = ConfigValue::new();
     if matches!(
         found.definition.id.as_str(),
-        "core/while" | "core/for-range"
+        intrinsic::WHILE | intrinsic::FOR_RANGE
     ) {
         let _ = config.insert("max_iterations".to_owned(), json!(NEW_WHILE_BOUND));
     }
-    if found.definition.id.as_str() == "core/on-watch" {
+    if found.definition.id.as_str() == intrinsic::ON_WATCH {
         let _ = config.insert("mode".to_owned(), json!("changed"));
+    }
+    if found.definition.id.as_str() == intrinsic::CHANGE_BEYOND_TOLERANCE {
+        let _ = config.insert("threshold".to_owned(), json!(1));
     }
     // A new timer runs as placed: every second, first tick after one interval, late
     // ticks coalesced (the language's defaults, written out so the card shows them).
     match found.definition.id.as_str() {
-        "core/on-timer" => {
-            let _ = config.insert("interval".to_owned(), json!("1000000000"));
+        intrinsic::ON_TIMER => {
+            let _ = config.insert("interval".to_owned(), json!(NEW_TIMER_PERIOD_NANOS));
             let _ = config.insert("first".to_owned(), json!("after-interval"));
             let _ = config.insert("missed".to_owned(), json!("coalesce"));
         }
-        "core/on-timeout" => {
-            let _ = config.insert("delay".to_owned(), json!("1000000000"));
+        intrinsic::ON_TIMEOUT => {
+            let _ = config.insert("delay".to_owned(), json!(NEW_TIMER_PERIOD_NANOS));
+        }
+        intrinsic::COLLECT => {
+            let _ = config.insert("max_items".to_owned(), json!(NEW_COLLECT_MAX_ITEMS));
+        }
+        intrinsic::TEE => {
+            let _ = config.insert("capacity".to_owned(), json!(NEW_TEE_CAPACITY));
+            let _ = config.insert("max_bytes".to_owned(), json!(NEW_TEE_MAX_BYTES));
+            let _ = config.insert("overflow".to_owned(), json!("backpressure"));
         }
         _ => {}
     }
@@ -450,6 +487,78 @@ impl Host {
         Ok(PortKey::new(id, Some(next)).to_string())
     }
 
+    /// Adds missing enum cases to a Switch without changing its existing case IDs or wires.
+    pub fn add_enum_cases(&self, draft: &mut Draft, node: NodeId) -> Result<bool, HostError> {
+        let document = draft.document();
+        let instance = document
+            .node(node)
+            .filter(|node| node.definition.id.as_str() == intrinsic::SWITCH)
+            .ok_or_else(|| refused(&"choose a Switch node"))?;
+        let key = self
+            .input_view(document, (node, "key"))
+            .and_then(|port| port.ty)
+            .ok_or_else(|| refused(&"connect an enum to the Switch key"))?;
+        let variants = self
+            .enum_choices(draft, &key)
+            .ok_or_else(|| refused(&"the Switch key must be an enum"))?;
+        let port = orange_model::port_id!("case");
+        let state = instance.variadic.get(&port);
+        let order = state.map_or(&[][..], |state| state.order.as_slice());
+        let mut cases = instance
+            .config
+            .get("cases")
+            .and_then(Json::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut free = order
+            .iter()
+            .copied()
+            .filter(|id| !cases.contains_key(&id.to_string()))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let existing: std::collections::HashSet<_> = cases
+            .values()
+            .filter_map(Json::as_str)
+            .map(str::to_owned)
+            .collect();
+        let mut next = state.map_or(0, |state| state.next);
+        let mut count = order.len();
+        let mut commands = Vec::new();
+        for choice in variants
+            .into_iter()
+            .filter(|choice| !existing.contains(&choice.id))
+        {
+            let case = if let Some(case) = free.next() {
+                case
+            } else {
+                let case = next;
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| refused(&"no Switch case IDs remain"))?;
+                commands.push(DocCommand::InsertVariadic {
+                    node,
+                    port: port.clone(),
+                    at: count,
+                });
+                count += 1;
+                case
+            };
+            let _ = cases.insert(case.to_string(), json!(choice.id));
+        }
+        let mut config = instance.config.clone();
+        let cases = Json::Object(cases);
+        if config.get("cases") == Some(&cases) {
+            return Ok(false);
+        }
+        let _ = config.insert("cases".to_owned(), cases);
+        commands.push(DocCommand::SetConfig {
+            node,
+            config_version: instance.config_version,
+            config,
+        });
+        draft.commit(&self.registry_for(draft.document()), commands)
+    }
+
     /// Removes one instance of a variadic port (`branch#1`) with its wires and value.
     /// The fewest instances the port may have stay.
     pub fn remove_port(&self, draft: &mut Draft, at: PortEnd<'_>) -> Result<bool, HostError> {
@@ -553,6 +662,34 @@ impl Draft {
     }
 }
 
+/// `base`, `base 2`, `base 3`, … whichever `taken` does not hold.
+fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> Result<String, HostError> {
+    std::iter::once(base.to_owned())
+        .chain((2..).map(|index| format!("{base} {index}")))
+        .find(|name| !taken(name))
+        .ok_or_else(|| refused(&"no free name is available"))
+}
+
+/// An event name no event of the draft has yet, from `base`.
+fn free_event_name(draft: &Draft, base: &str) -> Result<String, HostError> {
+    free_name(base, |name| {
+        draft
+            .document()
+            .events()
+            .values()
+            .any(|event| event.name == name)
+    })
+}
+
+/// A new run event without a payload, named `base`, `base 2`, … whichever is free.
+fn new_pulse_event(draft: &Draft, base: &str) -> Result<EventDecl, HostError> {
+    let name = free_event_name(draft, base)?;
+    serde_json::from_value(json!({
+        "id": draft.fresh_id("signal-event"), "name": name, "scope": "run"
+    }))
+    .map_err(|error| refused(&error))
+}
+
 fn event_config(node: NodeId, event: &str) -> DocCommand {
     DocCommand::SetConfig {
         node,
@@ -566,9 +703,8 @@ impl Host {
     /// place on the canvas, bound to this host's provider for it, with the default
     /// activation if it is a trigger. Returns the new node's ID. What the node still
     /// needs (a variable to name, a type to choose) shows in the draft's problems.
-    /// The authoring IDs `preset:rising-edge` and `preset:falling-edge` create a
-    /// boolean When trigger with the corresponding transition. `preset:guard`
-    /// creates a Branch.
+    /// Old edge, deadband and counter authoring IDs resolve to their dedicated
+    /// definitions. `preset:guard` creates a Branch.
     pub fn add_node(
         &self,
         draft: &mut Draft,
@@ -580,6 +716,80 @@ impl Host {
         Ok(node)
     }
 
+    /// Adds one ordinary node to an existing local function.
+    pub fn add_function_node(
+        &self,
+        draft: &mut Draft,
+        function: &str,
+        definition: &str,
+        at: [f32; 2],
+    ) -> Result<NodeId, HostError> {
+        let function = function
+            .parse::<FunctionId>()
+            .ok()
+            .and_then(|id| draft.document().functions().get(&id))
+            .ok_or_else(|| refused(&"the document has no such local function"))?;
+        let body = BodyRef::Function(function.id);
+        let kind = function.kind;
+        if !self.knows_node(definition) || !self.function_accepts(definition, kind) {
+            return Err(refused(&"this node kind cannot be added to this function"));
+        }
+        let (node, mut commands) = self.node_commands(draft, definition, at, "node")?;
+        for command in &mut commands {
+            if let DocCommand::AddNode { body: target, .. } = command {
+                *target = body;
+            }
+        }
+        let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
+        Ok(node)
+    }
+
+    /// Whether a node of `definition` may be part of a local function of `kind`. A node
+    /// this host has no definition for is left to validation, which reports it.
+    pub(crate) fn function_accepts(&self, definition: &str, kind: NodeKind) -> bool {
+        self.nodes()
+            .filter(|info| info.definition.definition.id.as_str() == definition)
+            .max_by_key(|info| info.definition.definition.version)
+            .is_none_or(|info| function_node_allowed(definition, info.definition.kind, kind))
+    }
+
+    fn knows_node(&self, definition: &str) -> bool {
+        self.nodes()
+            .any(|info| info.definition.definition.id.as_str() == definition)
+    }
+
+    /// Search the node kinds available inside the given local function.
+    pub fn search_function_nodes(
+        &self,
+        draft: &Draft,
+        function: &str,
+        search: &str,
+        locale: &str,
+    ) -> Vec<Found> {
+        let Some(function) = function
+            .parse::<FunctionId>()
+            .ok()
+            .and_then(|id| draft.document().functions().get(&id))
+        else {
+            return Vec::new();
+        };
+        let allowed: std::collections::HashSet<_> = self
+            .nodes()
+            .filter(|info| {
+                function_node_allowed(
+                    info.definition.definition.id.as_str(),
+                    info.definition.kind,
+                    function.kind,
+                )
+            })
+            .map(|info| info.definition.definition.id.as_str())
+            .collect();
+        self.search_nodes(search, locale)
+            .into_iter()
+            .filter(|node| allowed.contains(node.definition.as_str()))
+            .collect()
+    }
+
     fn new_node_commands(
         &self,
         draft: &Draft,
@@ -587,9 +797,13 @@ impl Host {
         at: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         match definition {
-            "preset:watchdog" => self.watchdog_commands(draft, at),
-            "preset:signal" => self
-                .signal_commands(draft, at, "Signal", [360.0, 0.0])
+            preset::WATCHDOG => self.watchdog_commands(draft, at),
+            preset::WIRELESS_VALUE => self.wireless_value_commands(draft, at),
+            preset::WIRELESS_PULSE => self
+                .signal_commands(draft, at, "Pulse", true)
+                .map(|([sender, _], commands)| (sender, commands)),
+            preset::SIGNAL => self
+                .signal_commands(draft, at, "Signal", false)
                 .map(|([sender, _], commands)| (sender, commands)),
             _ => self.node_commands(draft, definition, at, "node"),
         }
@@ -600,39 +814,39 @@ impl Host {
         draft: &Draft,
         [x, y]: [f32; 2],
         base: &str,
-        [dx, dy]: [f32; 2],
+        pulse: bool,
     ) -> Result<([NodeId; 2], Vec<DocCommand>), HostError> {
-        let name = std::iter::once(base.to_owned())
-            .chain((2..).map(|index| format!("{base} {index}")))
-            .find(|name| {
-                draft
-                    .document()
-                    .events()
-                    .values()
-                    .all(|event| event.name != *name)
-            })
-            .ok_or_else(|| refused(&"no signal name is available"))?;
+        let name = free_event_name(draft, base)?;
         let event = draft.fresh_id("signal-event");
-        let declaration = serde_json::from_value(json!({
-            "id": event, "name": name, "payload": "core/bool@1", "scope": "run"
-        }))
+        // A pulse is an event-only channel: no payload port on either end.
+        let declaration = serde_json::from_value(if pulse {
+            json!({"id": event, "name": name, "scope": "run"})
+        } else {
+            json!({"id": event, "name": name, "payload": "core/bool@1", "scope": "run"})
+        })
         .map_err(|error| refused(&error))?;
         let (emit, emission) = self.node_commands(draft, intrinsic::EMIT, [x, y], "signal-emit")?;
-        let (entry, reception) =
-            self.node_commands(draft, intrinsic::ON_EVENT, [x + dx, y + dy], "signal-entry")?;
+        let (entry, reception) = self.node_commands(
+            draft,
+            intrinsic::ON_EVENT,
+            [x + COLUMN_STEP, y],
+            "signal-entry",
+        )?;
         let mut commands = vec![DocCommand::UpsertEvent(declaration)];
         commands.extend(emission);
         commands.extend(reception);
         for node in [emit, entry] {
             commands.push(event_config(node, &event));
         }
-        commands.push(DocCommand::SetLiteral {
-            port: port_ref((emit, "payload"))?,
-            literal: Some(Literal::value(
-                "core/bool@1".parse().map_err(|error| refused(&error))?,
-                json!(true),
-            )),
-        });
+        if !pulse {
+            commands.push(DocCommand::SetLiteral {
+                port: port_ref((emit, "payload"))?,
+                literal: Some(Literal::value(
+                    "core/bool@1".parse().map_err(|error| refused(&error))?,
+                    json!(true),
+                )),
+            });
+        }
         Ok(([emit, entry], commands))
     }
 
@@ -675,23 +889,86 @@ impl Host {
                 )
             })
             .ok_or_else(|| refused(&"choose an Emit or On Event node"))?;
-        let event = source
+        let source_id = source.id;
+        let declared = source
             .config
             .get("event")
             .and_then(Json::as_str)
             .and_then(|id| id.parse::<EventDeclId>().ok())
             .and_then(|id| draft.document().events().get(&id))
-            .ok_or_else(|| refused(&"choose an event before adding a signal endpoint"))?;
-        let (node, mut commands) = self.node_commands(draft, definition, at, "signal-endpoint")?;
+            .cloned();
+        let mut commands = Vec::new();
+        // A node with no channel yet gets a new event-only one, bound to it and to the
+        // new endpoint in the same edit.
+        let event = match declared {
+            Some(event) => event,
+            None => {
+                let event = new_pulse_event(draft, "Signal")?;
+                commands.push(DocCommand::UpsertEvent(event.clone()));
+                commands.push(event_config(source_id, &event.id.to_string()));
+                event
+            }
+        };
+        let (node, made) = self.node_commands(draft, definition, at, "signal-endpoint")?;
+        commands.extend(made);
         commands.push(event_config(node, &event.id.to_string()));
-        if definition == intrinsic::EMIT && event.payload.as_str() == "core/bool@1" {
+        // A bool payload starts as true. An optional one is left unset, which sends None,
+        // and an event-only channel has no payload port at all.
+        if definition == intrinsic::EMIT
+            && let Some(payload) = event.payload.as_ref()
+            && payload.as_str() == "core/bool@1"
+        {
             commands.push(DocCommand::SetLiteral {
                 port: port_ref((node, "payload"))?,
-                literal: Some(Literal::value(event.payload.clone(), json!(true))),
+                literal: Some(Literal::value(payload.clone(), json!(true))),
             });
         }
         let _ = draft.commit(&self.registry_for(draft.document()), commands)?;
         Ok(node)
+    }
+
+    /// A stored value with an ordinary writer and reader. Reading starts no activation.
+    fn wireless_value_commands(
+        &self,
+        draft: &Draft,
+        [x, y]: [f32; 2],
+    ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
+        let id = draft.fresh_id("wireless-value");
+        let name = free_name("Wireless value", |name| {
+            draft
+                .document()
+                .variables()
+                .values()
+                .any(|variable| variable.name == name)
+        })?;
+        let declaration = serde_json::from_value(json!({
+            "id": id, "name": name, "type": "core/bool@1", "scope": "run",
+            "init": {"type": "core/bool@1", "value": false}
+        }))
+        .map_err(|error| refused(&error))?;
+        let (set, writer) = self.node_commands(
+            draft,
+            intrinsic::SET_VARIABLE,
+            [x, y],
+            "wireless-value-writer",
+        )?;
+        let (get, reader) = self.node_commands(
+            draft,
+            intrinsic::GET_VARIABLE,
+            [x + COLUMN_STEP, y],
+            "wireless-value-reader",
+        )?;
+        let mut commands = vec![DocCommand::UpsertVariable(declaration)];
+        commands.extend(writer);
+        commands.extend(reader);
+        for node in [set, get] {
+            commands.push(DocCommand::SetConfig {
+                node,
+                config_version: 1,
+                config: [("variable".to_owned(), json!(id))].into_iter().collect(),
+            });
+        }
+        Ok((set, commands))
     }
 
     fn watchdog_commands(
@@ -700,11 +977,11 @@ impl Host {
         [x, y]: [f32; 2],
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
         let ([emit, entry], mut commands) =
-            self.signal_commands(draft, [x, y], "Heartbeat", [0.0, 176.0])?;
+            self.signal_commands(draft, [x, y], "Heartbeat", true)?;
         let (wait, timeout) = self.node_commands(
             draft,
             intrinsic::WAIT,
-            [x + 360.0, y + 176.0],
+            [x + 2.0 * COLUMN_STEP, y],
             "watchdog-wait",
         )?;
         commands.extend(timeout);
@@ -792,21 +1069,13 @@ impl Host {
         at: [f32; 2],
         identity: &str,
     ) -> Result<(NodeId, Vec<DocCommand>), HostError> {
-        let counter_operation = match definition {
-            "preset:increment" => Some("add"),
-            "preset:decrement" => Some("sub"),
-            _ => None,
-        };
-        let watch_mode = match definition {
-            "preset:rising-edge" => Some("rising"),
-            "preset:falling-edge" => Some("falling"),
-            "preset:deadband" => Some("deadband"),
-            _ => None,
-        };
         let definition = match definition {
-            "preset:guard" => intrinsic::BRANCH,
-            _ if counter_operation.is_some() => intrinsic::UPDATE_VARIABLE,
-            _ if watch_mode.is_some() => intrinsic::ON_WATCH,
+            preset::INCREMENT => intrinsic::INCREMENT_COUNTER,
+            preset::DECREMENT => intrinsic::DECREMENT_COUNTER,
+            preset::RISING_EDGE => intrinsic::RISING_EDGE,
+            preset::FALLING_EDGE => intrinsic::FALLING_EDGE,
+            preset::DEADBAND => intrinsic::CHANGE_BEYOND_TOLERANCE,
+            preset::GUARD => intrinsic::BRANCH,
             _ => definition,
         };
         let version = self
@@ -830,48 +1099,7 @@ impl Host {
             .definition(&definition)
             .ok_or_else(|| HostError::Document(format!("no node kind `{}`", definition.id)))?;
         let entry = found.kind == NodeKind::Entry;
-        let mut config = new_config(found, registry)?;
-        let mut type_pins = BTreeMap::new();
-        let counter = counter_operation.map(|operation| {
-            let _ = config.insert("operation".to_owned(), json!(operation));
-            let variables = draft.document().variables();
-            let (name, existing) = (1..)
-                .map(|index| if index == 1 { "Counter".to_owned() } else { format!("Counter {index}") })
-                .find_map(|name| {
-                    let existing = variables.values().find(|variable| variable.name == name);
-                    if let Some(variable) = existing
-                        && (variable.scope != VarScope::Run
-                            || !matches!(variable.ty.as_str(), "core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1")
-                            || variable.init.is_none())
-                    {
-                        return None;
-                    }
-                    Some((name, existing))
-                })
-                .ok_or_else(|| refused(&"no counter name is available"))?;
-            if let Some(variable) = existing {
-                let _ = config.insert("variable".to_owned(), json!(variable.id));
-                return Ok::<_, HostError>((None, variable.ty.clone()));
-            }
-            let id = draft.fresh_id("counter-variable");
-            let declaration: orange_model::document::VariableDecl = serde_json::from_value(json!({
-                "id": id, "name": name, "type": "core/i64@1", "scope": "run", "init": {"type": "core/i64@1", "value": "0"}
-            })).map_err(|error| refused(&error))?;
-            let _ = config.insert("variable".to_owned(), json!(declaration.id));
-            let ty = declaration.ty.clone();
-            Ok((Some(declaration), ty))
-        }).transpose()?;
-        if let Some(mode) = watch_mode {
-            let _ = config.insert("mode".to_owned(), json!(mode));
-            if mode == "deadband" {
-                let _ = config.insert("threshold".to_owned(), json!(1));
-            } else {
-                type_pins.insert(
-                    "T".parse().map_err(|error| refused(&error))?,
-                    "core/bool@1".parse().map_err(|error| refused(&error))?,
-                );
-            }
-        }
+        let config = new_config(found, registry)?;
         let mut commands = if definition.id.is_core() {
             vec![DocCommand::AddNode {
                 body: BodyRef::Root,
@@ -881,7 +1109,7 @@ impl Host {
                     config_version: found.config_version,
                     config,
                     type_args: Default::default(),
-                    type_pins,
+                    type_pins: Default::default(),
                     provider: None::<ProviderBinding>,
                     signature: None,
                     inputs: Default::default(),
@@ -951,15 +1179,6 @@ impl Host {
             commands.push(DocCommand::SetActivation {
                 node,
                 policy: Some(policy),
-            });
-        }
-        if let Some((declaration, ty)) = counter {
-            if let Some(declaration) = declaration {
-                commands.insert(0, DocCommand::UpsertVariable(declaration));
-            }
-            commands.push(DocCommand::SetLiteral {
-                port: port_ref((node, "value"))?,
-                literal: Some(Literal::value(ty, json!("1"))),
             });
         }
         commands.push(place_command(node, Some(at)));
@@ -1053,6 +1272,12 @@ impl Host {
         from: PortEnd<'_>,
         to: PortEnd<'_>,
     ) -> Result<bool, HostError> {
+        let document = draft.document();
+        let from_body = document.locate_node(from.0);
+        let body = from_body
+            .filter(|_| from_body == document.locate_node(to.0))
+            .and_then(|body| document.body(body))
+            .ok_or_else(|| refused(&"wire endpoints must belong to the same graph"))?;
         let exec = |end: PortEnd<'_>, input: bool| {
             self.wire_node_view(draft.document(), end.0)
                 .and_then(|node| {
@@ -1073,9 +1298,7 @@ impl Host {
             ));
         }
         let (from_ref, to_ref) = (port_ref(from)?, port_ref(to)?);
-        let mut commands: Vec<DocCommand> = draft
-            .document()
-            .root()
+        let mut commands: Vec<DocCommand> = body
             .edges
             .values()
             .filter(|edge| {
@@ -1087,8 +1310,9 @@ impl Host {
             })
             .map(|edge| DocCommand::Disconnect { edge: edge.id })
             .collect();
-        if let Some(wanted) = self.for_each_wire_mode(draft, from, to) {
-            let instance = &draft.document().root().nodes[&to.0];
+        if let Some(wanted) = self.for_each_wire_mode(draft, from, to)
+            && let Some(instance) = body.nodes.get(&to.0)
+        {
             commands.extend(reconfigure_for_each(draft, instance, wanted, false)?.0);
             let mut config = instance.config.clone();
             let _ = config.insert("mode".to_owned(), json!(wanted));
@@ -1125,10 +1349,9 @@ impl Host {
         to: PortEnd<'_>,
     ) -> Option<&'static str> {
         let document = draft.document();
-        let instance =
-            document.root().nodes.get(&to.0).filter(|node| {
-                node.definition.id.as_str() == intrinsic::FOR_EACH && to.1 == "items"
-            })?;
+        let instance = document
+            .node(to.0)
+            .filter(|node| node.definition.id.as_str() == intrinsic::FOR_EACH && to.1 == "items")?;
         let source = self
             .node_view(document, from.0)?
             .ports
@@ -1161,7 +1384,7 @@ impl Host {
             "map" => "map",
             _ => return None,
         };
-        let instance = draft.document().root().nodes.get(&node)?;
+        let instance = draft.document().node(node)?;
         if instance.definition.id.as_str() != intrinsic::FOR_EACH
             || loop_mode(&instance.config) == Some(wanted)
         {
@@ -1215,11 +1438,9 @@ impl Host {
         input: bool,
     ) -> Result<bool, HostError> {
         let end = port_ref(at)?;
-        let commands: Vec<DocCommand> = draft
-            .document()
-            .root()
-            .edges
-            .values()
+        let commands: Vec<DocCommand> = node_body(draft.document(), at.0)
+            .into_iter()
+            .flat_map(|body| body.edges.values())
             .filter(|edge| {
                 if input {
                     edge.to == end
@@ -1244,7 +1465,8 @@ impl Host {
             .document()
             .node(node)
             .map(|found| {
-                if found.definition.id.as_str() == "core/on-watch" && found.config_version == 1 {
+                if found.definition.id.as_str() == intrinsic::ON_WATCH && found.config_version == 1
+                {
                     2
                 } else {
                     found.config_version
@@ -1254,7 +1476,7 @@ impl Host {
         let config: ConfigValue =
             serde_json::from_value(config.clone()).map_err(|error| refused(&error))?;
         let mut commands = Vec::new();
-        if let Some(instance) = draft.document().root().nodes.get(&node)
+        if let Some(instance) = draft.document().node(node)
             && instance.definition.id.as_str() == intrinsic::FOR_EACH
         {
             let wanted = match loop_mode(&config) {
@@ -1264,6 +1486,42 @@ impl Host {
             };
             if let Some(wanted) = wanted.filter(|mode| Some(*mode) != loop_mode(&instance.config)) {
                 commands = reconfigure_for_each(draft, instance, wanted, true)?.0;
+            }
+        }
+        if let Some(source) = draft.document().node(node)
+            && source.definition.id.as_str() == intrinsic::BRIDGE_OUT
+            && source.config.get("channel") != config.get("channel")
+            && let Some(body) = draft
+                .document()
+                .locate_node(node)
+                .and_then(|body| draft.document().body(body))
+        {
+            let channel = config.get("channel").cloned();
+            for edge in body.edges.values().filter(|edge| {
+                edge.from.node == node
+                    && edge.from.port.instance().is_none()
+                    && edge.from.port.port().as_str() == "result"
+                    && edge.to.port.instance().is_none()
+                    && edge.to.port.port().as_str() == "value"
+            }) {
+                let Some(reader) = body
+                    .nodes
+                    .get(&edge.to.node)
+                    .filter(|reader| reader.definition.id.as_str() == intrinsic::BRIDGE_IN)
+                else {
+                    continue;
+                };
+                let mut reader_config = reader.config.clone();
+                if let Some(channel) = &channel {
+                    let _ = reader_config.insert("channel".to_owned(), channel.clone());
+                } else {
+                    let _ = reader_config.remove("channel");
+                }
+                commands.push(DocCommand::SetConfig {
+                    node: reader.id,
+                    config_version: reader.config_version,
+                    config: reader_config,
+                });
             }
         }
         commands.push(DocCommand::SetConfig {
@@ -1324,12 +1582,26 @@ impl Host {
     }
 }
 
+fn function_node_allowed(definition: &str, node: NodeKind, function: NodeKind) -> bool {
+    if matches!(
+        definition,
+        intrinsic::FUNCTION_ENTRY | intrinsic::FUNCTION_OUTPUTS | intrinsic::RETURN
+    ) {
+        return false;
+    }
+    match function {
+        NodeKind::Pure => node == NodeKind::Pure,
+        NodeKind::Volatile => matches!(node, NodeKind::Pure | NodeKind::Volatile),
+        NodeKind::Action => matches!(node, NodeKind::Pure | NodeKind::Volatile | NodeKind::Action),
+        NodeKind::Async => node != NodeKind::Entry,
+        NodeKind::Entry | NodeKind::Iterator => false,
+    }
+}
+
 fn disconnect_commands(draft: &Draft, from: &PortRef, to: &PortRef) -> Vec<DocCommand> {
-    draft
-        .document()
-        .root()
-        .edges
-        .values()
+    node_body(draft.document(), from.node)
+        .into_iter()
+        .flat_map(|body| body.edges.values())
         .filter(|edge| &edge.from == from && &edge.to == to)
         .map(|edge| DocCommand::Disconnect { edge: edge.id })
         .collect()
@@ -1379,6 +1651,15 @@ impl Host {
         definition: &str,
     ) -> Result<NodeView, HostError> {
         let (node, commands) = self.new_node_commands(draft, definition, [0.0, 0.0])?;
+        self.preview_commands(draft, node, commands)
+    }
+
+    pub(crate) fn preview_commands(
+        &self,
+        draft: &Draft,
+        node: NodeId,
+        commands: Vec<DocCommand>,
+    ) -> Result<NodeView, HostError> {
         let mut staged = draft.document().clone();
         let _ = staged.apply(commands).map_err(|error| refused(&error))?;
         self.node_view(&staged, node)
@@ -1435,6 +1716,14 @@ impl Host {
         from: PortEnd<'_>,
         to: PortEnd<'_>,
     ) -> Result<(Vec<DocCommand>, Vec<EdgeId>), HostError> {
+        let document = draft.document();
+        let body = document.locate_node(node);
+        if body.is_none()
+            || body != document.locate_node(from.0)
+            || body != document.locate_node(to.0)
+        {
+            return Err(refused(&"wire endpoints must belong to the same graph"));
+        }
         let ends = |id: NodeId| self.node_view(draft.document(), id);
         let source = ends(from.0)
             .and_then(|view| view.ports.into_iter().find(|p| !p.input && p.id == from.1))
@@ -1447,11 +1736,8 @@ impl Host {
         // way out (`orange_model::fit`). A node without a registered definition, such as
         // a function call, is matched on its ports' types as they are.
         let registry = self.registry_for(draft.document());
-        let definition = draft
-            .document()
-            .root()
-            .nodes
-            .get(&node)
+        let definition = document
+            .node(node)
             .and_then(|instance| registry.definition(&instance.definition));
         let mut fit =
             definition.map(|definition| orange_model::fit::PortFit::new(definition, &registry));

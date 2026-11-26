@@ -44,18 +44,12 @@ impl Transform {
                     - 0.011_68 * (3.0 * x).cos()
             })
             .collect();
-        let bits = size.ilog2();
         Self {
             gain: window.iter().sum(),
             window,
-            twiddles: (0..size / 2)
-                .map(|i| {
-                    let (sin, cos) = (-TAU * i as f64 / size as f64).sin_cos();
-                    (cos, sin)
-                })
-                .collect(),
+            twiddles: crate::fft::twiddles(size),
             reversed: (0..size)
-                .map(|i| (i.reverse_bits() >> (usize::BITS - bits)) as u32)
+                .map(|i| crate::fft::reversed(i, size) as u32)
                 .collect(),
             data: vec![(0.0, 0.0); size],
             power: vec![0.0; size / 2],
@@ -79,20 +73,7 @@ impl Transform {
                 let imag = second.map_or(0.0, |channel| f64::from(frame[channel]) * w);
                 self.data[self.reversed[index] as usize] = (f64::from(frame[first]) * w, imag);
             }
-            let mut span = 2;
-            while span <= size {
-                let stride = size / span;
-                for chunk in self.data.chunks_exact_mut(span) {
-                    let (left, right) = chunk.split_at_mut(span / 2);
-                    for (index, (a, b)) in left.iter_mut().zip(right).enumerate() {
-                        let (c, s) = self.twiddles[index * stride];
-                        let (real, imag) = (b.0 * c - b.1 * s, b.0 * s + b.1 * c);
-                        *b = (a.0 - real, a.1 - imag);
-                        *a = (a.0 + real, a.1 + imag);
-                    }
-                }
-                span *= 2;
-            }
+            crate::fft::transform(&mut self.data, &self.twiddles);
             // Z = X + iY for real X and Y: X[k] = (Z[k] + conj Z[N-k]) / 2 and
             // Y[k] = (Z[k] - conj Z[N-k]) / 2i. A sine of amplitude A gives |X| = A·gain/2.
             let scale = 4.0 / (self.gain * self.gain) / 4.0;

@@ -1,5 +1,7 @@
 //! Bundled icons for controls. Application-specific mappings belong to the host.
 pub use egui_lucide::Lucide;
+/// Material Symbols by name, for checking the glyphs the editor writes as characters.
+pub use egui_material_icons::icons as material;
 pub use egui_phosphor::regular as phosphor;
 
 const PHOSPHOR_FAMILY: &str = "orange-phosphor";

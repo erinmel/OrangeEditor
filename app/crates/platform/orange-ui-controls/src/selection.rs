@@ -3,6 +3,9 @@ use egui::{Button, Key, Rect, Response, Slider, Stroke, StrokeKind, Ui, pos2, ve
 use std::num::NonZeroU16;
 use std::ops::RangeInclusive;
 
+/// Corner radius of a highlighted option row, before zoom.
+const OPTION_RADIUS: f32 = 4.0;
+
 /// Draws a single-choice group. Narrow panels stack the segments inside the
 /// same container. Arrows move selection within the focused group.
 pub fn segmented<T: Copy + PartialEq>(
@@ -30,6 +33,11 @@ pub struct BinaryChoice<'a> {
 
 impl BinaryChoice<'_> {
     pub fn show(self, ui: &Ui, rect: Rect, id: egui::Id) -> Option<bool> {
+        self.show_named(ui, rect, id, self.labels)
+    }
+
+    /// Draws the same choices with names that identify their field to assistive tools.
+    pub fn show_named(self, ui: &Ui, rect: Rect, id: egui::Id, names: [&str; 2]) -> Option<bool> {
         let (no, yes) = rect.split_left_right_at_fraction(0.5);
         let mut picked = None;
         let responses = [(0, no), (1, yes)].map(|(index, half)| {
@@ -40,7 +48,7 @@ impl BinaryChoice<'_> {
                     egui::Role::RadioButton,
                     response.enabled(),
                     self.selected == Some(value),
-                    self.labels[index],
+                    names[index],
                 )
             });
             if response.clicked() && (self.defaulted || self.selected != Some(value)) {
@@ -84,10 +92,14 @@ impl BinaryChoice<'_> {
                 } else {
                     theme.primary
                 };
-                ink = crate::theme::ensure_contrast(theme.on_primary, highlight, 4.5);
-                painter.rect_filled(bounds, 4.0 * zoom, highlight);
+                ink = crate::theme::ensure_contrast(
+                    theme.on_primary,
+                    highlight,
+                    crate::theme::TEXT_CONTRAST,
+                );
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, highlight);
             } else if response.is_some_and(Response::hovered) {
-                painter.rect_filled(bounds, 4.0 * zoom, theme.bg_elevated());
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, theme.bg_elevated());
             }
             painter.text(
                 bounds.center(),
@@ -97,10 +109,194 @@ impl BinaryChoice<'_> {
                 ink,
             );
             if response.is_some_and(Response::has_focus) {
-                painter.rect_stroke(bounds, 4.0 * zoom, theme.focus_ring, StrokeKind::Inside);
+                painter.rect_stroke(
+                    bounds,
+                    OPTION_RADIUS * zoom,
+                    theme.focus_ring,
+                    StrokeKind::Inside,
+                );
             }
         }
     }
+}
+
+/// Two to five fixed-width choices drawn into a given rectangle, such as a card's
+/// field: the many-option form of [`BinaryChoice`]. Long names shrink to fit.
+#[derive(Debug, Clone, Copy)]
+pub struct ChoiceRow<'a> {
+    pub labels: &'a [&'a str],
+    pub selected: Option<usize>,
+    /// The value is the default, not chosen: its choice is shown paler.
+    pub defaulted: bool,
+    pub surface: Surface,
+    pub zoom: f32,
+}
+
+impl ChoiceRow<'_> {
+    fn parts(&self, rect: Rect) -> Vec<Rect> {
+        let count = self.labels.len().max(1);
+        #[expect(clippy::cast_precision_loss, reason = "a handful of choices")]
+        let width = rect.width() / count as f32;
+        (0..count)
+            .map(|index| {
+                #[expect(clippy::cast_precision_loss, reason = "a handful of choices")]
+                let left = rect.left() + width * index as f32;
+                Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()))
+            })
+            .collect()
+    }
+
+    /// Draws the choices and returns the one clicked, if it changes the value.
+    pub fn show(self, ui: &Ui, rect: Rect, id: egui::Id) -> Option<usize> {
+        self.show_named(ui, rect, id, "")
+    }
+
+    /// Draws the choices as a group named `name` for assistive tools, such as the field
+    /// they set.
+    pub fn show_named(self, ui: &Ui, rect: Rect, id: egui::Id, name: &str) -> Option<usize> {
+        if !name.is_empty() {
+            let group = ui.interact(rect, id.with("group"), egui::Sense::hover());
+            group.widget_info(|| egui::WidgetInfo::labeled(egui::Role::RadioGroup, true, name));
+        }
+        let mut picked = None;
+        let responses: Vec<Response> = self
+            .parts(rect)
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| {
+                let response = ui.interact(part, id.with(index), egui::Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::RadioButton,
+                        response.enabled(),
+                        self.selected == Some(index),
+                        self.labels[index],
+                    )
+                });
+                if response.clicked() && (self.defaulted || self.selected != Some(index)) {
+                    picked = Some(index);
+                }
+                response
+            })
+            .collect();
+        self.paint(ui, rect, Some(&responses));
+        picked
+    }
+
+    pub fn paint_preview(self, ui: &Ui, rect: Rect) {
+        self.paint(ui, rect, None);
+    }
+
+    fn paint(self, ui: &Ui, rect: Rect, responses: Option<&[Response]>) {
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let theme = crate::UiTokens::for_surface(ui, self.surface).theme;
+        let painter = ui.painter();
+        let zoom = self.zoom;
+        let fill = theme.bg_input();
+        painter.rect(
+            rect,
+            5.0 * zoom,
+            fill,
+            theme.control_border(),
+            StrokeKind::Inside,
+        );
+        for (index, part) in self.parts(rect).into_iter().enumerate() {
+            let bounds = part.shrink(2.0 * zoom);
+            let response = responses.and_then(|items| items.get(index));
+            let mut ink = theme.text;
+            if self.selected == Some(index) {
+                let highlight = if self.defaulted {
+                    fill.lerp_to_gamma(theme.primary, 0.55)
+                } else {
+                    theme.primary
+                };
+                ink = crate::theme::ensure_contrast(
+                    theme.on_primary,
+                    highlight,
+                    crate::theme::TEXT_CONTRAST,
+                );
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, highlight);
+            } else if response.is_some_and(Response::hovered) {
+                painter.rect_filled(bounds, OPTION_RADIUS * zoom, theme.bg_elevated());
+            }
+            let size = 12.5 * zoom;
+            let galley = painter.layout_no_wrap(
+                self.labels[index].to_owned(),
+                egui::FontId::proportional(size),
+                ink,
+            );
+            let room = bounds.width() - 4.0 * zoom;
+            let galley = if galley.size().x > room && room > 0.0 {
+                let shrunk = (size * room / galley.size().x).max(6.0);
+                painter.layout_no_wrap(
+                    self.labels[index].to_owned(),
+                    egui::FontId::proportional(shrunk),
+                    ink,
+                )
+            } else {
+                galley
+            };
+            painter.galley(bounds.center() - galley.size() * 0.5, galley, ink);
+            if response.is_some_and(Response::has_focus) {
+                painter.rect_stroke(
+                    bounds,
+                    OPTION_RADIUS * zoom,
+                    theme.focus_ring,
+                    StrokeKind::Inside,
+                );
+            }
+        }
+    }
+}
+
+/// Minus and plus buttons at the two ends of `rect`, around a number the caller draws
+/// in between. Returns -1 or +1 for the button clicked. `rect`'s height sets their size.
+pub fn step_buttons(ui: &Ui, rect: Rect, id: egui::Id, surface: Surface, zoom: f32) -> Option<i8> {
+    if !rect.is_finite() || !rect.is_positive() || !zoom.is_finite() || zoom <= 0.0 {
+        return None;
+    }
+    let side = rect.height().min(rect.width() * 0.5);
+    let minus = Rect::from_min_size(rect.min, vec2(side, side));
+    let plus = Rect::from_min_size(pos2(rect.right() - side, rect.top()), vec2(side, side));
+    let theme = crate::UiTokens::for_surface(ui, surface).theme;
+    let mut step = None;
+    for (button, sign, glyph) in [(minus, -1, "\u{2212}"), (plus, 1, "+")] {
+        let response = ui.interact(button, id.with(sign), egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                response.enabled(),
+                if sign < 0 { "Decrease" } else { "Increase" },
+            )
+        });
+        if ui.is_rect_visible(button) {
+            let fill = if response.hovered() {
+                theme.bg_elevated()
+            } else {
+                theme.bg_input()
+            };
+            ui.painter().rect(
+                button,
+                5.0 * zoom,
+                fill,
+                theme.control_border(),
+                StrokeKind::Inside,
+            );
+            ui.painter().text(
+                button.center(),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(15.0 * zoom),
+                theme.text,
+            );
+        }
+        if response.clicked() {
+            step = Some(sign);
+        }
+    }
+    step
 }
 
 /// Intrinsic pill group with a sliding selection and a stacked narrow layout.
@@ -620,16 +816,8 @@ pub fn continuous_slider(
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
     let response = slider_input(ui, Slider::new(value, range), 22.0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "normalized screen coordinate"
-    )]
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
-    SliderTrack::new(response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
+    let fraction = track_fraction(*value, start, end);
+    SliderTrack::new(ui, response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
     response
 }
 
@@ -655,7 +843,34 @@ pub fn logarithmic_slider(
         reason = "normalized screen coordinate"
     )]
     let fraction = ((f64::from(*value).clamp(start, end) / start).ln() / (end / start).ln()) as f32;
-    SliderTrack::new(response.rect, fraction).paint(ui, surface, Some(&response), |_, _, _| {});
+    let track = SliderTrack::new(ui, response.rect, fraction);
+    track.paint(ui, surface, Some(&response), |painter, active, idle| {
+        // 1, 2 and 5 of every decade, the powers of ten taller.
+        let mut decade = 10f64.powf(start.log10().floor());
+        while decade <= end {
+            for (factor, major) in [(1.0, true), (2.0, false), (5.0, false)] {
+                let at = decade * factor;
+                if at < start || at > end {
+                    continue;
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "normalized screen coordinate"
+                )]
+                let x = egui::lerp(
+                    track.travel,
+                    ((at / start).ln() / (end / start).ln()) as f32,
+                );
+                track.notch(
+                    painter,
+                    x,
+                    major,
+                    if x <= track.thumb.x { active } else { idle },
+                );
+            }
+            decade *= 10.0;
+        }
+    });
     response
 }
 
@@ -674,23 +889,31 @@ pub fn continuous_marked_slider(
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
     let response = slider_input(ui, Slider::new(value, range), 22.0);
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
-    let track = SliderTrack::new(response.rect, fraction);
+    let fraction = track_fraction(*value, start, end);
+    let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
-        for mark in marks {
+        for (index, mark) in marks.iter().enumerate() {
             let x = egui::lerp(track.travel, mark.clamp(0.0, 1.0));
-            painter.rect_filled(
-                Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                CONTROL_RADIUS - 2,
+            let major = index == 0 || index + 1 == marks.len();
+            track.notch(
+                painter,
+                x,
+                major,
                 if x <= track.thumb.x { active } else { idle },
             );
         }
     });
     response
+}
+
+/// Where `value` sits between `start` and `end`, from 0 to 1; 0 for an empty range.
+#[expect(clippy::cast_possible_truncation, reason = "a fraction from 0 to 1")]
+fn track_fraction(value: f32, start: f64, end: f64) -> f32 {
+    if start == end {
+        0.0
+    } else {
+        ((f64::from(value) - start) / (end - start)).clamp(0.0, 1.0) as f32
+    }
 }
 
 /// A single slider presentation for continuous or strict values.
@@ -716,19 +939,16 @@ pub fn guided_slider(
     let response = slider_input(ui, slider, 22.0);
     let start = f64::from(*range.start());
     let end = f64::from(*range.end());
-    let fraction = if start == end {
-        0.0
-    } else {
-        ((f64::from(*value) - start) / (end - start)).clamp(0.0, 1.0) as f32
-    };
-    let track = SliderTrack::new(response.rect, fraction);
+    let fraction = track_fraction(*value, start, end);
+    let track = SliderTrack::new(ui, response.rect, fraction);
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         if matches!(marks, SliderMarks::Notches | SliderMarks::NotchesAndValues) {
             for guide in guides {
                 let x = egui::lerp(track.travel, guide.fraction.clamp(0.0, 1.0));
-                painter.rect_filled(
-                    Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                    CONTROL_RADIUS - 2,
+                track.notch(
+                    painter,
+                    x,
+                    true,
                     if x <= track.thumb.x { active } else { idle },
                 );
             }
@@ -748,8 +968,11 @@ pub fn guided_slider(
             let x = (egui::lerp(track.travel, guide.fraction.clamp(0.0, 1.0)) - width * 0.5)
                 .clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
-                ui.painter()
-                    .galley(pos2(x, track.thumb.y + 7.0), galley, theme.muted_text);
+                ui.painter().galley(
+                    pos2(x, track.thumb.y + track.label_drop()),
+                    galley,
+                    theme.muted_text,
+                );
                 right = x + width;
             }
         }
@@ -765,13 +988,15 @@ pub fn marked_slider(ui: &mut Ui, surface: Surface, fraction: &mut f32, marks: &
         Slider::new(fraction, 0.0..=1.0).smart_aim(false),
         height,
     );
-    SliderTrack::new(response.rect, *fraction).marked(ui, surface, Some(&response), marks);
+    SliderTrack::new(ui, response.rect, *fraction).marked(ui, surface, Some(&response), marks);
     response
 }
 
 /// Paints a marked track in a read-only preview, with no input registration.
 pub fn marked_slider_preview(ui: &Ui, rect: Rect, surface: Surface, fraction: f32, marks: &[f32]) {
-    SliderTrack::new(rect, fraction).marked(ui, surface, None, marks);
+    if rect.is_positive() && rect.is_finite() && rect.size().is_finite() {
+        SliderTrack::new(ui, rect, fraction).marked(ui, surface, None, marks);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -784,7 +1009,8 @@ pub enum KnobStyle {
     Loop,
 }
 /// Draws a rotary value control with optional snapping and visual marks.
-/// Drag up or right to increase it. Hold Shift while dragging for finer control.
+/// Drag up or right to increase it: Shift is ten times finer, Ctrl (Command on macOS) a
+/// hundred times. Arrows move one step, Page Up and Page Down ten.
 ///
 /// The marks are normalized positions from 0.0 to 1.0 and do not themselves
 /// constrain the value. This is suitable for continuous, stepped and logarithmic
@@ -801,6 +1027,98 @@ pub fn knob(
     rotary(ui, surface, value, range, step, marks, KnobStyle::Arc)
 }
 
+/// What a dial shows inside its ring: its name, and the unit after its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DialFace<'a> {
+    pub caption: &'a str,
+    pub unit: &'a str,
+    /// The dial's diameter. Without one it takes a knob's size, narrowed to fit.
+    pub diameter: Option<f32>,
+}
+
+/// Optional presentation for a dial face.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialStyle {
+    pub knob: KnobStyle,
+    pub precision: Option<u8>,
+}
+
+/// A self-contained rotary control: a ring of fine ticks lit up to the value, with the
+/// name, value and unit inside, so it needs no label beside it. It fills the space it
+/// is given, up to the size of a knob, and edits like [`knob`].
+pub fn dial(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+) -> Response {
+    styled_dial(ui, surface, value, range, step, face, DialStyle::default())
+}
+
+/// Draws a dial with the selected knob style and display precision.
+pub fn styled_dial(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+    style: DialStyle,
+) -> Response {
+    rotary_with(
+        ui,
+        surface,
+        value,
+        range,
+        step,
+        &[],
+        style.knob,
+        Some((face, style)),
+    )
+}
+
+/// Paints the same dial face in a read-only card preview.
+pub fn dial_preview(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+) {
+    styled_dial_preview(
+        ui,
+        rect,
+        surface,
+        value,
+        range,
+        step,
+        face,
+        DialStyle::default(),
+    );
+}
+
+/// Paints a styled dial without registering input.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one dial preview's display state"
+)]
+pub fn styled_dial_preview(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    face: DialFace<'_>,
+    style: DialStyle,
+) {
+    paint_dial(ui, rect, surface, value, &range, step, (face, style), None);
+}
+
 /// Relative rotary control with an optional center detent or outer tick marks.
 pub fn rotary(
     ui: &mut Ui,
@@ -811,6 +1129,23 @@ pub fn rotary(
     marks: &[f32],
     style: KnobStyle,
 ) -> Response {
+    rotary_with(ui, surface, value, range, step, marks, style, None)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one rotary control's state and face"
+)]
+fn rotary_with(
+    ui: &mut Ui,
+    surface: Surface,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: Option<f32>,
+    marks: &[f32],
+    style: KnobStyle,
+    face: Option<(DialFace<'_>, DialStyle)>,
+) -> Response {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
@@ -818,10 +1153,16 @@ pub fn rotary(
     let looping = style == KnobStyle::Loop;
     let normalize = |raw| rotary_value(raw, &range, None, looping);
     let commit = |raw| rotary_value(raw, &range, step, looping);
-    let diameter =
-        (ui.spacing().interact_size.y.max(24.0) + 45.0).min(ui.available_width().max(1.0));
-    let (rect, mut response) =
-        ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::click_and_drag());
+    let diameter = face
+        .and_then(|(face, _)| face.diameter)
+        .filter(|diameter| diameter.is_finite() && *diameter > 0.0)
+        .unwrap_or(ui.spacing().interact_size.y.max(24.0) + 45.0)
+        .min(ui.available_width().max(1.0));
+    let size = vec2(diameter, diameter);
+    if !span.is_finite() || span <= 0.0 || diameter < 4.0 {
+        return ui.allocate_exact_size(size, egui::Sense::hover()).1;
+    }
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     if response.clicked() || response.drag_started() {
         response.request_focus();
     }
@@ -866,14 +1207,24 @@ pub fn rotary(
     let mut next = *value;
     if span > 0.0 && response.dragged() {
         let delta = response.drag_delta();
-        let sensitivity = ui.input(|input| if input.modifiers.shift { 0.2 } else { 1.0 });
+        // A full sweep takes 200 points; Shift is ten times finer, Ctrl (Command on
+        // macOS) a hundred times, so a wide range can still be set to its last step.
+        let sensitivity = ui.input(|input| {
+            if input.modifiers.command {
+                0.01
+            } else if input.modifiers.shift {
+                0.1
+            } else {
+                1.0
+            }
+        });
         next = ui.ctx().data_mut(|data| {
             let previous = if response.drag_started() {
                 *value
             } else {
                 data.get_temp(drag_id).unwrap_or(*value)
             };
-            let raw = normalize(previous + span * (delta.x - delta.y) * sensitivity / 160.0);
+            let raw = normalize(previous + span * (delta.x - delta.y) * sensitivity / 200.0);
             data.insert_temp(drag_id, raw);
             raw
         });
@@ -881,14 +1232,17 @@ pub fn rotary(
         ui.ctx().data_mut(|data| data.remove::<f32>(drag_id));
     }
     if span > 0.0 && response.has_focus() {
-        let keyboard_step = step.unwrap_or(span / 100.0);
-        let [left, down, right, up] = super::consume_plain_keys(
+        // Arrows move one step, Page Up and Page Down ten.
+        let keyboard_step = step.unwrap_or(span / 200.0);
+        let [left, down, right, up, page_down, page_up] = super::consume_plain_keys(
             ui,
             [
                 Key::ArrowLeft,
                 Key::ArrowDown,
                 Key::ArrowRight,
                 Key::ArrowUp,
+                Key::PageDown,
+                Key::PageUp,
             ],
         );
         if left || down {
@@ -897,23 +1251,17 @@ pub fn rotary(
         if right || up {
             next += keyboard_step;
         }
+        if page_down {
+            next -= keyboard_step * 10.0;
+        }
+        if page_up {
+            next += keyboard_step * 10.0;
+        }
     }
     if span > 0.0 && response.hovered() && response.has_focus() {
-        let wheel = ui.input_mut(|input| {
-            let wheel = input
-                .raw
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                    _ => None,
-                })
-                .sum::<f32>();
-            input.smooth_scroll_delta.y = 0.0;
-            wheel
-        });
+        let wheel = crate::take_wheel(ui);
         if wheel != 0.0 {
-            next += wheel.signum() * step.unwrap_or(span / 100.0);
+            next += wheel.signum() * step.unwrap_or(span / 200.0);
         }
     }
     if style == KnobStyle::Bipolar && response.dragged() && next.abs() < span * 0.018 {
@@ -928,18 +1276,182 @@ pub fn rotary(
     }
     response.widget_info(|| egui::WidgetInfo::slider(response.enabled(), f64::from(*value), ""));
 
-    paint_rotary(
-        ui,
-        rect,
-        surface,
-        *value,
-        &range,
-        step,
-        marks,
-        style,
-        Some(&response),
-    );
+    if let Some(face) = face {
+        paint_dial(
+            ui,
+            rect,
+            surface,
+            *value,
+            &range,
+            step,
+            face,
+            Some(&response),
+        );
+    } else {
+        paint_rotary(
+            ui,
+            rect,
+            surface,
+            *value,
+            &range,
+            step,
+            marks,
+            style,
+            Some(&response),
+        );
+    }
     response
+}
+
+/// The dial face: ticks over three quarters of a turn, those up to the value in the
+/// primary color, a longer one at the value, and the caption, value and unit inside.
+#[allow(clippy::too_many_arguments, reason = "one dial face's display state")]
+fn paint_dial(
+    ui: &Ui,
+    rect: Rect,
+    surface: Surface,
+    value: f32,
+    range: &RangeInclusive<f32>,
+    step: Option<f32>,
+    (face, style): (DialFace<'_>, DialStyle),
+    response: Option<&Response>,
+) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let theme = Theme::of(ui);
+    let (start, end) = (*range.start(), *range.end());
+    let span = end - start;
+    if !rect.is_finite() || !rect.size().is_finite() || !span.is_finite() || span <= 0.0 {
+        return;
+    }
+    let value = if value.is_nan() {
+        start
+    } else {
+        value.clamp(start, end)
+    };
+    let fraction = (value - start) / span;
+    let enabled = response.is_none_or(Response::enabled);
+    let painter = ui.painter();
+    let diameter = rect.width().min(rect.height());
+    // Too small for its ticks and text: nothing legible fits.
+    if diameter < 24.0 {
+        return;
+    }
+    let center = rect.center();
+    let outer = diameter * 0.5 - 1.0;
+    let length = (diameter * 0.085).max(3.0);
+    let inner = outer - length;
+    let point = |normalized: f32, ring: f32| {
+        let (start, sweep) = if style.knob == KnobStyle::Loop {
+            (90.0, 360.0)
+        } else {
+            (135.0, 270.0)
+        };
+        let angle = (start + sweep * normalized).to_radians();
+        center + vec2(angle.cos() * ring, angle.sin() * ring)
+    };
+    let ink = if enabled {
+        theme.primary
+    } else {
+        theme.muted_text
+    };
+    let well = theme.background(surface).lerp_to_gamma(theme.text, 0.05);
+    painter.circle_filled(center, inner - 2.0, well);
+    if response.is_some_and(Response::has_focus) {
+        painter.circle_stroke(center, inner - 2.0, Stroke::new(1.0, theme.focus));
+    }
+    let width = (diameter / 50.0).clamp(0.8, 1.6);
+    let zero = if style.knob == KnobStyle::Bipolar && start < 0.0 && end > 0.0 {
+        -start / span
+    } else {
+        0.0
+    };
+    let count = if style.knob == KnobStyle::Notched {
+        step.map_or(12, |step| (span / step).round() as u16)
+            .clamp(2, 48)
+    } else {
+        ((diameter * 0.6) as u16).clamp(24, 48)
+    };
+    let last = count - u16::from(style.knob == KnobStyle::Loop);
+    for index in 0..=last {
+        let at = f32::from(index) / f32::from(count);
+        // Lit and unlit ticks differ in color only, like the knob's arc and track.
+        let lit = fraction != zero
+            && at + 0.5 / f32::from(count) >= zero.min(fraction)
+            && at <= zero.max(fraction) + 0.5 / f32::from(count);
+        let color = if lit { ink } else { theme.border };
+        painter.line_segment(
+            [point(at, inner), point(at, outer)],
+            Stroke::new(width, color),
+        );
+    }
+    let needle = if enabled {
+        theme.text
+    } else {
+        theme.muted_text
+    };
+    painter.line_segment(
+        [
+            point(fraction, inner - length * 0.7),
+            point(fraction, outer + 0.5),
+        ],
+        Stroke::new(width * 1.8, needle),
+    );
+    let precision = style.precision.unwrap_or_else(|| {
+        if step.is_some_and(|step| step.fract() == 0.0) {
+            0
+        } else {
+            1
+        }
+    });
+    let number = format!("{value:.*}", usize::from(precision));
+    // Shrinks text that would be wider than `room`.
+    let fit = |text: String, size: f32, color, room: f32| {
+        let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(size), color);
+        if galley.size().x > room {
+            // Never below a size egui can lay out, however narrow the room.
+            let shrunk = (size * room.max(1.0) / galley.size().x).max(4.0);
+            painter.layout_no_wrap(text, egui::FontId::proportional(shrunk), color)
+        } else {
+            galley
+        }
+    };
+    let well = inner - 3.0;
+    let value_text = fit(
+        number,
+        (diameter * 0.26).clamp(7.0, 22.0),
+        theme.text,
+        well * 1.8,
+    );
+    let value_at = pos2(
+        center.x - value_text.size().x * 0.5,
+        center.y - diameter * 0.04 - value_text.size().y * 0.5,
+    );
+    painter.galley(value_at, value_text, theme.text);
+    let small = (diameter * 0.14).clamp(6.5, 11.0);
+    if !face.unit.is_empty() {
+        let unit = fit(face.unit.to_owned(), small, theme.muted_text, well * 1.2);
+        let at = pos2(
+            center.x - unit.size().x * 0.5,
+            center.y + diameter * 0.17 - unit.size().y * 0.5,
+        );
+        painter.galley(at, unit, theme.muted_text);
+    }
+    // The name sits in the open quarter at the bottom of the ring.
+    if !face.caption.is_empty() {
+        let caption = fit(
+            face.caption.to_owned(),
+            small,
+            theme.muted_text,
+            diameter * 0.95,
+        );
+        let at = pos2(
+            center.x - caption.size().x * 0.5,
+            center.y + outer * 0.9 - caption.size().y * 0.5,
+        );
+        painter.galley(at, caption, theme.muted_text);
+    }
 }
 
 /// Paints the same rotary face in a read-only card preview.
@@ -979,11 +1491,15 @@ fn paint_rotary(
         let scale = (diameter / 60.0).clamp(0.35, 1.2);
         let enabled = response.is_none_or(Response::enabled);
         let painter = ui.painter();
-        let fraction = if span > 0.0 {
-            ((value - start) / span).clamp(0.0, 1.0)
+        if !rect.is_finite() || !rect.size().is_finite() || !span.is_finite() || span <= 0.0 {
+            return;
+        }
+        let value = if value.is_nan() {
+            start
         } else {
-            0.0
+            value.clamp(start, end)
         };
+        let fraction = (value - start) / span;
         let center = rect.center();
         let radius = rect.width() * 0.35;
         let point = |normalized: f32, ring: f32| {
@@ -1040,6 +1556,9 @@ fn paint_rotary(
             marks
         };
         for (index, mark) in marks.iter().enumerate() {
+            if !mark.is_finite() {
+                continue;
+            }
             let mark = mark.clamp(0.0, 1.0);
             let major = index == 0
                 || index + 1 == marks.len()
@@ -1104,12 +1623,27 @@ fn rotary_value(raw: f32, range: &RangeInclusive<f32>, step: Option<f32>, loopin
     if !raw.is_finite() || !span.is_finite() || span <= 0.0 {
         return start;
     }
-    let value = step.map_or(raw, |step| start + ((raw - start) / step).round() * step);
-    if looping {
-        start + (value - start).rem_euclid(span)
+    // Quantize and wrap in f64 so a very small step or a distant typed value
+    // cannot overflow the quotient and turn a cyclic dial into NaN.
+    let (start, end, raw) = (f64::from(start), f64::from(end), f64::from(raw));
+    let offset = raw - start;
+    let offset = step
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .map_or(offset, |step| {
+            let step = f64::from(step);
+            (offset / step).round() * step
+        });
+    let value = if looping {
+        start + offset.rem_euclid(end - start)
     } else {
-        value.clamp(start, end)
-    }
+        (start + offset).clamp(start, end)
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the public control edits f32"
+    )]
+    let value = value as f32;
+    value
 }
 
 /// Controls whether numeric values appear beneath a stepped slider.
@@ -1140,13 +1674,38 @@ pub fn stepped_slider(
             .smart_aim(false),
         22.0,
     );
-    let track = SliderTrack::new(
+    let mut track = SliderTrack::new(
+        ui,
         response.rect,
         f32::from(value.saturating_sub(start)) / f32::from((end - start).max(1)),
     );
+    // Pills closer than their own width would run together, so dense stops are ticks.
+    if track.style.notch == NotchStyle::Pill
+        && track.travel.span() / f32::from(stops.max(1)) < PILL.x * 1.6
+    {
+        track.style.notch = NotchStyle::Tick;
+    }
     let theme = Theme::of(ui);
-    let stride = tick_stride(stops, track.travel.span(), 12.0);
+    let gap = if track.style.notch == NotchStyle::Tick {
+        6.0
+    } else {
+        12.0
+    };
+    let stride = tick_stride(stops, track.travel.span(), gap);
     let x_at = |tick| egui::lerp(track.travel, f32::from(tick) / f32::from(stops.max(1)));
+    let mut font = egui::TextStyle::Monospace.resolve(ui.style());
+    font.size *= 0.85;
+    let size = ui
+        .painter()
+        .layout_no_wrap(end.to_string(), font.clone(), theme.muted_text)
+        .size();
+    // A labeled stop is a major one; without labels, every fifth.
+    let label_stride = tick_stride(stops, track.travel.span(), size.x + 10.0);
+    let major_stride = if matches!(labels, StepLabels::Values) {
+        label_stride
+    } else {
+        stride * 5
+    };
     track.paint(ui, surface, Some(&response), |painter, active, idle| {
         for tick in mark_indices(stops, stride) {
             let x = x_at(tick);
@@ -1155,21 +1714,12 @@ pub fn stepped_slider(
             } else {
                 idle
             };
-            painter.rect_filled(
-                Rect::from_center_size(pos2(x, track.thumb.y), vec2(10.5, 7.0)),
-                CONTROL_RADIUS - 2,
-                color,
-            );
+            let major = tick == stops || usize::from(tick) % major_stride == 0;
+            track.notch(painter, x, major, color);
         }
     });
     if matches!(labels, StepLabels::Values) {
-        let mut font = egui::TextStyle::Monospace.resolve(ui.style());
-        font.size *= 0.85;
-        let size = ui
-            .painter()
-            .layout_no_wrap(end.to_string(), font.clone(), theme.muted_text)
-            .size();
-        let stride = tick_stride(stops, track.travel.span(), size.x + 10.0);
+        let stride = label_stride;
         let (_, row) = ui.allocate_space(vec2(response.rect.width(), size.y));
         let mut right = row.left() - SPACE_SMALL;
         for tick in mark_indices(stops, stride) {
@@ -1187,7 +1737,7 @@ pub fn stepped_slider(
                 (x_at(tick) - width * 0.5).clamp(row.left(), (row.right() - width).max(row.left()));
             if x >= right + SPACE_SMALL && x + width <= row.right() {
                 ui.painter()
-                    .galley(pos2(x, track.thumb.y + 7.0), galley, color);
+                    .galley(pos2(x, track.thumb.y + track.label_drop()), galley, color);
                 right = x + width;
             }
         }
@@ -1208,41 +1758,155 @@ fn mark_indices(stops: u16, stride: usize) -> impl Iterator<Item = u16> {
 }
 
 const HANDLE_ASPECT: f32 = 0.72;
+/// From the rail's middle to the top of tick notches.
+const NOTCH_GAP: f32 = 4.5;
+const NOTCH_MAJOR: f32 = 5.0;
+const NOTCH_MINOR: f32 = 3.0;
+/// The pill a stop draws on the rail in the default style.
+const PILL: egui::Vec2 = vec2(10.5, 7.0);
+
+/// How a slider marks its stops and guides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotchStyle {
+    /// A pill on the rail, lit with it: the house style.
+    #[default]
+    Pill,
+    /// A thin tick under the rail, taller where labeled, for dense rulers.
+    Tick,
+    /// A small dot on the rail.
+    Dot,
+}
+
+/// The shape of a slider's handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThumbStyle {
+    /// A wide rounded capsule: the house style.
+    #[default]
+    Capsule,
+    /// A circle.
+    Round,
+    /// A narrow upright bar, for precise reading of the position.
+    Bar,
+}
+
+/// The look of every slider drawn in a scope. Set it for the whole application with
+/// [`SliderStyle::install`], or for some sliders with [`SliderStyle::scope`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliderStyle {
+    pub notch: NotchStyle,
+    pub thumb: ThumbStyle,
+}
+
+impl SliderStyle {
+    fn id() -> egui::Id {
+        egui::Id::unique("orange-ui-controls-slider-style")
+    }
+
+    /// The style sliders use now.
+    pub fn of(ui: &Ui) -> Self {
+        ui.data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default()
+    }
+
+    /// Makes `style` the style of every slider from now on.
+    pub fn install(ctx: &egui::Context, style: Self) {
+        ctx.data_mut(|data| data.insert_temp(Self::id(), style));
+    }
+
+    /// Runs `paint` with sliders in `style`, then restores the previous style: for
+    /// painting where only a shared `Ui` is at hand, such as a read-only preview.
+    pub fn apply<R>(ctx: &egui::Context, style: Self, paint: impl FnOnce() -> R) -> R {
+        let previous: Self = ctx
+            .data(|data| data.get_temp(Self::id()))
+            .unwrap_or_default();
+        ctx.data_mut(|data| data.insert_temp(Self::id(), style));
+        let result = paint();
+        ctx.data_mut(|data| data.insert_temp(Self::id(), previous));
+        result
+    }
+
+    /// Draws `add` with sliders in `style`, then restores the previous style.
+    pub fn scope<R>(ui: &mut Ui, style: Self, add: impl FnOnce(&mut Ui) -> R) -> R {
+        let previous = Self::of(ui);
+        ui.data_mut(|data| data.insert_temp(Self::id(), style));
+        let result = add(ui);
+        ui.data_mut(|data| data.insert_temp(Self::id(), previous));
+        result
+    }
+}
 
 struct SliderTrack {
     rect: Rect,
     travel: egui::Rangef,
     thumb: egui::Pos2,
+    style: SliderStyle,
 }
 
 impl SliderTrack {
-    fn new(rect: Rect, fraction: f32) -> Self {
+    fn new(ui: &Ui, rect: Rect, fraction: f32) -> Self {
         // egui 0.37 uses this inset for the rectangular handle's input travel.
         let inset = (rect.height() / 2.5 * HANDLE_ASPECT).min(rect.width() * 0.5);
         let travel = rect.x_range().shrink(inset);
+        let fraction = if fraction.is_nan() {
+            0.0
+        } else {
+            fraction.clamp(0.0, 1.0)
+        };
         let thumb = pos2(egui::lerp(travel, fraction), rect.center().y);
         Self {
             rect,
             travel,
             thumb,
+            style: SliderStyle::of(ui),
+        }
+    }
+
+    /// From the rail's middle to the top of the value labels: below tick notches.
+    fn label_drop(&self) -> f32 {
+        match self.style.notch {
+            NotchStyle::Tick => NOTCH_GAP + NOTCH_MAJOR + 2.0,
+            NotchStyle::Pill | NotchStyle::Dot => 7.0,
         }
     }
 
     fn marked(&self, ui: &Ui, surface: Surface, response: Option<&Response>, marks: &[f32]) {
         self.paint(ui, surface, response, |painter, active, idle| {
-            for mark in marks {
-                let x = egui::lerp(self.travel, *mark);
-                painter.rect_filled(
-                    Rect::from_center_size(pos2(x, self.thumb.y), vec2(10.5, 7.0)),
-                    CONTROL_RADIUS - 2,
-                    if x <= self.thumb.x && response.is_none_or(Response::enabled) {
-                        active
-                    } else {
-                        idle
-                    },
-                );
+            for (index, mark) in marks.iter().enumerate() {
+                if !mark.is_finite() {
+                    continue;
+                }
+                let x = egui::lerp(self.travel, mark.clamp(0.0, 1.0));
+                let major = index == 0 || index + 1 == marks.len();
+                let lit = x <= self.thumb.x && response.is_none_or(Response::enabled);
+                self.notch(painter, x, major, if lit { active } else { idle });
             }
         });
+    }
+
+    /// One stop in the slider's notch style, lit once the value has passed it. A major
+    /// stop, such as a labeled one, is taller as a tick.
+    fn notch(&self, painter: &egui::Painter, x: f32, major: bool, color: egui::Color32) {
+        match self.style.notch {
+            NotchStyle::Pill => {
+                painter.rect_filled(
+                    Rect::from_center_size(pos2(x, self.thumb.y), PILL),
+                    CONTROL_RADIUS - 2,
+                    color,
+                );
+            }
+            NotchStyle::Tick => {
+                let top = self.thumb.y + NOTCH_GAP;
+                let length = if major { NOTCH_MAJOR } else { NOTCH_MINOR };
+                painter.line_segment(
+                    [pos2(x, top), pos2(x, top + length)],
+                    Stroke::new(1.5, color),
+                );
+            }
+            NotchStyle::Dot => {
+                // Wider than the rail, so a dot reads against it lit or not.
+                painter.circle_filled(pos2(x, self.thumb.y), if major { 4.0 } else { 3.4 }, color);
+            }
+        }
     }
 
     fn paint(
@@ -1264,12 +1928,7 @@ impl SliderTrack {
             pos2(self.travel.max + 2.5, y + 2.5),
         )
         .intersect(self.rect);
-        let background = theme.background(surface);
-        let idle = crate::theme::ensure_contrast(
-            background.lerp_to_gamma(theme.text, 0.23),
-            background,
-            3.0,
-        );
+        let idle = theme.slider_idle(surface);
         painter.rect_filled(rail, 2, idle);
         if enabled && self.thumb.x > self.travel.min {
             painter.rect_filled(
@@ -1290,8 +1949,12 @@ impl SliderTrack {
         let size = (self.rect.height() * 0.38)
             .clamp(9.0, 14.0)
             .min(self.rect.width());
-        let thumb =
-            Rect::from_center_size(self.thumb, vec2((size * 1.5).min(self.rect.width()), size));
+        let (shape, radius) = match self.style.thumb {
+            ThumbStyle::Capsule => (vec2((size * 1.5).min(self.rect.width()), size), 255),
+            ThumbStyle::Round => (vec2(size * 1.15, size * 1.15), 255),
+            ThumbStyle::Bar => (vec2((size * 0.45).max(4.0), size * 1.6), 2),
+        };
+        let thumb = Rect::from_center_size(self.thumb, shape.min(self.rect.size()));
         if response.is_some_and(Response::has_focus) {
             painter.rect_stroke(
                 thumb.expand(2.0),
@@ -1300,7 +1963,7 @@ impl SliderTrack {
                 StrokeKind::Outside,
             );
         }
-        painter.rect_filled(thumb, 255, fill);
+        painter.rect_filled(thumb, radius, fill);
     }
 }
 
@@ -1338,6 +2001,17 @@ fn slider_input(ui: &mut Ui, slider: Slider<'_>, height: f32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slider thumb among painted shapes: the one rectangle of its size.
+    fn slider_thumb(shapes: &[egui::epaint::ClippedShape]) -> &egui::epaint::RectShape {
+        shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
+                _ => None,
+            })
+            .expect("a slider thumb is painted")
+    }
 
     #[test]
     fn stepped_encoder_wraps_in_both_directions_and_pan_clamps() {
@@ -1614,7 +2288,7 @@ mod tests {
                     crate::theme::ensure_contrast(
                         theme.panel.lerp_to_gamma(theme.text, 0.23),
                         theme.panel,
-                        3.0,
+                        crate::theme::UI_CONTRAST,
                     ),
                 ));
                 rect = stepped_slider(
@@ -1649,14 +2323,7 @@ mod tests {
                 track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
                 [active, active, idle, idle]
             );
-            let thumb = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(thumb) if thumb.rect.size() == vec2(13.5, 9.0) => Some(thumb),
-                    _ => None,
-                })
-                .unwrap();
+            let thumb = slider_thumb(&output.shapes);
             assert_eq!(thumb.rect.center().y, rect.center().y);
             assert!((thumb.rect.center().x - track[1].0.x).abs() < 0.01);
             let values = output
@@ -1665,6 +2332,83 @@ mod tests {
                 .filter_map(|shape| match &shape.shape {
                     egui::Shape::Text(text) => {
                         assert!((text.pos.y - rect.center().y - 7.0).abs() < 0.01);
+                        Some(text.galley.text())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            match labels {
+                StepLabels::Hidden => assert!(values.is_empty()),
+                StepLabels::Values => assert_eq!(values, ["12", "24", "36", "48"]),
+            }
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn tick_notches_sit_under_the_rail_with_labels_below_them() {
+        for labels in [StepLabels::Hidden, StepLabels::Values] {
+            let ctx = egui::Context::default();
+            let mut value = 24;
+            let mut rect = Rect::NOTHING;
+            let mut colors = None;
+            let output = ctx.run_ui(input(200.0, vec![]), |ui| {
+                let theme = Theme::of(ui);
+                colors = Some((
+                    theme.primary,
+                    crate::theme::ensure_contrast(
+                        theme.panel.lerp_to_gamma(theme.text, 0.23),
+                        theme.panel,
+                        crate::theme::UI_CONTRAST,
+                    ),
+                ));
+                let tick = SliderStyle {
+                    notch: NotchStyle::Tick,
+                    ..SliderStyle::default()
+                };
+                rect = SliderStyle::scope(ui, tick, |ui| {
+                    stepped_slider(
+                        ui,
+                        Surface::Panel,
+                        &mut value,
+                        12..=48,
+                        NonZeroU16::new(12).unwrap(),
+                        labels,
+                    )
+                })
+                .rect;
+            });
+            let track = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::LineSegment { points, stroke }
+                        if (points[0].y - rect.center().y - NOTCH_GAP).abs() < 0.01 =>
+                    {
+                        assert_eq!(points[0].x, points[1].x, "a notch is vertical");
+                        Some((points[0], stroke.color))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(track.len(), 4);
+            let (active, idle) = colors.unwrap();
+            assert_eq!(
+                track.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
+                [active, active, idle, idle]
+            );
+            let thumb = slider_thumb(&output.shapes);
+            assert_eq!(thumb.rect.center().y, rect.center().y);
+            assert!((thumb.rect.center().x - track[1].0.x).abs() < 0.01);
+            let values = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => {
+                        assert!(
+                            (text.pos.y - rect.center().y - (NOTCH_GAP + NOTCH_MAJOR + 2.0)).abs()
+                                < 0.01
+                        );
                         Some(text.galley.text())
                     }
                     _ => None,
@@ -1831,6 +2575,80 @@ mod tests {
         }]);
         assert!(rect.width() >= 44.0);
         assert_eq!(value, 1.0);
+    }
+
+    /// A dial with almost no room, as on a first layout pass, draws nothing rather than
+    /// laying out text at a negative size.
+    #[test]
+    fn a_dial_with_no_room_paints_nothing_and_never_panics() {
+        let ctx = egui::Context::default();
+        for (width, diameter) in [(4.0, None), (300.0, Some(6.0)), (30.0, Some(30.0))] {
+            let mut value = 150.0;
+            ctx.run_ui(input(width, vec![]), |ui| {
+                let _ = dial(
+                    ui,
+                    Surface::Card,
+                    &mut value,
+                    0.0..=10_000.0,
+                    Some(1.0),
+                    DialFace {
+                        caption: "Reset margin",
+                        unit: "ms",
+                        diameter,
+                    },
+                );
+            })
+            .drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn cyclic_rotary_remains_finite_when_the_step_is_subnormal() {
+        let next = rotary_value(f32::MAX, &(-10.0..=10.0), Some(f32::from_bits(1)), true);
+        assert!((-10.0..=10.0).contains(&next));
+    }
+
+    /// Ctrl (Command on macOS) drags a hundred times finer, so a wide range reaches
+    /// every step.
+    #[test]
+    fn a_precise_drag_moves_a_wide_dial_by_single_steps() {
+        let ctx = egui::Context::default();
+        let mut value = 0.0;
+        let mut frame = |events| {
+            let mut rect = Rect::NOTHING;
+            ctx.run_ui(input(240.0, events), |ui| {
+                rect = dial(
+                    ui,
+                    Surface::Panel,
+                    &mut value,
+                    0.0..=10_000.0,
+                    Some(1.0),
+                    DialFace::default(),
+                )
+                .rect;
+            })
+            .drop_without_applying_deltas();
+            (rect, value)
+        };
+        let pos = frame(vec![]).0.center();
+        frame(vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+            egui::Event::PointerMoved(pos),
+        ]);
+        frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::COMMAND,
+        }]);
+        for delta in 1u8..=4 {
+            frame(vec![egui::Event::PointerMoved(
+                pos + vec2(f32::from(delta) * 10.0, 0.0),
+            )]);
+        }
+        // Forty points at a hundredth of 10,000 per 200 points: twenty units, where a
+        // plain drag would have moved 2,000.
+        assert_eq!(frame(vec![]).1, 20.0);
     }
 
     #[test]

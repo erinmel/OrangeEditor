@@ -30,7 +30,9 @@ pub(crate) struct Setting(pub &'static str, pub f64, pub f64, pub f64);
 
 impl Setting {
     pub(crate) fn add(self, definition: Definition) -> Definition {
-        definition.setting(self.0, number_setting(self.1, self.2, self.3))
+        definition
+            .setting(self.0, number_setting(self.1, self.2, self.3))
+            .setting_control(self.0, orange_sdk::Control::slider().number())
     }
 
     pub(crate) fn read(self, config: &Map<String, Json>) -> Result<f64, String> {
@@ -324,7 +326,10 @@ impl Process for Limiter {
 const GAIN: Setting = Setting("gain_db", -60.0, 24.0, 0.0);
 
 pub(crate) fn gain_settings(definition: Definition) -> Definition {
-    GAIN.add(definition)
+    // A dial, with its decibels inside (ADR-33).
+    definition
+        .setting(GAIN.0, number_setting(GAIN.1, GAIN.2, GAIN.3))
+        .setting_control(GAIN.0, orange_sdk::Control::dial().unit("dB").precision(1))
 }
 
 /// Makes the stream louder or quieter by a fixed number of decibels.
@@ -359,9 +364,20 @@ pub(crate) fn filter_settings(definition: Definition) -> Definition {
         "mode",
         json!({"type": "string", "enum": FILTER_MODES, "default": "low-pass"}),
     );
-    [FILTER_CUTOFF, FILTER_Q]
+    let definition = [FILTER_CUTOFF, FILTER_Q]
         .into_iter()
-        .fold(definition, |definition, setting| setting.add(definition))
+        .fold(definition, |definition, setting| setting.add(definition));
+    // The cutoff on a frequency scale (ADR-33). The mode keeps its dropdown: its
+    // names are too long for a row of choices.
+    definition
+        .setting_control(
+            FILTER_CUTOFF.0,
+            orange_sdk::Control::slider().log().unit("Hz").number(),
+        )
+        .setting_control(
+            FILTER_Q.0,
+            orange_sdk::Control::slider().precision(2).number(),
+        )
 }
 
 /// A second-order filter (RBJ biquad) with its own state for each channel.

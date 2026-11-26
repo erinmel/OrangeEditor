@@ -169,6 +169,28 @@ impl RunDriver {
         budget: usize,
         refused: &mut dyn FnMut(Refused),
     ) -> Result<DriverTurn, RunError> {
+        self.turn_on(host_ns, max_inputs, budget, refused, None)
+    }
+    /// [`turn`](Self::turn) for a run attached to a workspace bus: its Dispatch nodes on
+    /// workspace events admit to `bus` while it pumps ([`Run::pump_with_workspace_bus`]).
+    pub fn turn_with_workspace_bus(
+        &mut self,
+        host_ns: u64,
+        max_inputs: usize,
+        budget: usize,
+        refused: &mut dyn FnMut(Refused),
+        bus: &mut crate::WorkspaceBus,
+    ) -> Result<DriverTurn, RunError> {
+        self.turn_on(host_ns, max_inputs, budget, refused, Some(bus))
+    }
+    fn turn_on(
+        &mut self,
+        host_ns: u64,
+        max_inputs: usize,
+        budget: usize,
+        refused: &mut dyn FnMut(Refused),
+        bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<DriverTurn, RunError> {
         let elapsed = host_ns
             .checked_sub(self.last_host_ns)
             .ok_or(RunError::ClockWentBackwards)?;
@@ -196,7 +218,10 @@ impl RunDriver {
             }
         }
         let progress = if clocked(self.run.state()) || self.run.state() == RunState::Paused {
-            self.run.pump(budget)?
+            match bus {
+                Some(bus) => self.run.pump_with_workspace_bus(bus, budget)?,
+                None => self.run.pump(budget)?,
+            }
         } else {
             RunProgress {
                 operations: 0,

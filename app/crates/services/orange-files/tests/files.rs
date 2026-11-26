@@ -258,8 +258,16 @@ fn watched_folder_appearance(wait_for_folder: bool) {
     std::fs::write(root.join("outside.txt"), "outside").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert_eq!(read(&host), None);
-    std::fs::write(root.join("chosen/inside.txt"), "inside").unwrap();
+    // The watcher starts on the new folder at its next poll and takes what is there
+    // then as its baseline, which never fires. Writing again until the change is seen
+    // keeps the test from depending on how soon that poll comes.
+    let mut checks = 0u32;
     until("the file change in the wired folder", || {
+        // About every 100 ms: `until` checks every 2 ms.
+        if checks.is_multiple_of(50) {
+            std::fs::write(root.join("chosen/inside.txt"), format!("inside {checks}")).unwrap();
+        }
+        checks += 1;
         read(&host).as_deref() == Some("chosen/inside.txt")
     });
     host.close(flow).unwrap();

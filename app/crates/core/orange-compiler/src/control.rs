@@ -182,10 +182,11 @@ pub enum ControlOperation {
         cases: Box<[SwitchCase]>,
         default: Option<ExecTarget>,
     },
-    /// Enqueues a run-scope event after evaluating its payload demand root.
+    /// Enqueues a run-scope event after evaluating its payload demand root. Without a
+    /// root (an event-only channel, or an optional payload left unset) it sends None.
     Emit {
         event: usize,
-        payload: usize,
+        payload: Option<usize>,
     },
     /// Suspends this strand until its next matching run-scoped emission, or its
     /// optional timeout; it never creates a new activation.
@@ -349,6 +350,7 @@ pub struct ControlEvent {
     id: EventDeclId,
     scope: EventScope,
     payload_type: ValueShape,
+    pulse: bool,
     handlers: Box<[EventHandler]>,
 }
 impl ControlEvent {
@@ -360,6 +362,10 @@ impl ControlEvent {
     }
     pub fn payload_type(&self) -> &ValueShape {
         &self.payload_type
+    }
+    /// Whether this event has no declared payload.
+    pub fn is_pulse(&self) -> bool {
+        self.pulse
     }
     pub fn handlers(&self) -> &[EventHandler] {
         &self.handlers
@@ -974,6 +980,7 @@ fn compile_control_inner(
         sources: Vec::new(),
         cx: &cx,
         edges: &edges,
+        producers: &producers,
         control_ix: &control_ix,
         event_ids: &event_ids,
         variables: &variables,
@@ -1509,6 +1516,9 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_TIMEOUT
                     | ids::ON_VARIABLE_CHANGED
                     | ids::ON_WATCH
+                    | ids::RISING_EDGE
+                    | ids::FALLING_EDGE
+                    | ids::CHANGE_BEYOND_TOLERANCE
                     | ids::CLOSE_HANDLE
                     | ids::NEXT_ITEM
                     | ids::COLLECT
@@ -1521,6 +1531,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::BRANCH
                     | ids::SET_VARIABLE
                     | ids::UPDATE_VARIABLE
+                    | ids::INCREMENT_COUNTER
+                    | ids::DECREMENT_COUNTER
                     | ids::SET_SHARED
                     | ids::UPDATE_SHARED
                     | ids::SEQUENCE
@@ -1594,7 +1606,7 @@ fn prepare_events(
             .events()
             .get(&event_id)
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
-        let payload_type = ValueShape::of_in(&declaration.payload, cx.snapshot.types().as_ref())
+        let payload_type = ValueShape::of_in(&declaration.carried(), cx.snapshot.types().as_ref())
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
         payload_types.entry(event_id).or_insert(payload_type);
         // Charge before retaining executable event metadata. The type is a bounded
@@ -1624,6 +1636,7 @@ fn prepare_events(
             id,
             scope: cx.document.events()[&id].scope,
             payload_type,
+            pulse: cx.document.events()[&id].payload.is_none(),
             handlers: handlers
                 .into_iter()
                 .map(|(_, _, handler)| handler)
@@ -1865,6 +1878,8 @@ fn collect_variables(cx: &Cx<'_>, bytes: &mut usize) -> Result<VariableLayout, C
             ids::GET_VARIABLE
                 | ids::SET_VARIABLE
                 | ids::UPDATE_VARIABLE
+                | ids::INCREMENT_COUNTER
+                | ids::DECREMENT_COUNTER
                 | ids::ON_VARIABLE_CHANGED
                 | ids::SET_SHARED
                 | ids::UPDATE_SHARED
@@ -1915,9 +1930,12 @@ fn collect_variables(cx: &Cx<'_>, bytes: &mut usize) -> Result<VariableLayout, C
         }
         if matches!(
             node.definition.id.as_str(),
-            ids::UPDATE_VARIABLE | ids::UPDATE_SHARED
+            ids::UPDATE_VARIABLE
+                | ids::UPDATE_SHARED
+                | ids::INCREMENT_COUNTER
+                | ids::DECREMENT_COUNTER
         ) {
-            update::resolve(node.id, &node.config, variables[variable_ids[&id]].ty())?;
+            update::resolve(node, variables[variable_ids[&id]].ty())?;
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
@@ -2091,6 +2109,7 @@ struct NodeLowering<'a, 'c> {
     sources: Vec<(ControlKey, Vec<(orange_model::id::PortKey, usize)>)>,
     cx: &'a Cx<'c>,
     edges: &'a BTreeMap<PortSite, ExecTarget>,
+    producers: &'a BTreeMap<PortSite, NodeId>,
     control_ix: &'a BTreeMap<ControlKey, ControlIx>,
     event_ids: &'a BTreeMap<EventDeclId, usize>,
     variables: &'a [ControlVariable],
@@ -2150,9 +2169,11 @@ impl NodeLowering<'_, '_> {
             .iter()
             .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
         {
-            let optional_await_timeout = node.definition.id.as_str() == ids::AWAIT_EVENT
-                && port.port_id.as_str() == "timeout";
-            if (port.is_optional() && !optional_await_timeout)
+            let supports_optional = matches!(
+                (node.definition.id.as_str(), port.port_id.as_str()),
+                (ids::AWAIT_EVENT, "timeout") | (ids::EMIT, "payload")
+            );
+            if (port.is_optional() && !supports_optional)
                 || port.is_lazy()
                 || (port.variadic.is_some()
                     && !matches!(operation, ControlOperation::Effect { .. }))
@@ -2295,7 +2316,7 @@ impl NodeLowering<'_, '_> {
                 let write = SharedWrite {
                     variable: variable.id(),
                     operation: if definition == ids::UPDATE_SHARED {
-                        Some(update::resolve(id, &node.config, variable.ty())?)
+                        Some(update::resolve(node, variable.ty())?)
                     } else {
                         None
                     },
@@ -2393,7 +2414,7 @@ impl NodeLowering<'_, '_> {
             ids::CLOSE_HANDLE => ControlOperation::CloseHandle {
                 handle: self.input(key, orange_model::port_id!("handle")),
             },
-            ids::ON_WATCH => {
+            ids::ON_WATCH | ids::RISING_EDGE | ids::FALLING_EDGE | ids::CHANGE_BEYOND_TOLERANCE => {
                 let root = self.input(key, orange_model::port_id!("watch"));
                 self.watches.push((key, root));
                 ControlOperation::Entry
@@ -2419,9 +2440,9 @@ impl NodeLowering<'_, '_> {
                 }
             }
             ids::FUNCTION_ENTRY => ControlOperation::Entry,
-            ids::UPDATE_VARIABLE => {
+            ids::UPDATE_VARIABLE | ids::INCREMENT_COUNTER | ids::DECREMENT_COUNTER => {
                 let variable = self.variable_nodes[&id];
-                let operation = update::resolve(id, &node.config, self.variables[variable].ty())?;
+                let operation = update::resolve(node, self.variables[variable].ty())?;
                 let mut operands = Vec::new();
                 if matches!(operation, UpdateOperation::CompareAndSet) {
                     operands.push(self.input(key, orange_model::port_id!("expected")));
@@ -2457,12 +2478,20 @@ impl NodeLowering<'_, '_> {
                     Ok(DeclId::Event(id)) => id,
                     _ => return Err(CompileError::UnsupportedNode { node: id }),
                 };
+                let payload_port =
+                    orange_model::id::PortKey::new(orange_model::port_id!("payload"), None);
+                // No port (an event-only channel) or an optional payload with neither a
+                // literal nor a wire: the emission carries None.
+                let payload_provided = cx.port(key, "payload").is_ok()
+                    && (node.inputs.contains_key(&payload_port)
+                        || self.producers.contains_key(&(scope, id, payload_port)));
                 ControlOperation::Emit {
                     event: *self
                         .event_ids
                         .get(&event_id)
                         .ok_or(CompileError::ValidationIncomplete)?,
-                    payload: self.input(key, orange_model::port_id!("payload")),
+                    payload: payload_provided
+                        .then(|| self.input(key, orange_model::port_id!("payload"))),
                 }
             }
             ids::AWAIT_EVENT => {
@@ -2746,7 +2775,7 @@ fn host_source(
             },
         ));
     }
-    if cx.node(key).definition.id.as_str() == ids::ON_WATCH && port == "value" {
+    if ids::is_watch(cx.node(key).definition.id.as_str()) && port == "value" {
         return Ok(HostSource::EventPayload(owner));
     }
     if matches!(operation, ControlOperation::Effect { .. }) && port != "error" {

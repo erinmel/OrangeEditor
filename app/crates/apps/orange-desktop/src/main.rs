@@ -87,10 +87,9 @@ impl Drop for Desktop {
             return;
         };
         let Some(parent) = path.parent() else { return };
-        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        let preferences = self.editor.preferences().to_string();
         let result = std::fs::create_dir_all(parent)
-            .and_then(|()| std::fs::write(&temporary, self.editor.preferences().to_string()))
-            .and_then(|()| std::fs::rename(&temporary, &path));
+            .and_then(|()| orange_sandbox::replace_file(&path, preferences.as_bytes()));
         if let Err(error) = result {
             eprintln!("Could not save editor preferences: {error}");
         }
@@ -167,9 +166,13 @@ impl eframe::App for Desktop {
         }
         let (events, focused) = ui.input(|input| (input.events.clone(), input.focused));
         let editing = ui.ctx().text_edit_focused() || ui.ctx().any_popup_open();
-        self.keyboard.handle(&events, focused, |key, modifiers| {
+        let problems = self.keyboard.handle(&events, focused, |key, modifiers| {
             !editing && self.editor.accepts_graph_key(key, modifiers)
         });
+        for problem in &problems {
+            self.editor
+                .note(orange_editor_ui::NoteLevel::Warning, &problem.text());
+        }
         // Flows report on their own threads: look again shortly while one runs.
         if self.editor.is_running() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
@@ -537,33 +540,6 @@ fn window_title(path: Option<&str>) -> std::borrow::Cow<'_, str> {
         .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy())
 }
 
-/// The network client of installed packages that hold the `http` or `http-local`
-/// grant. The plugin engine has already checked each address, so an `http://` URL
-/// reaches it only for a local address under `http-local`. Redirects are not followed.
-#[derive(Debug)]
-struct PluginHttp;
-impl orange_host::HttpClient for PluginHttp {
-    fn send(
-        &self,
-        request: &orange_host::HttpRequest,
-    ) -> Result<orange_host::HttpResponse, String> {
-        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch_response(
-            &request.method,
-            &request.url,
-            &request.headers,
-            &request.body,
-            limit,
-            request.url.starts_with("http://"),
-        )
-        .map(|response| orange_host::HttpResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-        })
-    }
-}
-
 fn built_in_services(
     keyboard: &keyboard::Keyboard,
     logbook: &logbook::LogBook,
@@ -590,7 +566,7 @@ fn start(
         secrets: Some(Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
         package_dir: beside("packages"),
         plugin_data_dir: beside("plugin-data"),
-        plugin_http: Some(Arc::new(PluginHttp)),
+        plugin_http: Some(Arc::new(orange_host::PluginHttp(orange_net::fetch_parts))),
         ..HostOptions::default()
     };
     let keyboard = keyboard::Keyboard::default();
@@ -716,6 +692,7 @@ fn main() -> ExitCode {
                 .set_theme(eframe::egui::ThemePreference::System);
             orange_editor_ui::apply_theme(&creation.egui_ctx);
             orange_editor_ui::icons::install(&creation.egui_ctx);
+            install_japanese_font(&creation.egui_ctx);
             Ok(Box::new(desktop))
         }),
     );
@@ -728,8 +705,180 @@ fn main() -> ExitCode {
     }
 }
 
+/// Use the platform's Japanese text font for editor UI, names and input.
+fn install_japanese_font(ctx: &eframe::egui::Context) -> bool {
+    use eframe::egui::{FontData, FontFamily, FontInsert, FontPriority, InsertFontFamily};
+
+    #[cfg(target_os = "windows")]
+    let paths = {
+        let Some(windows) = std::env::var_os("WINDIR") else {
+            return false;
+        };
+        let fonts = std::path::PathBuf::from(windows).join("Fonts");
+        ["meiryo.ttc", "YuGothM.ttc", "msgothic.ttc"].map(|file| fonts.join(file))
+    };
+    #[cfg(target_os = "macos")]
+    let paths = ["/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    ];
+
+    let Some(bytes) = paths.into_iter().find_map(|path| std::fs::read(path).ok()) else {
+        return false;
+    };
+    ctx.add_font(FontInsert::new(
+        "orange-japanese",
+        FontData::from_owned(bytes),
+        [FontFamily::Proportional, FontFamily::Monospace]
+            .into_iter()
+            .map(|family| InsertFontFamily {
+                family,
+                priority: FontPriority::Lowest,
+            })
+            .collect(),
+    ));
+    true
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_offered_node_has_spanish_and_japanese_labels() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let offered: std::collections::HashSet<_> = host
+            .offered_nodes()
+            .map(|info| info.definition.definition.id.as_str())
+            .collect();
+        let listed: std::collections::HashSet<_> = host
+            .search_nodes("", "en-US")
+            .into_iter()
+            .map(|node| node.definition)
+            .collect();
+        assert_eq!(
+            listed
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::HashSet<_>>(),
+            offered
+        );
+        for locale in ["es", "ja"] {
+            let mut missing = Vec::new();
+            for info in host.nodes() {
+                let id = info.definition.definition.id.as_str();
+                if !offered.contains(id) {
+                    continue;
+                }
+                let key = info
+                    .presentation
+                    .and_then(|shown| shown.label.as_ref())
+                    .map_or_else(|| format!("name-{id}"), |text| text.key.clone());
+                if !host
+                    .catalogs()
+                    .has(locale, &key.replace(['/', '.', '_'], "-"))
+                {
+                    missing.push(id);
+                }
+            }
+            assert!(
+                missing.is_empty(),
+                "{locale} missing node labels: {missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_desktop_node_is_searchable_by_all_three_captions_and_id_in_every_locale() {
+        const LOCALES: [&str; 3] = ["en-US", "es-MX", "ja-JP"];
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        let mut queries = std::collections::BTreeMap::<_, Vec<_>>::new();
+        for locale in LOCALES {
+            for found in host.search_nodes("", locale) {
+                queries
+                    .entry(found.definition)
+                    .or_default()
+                    .push(found.label);
+            }
+        }
+        for locale in LOCALES {
+            assert_eq!(host.search_nodes("", locale).len(), queries.len());
+            for (id, captions) in &queries {
+                assert_eq!(captions.len(), LOCALES.len(), "missing locale: {id}");
+                for query in captions.iter().map(String::as_str).chain([id.as_str()]) {
+                    assert!(
+                        host.search_nodes(query, locale)
+                            .iter()
+                            .any(|row| row.definition == *id),
+                        "{locale}: {query:?} misses {id}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn service_search_uses_localized_settings_and_caption_keys() {
+        let services = super::built_in_services(
+            &super::keyboard::Keyboard::default(),
+            &super::logbook::LogBook::default(),
+        )
+        .unwrap();
+        let (host, _) = orange_host::Host::with_services(Default::default(), services).unwrap();
+        for (query, locale, id) in [
+            ("compresor umbral", "es-MX", "org.orange.audio/compressor"),
+            ("filtro paso bajo", "es-MX", "org.orange.audio/filter"),
+            ("フィルター ローパス", "ja-JP", "org.orange.audio/filter"),
+            (
+                "コンプレッサー しきい値",
+                "ja-JP",
+                "org.orange.audio/compressor",
+            ),
+            ("ＨＴＴＰ ヘッダー", "ja-JP", "org.orange.net/http-request"),
+        ] {
+            assert!(
+                host.search_nodes(query, locale)
+                    .iter()
+                    .any(|row| row.definition == id),
+                "{query} misses {id}"
+            );
+        }
+        assert!(
+            host.outcome_names("es-MX")
+                .iter()
+                .any(|(id, (source, localized))| id == "org.orange.net/ws-send"
+                    && source == "Queued"
+                    && localized == "En cola")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_japanese_fallback_renders_the_language_and_node_labels() {
+        use eframe::egui::{Context, FontId, RawInput};
+        let ctx = Context::default();
+        if !super::install_japanese_font(&ctx) {
+            return;
+        }
+        ctx.run_ui(RawInput::default(), |ui| {
+            for font in [FontId::proportional(14.0), FontId::monospace(14.0)] {
+                assert!(ui.fonts_mut(|fonts| fonts.has_glyphs(&font, "日本語・音声を再生")));
+            }
+        })
+        .drop_without_applying_deltas();
+    }
+
     #[test]
     fn raw_clipboard_keys_map_to_text_commands() {
         use eframe::egui::{Event, Key, Modifiers};

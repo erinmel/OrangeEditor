@@ -13,13 +13,16 @@ use orange_kernel::{FaultText, KernelFault};
 use orange_model::GraphDocument;
 use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::VarScope;
+use orange_model::document::{EventScope, VarScope};
 use orange_model::id::{ConnectionId, EventDeclId, VariableId};
 use orange_runtime::{
     EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunError,
     RunEventSource, RunInbox, RunOptions, RunState, SourceOptions, StopMode,
 };
-use orange_runtime::{PortValues, Workspace, WorkspaceSnapshot};
+use orange_runtime::{
+    PortValues, Workspace, WorkspaceBus, WorkspaceBusError, WorkspaceDelivery, WorkspaceQueue,
+    WorkspaceSnapshot,
+};
 use orange_sdk::{Call, Session};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -69,6 +72,10 @@ pub(crate) struct Space {
     pub keep: Mutex<Option<Keep>>,
     /// `None` until the application declares the shared variables.
     pub workspace: Mutex<Option<Workspace>>,
+    /// Carries workspace events between flows. `None` until the declaration names one.
+    /// Each flow that dispatches or listens to them pumps with it held, so their turns
+    /// take it one at a time; flows without workspace events never touch it.
+    pub bus: Mutex<Option<WorkspaceBus>>,
     /// Counts committed writes, so a flow can tell it is behind without the lock.
     pub version: AtomicU64,
     /// Threads to wake after a write.
@@ -120,11 +127,54 @@ impl Space {
     }
 }
 
-/// Whether the graph reads or writes a shared variable.
+/// Whether the graph reads or writes a shared variable, or dispatches or listens to a
+/// workspace event: either way it runs against the host's workspace.
 pub(crate) fn uses_space(plan: &ControlPlan) -> bool {
     plan.variables()
         .iter()
         .any(|cell| cell.scope() == VarScope::Workspace)
+        || uses_workspace_events(plan)
+}
+
+/// Whether the graph dispatches or listens to an event other flows share.
+pub(crate) fn uses_workspace_events(plan: &ControlPlan) -> bool {
+    plan.events()
+        .iter()
+        .any(|event| event.scope() == EventScope::Workspace)
+}
+
+/// Joins a new run to the host's workspace bus when its graph uses workspace events.
+pub(crate) fn attach_bus(space: &Space, run: &mut Run, plan: &ControlPlan) -> Result<(), String> {
+    if !uses_workspace_events(plan) {
+        return Ok(());
+    }
+    let mut bus = space.bus.lock().unwrap_or_else(PoisonError::into_inner);
+    let bus = bus
+        .as_mut()
+        .ok_or("the document uses workspace events and none are declared")?;
+    run.attach_workspace_bus(bus, WorkspaceQueue::default())
+        .map_err(|error| format!("the document's workspace events do not match: {error}"))
+}
+
+/// Admits what other flows dispatched to this one since its last turn. A delivery the
+/// run cannot take yet (its queue is full) waits in `held` for the next turn; one it
+/// can never take (it stopped, or the endpoint closed) is dropped.
+fn ingest_deliveries(run: &mut Run, bus: &mut WorkspaceBus, held: &mut Option<WorkspaceDelivery>) {
+    loop {
+        let delivery = match held.take() {
+            Some(delivery) => delivery,
+            None => match run.take_workspace_delivery(bus) {
+                Ok(Some(delivery)) => delivery,
+                Ok(None) | Err(_) => return,
+            },
+        };
+        if let Err(refused) = run.ingest_workspace(delivery) {
+            if refused.error == WorkspaceBusError::Limit {
+                *held = Some(refused.delivery);
+            }
+            return;
+        }
+    }
 }
 
 /// A compiled replacement for a flow's graph, applied by the flow's own thread.
@@ -223,6 +273,7 @@ fn replace(
             &values,
         )?,
     };
+    attach_bus(&cx.space, &mut run, &swap.plan).map_err(crate::HostError::Workspace)?;
     if paused {
         run.pause()?;
     }
@@ -534,6 +585,8 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
     let mut closing_since: Option<Instant> = None;
     // The count of shared writes this flow's run has been given.
     let mut space_seen = cx.space.version.load(Ordering::Acquire);
+    // A workspace event this flow's run could not admit yet.
+    let mut held_delivery: Option<WorkspaceDelivery> = None;
     // The value of each variable as last reported to the observer.
     let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
     // The persistent variables as last stored. `None` until the first comparison, so
@@ -609,12 +662,34 @@ fn drive_inner(mut driver: RunDriver, mut cx: Context) {
         let mut refused = |refusal: Refused| {
             cx.sink.send(cx.id, FlowEvent::Refused(refusal.reason));
         };
+        let events = uses_workspace_events(&cx.plan);
+        let mut dispatched = false;
         let turn = match crate::effects::guard(|| {
-            driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused)
+            if !events {
+                return driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused);
+            }
+            let mut bus = cx.space.bus.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(bus) = bus.as_mut() else {
+                return driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused);
+            };
+            ingest_deliveries(driver.run_mut(), bus, &mut held_delivery);
+            let before = bus.stats().enqueued;
+            let turn = driver.turn_with_workspace_bus(
+                now,
+                cx.turn_inputs,
+                cx.turn_budget,
+                &mut refused,
+                bus,
+            );
+            dispatched = bus.stats().enqueued != before;
+            turn
         }) {
             Ok(turn) => turn,
             Err(_) => break true,
         };
+        if dispatched {
+            cx.space.wake_others(cx.id);
+        }
 
         let mut issued = false;
         // Shared writes are applied here, on the flow's thread, one at a time across

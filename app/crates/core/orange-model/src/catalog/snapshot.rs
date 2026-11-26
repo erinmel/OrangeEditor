@@ -1323,12 +1323,33 @@ impl RegistrySnapshot {
             .ok_or(ContractError::EventUnknown)?
             .payload
             .clone();
+        // An event-only channel has no payload port on any of its nodes.
+        let Some(payload) = payload else {
+            return Ok(match access {
+                EventAccess::Handle | EventAccess::Emit => Vec::new(),
+                EventAccess::Await => vec![
+                    PortDescriptor::data_in(
+                        "timeout",
+                        crate::id::fixed_id("core/option@1<core/duration@1>"),
+                    )
+                    .optional(),
+                    PortDescriptor::exec_out("then"),
+                    PortDescriptor::exec_out("timed_out"),
+                ],
+            });
+        };
+        // An optional payload left unset sends None, so clearing the input of a
+        // Dispatch is not an error.
+        let optional = payload.as_str().starts_with("core/option@1<");
         Ok(match access {
             EventAccess::Handle => vec![PortDescriptor::data_out(
                 "payload",
                 payload,
                 OutputSource::Payload,
             )],
+            EventAccess::Emit if optional => {
+                vec![PortDescriptor::data_in("payload", payload).optional()]
+            }
             EventAccess::Emit => vec![PortDescriptor::data_in("payload", payload)],
             EventAccess::Await => vec![
                 PortDescriptor::data_in(
@@ -1409,11 +1430,19 @@ impl RegistrySnapshot {
                 vec![PortDescriptor::data_in("value", ty)]
             }
             VariableAccess::Update | VariableAccess::UpdateShared => {
-                let token = node
-                    .config
-                    .get("operation")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or(ContractError::UpdateOperation)?;
+                if super::intrinsic_id::counter_operation(node.definition.id.as_str()).is_some() {
+                    if !super::intrinsic_id::is_counter_type(ty.as_str()) {
+                        return Err(ContractError::UpdateConstraint);
+                    }
+                    return Ok(vec![
+                        PortDescriptor::data_in("value", ty.clone()).with_default(
+                            crate::document::literal::Literal::value(ty.clone(), "1".into()),
+                        ),
+                        PortDescriptor::data_out("new", ty, OutputSource::Execution),
+                    ]);
+                }
+                let token =
+                    crate::variable::update_token(node).ok_or(ContractError::UpdateOperation)?;
                 let operation =
                     WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {

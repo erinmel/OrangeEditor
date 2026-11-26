@@ -44,3 +44,19 @@ org-orange-files-operation-cancelled = Se canceló la operación de carpeta.
 org-orange-files-tree-changed = La carpeta cambió mientras se leía.
 
 port-wait-for-folder = esperar la carpeta
+
+org-orange-files-connection-kind = El nodo necesita una conexión de carpeta.
+org-orange-files-input-invalid = Las entradas del nodo no son de los tipos esperados.
+org-orange-files-path-invalid = La ruta no es una ruta relativa dentro de la carpeta.
+org-orange-files-not-found = El archivo o la carpeta no existe.
+org-orange-files-too-large = El archivo o la lista supera el límite de tamaño.
+org-orange-files-not-utf8 = El archivo no es texto UTF-8.
+org-orange-files-read-only = La conexión de carpeta es de solo lectura.
+org-orange-files-io-failed = El sistema operativo rechazó la operación de archivo.
+org-orange-files-folder-missing = Falta la carpeta conectada. Vuelve a conectar la unidad o elige la carpeta de nuevo en la conexión.
+org-orange-files-permission-denied = El sistema denegó el acceso. Revisa los permisos del archivo y de la carpeta, o si el archivo está marcado como de solo lectura.
+org-orange-files-in-use = Otro programa está usando el archivo. Ciérralo allí y vuelve a ejecutar el nodo.
+org-orange-files-read-only-location = La unidad es de solo lectura o está protegida contra escritura. Elige una carpeta en una unidad que admita escritura.
+org-orange-files-no-space = La unidad está llena. Libera espacio y vuelve a ejecutar el nodo.
+org-orange-files-cross-device = El destino está en otra unidad, donde no se puede mover en un solo paso. Copia el archivo y luego borra el original.
+org-orange-files-unsupported = El sistema de archivos de la carpeta no admite esta operación.

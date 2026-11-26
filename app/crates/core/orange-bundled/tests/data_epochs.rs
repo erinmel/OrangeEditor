@@ -275,7 +275,12 @@ fn caught_dynamic_pure_callback_panic_interrupts_the_activation() {
 fn root_data_epoch_timing_baseline() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-    fn samples(label: &str, count: usize, mut operation: impl FnMut()) {
+    fn samples<T>(
+        label: &str,
+        count: usize,
+        setup: impl Fn() -> T,
+        mut operation: impl FnMut(&mut T),
+    ) {
         let count = if cfg!(debug_assertions) {
             count / 100
         } else {
@@ -283,9 +288,10 @@ fn root_data_epoch_timing_baseline() {
         };
         let mut nanos = Vec::with_capacity(30);
         for _ in 0..30 {
+            let mut state = setup();
             let started = Instant::now();
             for _ in 0..count {
-                operation();
+                operation(&mut state);
             }
             nanos.push(started.elapsed().as_nanos() as f64 / count as f64);
         }
@@ -327,37 +333,57 @@ fn root_data_epoch_timing_baseline() {
             )
             .unwrap(),
         );
-        let mut frame = start(plan.clone(), &doc, &snapshot, 17, 9, DataOptions::default());
-        // Establish the cached export even when the timed warmup is disabled.
-        frame.begin_epoch().unwrap();
-        black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
-        // Ten seconds of actual graph execution per size, separate from samples.
+        let setup = || {
+            let mut frame = start(plan.clone(), &doc, &snapshot, 17, 9, DataOptions::default());
+            frame.begin_epoch().unwrap();
+            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+            frame
+        };
+        // Standalone activations do not refill fuel between epochs.
         let warm = Instant::now();
         while !cfg!(debug_assertions) && warm.elapsed() < Duration::from_secs(10) {
-            frame.begin_epoch().unwrap();
-            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+            let mut frame = setup();
+            for _ in 0..100 {
+                frame.begin_epoch().unwrap();
+                black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+            }
         }
-        samples(&format!("nodes={size} cached-export"), 10_000, || {
+        samples(
+            &format!("nodes={size} cached-export"),
+            10_000,
+            setup,
+            |frame| {
+                black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+            },
+        );
+        samples(
+            &format!("nodes={size} sparse-epoch-leaf"),
+            1_000,
+            setup,
+            |frame| {
+                frame.begin_epoch().unwrap();
+                black_box(frame.export(1).unwrap().unwrap().outcome.unwrap());
+            },
+        );
+        samples(&format!("nodes={size} full-epoch"), 100, setup, |frame| {
+            frame.begin_epoch().unwrap();
             black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
         });
-        samples(&format!("nodes={size} sparse-epoch-leaf"), 1_000, || {
-            frame.begin_epoch().unwrap();
-            black_box(frame.export(1).unwrap().unwrap().outcome.unwrap());
-        });
-        samples(&format!("nodes={size} full-epoch"), 100, || {
-            frame.begin_epoch().unwrap();
-            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
-        });
-        samples(&format!("nodes={size} frame-entry-and-drop"), 100, || {
-            black_box(start(
-                plan.clone(),
-                &doc,
-                &snapshot,
-                17,
-                9,
-                DataOptions::default(),
-            ));
-        });
+        samples(
+            &format!("nodes={size} frame-entry-and-drop"),
+            100,
+            || (),
+            |_| {
+                black_box(start(
+                    plan.clone(),
+                    &doc,
+                    &snapshot,
+                    17,
+                    9,
+                    DataOptions::default(),
+                ));
+            },
+        );
     }
 }
 

@@ -63,6 +63,68 @@ struct Gallery {
     shell: advanced::Shell,
     patterns: advanced::Catalog,
     files: files::Files,
+    shot: Option<Shot>,
+}
+
+/// With `ORANGE_GALLERY_SHOT=<file.bmp>` the gallery saves one picture of its window once
+/// it has settled, then closes, so the controls can be checked without someone watching.
+/// `ORANGE_GALLERY_SIZE=<width>x<height>` sets the window size for it.
+struct Shot {
+    path: String,
+    frames: u32,
+    asked: bool,
+    written: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Shot {
+    fn from_env() -> Option<Self> {
+        Some(Self {
+            path: std::env::var("ORANGE_GALLERY_SHOT").ok()?,
+            frames: 0,
+            asked: false,
+            written: std::sync::Arc::default(),
+        })
+    }
+
+    fn take(&mut self, ui: &Ui) {
+        use std::sync::atomic::Ordering;
+        self.frames += 1;
+        if self.written.load(Ordering::Acquire) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if self.frames >= 30 && !self.asked {
+            self.asked = true;
+            let (path, written) = (self.path.clone(), std::sync::Arc::clone(&self.written));
+            ui.ctx().request_screenshot(move |image| {
+                let [width, height] = image.size;
+                if let Err(error) = std::fs::write(&path, bmp(width, height, &image.pixels)) {
+                    eprintln!("{path}: {error}");
+                }
+                written.store(true, Ordering::Release);
+            });
+        }
+        ui.ctx().request_repaint();
+    }
+}
+
+/// A top-down 32-bit BMP, which needs no image library.
+fn bmp(width: usize, height: usize, pixels: &[egui::Color32]) -> Vec<u8> {
+    let size = 54 + pixels.len() * 4;
+    let le32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX).to_le_bytes();
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&le32(size));
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&le32(54));
+    out.extend_from_slice(&le32(40));
+    out.extend_from_slice(&le32(width));
+    out.extend_from_slice(&(-i32::try_from(height).unwrap_or(i32::MAX)).to_le_bytes());
+    out.extend_from_slice(&[1, 0, 32, 0]);
+    out.extend_from_slice(&[0; 24]);
+    for pixel in pixels {
+        let [r, g, b, a] = pixel.to_array();
+        out.extend_from_slice(&[b, g, r, a]);
+    }
+    out
 }
 
 impl Default for Gallery {
@@ -80,6 +142,7 @@ impl Default for Gallery {
             shell: advanced::Shell::default(),
             patterns: advanced::Catalog::default(),
             files: files::Files::default(),
+            shot: Shot::from_env(),
         }
     }
 }
@@ -87,6 +150,9 @@ impl Default for Gallery {
 impl eframe::App for Gallery {
     fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
         self.canvas(ui);
+        if let Some(shot) = &mut self.shot {
+            shot.take(ui);
+        }
     }
 }
 
@@ -220,7 +286,7 @@ fn theme_tile(
 ) -> egui::Response {
     use egui::{Rect, Role, Sense, Stroke, StrokeKind, WidgetInfo, pos2, vec2};
     let theme = tokens.theme;
-    let height = tokens.density.row_height() + 44.0;
+    let height = tokens.density.row_height() + 65.0;
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     response.widget_info(|| {
@@ -246,56 +312,21 @@ fn theme_tile(
     );
     let sample = Rect::from_min_max(
         rect.min + vec2(5.0, 5.0),
-        pos2(rect.right() - 5.0, rect.top() + 38.0),
+        pos2(rect.right() - 5.0, rect.top() + 58.0),
     );
-    if let Some(palette) = palette {
-        painter.rect_filled(sample, 4, palette.surface);
-        let sidebar = Rect::from_min_max(
-            sample.min,
-            pos2(sample.left() + sample.width() * 0.27, sample.bottom()),
-        );
-        painter.rect_filled(sidebar.shrink(3.0), 2, palette.surface_elevated);
-        let x = sidebar.right() + 5.0;
-        let y = sample.top() + 9.0;
-        painter.hline(
-            x..=x + sample.width() * 0.27,
-            y,
-            Stroke::new(2.0, palette.text),
-        );
-        painter.rect_filled(
-            Rect::from_min_size(pos2(x, y + 8.0), vec2(sample.width() * 0.4, 8.0)),
-            2,
-            palette.primary,
-        );
-    } else {
-        painter.rect_filled(sample, 0, Theme::DARK.surface);
-        painter.add(egui::Shape::convex_polygon(
-            vec![sample.left_top(), sample.right_top(), sample.left_bottom()],
-            Theme::LIGHT.surface,
-            Stroke::NONE,
-        ));
-        for (x, y, ink) in [
-            (0.23, 0.28, Theme::LIGHT.primary),
-            (0.77, 0.72, Theme::DARK.primary),
-        ] {
-            let center = pos2(
-                sample.left() + sample.width() * x,
-                sample.top() + sample.height() * y,
-            );
-            painter.rect_filled(
-                Rect::from_center_size(center, vec2(sample.width() * 0.24, 6.0)),
-                2,
-                ink,
-            );
-        }
-    }
+    let light = orange_ui_controls::Theme::from_palette(Theme::LIGHT);
+    let dark = orange_ui_controls::Theme::from_palette(Theme::DARK);
+    let (first, split) = palette.map_or((light, Some(dark)), |theme| {
+        (orange_ui_controls::Theme::from_palette(theme), None)
+    });
+    orange_ui_controls::paint_theme_preview(&painter, sample, first, split);
     let available = rect.width() - 10.0;
     let font = egui::TextStyle::Body.resolve(ui.style());
     let galley = painter.layout(label.to_owned(), font, theme.text, available);
     painter.galley(
         pos2(
             rect.center().x - galley.size().x / 2.0,
-            rect.top() + 39.0 + (height - 39.0 - galley.size().y) / 2.0,
+            rect.top() + 59.0 + (height - 59.0 - galley.size().y) / 2.0,
         ),
         galley,
         theme.text,
@@ -308,8 +339,9 @@ fn theme_tile(
             Stroke::new(1.5, theme.primary),
         );
     }
-    response
+    response.on_hover_text("Preview of the canvas, panels, slider and buttons.")
 }
+
 fn card_grid(
     ui: &mut Ui,
     count: usize,
@@ -346,7 +378,15 @@ fn card_grid(
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 760.0])
+            .with_inner_size(
+                std::env::var("ORANGE_GALLERY_SIZE")
+                    .ok()
+                    .and_then(|size| {
+                        let (width, height) = size.split_once('x')?;
+                        Some([width.parse().ok()?, height.parse().ok()?])
+                    })
+                    .unwrap_or([920.0, 760.0]),
+            )
             .with_min_inner_size([240.0, 320.0]),
         ..Default::default()
     };

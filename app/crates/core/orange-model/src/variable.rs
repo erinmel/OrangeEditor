@@ -1,5 +1,16 @@
 //! Variable operation tokens shared by contextual contracts and function summaries.
 
+use crate::{catalog::intrinsic_id, document::NodeInstance};
+
+/// The operation fixed by a counter's definition or chosen on a general update.
+pub fn update_token(node: &NodeInstance) -> Option<&str> {
+    intrinsic_id::counter_operation(node.definition.id.as_str()).or_else(|| {
+        node.config
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+    })
+}
+
 /// The operation used by a variable write or function summary; later state analysis can
 /// recognize documented commutative update cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

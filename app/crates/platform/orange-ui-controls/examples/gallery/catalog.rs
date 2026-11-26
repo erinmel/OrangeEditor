@@ -2,11 +2,11 @@ use std::num::NonZeroU16;
 
 use egui::{Button, Id, Label, Response, RichText, Ui};
 use orange_ui_controls::{
-    Action, ButtonGeometry, ButtonSpec, ButtonStyle, ButtonTone, CheckStyle, KnobStyle,
-    NotebookOrientation, RadioStyle, SliderBehavior, SliderGuide, SliderMarks, StepLabels, Surface,
-    UiTokens, button, button_with, checkbox,
+    Action, ButtonGeometry, ButtonSpec, ButtonStyle, ButtonTone, CheckStyle, DialFace, KnobStyle,
+    NotchStyle, NotebookOrientation, RadioStyle, SliderBehavior, SliderGuide, SliderMarks,
+    SliderStyle, StepLabels, Surface, ThumbStyle, UiTokens, button, button_with, checkbox,
     components::{self, MenuItem, MenuTrigger, PasswordLabels, PathPicker},
-    guided_slider, knob, logarithmic_slider,
+    dial, guided_slider, knob, logarithmic_slider,
     note::{Note, NoteState, NoteTone},
     notebook, pill_segmented, radio, rotary, stepped_slider,
 };
@@ -174,6 +174,9 @@ pub struct Fixture {
     trim: f32,
     pan: f32,
     phase: f32,
+    hold: f32,
+    styled: [u16; 3],
+    reset: f32,
     tab: u8,
     text: String,
     email: String,
@@ -196,6 +199,9 @@ impl Fixture {
             knob: 35.0,
             trim: -4.0,
             phase: 350.0,
+            hold: 150.0,
+            styled: [50, 25, 75],
+            reset: 4.0,
             color: [225, 134, 82, 255],
             ..Self::default()
         }
@@ -834,7 +840,7 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                     let label = ui.label("Mix (%)");
                     knob(ui, Surface::Card, &mut fixture.knob, 0.0..=100.0, None, &[])
                         .labelled_by(label.id)
-                        .on_hover_text("Drag up or right · Shift for fine control");
+                        .on_hover_text("Drag up or right · Shift fine · Ctrl precise");
                 }
                 1 => {
                     let label = ui.label("Trim (dB)");
@@ -879,5 +885,71 @@ fn sliders(ui: &mut Ui, fixture: &mut Fixture) {
                 }
             },
         );
+    });
+    ui.add_space(ui.spacing().item_spacing.y);
+    // The same stepped slider in each notch and thumb style.
+    for (index, (name, notch, thumb)) in [
+        ("Pill · Capsule", NotchStyle::Pill, ThumbStyle::Capsule),
+        ("Tick · Bar", NotchStyle::Tick, ThumbStyle::Bar),
+        ("Dot · Round", NotchStyle::Dot, ThumbStyle::Round),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let label = ui.label(name);
+        SliderStyle::scope(ui, SliderStyle { notch, thumb }, |ui| {
+            stepped_slider(
+                ui,
+                Surface::Card,
+                &mut fixture.styled[index],
+                0..=100,
+                NonZeroU16::new(25).unwrap(),
+                StepLabels::Values,
+            )
+            .labelled_by(label.id)
+        });
+    }
+    // Dials name themselves, so a card can place them without a label row.
+    super::card_grid(ui, 3, 85.0, 3, |ui, index| {
+        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            let _ = match index {
+                0 => dial(
+                    ui,
+                    Surface::Card,
+                    &mut fixture.hold,
+                    0.0..=10_000.0,
+                    Some(1.0),
+                    DialFace {
+                        caption: "Hold",
+                        unit: "ms",
+                        ..DialFace::default()
+                    },
+                ),
+                1 => dial(
+                    ui,
+                    Surface::Card,
+                    &mut fixture.reset,
+                    0.0..=24.0,
+                    None,
+                    DialFace {
+                        caption: "Reset",
+                        unit: "dB",
+                        ..DialFace::default()
+                    },
+                ),
+                _ => dial(
+                    ui,
+                    Surface::Card,
+                    &mut fixture.knob,
+                    0.0..=100.0,
+                    None,
+                    DialFace {
+                        caption: "Mix",
+                        unit: "%",
+                        ..DialFace::default()
+                    },
+                ),
+            };
+        });
     });
 }

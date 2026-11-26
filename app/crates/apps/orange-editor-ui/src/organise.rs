@@ -5,6 +5,7 @@ use crate::canvas::GroupEdit;
 use crate::controls::{Action, Surface};
 use crate::i18n::{t, tf};
 use crate::{Editor, FileRequest, controls};
+use orange_host::intrinsic;
 use orange_host::{Extraction, FunctionPackagePreview, Group, Host, HostError, NodeId, Publish};
 
 #[derive(Debug, Clone)]
@@ -111,11 +112,32 @@ impl Editor {
     pub(crate) fn call_function(&self, node: NodeId) -> Option<&str> {
         let document = self.document.as_ref()?.draft.document();
         let instance = document.root().nodes.get(&node)?;
-        if instance.definition.id.as_str() == "core/call" {
+        if instance.definition.id.as_str() == intrinsic::CALL {
             instance.config.get("function")?.as_str()
         } else {
             None
         }
+    }
+
+    /// Replaces a call with editable copies of its cards and selects them.
+    pub fn expand_function(&mut self, host: &mut Host, node: NodeId) -> bool {
+        let Some(at) = self
+            .canvas
+            .places()
+            .into_iter()
+            .find_map(|(id, at)| (id == node).then_some(at))
+        else {
+            return false;
+        };
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.expand_function(draft, node, at);
+        let Some(nodes) = self.edited_value(host, result) else {
+            return false;
+        };
+        self.canvas.select_many(&nodes);
+        true
     }
 
     pub(crate) fn begin_function_export(&mut self, host: &Host, node: NodeId) -> bool {
@@ -531,7 +553,7 @@ mod tests {
         editor.open(host, "graph.json", text);
         let set = editor.graph().unwrap().nodes[1].id;
         let number = editor
-            .add_node_at(host, "core/whole-number", [900.0, 700.0])
+            .add_node_at(host, intrinsic::WHOLE_NUMBER, [900.0, 700.0])
             .unwrap();
         assert!(editor.set_input(host, (number, "value"), Some("9")));
         assert!(editor.connect(host, (number, "result"), (set, "value")));
@@ -666,6 +688,130 @@ mod tests {
         assert!(
             host.install(&archive, orange_host::Grants::default())
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn expanding_a_function_copies_internal_wires_and_literal_arguments() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let (mut editor, number, set) = opened(&mut host);
+        let first = editor
+            .add_node_at(&mut host, intrinsic::VALUE, [1200.0, 700.0])
+            .unwrap();
+        let second = editor
+            .add_node_at(&mut host, intrinsic::VALUE, [1500.0, 700.0])
+            .unwrap();
+        assert!(editor.connect(&mut host, (number, "result"), (first, "value")));
+        assert!(editor.connect(&mut host, (first, "result"), (second, "value")));
+        assert!(editor.connect(&mut host, (second, "result"), (set, "value")));
+        editor.canvas().select_many(&[first, second]);
+        let call = editor.extract_selection(&mut host, "Pass nine").unwrap();
+        let before = editor.text().unwrap();
+        assert!(!editor.expand_function(&mut host, call));
+        assert_eq!(editor.text().unwrap(), before);
+
+        assert!(editor.disconnect(&mut host, (call, "value"), true));
+        assert!(editor.set_input(&mut host, (call, "value"), Some("15")));
+        assert!(editor.expand_function(&mut host, call));
+        let selected = editor.canvas().selection();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|node| ![first, second].contains(node)));
+        let graph = editor.graph().unwrap();
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| selected.contains(&wire.from.0) && selected.contains(&wire.to.0))
+        );
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| selected.contains(&wire.from.0) && wire.to.0 == set)
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| selected.contains(&node.id))
+                .any(|node| {
+                    node.ports
+                        .iter()
+                        .any(|port| port.input && port.value.as_deref() == Some("15"))
+                })
+        );
+        editor.undo(&mut host);
+        assert!(editor.call_function(call).is_some());
+    }
+
+    #[test]
+    fn expanding_a_function_call_reconnects_wires_and_keeps_other_calls() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let (mut editor, number, set) = opened(&mut host);
+        let pass = editor
+            .add_node_at(&mut host, intrinsic::VALUE, [1200.0, 700.0])
+            .unwrap();
+        assert!(editor.connect(&mut host, (number, "result"), (pass, "value")));
+        assert!(editor.connect(&mut host, (pass, "result"), (set, "value")));
+        editor.canvas().select_many(&[pass]);
+        let call = editor.extract_selection(&mut host, "Pass nine").unwrap();
+        let function = editor.call_function(call).unwrap().to_owned();
+        let other: NodeId = "8577617d-00c6-443c-82ea-2fee38e82c0a".parse().unwrap();
+        let mut graph: serde_json::Value = serde_json::from_str(&editor.text().unwrap()).unwrap();
+        let nodes = graph["nodes"].as_array_mut().unwrap();
+        let mut copy = nodes
+            .iter()
+            .find(|node| node["id"] == call.to_string())
+            .unwrap()
+            .clone();
+        copy["id"] = serde_json::json!(other);
+        copy["inputs"] = serde_json::json!({"value": {"type": "core/i64@1", "value": "4"}});
+        nodes.push(copy);
+        editor.open_untitled(&mut host, graph.to_string());
+        editor.open_menu(crate::MenuTarget::Node(call), [0.0, 0.0], egui::Pos2::ZERO);
+        assert!(editor.run_command(&mut host, crate::Command::ExpandFunction));
+        let expanded = editor.canvas().selected().unwrap();
+        assert_ne!(expanded, pass);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.id != call)
+        );
+        assert_eq!(editor.call_function(other), Some(function.as_str()));
+        let graph = editor.graph().unwrap();
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from.0 == number && wire.to.0 == expanded)
+        );
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from.0 == expanded && wire.to.0 == set)
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.call_function(call), Some(function.as_str()));
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.id != expanded)
+        );
+        editor.redo(&mut host);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|node| node.id == expanded)
         );
     }
 

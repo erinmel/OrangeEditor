@@ -7,9 +7,12 @@ export function platforms(extended) {
     {label: 'Linux x64', os: 'ubuntu-24.04', host: 'x86_64-unknown-linux-gnu'},
     {label: 'Windows x64', os: 'windows-2022', host: 'x86_64-pc-windows-msvc'},
     {label: 'macOS ARM64', os: 'macos-15', host: 'aarch64-apple-darwin'},
+    // ARM laptops, servers and boards. Wasmtime itself does not test Windows ARM64
+    // (its tier 3), so this run is the evidence for it.
+    {label: 'Linux ARM64', os: 'ubuntu-24.04-arm', host: 'aarch64-unknown-linux-gnu'},
+    {label: 'Windows ARM64', os: 'windows-11-arm', host: 'aarch64-pc-windows-msvc'},
   ];
   if (extended) include.push(
-    {label: 'Linux ARM64', os: 'ubuntu-24.04-arm', host: 'aarch64-unknown-linux-gnu'},
     {label: 'macOS x64', os: 'macos-15-intel', host: 'x86_64-apple-darwin'},
   );
   return {include};

@@ -3,8 +3,85 @@
 //! by Insert node… on a wire, which also wires the new node on to where the wire went,
 //! or by Tab, Space or Add node… over the canvas, which lists every kind. The search is
 //! the host's: names, aliases, categories, concepts and descriptions, in the editor's
-//! language and English.
+//! language and the bundled search languages.
 use super::*;
+use orange_host::intrinsic;
+
+fn wire_member(definition: &str) -> Option<(&'static str, &'static str, &str, &str)> {
+    for (prefix, node, key) in [
+        (FIELD_GET, GET_FIELD, "field"),
+        (FIELD_SET, SET_FIELD, "field"),
+        (VARIANT_PAYLOAD, ENUM_PAYLOAD, "variant"),
+    ] {
+        if let Some((ty, member)) = definition
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.split_once('|'))
+        {
+            return Some((node, key, ty, member));
+        }
+    }
+    None
+}
+
+fn typed_wire_choices(host: &Host, draft: &Draft, ty: &str, search: &str) -> Vec<QuickChoice> {
+    if ty.starts_with("core/") || ty.contains(['$', '<']) {
+        return Vec::new();
+    }
+    let named_type = type_name(ty);
+    let query = orange_host::SearchQuery::new(search);
+    let mut choices = Vec::new();
+    let mut offer = |definition, label: String, input, purpose: &str, aliases: &str| {
+        if query.matches([label.as_str(), named_type.as_str(), aliases]) {
+            choices.push(QuickChoice {
+                definition,
+                label,
+                input: Some(input),
+                output: None,
+                category: t("wire-type-actions").to_owned(),
+                purpose: purpose.to_owned(),
+            });
+        }
+    };
+    if let Some(variants) = host.enum_choices(draft, ty) {
+        offer(
+            format!("{ENUM_SWITCH}{ty}"),
+            tf("wire-switch-enum", &[("type", named_type.as_str().into())]),
+            "key".to_owned(),
+            t("wire-switch-enum-help"),
+            "switch branch enum casos bifurcar",
+        );
+        for choice in variants.into_iter().filter(|choice| choice.payload) {
+            offer(
+                format!("{VARIANT_PAYLOAD}{ty}|{}", choice.id),
+                tf(
+                    "wire-enum-payload",
+                    &[("variant", choice.name.as_str().into())],
+                ),
+                "value".to_owned(),
+                t("wire-enum-payload-help"),
+                "enum payload carga datos",
+            );
+        }
+    } else if let Some(fields) = host.record_fields(draft, ty) {
+        for (id, name) in fields {
+            offer(
+                format!("{FIELD_GET}{ty}|{id}"),
+                tf("wire-get-field", &[("field", name.as_str().into())]),
+                "record".to_owned(),
+                t("wire-get-field-help"),
+                "get read field record leer campo registro",
+            );
+            offer(
+                format!("{FIELD_SET}{ty}|{id}"),
+                tf("wire-set-field", &[("field", name.as_str().into())]),
+                "record".to_owned(),
+                t("wire-set-field-help"),
+                "set change field record cambiar campo registro",
+            );
+        }
+    }
+    choices
+}
 
 /// The search being shown, and where the node it adds goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,7 +99,7 @@ pub(crate) struct QuickAdd {
     focused: bool,
     /// The choice the arrow keys are on.
     highlighted: usize,
-    choices_key: Option<(String, String, u64)>,
+    choices_key: Option<(String, String, (u64, u64))>,
     choices: Vec<QuickChoice>,
     splice_conversions: Option<(u64, Vec<orange_host::Conversion>)>,
 }
@@ -51,6 +128,13 @@ pub struct QuickChoice {
 
 /// Most kinds the search lists at once; typing narrows it.
 const SHOWN: usize = 40;
+const ENUM_SWITCH: &str = "wire:switch-enum:";
+const GET_FIELD: &str = "org.orange.collections/get-field";
+const SET_FIELD: &str = "org.orange.collections/set-field";
+const ENUM_PAYLOAD: &str = "org.orange.collections/enum-payload";
+const FIELD_GET: &str = "wire:get-field:";
+const FIELD_SET: &str = "wire:set-field:";
+const VARIANT_PAYLOAD: &str = "wire:enum-payload:";
 
 impl Editor {
     /// Opens the search to add a node at `at` (graph units), drawn at `screen`. With
@@ -123,7 +207,7 @@ impl Editor {
         // Dragged back from an input: the kinds with an output that feeds it.
         if let (None, Some(into), Some(document)) = (&quick.from, &quick.into, &self.document) {
             let givers = host.givers(&document.draft, (into.0, &into.1));
-            return host
+            let mut choices: Vec<_> = host
                 .search_nodes(search, self.language())
                 .into_iter()
                 .filter_map(|found| {
@@ -140,6 +224,28 @@ impl Editor {
                     })
                 })
                 .collect();
+            let target = document.node_view(into.0).and_then(|node| {
+                node.ports
+                    .iter()
+                    .find(|port| port.input && !port.exec && port.id == into.1)?
+                    .ty
+                    .as_deref()
+            });
+            if let Some(target) = target {
+                choices.extend(
+                    palette::conversion_items(host, search, self.language(), None, Some(target))
+                        .into_iter()
+                        .map(|item| QuickChoice {
+                            output: Some("result".into()),
+                            input: None,
+                            definition: item.id,
+                            label: item.label,
+                            category: t("conversions").to_owned(),
+                            purpose: item.purpose,
+                        }),
+                );
+            }
+            return choices;
         }
         let mut choices: Vec<_> = match (&quick.from, &self.document) {
             // Into a wire: the kinds that take its output and go on into its input, with
@@ -218,8 +324,8 @@ impl Editor {
                 .into_iter()
                 .map(|found| QuickChoice {
                     output: None,
-                    definition: found.definition,
                     label: found.label,
+                    definition: found.definition,
                     input: None,
                     category: found.category,
                     purpose: found.purpose,
@@ -239,9 +345,27 @@ impl Editor {
                 .ty
                 .as_deref()
         });
+        if let (Some(document), Some(ty)) = (&self.document, from_type) {
+            let contextual = typed_wire_choices(host, &document.draft, ty, search);
+            if contextual
+                .iter()
+                .any(|choice| choice.definition.starts_with(ENUM_SWITCH))
+            {
+                choices.retain(|choice| choice.definition != intrinsic::SWITCH);
+            }
+            if let Some(index) = choices
+                .iter()
+                .position(|choice| choice.definition == intrinsic::COALESCE)
+            {
+                let mut fallback = choices.remove(index);
+                fallback.input = Some("value".to_owned());
+                choices.insert(0, fallback);
+            }
+            choices.splice(0..0, contextual);
+        }
         if quick.from.is_none() || from_type.is_some() {
             choices.extend(
-                palette::conversion_items(host, search, self.language(), from_type)
+                palette::conversion_items(host, search, self.language(), from_type, None)
                     .into_iter()
                     .map(|item| QuickChoice {
                         output: None,
@@ -321,14 +445,47 @@ impl Editor {
         // Placing and wiring are one action: one undo takes both back, and a wire the
         // language refuses, or a document changed since the search opened, leaves the
         // graph, the selection and the history as they were.
+        let typed = self
+            .document
+            .as_ref()
+            .and_then(|doc| doc.node_view(from.0))
+            .and_then(|node| {
+                node.ports
+                    .iter()
+                    .find(|port| !port.input && port.id == from.1)
+            })
+            .and_then(|port| port.ty.clone());
         let draft = self.editing()?;
         let result = host.grouped(draft, |host, draft| {
-            let placed = place_node(host, draft, &choice.definition, quick.at)?;
-            if host.connect(draft, (from.0, &from.1), (placed.0, input))? {
-                Ok(placed)
-            } else {
-                Err(HostError::Document("the wire could not be made".to_owned()))
+            let member = wire_member(&choice.definition);
+            let enum_type = choice.definition.strip_prefix(ENUM_SWITCH);
+            if let Some(expected) = member.map(|(_, _, ty, _)| ty).or(enum_type)
+                && typed.as_deref() != Some(expected)
+            {
+                return Err(HostError::Document(t("wire-type-changed").into()));
             }
+            let definition = if let Some((definition, _, _, _)) = member {
+                definition
+            } else if enum_type.is_some() {
+                intrinsic::SWITCH
+            } else {
+                &choice.definition
+            };
+            let placed = place_node(host, draft, definition, quick.at)?;
+            if let Some((_, key, ty, value)) = member {
+                let _ = host.set_config(
+                    draft,
+                    placed.0,
+                    &serde_json::json!({"type": ty, key: value}),
+                )?;
+            }
+            if !host.connect(draft, (from.0, &from.1), (placed.0, input))? {
+                return Err(HostError::Document("the wire could not be made".to_owned()));
+            }
+            if enum_type.is_some() {
+                let _ = host.add_enum_cases(draft, placed.0)?;
+            }
+            Ok(placed)
         });
         self.placed(host, result)
     }
@@ -380,17 +537,17 @@ impl Editor {
                 let key = (
                     search.clone(),
                     self.language().to_owned(),
-                    host.registry().generation(),
+                    host.search_revision(),
                 );
                 if let Some(quick) = &mut self.quick
                     && let (Some(wire), Some(document)) = (quick.splice, &self.document)
                     && quick
                         .splice_conversions
                         .as_ref()
-                        .is_none_or(|(generation, _)| *generation != key.2)
+                        .is_none_or(|(generation, _)| *generation != key.2.0)
                 {
                     quick.splice_conversions =
-                        Some((key.2, host.splice_conversions(&document.draft, wire)));
+                        Some((key.2.0, host.splice_conversions(&document.draft, wire)));
                 }
                 if self
                     .quick
@@ -577,8 +734,132 @@ mod staging_tests {
     fn editor_with(host: &mut Host) -> (Editor, NodeId) {
         let mut editor = Editor::new();
         editor.open(host, "graph.json", orange_host::new_document().unwrap());
-        let trigger = editor.add_node(host, "core/on-manual").unwrap();
+        let trigger = editor.add_node(host, intrinsic::ON_MANUAL).unwrap();
         (editor, trigger)
+    }
+
+    #[test]
+    fn typed_wires_configure_enum_cases_and_record_members_in_one_undo_step() {
+        use serde_json::json;
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let mut document: serde_json::Value =
+            serde_json::from_str(&orange_host::new_document().unwrap()).unwrap();
+        document["types"] = json!([
+            {"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6d", "name":"Mood", "kind":"enum",
+                "variants":[{"id":"calm", "name":"Calm"}, {"id":"message", "name":"Message","payload":"core/string@1"}]},
+            {"id": "6c0e4a52-8b1f-4a5e-9c3d-1e2f3a4b5c6e", "name":"Profile", "kind":"record",
+                "fields":[{"id":"display", "name":"Display name", "type":"core/string@1", "optional":true}]}
+        ]);
+        editor.open_untitled(&mut host, document.to_string());
+        for (ty, literal, search, prefix, kind) in [
+            (
+                "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6d@1",
+                json!({"variant":"calm"}),
+                "switch mood",
+                ENUM_SWITCH,
+                intrinsic::SWITCH,
+            ),
+            (
+                "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6d@1",
+                json!({"variant":"calm"}),
+                "message payload",
+                VARIANT_PAYLOAD,
+                ENUM_PAYLOAD,
+            ),
+            (
+                "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6e@1",
+                json!({}),
+                "get display",
+                FIELD_GET,
+                GET_FIELD,
+            ),
+            (
+                "local/t6c0e4a528b1f4a5e9c3d1e2f3a4b5c6e@1",
+                json!({}),
+                "set display",
+                FIELD_SET,
+                SET_FIELD,
+            ),
+        ] {
+            let source = editor.add_node(&mut host, intrinsic::VALUE).unwrap();
+            assert!(editor.choose_type(&mut host, source, "T", Some(ty)));
+            assert!(editor.set_input(
+                &mut host,
+                (source, "value"),
+                Some(&json!({"type":ty, "value":literal}).to_string())
+            ));
+            let before = editor.graph().unwrap().wires.len();
+            editor.open_quick_add(
+                Some((source, "result".into())),
+                [320.0, 0.0],
+                egui::Pos2::ZERO,
+            );
+            let choice = editor
+                .quick_choices(&host, search)
+                .into_iter()
+                .find(|choice| choice.definition.starts_with(prefix))
+                .expect(search);
+            let node = editor.pick_quick(&mut host, &choice).expect(search);
+            let graph = editor.graph().unwrap();
+            let node = graph.nodes.iter().find(|item| item.id == node).unwrap();
+            assert_eq!(node.definition, kind);
+            if kind == intrinsic::SWITCH {
+                assert!(
+                    node.ports
+                        .iter()
+                        .any(|port| port.label.as_deref() == Some("Calm"))
+                );
+                assert!(
+                    node.ports
+                        .iter()
+                        .any(|port| port.label.as_deref() == Some("Message"))
+                );
+            } else if kind == ENUM_PAYLOAD {
+                assert_eq!(node.settings["variant"], "message");
+            } else {
+                assert_eq!(node.settings["field"], "display");
+            }
+            assert_eq!(graph.wires.len(), before + 1);
+            editor.undo(&mut host);
+            assert_eq!(editor.graph().unwrap().wires.len(), before);
+
+            editor.open_quick_add(
+                Some((source, "result".into())),
+                [320.0, 0.0],
+                egui::Pos2::ZERO,
+            );
+            assert!(editor.set_input(&mut host, (source, "value"), None));
+            assert!(editor.choose_type(&mut host, source, "T", Some("core/bool@1")));
+            let before_retry = editor.text().unwrap();
+            assert!(editor.pick_quick(&mut host, &choice).is_none());
+            assert_eq!(editor.text().unwrap(), before_retry);
+        }
+    }
+
+    #[test]
+    fn an_optional_wire_offers_fallback_first_and_wires_the_optional_input() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let source = editor.add_node(&mut host, intrinsic::VALUE).unwrap();
+        assert!(editor.choose_type(&mut host, source, "T", Some("core/option@1<core/string@1>")));
+        editor.open_quick_add(
+            Some((source, "result".into())),
+            [320.0, 0.0],
+            egui::Pos2::ZERO,
+        );
+        let choices = editor.quick_choices(&host, "");
+        assert_eq!(choices[0].definition, intrinsic::COALESCE);
+        let added = editor.pick_quick(&mut host, &choices[0]).unwrap();
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .wires
+                .iter()
+                .any(|wire| wire.to == (added, "value".into()))
+        );
     }
 
     /// Letting a wire go and choosing a kind places and wires the node as one action:
@@ -597,7 +878,7 @@ mod staging_tests {
         let choice = editor
             .quick_choices(&host, "sequence")
             .into_iter()
-            .find(|choice| choice.definition == "core/sequence")
+            .find(|choice| choice.definition == intrinsic::SEQUENCE)
             .expect("a sequence takes a step");
         let node = editor.pick_quick(&mut host, &choice).unwrap();
         assert_eq!((nodes(&editor), wires(&editor)), (2, 1));
@@ -622,7 +903,7 @@ mod staging_tests {
             egui::pos2(10.0, 10.0),
         );
         let refused = QuickChoice {
-            definition: "core/sequence".to_owned(),
+            definition: intrinsic::SEQUENCE.to_owned(),
             label: "Sequence".to_owned(),
             input: Some("no-such-port".to_owned()),
             output: None,
@@ -645,7 +926,7 @@ mod staging_tests {
             "graph.json",
             orange_host::new_document().unwrap(),
         );
-        let sequence = editor.add_node(&mut host, "core/sequence").unwrap();
+        let sequence = editor.add_node(&mut host, intrinsic::SEQUENCE).unwrap();
         let nodes = |editor: &Editor| editor.graph().unwrap().nodes.len();
         editor.open_quick_add_into(
             (sequence, "in".to_owned()),
@@ -656,7 +937,7 @@ mod staging_tests {
         assert!(!all.is_empty() && all.iter().all(|choice| choice.output.is_some()));
         let manual = all
             .iter()
-            .find(|choice| choice.definition == "core/on-manual")
+            .find(|choice| choice.definition == intrinsic::ON_MANUAL)
             .cloned()
             .expect("a trigger starts a step");
         let node = editor.pick_quick(&mut host, &manual).unwrap();
@@ -674,6 +955,35 @@ mod staging_tests {
         assert!(editor.graph().unwrap().wires.is_empty());
     }
 
+    #[test]
+    fn a_converter_can_feed_a_value_input_in_one_undo_step() {
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, orange_host::new_document().unwrap());
+        let target = editor
+            .add_node_at(&mut host, intrinsic::TEXT, [0.0, 0.0])
+            .unwrap();
+        editor.open_quick_add_into((target, "value".into()), [-320.0, 0.0], egui::Pos2::ZERO);
+        let choices = editor.quick_choices(&host, "convert");
+        let mut converters = choices
+            .iter()
+            .filter(|choice| choice.definition.starts_with(palette::CONVERSION));
+        let first = converters.next().unwrap();
+        for choice in std::iter::once(first).chain(converters) {
+            let converter = palette::conversion_named(&host, &choice.definition).unwrap();
+            assert_eq!(converter.to, "core/string@1");
+            assert_eq!(choice.output.as_deref(), Some("result"));
+        }
+        let placed = editor.pick_quick(&mut host, first).unwrap();
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.wires[0].from, (placed, "result".into()));
+        assert_eq!(graph.wires[0].to, (target, "value".into()));
+        editor.undo(&mut host);
+        let graph = editor.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(graph.wires.is_empty());
+    }
+
     /// A conversion chosen for a dropped value wire is placed and wired as one action.
     #[test]
     fn a_conversion_for_a_dropped_wire_is_one_undo_step() {
@@ -685,7 +995,7 @@ mod staging_tests {
             orange_host::new_document().unwrap(),
         );
         let number = editor
-            .add_node_at(&mut host, "core/number", [0.0, 0.0])
+            .add_node_at(&mut host, intrinsic::NUMBER, [0.0, 0.0])
             .unwrap();
         editor.open_quick_add(
             Some((number, "result".into())),
@@ -724,7 +1034,7 @@ mod staging_tests {
             "graph.json",
             orange_host::new_document().unwrap(),
         );
-        let whole = editor.add_node(&mut host, "core/whole-number").unwrap();
+        let whole = editor.add_node(&mut host, intrinsic::WHOLE_NUMBER).unwrap();
         let target = editor
             .add_node(&mut host, "org.orange.math/absolute")
             .unwrap();

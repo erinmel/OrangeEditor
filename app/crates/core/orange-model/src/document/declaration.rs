@@ -55,10 +55,24 @@ pub enum ConflictPolicy {
 pub struct EventDecl {
     pub id: EventDeclId,
     pub name: String,
-    pub payload: TypeExpr,
+    /// What each emission carries. Absent for an event-only channel: its emitters,
+    /// handlers and awaiters then have no `payload` port (11 §10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<TypeExpr>,
     pub scope: EventScope,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+impl EventDecl {
+    /// The type an emission carries at run time: the declared payload, or for an
+    /// event-only channel an option that is always None, so queues, quotas and
+    /// workspace schemas treat both alike.
+    pub fn carried(&self) -> TypeExpr {
+        self.payload
+            .clone()
+            .unwrap_or_else(|| crate::id::fixed_id("core/option@1<core/bool@1>"))
+    }
 }
 
 impl Keyed for EventDecl {

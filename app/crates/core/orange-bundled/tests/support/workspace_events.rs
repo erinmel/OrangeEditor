@@ -14,6 +14,37 @@ fn build(nodes: Vec<Json>, edges: Vec<Json>, variables: Vec<Json>, ty: &str) -> 
     )
     .unwrap()
 }
+#[test]
+fn a_workspace_pulse_cannot_share_an_id_with_a_typed_optional_event() {
+    let pulse = compile_with_event(
+        vec![on_event(1, 0, 2, "fault")],
+        vec![],
+        vec![],
+        json!({"id": EVENT, "name": "pulse", "scope": "workspace"}),
+    )
+    .unwrap();
+    let typed = build(
+        vec![on_event(1, 0, 2, "fault")],
+        vec![],
+        vec![],
+        "core/option@1<core/bool@1>",
+    );
+    let (workspace, mut bus) = host(&pulse, WorkspaceBusLimits::default());
+    let mut typed_run = Run::start_in_workspace(
+        typed.1.clone(),
+        &typed.0,
+        typed.1.data().snapshot(),
+        9,
+        RunOptions::default(),
+        &workspace.snapshot(),
+    )
+    .unwrap();
+    assert_eq!(
+        typed_run.attach_workspace_bus(&mut bus, WorkspaceQueue::default()),
+        Err(Error::SchemaMismatch),
+    );
+}
+
 fn producer(values: &[u64]) -> Fixture {
     let mut nodes = vec![core(1, "on-start")];
     let mut edges = Vec::new();

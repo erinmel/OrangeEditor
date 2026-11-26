@@ -1,15 +1,17 @@
 //! Downloads and update feeds: fetching over HTTPS, and signing and checking a feed.
 use crate::{DEFAULT_TIMEOUT_MS, hex};
+use std::net::IpAddr;
 use std::time::Duration;
 use ureq::Agent;
-use ureq::http::{Method, Request};
+use ureq::config::Config;
+use ureq::http::{Method, Request, Uri};
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Opens a finite HTTP media response for an explicitly configured source.
 /// Redirects are disabled and the response reader enforces the byte limit.
 pub fn media_reader(url: &str, max_bytes: u64) -> Result<impl std::io::Read + Send + Sync, String> {
-    let address = url
-        .parse::<ureq::http::Uri>()
-        .map_err(|_| "invalid audio URL")?;
+    let address = url.parse::<Uri>().map_err(|_| "invalid audio URL")?;
     if !matches!(address.scheme_str(), Some("http" | "https"))
         || address
             .authority()
@@ -86,8 +88,53 @@ pub fn fetch(
     body: &[u8],
     max_bytes: u64,
 ) -> Result<(u16, Vec<u8>), String> {
-    fetch_response(method, url, headers, body, max_bytes, false)
+    fetch_response(method, url, headers, body, max_bytes, FetchRules::HTTPS)
         .map(|response| (response.status, response.body))
+}
+
+/// What one [`fetch_response`] may use and where it may connect.
+#[derive(Debug, Clone, Copy)]
+pub struct FetchRules {
+    /// Whether a plain `http://` URL may be sent. The caller has checked that the
+    /// request may reach its address in plain text, as the `http-local` plugin grant does.
+    pub plain_http: bool,
+    /// Which resolved addresses the request may connect to; `None` allows any. With a
+    /// filter the request connects directly, never through a proxy from the
+    /// environment, so the check holds for the address actually reached.
+    pub connect_to: Option<fn(IpAddr) -> bool>,
+}
+
+impl FetchRules {
+    /// `https://` only, to any address, through the environment's proxy if one is set.
+    pub const HTTPS: Self = Self {
+        plain_http: false,
+        connect_to: None,
+    };
+}
+
+/// Resolves host names as usual and keeps only the addresses a filter accepts, so a
+/// name cannot point a checked request somewhere else.
+#[derive(Debug)]
+struct FilteredResolver(fn(IpAddr) -> bool);
+
+impl Resolver for FilteredResolver {
+    fn resolve(
+        &self,
+        uri: &Uri,
+        config: &Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let resolved = DefaultResolver::default().resolve(uri, config, timeout)?;
+        let Self(accepts) = *self;
+        let mut allowed = self.empty();
+        for address in resolved.iter().filter(|address| accepts(address.ip())) {
+            allowed.push(*address);
+        }
+        if allowed.is_empty() {
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(allowed)
+    }
 }
 
 /// The answer to [`fetch_response`].
@@ -99,30 +146,55 @@ pub struct FetchResponse {
     pub body: Vec<u8>,
 }
 
-/// Sends one request like [`fetch`] and also returns the response headers. With
-/// `plain_http` an `http://` URL is sent too: the caller has checked that its address
-/// is one the request may reach in plain text, as the `http-local` plugin grant does.
-/// Redirects are never followed, so that check holds for the whole request. Headers and
-/// body together must fit `max_bytes`.
+/// [`fetch_response`] with its answer as (status, headers, body), the shape an
+/// application hands the plugin engine as its transport. The engine has checked the
+/// URL's scheme for the grant, so `http://` is sent, and the request connects only to
+/// addresses `connect_to` accepts.
+#[expect(clippy::type_complexity, reason = "the transport's plain shape")]
+pub fn fetch_parts(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    max_bytes: u64,
+    connect_to: fn(IpAddr) -> bool,
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+    let rules = FetchRules {
+        plain_http: true,
+        connect_to: Some(connect_to),
+    };
+    fetch_response(method, url, headers, body, max_bytes, rules)
+        .map(|response| (response.status, response.headers, response.body))
+}
+
+/// Sends one request like [`fetch`] and also returns the response headers, within
+/// `rules`. Redirects are never followed, so the address check holds for the whole
+/// request. Headers and body together must fit `max_bytes`.
 pub fn fetch_response(
     method: &str,
     url: &str,
     headers: &[(String, String)],
     body: &[u8],
     max_bytes: u64,
-    plain_http: bool,
+    rules: FetchRules,
 ) -> Result<FetchResponse, String> {
     let secure = url.starts_with("https://");
-    if !secure && !(plain_http && url.starts_with("http://")) {
+    if !secure && !(rules.plain_http && url.starts_with("http://")) {
         return Err("the URL must start with https://".into());
     }
-    let agent: Agent = Agent::config_builder()
+    let config = Agent::config_builder()
         .timeout_global(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)))
         .https_only(secure)
         .max_redirects(0)
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
+        .http_status_as_error(false);
+    let agent = match rules.connect_to {
+        Some(filter) => Agent::with_parts(
+            config.proxy(None).build(),
+            DefaultConnector::default(),
+            FilteredResolver(filter),
+        ),
+        None => config.build().new_agent(),
+    };
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| "the method is not valid")?;
     let mut request = Request::builder().method(method).uri(url);
     for (name, value) in headers {
@@ -236,8 +308,41 @@ pub fn sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex, sha256, verify_feed};
+    use super::{fetch_parts, hex, sha256, verify_feed};
     use ring::signature::{Ed25519KeyPair, KeyPair};
+    use std::io::{Read, Write};
+
+    #[test]
+    fn a_checked_request_connects_only_to_resolved_addresses_its_filter_accepts() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let get = |url: &str, connect_to: fn(std::net::IpAddr) -> bool| {
+            fetch_parts("GET", url, &[], &[], 1024, connect_to)
+                .map(|(status, _, body)| (status, body))
+        };
+        let public = |address: std::net::IpAddr| !address.is_loopback();
+        // A name resolving to this computer is refused before any connection is made.
+        for url in [
+            format!("http://127.0.0.1:{port}/"),
+            format!("http://localhost:{port}/"),
+        ] {
+            assert!(get(&url, public).is_err(), "{url}");
+        }
+        let local = |address: std::net::IpAddr| address.is_loopback();
+        assert_eq!(
+            get(&format!("http://127.0.0.1:{port}/"), local),
+            Ok((200, b"ok".to_vec()))
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn a_feed_is_accepted_only_with_its_publishers_signature() {

@@ -686,4 +686,60 @@ mod tests {
         assert_eq!(output[7].method_key(), Ok((1, 60, 90)));
         assert_eq!(&output[7].data[11..], &[18, 1]);
     }
+
+    /// Broker bytes are untrusted: a corrupted transcript ends in a typed failure or a
+    /// bounded delivery, never a panic.
+    #[test]
+    fn corrupted_broker_transcripts_fail_without_panicking() {
+        let mut valid = Transcript::handshake();
+        valid.method(1, 60, 11, &[]);
+        valid.method(1, 60, 21, b"\x03tag");
+        let mut deliver = b"\x03tag".to_vec();
+        deliver.extend_from_slice(&17u64.to_be_bytes());
+        deliver.extend_from_slice(b"\x01\x02ex\x04test");
+        valid.method(1, 60, 60, &deliver);
+        let mut header = vec![0, 60, 0, 0];
+        header.extend_from_slice(&6u64.to_be_bytes());
+        header.extend_from_slice(&[0, 0]);
+        valid.frame(HEADER, 1, &header);
+        valid.frame(BODY, 1, &[0, 255, 2, 3, 4, 5]);
+        let valid = valid.broker.into_inner();
+        let settings = settings();
+        let mut next = crate::xorshift(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..4000 {
+            let mut bytes = valid.clone();
+            for _ in 0..=next() % 3 {
+                let at = next() % bytes.len();
+                match next() % 4 {
+                    0 => bytes.truncate(at),
+                    1 => bytes.insert(at, u8::try_from(next() % 256).unwrap()),
+                    // Lengths and sizes: make a field huge.
+                    2 => bytes[at] = 0xff,
+                    _ => bytes[at] ^= u8::try_from(next() % 255 + 1).unwrap(),
+                }
+                if bytes.is_empty() {
+                    break;
+                }
+            }
+            let transport = Transcript {
+                broker: Cursor::new(bytes),
+                client: Vec::new(),
+            };
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let Ok(mut connection) =
+                Connection::handshake(transport, &settings, deadline, &|| true)
+            else {
+                continue;
+            };
+            if connection
+                .consume(&settings, "test", deadline, &|| true)
+                .is_err()
+            {
+                continue;
+            }
+            if let Ok(Some(message)) = connection.delivery(&|| true) {
+                assert!(message.body.len() <= MAX_MESSAGE_BYTES);
+            }
+        }
+    }
 }

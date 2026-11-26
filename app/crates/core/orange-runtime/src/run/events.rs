@@ -834,6 +834,9 @@ impl Run {
             .events()
             .get(event_index)
             .ok_or(IngressError::RevokedSource)?;
+        if checked.is_pulse() && !matches!(payload, Value::None) {
+            return Err(IngressError::InvalidPayload);
+        }
         checked
             .payload_type()
             .checked_charge(payload, usize::MAX)

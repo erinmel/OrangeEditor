@@ -1,6 +1,7 @@
 //! Where one edit's time goes on a large graph (docs/10, "Performance"). Run with
 //! `ORANGE_EDIT_TIMING_PAIRS=2500 cargo test --release -p orange-editor-ui edit_timing -- --nocapture`.
 use super::*;
+use orange_host::intrinsic;
 use std::time::{Duration, Instant};
 
 /// A graph of `pairs` literal → absolute chains: 2 × `pairs` nodes, `pairs` wires.
@@ -9,7 +10,9 @@ fn large(host: &mut Host, pairs: usize) -> String {
     for index in 0..pairs {
         #[expect(clippy::cast_precision_loss, reason = "a test grid")]
         let at = [(index % 50) as f32 * 300.0, (index / 50) as f32 * 120.0];
-        let number = host.add_node(&mut draft, "core/whole-number", at).unwrap();
+        let number = host
+            .add_node(&mut draft, intrinsic::WHOLE_NUMBER, at)
+            .unwrap();
         let absolute = host
             .add_node(
                 &mut draft,
@@ -72,7 +75,7 @@ fn edit_timing() {
             (document.replace_graph(graph), failure_routes, port_details)
         });
         let touched = time!("touched", runs, {
-            touched_by_edit(&before, &document.graph)
+            touched_by_edit(&before, &document.graph, false)
         });
         document.declared = time!("declarations", runs, { host.declarations(&document.draft) });
         let graph = document.graph.clone();
@@ -110,7 +113,9 @@ fn an_edit_previews_what_it_touched_and_keeps_the_rest() {
     let (mut host, _events) = Host::new(orange_host::HostOptions::default()).unwrap();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let chain = |host: &Host, draft: &mut Draft, value: &str, y: f32| {
-        let number = host.add_node(draft, "core/whole-number", [0.0, y]).unwrap();
+        let number = host
+            .add_node(draft, intrinsic::WHOLE_NUMBER, [0.0, y])
+            .unwrap();
         host.set_input(draft, (number, "value"), Some(value))
             .unwrap();
         let absolute = host

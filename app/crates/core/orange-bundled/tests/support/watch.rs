@@ -20,6 +20,78 @@ fn seen(run: &Run, n: u32) -> Option<u64> {
     }
 }
 
+#[test]
+fn specialized_edges_and_deadband_drive_the_shared_counter_and_watch_kernels() {
+    let entry = |id, name| {
+        let mut entry = core(id, name);
+        entry["activation"] = activation(0, 8, "fault");
+        entry
+    };
+    let mut changes = entry(12, "change-beyond-tolerance");
+    changes["config"] = json!({"threshold": 2});
+    let boolean = json!({"id":id(100), "name":"condition", "type":"core/bool@1", "scope":"run",
+        "init":{"type":"core/bool@1","value":false}});
+    let (doc, plan) = compile(
+        vec![
+            variable_node(1, "get-variable", 100),
+            variable_node(2, "get-variable", 101),
+            variable_node(3, "get-variable", 105),
+            entry(10, "rising-edge"),
+            entry(11, "falling-edge"),
+            changes,
+            variable_node(20, "increment-counter", 102),
+            variable_node(21, "decrement-counter", 102),
+            variable_node(22, "set-variable", 103),
+            variable_node(23, "set-variable", 104),
+        ],
+        vec![
+            edge(1, 1, "value", 10, "watch"),
+            edge(2, 1, "value", 11, "watch"),
+            edge(3, 2, "value", 12, "watch"),
+            edge(4, 10, "then", 20, "in"),
+            edge(5, 11, "then", 21, "in"),
+            edge(6, 20, "then", 22, "in"),
+            edge(7, 20, "new", 22, "value"),
+            edge(8, 12, "then", 23, "in"),
+            edge(9, 12, "value", 23, "value"),
+            edge(10, 3, "value", 21, "value"),
+        ],
+        vec![
+            boolean,
+            variable(101, "run", Some(10)),
+            variable(102, "run", Some(5)),
+            variable(103, "run", Some(0)),
+            variable(104, "run", Some(0)),
+            variable(105, "run", Some(2)),
+        ],
+    );
+    let mut run = run(&doc, plan);
+    let sample = |run: &mut Run, variable, value| {
+        run.set_variable(id(variable).parse().unwrap(), value)
+            .unwrap();
+        pump_until_idle(run);
+    };
+    pump_until_idle(&mut run);
+    assert_eq!(seen(&run, 102), Some(5));
+    assert_eq!(seen(&run, 104), Some(0));
+    sample(&mut run, 100, Value::Bool(true));
+    assert_eq!((seen(&run, 102), seen(&run, 103)), (Some(6), Some(6)));
+    sample(&mut run, 100, Value::Bool(true));
+    assert_eq!(seen(&run, 102), Some(6));
+    sample(&mut run, 100, Value::Bool(false));
+    assert_eq!(seen(&run, 102), Some(4));
+    for (input, published) in [(12, 0), (13, 13), (14, 13), (16, 16)] {
+        sample(&mut run, 101, Value::U64(input));
+        assert_eq!(seen(&run, 104), Some(published));
+    }
+    sample(&mut run, 102, Value::U64(u64::MAX));
+    sample(&mut run, 100, Value::Bool(true));
+    assert_eq!(
+        (seen(&run, 102), seen(&run, 103)),
+        (Some(u64::MAX), Some(6))
+    );
+}
+
 fn numeric_watch_run(config: Json) -> (GraphDocument, Arc<orange_compiler::ControlPlan>) {
     let mut trigger = watch(10, "above", "core/f64@1");
     trigger["config_version"] = json!(2);

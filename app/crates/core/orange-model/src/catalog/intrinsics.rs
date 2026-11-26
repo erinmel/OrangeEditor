@@ -117,6 +117,49 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     watch.config_version = 2;
     watch.config_schema = Some(super::watch::schema());
     definitions.push(watch);
+    definitions.extend([ids::RISING_EDGE, ids::FALLING_EDGE].map(|id| {
+        definition(
+            id,
+            NodeKind::Entry,
+            None,
+            vec![PortDescriptor::data_in("watch", ty("core/bool@1"))],
+        )
+    }));
+    let mut deadband = generic(
+        definition(
+            ids::CHANGE_BEYOND_TOLERANCE,
+            NodeKind::Entry,
+            None,
+            vec![
+                PortDescriptor::data_in("watch", ty("$T")),
+                PortDescriptor::data_out("value", ty("$T"), OutputSource::Payload),
+            ],
+        ),
+        "T",
+        &["num"],
+    );
+    deadband.config_schema = Some(serde_json::json!({
+        "type": "object",
+        "properties": {"threshold": {"type": "number", "minimum": 0, "default": 1}},
+        "required": ["threshold"],
+        "additionalProperties": false
+    }));
+    definitions.push(deadband);
+    definitions.extend(
+        [ids::INCREMENT_COUNTER, ids::DECREMENT_COUNTER].map(|id| NodeDefinition {
+            config_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {"variable": {"type": "string"}},
+                "additionalProperties": false
+            })),
+            ..variable_definition(
+                id,
+                NodeKind::Action,
+                Some(Suspends::Never),
+                VariableAccess::Update,
+            )
+        }),
+    );
     definitions.push(NodeDefinition {
         ports: Ports::ForEach,
         ..definition(
@@ -188,6 +231,10 @@ fn value_definitions() -> Vec<NodeDefinition> {
         ),
         value(ids::TRUE_OR_FALSE, "core/bool@1", Some(Value::Bool(false))),
         generic(value(ids::VALUE, "$T", None), "T", &[]),
+        // A bridge is a pair of value nodes bound by an ordinary data edge from Bridge
+        // Out's result to Bridge In's value, which an editor draws as a wireless link.
+        generic(value(ids::BRIDGE_OUT, "$T", None), "T", &[]),
+        generic(value(ids::BRIDGE_IN, "$T", None), "T", &[]),
     ]
 }
 

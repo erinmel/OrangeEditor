@@ -2,6 +2,7 @@
 use super::{built_in_services, keyboard::Keyboard, logbook::LogBook};
 use eframe::egui;
 use orange_editor_ui::Editor;
+use orange_host::intrinsic;
 use orange_host::{Connection, ConnectionScope, Host, HostOptions};
 use serde_json::{Value as Json, json};
 use std::path::PathBuf;
@@ -110,7 +111,7 @@ fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
     let author_connection = editor
         .declare_connection(&mut author, &connection(&author_folder))
         .unwrap();
-    let entry = editor.add_node(&mut author, "core/on-manual").unwrap();
+    let entry = editor.add_node(&mut author, intrinsic::ON_MANUAL).unwrap();
     let write = editor
         .add_node(&mut author, orange_files::WRITE_TEXT)
         .unwrap();
@@ -160,7 +161,9 @@ fn a_published_file_function_uses_the_importing_graphs_folder_after_reopen() {
         .declare_connection(&mut consumer, &connection(&consumer_folder))
         .unwrap();
     assert_ne!(author_connection, consumer_connection);
-    let entry = editor.add_node(&mut consumer, "core/on-manual").unwrap();
+    let entry = editor
+        .add_node(&mut consumer, intrinsic::ON_MANUAL)
+        .unwrap();
     let write = editor
         .add_node(&mut consumer, "org.example.writer/write-hello")
         .unwrap();
@@ -245,9 +248,9 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|node| node["definition_id"] == "core/count")
+        .find(|node| node["definition_id"] == intrinsic::COUNT)
         .unwrap();
-    range["definition_id"] = json!("core/for-range");
+    range["definition_id"] = json!(intrinsic::FOR_RANGE);
     range["config"] = json!({"max_iterations": 1000});
     let owner = range["id"].clone();
     let exponent = source["edges"]
@@ -312,7 +315,7 @@ fn the_power_loop_with_for_range_can_be_reused_with_two_arguments_and_a_result()
     editor.canvas().select(Some(save));
     assert!(editor.duplicate(&mut host));
     let second_save = editor.canvas().selection()[0];
-    let second_trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+    let second_trigger = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
     assert!(editor.connect(&mut host, (second_trigger, "then"), (second_call, "in")));
     assert!(editor.connect(&mut host, (second_call, "then"), (second_save, "in")));
     assert!(editor.connect(&mut host, (second_call, "value"), (second_save, "value")));
@@ -391,6 +394,31 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let (mut host, _) = desktop_host();
     let template = typed_template();
     let nodes = host.search_nodes("", "en");
+    let listed: std::collections::BTreeSet<_> = nodes
+        .iter()
+        .map(|found| found.definition.as_str())
+        .collect();
+    let registered_core: std::collections::BTreeSet<_> = host
+        .nodes()
+        .map(|info| &info.definition.definition.id)
+        .filter(|id| id.is_core())
+        .map(|id| id.as_str().to_owned())
+        // Loadable but replaced in the palette by the growable And and Or.
+        .filter(|id| !orange_host::UNLISTED.contains(&id.as_str()))
+        .collect();
+    let hidden: Vec<_> = registered_core
+        .iter()
+        .filter(|id| !listed.contains(id.as_str()))
+        .collect();
+    eprintln!(
+        "Core definitions in the desktop catalogue: {}/{}; outside the catalogue: {hidden:?}",
+        registered_core.len() - hidden.len(),
+        registered_core.len()
+    );
+    assert!(
+        hidden.is_empty(),
+        "core definitions missing from the palette: {hidden:?}"
+    );
     for locale in ["en", "es"] {
         let mut labels = std::collections::BTreeMap::new();
         for found in host.search_nodes("", locale) {
@@ -412,6 +440,7 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
     let mut blocking_cards = Vec::new();
     let mut editor = Editor::new();
     let context = egui::Context::default();
+    context.enable_accesskit();
     for found in &nodes {
         let mut draft = host.draft(&template).unwrap();
         match host.add_node(&mut draft, &found.definition, [50.0, 100.0]) {
@@ -437,7 +466,16 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let size = orange_editor_ui::canvas::node_size(node_view);
                 let mut positions = std::collections::HashSet::new();
                 for port in &node_view.ports {
-                    if found.definition == "core/gate" && port.input && port.id == "enter" {
+                    // A bridge's link port is drawn as a wireless link, never as an anchor.
+                    let bridge_link = (found.definition == intrinsic::BRIDGE_OUT
+                        && !port.input
+                        && port.id == "result")
+                        || (found.definition == intrinsic::BRIDGE_IN
+                            && port.input
+                            && port.id == "value");
+                    if bridge_link
+                        || found.definition == intrinsic::GATE && port.input && port.id == "enter"
+                    {
                         assert!(
                             orange_editor_ui::canvas::port_offset(node_view, &port.id, true)
                                 .is_none()
@@ -484,6 +522,48 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                 let visible = output.shapes.iter().any(|shape| {
                     matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&prefix))
                 });
+                let named = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .is_some_and(|tree| {
+                        tree.nodes.iter().any(|(_, accessible)| {
+                            [Some(found.label.as_str()), Some(node_view.name.as_str())]
+                                .contains(&accessible.label())
+                        })
+                    });
+                use egui::Role::{ComboBox, RadioButton, Slider};
+                let fields: &[(&str, egui::Role)] = match found.definition.as_str() {
+                    intrinsic::AND => &[
+                        ("a, No", RadioButton),
+                        ("a, Yes", RadioButton),
+                        ("b, No", RadioButton),
+                        ("b, Yes", RadioButton),
+                    ],
+                    orange_audio::FILTER => {
+                        &[("Cutoff", Slider), ("Q", Slider), ("Mode", ComboBox)]
+                    }
+                    orange_audio::NOISE_LEVEL => &[
+                        ("Threshold", Slider),
+                        ("Hold", Slider),
+                        ("Reset margin", Slider),
+                    ],
+                    _ => &[],
+                };
+                let named_fields = fields.iter().all(|(name, role)| {
+                    output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .is_some_and(|tree| {
+                            tree.nodes.iter().any(|(_, node)| {
+                                node.role() == *role
+                                    && node
+                                        .label()
+                                        .is_some_and(|label| label.eq_ignore_ascii_case(name))
+                            })
+                        })
+                });
                 if matches!(
                     found.definition.as_str(),
                     orange_audio::NOISE_LEVEL
@@ -496,6 +576,16 @@ fn the_desktop_round_trips_all_conversions_and_paints_every_catalogue_node() {
                     }), "{} needs the Draft icon", found.definition);
                 }
                 output.drop_without_applying_deltas();
+                assert!(
+                    named_fields,
+                    "missing accessible field in {}: {fields:?}",
+                    found.definition
+                );
+                assert!(
+                    named,
+                    "the card needs its full accessible name: {}",
+                    found.definition
+                );
                 assert!(visible, "the canvas did not paint {}", found.definition);
             }
             Err(error) => rejected.push(format!("{}: {error}", found.definition)),
@@ -530,10 +620,10 @@ fn a_catalogue_gate_keeps_a_connected_entry_alias_visible() {
     let (host, _) = desktop_host();
     let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
     let trigger = host
-        .add_node(&mut draft, "core/on-manual", [20.0, 20.0])
+        .add_node(&mut draft, intrinsic::ON_MANUAL, [20.0, 20.0])
         .unwrap();
     let gate = host
-        .add_node(&mut draft, "core/gate", [340.0, 20.0])
+        .add_node(&mut draft, intrinsic::GATE, [340.0, 20.0])
         .unwrap();
     host.connect(&mut draft, (trigger, "then"), (gate, "enter"))
         .unwrap();
@@ -659,7 +749,7 @@ fn the_saved_json_example_reads_fields_in_one_step_and_uses_its_fallback() {
         let read = graph
             .nodes
             .iter()
-            .find(|node| node.definition == "core/on-manual")
+            .find(|node| node.definition == intrinsic::ON_MANUAL)
             .unwrap()
             .id;
         let extract = graph
@@ -734,7 +824,7 @@ fn a_reopened_editor_graph_executes_a_connection_and_reports_success_and_failure
     let mut routes = Vec::new();
     for (row, path) in [(0.0, "sample.json"), (230.0, "missing.json")] {
         let trigger = editor
-            .add_node_at(&mut host, "core/on-manual", [0.0, row])
+            .add_node_at(&mut host, intrinsic::ON_MANUAL, [0.0, row])
             .unwrap();
         let read = editor
             .add_node_at(&mut host, orange_files::READ_TEXT, [260.0, row])
@@ -844,7 +934,7 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
     let mut editor = Editor::new();
     editor.open_untitled(&mut host, orange_host::new_document().unwrap());
     let trigger = editor
-        .add_node_at(&mut host, "core/on-manual", [0.0, 0.0])
+        .add_node_at(&mut host, intrinsic::ON_MANUAL, [0.0, 0.0])
         .unwrap();
     let request = editor
         .add_node_at(&mut host, orange_net::HTTP_REQUEST_JSON, [260.0, 0.0])
@@ -869,7 +959,7 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
     let saved = editor.text().unwrap();
     let mut draft = host.draft(&saved).unwrap();
     let number = host
-        .add_node(&mut draft, "core/whole-number", [0.0, 140.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [0.0, 140.0])
         .unwrap();
     let json_number = host
         .add_node(&mut draft, "org.orange.json/from-i64", [210.0, 140.0])
@@ -878,13 +968,13 @@ fn desktop_http_request_sends_graph_built_json_and_reports_the_socket_response()
         .add_node(&mut draft, "org.orange.json/set-field", [510.0, 140.0])
         .unwrap();
     let match_response = host
-        .add_node(&mut draft, "core/match-option", [530.0, 0.0])
+        .add_node(&mut draft, intrinsic::MATCH_OPTION, [530.0, 0.0])
         .unwrap();
     let lookup = host
         .add_node(&mut draft, "org.orange.json/get", [790.0, 150.0])
         .unwrap();
     let match_lookup = host
-        .add_node(&mut draft, "core/match-option", [1050.0, 0.0])
+        .add_node(&mut draft, intrinsic::MATCH_OPTION, [1050.0, 0.0])
         .unwrap();
     let log = host
         .add_node(&mut draft, "org.orange.logging/log-message", [1320.0, 0.0])
@@ -1228,7 +1318,7 @@ fn list_builder_previews_wired_and_inline_items_in_card_order() {
         .add_node(&mut draft, "org.orange.collections/build-list", [0.0, 0.0])
         .unwrap();
     let value = host
-        .add_node(&mut draft, "core/whole-number", [300.0, 0.0])
+        .add_node(&mut draft, intrinsic::WHOLE_NUMBER, [300.0, 0.0])
         .unwrap();
     let first = host.add_port(&mut draft, builder, "item").unwrap();
     let removed = host.add_port(&mut draft, builder, "item").unwrap();

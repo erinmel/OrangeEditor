@@ -1,11 +1,59 @@
 use super::*;
 
 #[test]
+fn settings_and_shortcuts_search_accept_localized_and_english_terms() {
+    let mut editor = Editor::new();
+    // Each search is given as typed correctly, then with a typo or other separators.
+    for (saved, tag, display, shortcut) in [
+        (
+            "es_mx",
+            "es-MX",
+            ["cuadricula spacing", "cuadricual-spacing"],
+            ["archivos save", "archvios save"],
+        ),
+        (
+            "ja_jp",
+            "ja-JP",
+            ["グリッド spacing", "グリッド_spacing"],
+            ["ファイル save", "ファイル-save"],
+        ),
+        (
+            "en",
+            "en-US",
+            ["grid spacing", "grid_spacing"],
+            ["files save", "fiels-save"],
+        ),
+    ] {
+        editor.restore_preferences(&serde_json::json!({ "version": 1, "language": saved }));
+        assert_eq!(editor.language(), tag);
+        assert_eq!(editor.preferences()["language"], tag);
+        for typed in display {
+            let query = orange_host::SearchQuery::new(typed);
+            assert!(
+                Section::Display.relevance(&query).is_some(),
+                "{tag}: {typed}"
+            );
+            assert!(
+                Section::Search.relevance(&query).is_none(),
+                "{tag}: {typed}"
+            );
+        }
+        for typed in shortcut {
+            assert!(
+                editor.shortcut_search_rank(typed).is_some(),
+                "{tag}: {typed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
     let ctx = egui::Context::default();
     theme::apply(&ctx);
     ctx.set_theme(egui::Theme::Dark);
     let mut editor = Editor::new();
+    let light_panel = ctx.style_of(egui::Theme::Light).visuals.panel_fill;
     let colors = [egui::Theme::Light, egui::Theme::Dark].map(|mode| {
         let style = ctx.style_of(mode);
         (style.visuals.window_fill, style.visuals.extreme_bg_color)
@@ -25,7 +73,7 @@ fn appearance_shows_both_theme_palettes_without_changing_the_active_theme() {
     }
     assert!(shapes.iter().any(|shape| matches!(
         &shape.shape,
-        egui::Shape::Path(path) if path.points.len() == 3 && path.fill == colors[0].0
+        egui::Shape::Path(path) if path.points.len() == 3 && path.fill == light_panel
     )));
     assert_eq!(ctx.theme(), egui::Theme::Dark);
     assert_eq!(editor.preferred_theme, None);

@@ -59,11 +59,10 @@
     {
       "id": "10000000-0000-4000-8000-000000000001",
       "name": "Forward meaningful changes",
-      "definition_id": "core/on-watch",
+      "definition_id": "core/change-beyond-tolerance",
       "definition_version": 1,
-      "config_version": 2,
+      "config_version": 1,
       "config": {
-        "mode": "deadband",
         "threshold": 1
       },
       "activation": {

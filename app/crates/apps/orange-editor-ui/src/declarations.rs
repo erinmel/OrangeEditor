@@ -5,15 +5,57 @@
 use super::*;
 use crate::controls::{Action, Dropdown as _, Surface, button};
 use crate::properties::COMMON_TYPES;
+use orange_host::intrinsic;
 use orange_host::{
     AdapterInfo, Connection, ConnectionScope, Declarations, SECRET_PREFIX, SettingChoices,
     SettingField, SettingText, SettingToggle, VarScope, Variable,
 };
 use std::collections::BTreeMap;
 
-mod network;
+pub(crate) mod network;
 pub(crate) use network::HTTP;
 const FOLDER_ADAPTER: &str = "org.orange.files/folder";
+
+/// How an event's payload is named in lists: its type, or "No payload" for an
+/// event-only channel (an empty type).
+pub(crate) fn payload_name(ty: &str) -> String {
+    if ty.is_empty() {
+        t("event-no-payload").to_owned()
+    } else {
+        type_name(ty)
+    }
+}
+
+pub(crate) fn variable_scope_allowed(definition: &str, scope: VarScope) -> bool {
+    match definition {
+        intrinsic::SET_SHARED | intrinsic::UPDATE_SHARED => scope == VarScope::Workspace,
+        intrinsic::SET_VARIABLE
+        | intrinsic::UPDATE_VARIABLE
+        | intrinsic::INCREMENT_COUNTER
+        | intrinsic::DECREMENT_COUNTER => scope != VarScope::Workspace,
+        intrinsic::ON_VARIABLE_CHANGED => scope == VarScope::Run,
+        _ => true,
+    }
+}
+
+pub(crate) fn variable_type_allowed(definition: &str, ty: &str) -> bool {
+    intrinsic::counter_operation(definition).is_none() || intrinsic::is_counter_type(ty)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VariableChoice {
+    pub id: String,
+    pub label: String,
+    pub scope: VarScope,
+    pub ty: String,
+}
+
+impl VariableChoice {
+    pub fn fits(&self, definition: &str) -> bool {
+        variable_scope_allowed(definition, self.scope)
+            && variable_type_allowed(definition, &self.ty)
+    }
+}
 
 fn adapter_rank(id: &str) -> usize {
     [
@@ -45,12 +87,16 @@ pub(crate) const VARIABLE_DRAG: &str = "orange-variable:";
 /// Secrets typed into the connection form, by setting, until it is saved. Never shown
 /// in debug output.
 #[derive(Clone, Default, PartialEq)]
-pub(crate) struct Typed(BTreeMap<String, String>);
+pub(crate) struct Typed {
+    values: BTreeMap<String, String>,
+    revealed: std::collections::BTreeSet<String>,
+    local_status: BTreeMap<String, &'static str>,
+}
 impl std::fmt::Debug for Typed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
             .entries(
-                self.0
+                self.values
                     .keys()
                     .map(|setting| format!("{setting}: <redacted>")),
             )
@@ -147,7 +193,7 @@ impl ConnectionForm {
                 );
             }
         }
-        for (setting, secret) in &self.secrets.0 {
+        for (setting, secret) in &self.secrets.values {
             if !secret.is_empty() {
                 set_text(&mut settings, setting, Some(Json::from(secret.as_str())));
             }
@@ -164,12 +210,13 @@ impl ConnectionForm {
 pub(crate) struct Forms {
     variable: VariableForm,
     variable_target: Option<(NodeId, String)>,
+    event: Option<EventForm>,
     connection: ConnectionForm,
     /// Open the new-variable form at the next frame.
     open_variable: bool,
     /// Whether the Connections panel is showing a form.
-    open_connection: bool,
-    scroll_to_connection: bool,
+    pub(crate) open_connection: bool,
+    connection_target: Option<NodeId>,
     /// The variable form is shown.
     variable_open: bool,
     /// What is being typed in place in the Variables list, by variable ID and field,
@@ -177,6 +224,15 @@ pub(crate) struct Forms {
     inline: BTreeMap<(String, &'static str), String>,
     /// The field to put the keyboard in when it is next drawn, such as a new choice.
     focus: Option<(String, &'static str)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct EventForm {
+    target: NodeId,
+    rename: Option<orange_host::EventDeclId>,
+    name: String,
+    payload: String,
+    failed: bool,
 }
 
 impl Forms {
@@ -191,9 +247,18 @@ impl Forms {
     }
     pub(crate) fn reveal_connection(&mut self) {
         self.open_connection = true;
-        self.scroll_to_connection = true;
     }
+    pub(crate) fn new_connection_for(&mut self, node: NodeId, adapter: &str) {
+        self.connection = ConnectionForm {
+            adapter: adapter.to_owned(),
+            ..ConnectionForm::default()
+        };
+        self.connection_target = Some(node);
+        self.reveal_connection();
+    }
+
     pub(crate) fn edit_connection(&mut self, connection: &Connection) {
+        self.connection_target = None;
         self.connection = ConnectionForm {
             changing: connection.id.clone(),
             name: connection.name.clone(),
@@ -416,6 +481,9 @@ pub(crate) fn live_level(
 }
 
 /// Display floor in dBFS, matching the audio package's silence reading.
+/// Space kept between a dialog and the window edges.
+const DIALOG_MARGIN: f32 = 40.0;
+
 pub(crate) const AUDIO_SILENCE_DB: f64 = -120.0;
 
 #[expect(
@@ -537,6 +605,17 @@ impl Editor {
         pointer: &str,
         variable: &Variable,
     ) -> Option<String> {
+        let definition = &self
+            .graph()?
+            .nodes
+            .iter()
+            .find(|view| view.id == node)?
+            .definition;
+        if !variable_scope_allowed(definition, variable.scope)
+            || !variable_type_allowed(definition, &variable.ty)
+        {
+            return None;
+        }
         let id = self.declare_variable(host, variable)?;
         let _ = self.set_setting(
             host,
@@ -596,9 +675,174 @@ impl Editor {
     }
 
     pub(crate) fn new_variable_for_node(&mut self, node: NodeId, pointer: &str) {
+        let counter = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+            .is_some_and(|view| intrinsic::counter_operation(&view.definition).is_some());
+        let scope = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|view| view.id == node))
+            .filter(|view| !variable_scope_allowed(&view.definition, VarScope::Run))
+            .map_or(VarScope::Run, |_| VarScope::Workspace);
         self.panels.nodes = true;
         self.tab = Tab::Variables;
         self.forms.reveal_variable(Some((node, pointer.to_owned())));
+        self.forms.variable.scope = scope;
+        if counter {
+            self.forms.variable.ty = "core/i64@1".to_owned();
+            self.forms.variable.initial = "0".to_owned();
+        }
+    }
+
+    pub(crate) fn new_event_for_node(&mut self, target: NodeId) {
+        self.forms.event = Some(EventForm {
+            target,
+            rename: None,
+            name: String::new(),
+            payload: String::new(),
+            failed: false,
+        });
+    }
+
+    pub(crate) fn rename_event_for_node(&mut self, target: NodeId) -> bool {
+        let declaration = self
+            .graph()
+            .and_then(|graph| graph.nodes.iter().find(|node| node.id == target))
+            .and_then(|node| node.settings["event"].as_str())
+            .and_then(|id| id.parse().ok())
+            .and_then(|id| {
+                self.declarations()?
+                    .events
+                    .iter()
+                    .find(|event| event.id == id)
+            });
+        let Some(event) = declaration else {
+            return false;
+        };
+        self.forms.event = Some(EventForm {
+            target,
+            rename: Some(event.id),
+            name: event.name.clone(),
+            payload: String::new(),
+            failed: false,
+        });
+        true
+    }
+
+    pub(crate) fn event_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
+        if let Some(form) = &self.forms.event
+            && self
+                .graph()
+                .is_none_or(|graph| !graph.nodes.iter().any(|node| node.id == form.target))
+        {
+            self.forms.event = None;
+        }
+        let Some(form) = &mut self.forms.event else {
+            return;
+        };
+        let shown =
+            orange_ui_controls::modal(ctx, egui::Id::unique("declare-run-event")).show(ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - DIALOG_MARGIN).clamp(200.0, 380.0));
+                let renaming = form.rename.is_some();
+                ui.heading(t(if renaming {
+                    "event-rename"
+                } else {
+                    "event-new"
+                }));
+                if !renaming {
+                    ui.label(t("event-run-hint"));
+                }
+                let label = ui.label(t("event-channel-name"));
+                let id = ui.make_persistent_id("event-name");
+                let _ = orange_ui_controls::text_field(
+                    ui,
+                    Surface::Dialog,
+                    id,
+                    &mut form.name,
+                    t("event-name-hint"),
+                )
+                .labelled_by(label.id);
+                if !renaming {
+                    let label = ui.label(t("event-payload-type"));
+                    let _ = egui::ComboBox::from_id_salt("event-payload-type")
+                        .selected_text(payload_name(&form.payload))
+                        .width(ui.available_width())
+                        .show_select(ui, Surface::Dialog, |ui| {
+                            // An event-only channel: its nodes have no payload port.
+                            let _ = ui.selectable_value(
+                                &mut form.payload,
+                                String::new(),
+                                t("event-no-payload"),
+                            );
+                            for ty in COMMON_TYPES.into_iter().chain([
+                                "core/json@1",
+                                "core/timestamp@1",
+                                "core/i32@1",
+                                "core/u32@1",
+                                "core/u64@1",
+                                "core/f32@1",
+                            ]) {
+                                let _ = ui.selectable_value(
+                                    &mut form.payload,
+                                    ty.to_owned(),
+                                    type_name(ty),
+                                );
+                            }
+                            for (ty, name) in types_tab::choices() {
+                                let _ = ui.selectable_value(&mut form.payload, ty, name);
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                }
+                if form.failed {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        t(if renaming {
+                            "event-rename-failed"
+                        } else {
+                            "event-create-failed"
+                        }),
+                    );
+                }
+                controls::dialog_actions(
+                    ui,
+                    Action::Primary,
+                    !form.name.trim().is_empty(),
+                    egui::Button::new(t(if renaming {
+                        "save"
+                    } else {
+                        "event-create-bind"
+                    })),
+                )
+            });
+        if shown.inner.1.clicked() {
+            let target = form.target;
+            let rename = form.rename;
+            let name = form.name.clone();
+            let payload = if form.payload.is_empty() {
+                Ok(None)
+            } else {
+                form.payload.parse().map(Some)
+            };
+            if let Ok(payload) = payload
+                && let Some(draft) = self.editing()
+            {
+                let result = match rename {
+                    Some(event) => host.rename_event(draft, event, &name).map(|_| event),
+                    None => host.declare_run_event_for(draft, target, &name, payload),
+                };
+                if self.edited_value(host, result).is_some() {
+                    self.forms.event = None;
+                    return;
+                }
+            }
+            if let Some(form) = &mut self.forms.event {
+                form.failed = true;
+            }
+        } else if shown.inner.0.clicked() || shown.should_close() {
+            self.forms.event = None;
+        }
     }
 
     pub(crate) fn variables_tab(&mut self, ui: &mut egui::Ui, host: &mut Host) {
@@ -653,9 +897,9 @@ impl Editor {
             })
         });
         let definition = match (set, shared) {
-            (false, _) => "core/get-variable",
-            (true, false) => "core/set-variable",
-            (true, true) => "core/set-shared",
+            (false, _) => intrinsic::GET_VARIABLE,
+            (true, false) => intrinsic::SET_VARIABLE,
+            (true, true) => intrinsic::SET_SHARED,
         };
         let node = self.add_node_at(host, definition, at)?;
         let _ = self.set_setting(host, node, "/variable", Some(Json::from(id)));
@@ -718,14 +962,10 @@ impl Editor {
             .document
             .as_ref()
             .is_some_and(|document| document.flow.is_some());
-        let values = self
-            .document
-            .as_ref()
-            .map(|document| document.values.clone())
-            .unwrap_or_default();
         let mut remove = None;
         let mut change: Option<Variable> = None;
         let mut place: Option<(String, bool)> = None;
+        let mut inspect_value = None;
         let mut find: Option<Vec<NodeId>> = None;
         // The nodes that name each variable: Get, Set, Update, On variable changed.
         let mut users_of: HashMap<String, Vec<NodeId>> = HashMap::new();
@@ -737,20 +977,17 @@ impl Editor {
                     .push(node.id);
             }
         }
-        let query = self.declaration_search[0].trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.declaration_search[0]);
         let mut visible: Vec<_> = declared
             .variables
             .iter()
             .filter(|variable| {
-                contains_query(
-                    &query,
-                    &[
-                        &variable.name,
-                        &variable.ty,
-                        &type_name(&variable.ty),
-                        scope_name(variable.scope),
-                    ],
-                )
+                query.matches([
+                    variable.name.as_str(),
+                    variable.ty.as_str(),
+                    type_name(&variable.ty).as_str(),
+                    scope_name(variable.scope),
+                ])
             })
             .collect();
         visible.sort_by_cached_key(|variable| (variable.scope as u8, variable.name.to_lowercase()));
@@ -766,6 +1003,11 @@ impl Editor {
             let Some(id) = variable.id.clone() else {
                 continue;
             };
+            let current_value = self
+                .document
+                .as_ref()
+                .and_then(|doc| doc.values.get(&id))
+                .map(|value| value.shown.clone());
             let _ = item_frame(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -819,7 +1061,11 @@ impl Editor {
                             .response
                             .on_hover_text(t("more-options"));
                         // Its value now while the graph runs; the last one, dimmed, after.
-                        match values.get(&id) {
+                        if current_value.is_some() && ui.small_button(t("inspect-value")).clicked()
+                        {
+                            inspect_value = Some(id.clone());
+                        }
+                        match &current_value {
                             Some(value) if running => {
                                 let _ = ui
                                     .add(
@@ -960,6 +1206,10 @@ impl Editor {
                 });
             });
         }
+        if let Some(id) = inspect_value {
+            self.inspected_port = None;
+            self.inspected_variable = Some(id);
+        }
         if let Some((id, set)) = place {
             let at = self.canvas.paste_place();
             let _ = self.drop_variable(host, &id, set, at);
@@ -994,12 +1244,7 @@ impl Editor {
                 .variable_target
                 .as_ref()
                 .and_then(|(node, _)| self.graph()?.nodes.iter().find(|view| view.id == *node));
-            let can_use_workspace = target.is_none_or(|view| {
-                !matches!(
-                    view.definition.as_str(),
-                    "core/set-variable" | "core/update-variable" | "core/on-variable-changed"
-                )
-            });
+            let target_definition = target.map(|node| node.definition.clone());
             let target_name = target.map(|node| node.name.clone());
             let enums = &self.canvas.enums;
             let form = &mut self.forms.variable;
@@ -1024,10 +1269,20 @@ impl Editor {
                         .selected_text(type_name(&form.ty))
                         .show_select(ui, Surface::Panel, |ui| {
                             for ty in COMMON_TYPES {
+                                if target_definition.as_deref().is_some_and(|definition| {
+                                    !variable_type_allowed(definition, ty)
+                                }) {
+                                    continue;
+                                }
                                 let _ =
                                     ui.selectable_value(&mut form.ty, ty.to_owned(), type_name(ty));
                             }
                             for (local, name) in types_tab::choices() {
+                                if target_definition.as_deref().is_some_and(|definition| {
+                                    !variable_type_allowed(definition, &local)
+                                }) {
+                                    continue;
+                                }
                                 let _ = ui.selectable_value(&mut form.ty, local, name);
                             }
                         });
@@ -1037,7 +1292,9 @@ impl Editor {
                         .selected_text(scope_name(form.scope))
                         .show_select(ui, Surface::Panel, |ui| {
                             for scope in [VarScope::Run, VarScope::Workspace, VarScope::Local] {
-                                if scope == VarScope::Workspace && !can_use_workspace {
+                                if target_definition.as_deref().is_some_and(|definition| {
+                                    !variable_scope_allowed(definition, scope)
+                                }) {
                                     continue;
                                 }
                                 let _ =
@@ -1171,11 +1428,26 @@ impl Editor {
         };
         let secrets: Vec<_> = form
             .secrets
-            .0
+            .values
             .into_iter()
             .filter(|(_, secret)| !secret.is_empty())
             .collect();
-        let Some(id) = self.declare_connection_with_secrets(host, &connection, &secrets) else {
+        let saved = if let Some(node) = self.forms.connection_target {
+            let result = self.editing().map(|draft| {
+                host.declare_connection_for(draft, node, &connection, &secrets)
+                    .and_then(|id| {
+                        if secrets.is_empty() {
+                            host.approve_connection_credentials(draft, &id)?;
+                        }
+                        Ok(id)
+                    })
+            });
+            result.and_then(|result| self.edited_value(host, result))
+        } else {
+            self.declare_connection_with_secrets(host, &connection, &secrets)
+        };
+        let Some(id) = saved else {
+            self.forms.connection.tested = Some(Err(t("connection-save-failed").to_owned()));
             return false;
         };
         if connection.id.is_none() {
@@ -1231,251 +1503,21 @@ impl Editor {
         };
         if section_heading(ui, t("connections"), t("add-connection")) {
             self.forms.connection = ConnectionForm::default();
+            self.forms.connection_target = None;
             self.forms.reveal_connection();
             self.declaration_search[1].clear();
         }
-        if self.forms.connection.adapter.is_empty()
-            && let Some(first) = adapters
-                .iter()
-                .find(|info| info.id == HTTP)
-                .or_else(|| adapters.first())
-        {
-            self.forms.connection.adapter.clone_from(&first.id);
-        }
-        let adapter = self.forms.connection.adapter.clone();
-        let choices = self.adapter_choices(host, &adapter, false);
-        let fields = host.adapter_fields(&adapter);
-        let mut texts = host.adapter_texts(&adapter);
-        let folder_picker = self.file_dialogs && adapter == FOLDER_ADAPTER;
-        if folder_picker {
-            texts.retain(|field| field.setting != "path");
-        }
-        let mut pick_folder = None;
-        let toggles = host.adapter_toggles(&adapter);
-        let probes = host.adapter_probes(&adapter);
-        let mut refresh = false;
-        let mut declare = false;
-        let mut cancel = false;
-        let mut test = false;
-        let open = self.forms.open_connection;
-        let reveal = std::mem::take(&mut self.forms.scroll_to_connection);
-        let probing = &mut self.probing;
-        let form = &mut self.forms.connection;
-        let title = if form.changing.is_some() {
-            t("change-connection")
-        } else {
-            t("new-connection")
-        };
-        if open {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                let heading = ui.strong(title);
-                if reveal {
-                    heading.scroll_to_me(Some(egui::Align::Min));
-                }
-                ui.small(t("name"));
-                let name = ui.add(
-                    egui::TextEdit::singleline(&mut form.name)
-                        .hint_text(t("connection-name-hint"))
-                        .desired_width(f32::INFINITY),
-                );
-                if name.changed() {
-                    form.saved = false;
-                }
-                ui.small(t("connection-protocol"));
-                adapter_picker(ui, &adapters, form);
-                ui.separator();
-                if form.scope == ConnectionScope::Shared {
-                    ui.weak(t("connection-host-hint"));
-                    cancel = button(
-                        ui,
-                        Surface::Panel,
-                        Action::Secondary,
-                        true,
-                        egui::Button::new(t("cancel")),
-                    )
-                    .clicked();
-                    return;
-                }
-                if adapter != form.adapter {
-                    return;
-                }
-                if let Ok(mut current) = serde_json::from_str::<Json>(&form.settings) {
-                    let before = current.clone();
-                    if folder_picker {
-                        let path = current["path"].as_str().unwrap_or_default();
-                        ui.small(t("connection-folder-root"));
-                        ui.horizontal_wrapped(|ui| {
-                            if button(
-                                ui,
-                                Surface::Panel,
-                                Action::Secondary,
-                                true,
-                                egui::Button::new(t("choose-folder")),
-                            )
-                            .clicked()
-                            {
-                                pick_folder = Some(path.to_owned());
-                            }
-                            if !path.is_empty() {
-                                ui.add(egui::Label::new(path).truncate())
-                                    .on_hover_text(path);
-                            }
-                        });
-                    }
-                    let fields_changed = network::fields(
-                        ui,
-                        &adapter,
-                        &texts,
-                        &mut current,
-                        &mut form.secrets,
-                        &mut form.auth,
-                    );
-                    toggle_fields(ui, &toggles, &mut current);
-                    if let Some((setting, value)) =
-                        choice_fields(ui, "form", &choices, &current, &mut refresh)
-                    {
-                        current = with_setting(&current, &setting, value);
-                    }
-                    if let Some((setting, value)) = number_fields(ui, &fields, &current) {
-                        current = with_number(&current, &setting, value);
-                    }
-                    if current != before {
-                        form.settings = serde_json::to_string_pretty(&current).unwrap_or_default();
-                    }
-                    if current != before || fields_changed {
-                        form.tested = None;
-                        form.saved = false;
-                    }
-                    if probes {
-                        live_level(
-                            ui,
-                            host,
-                            &form.adapter,
-                            &current,
-                            &choices,
-                            &fields,
-                            probing,
-                        );
-                    }
-                } else {
-                    *probing = None;
-                    ui.colored_label(ui.visuals().warn_fg_color, t("settings-below-not-json"));
-                }
-                ui.horizontal(|ui| {
-                    test = ui
-                        .button(t("check-settings"))
-                        .on_hover_text(t("check-settings-hint"))
-                        .clicked();
-                    match &form.tested {
-                        Some(Ok(())) => {
-                            ui.label(t("settings-accepted"));
-                        }
-                        Some(Err(why)) => {
-                            ui.colored_label(ui.visuals().warn_fg_color, why.as_str());
-                        }
-                        None => {}
-                    }
-                });
-                egui::CollapsingHeader::new(t("all-settings-json"))
-                    .id_salt("orange-connection-json")
-                    .default_open(
-                        !folder_picker
-                            && texts.is_empty()
-                            && choices.is_empty()
-                            && fields.is_empty(),
-                    )
-                    .show(ui, |ui| {
-                        let changed = ui
-                            .add(
-                                egui::TextEdit::multiline(&mut form.settings)
-                                    .code_editor()
-                                    .desired_rows(4)
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .changed();
-                        if changed {
-                            form.auth = None;
-                            form.tested = None;
-                            form.saved = false;
-                        }
-                        ui.weak(t("secret-hint"));
-                    });
-                ui.horizontal_wrapped(|ui| {
-                    let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
-                    let label = if form.settings.contains(SECRET_PREFIX)
-                        || form.secrets.0.values().any(|secret| !secret.is_empty())
-                    {
-                        t("save-and-approve-credentials")
-                    } else if form.changing.is_some() {
-                        t("save")
-                    } else {
-                        t("add")
-                    };
-                    declare = button(
-                        ui,
-                        Surface::Panel,
-                        Action::Primary,
-                        ready,
-                        egui::Button::new(label),
-                    )
-                    .clicked();
-                    let close = if form.saved {
-                        t("connection-done")
-                    } else {
-                        t("cancel")
-                    };
-                    cancel = button(
-                        ui,
-                        Surface::Panel,
-                        Action::Secondary,
-                        true,
-                        egui::Button::new(close),
-                    )
-                    .clicked();
-                    if form.saved {
-                        ui.label(t("connection-saved"));
-                    }
-                });
-            });
-        }
-        if let Some(current) = pick_folder {
-            self.ask(FileRequest::ChooseConnectionFolder { current });
-        }
-        // A closed form shows no level, and the device it listened to is let go.
-        if !open || declare || cancel {
-            self.probing = None;
-        }
-        if test {
-            let form = &mut self.forms.connection;
-            form.tested = Some(
-                form.settings_for_save()
-                    .and_then(|settings| form.check(host, settings)),
-            );
-        }
-        if declare {
-            cancel = self.commit_connection_form(host);
-        }
-        if cancel {
-            self.forms.connection = ConnectionForm::default();
-            self.forms.open_connection = false;
-        }
-        if refresh {
-            let _ = self.adapter_choices(host, &adapter, true);
-        }
         let mut remove = None;
-        let query = self.declaration_search[1].trim().to_lowercase();
+        let query = orange_host::SearchQuery::new(&self.declaration_search[1]);
         let mut visible: Vec<_> = declared
             .connections
             .iter()
             .filter(|connection| {
-                contains_query(
-                    &query,
-                    &[
-                        &connection.name,
-                        &connection.adapter,
-                        &label_of(&connection.adapter),
-                    ],
-                )
+                query.matches([
+                    connection.name.as_str(),
+                    connection.adapter.as_str(),
+                    label_of(&connection.adapter).as_str(),
+                ])
             })
             .collect();
         visible.sort_by_cached_key(|connection| {
@@ -1550,6 +1592,322 @@ impl Editor {
             let _ = self.remove_connection(host, &id);
         }
     }
+
+    pub(crate) fn show_connection_dialog(&mut self, ctx: &egui::Context, host: &mut Host) {
+        if !self.forms.open_connection {
+            return;
+        }
+        let mut adapters = host.adapter_list();
+        adapters.sort_by_key(|adapter| adapter_rank(&adapter.id));
+        self.connection_dialog(ctx, host, &adapters);
+    }
+
+    fn connection_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        host: &mut Host,
+        adapters: &[AdapterInfo],
+    ) {
+        if !self.forms.open_connection {
+            self.probing = None;
+            return;
+        }
+        if self.forms.connection.adapter.is_empty()
+            && let Some(first) = adapters
+                .iter()
+                .find(|info| info.id == HTTP)
+                .or_else(|| adapters.first())
+        {
+            self.forms.connection.adapter.clone_from(&first.id);
+        }
+        let adapter = self.forms.connection.adapter.clone();
+        let choices = self.adapter_choices(host, &adapter, false);
+        let fields = host.adapter_fields(&adapter);
+        let mut texts = host.adapter_texts(&adapter);
+        let folder_picker = self.file_dialogs && adapter == FOLDER_ADAPTER;
+        if folder_picker {
+            texts.retain(|field| field.setting != "path");
+        }
+        let mut pick_folder = None;
+        let toggles = host.adapter_toggles(&adapter);
+        let probes = host.adapter_probes(&adapter);
+        let mut refresh = false;
+        let mut declare = false;
+        let mut cancel = false;
+        let mut test = false;
+        let probing = &mut self.probing;
+        let form = &mut self.forms.connection;
+        let title = if form.changing.is_some() {
+            t("change-connection")
+        } else {
+            t("new-connection")
+        };
+        {
+            let bounds = ctx.content_rect();
+            let read_only = form.scope == ConnectionScope::Shared;
+            let shown = orange_ui_controls::modal(ctx, egui::Id::unique("connection-form")).show(
+                ctx,
+                |ui| {
+                    ui.set_width((bounds.width() - DIALOG_MARGIN).clamp(240.0, 520.0));
+                    ui.heading(title);
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt((&form.changing, "connection-fields"))
+                        .auto_shrink([false, true])
+                        .max_height((bounds.height() - 172.0).max(80.0))
+                        .show(ui, |ui| {
+                            let name_label = ui.label(t("name"));
+                            if read_only {
+                                ui.label(&form.name);
+                            } else {
+                                let id = ui.make_persistent_id("connection-name");
+                                if orange_ui_controls::text_field(
+                                    ui,
+                                    Surface::Dialog,
+                                    id,
+                                    &mut form.name,
+                                    t("connection-name-hint"),
+                                )
+                                .labelled_by(name_label.id)
+                                .changed()
+                                {
+                                    form.saved = false;
+                                }
+                            }
+                            adapter_picker(ui, adapters, form);
+                            ui.separator();
+                            if form.scope == ConnectionScope::Shared {
+                                ui.weak(t("connection-host-hint"));
+                                return;
+                            }
+                            if adapter != form.adapter {
+                                return;
+                            }
+                            if let Ok(mut current) = serde_json::from_str::<Json>(&form.settings) {
+                                let before = current.clone();
+                                if folder_picker {
+                                    let path = current["path"].as_str().unwrap_or_default();
+                                    ui.label(t("connection-folder-root"));
+                                    ui.horizontal_wrapped(|ui| {
+                                        if button(
+                                            ui,
+                                            Surface::Dialog,
+                                            Action::Secondary,
+                                            true,
+                                            egui::Button::new(t("choose-folder")),
+                                        )
+                                        .clicked()
+                                        {
+                                            pick_folder = Some(path.to_owned());
+                                        }
+                                        if !path.is_empty() {
+                                            ui.add(egui::Label::new(path).truncate())
+                                                .on_hover_text(path);
+                                        }
+                                    });
+                                }
+                                let fields_changed = network::fields(
+                                    ui,
+                                    &adapter,
+                                    &texts,
+                                    &mut current,
+                                    &mut form.secrets,
+                                    &mut form.auth,
+                                    host,
+                                );
+                                let mut fields_changed = fields_changed;
+                                let mut settings_controls =
+                                    |ui: &mut egui::Ui, current: &mut Json| {
+                                        toggle_fields(ui, &toggles, current);
+                                        if let Some((setting, value)) = choice_fields(
+                                            ui,
+                                            "form",
+                                            &choices,
+                                            current,
+                                            &mut refresh,
+                                        ) {
+                                            *current = with_setting(current, &setting, value);
+                                        }
+                                        if let Some((setting, value)) =
+                                            number_fields(ui, &fields, current)
+                                        {
+                                            *current = with_number(current, &setting, value);
+                                        }
+                                    };
+                                if network::uses_auth(&adapter) {
+                                    let advanced = network::advanced_texts(&texts);
+                                    if !advanced.is_empty()
+                                        || !toggles.is_empty()
+                                        || !choices.is_empty()
+                                        || !fields.is_empty()
+                                    {
+                                        egui::CollapsingHeader::new(t("advanced"))
+                                            .id_salt((&adapter, "connection-advanced"))
+                                            .show(ui, |ui| {
+                                                settings_controls(ui, &mut current);
+                                                fields_changed |= text_fields(
+                                                    ui,
+                                                    &advanced,
+                                                    &mut current,
+                                                    &mut form.secrets,
+                                                    host,
+                                                );
+                                            });
+                                    }
+                                } else {
+                                    settings_controls(ui, &mut current);
+                                }
+                                if current != before {
+                                    form.settings =
+                                        serde_json::to_string_pretty(&current).unwrap_or_default();
+                                }
+                                if current != before || fields_changed {
+                                    form.tested = None;
+                                    form.saved = false;
+                                }
+                                if probes {
+                                    live_level(
+                                        ui,
+                                        host,
+                                        &form.adapter,
+                                        &current,
+                                        &choices,
+                                        &fields,
+                                        probing,
+                                    );
+                                }
+                            } else {
+                                *probing = None;
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    t("settings-below-not-json"),
+                                );
+                            }
+                            egui::CollapsingHeader::new(t("all-settings-json"))
+                                .id_salt("orange-connection-json")
+                                .default_open(
+                                    !folder_picker
+                                        && texts.is_empty()
+                                        && choices.is_empty()
+                                        && fields.is_empty(),
+                                )
+                                .show(ui, |ui| {
+                                    let changed = ui
+                                        .add(
+                                            egui::TextEdit::multiline(&mut form.settings)
+                                                .code_editor()
+                                                .desired_rows(4)
+                                                .desired_width(f32::INFINITY),
+                                        )
+                                        .changed();
+                                    if changed {
+                                        form.auth = None;
+                                        form.secrets.revealed.clear();
+                                        form.secrets.local_status.clear();
+                                        form.tested = None;
+                                        form.saved = false;
+                                    }
+                                    ui.weak(t("secret-hint"));
+                                });
+                        });
+                    ui.separator();
+                    if let Some(result) = &form.tested {
+                        match result {
+                            Ok(()) => {
+                                ui.label(t("settings-accepted"));
+                            }
+                            Err(why) => {
+                                ui.colored_label(ui.visuals().warn_fg_color, why);
+                            }
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        let ready = !form.name.trim().is_empty() && !form.adapter.is_empty();
+                        let label = if form.settings.contains(SECRET_PREFIX)
+                            || form
+                                .secrets
+                                .values
+                                .values()
+                                .any(|secret| !secret.is_empty())
+                        {
+                            t("save-and-approve-credentials")
+                        } else if form.changing.is_some() {
+                            t("save")
+                        } else {
+                            t("add")
+                        };
+                        if !read_only {
+                            declare = button(
+                                ui,
+                                Surface::Dialog,
+                                Action::Primary,
+                                ready,
+                                egui::Button::new(label),
+                            )
+                            .clicked();
+                        }
+                        let close = if form.saved || read_only {
+                            t("connection-done")
+                        } else {
+                            t("cancel")
+                        };
+                        cancel = button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Secondary,
+                            true,
+                            egui::Button::new(close),
+                        )
+                        .clicked();
+                        if !read_only {
+                            test = button(
+                                ui,
+                                Surface::Dialog,
+                                Action::Secondary,
+                                adapter == form.adapter,
+                                egui::Button::new(t("check-settings")),
+                            )
+                            .on_hover_text(t("check-settings-hint"))
+                            .clicked();
+                        }
+                        if form.saved {
+                            ui.label(t("connection-saved"));
+                        }
+                    });
+                },
+            );
+            // Consume Escape without treating a backdrop click as Cancel.
+            cancel |= shown.is_top_modal
+                && !shown.any_popup_open
+                && ctx
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        }
+        if let Some(current) = pick_folder {
+            self.ask(FileRequest::ChooseConnectionFolder { current });
+        }
+        // A closed form shows no level, and the device it listened to is let go.
+        if declare || cancel {
+            self.probing = None;
+        }
+        if test {
+            let form = &mut self.forms.connection;
+            form.tested = Some(
+                form.settings_for_save()
+                    .and_then(|settings| form.check(host, settings)),
+            );
+        }
+        if declare {
+            cancel = self.commit_connection_form(host);
+        }
+        if cancel {
+            self.forms.connection = ConnectionForm::default();
+            self.forms.open_connection = false;
+            self.forms.connection_target = None;
+        }
+        if refresh {
+            let _ = self.adapter_choices(host, &adapter, true);
+        }
+    }
 }
 
 /// A frameless field that reads like a label until it is clicked.
@@ -1587,17 +1945,21 @@ fn choice_list(
 
 /// The list of adapters to make a connection of, by name, with each one's purpose.
 fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut ConnectionForm) {
+    let caption = ui.label(t("connection-protocol"));
     let current = adapters.iter().find(|known| known.id == form.adapter);
     let shown = current.map_or(form.adapter.as_str(), adapter_label);
     if form.changing.is_some() {
         ui.label(shown);
+        if let Some(known) = current.filter(|known| !known.purpose.is_empty()) {
+            ui.weak(known.purpose.as_str());
+        }
         return;
     }
     let before = form.adapter.clone();
     let _ = egui::ComboBox::from_id_salt("orange-connection-adapter")
         .selected_text(shown)
         .width((ui.available_width() - 8.0).max(0.0))
-        .show_select(ui, Surface::Panel, |ui| {
+        .show_select(ui, Surface::Dialog, |ui| {
             let mut in_audio = false;
             for adapter in adapters {
                 let audio = matches!(
@@ -1624,7 +1986,9 @@ fn adapter_picker(ui: &mut egui::Ui, adapters: &[AdapterInfo], form: &mut Connec
                     )
                     .on_hover_text(hover);
             }
-        });
+        })
+        .response
+        .labelled_by(caption.id);
     if form.adapter != before {
         // Another kind has other settings: start from none.
         form.settings = "{}".to_owned();
@@ -1693,105 +2057,158 @@ pub(super) fn text_fields(
     texts: &[SettingText],
     settings: &mut Json,
     secrets: &mut Typed,
+    host: &Host,
 ) -> bool {
-    let mut secret_changed = false;
-    {
-        {
-            for text in texts {
-                let label = if text.required {
-                    format!("{} *", text.label)
-                } else {
-                    text.label.clone()
-                };
-                let _ = ui.small(label).on_hover_text(text.help.as_str());
-                let current = text_at(settings, &text.setting).cloned();
-                if text.secret {
-                    let stored = current
-                        .as_ref()
-                        .and_then(Json::as_str)
-                        .filter(|value| value.starts_with(SECRET_PREFIX))
-                        .map(str::to_owned);
-                    match (stored, secrets.0.get_mut(&text.setting)) {
-                        (Some(reference), None) => {
-                            ui.horizontal(|ui| {
-                                let _ = ui
-                                    .weak(t("saved-in-credential-store"))
-                                    .on_hover_text(reference.as_str());
-                                if ui.small_button(t("replace")).clicked() {
-                                    let _ = secrets.0.insert(text.setting.clone(), String::new());
-                                }
-                                if ui
-                                    .small_button(icons::text(icons::CLOSE))
-                                    .on_hover_text(t("leave-out"))
-                                    .clicked()
-                                {
-                                    set_text(settings, &text.setting, None);
-                                }
-                            });
+    let mut changed = false;
+    for text in texts {
+        let label = if text.required {
+            format!("{} *", text.label)
+        } else {
+            text.label.clone()
+        };
+        let caption = ui.label(&label).on_hover_text(text.help.as_str());
+        let current = text_at(settings, &text.setting).and_then(Json::as_str);
+        if text.secret {
+            let field = &text.setting;
+            let reference = current.filter(|value| value.starts_with(SECRET_PREFIX));
+            if let Some(reference) = reference.filter(|_| !secrets.values.contains_key(field)) {
+                ui.label(t(secrets
+                    .local_status
+                    .get(reference)
+                    .copied()
+                    .unwrap_or("connection-credential-reference")));
+                let remove = ui
+                    .horizontal_wrapped(|ui| {
+                        if button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Secondary,
+                            true,
+                            egui::Button::new(t("connection-credential-check")),
+                        )
+                        .clicked()
+                        {
+                            let status = match host.credential_available(reference) {
+                                Ok(true) => "connection-credential-available",
+                                Ok(false) => "connection-credential-missing",
+                                Err(_) => "connection-credential-unavailable",
+                            };
+                            secrets.local_status.insert(reference.to_owned(), status);
                         }
-                        (_, typed) => {
-                            let mut secret = typed.cloned().unwrap_or_default();
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut secret)
-                                    .password(true)
-                                    .hint_text(t("kept-in-credential-store"))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            if response.changed() {
-                                secret_changed = true;
-                                let _ = secrets.0.insert(text.setting.clone(), secret);
-                            }
+                        if button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Secondary,
+                            true,
+                            egui::Button::new(t("replace")),
+                        )
+                        .clicked()
+                        {
+                            secrets.values.insert(field.clone(), String::new());
                         }
-                    }
-                } else if text.list {
-                    let mut lines = current
-                        .as_ref()
-                        .and_then(Json::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(Json::as_str)
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_default();
-                    let response = ui.add(
-                        egui::TextEdit::multiline(&mut lines)
-                            .hint_text(text.hint.as_str())
-                            .desired_rows(2)
-                            .desired_width(f32::INFINITY),
-                    );
-                    if response.changed() {
-                        let items: Vec<Json> = lines
-                            .lines()
-                            .map(str::trim)
-                            .filter(|line| !line.is_empty())
-                            .map(Json::from)
-                            .collect();
-                        let value = (!items.is_empty()).then_some(Json::Array(items));
-                        set_text(settings, &text.setting, value);
-                    }
-                } else {
-                    let mut value = current
-                        .as_ref()
-                        .and_then(Json::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut value)
-                            .hint_text(text.hint.as_str())
-                            .desired_width(f32::INFINITY),
-                    );
-                    if response.changed() {
-                        let value = (!value.is_empty()).then(|| Json::from(value));
-                        set_text(settings, &text.setting, value);
-                    }
+                        button(
+                            ui,
+                            Surface::Dialog,
+                            Action::Outline,
+                            true,
+                            egui::Button::new(t("connection-credential-remove")),
+                        )
+                        .clicked()
+                    })
+                    .inner;
+                if remove {
+                    set_text(settings, field, None);
                 }
-                ui.add_space(2.0);
+            } else {
+                let mut value = secrets.values.get(field).cloned().unwrap_or_default();
+                let mut revealed = secrets.revealed.contains(field);
+                let tokens = orange_ui_controls::UiTokens::for_surface(ui, Surface::Dialog);
+                let response = ui
+                    .push_id(field, |ui| {
+                        orange_ui_controls::components::password(
+                            ui,
+                            tokens,
+                            &mut value,
+                            &mut revealed,
+                            orange_ui_controls::components::PasswordLabels {
+                                field: &label,
+                                reveal: t("connection-secret-show"),
+                                hide: t("connection-secret-hide"),
+                            },
+                            None,
+                        )
+                    })
+                    .inner;
+                if revealed {
+                    secrets.revealed.insert(field.clone());
+                } else {
+                    secrets.revealed.remove(field);
+                }
+                if response.changed() {
+                    changed = true;
+                    secrets.values.insert(field.clone(), value);
+                }
+                if reference.is_some() {
+                    ui.weak(t("connection-credential-replace-hint"));
+                    if ui.button(t("connection-credential-keep")).clicked() {
+                        secrets.values.remove(field);
+                        secrets.revealed.remove(field);
+                        changed = true;
+                    }
+                } else {
+                    ui.weak(t("kept-in-credential-store"));
+                }
+            }
+        } else if text.list {
+            let mut lines = text_at(settings, &text.setting)
+                .and_then(Json::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Json::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            if ui
+                .add(
+                    egui::TextEdit::multiline(&mut lines)
+                        .hint_text(text.hint.as_str())
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(caption.id)
+                .changed()
+            {
+                let items: Vec<Json> = lines
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(Json::from)
+                    .collect();
+                set_text(
+                    settings,
+                    &text.setting,
+                    (!items.is_empty()).then_some(Json::Array(items)),
+                );
+            }
+        } else {
+            let mut value = current.unwrap_or_default().to_owned();
+            let id = ui.make_persistent_id(("connection-text", &text.setting));
+            if orange_ui_controls::text_field(ui, Surface::Dialog, id, &mut value, &text.hint)
+                .labelled_by(caption.id)
+                .changed()
+            {
+                set_text(
+                    settings,
+                    &text.setting,
+                    (!value.is_empty()).then(|| Json::from(value)),
+                );
             }
         }
+        ui.add_space(6.0);
     }
-    secret_changed
+    changed
 }
 
 /// Switches for an adapter's true-or-false settings. One switched back to its default
@@ -1953,7 +2370,10 @@ mod tests {
             .id
             .clone()
             .unwrap();
-        for (set, kind) in [(false, "core/get-variable"), (true, "core/set-variable")] {
+        for (set, kind) in [
+            (false, intrinsic::GET_VARIABLE),
+            (true, intrinsic::SET_VARIABLE),
+        ] {
             let node = editor
                 .drop_variable(&mut host, &count, set, [40.0, 80.0])
                 .unwrap();
@@ -1997,7 +2417,7 @@ mod tests {
             .unwrap();
         let graph = editor.graph().unwrap();
         let set = graph.nodes.iter().find(|found| found.id == node).unwrap();
-        assert_eq!(set.definition, "core/set-shared");
+        assert_eq!(set.definition, intrinsic::SET_SHARED);
         assert_eq!(set.settings["variable"], json!(shared));
 
         // The host learns the shared variables on the first run, so it starts.
@@ -2034,7 +2454,7 @@ mod tests {
             .forms
             .connection
             .secrets
-            .0
+            .values
             .insert("token".into(), "s3cret-value".into());
         assert!(!format!("{:?}", editor.forms).contains("s3cret-value"));
 
@@ -2068,6 +2488,428 @@ mod tests {
     }
 
     #[test]
+    fn variable_inspector_copies_full_text_beyond_the_preview() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let id = editor
+            .declare_variable(
+                &mut host,
+                &Variable {
+                    id: None,
+                    name: "Response body".into(),
+                    ty: "core/string@1".into(),
+                    scope: VarScope::Run,
+                    persistent: false,
+                    initial: None,
+                },
+            )
+            .unwrap();
+        let full = format!("{}end", "x".repeat(8192));
+        editor.document.as_mut().unwrap().values.insert(
+            id,
+            ObservedVariable {
+                shown: "short preview".into(),
+                exact_text: Some(orange_host::Value::Str(Arc::new(full.clone()))),
+            },
+        );
+
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.variables_tab(ui, &mut host);
+                    editor.variable_inspector_window(ui.ctx());
+                },
+            )
+        };
+        frame(Vec::new()).drop_without_applying_deltas();
+        let layout = frame(Vec::new());
+        let inspect = text_center(&layout.shapes, t("inspect-value")).unwrap();
+        layout.drop_without_applying_deltas();
+        click(inspect, egui::PointerButton::Primary, |events| {
+            frame(events).drop_without_applying_deltas();
+        });
+        let open = frame(Vec::new());
+        let copy = text_center(&open.shapes, t("copy")).unwrap();
+        open.drop_without_applying_deltas();
+        let mut copied = false;
+        click(copy, egui::PointerButton::Primary, |events| {
+            let output = frame(events);
+            copied |= output.platform_output.commands.iter().any(
+                |command| matches!(command, egui::OutputCommand::CopyText(text) if text == &full),
+            );
+            output.drop_without_applying_deltas();
+        });
+        assert!(copied);
+    }
+
+    #[test]
+    fn a_connection_created_from_properties_binds_only_its_target() {
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let target = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let other = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        let original = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == other)
+            .unwrap()
+            .settings["connection"]
+            .clone();
+        editor.forms.new_connection_for(target, HTTP);
+        editor.forms.connection.name = "Second service".into();
+        editor.forms.connection.settings = json!({"base_url": "https://example.test"}).to_string();
+        assert!(editor.commit_connection_form(&mut host));
+        let graph = editor.graph().unwrap();
+        assert_ne!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == target)
+                .unwrap()
+                .settings["connection"],
+            original
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == other)
+                .unwrap()
+                .settings["connection"],
+            original
+        );
+    }
+
+    #[test]
+    fn properties_opens_the_nodes_connection_without_switching_tabs() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let node = editor
+            .add_node(&mut host, orange_net::HTTP_REQUEST)
+            .unwrap();
+        editor.canvas.select(Some(node));
+        let profile = editor.declarations().unwrap().connections[0].id.clone();
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 700.0));
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor.ui_with_layout(ui, &mut host, |editor, ui, host| {
+                        editor.properties_panel(ui, host);
+                    })
+                },
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(Vec::new());
+        let position = text_center(&frame(Vec::new()), t("edit-connection")).unwrap();
+        click(position, egui::PointerButton::Primary, |events| {
+            frame(events);
+        });
+        frame(Vec::new());
+        assert!(editor.forms.open_connection);
+        assert_eq!(editor.forms.connection.changing, profile);
+        assert_eq!(editor.tab, Tab::Nodes);
+        assert_eq!(editor.canvas.selected(), Some(node));
+    }
+
+    #[test]
+    fn the_connection_dialog_keeps_actions_visible_and_checks_references_on_request() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) =
+            Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        editor.forms.edit_connection(&Connection {
+            id: Some("example".to_owned()),
+            name: "Example".to_owned(),
+            adapter: HTTP.to_owned(),
+            scope: ConnectionScope::Graph,
+            settings: json!({
+                "base_url": "https://example.test",
+                "basic": {"user": "example", "password": "credential://example-token"}
+            }),
+        });
+
+        let adapters = host.adapter_list();
+        let context = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 560.0));
+        let mut frame = |screen_rect, events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen_rect),
+                    events,
+                    ..egui::RawInput::default()
+                },
+                |ui| editor.connection_dialog(ui.ctx(), &mut host, &adapters),
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(screen, Vec::new());
+        let shapes = frame(screen, Vec::new());
+        for action in ["save-and-approve-credentials", "cancel", "check-settings"] {
+            let position = text_center(&shapes, t(action)).unwrap();
+            assert!(screen.shrink(8.0).contains(position));
+        }
+        let tall = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 800.0));
+        frame(tall, Vec::new());
+        let check =
+            text_center(&frame(tall, Vec::new()), t("connection-credential-check")).unwrap();
+        click(check, egui::PointerButton::Primary, |events| {
+            frame(tall, events);
+        });
+        frame(tall, Vec::new());
+        assert_eq!(
+            editor.forms.connection.secrets.local_status["credential://example-token"],
+            "connection-credential-unavailable"
+        );
+        assert!(editor.forms.connection.secrets.values.is_empty());
+    }
+
+    #[test]
+    fn renaming_a_channel_in_the_dialog_keeps_both_endpoints_and_undoes() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let dispatch = editor
+            .add_node(&mut host, orange_host::preset::WIRELESS_PULSE)
+            .unwrap();
+        let original = editor.declarations().unwrap().events[0].clone();
+        assert!(editor.rename_event_for_node(dispatch));
+        editor.forms.event.as_mut().unwrap().name = "Front door".into();
+
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| editor.event_dialog(ui.ctx(), &mut host),
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(Vec::new());
+        let action = text_center(&frame(Vec::new()), t("save")).unwrap();
+        click(action, egui::PointerButton::Primary, |events| {
+            frame(events);
+        });
+
+        let event = &editor.declarations().unwrap().events[0];
+        assert_eq!(event.name, "Front door");
+        assert_eq!(event.id, original.id);
+        assert_eq!(event.payload, original.payload);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .all(|node| node.settings["event"] == original.id.to_string())
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.declarations().unwrap().events[0].name, original.name);
+    }
+
+    #[test]
+    fn creating_a_typed_run_event_assigns_and_restores_its_references() {
+        use orange_testkit::ui::{click, text_center};
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let awaiter = editor.add_node(&mut host, intrinsic::AWAIT_EVENT).unwrap();
+        editor.new_event_for_node(awaiter);
+        let form = editor.forms.event.as_mut().unwrap();
+        form.name = "Reading received".into();
+        form.payload = "core/i64@1".into();
+
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..egui::RawInput::default()
+                },
+                |ui| editor.event_dialog(ui.ctx(), &mut host),
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        frame(Vec::new());
+        let create = text_center(&frame(Vec::new()), t("event-create-bind")).unwrap();
+        click(create, egui::PointerButton::Primary, |events| {
+            frame(events);
+        });
+        let [event] = editor.declarations().unwrap().events.as_slice() else {
+            panic!("expected one event");
+        };
+        let event = event.id.to_string();
+        editor.undo(&mut host);
+        assert!(editor.declarations().unwrap().events.is_empty());
+        assert!(
+            editor.graph().unwrap().nodes[0]
+                .settings
+                .get("event")
+                .is_none()
+        );
+        editor.redo(&mut host);
+
+        for kind in [intrinsic::EMIT, intrinsic::ON_EVENT] {
+            let node = editor.add_node(&mut host, kind).unwrap();
+            assert!(editor.set_setting(&mut host, node, "/event", Some(json!(event))));
+        }
+        let text = editor.text().unwrap();
+        editor.open_untitled(&mut host, text);
+        let declared = &editor.declarations().unwrap().events[0];
+        assert_eq!(declared.name, "Reading received");
+        assert_eq!(declared.payload.as_ref().unwrap().as_str(), "core/i64@1");
+        for node in &editor.graph().unwrap().nodes {
+            assert_eq!(node.settings["event"], event);
+            assert!(
+                node.ports
+                    .iter()
+                    .any(|port| port.id == "payload" && port.ty.as_deref() == Some("core/i64@1"))
+            );
+        }
+        let graph = editor.graph().unwrap();
+        let emit = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == intrinsic::EMIT)
+            .unwrap()
+            .id;
+        let receive = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == intrinsic::ON_EVENT)
+            .unwrap()
+            .id;
+        let manual = editor.add_node(&mut host, intrinsic::ON_MANUAL).unwrap();
+        let store = editor.add_node(&mut host, intrinsic::SET_VARIABLE).unwrap();
+        let value = editor
+            .declare_variable_for(
+                &mut host,
+                store,
+                "/variable",
+                &Variable {
+                    id: None,
+                    name: "Received".into(),
+                    ty: "core/i64@1".into(),
+                    scope: VarScope::Run,
+                    persistent: false,
+                    initial: Some("0".into()),
+                },
+            )
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(editor.connect(&mut host, (manual, "then"), (emit, "in")));
+        assert!(editor.set_input(&mut host, (emit, "payload"), Some("42")));
+        assert!(editor.connect(&mut host, (receive, "then"), (store, "in")));
+        assert!(editor.connect(&mut host, (receive, "payload"), (store, "value")));
+        editor.run(&mut host);
+        let flow = editor.document.as_ref().unwrap().flow.as_ref().unwrap().0;
+        editor.trigger(&host, manual);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while host.variable_value(flow, value).unwrap() != Some(orange_host::Value::I64(42)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "event did not deliver its typed value"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        editor.stop(&mut host);
+    }
+
+    #[test]
+    fn quick_create_and_bind_respect_shared_variable_scopes() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        for kind in [intrinsic::SET_SHARED, intrinsic::UPDATE_SHARED] {
+            let node = editor.add_node(&mut host, kind).unwrap();
+            editor.new_variable_for_node(node, "/variable");
+            assert_eq!(editor.forms.variable.scope, VarScope::Workspace);
+            let mut variable = Variable {
+                id: None,
+                name: kind.to_owned(),
+                ty: "core/i64@1".into(),
+                scope: VarScope::Run,
+                persistent: false,
+                initial: Some("0".into()),
+            };
+            let count = editor.declarations().unwrap().variables.len();
+            assert!(
+                editor
+                    .declare_variable_for(&mut host, node, "/variable", &variable)
+                    .is_none()
+            );
+            assert_eq!(editor.declarations().unwrap().variables.len(), count);
+            variable.scope = VarScope::Workspace;
+            assert!(
+                editor
+                    .declare_variable_for(&mut host, node, "/variable", &variable)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn newly_placed_stream_nodes_have_explicit_bounded_settings() {
+        let (mut host, _) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open_untitled(&mut host, blank());
+        let _ = editor.add_node(&mut host, intrinsic::COLLECT).unwrap();
+        let _ = editor.add_node(&mut host, intrinsic::TEE).unwrap();
+        let graph = editor.graph().unwrap();
+        let collect = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == intrinsic::COLLECT)
+            .unwrap();
+        let tee = graph
+            .nodes
+            .iter()
+            .find(|node| node.definition == intrinsic::TEE)
+            .unwrap();
+        assert_eq!(collect.settings["max_items"], 1024);
+        assert_eq!(tee.settings["capacity"], 32);
+        assert_eq!(tee.settings["max_bytes"], 1_048_576);
+        assert_eq!(tee.settings["overflow"], "backpressure");
+    }
+
+    #[test]
     fn saving_changes_keeps_the_profile_open_and_replaces_a_draft_secret_with_its_reference() {
         let store = Arc::new(Store::default());
         let options = HostOptions {
@@ -2091,7 +2933,7 @@ mod tests {
         form.name = "Edited API".to_owned();
         form.auth = Some(network::Auth::Bearer);
         form.secrets
-            .0
+            .values
             .insert("bearer".to_owned(), "new-test-secret".to_owned());
 
         assert!(!editor.commit_connection_form(&mut host));
@@ -2100,7 +2942,7 @@ mod tests {
         assert_eq!(form.changing.as_deref(), Some(id.as_str()));
         assert_eq!(form.name, "Edited API");
         assert!(form.saved);
-        assert!(form.secrets.0.is_empty());
+        assert!(form.secrets.values.is_empty());
         assert!(form.settings.contains("credential://"));
         assert!(!form.settings.contains("new-test-secret"));
         assert_eq!(editor.declarations().unwrap().connections.len(), 1);

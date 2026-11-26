@@ -16,13 +16,17 @@ pub mod patterns;
 pub mod theme;
 pub use theme::{Density, Divider, SpacingScale, ThemeMode, UiTokens};
 mod selection;
+mod theme_preview;
+pub use theme_preview::paint_theme_preview;
 pub mod visualizations;
+pub mod waveform;
 pub use selection::{
-    BinaryChoice, KnobStyle, NotebookOrientation, NotebookPadding, NotebookWidth, SliderBehavior,
-    SliderGuide, SliderMarks, StepLabels, continuous_marked_slider, continuous_slider,
+    BinaryChoice, ChoiceRow, DialFace, DialStyle, KnobStyle, NotchStyle, NotebookOrientation,
+    NotebookPadding, NotebookWidth, SliderBehavior, SliderGuide, SliderMarks, SliderStyle,
+    StepLabels, ThumbStyle, continuous_marked_slider, continuous_slider, dial, dial_preview,
     guided_slider, knob, logarithmic_slider, marked_slider, marked_slider_preview, notebook,
     notebook_flex, notebook_styled, pill_segmented, rotary, rotary_preview, segmented,
-    stepped_slider,
+    step_buttons, stepped_slider, styled_dial, styled_dial_preview,
 };
 pub use visualizations::{
     ChartOrientation, ChartRepresentation, LevelMeter, MeterColors, MeterOrientation,
@@ -108,24 +112,33 @@ impl Theme {
             return theme;
         }
         if let Some(tokens) = UiTokens::installed(ctx) {
-            let t = tokens.theme;
-            return Self {
-                panel: t.surface,
-                dialog: t.surface_elevated,
-                inset: t.surface_elevated,
-                text: t.text,
-                muted_text: t.text_muted,
-                border: t.border.color,
-                primary: t.primary,
-                on_primary: t.on_primary,
-                secondary: t.surface_elevated,
-                on_secondary: t.text,
-                focus: t.focus_ring.color,
-                danger: t.danger,
-                danger_fill: t.surface_elevated,
-                on_danger: t.danger,
-            };
+            return Self::from_palette(tokens.theme);
         }
+        Self::from_visuals(visuals)
+    }
+
+    /// Resolves the shared control colors for a palette.
+    pub fn from_palette(t: theme::Theme) -> Self {
+        Self {
+            panel: t.surface,
+            dialog: t.surface_elevated,
+            inset: t.surface_elevated,
+            text: t.text,
+            muted_text: t.text_muted,
+            border: t.border.color,
+            primary: t.primary,
+            on_primary: t.on_primary,
+            secondary: t.surface_elevated,
+            on_secondary: t.text,
+            focus: t.focus_ring.color,
+            danger: t.danger,
+            danger_fill: t.surface_elevated,
+            on_danger: t.danger,
+        }
+    }
+
+    /// Resolves the shared control colors from egui visuals.
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
         let text = visuals.strong_text_color();
         let primary = visuals.selection.bg_fill;
         let [r, g, b, _] = egui::Rgba::from(primary).to_array();
@@ -160,6 +173,15 @@ impl Theme {
             Surface::Dialog => self.dialog,
             Surface::Card => self.inset,
         }
+    }
+
+    fn slider_idle(self, surface: Surface) -> egui::Color32 {
+        let background = self.background(surface);
+        theme::ensure_contrast(
+            background.lerp_to_gamma(self.text, 0.23),
+            background,
+            theme::UI_CONTRAST,
+        )
     }
 
     fn selected_fill(self, surface: Surface) -> egui::Color32 {
@@ -449,14 +471,7 @@ pub fn button(
     let (fill, border, ink) = role_colors(theme, surface, action);
     let background = ui.painter().add(egui::Shape::Noop);
     let response = with_style(ui, surface, action, |ui| {
-        for state in widget_states(&mut ui.visuals_mut().widgets) {
-            state.bg_stroke = Stroke::NONE;
-            state.bg_fill = egui::Color32::TRANSPARENT;
-            state.weak_bg_fill = egui::Color32::TRANSPARENT;
-            state.fg_stroke.color = ink;
-        }
-        ui.visuals_mut().override_text_color = Some(ink);
-        ui.add_enabled(enabled, button.frame(true))
+        bare_button(ui, ink, enabled, button)
     });
     let (hover, press) = motion(ui, &response);
     if ui.is_rect_visible(response.rect) {
@@ -535,14 +550,7 @@ pub fn button_with(
     };
     let background = ui.painter().add(egui::Shape::Noop);
     let response = with_style(ui, surface, role, |ui| {
-        for state in widget_states(&mut ui.visuals_mut().widgets) {
-            state.bg_stroke = Stroke::NONE;
-            state.bg_fill = egui::Color32::TRANSPARENT;
-            state.weak_bg_fill = egui::Color32::TRANSPARENT;
-            state.fg_stroke.color = ink;
-        }
-        ui.visuals_mut().override_text_color = Some(ink);
-        ui.add_enabled(enabled, egui_button.frame(true))
+        bare_button(ui, ink, enabled, egui_button)
     });
     let (hover, press) = motion(ui, &response);
     if ui.is_rect_visible(response.rect) {
@@ -686,6 +694,19 @@ fn motion(ui: &Ui, response: &Response) -> (f32, f32) {
     )
 }
 
+/// Adds `button` with no fill or outline of its own and `ink` text: the caller paints its
+/// background underneath, so its colours animate with hover and press.
+fn bare_button(ui: &mut Ui, ink: egui::Color32, enabled: bool, button: Button<'_>) -> Response {
+    for state in widget_states(&mut ui.visuals_mut().widgets) {
+        state.bg_stroke = Stroke::NONE;
+        state.bg_fill = egui::Color32::TRANSPARENT;
+        state.weak_bg_fill = egui::Color32::TRANSPARENT;
+        state.fg_stroke.color = ink;
+    }
+    ui.visuals_mut().override_text_color = Some(ink);
+    ui.add_enabled(enabled, button.frame(true))
+}
+
 fn with_style<R>(
     ui: &mut Ui,
     surface: Surface,
@@ -717,7 +738,7 @@ fn role_colors(
             (
                 fill,
                 theme.focus,
-                theme::ensure_contrast(theme.text, fill, 5.3),
+                theme::ensure_contrast(theme.text, fill, theme::SELECTED_TEXT_CONTRAST),
             )
         }
         Action::Secondary => {
@@ -729,7 +750,7 @@ fn role_colors(
             (
                 fill,
                 theme.border,
-                theme::ensure_contrast(theme.text, fill, 4.5),
+                theme::ensure_contrast(theme.text, fill, theme::TEXT_CONTRAST),
             )
         }
         Action::Outline => (background, theme.border, theme.text),
@@ -965,6 +986,9 @@ fn style(ui: &mut Ui, surface: Surface, action: Action) {
     widgets.open.expansion = 0.0;
 }
 
+/// Maximum characters in an interactive search field.
+pub const MAX_SEARCH_CHARS: usize = 1024;
+
 /// Search row with a label for assistive technology and a clear action that
 /// returns focus to the field.
 pub fn search(
@@ -1011,6 +1035,7 @@ pub fn search_sized(
     let mut field = with_style(ui, Surface::Panel, Action::Outline, |ui| {
         let mut edit = egui::TextEdit::singleline(query)
             .id(id)
+            .char_limit(MAX_SEARCH_CHARS)
             .frame(input_frame(ui, Surface::Panel, 255))
             .align(egui::Align2::LEFT_CENTER)
             .min_size(egui::vec2(
@@ -1052,6 +1077,24 @@ pub fn search_sized(
     }
     paint_input_focus(ui, &field.response, 255);
     field.response
+}
+
+/// Takes this frame's mouse-wheel turns for a control under the pointer: the summed
+/// vertical delta, with egui's smooth scrolling cleared so nothing behind it scrolls.
+pub(crate) fn take_wheel(ui: &Ui) -> f32 {
+    ui.input_mut(|input| {
+        let wheel = input
+            .raw
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                _ => None,
+            })
+            .sum::<f32>();
+        input.smooth_scroll_delta.y = 0.0;
+        wheel
+    })
 }
 
 /// Consumes unmodified navigation keys reserved by a focused control.
@@ -1176,7 +1219,7 @@ pub(crate) fn input_frame(ui: &Ui, surface: Surface, radius: u8) -> egui::Frame 
     } else {
         (theme.inset, theme.border)
     };
-    let border = theme::ensure_contrast(ink, theme.background(surface), 3.0);
+    let border = theme::ensure_contrast(ink, theme.background(surface), theme::UI_CONTRAST);
     egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, border))
@@ -1433,6 +1476,38 @@ pub fn icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_limits_a_multibyte_paste_before_matching() {
+        let ctx = egui::Context::default();
+        let mut query = String::new();
+        for events in [
+            vec![],
+            vec![egui::Event::Paste("検".repeat(MAX_SEARCH_CHARS + 1))],
+        ] {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    search(
+                        ui,
+                        "bounded",
+                        &mut query,
+                        "Find",
+                        "Find".into(),
+                        "Clear".into(),
+                        "Clear",
+                    )
+                    .request_focus();
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(query.chars().count(), MAX_SEARCH_CHARS);
+        assert!(query.chars().all(|c| c == '検'));
+    }
 
     #[test]
     fn search_and_clear_fit_narrow_and_wide_panels() {

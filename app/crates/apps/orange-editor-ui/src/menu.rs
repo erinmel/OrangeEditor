@@ -3,6 +3,7 @@
 //! shortcut. Commands go through the same editor methods as the toolbar and the keys,
 //! so [`Editor::run_command`] drives them without a window.
 use super::*;
+use orange_host::intrinsic;
 
 /// What a right-click was on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,11 +39,14 @@ pub enum Command {
     Duplicate,
     MakeFunction,
     ExportFunction,
+    ExpandFunction,
+    OpenFunction,
     Delete,
     InsertNode,
     AddWaypoint,
     AddSignalReceiver,
     AddSignalSender,
+    RenameEvent,
     RemoveWaypoint,
     DeleteWire,
     Disconnect,
@@ -72,6 +76,14 @@ pub(crate) struct Menu {
 
 /// How far a duplicate lands from what it copies, in graph units.
 const DUPLICATE_OFFSET: f32 = 40.0;
+/// Room between a wireless node and the subscriber or emitter spawned beside it.
+const SPAWN_GAP: f32 = 48.0;
+/// The height kept free for a spawned card before it is moved below a card in the way.
+const SPAWN_ROOM: f32 = 220.0;
+/// Room between a spawned card and the card above it.
+const STACK_GAP: f32 = 24.0;
+/// The width of the right-click menu.
+const MENU_WIDTH: f32 = 220.0;
 
 impl Editor {
     /// Opens the right-click menu for `target`, clicked at `at` (graph units) and drawn
@@ -176,34 +188,78 @@ impl Editor {
                         true,
                     ),
                 ];
-                if self.graph().is_some_and(|graph| {
-                    graph
-                        .nodes
-                        .iter()
-                        .any(|card| card.id == *node && palette::signal(card).is_some())
-                }) {
-                    entries.insert(
-                        1,
-                        entry(
-                            Command::AddSignalReceiver,
-                            t("signal-add-receiver"),
-                            "",
-                            icons::SIGNAL,
-                            true,
-                        ),
-                    );
-                    entries.insert(
-                        2,
-                        entry(
-                            Command::AddSignalSender,
-                            t("signal-add-sender"),
-                            "",
-                            icons::SIGNAL,
-                            true,
-                        ),
-                    );
+                if let Some(graph) = self.graph()
+                    && let Some(card) = graph.nodes.iter().find(|card| card.id == *node)
+                {
+                    if matches!(
+                        card.definition.as_str(),
+                        intrinsic::EMIT | palette::BRIDGE_OUT
+                    ) {
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::AddSignalReceiver,
+                                t("signal-add-receiver"),
+                                "",
+                                icons::SIGNAL,
+                                true,
+                            ),
+                        );
+                    }
+                    if card.definition == intrinsic::ON_EVENT {
+                        let has_emitter = card.settings["event"].as_str().is_some_and(|event| {
+                            graph
+                                .nodes
+                                .iter()
+                                .any(|node| palette::signal(node) == Some((true, event)))
+                        });
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::AddSignalSender,
+                                t(if has_emitter {
+                                    "signal-add-another-sender"
+                                } else {
+                                    "signal-add-sender"
+                                }),
+                                "",
+                                icons::SIGNAL,
+                                true,
+                            ),
+                        );
+                    }
+                    if let Some((_, id)) = palette::signal(card)
+                        && self.declarations().is_some_and(|d| {
+                            d.events.iter().any(|event| event.id.to_string() == id)
+                        })
+                    {
+                        entries.insert(
+                            1,
+                            entry(
+                                Command::RenameEvent,
+                                t("event-rename"),
+                                "",
+                                icons::EDIT,
+                                true,
+                            ),
+                        );
+                    }
                 }
                 if self.call_function(*node).is_some() {
+                    entries.push(entry(
+                        Command::OpenFunction,
+                        t("open-function"),
+                        "",
+                        icons::FUNCTION,
+                        true,
+                    ));
+                    entries.push(entry(
+                        Command::ExpandFunction,
+                        t("expand-function"),
+                        "",
+                        icons::FUNCTION,
+                        true,
+                    ));
                     entries.push(entry(
                         Command::ExportFunction,
                         t("export-function"),
@@ -312,6 +368,7 @@ impl Editor {
                 true
             }
             (Command::Rename, MenuTarget::Node(node)) => self.begin_node_rename(*node),
+            (Command::RenameEvent, MenuTarget::Node(node)) => self.rename_event_for_node(*node),
             (Command::Paste, _) => match self.clip.clone() {
                 Some(clip) => !self.paste(host, &clip, menu.at).is_empty(),
                 None => {
@@ -341,6 +398,8 @@ impl Editor {
                 self.preview_function(host);
                 true
             }
+            (Command::ExpandFunction, MenuTarget::Node(node)) => self.expand_function(host, *node),
+            (Command::OpenFunction, MenuTarget::Node(node)) => self.open_function(host, *node),
             (Command::ExportFunction, MenuTarget::Node(node)) => {
                 self.begin_function_export(host, *node)
             }
@@ -388,7 +447,7 @@ impl Editor {
         let Some(&[x, mut y]) = places.get(&node) else {
             return false;
         };
-        let side = canvas::NODE_WIDTH + 48.0;
+        let side = canvas::NODE_WIDTH + SPAWN_GAP;
         let x = if sender { x - side } else { x + side };
         let mut occupied: Vec<_> = graph
             .nodes
@@ -402,22 +461,56 @@ impl Editor {
             .collect();
         occupied.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (top, bottom) in occupied {
-            if y + 220.0 > top && y < bottom + 24.0 {
-                y = bottom + 24.0;
+            if y + SPAWN_ROOM > top && y < bottom + STACK_GAP {
+                y = bottom + STACK_GAP;
             }
         }
+        let bridge = graph
+            .nodes
+            .iter()
+            .find(|card| card.id == node)
+            .and_then(|card| {
+                palette::bridge_channel(card)
+                    .map(|channel| (card.definition.clone(), channel.to_owned()))
+            });
         let Some(draft) = self.editing() else {
             return false;
         };
-        let result = if sender {
-            host.add_signal_sender(draft, node, [x, y])
-        } else {
-            host.add_signal_receiver(draft, node, [x, y])
+        let result = match bridge {
+            // A Bridge Out spawns a Bridge In on its channel; an unbound Bridge In gets a
+            // Bridge Out on its own.
+            Some((definition, channel)) => {
+                let spawn = if definition == palette::BRIDGE_OUT {
+                    palette::BRIDGE_IN
+                } else {
+                    palette::BRIDGE_OUT
+                };
+                // One undo step; a refused bind leaves no node, edge or channel behind.
+                host.grouped(draft, |host, draft| {
+                    let spawned = host.add_node(draft, spawn, [x, y])?;
+                    let _ = host.set_config(
+                        draft,
+                        spawned,
+                        &serde_json::json!({ "channel": channel }),
+                    )?;
+                    let (out, reading) = if spawn == palette::BRIDGE_IN {
+                        (node, spawned)
+                    } else {
+                        (spawned, node)
+                    };
+                    let _ = host.connect(draft, (out, "result"), (reading, "value"))?;
+                    Ok(spawned)
+                })
+            }
+            None if sender => host.add_signal_sender(draft, node, [x, y]),
+            None => host.add_signal_receiver(draft, node, [x, y]),
         };
         match result {
             Ok(endpoint) => {
                 let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(endpoint));
+                // It rides on the pointer until a click places it.
+                self.canvas.follow(endpoint);
                 true
             }
             Err(error) => self.edited(host, Err(error)),
@@ -492,7 +585,7 @@ impl Editor {
             ctx,
             egui::Id::unique("orange-context-menu"),
             screen,
-            220.0,
+            MENU_WIDTH,
             |ui| {
                 ui.strong(title);
                 ui.separator();
@@ -504,6 +597,8 @@ impl Editor {
                             let group = match entry.command {
                                 Command::Group
                                 | Command::MakeFunction
+                                | Command::OpenFunction
+                                | Command::ExpandFunction
                                 | Command::ExportFunction
                                 | Command::Arrange => 1,
                                 Command::Fit | Command::SelectAll => 2,
@@ -575,7 +670,7 @@ mod tests {
         let mut editor = Editor::new();
         editor.open_untitled(&mut host, orange_host::new_document().unwrap());
         let sender = editor
-            .add_node_at(&mut host, "preset:signal", [0.0, 0.0])
+            .add_node_at(&mut host, orange_host::preset::SIGNAL, [0.0, 0.0])
             .unwrap();
         let first = editor
             .graph()
@@ -593,10 +688,10 @@ mod tests {
         let other_sender = editor.canvas.selected().unwrap();
         assert_eq!(editor.graph().unwrap().nodes.len(), 4);
         let wait_a = editor
-            .add_node_at(&mut host, "core/wait", [740.0, 0.0])
+            .add_node_at(&mut host, intrinsic::WAIT, [740.0, 0.0])
             .unwrap();
         let wait_b = editor
-            .add_node_at(&mut host, "core/wait", [740.0, 200.0])
+            .add_node_at(&mut host, intrinsic::WAIT, [740.0, 200.0])
             .unwrap();
         assert!(editor.connect(&mut host, (first, "then"), (wait_a, "in")));
         assert!(editor.connect(&mut host, (second, "then"), (wait_b, "in")));
@@ -856,7 +951,7 @@ mod tests {
         let choice = editor
             .quick_choices(&host, "do once")
             .into_iter()
-            .find(|choice| choice.definition == "core/do-once")
+            .find(|choice| choice.definition == intrinsic::DO_ONCE)
             .unwrap();
         let inserted = editor.pick_quick(&mut host, &choice).unwrap();
         let wires = |editor: &Editor| -> Vec<canvas::WireEnds> {

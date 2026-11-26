@@ -163,6 +163,12 @@ impl NodeDefinition {
             });
         }
         let editor = wire.editor.take().unwrap_or_default();
+        let (controls, hint_problems) = super::controls::read(
+            editor.controls.as_ref(),
+            editor.layout.as_ref(),
+            wire.config_schema.as_ref(),
+            &wire.ports,
+        );
         let presentation = Presentation {
             label: wire.label.take(),
             description: wire.description.take(),
@@ -173,6 +179,8 @@ impl NodeDefinition {
             paths: editor.paths,
             keywords: editor.keywords,
             hidden: editor.hidden,
+            controls,
+            hint_problems,
         };
         let replaces = std::mem::take(&mut wire.replaces);
         let definition: NodeDefinition = wire.into();
@@ -229,7 +237,7 @@ pub struct TextRef {
 
 /// What a definition file says about showing its node to people. It never affects
 /// validation, compilation or execution, and it is not part of a node's identity.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Presentation {
     pub label: Option<TextRef>,
     pub description: Option<TextRef>,
@@ -252,6 +260,10 @@ pub struct Presentation {
     pub keywords: Option<TextRef>,
     /// Existing documents can use this definition; the editor omits it from search.
     pub hidden: bool,
+    /// How the node asks an editor to present its fields (ADR-33).
+    pub controls: super::controls::Controls,
+    /// Control hints that did not fit and were left out, for a package check to report.
+    pub hint_problems: Vec<super::controls::HintProblem>,
 }
 
 /// A text input that holds a path, from a definition file's `editor.paths`.
@@ -289,6 +301,10 @@ struct EditorWire {
     keywords: Option<TextRef>,
     #[serde(default)]
     hidden: bool,
+    #[serde(default)]
+    controls: Option<serde_json::Value>,
+    #[serde(default)]
+    layout: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
