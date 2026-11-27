@@ -2,6 +2,7 @@
 name = "orange-testkit"
 description = "OrangeEditor test support: the IDs, graph fragments and waiting that integration tests of every crate share"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
@@ -11,7 +12,7 @@ ui = ["dep:egui"]
 
 [dependencies]
 egui = { workspace = true, optional = true }
-orange-model = { path = "../../core/orange-model", version = "=0.1.0-preview.1" }
+orange-model = { path = "../../core/orange-model", version = "=0.1.1-preview" }
 serde_json.workspace = true
 
 [lints]

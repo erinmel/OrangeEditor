@@ -8,7 +8,7 @@ yanked = "deny"
 # upgrade to move to; there is no known defect. Remove when accesskit moves to zbus 6.
 ignore = ["RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]
 
-# Unpublished workspace members carry no license until a release package declares one.
+# Workspace members are MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 [licenses]
 # ISC (ring, rustls-webpki, untrusted) and CDLA-Permissive-2.0 (webpki-roots, the Mozilla
 # root certificate data) were admitted on 2026-11-10 for HTTPS in orange-net.

@@ -2,21 +2,22 @@
 name = "orange-host"
 description = "OrangeEditor session host: packages, concurrent graph runs and effect workers behind one API"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 build = "../../../build/locales.rs"
 
 [dependencies]
-orange-bundled = { path = "../../core/orange-bundled", version = "=0.1.0-preview.1" }
-orange-compiler = { path = "../../core/orange-compiler", version = "=0.1.0-preview.1" }
-orange-guest = { path = "../../platform/orange-guest", version = "=0.1.0-preview.1" }
-orange-kernel = { path = "../../core/orange-kernel", version = "=0.1.0-preview.1" }
-orange-model = { path = "../../core/orange-model", version = "=0.1.0-preview.1" }
-orange-packages = { path = "../../platform/orange-packages", version = "=0.1.0-preview.1" }
-orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.0-preview.1" }
-orange-runtime = { path = "../../core/orange-runtime", version = "=0.1.0-preview.1" }
-orange-sandbox = { path = "../../platform/orange-sandbox", version = "=0.1.0-preview.1" }
+orange-bundled = { path = "../../core/orange-bundled", version = "=0.1.1-preview" }
+orange-compiler = { path = "../../core/orange-compiler", version = "=0.1.1-preview" }
+orange-guest = { path = "../../platform/orange-guest", version = "=0.1.1-preview" }
+orange-kernel = { path = "../../core/orange-kernel", version = "=0.1.1-preview" }
+orange-model = { path = "../../core/orange-model", version = "=0.1.1-preview" }
+orange-packages = { path = "../../platform/orange-packages", version = "=0.1.1-preview" }
+orange-sdk = { path = "../../platform/orange-sdk", version = "=0.1.1-preview" }
+orange-runtime = { path = "../../core/orange-runtime", version = "=0.1.1-preview" }
+orange-sandbox = { path = "../../platform/orange-sandbox", version = "=0.1.1-preview" }
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
@@ -27,7 +28,7 @@ unic-langid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.0-preview.1" }
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.1-preview" }
 
 [lints]
 workspace = true

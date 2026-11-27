@@ -124,6 +124,15 @@ fn differences<'a>(before: &'a Snapshot, after: &'a Snapshot) -> Vec<(&'a str, b
     changes
 }
 
+/// Whether a scan error is passed over once rather than reported. Windows refuses access
+/// to a file while its deletion is pending, so a scan that meets a file being deleted is
+/// denied for a moment; a denial that is still there on the next scan is reported.
+fn passes_over(error: FsError, passed: &mut bool) -> bool {
+    let transient = error == FsError::PermissionDenied && !*passed;
+    *passed = transient;
+    transient
+}
+
 /// Signals its watcher to stop when the arm is dropped.
 struct Watching(Arc<Lifecycle>);
 
@@ -176,10 +185,12 @@ impl Watch {
     ) {
         let mut before = None;
         let mut last_error = None;
+        let mut passed = false;
         loop {
             match snapshot(folder, path, life, limit) {
                 Ok(now) => {
                     last_error = None;
+                    passed = false;
                     if let Some(before) = &before {
                         for (relative, directory, change) in differences(before, &now) {
                             if life.stopped()
@@ -194,6 +205,7 @@ impl Watch {
                 }
                 Err(FsError::Cancelled) => return,
                 Err(FsError::Changed) => {}
+                Err(error) if passes_over(error, &mut passed) => {}
                 Err(FsError::NotFound)
                     if wait_for_folder
                         && before.is_none()
@@ -277,6 +289,19 @@ impl ServiceSource for Watch {
 
 #[cfg(test)]
 mod tests {
+    /// A denial is passed over once, as when a scan meets a file whose deletion is
+    /// pending on Windows, and reported when it is still there on the next scan.
+    #[test]
+    fn a_denied_scan_is_reported_only_when_the_next_one_is_denied_too() {
+        let mut passed = false;
+        assert!(super::passes_over(FsError::PermissionDenied, &mut passed));
+        assert!(!super::passes_over(FsError::PermissionDenied, &mut passed));
+        assert!(super::passes_over(FsError::PermissionDenied, &mut passed));
+        let mut passed = false;
+        assert!(!super::passes_over(FsError::NotFound, &mut passed));
+        assert!(!passed);
+    }
+
     use super::*;
     use crate::TOO_LARGE;
     use std::fs;
