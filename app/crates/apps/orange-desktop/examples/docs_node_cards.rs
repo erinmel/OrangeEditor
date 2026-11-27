@@ -170,42 +170,309 @@ fn save_png(path: PathBuf, [width, height]: [u32; 2], rgba: &[u8]) -> Result<(),
 const SCHEMES: [(&str, egui::Theme); 2] =
     [("light", egui::Theme::Light), ("dark", egui::Theme::Dark)];
 
+/// What a documentation picture shows of the editor.
+enum View {
+    /// The canvas alone, fitted to the graph.
+    Canvas,
+    /// The whole editor, as a person sees it: optionally with a node selected so its
+    /// properties show, buttons fired while the graph runs, and then labels pressed in
+    /// order, named by their catalogue message (a tab, or Advanced).
+    Editor {
+        press: &'static [&'static str],
+        select: Option<&'static str>,
+        fire: &'static [(&'static str, usize)],
+    },
+}
+
+/// A picture for the guides: its folder name, the graph, the names of the nodes to keep
+/// (all when empty), what it shows and its size in pixels.
+struct Shot {
+    slug: &'static str,
+    graph: &'static str,
+    keep: &'static [&'static str],
+    view: View,
+    size: [u32; 2],
+}
+
+const COUNTER: &str = include_str!("../../orange-cli/graphs/counter-with-reset.json");
+const JSON: &str = include_str!("../../orange-cli/graphs/json-extraction.json");
+const POWER: &str = include_str!("../../orange-cli/graphs/power-with-count.json");
+const HTTP: &str = include_str!("../../orange-cli/graphs/http-with-failure-handling.json");
+const RETRY: &str = include_str!("../../orange-cli/graphs/http-with-bounded-retry.json");
+const FILES: &str = include_str!("../../orange-cli/graphs/file-change-journal.json");
+const SHARED: &str = include_str!("../../orange-cli/graphs/shared-score.json");
+const IDE: [u32; 2] = [1440, 860];
+
+const SHOTS: &[Shot] = &[
+    Shot {
+        slug: "counter-with-reset",
+        graph: COUNTER,
+        keep: &[],
+        view: View::Canvas,
+        size: [680, 850],
+    },
+    Shot {
+        slug: "json-extraction",
+        graph: JSON,
+        keep: &[],
+        view: View::Canvas,
+        size: [1000, 520],
+    },
+    Shot {
+        slug: "power-with-count",
+        graph: POWER,
+        keep: &[],
+        view: View::Canvas,
+        size: [1280, 680],
+    },
+    Shot {
+        slug: "power-loop-start",
+        graph: POWER,
+        keep: &[
+            "Calculate power",
+            "Reset accumulator to 1",
+            "Count exponent iterations",
+            "Exponent",
+        ],
+        view: View::Canvas,
+        size: [1000, 420],
+    },
+    Shot {
+        slug: "http-with-failure-handling",
+        graph: HTTP,
+        keep: &[],
+        view: View::Canvas,
+        size: [1280, 640],
+    },
+    Shot {
+        slug: "http-with-bounded-retry",
+        graph: RETRY,
+        keep: &[],
+        view: View::Canvas,
+        size: [1280, 640],
+    },
+    Shot {
+        slug: "file-change-journal",
+        graph: FILES,
+        keep: &[],
+        view: View::Canvas,
+        size: [1000, 520],
+    },
+    Shot {
+        slug: "shared-score",
+        graph: SHARED,
+        keep: &[],
+        view: View::Canvas,
+        size: [680, 560],
+    },
+    Shot {
+        slug: "editor-counter-properties",
+        graph: COUNTER,
+        keep: &[],
+        view: View::Editor {
+            press: &[],
+            select: Some("Add one"),
+            fire: &[],
+        },
+        size: IDE,
+    },
+    Shot {
+        slug: "editor-counter-variables",
+        graph: COUNTER,
+        keep: &[],
+        view: View::Editor {
+            press: &["variables"],
+            select: None,
+            fire: &[("Increment", 3)],
+        },
+        size: IDE,
+    },
+    Shot {
+        slug: "editor-http-connections",
+        graph: HTTP,
+        keep: &[],
+        view: View::Editor {
+            press: &["connections"],
+            select: None,
+            fire: &[],
+        },
+        size: IDE,
+    },
+    Shot {
+        slug: "editor-file-trigger",
+        graph: FILES,
+        keep: &[],
+        view: View::Editor {
+            press: &["connections"],
+            select: Some("On file change"),
+            fire: &[],
+        },
+        size: IDE,
+    },
+];
+
+/// The graph with only the named nodes and the wires between them.
+fn only_nodes(graph: &str, keep: &[&str]) -> Result<String, Box<dyn Error>> {
+    if keep.is_empty() {
+        return Ok(graph.to_owned());
+    }
+    let mut document: serde_json::Value = serde_json::from_str(graph)?;
+    let nodes = document["nodes"]
+        .as_array_mut()
+        .ok_or("a graph has nodes")?;
+    nodes.retain(|node| keep.iter().any(|name| node["name"] == *name));
+    let ids: Vec<serde_json::Value> = nodes.iter().map(|node| node["id"].clone()).collect();
+    if ids.len() != keep.len() {
+        return Err(format!("a documentation picture names missing nodes: {keep:?}").into());
+    }
+    if let Some(edges) = document["edges"].as_array_mut() {
+        edges.retain(|edge| {
+            ids.contains(&edge["from"]["node"]) && ids.contains(&edge["to"]["node"])
+        });
+    }
+    Ok(document.to_string())
+}
+
+/// The ID of the node a graph names so.
+fn node_named(graph: &str, name: &str) -> Result<orange_host::NodeId, Box<dyn Error>> {
+    let document: serde_json::Value = serde_json::from_str(graph)?;
+    let id = document["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|node| node["name"] == name))
+        .and_then(|node| node["id"].as_str())
+        .ok_or_else(|| format!("no node named {name}"))?;
+    Ok(id.parse()?)
+}
+
+/// Where a label is drawn, to press it like a person would.
+fn label_at(output: &egui::FullOutput, label: &str) -> Option<Pos2> {
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+}
+
+/// Every label a frame drew, to explain a missing one.
+fn all_labels(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn render_tutorial_graphs(
     host: &mut Host,
+    events: &orange_host::Events,
     gpu: &mut Offscreen,
     ctx: &egui::Context,
     destination: &std::path::Path,
     language: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let counter = include_str!("../../orange-cli/graphs/counter-with-reset.json");
-    let json = include_str!("../../orange-cli/graphs/json-extraction.json");
-    let power = include_str!("../../orange-cli/graphs/power-with-count.json");
-    for (slug, document, dimensions) in [
-        ("counter-with-reset", counter, [680, 850]),
-        ("json-extraction", json, [1000, 520]),
-        ("power-with-count", power, [1280, 680]),
-    ] {
-        let directory = destination.join(language).join("graphs").join(slug);
+    for shot in SHOTS {
+        let directory = destination.join(language).join("graphs").join(shot.slug);
         fs::create_dir_all(&directory)?;
         let mut editor = Editor::new();
         editor.set_language(language);
-        editor.open_untitled(host, document.to_owned());
-        editor.canvas().fit();
-        let [width, height] = dimensions;
+        editor.open_untitled(host, only_nodes(shot.graph, shot.keep)?);
+        let [width, height] = shot.size;
         #[expect(clippy::cast_precision_loss, reason = "fixed small preview dimensions")]
         let bounds = Rect::from_min_size(Pos2::ZERO, egui::vec2(width as f32, height as f32));
-        for (mode, theme) in SCHEMES {
-            ctx.set_theme(theme);
-            let output = ctx.run_ui(
+        let frame = |editor: &mut Editor, host: &mut Host, input: Vec<egui::Event>| {
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(bounds),
+                    events: input,
                     ..Default::default()
                 },
-                |ui| editor.canvas_panel(ui, host),
-            );
-            let rgba = gpu.render(ctx, output, dimensions)?;
-            save_png(directory.join(format!("{mode}.png")), dimensions, &rgba)?;
-            if slug == "counter-with-reset" {
+                |ui| match shot.view {
+                    View::Canvas => editor.canvas_panel(ui, host),
+                    View::Editor { .. } => editor.ui(ui, host),
+                },
+            )
+        };
+        if let View::Editor {
+            press,
+            select,
+            fire,
+        } = shot.view
+        {
+            if let Some(name) = select {
+                editor.canvas().select(Some(node_named(shot.graph, name)?));
+            }
+            if !fire.is_empty() {
+                editor.run(host);
+                for &(name, times) in fire {
+                    let node = node_named(shot.graph, name)?;
+                    for _ in 0..times {
+                        editor.trigger(host, node);
+                    }
+                }
+                for _ in 0..40 {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    editor.poll_events(events);
+                }
+            }
+            // Lay the panels out, then press the tab where the editor drew it.
+            let output = frame(&mut editor, host, Vec::new());
+            gpu.render(ctx, output, shot.size)?;
+            for &label in press {
+                // A narrow panel keeps some tabs behind its "…" menu: open it first.
+                let mut targets = vec![i18n::t(label)];
+                for _ in 0..2 {
+                    let output = frame(&mut editor, host, Vec::new());
+                    let found = label_at(&output, targets[targets.len() - 1]);
+                    let more = label_at(&output, "…");
+                    let texts = all_labels(&output);
+                    gpu.render(ctx, output, shot.size)?;
+                    let at = match (found, more) {
+                        (Some(at), _) => at,
+                        (None, Some(more)) if targets.len() == 1 => {
+                            targets.insert(0, "…");
+                            more
+                        }
+                        _ => return Err(format!("no {label} among {texts:?}").into()),
+                    };
+                    for pressed in [true, false] {
+                        let click = egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        };
+                        let output = frame(
+                            &mut editor,
+                            host,
+                            vec![egui::Event::PointerMoved(at), click],
+                        );
+                        gpu.render(ctx, output, shot.size)?;
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+            }
+            editor.canvas().fit();
+        } else {
+            editor.canvas().fit();
+        }
+        for (mode, theme) in SCHEMES {
+            ctx.set_theme(theme);
+            // A frame to settle the layout and theme, then the picture.
+            let output = frame(&mut editor, host, Vec::new());
+            gpu.render(ctx, output, shot.size)?;
+            let output = frame(&mut editor, host, Vec::new());
+            let rgba = gpu.render(ctx, output, shot.size)?;
+            save_png(directory.join(format!("{mode}.png")), shot.size, &rgba)?;
+            if shot.slug == "counter-with-reset" {
                 // The first row of the checked-in graph is the tutorial's first step.
                 let first_row = destination
                     .join(language)
@@ -221,6 +488,9 @@ fn render_tutorial_graphs(
                 )?;
             }
         }
+        if editor.is_running() {
+            editor.stop(host);
+        }
     }
     Ok(())
 }
@@ -228,7 +498,7 @@ fn render_tutorial_graphs(
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
     let destination = PathBuf::from(args.next().ok_or("expected the preview output directory")?);
-    let (mut host, _) = Host::with_services(
+    let (mut host, events) = Host::with_services(
         HostOptions::default(),
         vec![
             orange_net::package(),
@@ -255,7 +525,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let padding = egui::Vec2::splat(12.0);
 
     for language in ["en", "es"] {
-        render_tutorial_graphs(&mut host, &mut gpu, &ctx, &destination, language)?;
+        render_tutorial_graphs(&mut host, &events, &mut gpu, &ctx, &destination, language)?;
         i18n::set_language(language);
         i18n::set_port_names(host.port_names(language));
         for info in host.nodes() {

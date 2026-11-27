@@ -10,6 +10,12 @@ Coloca el disparador de cambio de archivo y elige la conexión en **Propiedades*
 
 Cada cambio inicia una activación. `payload` contiene el tipo de cambio, la ruta relativa, la ruta previa si cambió el nombre y si el elemento es una carpeta. Los archivos presentes al inicio sirven como punto de partida.
 
+<!-- tutorial-graph: editor-file-trigger file-change-journal -->
+
 ## Espera a una carpeta que aún no existe
 
 Si otro programa creará la carpeta más adelante, activa `wait_for_folder`. Con el ajuste predeterminado, una ruta ausente produce un fallo. Usa la misma conexión para leer o mover el archivo. Consulta el [catálogo de nodos](../nodes/) y el [modelo de permisos](../security-model/).
+
+El [registro de cambios](../examples/#file-change-journal) lee **path** de los datos con [**Leer campo**](../nodes/org.orange.collections/get-field/1/), le añade un salto de línea y lo agrega a `changes.log`:
+
+<!-- tutorial-graph: file-change-journal -->

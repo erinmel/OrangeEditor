@@ -40,6 +40,8 @@ runs once per pass, and [**Done**](../nodes/core/count/1/#port-completed) runs
 after the last pass. Its [**index**](../nodes/core/count/1/#port-index) output says
 which pass is running, starting at `0`.
 
+<!-- tutorial-graph: power-loop-start power-with-count -->
+
 ## Multiply on each pass
 
 The step that runs on each pass reads `power`, multiplies it by 3 and writes it back.

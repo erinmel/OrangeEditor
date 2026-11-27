@@ -12,6 +12,15 @@ export const tutorial = {
   'counter-with-reset': ['Counter graph in OrangeEditor', 'Increment adds one, Decrement subtracts one, and Reset sets Counter to zero.'],
   'json-extraction': ['JSON extraction graph in OrangeEditor', 'The manual trigger runs the variable write. The JSON nodes supply the value through data wires.'],
   'power-with-count': ['Power graph with a loop in OrangeEditor', 'Count runs body four times. Each pass multiplies the variable by the base.'],
+  'editor-counter-properties': ["OrangeEditor with Add one selected and its Properties open", "Select a card to see its settings in Properties. Add one is an Increment Counter bound to Counter."],
+  'editor-counter-variables': ["OrangeEditor running the counter graph with Variables open", "After three presses of Increment, Variables shows Counter at 3, and Add one shows the old and new values it last wrote."],
+  'power-loop-start': ["The start of the loop graph in OrangeEditor", "The trigger sets the variable to 1, then Count runs its body four times."],
+  'http-with-failure-handling': ["HTTP request graph in OrangeEditor", "Every answer continues on Exit, where a Branch reads success. Failed runs only when no answer arrived."],
+  'http-with-bounded-retry': ["HTTP retry graph in OrangeEditor", "A failed first request waits 250 ms and tries once more. A second failure is final."],
+  'editor-http-connections': ["OrangeEditor with the Connections tab open", "The HTTP connection holds the base address. Each request chooses it and adds only a path."],
+  'editor-file-trigger': ["OrangeEditor with On file change selected", "The trigger watches the incoming folder inside the granted folder. Its payload holds what changed."],
+  'file-change-journal': ["File change journal graph in OrangeEditor", "Each change reads the path from the payload, adds a line break and appends it to changes.log."],
+  'shared-score': ["Shared score graph in OrangeEditor", "Add a point adds one to the shared Score, and Reset sets it to zero. Every running graph that declares Score sees the change."],
   graph: 'Open the example graph',
   linkedPorts: 'Follow the ports',
 };
@@ -42,6 +51,9 @@ export const examples = {
   'running-total-with-reduce': ['Accumulate a running total', 'Open the graph and follow the running state from Reduce begin through Add to Reduce end. Inspect the final sum.'],
   'json-extraction': ['Read a field from JSON', 'Run the graph and fire its manual trigger. Follow the parsed document into JSON Read Text and inspect the variable it writes.'],
   'http-with-failure-handling': ['Route the result of an HTTP request', 'Choose a reachable test endpoint in the connection. Fire the graph and compare an HTTP success status, an HTTP error status and a connection failure.'],
+  'http-with-bounded-retry': ["Retry an HTTP request once", "Choose a reachable test endpoint in the connection and fire Check endpoint. Stop the server to see the retry, then the final failure."],
+  'file-change-journal': ["Keep a journal of file changes", "Point the folder connection at a folder with an incoming folder inside it, run the graph and add a file there. Its path appears in changes.log."],
+  'shared-score': ["Share a score between graphs", "Run the graph and fire Add a point twice. Score reads 2 in Variables, and in every other running graph that declares it."],
   'quiet-mic-gate': ['Meter audio after a noise gate', 'Choose an input device and run the graph. Watch the gated level as the source becomes quiet. The example uses silent devices until you configure real ones.'],
 };
 

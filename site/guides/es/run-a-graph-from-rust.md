@@ -88,6 +88,7 @@ fn id_named<T: std::str::FromStr>(graph: &serde_json::Value, list: &str, name: &
 }
 ```
 
+El grafo llama `Increment` al botón y `Counter` a la variable, como en el editor.
 Después, en `main`, antes de `Ok(())`:
 
 ```rust
@@ -96,6 +97,8 @@ Después, en `main`, antes de `Ok(())`:
     let counter: VariableId =
         id_named(&graph, "variables", "Counter").ok_or("no Counter variable")?;
 ```
+
+<!-- tutorial-graph: counter-with-reset -->
 
 <h2 id="press-the-button">Pulsa el botón</h2>
 

@@ -43,6 +43,15 @@ export const tutorial = {
   'counter-with-reset': ['Grafo del contador en OrangeEditor', 'Increment suma uno, Decrement resta uno y Reset vuelve a dejar Counter en cero.'],
   'json-extraction': ['Grafo de extracción de JSON en OrangeEditor', 'El disparador manual ejecuta la escritura de la variable. Los nodos JSON entregan el valor por los cables de datos.'],
   'power-with-count': ['Grafo de potencia con un bucle en OrangeEditor', 'Contar ejecuta cuerpo cuatro veces. Cada vuelta multiplica la variable por la base.'],
+  'editor-counter-properties': ["OrangeEditor con Add one seleccionado y sus Propiedades abiertas", "Selecciona una tarjeta para ver sus ajustes en Propiedades. Add one es un Incrementar contador vinculado a Counter."],
+  'editor-counter-variables': ["OrangeEditor ejecutando el contador con Variables abierto", "Tras pulsar Increment tres veces, Variables muestra Counter en 3, y Add one muestra el valor anterior y el nuevo que escribió."],
+  'power-loop-start': ["El inicio del grafo del bucle en OrangeEditor", "El disparador pone la variable en 1 y después Contar ejecuta su cuerpo cuatro veces."],
+  'http-with-failure-handling': ["Grafo de petición HTTP en OrangeEditor", "Toda respuesta sigue por Salida, donde una Rama lee success. Falló solo se ejecuta si no llegó respuesta."],
+  'http-with-bounded-retry': ["Grafo de reintento HTTP en OrangeEditor", "Si la primera petición falla, espera 250 ms y lo intenta una vez más. Un segundo fallo es definitivo."],
+  'editor-http-connections': ["OrangeEditor con la pestaña Conexiones abierta", "La conexión HTTP guarda la dirección base. Cada petición la elige y solo añade una ruta."],
+  'editor-file-trigger': ["OrangeEditor con Al cambiar un archivo seleccionado", "El disparador vigila la carpeta incoming dentro de la carpeta autorizada. Sus datos indican qué cambió."],
+  'file-change-journal': ["Grafo de registro de cambios de archivos en OrangeEditor", "Cada cambio lee la ruta de los datos, añade un salto de línea y la agrega a changes.log."],
+  'shared-score': ["Grafo de puntuación compartida en OrangeEditor", "Add a point suma uno a la variable compartida Score y Reset la pone a cero. Todo grafo en ejecución que declare Score ve el cambio."],
   graph: 'Abre el grafo de ejemplo',
   linkedPorts: 'Consulta los puertos',
 };
@@ -55,6 +64,9 @@ export const examples = {
   'running-total-with-reduce': ['Acumula un total', 'Sigue el valor desde el inicio de la reducción, pasando por la suma, hasta el fin de la reducción.'],
   'json-extraction': ['Lee un campo de JSON', 'Dispara el grafo, sigue el documento hasta el nodo que lee el texto JSON y revisa la variable.'],
   'http-with-failure-handling': ['Dirige el resultado de una petición HTTP', 'Prueba con un servidor accesible. Compara una respuesta exitosa, un error HTTP y un fallo de conexión.'],
+  'http-with-bounded-retry': ["Reintenta una petición HTTP una vez", "Elige un servidor de prueba accesible en la conexión y dispara Check endpoint. Detén el servidor para ver el reintento y después el fallo definitivo."],
+  'file-change-journal': ["Registra los cambios de archivos", "Apunta la conexión a una carpeta que contenga otra llamada incoming, ejecuta el grafo y añade allí un archivo. Su ruta aparece en changes.log."],
+  'shared-score': ["Comparte una puntuación entre grafos", "Ejecuta el grafo y dispara Add a point dos veces. Score vale 2 en Variables y en cada grafo en ejecución que la declare."],
   'quiet-mic-gate': ['Mide audio después de una puerta de ruido', 'Elige un dispositivo y ejecuta el grafo. Observa la señal cuando baje el nivel de entrada. El ejemplo usa dispositivos silenciosos hasta que los cambies.'],
 };
 

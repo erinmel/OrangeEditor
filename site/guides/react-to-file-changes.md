@@ -25,6 +25,8 @@ Each change starts its own activation with a **payload** record that holds:
 - the previous path, for a rename;
 - whether the item is a folder.
 
+<!-- tutorial-graph: editor-file-trigger file-change-journal -->
+
 ## When the folder does not exist yet
 
 By default a missing watched folder is reported as a fault, so you notice a wrong
@@ -40,6 +42,12 @@ fire. Only later changes do.
 Use the file nodes in the same category to read, copy, move or delete what changed.
 They work through the same folder connection, so they stay inside the granted folder
 too.
+
+The [file change journal](../examples/#file-change-journal) reads **path** from the
+payload with [**Get field**](../nodes/org.orange.collections/get-field/1/), ends it
+with a line break and appends it to `changes.log`:
+
+<!-- tutorial-graph: file-change-journal -->
 
 ## See also
 

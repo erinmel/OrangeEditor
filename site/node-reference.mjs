@@ -12,6 +12,9 @@ const exampleSlugs = [
   "running-total-with-reduce",
   "json-extraction",
   "http-with-failure-handling",
+  "http-with-bounded-retry",
+  "file-change-journal",
+  "shared-score",
   "quiet-mic-gate"
 ];
 

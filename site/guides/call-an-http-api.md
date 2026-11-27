@@ -20,6 +20,8 @@ the graph never contains them.
 The first time a graph uses a connection that reaches outside the computer, the editor
 asks you to approve it for that graph.
 
+<!-- tutorial-graph: editor-http-connections http-with-failure-handling -->
+
 ## Send the request
 
 1. Place a trigger, such as **On manual**, and an **HTTP request** node.
@@ -46,12 +48,16 @@ The request continues on one of two routes:
 A common shape is a [**Branch**](../nodes/core/branch/1/#port-condition) on **success** after **then**, with one action for an
 accepted status and another for a rejected one, plus a separate action on **failed**.
 
+<!-- tutorial-graph: http-with-failure-handling -->
+
 ## Retry once after a short wait
 
 Some failures are temporary. To retry once, wire **failed** to a **Wait** of, for
 example, 250 ms, then to a second **HTTP request** with the same settings. Handle
 that one's **failed** route as final. The
-[bounded retry example](../examples/) shows the whole graph.
+[bounded retry example](../examples/#http-with-bounded-retry) shows the whole graph:
+
+<!-- tutorial-graph: http-with-bounded-retry -->
 
 Retry only requests that are safe to repeat. A repeated `POST` can create a record
 twice.

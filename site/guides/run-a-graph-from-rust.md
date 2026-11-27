@@ -87,7 +87,8 @@ fn id_named<T: std::str::FromStr>(graph: &serde_json::Value, list: &str, name: &
 }
 ```
 
-Then, in `main`, before `Ok(())`:
+The graph names the button `Increment` and the variable `Counter`, as in the
+editor. Then, in `main`, before `Ok(())`:
 
 ```rust
     let graph: serde_json::Value = serde_json::from_str(&text)?;
@@ -95,6 +96,8 @@ Then, in `main`, before `Ok(())`:
     let counter: VariableId =
         id_named(&graph, "variables", "Counter").ok_or("no Counter variable")?;
 ```
+
+<!-- tutorial-graph: counter-with-reset -->
 
 ## Press the button
 

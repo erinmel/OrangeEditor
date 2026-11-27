@@ -4,6 +4,8 @@
 
 Declara la variable con alcance compartido y conserva el mismo identificador y tipo en cada grafo. Usa un nodo que lea la variable y acciones que asignen o actualicen el valor compartido. Las escrituras se aplican una a la vez y cada grafo ve el cambio en su siguiente turno.
 
+<!-- tutorial-graph: shared-score -->
+
 ## Envía un evento
 
 [Despachar](../nodes/core/emit/1/) activa [Escuchar](../nodes/core/on-event/1/) en los otros grafos en ejecución que coinciden con el evento de espacio de trabajo. Cada receptor recibe el valor del evento en una activación. Declara estos eventos en los documentos de la aplicación que aloja el motor.

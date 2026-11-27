@@ -1,0 +1,289 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-0000000000f1",
+  "revision": 7,
+  "package_lock": [
+    {
+      "id": "org.orange.files",
+      "version": "0.0.0",
+      "content_digest": "sha256:f4208f509dd4c097a776329318e5d7052c6e0edd0cc742bbebe0d2c326c77306"
+    },
+    {
+      "id": "org.orange.collections",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    },
+    {
+      "id": "org.orange.text",
+      "version": "0.0.0",
+      "content_digest": "sha256:0a1d2c40b01100d64c99e21dc4a47e9bb2925539aa5d97b9521296b254cb0a52"
+    }
+  ],
+  "type_lock": [],
+  "variables": [],
+  "events": [],
+  "connections": [
+    {
+      "id": "f1000000-0000-4000-8000-000000000100",
+      "name": "Watched folder",
+      "adapter": "org.orange.files/folder",
+      "scope": "graph",
+      "settings": {
+        "path": "."
+      }
+    }
+  ],
+  "signatures": {
+    "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3": {
+      "kind": "entry",
+      "ports": [
+        {
+          "port_id": "folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1",
+          "default": {
+            "type": "core/string@1",
+            "value": ""
+          }
+        },
+        {
+          "port_id": "wait_for_folder",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/bool@1",
+          "default": {
+            "type": "core/bool@1",
+            "value": false
+          }
+        },
+        {
+          "port_id": "payload",
+          "direction": "output",
+          "kind": "data",
+          "type": "org.orange.files/change@1",
+          "source": "payload"
+        }
+      ]
+    },
+    "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075": {
+      "kind": "async",
+      "suspends": "always",
+      "ports": [
+        {
+          "port_id": "path",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "text",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        }
+      ]
+    },
+    "sha256:300ca24468d8102e446db3531d399a540b3727d56a83e6eef152f81715fa2fc7": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "a",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "b",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/string@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "computed"
+        }
+      ]
+    },
+    "sha256:a568c99e721bb859b452ac50c3caf48f43f1b77e7ba4cc3e2d2046c72f7bda70": {
+      "kind": "pure",
+      "ports": [
+        {
+          "port_id": "record",
+          "direction": "input",
+          "kind": "data",
+          "type": "org.orange.files/change@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/string@1",
+          "source": "computed"
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "f1000000-0000-4000-8000-000000000001",
+      "definition_id": "org.orange.files/on-change",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "f1000000-0000-4000-8000-000000000100"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:12288059c837c0d6dbf1856cfcf85af7f0c32cd417c3f29a23c552c85f7412c3",
+      "inputs": {
+        "folder": {
+          "type": "core/string@1",
+          "value": "incoming"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On file change"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.collections/get-field",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "type": "org.orange.files/change@1",
+        "field": "path"
+      },
+      "provider": {
+        "package": "org.orange.collections",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:a568c99e721bb859b452ac50c3caf48f43f1b77e7ba4cc3e2d2046c72f7bda70",
+      "name": "Changed path"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000004",
+      "definition_id": "org.orange.text/concat",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.orange.text",
+        "version": "0.0.0",
+        "id": "native-v1"
+      },
+      "signature": "sha256:300ca24468d8102e446db3531d399a540b3727d56a83e6eef152f81715fa2fc7",
+      "inputs": {
+        "b": {
+          "type": "core/string@1",
+          "value": "\n"
+        }
+      },
+      "name": "Add a line break"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000003",
+      "definition_id": "org.orange.files/append-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "f1000000-0000-4000-8000-000000000100"
+      },
+      "provider": {
+        "package": "org.orange.files",
+        "version": "0.0.0",
+        "id": "native"
+      },
+      "signature": "sha256:281504adf16ce70b29fb398f4433e17acaa55b9c91d22e0ce5491c6ac04eb075",
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "changes.log"
+        }
+      },
+      "name": "Append to changes.log"
+    }
+  ],
+  "edges": [
+    {
+      "id": "f1e00000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000003",
+        "port": "in"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000001",
+        "port": "payload"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000002",
+        "port": "record"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000002",
+        "port": "result"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000004",
+        "port": "a"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000005",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000004",
+        "port": "result"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000003",
+        "port": "text"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "f1000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "f1000000-0000-4000-8000-000000000002": {
+        "x": 0,
+        "y": 330
+      },
+      "f1000000-0000-4000-8000-000000000004": {
+        "x": 340,
+        "y": 330
+      },
+      "f1000000-0000-4000-8000-000000000003": {
+        "x": 680,
+        "y": 0
+      }
+    }
+  }
+}

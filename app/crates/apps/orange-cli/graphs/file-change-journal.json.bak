@@ -1,0 +1,156 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-0000000000f1",
+  "revision": 3,
+  "package_lock": [],
+  "type_lock": [],
+  "variables": [],
+  "events": [],
+  "connections": [
+    {
+      "id": "f1000000-0000-4000-8000-000000000100",
+      "name": "Watched folder",
+      "adapter": "org.orange.files/folder",
+      "scope": "graph",
+      "settings": {
+        "path": "."
+      }
+    }
+  ],
+  "signatures": {},
+  "nodes": [
+    {
+      "id": "f1000000-0000-4000-8000-000000000001",
+      "definition_id": "org.orange.files/on-change",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "f1000000-0000-4000-8000-000000000100"
+      },
+      "inputs": {
+        "folder": {
+          "type": "core/string@1",
+          "value": "incoming"
+        }
+      },
+      "activation": {
+        "mode": "queue",
+        "capacity": 16,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      },
+      "name": "On file change"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000002",
+      "definition_id": "org.orange.collections/get-field",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "type": "org.orange.files/change@1",
+        "field": "path"
+      },
+      "name": "Changed path"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000004",
+      "definition_id": "org.orange.text/concat",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "inputs": {
+        "b": {
+          "type": "core/string@1",
+          "value": "\n"
+        }
+      },
+      "name": "Add a line break"
+    },
+    {
+      "id": "f1000000-0000-4000-8000-000000000003",
+      "definition_id": "org.orange.files/append-text",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "connection": "f1000000-0000-4000-8000-000000000100"
+      },
+      "inputs": {
+        "path": {
+          "type": "core/string@1",
+          "value": "changes.log"
+        }
+      },
+      "name": "Append to changes.log"
+    }
+  ],
+  "edges": [
+    {
+      "id": "f1e00000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000003",
+        "port": "in"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000001",
+        "port": "payload"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000002",
+        "port": "record"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000004",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000002",
+        "port": "result"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000004",
+        "port": "a"
+      }
+    },
+    {
+      "id": "f1e00000-0000-4000-8000-000000000005",
+      "from": {
+        "node": "f1000000-0000-4000-8000-000000000004",
+        "port": "result"
+      },
+      "to": {
+        "node": "f1000000-0000-4000-8000-000000000003",
+        "port": "text"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {
+    "nodes": {
+      "f1000000-0000-4000-8000-000000000001": {
+        "x": 0,
+        "y": 0
+      },
+      "f1000000-0000-4000-8000-000000000002": {
+        "x": 0,
+        "y": 250
+      },
+      "f1000000-0000-4000-8000-000000000004": {
+        "x": 320,
+        "y": 250
+      },
+      "f1000000-0000-4000-8000-000000000003": {
+        "x": 640,
+        "y": 0
+      }
+    }
+  }
+}

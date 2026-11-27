@@ -19,6 +19,8 @@ In a graph:
 
 Every graph that uses the variable declares it with the same ID and type.
 
+<!-- tutorial-graph: shared-score -->
+
 ## Shared events
 
 A workspace event lets one graph start work in others. A **Dispatch** on a workspace

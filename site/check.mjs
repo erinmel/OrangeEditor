@@ -151,12 +151,30 @@ assert.match(spanishTutorial, /<code>Counter = 3<\/code>/);
 for (const page of [tutorial, spanishTutorial]) {
   assert.match(page, /class="node-stage graph-wire"/);
   assert.match(page, /nodes\/core\/on-manual\/1\/#port-then/);
-  assert.match(page, /nodes\/core\/update-variable\/1\/#port-in/);
+  assert.match(page, /nodes\/core\/increment-counter\/1\/#port-in/);
   assert.match(page, /nodes\/org\.orange\.json\/parse\/1\//);
   assert.match(page, /nodes\/org\.orange\.json\/read-text\/1\//);
   assert.match(page, /<code>Studio mic<\/code>/);
 }
 if (requireNativePreviews) {
+  // Each guide shows the editor pictures it was written around, in both languages.
+  const pictures = {
+    'count-button-presses': ['editor-counter-properties', 'editor-counter-variables'],
+    'repeat-with-a-loop': ['power-loop-start'],
+    'run-a-graph-from-rust': ['counter-with-reset'],
+    'call-an-http-api': ['editor-http-connections', 'http-with-failure-handling', 'http-with-bounded-retry'],
+    'react-to-file-changes': ['editor-file-trigger', 'file-change-journal'],
+    'share-between-graphs': ['shared-score'],
+    'data-and-execution': ['json-extraction'],
+  };
+  for (const [slug, graphs] of Object.entries(pictures)) {
+    for (const language of ['en', 'es']) {
+      const page = await read((language === 'es' ? 'es/' : '') + slug + '/index.html');
+      for (const graph of graphs) {
+        assert.ok(page.includes('assets/tutorial-graphs/' + language + '/' + graph + '/light.png'), slug + ' ' + language + ' ' + graph);
+      }
+    }
+  }
   for (const [language, page] of [['en', loopTutorial], ['es', spanishLoop]]) {
     for (const theme of ['light', 'dark']) {
       assert.ok(page.includes('assets/tutorial-graphs/' + language + '/power-with-count/' + theme + '.png'));

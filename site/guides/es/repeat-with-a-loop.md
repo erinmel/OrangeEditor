@@ -40,6 +40,8 @@ se ejecuta en cada vuelta y [**terminado**](../nodes/core/count/1/#port-complete
 después de la última. Su salida [**índice**](../nodes/core/count/1/#port-index) indica
 qué vuelta se está ejecutando, empezando en `0`.
 
+<!-- tutorial-graph: power-loop-start power-with-count -->
+
 <h2 id="multiply-on-each-pass">Multiplica en cada vuelta</h2>
 
 El paso que se ejecuta en cada vuelta lee `power`, lo multiplica por 3 y lo vuelve a

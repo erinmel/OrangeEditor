@@ -34,20 +34,28 @@ A variable holds a value between activations of the graph.
 1. Search **Nodes** for `on manual` and place [**On manual**](../nodes/core/on-manual/1/). This trigger starts an
    activation each time you press **Fire** on it while the graph runs.
 2. Name it `Increment` in **Properties**, so you can tell the three buttons apart.
-3. Place [**Update variable**](../nodes/core/update-variable/1/) to its right.
-4. In **Properties**, choose `Counter` as its variable and **Add** as its operation,
-   and set its value to `1`.
+3. Open the **Variables** group in **Nodes** and place
+   [**Increment Counter**](../nodes/core/increment-counter/1/) to its right. Name it
+   `Add one`.
+4. In **Properties**, choose `Counter` as its variable. Its **Step** is `1`, so each
+   run adds one.
 5. Drag from the trigger's [**Exit**](../nodes/core/on-manual/1/#port-then) to the
-   action's [**Enter**](../nodes/core/update-variable/1/#port-in). This execution wire
+   action's [**Enter**](../nodes/core/increment-counter/1/#port-in). This execution wire
    tells the editor which action runs next.
 
 <!-- counter-wire -->
+
+Select a card to see everything you can set on it in **Properties**:
+
+<!-- tutorial-graph: editor-counter-properties counter-with-reset -->
 
 ## Run it
 
 1. Check that **Problems** is empty, then press **Run**.
 2. Press **Fire** on `Increment` three times.
 3. Open **Variables** and confirm **`Counter = 3`**.
+
+<!-- tutorial-graph: editor-counter-variables counter-with-reset -->
 
 Each press started its own activation, and they run in the order you pressed. A
 trigger keeps up to 16 presses waiting while an earlier one runs; a press beyond
@@ -57,8 +65,9 @@ that faults the trigger.
 
 Stop the graph, then add:
 
-- A second **On manual** named `Decrement`, wired to an **Update variable** with
-  `Counter`, **Subtract** and the value `1`.
+- A second **On manual** named `Decrement`, wired to a
+  [**Decrement Counter**](../nodes/core/decrement-counter/1/) named `Subtract one`, with
+  `Counter` as its variable.
 - A third **On manual** named `Reset`, wired to [**Set variable**](../nodes/core/set-variable/1/) with `Counter` and
   the value `0`.
 

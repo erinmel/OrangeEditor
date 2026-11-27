@@ -17,18 +17,24 @@ En **Variables**, crea `Counter` con tipo **Entero** y valor inicial `0`. Elige 
 <h2 id="add-the-first-button">Añade el primer botón</h2>
 
 1. Añade [**Manual**](../nodes/core/on-manual/1/) y ponle el nombre `Increment`.
-2. Añade [**Actualizar variable**](../nodes/core/update-variable/1/). En **Propiedades**, elige `Counter`, la operación de sumar y el valor `1`.
-3. Conecta la [**Salida**](../nodes/core/on-manual/1/#port-then) del disparador con la [**Entrada**](../nodes/core/update-variable/1/#port-in) de la acción.
+2. Abre el grupo **Variables** en **Nodos** y añade [**Incrementar contador**](../nodes/core/increment-counter/1/). Llámalo `Add one` y, en **Propiedades**, elige `Counter` como variable. Su **Paso** es `1`, así que cada ejecución suma uno.
+3. Conecta la [**Salida**](../nodes/core/on-manual/1/#port-then) del disparador con la [**Entrada**](../nodes/core/increment-counter/1/#port-in) de la acción.
 
 <!-- counter-wire -->
+
+Selecciona una tarjeta para ver en **Propiedades** todo lo que puedes ajustar:
+
+<!-- tutorial-graph: editor-counter-properties counter-with-reset -->
 
 <h2 id="run-it">Ejecuta el grafo</h2>
 
 Revisa **Problemas** y pulsa **Ejecutar**. Dispara `Increment` tres veces. En **Variables** debe aparecer **`Counter = 3`**. Cada pulsación inicia una activación. El disparador guarda hasta 16 pulsaciones en espera mientras se ejecuta otra. Si llega una más, el disparador falla.
 
+<!-- tutorial-graph: editor-counter-variables counter-with-reset -->
+
 <h2 id="add-the-other-two-buttons">Añade los otros dos botones</h2>
 
-Detén el grafo. Conecta un disparador `Decrement` a **Actualizar variable** con la operación de restar y el valor `1`. Conecta `Reset` a [**Escribir variable**](../nodes/core/set-variable/1/) y usa `0`. Las dos acciones usan `Counter`. Ejecuta el grafo, dispara `Increment` tres veces y luego `Decrement` y `Reset`. Comprueba los valores `3`, `2` y `0`. Guarda tu grafo.
+Detén el grafo. Conecta un disparador `Decrement` a [**Decrementar contador**](../nodes/core/decrement-counter/1/), llamado `Subtract one`, con la variable `Counter`. Conecta `Reset` a [**Escribir variable**](../nodes/core/set-variable/1/) y usa `0`. Las dos acciones usan `Counter`. Ejecuta el grafo, dispara `Increment` tres veces y luego `Decrement` y `Reset`. Comprueba los valores `3`, `2` y `0`. Guarda tu grafo.
 
 <!-- tutorial-graph: counter-with-reset -->
 

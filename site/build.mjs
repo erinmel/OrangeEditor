@@ -244,9 +244,11 @@ async function renderGuide([slug, title, description], language, neighbors) {
           '</summary>' + diagram + '</details>'
         : diagram);
     }
-    for (const match of body.matchAll(/<!-- tutorial-graph: ([a-z0-9-]+) -->/g)) {
-      const [marker, graph] = match;
-      body = body.replace(marker, await renderTutorialGraph(graph, language));
+    // <!-- tutorial-graph: <picture> [<example>] --> places an editor picture, linked to
+    // the example graph it shows when the picture's name is not the example's.
+    for (const match of body.matchAll(/<!-- tutorial-graph: ([a-z0-9-]+)(?: ([a-z0-9-]+))? -->/g)) {
+      const [marker, graph, example] = match;
+      body = body.replace(marker, await renderTutorialGraph(graph, language, example ?? graph));
     }
     if (slug === 'controls') body = body.replace('<!-- controls-demo -->', demo
       ? '<button type="button" id="load-controls-demo" class="icon-action" hidden>' +
@@ -276,8 +278,9 @@ async function renderTutorialGraph(graph, language, exampleSlug = graph) {
   const images = await Promise.all(['light', 'dark'].map(async theme => {
     const file = theme + '.png';
     await copyFile(join(values['node-previews'], language, 'graphs', graph, file), join(output, folder, file));
-    return '<img class="native-' + theme + '" src="' + back + folder + file +
-      '" alt="' + escape(alt) + '" loading="lazy" decoding="async">';
+    // Each picture opens at full size, where the editor's text is easy to read.
+    return '<a class="native-' + theme + '" href="' + back + folder + file + '"><img src="' + back + folder + file +
+      '" alt="' + escape(alt) + '" loading="lazy" decoding="async"></a>';
   }));
   return '<figure class="node-preview native-preview tutorial-graph">' + images.join('') +
     '<figcaption>' + escape(caption) + ' ' + example + '.</figcaption></figure>';

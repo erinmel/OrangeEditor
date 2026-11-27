@@ -31,9 +31,12 @@ Data wires carry a typed value from an output to an input. They are coloured by 
 ## Putting them together
 
 In the [counter tutorial](../count-button-presses/), execution runs from
-**On manual** to **Update variable**. If you wired a **Get variable** into a **Branch**
+**On manual** to **Increment Counter**. In the JSON example below, execution runs
+from the trigger to **Set variable**, and the JSON nodes only supply its value. If you wired a **Get variable** into a **Branch**
 condition, its value would be pulled at the moment execution reached the branch: the
 current value then, not when the graph started.
+
+<!-- tutorial-graph: json-extraction -->
 
 ## Why two kinds
 
