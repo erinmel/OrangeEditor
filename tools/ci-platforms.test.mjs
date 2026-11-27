@@ -10,13 +10,10 @@ test('ordinary coverage retains the three product platforms and both ARM64 hosts
   ]);
 });
 
-test('extended coverage adds native architectures without replacing required platforms', () => {
-  const ordinary = platforms(false).include;
+test('extended coverage tests the same hosts, without Intel Macs', () => {
   const extended = platforms(true).include;
-  assert.deepEqual(extended.slice(0, ordinary.length), ordinary);
-  assert.deepEqual(extended.slice(ordinary.length).map(p => [p.os, p.host]), [
-    ['macos-15-intel', 'x86_64-apple-darwin'],
-  ]);
+  assert.deepEqual(extended, platforms(false).include);
+  assert.ok(!extended.some(p => p.host === 'x86_64-apple-darwin'));
   assert.equal(new Set(extended.map(p => p.os)).size, extended.length);
 });
 
