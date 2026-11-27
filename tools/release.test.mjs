@@ -12,6 +12,28 @@ const metadata = {workspace_members: ['editor'], packages: [member], resolve: {n
 const config = {qualified: true, package: 'orange-editor', binary: 'orange-editor'};
 const receipt = {target: 'x86_64-pc-windows-msvc', version: '1.2.3', commit: 'abc', files: ['OrangeEditor-windows.zip'], checks: {signature: true, timestamp: true, installation: true, launch: true}};
 
+test('release metadata has LF line endings and a final newline', () => {
+  const script = [
+    ". ./common.ps1",
+    "$file = [System.IO.Path]::GetTempFileName()",
+    "try {",
+    "    $text = 'Description: OrangeEditor' + [char]13 + [char]10 + ' Edits typed node graphs.'",
+    "    Write-TextFile $file $text",
+    "    [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($file))",
+    "} finally {",
+    "    Remove-Item -LiteralPath $file",
+    "}",
+  ].join('\n');
+  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    cwd: fileURLToPath(new URL('./release/', import.meta.url)),
+    encoding: 'utf8',
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const bytes = Buffer.from(result.stdout.trim(), 'base64');
+  assert.deepEqual(bytes, Buffer.from('Description: OrangeEditor\n Edits typed node graphs.\n'));
+});
+
 test('unconfigured library workspace cannot produce a release', () => {
   const disabled = {qualified: false, package: null, binary: null};
   assert.equal(inspectConfig(disabled, metadata), null);
