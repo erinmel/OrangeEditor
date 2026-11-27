@@ -1,6 +1,8 @@
 import {pathToFileURL} from 'node:url';
 
 // Native tests: each host triple is asserted against rustc before running Cargo.
+// Extended runs (weekly and release validation) test the same hosts; Intel Macs were
+// dropped on 2026-11-27, as no release builds for them.
 export function platforms(extended) {
   if (typeof extended !== 'boolean') throw new TypeError('extended must be a boolean');
   const include = [
@@ -12,9 +14,6 @@ export function platforms(extended) {
     {label: 'Linux ARM64', os: 'ubuntu-24.04-arm', host: 'aarch64-unknown-linux-gnu'},
     {label: 'Windows ARM64', os: 'windows-11-arm', host: 'aarch64-pc-windows-msvc'},
   ];
-  if (extended) include.push(
-    {label: 'macOS x64', os: 'macos-15-intel', host: 'x86_64-apple-darwin'},
-  );
   return {include};
 }
 
