@@ -145,6 +145,8 @@ assert.equal(searchIndex(prepareIndex(spanishSearch), 'Branch')[0]?.path, 'es/no
 assert.equal(searchIndex(prepareIndex(spanishSearch), 'puene salida')[0]?.path, 'es/nodes/core/bridge-out/1/');
 assert.equal(searchIndex(prepareIndex(spanishSearch), 'cuenta las pulsaciones de un botón')[0]?.path, 'es/count-button-presses/');
 const spanishTutorial = await read('es/count-button-presses/index.html');
+const loopTutorial = await read('repeat-with-a-loop/index.html');
+const spanishLoop = await read('es/repeat-with-a-loop/index.html');
 assert.match(spanishTutorial, /<code>Counter = 3<\/code>/);
 for (const page of [tutorial, spanishTutorial]) {
   assert.match(page, /class="node-stage graph-wire"/);
@@ -155,6 +157,11 @@ for (const page of [tutorial, spanishTutorial]) {
   assert.match(page, /<code>Studio mic<\/code>/);
 }
 if (requireNativePreviews) {
+  for (const [language, page] of [['en', loopTutorial], ['es', spanishLoop]]) {
+    for (const theme of ['light', 'dark']) {
+      assert.ok(page.includes('assets/tutorial-graphs/' + language + '/power-with-count/' + theme + '.png'));
+    }
+  }
   for (const [language, page] of [['en', tutorial], ['es', spanishTutorial]]) {
     for (const graph of ['counter-first-step', 'counter-with-reset', 'json-extraction']) {
       for (const theme of ['light', 'dark']) {
@@ -167,7 +174,15 @@ if (requireNativePreviews) {
   }
 }
 assert.match(spanishTutorial, /rel="prev" href="\.\.\/getting-started\//);
-assert.match(spanishTutorial, /rel="next" href="\.\.\/editor\//);
+assert.match(spanishTutorial, /rel="next" href="\.\.\/repeat-with-a-loop\//);
+for (const page of [loopTutorial, spanishLoop]) {
+  assert.match(page, /nodes\/core\/count\/1\/#port-body/);
+  assert.match(page, /<code>power = 81<\/code>/);
+}
+for (const page of [await read('run-a-graph-from-rust/index.html'), await read('es/run-a-graph-from-rust/index.html')]) {
+  assert.match(page, /examples\/run_counter\.rs/);
+  assert.match(page, /Counter = Some\(I64\(3\)\)/);
+}
 assert.match(branchPage, /Boolean that chooses the branch/);
 assert.match(branchPage, /<ul class="port-legend">/);
 assert.ok(branchPage.indexOf('<h2 id="try-it">') < branchPage.indexOf('<h2 id="ports">'));

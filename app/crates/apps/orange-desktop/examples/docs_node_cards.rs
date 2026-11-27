@@ -179,9 +179,11 @@ fn render_tutorial_graphs(
 ) -> Result<(), Box<dyn Error>> {
     let counter = include_str!("../../orange-cli/graphs/counter-with-reset.json");
     let json = include_str!("../../orange-cli/graphs/json-extraction.json");
+    let power = include_str!("../../orange-cli/graphs/power-with-count.json");
     for (slug, document, dimensions) in [
         ("counter-with-reset", counter, [680, 850]),
         ("json-extraction", json, [1000, 520]),
+        ("power-with-count", power, [1280, 680]),
     ] {
         let directory = destination.join(language).join("graphs").join(slug);
         fs::create_dir_all(&directory)?;

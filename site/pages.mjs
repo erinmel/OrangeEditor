@@ -15,6 +15,8 @@ export const pages = [
   ['getting-started', 'Getting started', 'Open the desktop editor, run your first graph, and try the terminal runner.', 'start'],
 
   ['count-button-presses', 'Count button presses', 'Build a graph from an empty canvas: triggers, a variable, and actions that change it.', 'tutorials'],
+  ['repeat-with-a-loop', 'Repeat an action with a loop', 'Raise a number to a power with Count, a variable and data wires.', 'tutorials'],
+  ['run-a-graph-from-rust', 'Run a graph from Rust', 'Open a saved graph in your own program, press its buttons and read its variables.', 'tutorials'],
 
   ['editor', 'Use the editor', 'Place and wire typed nodes, configure variables and connections, and debug a flow.', 'how-to'],
   ['call-an-http-api', 'Call an HTTP API', 'Send a request through a connection and handle statuses, failures, and retries.', 'how-to'],

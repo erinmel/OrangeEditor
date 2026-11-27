@@ -11,6 +11,7 @@ export const tutorial = {
   'counter-first-step': ['Increment and Add one cards connected in OrangeEditor', 'The execution wire runs from Increment to Add one.'],
   'counter-with-reset': ['Counter graph in OrangeEditor', 'Increment adds one, Decrement subtracts one, and Reset sets Counter to zero.'],
   'json-extraction': ['JSON extraction graph in OrangeEditor', 'The manual trigger runs the variable write. The JSON nodes supply the value through data wires.'],
+  'power-with-count': ['Power graph with a loop in OrangeEditor', 'Count runs body four times. Each pass multiplies the variable by the base.'],
   graph: 'Open the example graph',
   linkedPorts: 'Follow the ports',
 };

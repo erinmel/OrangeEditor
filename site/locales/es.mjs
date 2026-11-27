@@ -7,6 +7,8 @@ export const pages = {
   '': ['Inicio', 'Una base en Rust para grafos de nodos tipados con un editor en egui.'],
   'getting-started': ['Primeros pasos', 'Abre el editor y ejecuta tu primer grafo.'],
   'count-button-presses': ['Cuenta las pulsaciones de un botón', 'Construye un contador con disparadores, una variable y acciones.'],
+  'repeat-with-a-loop': ['Repite una acción con un bucle', 'Eleva un número a una potencia con Contar, una variable y cables de datos.'],
+  'run-a-graph-from-rust': ['Ejecuta un grafo desde Rust', 'Abre un grafo guardado en tu programa, pulsa sus botones y lee sus variables.'],
   editor: ['Usa el editor', 'Coloca y conecta nodos, configura variables y revisa los resultados.'],
   'call-an-http-api': ['Llama a una API HTTP', 'Configura una conexión y distingue respuestas HTTP de fallos de red.'],
   'react-to-file-changes': ['Reacciona a cambios en archivos', 'Ejecuta un flujo cuando cambie un archivo en una carpeta autorizada.'],
@@ -40,6 +42,7 @@ export const tutorial = {
   'counter-first-step': ['Tarjetas Increment y Add one conectadas en OrangeEditor', 'El cable de ejecución va de Increment a Add one.'],
   'counter-with-reset': ['Grafo del contador en OrangeEditor', 'Increment suma uno, Decrement resta uno y Reset vuelve a dejar Counter en cero.'],
   'json-extraction': ['Grafo de extracción de JSON en OrangeEditor', 'El disparador manual ejecuta la escritura de la variable. Los nodos JSON entregan el valor por los cables de datos.'],
+  'power-with-count': ['Grafo de potencia con un bucle en OrangeEditor', 'Contar ejecuta body cuatro veces. Cada vuelta multiplica la variable por la base.'],
   graph: 'Abre el grafo de ejemplo',
   linkedPorts: 'Consulta los puertos',
 };
