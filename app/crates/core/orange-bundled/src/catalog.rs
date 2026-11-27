@@ -136,7 +136,7 @@ impl MathPackage {
         }
         let key = |package: &str| ProviderKey {
             package: package.into(),
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.into(),
             content_digest: content_digest.clone(),
             id: "native-v1".into(),
         };
@@ -145,25 +145,25 @@ impl MathPackage {
             time: key("org.orange.time"),
             key: ProviderKey {
                 package: "org.orange.math".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.into(),
                 content_digest: content_digest.clone(),
                 id: "native-v1".into(),
             },
             text: ProviderKey {
                 package: "org.orange.text".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.into(),
                 content_digest: content_digest.clone(),
                 id: "native-v1".into(),
             },
             collections: ProviderKey {
                 package: "org.orange.collections".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.into(),
                 content_digest: content_digest.clone(),
                 id: "native-v1".into(),
             },
             json: ProviderKey {
                 package: "org.orange.json".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.into(),
                 content_digest,
                 id: "native-v1".into(),
             },

@@ -402,7 +402,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
-    let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+    let package = ServicePackage::new(PACKAGE, orange_sdk::BUILT_IN_PACKAGE_VERSION)
         .about(
             "Network",
             "HTTP requests, WebSocket connections, MQTT and AMQP 0-9-1.",

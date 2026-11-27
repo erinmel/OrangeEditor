@@ -631,22 +631,24 @@ pub fn package() -> ServicePackage {
             vec![path()],
         ),
     ];
-    let mut package = Ok(ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
-        .about(
-            "Files",
-            "Reads, writes, lists and watches files in folders the document names.",
-        )
-        .with_catalogs(CATALOGS)
-        .adapter(FOLDER_ADAPTER, FolderAdapter)
-        .record(
-            "change",
-            &[
-                ("kind", STRING),
-                ("path", STRING),
-                ("previous_path", STRING),
-                ("is_directory", "core/bool@1"),
-            ],
-        ));
+    let mut package = Ok(
+        ServicePackage::new(PACKAGE, orange_sdk::BUILT_IN_PACKAGE_VERSION)
+            .about(
+                "Files",
+                "Reads, writes, lists and watches files in folders the document names.",
+            )
+            .with_catalogs(CATALOGS)
+            .adapter(FOLDER_ADAPTER, FolderAdapter)
+            .record(
+                "change",
+                &[
+                    ("kind", STRING),
+                    ("path", STRING),
+                    ("previous_path", STRING),
+                    ("is_directory", "core/bool@1"),
+                ],
+            ),
+    );
     for (name, label, description, operation, ports) in nodes {
         package = package.and_then(|package| {
             let mut definition = described(Definition::node(PACKAGE, name, label), description);

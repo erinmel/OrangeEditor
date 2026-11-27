@@ -1017,7 +1017,7 @@ mod tests {
     fn an_http_graph_observes_the_status_and_body_without_output_wires() {
         use orange_host::{FlowEvent, Host, HostOptions, ServicePackage};
 
-        let package = ServicePackage::new(crate::PACKAGE, env!("CARGO_PKG_VERSION"))
+        let package = ServicePackage::new(crate::PACKAGE, orange_sdk::BUILT_IN_PACKAGE_VERSION)
             .adapter(crate::HTTP_ADAPTER, MockApi(Arc::default()))
             .node(&http_request_definition(), HttpRequest)
             .unwrap();

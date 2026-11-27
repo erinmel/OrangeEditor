@@ -106,6 +106,7 @@ pub use orange_guest::{
 };
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
+pub use orange_model::catalog::BUILT_IN_PACKAGE_VERSION;
 pub use orange_model::catalog::ReferenceKind;
 pub use orange_model::catalog::controls;
 pub use orange_model::catalog::{NodeDefinition, PathInput, Presentation, ProviderKey, TextRef};
@@ -885,9 +886,11 @@ fn package_types(
         .map_err(|error| format!("package types: {error}"))
 }
 
-/// A stable identity for code compiled into this host, in the form package digests use.
-fn built_in_digest(what: &str) -> String {
-    let hash = Sha256::digest(format!("{what}@{}", env!("CARGO_PKG_VERSION")).as_bytes());
+/// A stable identity for code compiled into this host at a package version, in the form
+/// package digests use. Graphs lock it with the version, so it must not change while the
+/// version stays the same.
+fn built_in_digest(what: &str, version: &str) -> String {
+    let hash = Sha256::digest(format!("{what}@{version}").as_bytes());
     format!("sha256:{}", hex(&hash))
 }
 
@@ -945,14 +948,27 @@ impl Host {
                     .output("timestamp", "core/timestamp@1")
                     .build();
             packages.push(
-                ServicePackage::new("org.orange.clock", env!("CARGO_PKG_VERSION"))
-                    .node(&definition, UtcTimestamp)
-                    .map_err(|error| start(&error))?,
+                ServicePackage::new(
+                    "org.orange.clock",
+                    orange_model::catalog::BUILT_IN_PACKAGE_VERSION,
+                )
+                .node(&definition, UtcTimestamp)
+                .map_err(|error| start(&error))?,
             );
         }
-        let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
-        let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
-            .map_err(|e| start(&e))?;
+        let math = MathPackage::new(built_in_digest(
+            "orange-bundled",
+            orange_model::catalog::BUILT_IN_PACKAGE_VERSION,
+        ))
+        .map_err(|e| start(&e))?;
+        let origin = HostOrigin::new(
+            env!("CARGO_PKG_VERSION"),
+            built_in_digest(
+                "orange-host",
+                orange_model::catalog::BUILT_IN_PACKAGE_VERSION,
+            ),
+        )
+        .map_err(|e| start(&e))?;
         let saved = match &options.package_dir {
             Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
             None => Vec::new(),
@@ -972,7 +988,7 @@ impl Host {
         let mut services = Services::default();
         let mut built_in = vec![BuiltIn {
             id: BASE_PACKAGE.to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: orange_model::catalog::BUILT_IN_PACKAGE_VERSION.to_owned(),
             kind: PackageKind::Base,
             active: base_nodes,
             name: Some("Base nodes".to_owned()),
@@ -1019,7 +1035,7 @@ impl Host {
             let key = ProviderKey {
                 package: package.id().to_owned(),
                 version: package.version().to_owned(),
-                content_digest: built_in_digest(package.id()),
+                content_digest: built_in_digest(package.id(), package.version()),
                 id: SERVICE_PROVIDER.to_owned(),
             };
             let mut provider = ProviderDescriptor {

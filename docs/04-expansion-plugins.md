@@ -427,6 +427,8 @@ Converter pair slots may contain distinct semantic entry contracts. An override 
 
 A package version may stop shipping a definition and ship another in its place: a renamed node, renamed ports or config fields, or a new definition version whose contract changed. The new definition file lists what it replaces (`replaces`, [12 §6.4](12-graph-data-structures.md)). Opening a document rebuilds each node of a replaced definition that the host no longer has as a node of its replacement, keeping its values, wires and place, and reports the nodes it rebuilt. A replaced definition that is still installed is never moved, and two packages that disagree about one replacement are refused, so the result does not depend on install order. This is a load-time rewrite of the document, not a provider swap: running flows and locks of installed versions are untouched until the document is opened again.
 
+Built-in packages (the base nodes, clock, files, network and audio) carry their own version, `orange_model::catalog::BUILT_IN_PACKAGE_VERSION`, not the application's. Graphs lock it exactly, so releasing the application leaves saved graphs resolving. It changes only when a built-in package changes in a way locks must notice, together with the replacements above. Its content digest is derived from the package ID and that version, so a locked pair stays valid across builds.
+
 Built-in service packages declare replacements with `Definition::replaces`; archive definitions write the field directly. Config value upgrades beyond renamed fields (`config_version`) are not covered yet.
 
 ## Hot update/removal semantics

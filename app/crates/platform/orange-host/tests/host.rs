@@ -1957,3 +1957,30 @@ fn an_unwired_variable_update_output_is_reported_once_it_completes() {
     assert!(matches!(seen["new"], Value::I64(1)), "{seen:?}");
     host.close(flow).unwrap();
 }
+
+/// Built-in packages keep their own version, not the application's, so a graph saved by
+/// an earlier release still finds the exact providers it pinned.
+#[test]
+fn built_in_packages_keep_their_own_version_across_releases() {
+    let (host, _) = Host::new(HostOptions::default()).unwrap();
+    let built_in: Vec<_> = host
+        .packages()
+        .filter(|package| package.kind != PackageKind::Installed)
+        .collect();
+    assert!(!built_in.is_empty());
+    for package in built_in {
+        assert_eq!(
+            package.version,
+            orange_host::BUILT_IN_PACKAGE_VERSION,
+            "{}",
+            package.id
+        );
+    }
+    // This example was saved with the base nodes pinned at the built-in version.
+    let saved = include_str!("../../../apps/orange-cli/graphs/json-extraction.json");
+    assert!(saved.contains(&format!(
+        "\"version\": \"{}\"",
+        orange_host::BUILT_IN_PACKAGE_VERSION
+    )));
+    assert!(host.check(saved).unwrap().is_empty());
+}

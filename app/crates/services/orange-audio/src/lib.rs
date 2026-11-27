@@ -1279,7 +1279,7 @@ fn record_definition() -> String {
 
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
-    let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+    let package = ServicePackage::new(PACKAGE, orange_sdk::BUILT_IN_PACKAGE_VERSION)
         .about(
             "Audio",
             "Plays sound files and live audio on output devices, and listens to, measures and records microphones and other inputs.",
