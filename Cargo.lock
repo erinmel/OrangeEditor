@@ -3394,7 +3394,7 @@ dependencies = [
 
 [[package]]
 name = "orange-audio"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "claxon",
  "cpal",
@@ -3413,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "orange-bundled"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "jiff",
  "orange-compiler",
@@ -3429,7 +3429,7 @@ dependencies = [
 
 [[package]]
 name = "orange-cli"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-audio",
  "orange-files",
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "orange-compiler"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-kernel",
  "orange-model",
@@ -3452,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "orange-desktop"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "ashpd",
  "async-channel",
@@ -3477,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "orange-docs-web"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "eframe",
  "orange-ui-controls",
@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "orange-editor-ui"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "egui 0.37.0",
  "orange-audio",
@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "orange-files"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-host",
  "orange-model",
@@ -3513,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "orange-guest"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-bundled",
  "orange-compiler",
@@ -3530,7 +3530,7 @@ dependencies = [
 
 [[package]]
 name = "orange-host"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "fluent-bundle",
  "fluent-syntax",
@@ -3554,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "orange-kernel"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-model",
  "thiserror 2.0.21",
@@ -3562,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "orange-measure"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-bundled",
  "orange-compiler",
@@ -3573,7 +3573,7 @@ dependencies = [
 
 [[package]]
 name = "orange-model"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "indexmap",
  "proptest",
@@ -3586,7 +3586,7 @@ dependencies = [
 
 [[package]]
 name = "orange-native"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "libloading 0.9.0",
  "orange-host",
@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "orange-net"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-host",
  "orange-model",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "orange-packages"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-model",
  "proptest",
@@ -3629,14 +3629,14 @@ dependencies = [
 
 [[package]]
 name = "orange-plugin-example"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-sdk",
 ]
 
 [[package]]
 name = "orange-runtime"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-compiler",
  "orange-model",
@@ -3648,7 +3648,7 @@ dependencies = [
 
 [[package]]
 name = "orange-sandbox"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "rustix 1.1.6",
  "same-file",
@@ -3656,7 +3656,7 @@ dependencies = [
 
 [[package]]
 name = "orange-sdk"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "orange-kernel",
  "orange-model",
@@ -3666,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "orange-testkit"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "egui 0.37.0",
  "orange-model",
@@ -3675,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "orange-ui-controls"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "cpal",
  "eframe",
@@ -3692,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "orange-vault"
-version = "0.0.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "keyring",
  "orange-sdk",

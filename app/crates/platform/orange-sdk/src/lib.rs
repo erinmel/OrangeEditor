@@ -24,7 +24,9 @@ pub use controls::{Control, Layout};
 pub use lifecycle::Lifecycle;
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
-pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
+pub use orange_model::catalog::{
+    BUILT_IN_PACKAGE_VERSION, DefinitionError, NodeDefinition, Presentation, TextRef,
+};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::id::PortKey;
 pub use orange_model::replace::Replacement;

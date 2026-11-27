@@ -6,6 +6,12 @@ use super::TypeArgs;
 use crate::GraphDocument;
 use crate::document::{DefinitionRef, ProviderBinding};
 
+/// The version of the packages built into OrangeEditor: the base nodes, clock, files,
+/// network and audio. It is the packages' own version, not the application's. Saved
+/// graphs pin it exactly, so it changes only when a built-in package changes in a way
+/// saved graphs must notice, never because the application is released.
+pub const BUILT_IN_PACKAGE_VERSION: &str = "0.0.0";
+
 /// Exact implementation identity that specialization metadata belongs to: a node's
 /// provider binding plus the document lock's digest for that package version. Two
 /// providers of one definition can support different argument sets.

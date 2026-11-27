@@ -31,7 +31,7 @@ pub(crate) use language::{
     implicit_port, implicit_ports, instance_port, intrinsic, is_converter_special_form,
     is_intrinsic,
 };
-pub use provider::{ProviderDescriptor, ProviderKey};
+pub use provider::{BUILT_IN_PACKAGE_VERSION, ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};
 pub use timer::{MissedTicks, TimerFirst, TimerSchedule};
 pub use watch::{NumericWatch, WatchCondition, WatchConfig};
