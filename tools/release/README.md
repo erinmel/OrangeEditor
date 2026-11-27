@@ -45,7 +45,7 @@ PR and reusable validation jobs have read-only permissions and receive no releas
 
 ## Validation
 
-`node --test tools/release.test.mjs` exercises disabled/unqualified releases, wrong package/version, library targets, license/development-feature guards, missing packagers, failed native verification, artifact paths, actual checksums and complete platform collection. `node tools/release.mjs check` validates the tracked configuration without claiming release readiness. Run actionlint against both workflow files for schema/expression checks. No real desktop package can be built or published until the prerequisites above are implemented.
+`node --test tools/release.test.mjs` exercises disabled/unqualified releases, wrong package/version, library targets, license/development-feature guards, missing packagers, failed native verification, artifact paths, actual checksums and complete platform collection. It uses PowerShell (`pwsh`) to check that generated package metadata is UTF-8 without a BOM and ends with a Linux-compatible newline. `node tools/release.mjs check` validates the tracked configuration without claiming release readiness. Run actionlint against both workflow files for schema/expression checks. No real desktop package can be built or published until the prerequisites above are implemented.
 
 For each final desktop artifact, run the following from a fresh install with a clean
 profile and record the platform, artifact checksum and result.

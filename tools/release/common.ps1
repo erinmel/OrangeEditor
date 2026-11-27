@@ -37,11 +37,13 @@ function New-WorkDirectory([string]$Name) {
     $path
 }
 
-# Writes text with LF line endings and no byte order mark. Scripts are checked out
-# with CRLF (.gitattributes), and package metadata such as a .deb control file must
-# not carry those carriage returns.
+# Writes metadata with LF line endings and no byte order mark. PowerShell here-strings
+# inherit the script's line endings and omit the newline before the closing delimiter.
+# Debian control files require that final newline.
 function Write-TextFile([string]$Path, [string]$Text) {
-    [System.IO.File]::WriteAllText($Path, ($Text -replace "`r", ''))
+    $Text = $Text -replace "`r", ''
+    if (-not $Text.EndsWith("`n")) { $Text += "`n" }
+    [System.IO.File]::WriteAllText($Path, $Text)
 }
 
 # The license and notice files at the repository root, to ship beside the program.
