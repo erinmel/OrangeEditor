@@ -2,6 +2,7 @@
 name = "orange-desktop"
 description = "OrangeEditor desktop application: the window that hosts the editor interface"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

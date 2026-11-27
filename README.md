@@ -161,3 +161,10 @@ measurement and the Git workflow.
 
 [Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md) describe how to work
 in this repository.
+
+## License
+
+OrangeEditor is licensed under either of the [MIT license](LICENSE-MIT) or the
+[Apache License, Version 2.0](LICENSE-APACHE), at your option. Unless you state
+otherwise, any contribution you submit for inclusion is licensed the same way, without
+additional terms.

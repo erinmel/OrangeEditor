@@ -2,6 +2,7 @@
 name = "orange-host"
 description = "OrangeEditor session host: packages, concurrent graph runs and effect workers behind one API"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

@@ -2,6 +2,7 @@
 name = "orange-packages"
 description = "OrangeEditor package manifests, lifecycle state and registry transactions"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

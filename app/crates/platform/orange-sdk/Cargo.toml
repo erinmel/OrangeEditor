@@ -2,6 +2,7 @@
 name = "orange-sdk"
 description = "OrangeEditor plugin SDK: native nodes, triggers and connection adapters for a host application"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

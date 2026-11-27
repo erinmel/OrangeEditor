@@ -2,6 +2,7 @@
 name = "orange-runtime"
 description = "OrangeEditor headless execution primitives and deterministic consumption scopes"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

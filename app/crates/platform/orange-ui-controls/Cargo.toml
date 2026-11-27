@@ -2,6 +2,7 @@
 name = "orange-ui-controls"
 description = "Reusable theme-aware egui controls"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false

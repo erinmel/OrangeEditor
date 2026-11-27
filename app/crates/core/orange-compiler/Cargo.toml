@@ -2,6 +2,7 @@
 name = "orange-compiler"
 description = "OrangeEditor checked pure export plan compiler"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
