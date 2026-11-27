@@ -106,3 +106,11 @@ debug = false
 # rather than losing the process with it.
 lto = "thin"
 codegen-units = 1
+
+# The whole test suite built as the release runs: optimised and without debug
+# assertions. Cross-crate optimisation is left out: it changes no behaviour, and with
+# it every test binary took most of an hour to build.
+[profile.qualify]
+inherits = "release"
+lto = false
+codegen-units = 16

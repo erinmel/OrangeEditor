@@ -242,7 +242,13 @@ mod tests {
             "3 nodos seleccionados"
         );
         set_language(PSEUDO_LANGUAGE);
-        assert!(t("cancel").starts_with("Cáñçél"));
+        // The pseudo-language is built only into debug builds; a release build reads
+        // English for it.
+        if cfg!(debug_assertions) {
+            assert!(t("cancel").starts_with("Cáñçél"));
+        } else {
+            assert_eq!(t("cancel"), "Cancel");
+        }
         set_language(SOURCE_LANGUAGE);
         assert_eq!(
             tf("nodes-selected", &[("count", 1.into())]),

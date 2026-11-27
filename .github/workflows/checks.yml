@@ -226,7 +226,7 @@ jobs:
     needs: policy
     runs-on: ubuntu-24.04
     # Extended runs (weekly and release validation) also run the whole optimized
-    # workspace suite, which takes about 15 minutes on its own.
+    # workspace suite in the qualify profile.
     timeout-minutes: ${{ needs.policy.outputs.extended == 'true' && 60 || 20 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -258,7 +258,8 @@ jobs:
           done
       - name: Full optimized workspace qualification on extended runs
         if: needs.policy.outputs.extended == 'true'
-        run: cargo test --workspace --release --locked
+        # Every crate runs, so one failure does not hide another.
+        run: cargo test --workspace --profile qualify --locked --no-fail-fast
 
   guest:
     name: 2 · guest / probe component from source
