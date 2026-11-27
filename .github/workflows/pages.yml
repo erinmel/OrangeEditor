@@ -45,7 +45,9 @@ jobs:
           node-version: 24.18.0
           package-manager-cache: false
       - name: Install ALSA development headers and a headless renderer
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev libvulkan1 mesa-vulkan-drivers
+        # Only Ubuntu's own repositories are needed; the runner's Microsoft repository can
+        # refuse requests and fail the whole update.
+        run: sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* && sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev libvulkan1 mesa-vulkan-drivers
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
