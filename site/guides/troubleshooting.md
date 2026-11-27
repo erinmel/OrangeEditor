@@ -38,8 +38,10 @@ runs; see [Data wires and execution wires](../data-and-execution/).
 
 ### A trigger faults when pressed quickly.
 
-Its queue is full. Raise its capacity, or choose what happens to extra activations,
-in its **Properties**.
+Its queue is full. A trigger keeps up to 16 activations waiting while an earlier one
+runs. Give each activation less to do, or change `capacity` and `overflow` in the
+node's `activation` in the graph file; see the
+[graph file format](../reference/graph-file-format/).
 
 ### Two ports will not connect.
 

@@ -12,7 +12,7 @@ Deja abiertos **Nodos** y **Propiedades**.
 
 <h2 id="declare-the-counter">Declara el contador</h2>
 
-En **Variables**, crea `Counter` con tipo entero y valor inicial `0`. Elige el ámbito de ejecución para que el contador conserve su valor entre activaciones y vuelva a cero al iniciar otra ejecución.
+En **Variables**, crea `Counter` con tipo **Entero** y valor inicial `0`. Elige el ámbito de ejecución para que el contador conserve su valor entre activaciones y vuelva a cero al iniciar otra ejecución.
 
 <h2 id="add-the-first-button">Añade el primer botón</h2>
 
@@ -24,7 +24,7 @@ En **Variables**, crea `Counter` con tipo entero y valor inicial `0`. Elige el �
 
 <h2 id="run-it">Ejecuta el grafo</h2>
 
-Revisa **Problemas** y pulsa **Ejecutar**. Dispara `Increment` tres veces. En **Variables** debe aparecer **`Counter = 3`**. Cada pulsación inicia una activación. El disparador puede acumular hasta ocho pendientes por defecto y puedes cambiar el límite en **Propiedades**.
+Revisa **Problemas** y pulsa **Ejecutar**. Dispara `Increment` tres veces. En **Variables** debe aparecer **`Counter = 3`**. Cada pulsación inicia una activación. El disparador guarda hasta 16 pulsaciones en espera mientras se ejecuta otra. Si llega una más, el disparador falla.
 
 <h2 id="add-the-other-two-buttons">Añade los otros dos botones</h2>
 
@@ -34,7 +34,7 @@ Detén el grafo. Conecta un disparador `Decrement` a **Actualizar variable** con
 
 <h2 id="what-you-built">Qué construiste</h2>
 
-Los disparadores inician el trabajo, los cables de ejecución ordenan los pasos y la variable guarda el estado entre pulsaciones. Consulta [datos y ejecución](../data-and-execution/) para ver cómo se combinan con los cables de datos.
+Los disparadores inician el trabajo, los cables de ejecución ordenan los pasos y la variable guarda el estado entre pulsaciones. Consulta [datos y ejecución](../data-and-execution/) para ver cómo se combinan con los cables de datos, o sigue con [Repite una acción con un bucle](../repeat-with-a-loop/).
 
 <h2 id="try-a-graph-with-data-wires">Prueba un grafo con cables de datos</h2>
 

@@ -25,7 +25,7 @@ The editor opens with an empty graph. Keep the **Nodes** panel open on the left 
 A variable holds a value between activations of the graph.
 
 1. Open **Variables** and add a variable named `Counter`.
-2. Give it the type **Whole number** and the start value `0`.
+2. Give it the type **Int** and the start value `0`.
 3. Keep its scope as a run variable: it lives while the graph runs and starts again at
    `0` the next time you press **Run**.
 
@@ -50,8 +50,8 @@ A variable holds a value between activations of the graph.
 3. Open **Variables** and confirm **`Counter = 3`**.
 
 Each press started its own activation, and they run in the order you pressed. A
-trigger queues up to eight presses that are still waiting; you can change how many,
-and what happens to more, in its **Properties**.
+trigger keeps up to 16 presses waiting while an earlier one runs; a press beyond
+that faults the trigger.
 
 ## Add the other two buttons
 
@@ -75,14 +75,15 @@ Run the graph again and try all three. Then use **Save as** to keep your graph.
 - **Variables keep state.** Actions change them; the value survives between
   activations of the same run.
 
-Next, learn why graphs also have [data wires](../data-and-execution/), or
-[call an HTTP API](../call-an-http-api/) from a button.
+Next, [repeat an action with a loop](../repeat-with-a-loop/), learn why graphs also
+have [data wires](../data-and-execution/), or [call an HTTP API](../call-an-http-api/)
+from a button.
 
 ## Try a graph with data wires
 
 Open [JSON extraction](../examples/#json-extraction) and fire **Read sample JSON**.
-[**JSON Parse**](../nodes/org.orange.json/parse/1/) reads the sample, then
-[**JSON Read Text**](../nodes/org.orange.json/read-text/1/) supplies the name
+[**Parse JSON**](../nodes/org.orange.json/parse/1/) reads the sample, then
+[**Read JSON Text**](../nodes/org.orange.json/read-text/1/) supplies the name
 or its fallback to **Set variable**. Look at **Variables** after firing.
 The value of `extracted_text` should be `Studio mic`.
 
