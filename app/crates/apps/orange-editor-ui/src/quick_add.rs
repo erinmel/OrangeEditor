@@ -377,6 +377,23 @@ impl Editor {
                     }),
             );
         }
+        if quick.from.is_none()
+            && self.function_body.is_none()
+            && self.document.is_some()
+            && comments::matches(search)
+        {
+            choices.insert(
+                0,
+                QuickChoice {
+                    definition: comments::DEFINITION.to_owned(),
+                    label: t("canvas-comment").to_owned(),
+                    input: None,
+                    output: None,
+                    category: t("canvas-comment-category").to_owned(),
+                    purpose: t("canvas-comment-help").to_owned(),
+                },
+            );
+        }
         choices
     }
 
@@ -384,6 +401,14 @@ impl Editor {
     /// A successful placement closes the search and returns the new node.
     pub fn pick_quick(&mut self, host: &mut Host, choice: &QuickChoice) -> Option<NodeId> {
         let quick = self.quick.take()?;
+        if choice.definition == comments::DEFINITION
+            && quick.from.is_none()
+            && quick.into.is_none()
+            && self.function_body.is_none()
+        {
+            self.add_canvas_comment(quick.at);
+            return None;
+        }
         let placed = self.place_quick(host, choice, &quick);
         if placed.is_none() {
             self.quick = Some(quick);

@@ -390,7 +390,7 @@ impl Dropdown for ComboBox<'_> {
     ) -> InnerResponse<Option<R>> {
         with_style(ui, surface, Action::Secondary, |ui| {
             let theme = Theme::of(ui);
-            let field = input_frame(ui, surface, CONTROL_RADIUS);
+            let field = input_frame(ui, surface, control_radius(ui.ctx()));
             let focus = Stroke::new(2.0, theme.focus);
             let widgets = &mut ui.visuals_mut().widgets;
             for state in [
@@ -423,11 +423,40 @@ fn paint_chevron(ui: &Ui, center: egui::Pos2, angle: f32, color: egui::Color32) 
         .add(egui::Shape::line(points.to_vec(), Stroke::new(1.25, color)));
 }
 
+/// Presentation choices for expandable tree branches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeStyle {
+    pub guides: bool,
+    pub arrows: bool,
+    pub branch_background: bool,
+}
+
+impl Default for TreeStyle {
+    fn default() -> Self {
+        Self {
+            guides: true,
+            arrows: true,
+            branch_background: false,
+        }
+    }
+}
+
 /// Draws a compact disclosure row with native keyboard and expanded-state semantics.
 pub fn tree_section<R>(
     ui: &mut Ui,
     surface: Surface,
     header: egui::CollapsingHeader,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::CollapsingResponse<R> {
+    tree_section_styled(ui, surface, header, TreeStyle::default(), contents)
+}
+
+/// Draws a branch with optional guides, arrows, and a grouped surface.
+pub fn tree_section_styled<R>(
+    ui: &mut Ui,
+    surface: Surface,
+    header: egui::CollapsingHeader,
+    tree: TreeStyle,
     contents: impl FnOnce(&mut Ui) -> R,
 ) -> egui::CollapsingResponse<R> {
     let theme = Theme::of(ui);
@@ -436,27 +465,72 @@ pub fn tree_section<R>(
         let spacing = ui.spacing_mut();
         spacing.interact_size.y = 26.0;
         spacing.button_padding = egui::vec2(SPACE_MEDIUM, 3.0);
-        spacing.indent = 20.0;
+        spacing.indent_ends_with_horizontal_line = false;
+        spacing.indent = if tree.arrows || tree.guides {
+            20.0
+        } else {
+            9.0
+        };
         spacing.item_spacing.x = SPACE_SMALL;
         let visuals = ui.visuals_mut();
         visuals.collapsing_header_frame = true;
+        visuals.indent_has_left_vline = tree.guides;
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, theme.border);
+        let radius = visuals.widgets.inactive.corner_radius;
+        let background = visuals.faint_bg_color;
         for state in widget_states(&mut visuals.widgets) {
             state.bg_stroke = Stroke::NONE;
-            state.corner_radius = 4.into();
+            state.corner_radius = radius;
             state.expansion = 0.0;
         }
-        visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+        visuals.widgets.inactive.weak_bg_fill = if tree.branch_background {
+            background
+        } else {
+            egui::Color32::TRANSPARENT
+        };
         visuals.widgets.active.bg_stroke = Stroke::new(1.0, theme.focus);
         header
             .icon(move |ui, openness, response| {
-                let angle = (openness - 1.0) * std::f32::consts::FRAC_PI_2;
-                paint_chevron(ui, response.rect.center(), angle, theme.muted_text);
+                if tree.arrows {
+                    let angle = (openness - 1.0) * std::f32::consts::FRAC_PI_2;
+                    paint_chevron(ui, response.rect.center(), angle, theme.muted_text);
+                }
             })
             .show(ui, |ui| {
                 ui.set_style(body_style);
-                contents(ui)
+                if tree.branch_background {
+                    egui::Frame::new()
+                        .fill(background)
+                        .corner_radius(radius)
+                        .inner_margin(3)
+                        .show(ui, contents)
+                        .inner
+                } else {
+                    contents(ui)
+                }
             })
     })
+}
+
+/// Overrides the radius of shared buttons in this context.
+pub fn set_control_radius(ctx: &egui::Context, radius: Option<u8>) {
+    let id = control_radius_id();
+    ctx.data_mut(|data| {
+        if let Some(radius) = radius {
+            data.insert_temp(id, radius);
+        } else {
+            data.remove::<u8>(id);
+        }
+    });
+}
+
+fn control_radius_id() -> egui::Id {
+    egui::Id::unique("orange-control-radius")
+}
+
+fn control_radius(ctx: &egui::Context) -> u8 {
+    ctx.data(|data| data.get_temp(control_radius_id()))
+        .unwrap_or(CONTROL_RADIUS)
 }
 
 /// Draws an action with the shared theme for `surface`.
@@ -497,7 +571,7 @@ pub fn button(
             background,
             egui::epaint::RectShape::new(
                 response.rect,
-                CONTROL_RADIUS,
+                control_radius(ui.ctx()),
                 fill.gamma_multiply(fade),
                 Stroke::new(stroke.width, stroke.color.gamma_multiply(fade)),
                 egui::StrokeKind::Inside,
@@ -915,7 +989,7 @@ pub fn footer<R>(ui: &mut Ui, fill: egui::Color32, contents: impl FnOnce(&mut Ui
     egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, theme.border))
-        .corner_radius(CONTROL_RADIUS)
+        .corner_radius(control_radius(ui.ctx()))
         .inner_margin(SPACE_MEDIUM)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -1153,7 +1227,7 @@ pub fn notice(ui: &mut Ui, tone: ButtonTone, text: impl Into<egui::WidgetText>) 
     egui::Frame::new()
         .fill(theme.dialog.lerp_to_gamma(accent, 0.11))
         .stroke(Stroke::new(1.0, theme.border.lerp_to_gamma(accent, 0.52)))
-        .corner_radius(CONTROL_RADIUS)
+        .corner_radius(control_radius(ui.ctx()))
         .inner_margin(egui::vec2(SPACE_MEDIUM, SPACE_SMALL))
         .show(ui, |ui| {
             ui.visuals_mut().override_text_color = Some(theme.text);
@@ -1174,7 +1248,7 @@ pub fn text_field(
         let theme = Theme::of(ui);
         let response = egui::TextEdit::singleline(text)
             .id(id)
-            .frame(input_frame(ui, surface, CONTROL_RADIUS))
+            .frame(input_frame(ui, surface, control_radius(ui.ctx())))
             .align(egui::Align2::LEFT_CENTER)
             .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
             .hint_text(egui::RichText::new(hint).color(theme.muted_text))
@@ -1182,7 +1256,7 @@ pub fn text_field(
             .desired_width(f32::INFINITY)
             .show(ui)
             .response;
-        paint_input_focus(ui, &response, CONTROL_RADIUS);
+        paint_input_focus(ui, &response, control_radius(ui.ctx()));
         response.response
     })
 }
@@ -1199,14 +1273,14 @@ pub fn text_area(
         let theme = Theme::of(ui);
         let response = egui::TextEdit::multiline(text)
             .id(id)
-            .frame(input_frame(ui, surface, CONTROL_RADIUS))
+            .frame(input_frame(ui, surface, control_radius(ui.ctx())))
             .desired_rows(4)
             .hint_text(egui::RichText::new(hint).color(theme.muted_text))
             .text_color(theme.text)
             .desired_width(f32::INFINITY)
             .show(ui)
             .response;
-        paint_input_focus(ui, &response, CONTROL_RADIUS);
+        paint_input_focus(ui, &response, control_radius(ui.ctx()));
         response.response
     })
 }
@@ -1269,7 +1343,7 @@ pub fn resizable_text_area(
     let theme = Theme::of(ui);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    let frame = input_frame(ui, surface, CONTROL_RADIUS);
+    let frame = input_frame(ui, surface, control_radius(ui.ctx()));
     let response = frame
         .show(&mut child, |ui| {
             let inner = ui.available_size();
@@ -1355,7 +1429,6 @@ fn surface_frame(frame: egui::Frame, theme: Theme) -> egui::Frame {
     frame
         .fill(theme.dialog)
         .stroke(Stroke::new(1.0, theme.border))
-        .corner_radius(CONTROL_RADIUS)
         .inner_margin(SPACE_MEDIUM)
 }
 
@@ -1455,7 +1528,13 @@ pub fn icon_button(
             Stroke::NONE
         };
         let painter = ui.painter();
-        painter.rect(rect, CONTROL_RADIUS, fill, stroke, egui::StrokeKind::Inside);
+        painter.rect(
+            rect,
+            control_radius(ui.ctx()),
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
 
         let color = icon_color.unwrap_or(visuals.fg_stroke.color);
         let icon_size = rect.width().min(rect.height()).min(16.0);

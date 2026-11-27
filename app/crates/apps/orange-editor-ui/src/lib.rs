@@ -25,6 +25,7 @@
 pub mod bundle;
 pub mod canvas;
 mod card_sources;
+mod comments;
 pub mod controls;
 mod declarations;
 mod diagnostics;
@@ -46,6 +47,7 @@ mod properties;
 mod quick_add;
 mod settings;
 mod theme;
+mod toolbar_options;
 pub use theme::apply as apply_theme;
 mod types_tab;
 
@@ -281,6 +283,15 @@ struct ConversionChoice {
     at: Option<egui::Pos2>,
 }
 
+/// Optional system-wide readings, supplied by the application that hosts the UI.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemStatus {
+    /// CPU usage across all processors, from 0 to 100.
+    pub cpu_percent: Option<f32>,
+    /// Aggregate receive and transmit rates, in KiB/s.
+    pub network_kib_per_second: Option<[u64; 2]>,
+}
+
 /// The left panel's tabs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -507,6 +518,14 @@ pub struct Editor {
     settings_tab: settings::Section,
     preferred_scale: Option<f32>,
     preferred_theme: Option<egui::ThemePreference>,
+    tree_style: orange_ui_controls::TreeStyle,
+    corners: settings::Corners,
+    display_page: settings::DisplayPage,
+    bars: settings::Bars,
+    toolbar_options: toolbar_options::Toolbar,
+    system_status: SystemStatus,
+    comment_edit: Option<orange_host::CanvasComment>,
+    comment_focus: bool,
     scale_applied: bool,
     shortcut_edit: Option<keymap::ShortcutEdit>,
     node_config_menu: Option<(NodeId, egui::Pos2)>,
@@ -676,6 +695,7 @@ impl Editor {
         self.forms = declarations::Forms::default();
         self.probing = None;
         self.tab = self.preferred_tab;
+        self.comment_edit = None;
         self.previews.invalidate();
         self.stop(host);
         let path = path.into();
@@ -1917,12 +1937,32 @@ impl Editor {
                 .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         }
         self.canvas.shortcuts_enabled = !self.settings_open
+            && self.comment_edit.is_none()
             && !self.forms.open_connection
             && !self.has_node_ergonomics_modal()
             && self.value_form.is_none();
         if self.function_body.is_none() {
             self.keyboard(ui, host);
         }
+        orange_ui_controls::set_control_radius(ui.ctx(), self.corners.controls);
+        let theme = ui.ctx().theme();
+        let previous_visuals = &ui.ctx().style_of(theme).visuals;
+        if self
+            .corners
+            .windows
+            .is_some_and(|radius| previous_visuals.window_corner_radius != radius.into())
+            || self
+                .corners
+                .menus
+                .is_some_and(|radius| previous_visuals.menu_corner_radius != radius.into())
+            || self.corners.controls.is_some_and(|radius| {
+                previous_visuals.widgets.inactive.corner_radius != radius.into()
+            })
+        {
+            ui.ctx()
+                .style_mut_of(theme, |style| self.corners.apply(&mut style.visuals));
+        }
+        self.corners.apply(ui.visuals_mut());
         layout(self, ui, host);
         if self.window_toolbar {
             resize_borders(ui.ctx());
@@ -1937,6 +1977,7 @@ impl Editor {
         self.value_dialog(ui.ctx(), host);
         self.for_each_mode_dialog(ui.ctx(), host);
         self.build_map_rows_dialog(ui.ctx(), host);
+        self.comment_window(ui.ctx());
         if std::mem::take(&mut self.run_asked) {
             self.run(host);
         }
@@ -1950,7 +1991,9 @@ impl Editor {
             return;
         }
         self.toolbar(ui, host);
-        self.workspace_bar(ui);
+        if self.bars.status {
+            self.workspace_bar(ui);
+        }
         self.dock_layout(ui, host);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1962,6 +2005,7 @@ impl Editor {
     pub fn accepts_graph_key(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
         self.function_body.is_none()
             && !self.settings_open
+            && self.comment_edit.is_none()
             && !self.forms.open_connection
             && self.quick.is_none()
             && self.menu.is_none()
@@ -1976,326 +2020,213 @@ impl Editor {
     /// Draws the editor's top command bar in a top panel.
     pub fn toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         icons::install(ui.ctx());
-        egui::Panel::top("orange-toolbar").show(ui, |ui| {
-            ui.spacing_mut().interact_size.y = 28.0;
-            if ui.available_width() < if self.window_toolbar { 820.0 } else { 720.0 } {
-                ui.spacing_mut().item_spacing.x = 2.0;
-            }
-            ui.horizontal(|ui| {
-                let open = self.document.is_some();
-                let gap = ui.spacing().item_spacing.x;
-                let button = icons::BUTTON_WIDTH + gap;
-                let separator = 6.0 + gap;
-                let leading_buttons = if self.file_dialogs { 13.0 } else { 10.0 };
-                let trailing_width = if self.window_toolbar {
-                    6.0 * button + 2.0 * separator
-                } else {
-                    3.0 * button + separator
-                };
-                if ui.available_width()
-                    < leading_buttons * button + 4.0 * separator + trailing_width
-                {
-                    egui::ScrollArea::horizontal()
-                        .id_salt("toolbar-edit-commands")
-                        .max_width((ui.available_width() - trailing_width).max(1.0))
-                        .min_scrolled_width(1.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| self.toolbar_edit_commands(ui, host, open))
-                        });
-                } else {
-                    self.toolbar_edit_commands(ui, host, open);
+        egui::Panel::top("orange-toolbar")
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.spacing_mut().interact_size.y = 28.0;
+                if ui.available_width() < if self.window_toolbar { 820.0 } else { 720.0 } {
+                    ui.spacing_mut().item_spacing.x = 1.0;
                 }
-                let rest = ui.available_rect_before_wrap();
-                if self.window_toolbar {
-                    let drag = egui::Rect::from_min_max(
-                        rest.min,
-                        egui::pos2((rest.right() - 300.0).max(rest.left()), rest.bottom()),
-                    );
-                    if drag.width() > 100.0 {
-                        let name = self
-                            .path()
-                            .and_then(|path| std::path::Path::new(path).file_name())
-                            .map_or_else(|| "OrangeEditor".into(), |name| name.to_string_lossy());
-                        let painter = ui.painter().with_clip_rect(drag.shrink(8.0));
-                        painter.text(
-                            drag.center(),
-                            egui::Align2::CENTER_CENTER,
-                            name,
-                            egui::FontId::proportional(12.0),
-                            ui.visuals().weak_text_color(),
-                        );
+                ui.horizontal(|ui| {
+                    let open = self.document.is_some();
+                    let gap = ui.spacing().item_spacing.x;
+                    let button = icons::BUTTON_WIDTH + gap;
+                    let leading_width = self
+                        .toolbar_options
+                        .leading_width(self.file_dialogs, button);
+                    let mut trailing_width = 2.0 * button + 5.0;
+                    if self.toolbar_options.check() {
+                        trailing_width += button;
                     }
-                    let response = ui.interact(
-                        drag,
-                        ui.scope_id().with("window-drag"),
-                        egui::Sense::click_and_drag(),
-                    );
-                    if response.double_clicked() {
-                        let maximized =
-                            ui.input(|input| input.viewport().maximized.unwrap_or(false));
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                    } else if response.drag_started() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    if self.toolbar_options.run() {
+                        trailing_width += button;
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.window_toolbar {
-                        if icons::button(ui, true, icons::CLOSE, t("close-window"), "Alt+F4")
-                            .clicked()
-                        {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        trailing_width += 3.0 * button + 5.0;
+                    }
+                    if leading_width > 0.0 && ui.available_width() < leading_width + trailing_width
+                    {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("toolbar-edit-commands")
+                            .max_width((ui.available_width() - trailing_width).max(1.0))
+                            .min_scrolled_width(1.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| self.toolbar_edit_commands(ui, host, open))
+                            });
+                    } else {
+                        self.toolbar_edit_commands(ui, host, open);
+                    }
+                    let rest = ui.available_rect_before_wrap();
+                    if self.window_toolbar {
+                        let drag = egui::Rect::from_min_max(
+                            rest.min,
+                            egui::pos2(
+                                (rest.right() - trailing_width).max(rest.left()),
+                                rest.bottom(),
+                            ),
+                        );
+                        if drag.width() > 100.0 {
+                            let name = self
+                                .path()
+                                .and_then(|path| std::path::Path::new(path).file_name())
+                                .map_or_else(
+                                    || "OrangeEditor".into(),
+                                    |name| name.to_string_lossy(),
+                                );
+                            let painter = ui.painter().with_clip_rect(drag.shrink(8.0));
+                            painter.text(
+                                drag.center(),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                egui::FontId::proportional(12.0),
+                                ui.visuals().weak_text_color(),
+                            );
                         }
-                        let maximized =
-                            ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                        let response = ui.interact(
+                            drag,
+                            ui.scope_id().with("window-drag"),
+                            egui::Sense::click_and_drag(),
+                        );
+                        response.context_menu(|ui| self.toolbar_options(ui, false));
+                        if response.double_clicked() {
+                            let maximized =
+                                ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        } else if response.drag_started() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                    } else {
+                        let free = egui::Rect::from_min_max(
+                            rest.min,
+                            egui::pos2(
+                                (rest.right() - trailing_width).max(rest.left()),
+                                rest.bottom(),
+                            ),
+                        );
+                        if free.is_positive() {
+                            ui.interact(
+                                free,
+                                ui.scope_id().with("toolbar-empty"),
+                                egui::Sense::click(),
+                            )
+                            .context_menu(|ui| self.toolbar_options(ui, false));
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.window_toolbar {
+                            if icons::button(ui, true, icons::CLOSE, t("close-window"), "Alt+F4")
+                                .clicked()
+                            {
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                            let maximized =
+                                ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                            if icons::button(
+                                ui,
+                                true,
+                                if maximized {
+                                    icons::RESTORE
+                                } else {
+                                    icons::MAXIMIZE
+                                },
+                                if maximized {
+                                    t("restore-window")
+                                } else {
+                                    t("maximize-window")
+                                },
+                                "",
+                            )
+                            .clicked()
+                            {
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(
+                                    !maximized,
+                                ));
+                            }
+                            if icons::button(ui, true, icons::MINIMIZE, t("minimize-window"), "")
+                                .clicked()
+                            {
+                                ui.ctx()
+                                    .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            }
+                            ui.add_space(5.0);
+                        }
                         if icons::button(
                             ui,
                             true,
-                            if maximized {
-                                icons::RESTORE
-                            } else {
-                                icons::MAXIMIZE
-                            },
-                            if maximized {
-                                t("restore-window")
-                            } else {
-                                t("maximize-window")
-                            },
-                            "",
+                            icons::SETTINGS,
+                            t("settings"),
+                            &self.canvas.keys.label("settings"),
                         )
                         .clicked()
                         {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                            self.settings_open = true;
                         }
-                        if icons::button(ui, true, icons::MINIMIZE, t("minimize-window"), "")
-                            .clicked()
+                        let options =
+                            icons::button(ui, true, icons::MORE, t("toolbar-visibility"), "");
+                        egui::Popup::menu(&options)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| self.toolbar_options(ui, false));
+                        ui.add_space(5.0);
+                        let running = self.is_running();
+                        let blocked = self
+                            .document
+                            .as_ref()
+                            .is_some_and(|document| document.run_blocked);
+                        let (hint, key) = if running {
+                            ("stop-with-key", "stop")
+                        } else {
+                            ("run-with-key", "run")
+                        };
+                        if self.toolbar_options.run()
+                            && icons::run_button(ui, running || open && !blocked, running)
+                                .on_hover_text(tf(
+                                    hint,
+                                    &[("key", self.canvas.keys.label(key).into())],
+                                ))
+                                .on_disabled_hover_text(t(if blocked {
+                                    "run-blocked-hint"
+                                } else {
+                                    "run-hint"
+                                }))
+                                .clicked()
                         {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            if running {
+                                self.stop(host);
+                            } else {
+                                ui.memory_mut(egui::Memory::stop_text_input);
+                                self.run_asked = true;
+                            }
                         }
-                        ui.separator();
-                    }
-                    if icons::button(
-                        ui,
-                        true,
-                        icons::SETTINGS,
-                        t("settings"),
-                        &self.canvas.keys.label("settings"),
-                    )
-                    .clicked()
-                    {
-                        self.settings_open = true;
-                    }
-                    ui.separator();
-                    let running = self.is_running();
-                    let blocked = self
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.run_blocked);
-                    let (hint, key) = if running {
-                        ("stop-with-key", "stop")
-                    } else {
-                        ("run-with-key", "run")
-                    };
-                    if icons::run_button(ui, running || open && !blocked, running)
-                        .on_hover_text(tf(hint, &[("key", self.canvas.keys.label(key).into())]))
-                        .on_disabled_hover_text(t(if blocked {
-                            "run-blocked-hint"
-                        } else {
-                            "run-hint"
-                        }))
-                        .clicked()
-                    {
-                        if running {
-                            self.stop(host);
-                        } else {
-                            ui.memory_mut(egui::Memory::stop_text_input);
-                            self.run_asked = true;
+                        if self.toolbar_options.check()
+                            && icons::button(ui, open, icons::CHECK, t("check-graph-hint"), "")
+                                .clicked()
+                        {
+                            self.check(host);
                         }
-                    }
-                    if icons::button(ui, open, icons::CHECK, t("check-graph-hint"), "").clicked() {
-                        self.check(host);
-                    }
+                    });
                 });
             });
-        });
     }
 
-    fn toolbar_edit_commands(&mut self, ui: &mut egui::Ui, host: &mut Host, open: bool) {
-        // File
-        if self.file_dialogs {
-            if icons::button(
-                ui,
-                true,
-                icons::NEW,
-                t("new-graph"),
-                &self.canvas.keys.label("new"),
-            )
-            .clicked()
-            {
-                self.ask(FileRequest::New);
-            }
-            if icons::button(
-                ui,
-                true,
-                icons::OPEN,
-                t("open-graph"),
-                &self.canvas.keys.label("open"),
-            )
-            .clicked()
-            {
-                self.ask(FileRequest::Open);
-            }
-        }
-        if icons::button(
-            ui,
-            open,
-            icons::SAVE,
-            t("save"),
-            &self.canvas.keys.label("save"),
-        )
-        .clicked()
-            && let Err(message) = self.save()
-        {
-            self.say(message);
-        }
-        if self.file_dialogs
-            && icons::button(
-                ui,
-                open,
-                icons::SAVE_AS,
-                t("save-as"),
-                &self.canvas.keys.label("save-as"),
-            )
-            .clicked()
-        {
-            self.ask(FileRequest::SaveAs);
-        }
-        ui.separator();
-        // Edit
-        let (undo, redo) = self.can_undo();
-        if icons::button(
-            ui,
-            undo,
-            icons::UNDO,
-            t("undo"),
-            &self.canvas.keys.label("undo"),
-        )
-        .clicked()
-        {
-            self.undo(host);
-        }
-        if icons::button(
-            ui,
-            redo,
-            icons::REDO,
-            t("redo"),
-            &self.canvas.keys.label("redo"),
-        )
-        .clicked()
-        {
-            self.redo(host);
-        }
-        ui.separator();
-        self.canvas_toolbar(ui, host);
-        ui.separator();
+    /// Whether the visible status bar has opted in to CPU or network sampling.
+    pub fn system_status_requested(&self) -> bool {
+        self.bars.status && (self.bars.cpu || self.bars.network)
     }
 
-    fn canvas_toolbar(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        let open = self.document.is_some();
-        let chosen = self.canvas.selection().len();
-        let group = self.canvas.selected_group().map(|group| group.id.clone());
-        let wire = if chosen == 0 && group.is_none() {
-            self.canvas.selected_wire().cloned()
-        } else {
-            None
-        };
-        if icons::button(
-            ui,
-            open && chosen > 0 && group.is_none(),
-            icons::GROUP,
-            t("group-selection"),
-            &self.canvas.keys.label("group"),
-        )
-        .clicked()
-        {
-            let _ = self.group_selection(host, t("group"));
-        }
-        if icons::button(
-            ui,
-            group.is_some(),
-            icons::UNGROUP,
-            t("ungroup"),
-            &self.canvas.keys.label("ungroup"),
-        )
-        .clicked()
-            && let Some(id) = group
-        {
-            let _ = self.ungroup(host, &id);
-        }
-        if icons::button(
-            ui,
-            open && chosen > 1,
-            icons::ARRANGE,
-            t("arrange-selection"),
-            &self.canvas.keys.label("arrange"),
-        )
-        .clicked()
-        {
-            let _ = self.arrange_selection();
-        }
-        if icons::button(
-            ui,
-            wire.is_some(),
-            icons::DISCONNECT,
-            t("unlink-wire"),
-            &self.canvas.keys.label("delete"),
-        )
-        .clicked()
-            && let Some(wire) = wire
-        {
-            let _ = self.remove_wire(host, &wire);
-        }
-        if icons::button(
-            ui,
-            open,
-            icons::FIT,
-            t("fit-to-view"),
-            &self.canvas.keys.label("fit"),
-        )
-        .clicked()
-        {
-            self.canvas.fit();
-        }
-        ui.separator();
-        if icons::toggle_button(
-            ui,
-            icons::SNAP,
-            self.canvas.snap,
-            t("snap-grid"),
-            &self.canvas.keys.label("snap"),
-        )
-        .on_hover_text(t("snap-grid-hint"))
-        .clicked()
-        {
-            self.canvas.snap = !self.canvas.snap;
-        }
-        let grid = icons::button(ui, true, icons::GRID, t("grid-settings"), "");
-        let _ = egui::Popup::menu(&grid)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| {
-                ui.set_width(ui.available_width().min(250.0));
-                self.grid_menu(ui);
-            });
+    /// Supplies the latest system sample from the embedding application.
+    pub fn set_system_status(&mut self, status: SystemStatus) {
+        self.system_status = status;
     }
 
     /// Draws the workspace status and panel controls in a bottom panel.
     pub fn workspace_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("orange-workspace-bar").show(ui, |ui| {
-            ui.spacing_mut().interact_size.y = 28.0;
-            ui.horizontal_wrapped(|ui| self.workspace_right(ui));
-        });
+        egui::Panel::bottom("orange-workspace-bar")
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.spacing_mut().interact_size.y = 28.0;
+                ui.horizontal_wrapped(|ui| self.workspace_right(ui));
+            });
     }
 
     fn toggle_left_panel(&mut self) {
@@ -2310,7 +2241,7 @@ impl Editor {
     }
 
     fn workspace_right(&mut self, ui: &mut egui::Ui) {
-        if self.document.is_some() {
+        if self.bars.zoom && self.document.is_some() {
             ui.menu_button(format!("{:.0}%", self.canvas.zoom() * 100.0), |ui| {
                 let label = ui.label(t("canvas-zoom"));
                 let mut zoom = self.canvas.zoom();
@@ -2362,7 +2293,7 @@ impl Editor {
                 {
                     self.canvas.zoom_around_center(zoom);
                 }
-                ui.separator();
+                ui.add_space(6.0);
                 if ui.button(t("fit-to-view")).clicked() {
                     self.canvas.fit();
                     ui.close();
@@ -2382,16 +2313,36 @@ impl Editor {
         } else {
             t("no-graph")
         };
-        ui.label(state);
-        if self.is_unsaved() {
+        if self.bars.graph_state {
+            ui.label(state);
+        }
+        if self.bars.graph_state && self.is_unsaved() {
             ui.weak(t("unsaved"));
+        }
+        if self.bars.cpu
+            && let Some(percent) = self.system_status.cpu_percent
+        {
+            ui.label(tf(
+                "status-cpu-reading",
+                &[("percent", format!("{percent:.0}").into())],
+            ))
+            .on_hover_text(t("status-cpu"));
+        }
+        if self.bars.network
+            && let Some([rx, tx]) = self.system_status.network_kib_per_second
+        {
+            ui.label(tf(
+                "status-network-reading",
+                &[("rx", rx.to_string().into()), ("tx", tx.to_string().into())],
+            ))
+            .on_hover_text(t("status-network"));
         }
     }
 
     /// Draws the Inspector in the supplied container.
     pub fn right_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         self.prepare_text(host);
-        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+        ui.style_mut().spacing.scroll = dock::workspace_scroll();
         self.properties_panel(ui, host);
     }
 
@@ -2431,7 +2382,7 @@ impl Editor {
     /// Draws the node catalogue and declaration tabs in the supplied container.
     pub fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         self.prepare_text(host);
-        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+        ui.style_mut().spacing.scroll = dock::workspace_scroll();
         let options = Tab::ALL.map(|(tab, label)| (tab, t(label)));
         let previous = self.tab;
         let response = orange_ui_controls::notebook_flex(
@@ -2462,6 +2413,10 @@ impl Editor {
                 return;
             }
         }
+        self.node_catalogue(ui, host);
+    }
+
+    fn node_catalogue(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let mut add = None;
         let search_salt = "node-palette-search";
         let search_id = ui.make_persistent_id(search_salt);
@@ -2485,9 +2440,10 @@ impl Editor {
             self.palette_highlighted = 0;
         }
         egui::ScrollArea::vertical()
-            .id_salt(self.tab.key())
+            .id_salt("node-catalogue")
             .show(ui, |ui| {
                 let searching = !self.search.trim().is_empty();
+                let show_comment = self.document.is_some() && comments::matches(&self.search);
                 let language = if self.language.is_empty() {
                     i18n::DEFAULT_LOCALE
                 } else {
@@ -2509,10 +2465,10 @@ impl Editor {
                     .iter()
                     .map(|(_, items)| items.len())
                     .sum::<usize>();
-                if found_count == 0 && searching {
+                if found_count == 0 && searching && !show_comment {
                     ui.weak(t("no-node-matches"));
                 }
-                let last = found_count.saturating_sub(1);
+                let last = (found_count + usize::from(show_comment)).saturating_sub(1);
                 self.palette_highlighted = self.palette_highlighted.min(last);
                 if down {
                     self.palette_highlighted = self.palette_highlighted.saturating_add(1).min(last);
@@ -2521,6 +2477,37 @@ impl Editor {
                     self.palette_highlighted = self.palette_highlighted.saturating_sub(1);
                 }
                 let mut index = 0;
+                if show_comment {
+                    let active = searching && field.has_focus() && self.palette_highlighted == 0;
+                    let row = palette::result_row(
+                        ui,
+                        t("canvas-comment"),
+                        t("canvas-comment-help"),
+                        None,
+                        active,
+                        None,
+                        None,
+                    );
+                    if row.drag_started() {
+                        row.dnd_set_drag_payload(palette::PaletteDrag {
+                            item: palette::PaletteItem {
+                                id: comments::DEFINITION.to_owned(),
+                                label: t("canvas-comment").to_owned(),
+                                package: String::new(),
+                                purpose: t("canvas-comment-help").to_owned(),
+                            },
+                            card: None,
+                        });
+                    }
+                    if active && (up || down) {
+                        row.scroll_to_me(None);
+                    }
+                    if row.clicked() || (active && enter) {
+                        add = Some(comments::DEFINITION.to_owned());
+                    }
+                    index += 1;
+                }
+                let tree = self.tree_style;
                 let mut draw_groups =
                     |ui: &mut egui::Ui, groups: &[(String, Vec<palette::PaletteItem>)]| {
                         for (category, items) in groups {
@@ -2529,56 +2516,88 @@ impl Editor {
                             };
                             let (heading, help) =
                                 palette::category_heading(category, &first.id, language);
-                            orange_ui_controls::tree_section(
+                            orange_ui_controls::tree_section_styled(
                                 ui,
                                 Surface::Panel,
                                 egui::CollapsingHeader::new(heading)
                                     .id_salt((category.as_str(), searching))
                                     .open(searching.then_some(true)),
+                                tree,
                                 |ui| {
-                                    let mut section = None;
-                                    for item in items {
-                                        let next = palette::catalog_section(&item.id);
-                                        if !searching
-                                            && section != next
-                                            && let Some((title, description)) = next
-                                            && t(title) != category
+                                    let mut draw_items =
+                                        |ui: &mut egui::Ui, items: &[palette::PaletteItem]| {
+                                            for item in items {
+                                                let active = searching
+                                                    && field.has_focus()
+                                                    && index == self.palette_highlighted;
+                                                index += 1;
+                                                let draft = self
+                                                    .document
+                                                    .as_ref()
+                                                    .map(|document| &document.draft);
+                                                let card = self
+                                                    .node_search_previews
+                                                    .then(|| {
+                                                        self.previews.card(host, None, &item.id)
+                                                    })
+                                                    .flatten();
+                                                let row = palette::result_row(
+                                                    ui,
+                                                    &item.label,
+                                                    &item.purpose,
+                                                    None,
+                                                    active,
+                                                    card,
+                                                    Some(&item.id),
+                                                );
+                                                if row.drag_started() {
+                                                    let card = self
+                                                        .previews
+                                                        .card(host, draft, &item.id)
+                                                        .cloned();
+                                                    row.dnd_set_drag_payload(
+                                                        palette::PaletteDrag {
+                                                            item: item.clone(),
+                                                            card,
+                                                        },
+                                                    );
+                                                }
+                                                if active && (up || down) {
+                                                    row.scroll_to_me(None);
+                                                }
+                                                if row.clicked() || (active && enter) {
+                                                    add = Some(item.id.clone());
+                                                }
+                                            }
+                                        };
+                                    if searching {
+                                        draw_items(ui, items);
+                                    } else {
+                                        for (section_index, section) in items
+                                            .chunk_by(|a, b| {
+                                                palette::catalog_section(&a.id)
+                                                    == palette::catalog_section(&b.id)
+                                            })
+                                            .enumerate()
                                         {
-                                            ui.weak(t(title)).on_hover_text(t(description));
-                                        }
-                                        section = next;
-                                        let active = searching
-                                            && field.has_focus()
-                                            && index == self.palette_highlighted;
-                                        index += 1;
-                                        let draft =
-                                            self.document.as_ref().map(|document| &document.draft);
-                                        let card = self
-                                            .node_search_previews
-                                            .then(|| self.previews.card(host, None, &item.id))
-                                            .flatten();
-                                        let row = palette::result_row(
-                                            ui,
-                                            &item.label,
-                                            &item.purpose,
-                                            None,
-                                            active,
-                                            card,
-                                            Some(&item.id),
-                                        );
-                                        if row.drag_started() {
-                                            let card =
-                                                self.previews.card(host, draft, &item.id).cloned();
-                                            row.dnd_set_drag_payload(palette::PaletteDrag {
-                                                item: item.clone(),
-                                                card,
-                                            });
-                                        }
-                                        if active && (up || down) {
-                                            row.scroll_to_me(None);
-                                        }
-                                        if row.clicked() || (active && enter) {
-                                            add = Some(item.id.clone());
+                                            if let Some((title, description)) =
+                                                palette::catalog_section(&section[0].id)
+                                                && t(title) != category
+                                            {
+                                                orange_ui_controls::tree_section_styled(
+                                                    ui,
+                                                    Surface::Panel,
+                                                    egui::CollapsingHeader::new(t(title))
+                                                        .id_salt((title, section_index))
+                                                        .default_open(true),
+                                                    tree,
+                                                    |ui| draw_items(ui, section),
+                                                )
+                                                .header_response
+                                                .on_hover_text(t(description));
+                                            } else {
+                                                draw_items(ui, section);
+                                            }
                                         }
                                     }
                                 },
@@ -2591,12 +2610,13 @@ impl Editor {
                 if let Some(first) = conversions.first().and_then(|(_, items)| items.first()) {
                     let (heading, help) =
                         palette::category_heading(t("conversions"), &first.id, language);
-                    orange_ui_controls::tree_section(
+                    orange_ui_controls::tree_section_styled(
                         ui,
                         Surface::Panel,
                         egui::CollapsingHeader::new(heading)
                             .id_salt(("node-conversions", searching))
                             .open(searching.then_some(true)),
+                        tree,
                         |ui| draw_groups(ui, conversions),
                     )
                     .header_response
@@ -2604,7 +2624,9 @@ impl Editor {
                 }
             });
         if let Some(definition) = add {
-            if self.document.is_some() {
+            if definition == comments::DEFINITION {
+                self.add_canvas_comment(self.canvas.paste_place());
+            } else if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
             } else {
                 self.say(t("open-graph-before-adding").to_owned());
@@ -2794,21 +2816,20 @@ impl Editor {
                         }
                         // What the package may reach: unticking a box revokes it for
                         // graphs started from now on.
-                        if let Some(key) = key {
-                            if let (Some(requested), Some(access)) =
+                        if let Some(key) = key
+                            && let (Some(requested), Some(access)) =
                                 (host.requested_grants(&key), host.access(&key))
-                                && requested != orange_host::Grants::default()
-                            {
-                                let mut grants = access.grants;
-                                if package_import::grant_choices(ui, requested, &mut grants) {
-                                    access_change = Some((
-                                        key,
-                                        orange_host::PackageAccess {
-                                            grants,
-                                            ..access.clone()
-                                        },
-                                    ));
-                                }
+                            && requested != orange_host::Grants::default()
+                        {
+                            let mut grants = access.grants;
+                            if package_import::grant_choices(ui, requested, &mut grants) {
+                                access_change = Some((
+                                    key,
+                                    orange_host::PackageAccess {
+                                        grants,
+                                        ..access.clone()
+                                    },
+                                ));
                             }
                         }
                     });
@@ -2861,12 +2882,14 @@ impl Editor {
             .map_or(&[][..], |(_, entries)| entries.as_slice());
         let stored_text =
             |node, port: &str| properties::stored_input_text(host, &document.draft, node, port);
+        let comments: Vec<_> = document.draft.comments().collect();
         let done = self.canvas.show_with_path_controls(
             ui,
             &document.graph,
             triggers,
             self.file_dialogs,
             Some(&stored_text),
+            &comments,
         );
         if let Some(target) = self.canvas.pending_inbound_givers() {
             let matches = host.output_givers(&document.draft, &document.graph, target);
@@ -2985,12 +3008,18 @@ impl Editor {
             let at = self.canvas.paste_place();
             let _ = self.paste(host, &clip, at);
         }
+        if let Some(action) = done.comment {
+            self.apply_comment_action(action);
+        }
         if let Some((definition, at)) = done.dropped {
             // A variable dragged from the Variables list becomes a Get, or a Set with Alt.
             match definition.strip_prefix(declarations::VARIABLE_DRAG) {
                 Some(variable) => {
                     let set = ui.input(|input| input.modifiers.alt);
                     let _ = self.drop_variable(host, variable, set, at);
+                }
+                None if definition == comments::DEFINITION => {
+                    self.add_canvas_comment(at);
                 }
                 None => {
                     if let Some(wire) = done.drop_wire {

@@ -1,5 +1,70 @@
 //! Searchable preferences with sidebar navigation and independently scrollable pages.
 use super::*;
+
+#[derive(Debug)]
+pub(super) struct Bars {
+    pub(super) status: bool,
+    pub(super) zoom: bool,
+    pub(super) graph_state: bool,
+    pub(super) cpu: bool,
+    pub(super) network: bool,
+}
+
+impl Default for Bars {
+    fn default() -> Self {
+        Self {
+            status: true,
+            zoom: true,
+            graph_state: true,
+            cpu: false,
+            network: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Corners {
+    pub(super) docks: u8,
+    pub(super) windows: Option<u8>,
+    pub(super) menus: Option<u8>,
+    pub(super) controls: Option<u8>,
+}
+
+impl Default for Corners {
+    fn default() -> Self {
+        Self {
+            docks: 8,
+            windows: None,
+            menus: None,
+            controls: None,
+        }
+    }
+}
+
+impl Corners {
+    pub(super) fn apply(self, visuals: &mut egui::Visuals) {
+        if let Some(radius) = self.windows {
+            visuals.window_corner_radius = radius.into();
+        }
+        if let Some(radius) = self.menus {
+            visuals.menu_corner_radius = radius.into();
+        }
+        let Some(radius) = self.controls else {
+            return;
+        };
+        let widgets = &mut visuals.widgets;
+        for state in [
+            &mut widgets.noninteractive,
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+            &mut widgets.open,
+        ] {
+            state.corner_radius = radius.into();
+        }
+    }
+}
+
 use crate::canvas::{GRID_STEPS, GridStyle};
 use crate::controls::{Action, Dropdown as _, Surface};
 use orange_ui_controls::{CONTROL_HEIGHT, ControlSize, SPACE_LARGE, SPACE_MEDIUM, SPACE_SMALL};
@@ -25,6 +90,33 @@ pub(crate) enum Section {
     Display,
     Shortcuts,
     Extensions,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DisplayPage {
+    #[default]
+    Appearance,
+    Workspace,
+    Toolbar,
+    Canvas,
+}
+
+impl DisplayPage {
+    const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Workspace,
+        Self::Toolbar,
+        Self::Canvas,
+    ];
+
+    fn title(self) -> &'static str {
+        t(match self {
+            Self::Appearance => "appearance",
+            Self::Workspace => "settings-panels",
+            Self::Toolbar => "toolbar-visibility",
+            Self::Canvas => "settings-canvas",
+        })
+    }
 }
 
 impl Section {
@@ -79,6 +171,14 @@ impl Section {
                 "grid-hidden",
                 "grid-spacing",
                 "wireless-opacity",
+                "corner-radius",
+                "radius-docks",
+                "radius-windows",
+                "radius-menus",
+                "radius-controls",
+                "toolbar-visibility",
+                "status-visibility",
+                "tree-appearance",
             ],
             Self::Shortcuts => &["shortcuts-section-words", "restore-default-shortcuts"],
             Self::Extensions => &[
@@ -148,7 +248,6 @@ impl Editor {
         let palette = orange_ui_controls::Theme::of(ui);
         let footer_height = CONTROL_HEIGHT + SPACE_MEDIUM * 2.0;
         let footer_y = content.bottom() - footer_height;
-        let divider = egui::Stroke::new(1.0, palette.border);
         let compact = content.width() < 540.0;
         let nav_width = (content.width() * 0.23).clamp(152.0, 195.0);
         let strip_height = CONTROL_HEIGHT + SPACE_MEDIUM * 2.0;
@@ -160,7 +259,8 @@ impl Editor {
                 egui::pos2(content.left() + nav_width, content.bottom())
             },
         );
-        ui.painter().rect_filled(nav_rect, 6, palette.panel);
+        ui.painter()
+            .rect_filled(nav_rect, self.corners.docks, palette.panel);
         let mut header = settings_pane(
             ui,
             "settings-search-sidebar",
@@ -208,8 +308,6 @@ impl Editor {
         let matches = ranks.map(|rank| rank.is_some());
 
         let navigation = if compact {
-            ui.painter()
-                .hline(content.x_range(), nav_rect.bottom(), divider);
             egui::Rect::from_min_max(
                 egui::pos2(nav_rect.center().x + 24.0, nav_rect.top() + SPACE_MEDIUM),
                 egui::pos2(
@@ -218,8 +316,6 @@ impl Editor {
                 ),
             )
         } else {
-            ui.painter()
-                .vline(nav_rect.right(), nav_rect.y_range(), divider);
             egui::Rect::from_min_max(
                 nav_rect.min + egui::vec2(SPACE_MEDIUM, strip_height),
                 egui::pos2(nav_rect.right() - SPACE_MEDIUM, footer_y - SPACE_SMALL),
@@ -249,6 +345,7 @@ impl Editor {
                 ),
             ),
         );
+        page.style_mut().spacing.scroll = super::dock::workspace_scroll();
         if matches.iter().any(|&found| found) {
             if self.settings_tab != Section::Shortcuts {
                 page.label(
@@ -260,7 +357,6 @@ impl Editor {
             }
             match self.settings_tab {
                 Section::Extensions => {
-                    page.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                     self.graph_bundle_menu(&mut page, host);
                     if self.native_plugins
                         && controls::button(
@@ -281,7 +377,7 @@ impl Editor {
                     }
                     if self.native_plugins {
                         page.weak(t("native-plugins-hint"));
-                        page.separator();
+                        page.add_space(SPACE_SMALL);
                     }
                     page.strong(t("packages"));
                     self.package_manager(&mut page, host);
@@ -330,7 +426,6 @@ impl Editor {
         }
         let left = content.left() + SPACE_MEDIUM;
         let right = nav_rect.right() - SPACE_MEDIUM;
-        ui.painter().hline(left..=right, footer_y, divider);
         let area = egui::Rect::from_min_max(
             egui::pos2(left, footer_y + SPACE_MEDIUM),
             egui::pos2(right, content.bottom() - SPACE_MEDIUM),
@@ -410,80 +505,154 @@ impl Editor {
     }
 
     fn display_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.appearance_picker(ui, ctx);
-        self.interface_scale_picker(ui, ctx);
-        ui.add_space(SPACE_LARGE);
-        settings_group(ui, t("settings-panels"), |ui| {
-            orange_ui_controls::toggle(
-                ui,
-                Surface::Dialog,
-                &mut self.panels.nodes,
-                t("show-left-panel"),
-            );
-            orange_ui_controls::toggle(
-                ui,
-                Surface::Dialog,
-                &mut self.panels.properties,
-                t("show-right-panel"),
-            );
-        });
-        ui.add_space(SPACE_LARGE);
-        settings_group(ui, t("settings-canvas"), |ui| {
-            setting_row(ui, t("grid-type"), |ui, label| {
-                self.grid_type_choice(ui, label)
-            });
-            setting_row(ui, t("grid-spacing"), |ui, label| {
-                let _ = self.grid_spacing_input(ui, label);
-            });
-            setting_row(ui, t("wireless-opacity"), |ui, label| {
-                ui.set_max_width(CHOICE_WIDTH);
-                let mut percent = f32::from(self.canvas.wireless_opacity);
-                let response = orange_ui_controls::guided_slider(
+        if self.settings_search.trim().is_empty() {
+            egui::ComboBox::from_id_salt("display-page")
+                .selected_text(self.display_page.title())
+                .show_select(ui, Surface::Dialog, |ui| {
+                    for page in DisplayPage::ALL {
+                        ui.selectable_value(&mut self.display_page, page, page.title());
+                    }
+                });
+            ui.add_space(SPACE_MEDIUM);
+        }
+        let searching = !self.settings_search.trim().is_empty();
+        if searching || self.display_page == DisplayPage::Appearance {
+            self.appearance_picker(ui, ctx);
+            self.interface_scale_picker(ui, ctx);
+            self.corner_settings(ui, ctx);
+        }
+        if searching || self.display_page == DisplayPage::Workspace {
+            ui.add_space(SPACE_LARGE);
+            settings_group(ui, t("settings-panels"), |ui| {
+                ui.checkbox(&mut self.dock.names, t("dock-show-names"));
+                orange_ui_controls::toggle(
                     ui,
                     Surface::Dialog,
-                    &mut percent,
-                    0.0..=100.0,
-                    orange_ui_controls::SliderBehavior::Step(1.0),
-                    orange_ui_controls::SliderMarks::NotchesAndValues,
-                    &[
-                        orange_ui_controls::SliderGuide {
-                            fraction: 0.0,
-                            label: "0%",
-                        },
-                        orange_ui_controls::SliderGuide {
-                            fraction: 0.1,
-                            label: "10%",
-                        },
-                        orange_ui_controls::SliderGuide {
-                            fraction: 0.5,
-                            label: "50%",
-                        },
-                        orange_ui_controls::SliderGuide {
-                            fraction: 1.0,
-                            label: "100%",
-                        },
-                    ],
-                )
-                .labelled_by(label.id)
-                .on_hover_text(t("wireless-opacity-help"));
-                if response.changed() {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "a percentage"
-                    )]
-                    let percent = percent.round().clamp(0.0, 100.0) as u8;
-                    self.canvas.wireless_opacity = percent;
-                }
+                    &mut self.panels.nodes,
+                    t("show-left-panel"),
+                );
+                orange_ui_controls::toggle(
+                    ui,
+                    Surface::Dialog,
+                    &mut self.panels.properties,
+                    t("show-right-panel"),
+                );
             });
-            ui.add_space(SPACE_SMALL);
-            orange_ui_controls::toggle(ui, Surface::Dialog, &mut self.canvas.snap, t("snap-grid"));
-            orange_ui_controls::toggle(
-                ui,
-                Surface::Dialog,
-                &mut self.canvas.scroll_pans,
-                t("wheel-pans"),
-            );
+            ui.add_space(SPACE_LARGE);
+            settings_group(ui, t("tree-appearance"), |ui| {
+                ui.checkbox(&mut self.tree_style.guides, t("tree-guides"));
+                ui.checkbox(&mut self.tree_style.arrows, t("tree-arrows"));
+                ui.checkbox(&mut self.tree_style.branch_background, t("tree-background"));
+            });
+        }
+        if searching || self.display_page == DisplayPage::Toolbar {
+            self.toolbar_options(ui, true);
+        }
+        if searching || self.display_page == DisplayPage::Workspace {
+            settings_group(ui, t("status-visibility"), |ui| {
+                ui.checkbox(&mut self.bars.status, t("status-show"));
+                ui.checkbox(&mut self.bars.zoom, t("zoom-controls"));
+                ui.checkbox(&mut self.bars.graph_state, t("graph-info"));
+                ui.checkbox(&mut self.bars.cpu, t("status-cpu"));
+                ui.checkbox(&mut self.bars.network, t("status-network"));
+            });
+        }
+        if searching || self.display_page == DisplayPage::Canvas {
+            ui.add_space(SPACE_LARGE);
+            settings_group(ui, t("settings-canvas"), |ui| {
+                setting_row(ui, t("grid-type"), |ui, label| {
+                    self.grid_type_choice(ui, label)
+                });
+                setting_row(ui, t("grid-spacing"), |ui, label| {
+                    let _ = self.grid_spacing_input(ui, label);
+                });
+                setting_row(ui, t("wireless-opacity"), |ui, label| {
+                    ui.set_max_width(CHOICE_WIDTH);
+                    let mut percent = f32::from(self.canvas.wireless_opacity);
+                    let response = orange_ui_controls::guided_slider(
+                        ui,
+                        Surface::Dialog,
+                        &mut percent,
+                        0.0..=100.0,
+                        orange_ui_controls::SliderBehavior::Step(1.0),
+                        orange_ui_controls::SliderMarks::NotchesAndValues,
+                        &[
+                            orange_ui_controls::SliderGuide {
+                                fraction: 0.0,
+                                label: "0%",
+                            },
+                            orange_ui_controls::SliderGuide {
+                                fraction: 0.1,
+                                label: "10%",
+                            },
+                            orange_ui_controls::SliderGuide {
+                                fraction: 0.5,
+                                label: "50%",
+                            },
+                            orange_ui_controls::SliderGuide {
+                                fraction: 1.0,
+                                label: "100%",
+                            },
+                        ],
+                    )
+                    .labelled_by(label.id)
+                    .on_hover_text(t("wireless-opacity-help"));
+                    if response.changed() {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "a percentage"
+                        )]
+                        let percent = percent.round().clamp(0.0, 100.0) as u8;
+                        self.canvas.wireless_opacity = percent;
+                    }
+                });
+                ui.add_space(SPACE_SMALL);
+                orange_ui_controls::toggle(
+                    ui,
+                    Surface::Dialog,
+                    &mut self.canvas.snap,
+                    t("snap-grid"),
+                );
+                orange_ui_controls::toggle(
+                    ui,
+                    Surface::Dialog,
+                    &mut self.canvas.scroll_pans,
+                    t("wheel-pans"),
+                );
+            });
+        }
+    }
+
+    fn corner_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let visuals = &ctx.style_of(ctx.theme()).visuals;
+        settings_group(ui, t("corner-radius"), |ui| {
+            ui.add(egui::Slider::new(&mut self.corners.docks, 0..=16).text(t("radius-docks")));
+            for (radius, default, label) in [
+                (
+                    &mut self.corners.windows,
+                    visuals.window_corner_radius.nw.min(16),
+                    "radius-windows",
+                ),
+                (
+                    &mut self.corners.menus,
+                    visuals.menu_corner_radius.nw.min(16),
+                    "radius-menus",
+                ),
+                (
+                    &mut self.corners.controls,
+                    orange_ui_controls::CONTROL_RADIUS,
+                    "radius-controls",
+                ),
+            ] {
+                let mut value = radius.unwrap_or(default);
+                if ui
+                    .add(egui::Slider::new(&mut value, 0..=16).text(t(label)))
+                    .changed()
+                {
+                    *radius = Some(value);
+                }
+            }
         });
     }
 

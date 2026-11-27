@@ -15,6 +15,9 @@ pub const UNDO: char = '\u{e166}'; // undo
 pub const REDO: char = '\u{e15a}'; // redo
 pub const GROUP: char = '\u{e162}'; // select_all
 pub const UNGROUP: char = '\u{f731}'; // ungroup
+pub(crate) const TYPES: char = '\u{e72c}'; // category
+pub(crate) const CONNECTIONS: char = '\u{efe6}'; // cable
+pub(crate) const COMMENT: char = '\u{f040}'; // note_alt
 pub const FUNCTION: char = '\u{e24a}'; // functions
 pub const ARRANGE: char = '\u{e97a}'; // account_tree
 pub const VARIABLE: char = '\u{ead3}'; // data_object
@@ -26,6 +29,7 @@ pub const DUPLICATE: char = '\u{e03c}'; // library_add
 pub const DISCONNECT: char = '\u{e16f}'; // link_off
 pub const SELECT_ALL: char = '\u{e6fa}'; // select_window
 pub const RUN: char = '\u{e037}'; // play_arrow
+pub(crate) const RUN_LOG: char = '\u{e1c4}'; // play_circle
 pub const STOP: char = '\u{e047}'; // stop
 pub const WATCH: char = '\u{e8f4}'; // visibility
 pub const NODES: char = '\u{f716}'; // left_panel_open
@@ -81,6 +85,9 @@ pub const ALL: &[char] = &[
     GROUP,
     UNGROUP,
     FUNCTION,
+    TYPES,
+    CONNECTIONS,
+    COMMENT,
     ARRANGE,
     VARIABLE,
     ADD,
@@ -93,6 +100,7 @@ pub const ALL: &[char] = &[
     SELECT_ALL,
     CHECK,
     RUN,
+    RUN_LOG,
     STOP,
     WATCH,
     NODES,
@@ -168,9 +176,15 @@ pub(crate) fn centered(icon: char) -> egui::Atom<'static> {
     shared::slot(move |ui, rect, color| paint_command(ui, rect, icon, color))
 }
 
-pub(crate) fn dock_tab(ui: &mut egui::Ui, icon: char, active: bool) -> egui::Response {
+pub(crate) fn dock_tab(
+    ui: &mut egui::Ui,
+    icon: char,
+    active: bool,
+    label: Option<&str>,
+) -> egui::Response {
+    let width = label.map_or(26.0, |_| (ui.available_width() - 4.0).max(26.0));
     let (rect, response) =
-        ui.allocate_exact_size(egui::Vec2::splat(26.0), egui::Sense::click_and_drag());
+        ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click_and_drag());
     let visuals = ui.visuals();
     if active || response.hovered() || response.has_focus() {
         let fill = if active {
@@ -178,7 +192,8 @@ pub(crate) fn dock_tab(ui: &mut egui::Ui, icon: char, active: bool) -> egui::Res
         } else {
             visuals.widgets.hovered.bg_fill
         };
-        ui.painter().rect_filled(rect, 4, fill);
+        ui.painter()
+            .rect_filled(rect, visuals.widgets.inactive.corner_radius, fill);
     }
     let ink = if active {
         visuals.strong_text_color()
@@ -187,10 +202,22 @@ pub(crate) fn dock_tab(ui: &mut egui::Ui, icon: char, active: bool) -> egui::Res
     };
     paint_command(
         ui,
-        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(18.0)),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 13.0, rect.center().y),
+            egui::Vec2::splat(18.0),
+        ),
         icon,
         ink,
     );
+    if let Some(label) = label {
+        ui.painter().with_clip_rect(rect).text(
+            egui::pos2(rect.left() + 27.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            ink,
+        );
+    }
     response
 }
 

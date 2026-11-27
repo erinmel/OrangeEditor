@@ -84,7 +84,92 @@ fn group_command(id: &str, group: Option<&Group>) -> DocCommand {
     })
 }
 
+/// A root-canvas annotation stored in the document's editor layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasComment {
+    pub id: String,
+    pub at: [f32; 2],
+    pub text: String,
+}
+
+fn comment_command(id: &str, value: Option<Json>) -> DocCommand {
+    DocCommand::Layout(LayoutCommand::Set {
+        path: vec!["comments".to_owned(), id.to_owned()],
+        value,
+    })
+}
+
 impl Draft {
+    /// Lists the saved canvas annotations, in document order.
+    pub fn comments(&self) -> impl Iterator<Item = CanvasComment> + '_ {
+        self.document()
+            .editor()
+            .get("comments")
+            .and_then(Json::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, saved)| {
+                let at = saved["at"].as_array()?;
+                if at.len() != 2 {
+                    return None;
+                }
+                #[expect(clippy::cast_possible_truncation, reason = "canvas positions use f32")]
+                let at = [at[0].as_f64()? as f32, at[1].as_f64()? as f32];
+                at.iter()
+                    .all(|value| value.is_finite())
+                    .then_some(CanvasComment {
+                        id: id.clone(),
+                        at,
+                        text: saved["text"].as_str()?.to_owned(),
+                    })
+            })
+    }
+
+    /// Creates an annotation in one undoable layout edit.
+    pub fn add_comment(&mut self, at: [f32; 2], text: &str) -> Result<String, HostError> {
+        let id = self.fresh_id("comment");
+        self.write_comment(&id, at, text)?;
+        Ok(id)
+    }
+
+    /// Updates the text and position of an existing annotation.
+    pub fn update_comment(&mut self, comment: &CanvasComment) -> Result<bool, HostError> {
+        if self
+            .document()
+            .editor()
+            .get("comments")
+            .and_then(|comments| comments.get(&comment.id))
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.write_comment(&comment.id, comment.at, &comment.text)
+    }
+
+    fn write_comment(&mut self, id: &str, at: [f32; 2], text: &str) -> Result<bool, HostError> {
+        if !at.iter().all(|value| value.is_finite()) {
+            return Err(HostError::Document("invalid comment position".into()));
+        }
+        self.layout(vec![comment_command(
+            id,
+            Some(json!({"at": at, "text": text})),
+        )])
+    }
+
+    /// Removes an annotation in one undoable layout edit.
+    pub fn remove_comment(&mut self, id: &str) -> Result<bool, HostError> {
+        if self
+            .document()
+            .editor()
+            .get("comments")
+            .and_then(|comments| comments.get(id))
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.layout(vec![comment_command(id, None)])
+    }
+
     /// The groups of the draft's top level, by name. A group lists only nodes that are
     /// still at the top level, and one with none of them left is not listed: a node
     /// taken into a function or deleted leaves its group, and comes back with an undo.

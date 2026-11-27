@@ -143,7 +143,9 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                     },
                     |ui| editor.toolbar(ui, &mut host),
                 );
-                let texts = text_shapes(&output.shapes);
+                let shapes = output.shapes.clone();
+                output.drop_without_applying_deltas();
+                let texts = text_shapes(&shapes);
                 let at = |icon: char| {
                     let text = texts
                         .iter()
@@ -169,8 +171,8 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                         "{width}, native={native}, {icon}"
                     );
                 }
-                let controls = toolbar_button_centers(&output.shapes);
-                assert_eq!(controls.len(), if native { 19 } else { 16 });
+                let controls = toolbar_button_centers(&shapes);
+                assert_eq!(controls.len(), if native { 20 } else { 17 });
                 assert!(controls.iter().all(|at| (at.y - left.y).abs() < 1.0));
                 assert!(at(icons::REDO).x < controls[6].x);
                 assert!(at(icons::GRID).x < at(icons::CHECK).x);
@@ -182,7 +184,6 @@ fn toolbar_commands_share_one_row_and_window_controls_stay_at_the_right() {
                 if native {
                     assert!(at(icons::CLOSE).x > width - 50.0);
                 }
-                output.drop_without_applying_deltas();
             }
         }
     }
@@ -286,7 +287,7 @@ fn the_top_toolbar_exposes_grid_and_group_controls_at_narrow_width() {
         click_at(editor, host, position);
     };
     let controls = toolbar_button_centers(&shapes);
-    assert_eq!(controls.len(), 13);
+    assert_eq!(controls.len(), 14);
     click_at(&mut editor, &mut host, controls[8]);
     assert!(!editor.canvas.snap);
     click(&mut editor, &mut host, &icons::GRID.to_string());

@@ -129,7 +129,7 @@ pub use orange_sdk::{
     SettingField, SettingText, SettingToggle, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
-pub use organise::{Extraction, GROUP_COLORS, Group};
+pub use organise::{CanvasComment, Extraction, GROUP_COLORS, Group};
 pub use preview::Previewed;
 pub use search::{
     CONCEPTS, Found, Match, SEARCH_LANGUAGES, SearchQuery, SearchRank, UNLISTED, fold_search,

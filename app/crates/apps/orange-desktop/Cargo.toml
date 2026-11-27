@@ -18,6 +18,7 @@ serde_json.workspace = true
 rfd.workspace = true
 global-hotkey.workspace = true
 sys-locale.workspace = true
+sysinfo = { version = "=0.39.6", default-features = false, features = ["system", "network"] }
 orange-audio = { path = "../../services/orange-audio", version = "=0.1.1-preview" }
 orange-editor-ui = { path = "../../apps/orange-editor-ui", version = "=0.1.1-preview" }
 orange-files = { path = "../../services/orange-files", version = "=0.1.1-preview" }

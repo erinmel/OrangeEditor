@@ -43,6 +43,8 @@ pub fn apply_desktop_style(ctx: &egui::Context) {
         };
         let visuals = &mut style.visuals;
         visuals.panel_fill = panel;
+        visuals.window_corner_radius = 12.into();
+        visuals.menu_corner_radius = 8.into();
         visuals.window_fill = dialog;
         visuals.window_stroke = egui::Stroke::new(1.0, border);
         visuals.extreme_bg_color = inset;

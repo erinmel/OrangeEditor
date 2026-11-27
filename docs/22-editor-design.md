@@ -16,23 +16,37 @@ between areas. The side panels and bottom tray are resizable, and the two
 bottom areas appear side by side when both are open. The editor remembers tab
 placement, order, visibility, and panel sizes in application preferences.
 
-Nodes starts on the left, Properties and Packages on the right, Graph Info at
-the bottom left, and Problems and Log at the bottom right. Nodes and Properties
-start open. The Packages tab and Settings → Extensions use the same package
-manager and graph bundle commands.
+Nodes, Variables, Types, and Connections start on the left, Properties starts on the
+right, Graph Info starts at the bottom left, and Problems and Log start at the bottom
+right. Right-click an icon to hide it, then right-click free space on a rail to add
+it back in that position. Docks use padded surfaces and gutters to separate adjacent
+panels. Resize edges become visible on hover or while dragging. Scrollbars expand
+within a reserved gutter.
+
+Settings → Display has pages for Appearance, Workspace, Toolbar, and Canvas.
+Appearance configures corner radii independently for docks, windows, menus, and
+controls. The toolbar options menu and its context menu let you show or hide
+individual commands. In Customize toolbar, move commands earlier or later in the
+left group or reset the toolbar. Check and Run are anchored near Settings and can
+be hidden individually. Workspace controls icon names and status items. Optional CPU and network readings are
+system-wide and sampled by the desktop. Manage packages and graph bundles in
+Settings → Extensions.
 
 ## Finding nodes and connecting distant sections
 
-The node panel has Nodes, Variables, Types, and Connections tabs. In Nodes,
-Conversions expands into groups by source type. The Nodes search includes
-converters and opens matching branches for keyboard navigation.
+In Nodes, Conversions expands into groups by source type. The catalogue generally
+uses one or two group levels, with related nodes in expandable subgroups. Search
+opens matching branches for keyboard navigation. Settings → Display can show or hide
+branch guides and disclosure arrows and tint each branch and its contents. Related
+nodes stay together in sections such as Wireless links and HTTP Request. Search
+includes group and section names, node labels, and aliases; a heading explains its
+purpose on hover.
 
-The picker groups built-in nodes by task, including Triggers & signals, Control
-flow, Loops, Variables, JSON, Files and Network. Sections within those groups
-keep closely related nodes together, such as Wireless links and HTTP Request.
-Search matches group and section names alongside node labels and aliases. Hover
-a heading for its purpose. Nodes opens by default and the application remembers
-the last sidebar tab chosen explicitly.
+Right-click the main canvas and choose **Add comment**, or search for **Comment**,
+**note**, or **annotation** in the Nodes catalogue or canvas picker. Double-click a
+comment to edit it, drag it to move it, or use its menu to delete it. Comments have
+no ports and do not execute. They are saved with the graph and included when sharing
+it as a bundle.
 
 Guard searches find Branch. Rising Edge and Falling Edge each have a Boolean
 input and a trigger output. When Value Changes Enough shows its tolerance on

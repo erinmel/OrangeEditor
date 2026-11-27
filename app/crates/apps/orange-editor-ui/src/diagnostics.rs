@@ -432,16 +432,11 @@ impl Editor {
 
     /// Draws the current diagnostics tab in the supplied container.
     pub fn log_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .show(ui, |ui| {
-                ui.set_min_height(ui.available_height());
-                if self.log_events {
-                    self.log_content(ui);
-                } else {
-                    self.problems_content(ui);
-                }
-            });
+        if self.log_events {
+            self.log_content(ui);
+        } else {
+            self.problems_content(ui);
+        }
     }
 
     fn log_content(&mut self, ui: &mut egui::Ui) {
@@ -502,7 +497,7 @@ impl Editor {
             },
             |ui| search_field(ui, "log-search", &mut self.log_search, t("search-log")),
         );
-        ui.separator();
+        ui.add_space(6.0);
         let query = orange_host::SearchQuery::new(&self.log_search);
         let mut text = String::new();
         let mut levels = Vec::new();
@@ -699,7 +694,7 @@ impl Editor {
                 .collect::<Vec<_>>();
             ui.ctx().copy_text(lines.join("\n\n"));
         }
-        ui.separator();
+        ui.add_space(6.0);
         let mut focus = None;
         egui::ScrollArea::vertical()
             .id_salt("editor-problems")

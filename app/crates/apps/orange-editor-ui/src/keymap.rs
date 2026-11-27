@@ -397,6 +397,7 @@ impl crate::Editor {
 
     pub(crate) fn keyboard(&mut self, ui: &egui::Ui, host: &mut orange_host::Host) {
         if self.settings_open
+            || self.comment_edit.is_some()
             || self.has_node_ergonomics_modal()
             || self.value_form.is_some()
             || !ui.input(|i| i.focused)
@@ -463,6 +464,10 @@ impl crate::Editor {
               "panels":{"nodes":self.panels.nodes,"properties":self.panels.properties,
                         "log":self.panels.log},
               "dock":self.dock_preferences(),
+              "toolbar":self.toolbar_options.preferences(),
+              "bars":{"status":self.bars.status,"zoom":self.bars.zoom,"graph_state":self.bars.graph_state,"cpu":self.bars.cpu,"network":self.bars.network},
+              "corners":{"docks":self.corners.docks,"windows":self.corners.windows,"menus":self.corners.menus,"controls":self.corners.controls},
+              "tree":{"guides":self.tree_style.guides,"arrows":self.tree_style.arrows,"background":self.tree_style.branch_background},
               "appearance":self.preferred_theme.map(egui::ThemePreference::name),
               "node_search_previews":self.node_search_previews,
               "wireless_opacity":self.canvas.wireless_opacity})
@@ -491,6 +496,36 @@ impl crate::Editor {
             Some("dark") => Some(egui::ThemePreference::Dark),
             Some("system") => Some(egui::ThemePreference::System),
             _ => None,
+        };
+        let bars = &value["bars"];
+        self.toolbar_options.restore(&value["toolbar"], bars);
+        self.bars = crate::settings::Bars {
+            status: bars["status"].as_bool().unwrap_or(true),
+            zoom: bars["zoom"].as_bool().unwrap_or(true),
+            graph_state: bars["graph_state"].as_bool().unwrap_or(true),
+            cpu: bars["cpu"].as_bool().unwrap_or(false),
+            network: bars["network"].as_bool().unwrap_or(false),
+        };
+        let radius = |entry: &serde_json::Value| {
+            entry
+                .as_u64()
+                .filter(|radius| *radius <= 16)
+                .and_then(|radius| u8::try_from(radius).ok())
+        };
+        let legacy = radius(&value["corner_radius"]);
+        let corners = &value["corners"];
+        self.corners = crate::settings::Corners {
+            docks: radius(&corners["docks"])
+                .or(legacy)
+                .unwrap_or(crate::settings::Corners::default().docks),
+            windows: radius(&corners["windows"]).or(legacy),
+            menus: radius(&corners["menus"]).or(legacy),
+            controls: radius(&corners["controls"]).or(legacy),
+        };
+        self.tree_style = orange_ui_controls::TreeStyle {
+            guides: value["tree"]["guides"].as_bool().unwrap_or(true),
+            arrows: value["tree"]["arrows"].as_bool().unwrap_or(true),
+            branch_background: value["tree"]["background"].as_bool().unwrap_or(false),
         };
         self.node_search_previews = value["node_search_previews"].as_bool().unwrap_or(false);
         self.canvas.wireless_opacity = value["wireless_opacity"]

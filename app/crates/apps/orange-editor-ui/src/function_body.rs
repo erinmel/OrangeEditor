@@ -205,8 +205,14 @@ impl Editor {
             |node, port: &str| properties::stored_input_text(host, &document.draft, node, port);
         let response = ui
             .push_id(("function-body", &body.id), |ui| {
-                body.canvas
-                    .show_with_path_controls(ui, &body.view.graph, &[], false, Some(&stored))
+                body.canvas.show_with_path_controls(
+                    ui,
+                    &body.view.graph,
+                    &[],
+                    false,
+                    Some(&stored),
+                    &[],
+                )
             })
             .inner;
         if let Some((at, _)) = response.quick_add {

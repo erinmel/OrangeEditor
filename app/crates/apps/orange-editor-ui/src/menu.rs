@@ -27,6 +27,7 @@ pub enum MenuTarget {
 #[non_exhaustive]
 pub enum Command {
     AddNode,
+    AddComment,
     Properties,
     Rename,
     Paste,
@@ -135,6 +136,13 @@ impl Editor {
                     "Tab",
                     icons::ADD,
                     true,
+                ),
+                entry(
+                    Command::AddComment,
+                    t("add-canvas-comment"),
+                    "",
+                    icons::COMMENT,
+                    self.function_body.is_none(),
                 ),
                 entry(Command::Paste, t("paste"), "Ctrl+V", icons::PASTE, true),
                 entry(
@@ -361,6 +369,7 @@ impl Editor {
                 self.open_quick_add(None, menu.at, menu.screen);
                 true
             }
+            (Command::AddComment, MenuTarget::Canvas) => self.add_canvas_comment(menu.at),
             (Command::Properties, MenuTarget::Node(node)) => {
                 self.canvas.select(Some(*node));
                 self.panels.properties = true;
@@ -824,6 +833,7 @@ mod tests {
             commands(&editor),
             [
                 Command::AddNode,
+                Command::AddComment,
                 Command::Paste,
                 Command::SelectAll,
                 Command::Group,
@@ -835,7 +845,12 @@ mod tests {
         let entries = editor.menu_entries();
         let group = entries.iter().find(|entry| entry.command == Command::Group);
         assert!(!group.unwrap().enabled);
-        assert!(entries.iter().all(|entry| !entry.shortcut.is_empty()));
+        assert!(
+            entries
+                .iter()
+                .filter(|entry| entry.command != Command::AddComment)
+                .all(|entry| !entry.shortcut.is_empty())
+        );
         // A right-clicked card becomes the selection and gets the card commands.
         editor.open_menu(MenuTarget::Node(id(2)), [0.0, 0.0], egui::Pos2::ZERO);
         assert_eq!(editor.canvas.selection(), [id(2)]);

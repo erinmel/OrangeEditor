@@ -425,6 +425,12 @@ At registry publication, the same kind/value matrix is enforced on definition me
 
 Function declarations remain graph-local. `core/call.config.function` contains a canonical `FunctionId`; variable intrinsics use `config.variable` with a canonical `VariableId`, and update nodes use `config.operation` with a stable operation token. These are typed references, not names or arbitrary strings to search. Function summaries (inferred kind, suspension, transitive run-variable writes, and completeness) are derived validation/compile data, not persisted document fields. A host may provide explicit trusted native-leaf semantics; unresolved external bodies remain incomplete, never assumed effect-free. The call graph is analyzed iteratively with bounded explicit traversal state; recursive calls report `E-RECURSION` without relying on the Rust call stack.
 
+Root-canvas annotations use optional layout entries at
+`editor.comments.<id>` with shape `{at: [x, y], text}`. Coordinates are finite
+graph units and the text is display-only. Comment changes are undoable layout
+transactions. Comments travel with the graph JSON and bundles, and the graph
+compiler never reads them. Existing graphs need no migration.
+
 ### 3.2 Derived indexes (not persisted)
 
 Function-body index membership (2026-10-31): `DocIndex` retains private ordered node/edge ID sets for functions only. Replacing or removing a function visits its old indexed members instead of scanning unrelated root nodes and edges; ordinary insertion/removal maintains membership and current-owner checks preserve IDs moved between functions in either update order. Empty functions have consistent membership entries, and missing/foreign receipts still rebuild. Root contents acquire no secondary membership directory. Membership edits add ordered-set costs and storage for function IDs; measured timing and memory tradeoffs are recorded in 10. This is a derived representation change, not persisted graph data or a public API change.

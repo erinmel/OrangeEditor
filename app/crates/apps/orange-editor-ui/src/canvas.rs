@@ -204,6 +204,7 @@ struct ExpandedText {
 /// What the person did on the canvas this frame.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CanvasResponse {
+    pub(super) comment: Option<crate::comments::Action>,
     pub(crate) edit_literal: Option<(NodeId, String)>,
     pub(crate) edit_map_pairs: Option<NodeId>,
     pub(crate) new_event: Option<NodeId>,
@@ -1642,7 +1643,7 @@ impl Canvas {
         graph: &GraphView,
         triggers: &[NodeId],
     ) -> CanvasResponse {
-        self.show_with_path_controls(ui, graph, triggers, false, None)
+        self.show_with_path_controls(ui, graph, triggers, false, None, &[])
     }
 
     pub(crate) fn cancel_node_rename(&mut self) {
@@ -1656,6 +1657,7 @@ impl Canvas {
         triggers: &[NodeId],
         file_dialogs: bool,
         stored_text: Option<&StoredText<'_>>,
+        comments: &[orange_host::CanvasComment],
     ) -> CanvasResponse {
         crate::icons::install(ui.ctx());
         let mut done = CanvasResponse::default();
@@ -1716,7 +1718,14 @@ impl Canvas {
         let untouched = self.fitted == Some((self.zoom, self.origin));
         if self.fit || (untouched && previous_size != self.size) {
             self.fit = false;
-            if let Some(bounds) = self.bounds(graph) {
+            let bounds = self
+                .bounds(graph)
+                .into_iter()
+                .chain(comments.iter().map(|comment| {
+                    Rect::from_min_size(Pos2::from(comment.at), crate::comments::SIZE)
+                }))
+                .reduce(Rect::union);
+            if let Some(bounds) = bounds {
                 (self.zoom, self.origin) = Self::frame(bounds, area.size());
                 self.fitted = Some((self.zoom, self.origin));
             }
@@ -2447,7 +2456,11 @@ impl Canvas {
         self.hover_wire = nearest
             .filter(|(away, _)| *away <= WIRE_GRAB * zoom.max(0.6))
             .map(|(_, ends)| ends);
-        if palette_item.is_some() && done.dropped.is_some() {
+        if palette_item
+            .as_ref()
+            .is_some_and(|drag| drag.item.id != crate::comments::DEFINITION)
+            && done.dropped.is_some()
+        {
             done.drop_wire.clone_from(&self.hover_wire);
         }
         // A click on the background selects the wire under it, or none.
@@ -3284,7 +3297,7 @@ impl Canvas {
                     colors.text,
                 );
             }
-            if self.hover_wire.is_some() {
+            if drag.item.id != crate::comments::DEFINITION && self.hover_wire.is_some() {
                 let _ = painter.text(
                     at - Vec2::new(0.0, 8.0),
                     Align2::LEFT_BOTTOM,
@@ -3292,6 +3305,17 @@ impl Canvas {
                     FontId::proportional(12.0),
                     colors.text,
                 );
+            }
+        }
+        for comment in comments {
+            let rect = Rect::from_min_size(
+                area.min + (Pos2::from(comment.at) - self.origin) * self.zoom,
+                crate::comments::SIZE * self.zoom,
+            );
+            if rect.intersects(area)
+                && let Some(action) = crate::comments::card(ui, &painter, comment, rect, self.zoom)
+            {
+                done.comment = Some(action);
             }
         }
         done

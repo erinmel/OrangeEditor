@@ -1505,7 +1505,7 @@ impl Editor {
                     .on_hover_text(&from);
             }
         }
-        ui.separator();
+        ui.add_space(6.0);
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
         // Delete stays in the panel's bottom right corner while the fields scroll.

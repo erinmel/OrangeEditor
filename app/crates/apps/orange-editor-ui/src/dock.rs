@@ -6,17 +6,21 @@ use serde_json::{Value as Json, json};
 enum Tool {
     Nodes,
     Properties,
-    Packages,
+    Variables,
+    Types,
+    Connections,
     GraphInfo,
     Problems,
     Log,
 }
 
 impl Tool {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Nodes,
         Self::Properties,
-        Self::Packages,
+        Self::Variables,
+        Self::Types,
+        Self::Connections,
         Self::GraphInfo,
         Self::Problems,
         Self::Log,
@@ -26,7 +30,9 @@ impl Tool {
         match self {
             Self::Nodes => "nodes",
             Self::Properties => "properties",
-            Self::Packages => "packages",
+            Self::Variables => "variables",
+            Self::Types => "types",
+            Self::Connections => "connections",
             Self::GraphInfo => "graph-info",
             Self::Problems => "problems",
             Self::Log => "log",
@@ -37,10 +43,24 @@ impl Tool {
         match self {
             Self::Nodes => icons::ARRANGE,
             Self::Properties => icons::PROPERTIES,
-            Self::Packages => icons::PACKAGES,
+            Self::Variables => icons::VARIABLE,
+            Self::Types => icons::TYPES,
+            Self::Connections => icons::CONNECTIONS,
             Self::GraphInfo => icons::INFO,
-            Self::Problems => icons::WARNING,
-            Self::Log => icons::TEXT,
+            Self::Problems => icons::ERROR,
+            Self::Log => icons::RUN_LOG,
+        }
+    }
+
+    const CATALOGUE: [Self; 4] = [Self::Nodes, Self::Variables, Self::Types, Self::Connections];
+
+    fn tab(self) -> Option<Tab> {
+        match self {
+            Self::Nodes => Some(Tab::Nodes),
+            Self::Variables => Some(Tab::Variables),
+            Self::Types => Some(Tab::Types),
+            Self::Connections => Some(Tab::Connections),
+            _ => None,
         }
     }
 
@@ -59,34 +79,54 @@ const AREA_LABELS: [&str; 4] = [
 ];
 const RAIL: f32 = 30.0;
 
+pub(super) fn workspace_scroll() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        bar_width: 8.0,
+        floating_width: 4.0,
+        floating_allocated_width: 13.0,
+        bar_inner_margin: 3.0,
+        bar_outer_margin: 2.0,
+        dormant_handle_opacity: 0.42,
+        active_handle_opacity: 0.65,
+        interact_handle_opacity: 0.9,
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.0,
+        ..egui::style::ScrollStyle::floating()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Dock {
     tools: [Vec<Tool>; 4],
     active: [Option<Tool>; 4],
     sizes: [f32; 3],
+    hidden: Vec<Tool>,
+    pub(super) names: bool,
+    tab: Tab,
 }
 
 impl Default for Dock {
     fn default() -> Self {
         Self {
             tools: [
-                vec![Tool::Nodes],
-                vec![Tool::Properties, Tool::Packages],
+                Tool::CATALOGUE.to_vec(),
+                vec![Tool::Properties],
                 vec![Tool::GraphInfo],
                 vec![Tool::Problems, Tool::Log],
             ],
             active: [Some(Tool::Nodes), Some(Tool::Properties), None, None],
             sizes: [280.0, 280.0, 170.0],
+            hidden: Vec::new(),
+            names: false,
+            tab: Tab::Nodes,
         }
     }
 }
 
 impl Dock {
-    fn area(&self, tool: Tool) -> usize {
-        self.tools
-            .iter()
-            .position(|tools| tools.contains(&tool))
-            .expect("each tool has an area")
+    fn area(&self, tool: Tool) -> Option<usize> {
+        self.tools.iter().position(|tools| tools.contains(&tool))
     }
 
     fn visible(&self, tool: Tool) -> bool {
@@ -94,9 +134,21 @@ impl Dock {
     }
 
     fn show(&mut self, tool: Tool, visible: bool) {
-        let area = self.area(tool);
+        if visible && self.hidden.contains(&tool) {
+            return;
+        }
+        let Some(area) = self.area(tool) else {
+            return;
+        };
         if visible || self.active[area] == Some(tool) {
             self.active[area] = visible.then_some(tool);
+        }
+    }
+
+    fn hide(&mut self, tool: Tool) {
+        self.show(tool, false);
+        if !self.hidden.contains(&tool) {
+            self.hidden.push(tool);
         }
     }
 
@@ -104,7 +156,9 @@ impl Dock {
         if before == Some(tool) {
             return;
         }
-        let source = self.area(tool);
+        let Some(source) = self.area(tool) else {
+            return;
+        };
         self.show(tool, false);
         self.tools[source].retain(|item| *item != tool);
         let tools = &mut self.tools[destination];
@@ -112,6 +166,7 @@ impl Dock {
             .and_then(|target| tools.iter().position(|item| *item == target))
             .unwrap_or(tools.len());
         tools.insert(index, tool);
+        self.hidden.retain(|hidden| *hidden != tool);
         self.active[destination] = Some(tool);
     }
 
@@ -120,7 +175,7 @@ impl Dock {
             .tools
             .each_ref()
             .map(|tools| tools.iter().map(|tool| tool.key()).collect::<Vec<_>>());
-        json!({"tools": tools, "active": self.active.map(|tool| tool.map(Tool::key)), "sizes": self.sizes})
+        json!({"tools": tools, "active": self.active.map(|tool| tool.map(Tool::key)), "sizes": self.sizes, "names": self.names, "hidden": self.hidden.iter().map(|tool| tool.key()).collect::<Vec<_>>() })
     }
 
     pub(super) fn restore(&mut self, value: &Json) {
@@ -147,8 +202,16 @@ impl Dock {
         for (area, tools) in defaults.tools.iter().enumerate() {
             self.tools[area].extend(tools.iter().copied().filter(|tool| !seen.contains(tool)));
         }
+        self.names = value["names"].as_bool().unwrap_or(false);
+        self.hidden = value["hidden"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Tool::read)
+            .collect();
         self.active = std::array::from_fn(|area| {
-            Tool::read(&value["active"][area]).filter(|tool| self.tools[area].contains(tool))
+            Tool::read(&value["active"][area])
+                .filter(|tool| self.tools[area].contains(tool) && !self.hidden.contains(tool))
         });
         for (index, size) in self.sizes.iter_mut().enumerate() {
             *size = value["sizes"][index]
@@ -160,8 +223,24 @@ impl Dock {
 }
 
 impl Editor {
-    fn sync_visibility(dock: &mut Dock, panels: Panels, log_events: bool) {
-        dock.show(Tool::Nodes, panels.nodes);
+    fn sync_visibility(dock: &mut Dock, panels: Panels, log_events: bool, tab: Tab) {
+        if !panels.nodes {
+            for tool in Tool::CATALOGUE {
+                dock.show(tool, false);
+            }
+        } else if dock.tab != tab || !Tool::CATALOGUE.into_iter().any(|tool| dock.visible(tool)) {
+            let visible_icons = Tool::CATALOGUE
+                .into_iter()
+                .filter(|tool| !dock.hidden.contains(tool));
+            let tool = visible_icons
+                .clone()
+                .find(|tool| tool.tab() == Some(tab))
+                .or_else(|| visible_icons.into_iter().next());
+            if let Some(tool) = tool {
+                dock.show(tool, true);
+            }
+        }
+        dock.tab = tab;
         dock.show(Tool::Properties, panels.properties);
         if panels.log {
             let requested = if log_events {
@@ -178,12 +257,29 @@ impl Editor {
 
     pub(super) fn dock_preferences(&self) -> Json {
         let mut dock = self.dock.clone();
-        Self::sync_visibility(&mut dock, self.panels, self.log_events);
+        Self::sync_visibility(&mut dock, self.panels, self.log_events, self.tab);
         dock.preferences()
     }
 
+    fn remember_catalogue_tool(&mut self, tool: Tool) {
+        if let Some(tab) = tool.tab() {
+            self.tab = tab;
+            self.preferred_tab = tab;
+            self.dock.tab = tab;
+            self.palette_highlighted = 0;
+        }
+    }
+
+    fn move_dock_tool(&mut self, tool: Tool, area: usize, before: Option<Tool>) {
+        self.dock.move_tool(tool, area, before);
+        self.remember_catalogue_tool(tool);
+        self.sync_panels_from_dock();
+    }
+
     fn sync_panels_from_dock(&mut self) {
-        self.panels.nodes = self.dock.visible(Tool::Nodes);
+        self.panels.nodes = Tool::CATALOGUE
+            .into_iter()
+            .any(|tool| self.dock.visible(tool));
         self.panels.properties = self.dock.visible(Tool::Properties);
         let log = self.dock.visible(Tool::Log);
         let problems = self.dock.visible(Tool::Problems);
@@ -199,12 +295,13 @@ impl Editor {
             .is_some_and(|groups| groups.len() == 4)
         {
             self.dock.restore(value);
+            self.dock.tab = self.tab;
             self.sync_panels_from_dock();
         }
     }
 
     pub(super) fn dock_layout(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        Self::sync_visibility(&mut self.dock, self.panels, self.log_events);
+        Self::sync_visibility(&mut self.dock, self.panels, self.log_events, self.tab);
         self.sync_panels_from_dock();
         let mut targets = [egui::Rect::NOTHING; 4];
         let mut rails = [egui::Rect::NOTHING; 4];
@@ -215,8 +312,9 @@ impl Editor {
             } else {
                 egui::Panel::right("dock-right-tabs")
             };
-            rail.frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
-                .exact_size(RAIL)
+            rail.show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill))
+                .exact_size(if self.dock.names { 112.0 } else { RAIL })
                 .show(ui, |ui| {
                     let bounds = ui.max_rect().intersect(ui.clip_rect());
                     for area in [side, side + 2] {
@@ -249,18 +347,25 @@ impl Editor {
         if bottom.iter().any(Option::is_some) {
             let max = (ui.available_height() * 0.55).max(70.0);
             let panel = egui::Panel::bottom("dock-bottom-content")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(ui.visuals().panel_fill)
+                        .inner_margin(egui::Margin::symmetric(3, 4)),
+                )
                 .resizable(true)
                 .size_range(70.0..=max)
                 .default_size(self.dock.sizes[2].clamp(70.0, max))
                 .show(ui, |ui| {
                     if let [Some(left), Some(right)] = bottom {
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         ui.columns(2, |columns| {
                             for (index, tool) in [left, right].into_iter().enumerate() {
                                 let column = &mut columns[index];
                                 let bounds = column.max_rect().intersect(column.clip_rect());
                                 targets[index + 2] = targets[index + 2].union(bounds);
                                 column.set_clip_rect(column.clip_rect().intersect(bounds));
-                                self.dock_content(column, host, tool);
+                                self.dock_surface(column, host, tool);
                             }
                         });
                     } else if let Some(tool) = bottom[0].or(bottom[1]) {
@@ -274,7 +379,7 @@ impl Editor {
                             egui::pos2(center, bounds.top()),
                             bounds.max,
                         ));
-                        self.dock_content(ui, host, tool);
+                        self.dock_surface(ui, host, tool);
                     }
                 });
             if ui.input(|input| input.pointer.is_decidedly_dragging()) {
@@ -290,10 +395,16 @@ impl Editor {
                     egui::Panel::right("orange-inspector")
                 };
                 let panel = content
+                    .show_separator_line(false)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(ui.visuals().panel_fill)
+                            .inner_margin(egui::Margin::symmetric(3, 4)),
+                    )
                     .resizable(true)
                     .size_range(100.0..=side_max)
                     .default_size(self.dock.sizes[area].clamp(100.0, side_max))
-                    .show(ui, |ui| self.dock_content(ui, host, tool));
+                    .show(ui, |ui| self.dock_surface(ui, host, tool));
                 *target = panel.response.rect;
                 if ui.input(|input| input.pointer.is_decidedly_dragging()) {
                     self.dock.sizes[area] = panel.response.rect.width();
@@ -308,7 +419,11 @@ impl Editor {
         if area >= 2 {
             tools.reverse();
         }
-        for tool in tools {
+        for tool in tools
+            .into_iter()
+            .filter(|tool| !self.dock.hidden.contains(tool))
+            .collect::<Vec<_>>()
+        {
             let active = self.dock.active[area] == Some(tool);
             let label = match tool {
                 Tool::Nodes => format!(
@@ -324,7 +439,14 @@ impl Editor {
                 _ => t(tool.key()).to_owned(),
             };
             let response = ui
-                .push_id(tool.key(), |ui| icons::dock_tab(ui, tool.icon(), active))
+                .push_id(tool.key(), |ui| {
+                    icons::dock_tab(
+                        ui,
+                        tool.icon(),
+                        active,
+                        self.dock.names.then(|| t(tool.key())),
+                    )
+                })
                 .inner;
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::Role::Button, true, active, t(tool.key()))
@@ -334,20 +456,46 @@ impl Editor {
             response.dnd_set_drag_payload(tool);
             if response.clicked() {
                 self.dock.show(tool, !active);
+                if !active {
+                    self.remember_catalogue_tool(tool);
+                }
                 self.sync_panels_from_dock();
             }
             response.context_menu(|ui| {
+                if ui.button(t("dock-hide-icon")).clicked() {
+                    self.dock.hide(tool);
+                    self.sync_panels_from_dock();
+                    ui.close();
+                }
+                ui.checkbox(&mut self.dock.names, t("dock-show-names"));
+                ui.add_space(4.0);
                 for (destination, label) in AREA_LABELS.into_iter().enumerate() {
                     if ui
                         .add_enabled(destination != area, egui::Button::new(t(label)))
                         .clicked()
                     {
-                        self.dock.move_tool(tool, destination, None);
-                        self.sync_panels_from_dock();
+                        self.move_dock_tool(tool, destination, None);
                         ui.close();
                     }
                 }
             });
+        }
+        let rest = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        if rest.is_positive() {
+            ui.interact(rest, ui.scope_id().with("empty-rail"), egui::Sense::click())
+                .context_menu(|ui| {
+                    ui.checkbox(&mut self.dock.names, t("dock-show-names"));
+                    ui.add_enabled_ui(!self.dock.hidden.is_empty(), |ui| {
+                        ui.menu_button(t("dock-add-icon"), |ui| {
+                            for tool in self.dock.hidden.clone() {
+                                if ui.button(t(tool.key())).clicked() {
+                                    self.move_dock_tool(tool, area, None);
+                                    ui.close();
+                                }
+                            }
+                        })
+                    });
+                });
         }
     }
 
@@ -374,7 +522,7 @@ impl Editor {
         };
         let before = slots
             .iter()
-            .find(|(item, rect)| self.dock.area(*item) == area && rect.contains(pointer))
+            .find(|(item, rect)| self.dock.area(*item) == Some(area) && rect.contains(pointer))
             .map(|(item, _)| *item);
         ui.ctx()
             .layer_painter(egui::LayerId::new(
@@ -389,21 +537,39 @@ impl Editor {
             );
         if ui.input(|input| input.pointer.primary_released()) {
             let _ = egui::DragAndDrop::take_payload::<Tool>(ui.ctx());
-            self.dock.move_tool(*tool, area, before);
-            self.sync_panels_from_dock();
+            self.move_dock_tool(*tool, area, before);
             ui.ctx().request_repaint();
         }
     }
 
+    fn dock_surface(&mut self, ui: &mut egui::Ui, host: &mut Host, tool: Tool) {
+        egui::Frame::new()
+            .fill(
+                ui.visuals()
+                    .panel_fill
+                    .lerp_to_gamma(ui.visuals().faint_bg_color, 0.42),
+            )
+            .corner_radius(self.corners.docks)
+            .inner_margin(egui::Margin::symmetric(9, 8))
+            .show(ui, |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+                ui.set_min_size(ui.available_size());
+                if tool != Tool::GraphInfo {
+                    ui.strong(t(tool.key()));
+                    ui.add_space(4.0);
+                }
+                self.dock_content(ui, host, tool);
+            });
+    }
+
     fn dock_content(&mut self, ui: &mut egui::Ui, host: &mut Host, tool: Tool) {
-        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+        ui.style_mut().spacing.scroll = workspace_scroll();
         match tool {
-            Tool::Nodes => self.nodes_panel(ui, host),
+            Tool::Nodes => self.node_catalogue(ui, host),
+            Tool::Variables => self.variables_tab(ui, host),
+            Tool::Types => self.types_tab(ui, host),
+            Tool::Connections => self.connections_tab(ui, host),
             Tool::Properties => self.right_panel(ui, host),
-            Tool::Packages => {
-                self.graph_bundle_menu(ui, host);
-                self.package_manager(ui, host);
-            }
             Tool::Log | Tool::Problems => {
                 let previous = std::mem::replace(&mut self.log_events, tool == Tool::Log);
                 self.log_panel(ui);
@@ -412,7 +578,11 @@ impl Editor {
             Tool::GraphInfo => {
                 ui.strong(t("graph-info"));
                 if let Some(path) = self.path().filter(|path| !path.is_empty()) {
-                    ui.label(path).on_hover_text(path);
+                    let name = std::path::Path::new(path)
+                        .file_name()
+                        .map_or_else(|| path.into(), std::ffi::OsStr::to_string_lossy);
+                    ui.add(egui::Label::new(name).truncate())
+                        .on_hover_text(path);
                 }
                 ui.label(t(if self.is_running() {
                     "running"
@@ -497,23 +667,82 @@ mod tests {
         ] {
             frame(&mut editor, events);
         }
-        assert_eq!(editor.dock.area(Tool::Nodes), 3);
+        assert_eq!(editor.dock.area(Tool::Nodes), Some(3));
         assert_eq!(editor.dock.active[3], Some(Tool::Nodes));
         let mut restored = Editor::new();
         restored.restore_preferences(&editor.preferences());
-        assert_eq!(restored.dock.area(Tool::Nodes), 3);
+        assert_eq!(restored.dock.area(Tool::Nodes), Some(3));
         assert_eq!(restored.dock.active[3], Some(Tool::Nodes));
+    }
+
+    #[test]
+    fn right_clicking_empty_bottom_rail_offers_to_restore_a_hidden_icon() {
+        let mut editor = Editor::new();
+        let (mut host, _) = Host::new(orange_host::HostOptions::default()).unwrap();
+        editor.dock.hide(Tool::Variables);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 500.0));
+        let at = egui::pos2(screen.right() - RAIL / 2.0, screen.bottom() - 108.0);
+        let menu = t("dock-add-icon");
+        let mut menu_shown = false;
+        for events in [
+            vec![],
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                pressed: true,
+                button: egui::PointerButton::Secondary,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                pressed: false,
+                button: egui::PointerButton::Secondary,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![],
+        ] {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| editor.dock_layout(ui, &mut host),
+            );
+            menu_shown |= output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == menu));
+            output.drop_without_applying_deltas();
+        }
+        assert!(menu_shown);
+    }
+
+    #[test]
+    fn hidden_tools_stay_hidden_until_added_to_a_rail() {
+        let mut dock = Dock::default();
+        assert_eq!(dock.tools[0], Tool::CATALOGUE);
+        dock.hide(Tool::Nodes);
+        dock.names = true;
+        let mut restored = Dock::default();
+        restored.restore(&dock.preferences());
+        assert_eq!(restored.hidden, [Tool::Nodes]);
+        assert!(restored.names);
+        restored.show(Tool::Nodes, true);
+        assert!(!restored.visible(Tool::Nodes));
+        restored.move_tool(Tool::Nodes, 3, None);
+        assert!(restored.hidden.is_empty());
+        assert!(restored.visible(Tool::Nodes));
+        assert_eq!(restored.area(Tool::Nodes), Some(3));
     }
 
     #[test]
     fn tabs_can_be_reordered_and_fit_into_each_area() {
         let mut dock = Dock::default();
-        dock.move_tool(Tool::Packages, 1, Some(Tool::Properties));
-        assert_eq!(dock.tools[1], [Tool::Packages, Tool::Properties]);
+        dock.move_tool(Tool::Connections, 1, Some(Tool::Properties));
+        assert_eq!(dock.tools[1], [Tool::Connections, Tool::Properties]);
         for area in [0, 2, 3, 1] {
-            dock.move_tool(Tool::Packages, area, None);
-            assert_eq!(dock.area(Tool::Packages), area);
-            assert_eq!(dock.active[area], Some(Tool::Packages));
+            dock.move_tool(Tool::Connections, area, None);
+            assert_eq!(dock.area(Tool::Connections), Some(area));
+            assert_eq!(dock.active[area], Some(Tool::Connections));
         }
         let mut restored = Dock::default();
         restored.restore(&dock.preferences());

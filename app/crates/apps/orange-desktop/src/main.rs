@@ -12,6 +12,7 @@ mod keyboard;
 mod logbook;
 mod native;
 mod picture;
+mod system_status;
 
 include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
@@ -85,6 +86,7 @@ struct Desktop {
     host: Host,
     events: orange_host::Events,
     editor: Editor,
+    system_status: Option<system_status::Sampler>,
     /// With `--canvas-only`: the graph and its canvas, shown without the editor.
     bare: Option<(GraphView, Canvas)>,
     capture_canvas_only: bool,
@@ -179,6 +181,21 @@ impl eframe::App for Desktop {
                 ui.ctx()
                     .send_viewport_cmd(eframe::egui::ViewportCommand::Title(self.title.clone()));
             }
+        }
+        if self.bare.is_none() && !self.capture_canvas_only && self.editor.system_status_requested()
+        {
+            if self.system_status.is_none() {
+                self.system_status = system_status::Sampler::start(ui.ctx().clone());
+            }
+            if let Some(sample) = self
+                .system_status
+                .as_ref()
+                .and_then(system_status::Sampler::latest)
+            {
+                self.editor.set_system_status(sample);
+            }
+        } else if self.system_status.take().is_some() {
+            self.editor.set_system_status(Default::default());
         }
         match &mut self.bare {
             // All an embedding application does: show the canvas where it wants it.
@@ -663,6 +680,7 @@ fn start(
         host,
         events,
         editor,
+        system_status: None,
         bare,
         capture_canvas_only: canvas_only && screenshot.is_some(),
         title,
