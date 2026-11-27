@@ -27,13 +27,17 @@ fn profile_dir() -> PathBuf {
 fn plugin() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT.get_or_init(|| {
+        // The profile's folder is named after it, except `dev`, whose folder is `debug`.
+        let folder = profile_dir();
+        let profile = match folder.file_name().and_then(|name| name.to_str()) {
+            Some("debug") | None => "dev",
+            Some(name) => name,
+        };
         let mut build = Command::new(env!("CARGO"));
         let _ = build
             .args(["build", "--locked", "-p", "orange-plugin-example"])
+            .args(["--profile", profile])
             .current_dir(env!("CARGO_MANIFEST_DIR"));
-        if !cfg!(debug_assertions) {
-            let _ = build.arg("--release");
-        }
         let status = build.status().unwrap();
         assert!(status.success(), "the example plugin did not build");
         let name = format!(
