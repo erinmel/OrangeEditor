@@ -28,6 +28,6 @@ cpal.workspace = true
 hound.workspace = true
 rfd.workspace = true
 eframe.workspace = true
-orange-testkit = { path = "../../dev/orange-testkit", version = "=0.0.0", features = ["ui"] }
+orange-testkit = { path = "../../dev/orange-testkit", version = "=0.1.0-preview.1", features = ["ui"] }
 # The gallery's live analyser runs on the audio package's FFT.
-orange-audio = { path = "../../services/orange-audio", version = "=0.0.0" }
+orange-audio = { path = "../../services/orange-audio", version = "=0.1.0-preview.1" }
